@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../faster-blaster"
+		},
+		{
+			"path": "../faster-blaster-reference"
+		},
+		{
+			"path": "../candlelight"
+		},
+		{
+			"path": "../lightbulb"
+		},
+		{
+			"path": "../candle-cuda-vmm"
+		}
+	],
+	"settings": {}
+}

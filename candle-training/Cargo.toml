@@ -1,0 +1,25 @@
+[package]
+    categories.workspace = true
+    description          = "Training orchestration layer for the Candle ML framework."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "candle-training"
+    readme               = "README.md"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    candle     = { workspace = true }
+    candle-nn  = { workspace = true }
+    serde      = { workspace = true }
+    serde_json = { workspace = true }
+    tracing    = { workspace = true }
+
+[features]
+    accelerate = ["candle-nn/accelerate", "candle/accelerate"]
+    cuda       = ["candle-nn/cuda", "candle/cuda"]
+    cudnn      = ["candle-nn/cudnn", "candle/cudnn"]
+    default    = []
+    metal      = ["candle-nn/metal", "candle/metal"]
+    mkl        = ["candle-nn/mkl", "candle/mkl"]

@@ -415,7 +415,7 @@ fn run(args: Args) -> Result<()> {
 
         // Apply CFG if guidance_scale > 1.0
         let noise_pred = if args.guidance_scale > 1.0 {
-            if let (Some(ref neg_feats), Some(ref neg_mask)) = (&neg_cap_feats, &neg_cap_mask) {
+            if let (Some(neg_feats), Some(neg_mask)) = (&neg_cap_feats, &neg_cap_mask) {
                 let neg_pred = transformer.forward(&latents, &t_tensor, neg_feats, neg_mask)?;
                 // CFG: pred = neg + scale * (pos - neg)
                 let diff = (&noise_pred - &neg_pred)?;

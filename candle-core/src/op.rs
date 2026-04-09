@@ -1,4 +1,10 @@
-//! Tensor Operation Enums and Traits
+//! Enums and traits representing the operations in candle's computation graph.
+//!
+//! This module defines the core operation types that make up the autograd graph. Each time a
+//! tensor operation is performed (add, matmul, reshape, etc.), an [`Op`] variant is recorded
+//! so that gradients can be computed during backpropagation. The leaf enums ([`UnaryOp`],
+//! [`BinaryOp`], [`ReduceOp`], [`CmpOp`]) categorize the primitive operations, while the
+//! [`BackpropOp`] wrapper manages optional graph tracking.
 //!
 #![allow(clippy::redundant_closure_call)]
 use crate::Tensor;
@@ -6,85 +12,143 @@ use float8::F8E4M3 as f8e4m3;
 use half::{bf16, f16};
 use num_traits::float::Float;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CmpOp {
-    Eq,
-    Ne,
-    Le,
-    Ge,
-    Lt,
-    Gt,
-}
+pub use candle_core_types::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 
+/// Element-wise binary operations on two tensors of the same shape.
+///
+/// These operations preserve the input dtype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReduceOp {
-    Sum,
-    Min,
-    Max,
-    ArgMin,
-    ArgMax,
+pub enum BinaryOp {
+    /// Element-wise addition.
+    Add,
+    /// Element-wise multiplication.
+    Mul,
+    /// Element-wise subtraction.
+    Sub,
+    /// Element-wise division.
+    Div,
+    /// Element-wise maximum of two tensors.
+    Maximum,
+    /// Element-wise minimum of two tensors.
+    Minimum,
 }
 
-impl ReduceOp {
-    pub(crate) fn name(&self) -> &'static str {
-        match self {
-            Self::ArgMax => "argmax",
-            Self::ArgMin => "argmin",
-            Self::Min => "min",
-            Self::Max => "max",
-            Self::Sum => "sum",
+/// Element-wise unary operations applied to a single tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// Exponential function (`e^x`).
+    Exp,
+    /// Natural logarithm (`ln(x)`).
+    Log,
+    /// Sine.
+    Sin,
+    /// Cosine.
+    Cos,
+    /// Absolute value.
+    Abs,
+    /// Negation (`-x`).
+    Neg,
+    /// Reciprocal (`1/x`).
+    Recip,
+    /// Square (`x^2`).
+    Sqr,
+    /// Square root.
+    Sqrt,
+    /// GELU activation using the tanh approximation.
+    Gelu,
+    /// GELU activation using the exact erf formulation.
+    GeluErf,
+    /// Gauss error function.
+    Erf,
+    /// Rectified linear unit (`max(0, x)`).
+    Relu,
+    /// SiLU (Swish) activation (`x * sigmoid(x)`).
+    Silu,
+    /// Hyperbolic tangent.
+    Tanh,
+    /// Floor rounding.
+    Floor,
+    /// Ceiling rounding.
+    Ceil,
+    /// Round to nearest integer.
+    Round,
+    /// Sign function (-1, 0, or 1).
+    Sign,
+}
+
+impl BinaryOp {
+    /// Look up a [`BinaryOp`] variant by its `BinaryOpT::NAME` string.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "add" => Some(Self::Add),
+            "sub" => Some(Self::Sub),
+            "mul" => Some(Self::Mul),
+            "div" => Some(Self::Div),
+            "maximum" => Some(Self::Maximum),
+            "minimum" => Some(Self::Minimum),
+            _ => None,
         }
     }
 }
 
-// These ops return the same type as their input type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
-    Add,
-    Mul,
-    Sub,
-    Div,
-    Maximum,
-    Minimum,
+impl UnaryOp {
+    /// Look up a [`UnaryOp`] variant by its `UnaryOpT::NAME` string.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "exp" => Some(Self::Exp),
+            "log" => Some(Self::Log),
+            "sin" => Some(Self::Sin),
+            "cos" => Some(Self::Cos),
+            "abs" => Some(Self::Abs),
+            "neg" => Some(Self::Neg),
+            "recip" => Some(Self::Recip),
+            "sqr" => Some(Self::Sqr),
+            "sqrt" => Some(Self::Sqrt),
+            "gelu" => Some(Self::Gelu),
+            "gelu_erf" => Some(Self::GeluErf),
+            "erf" => Some(Self::Erf),
+            "relu" => Some(Self::Relu),
+            "silu" => Some(Self::Silu),
+            "tanh" => Some(Self::Tanh),
+            "floor" => Some(Self::Floor),
+            "ceil" => Some(Self::Ceil),
+            "round" => Some(Self::Round),
+            "sign" => Some(Self::Sign),
+            _ => None,
+        }
+    }
 }
 
-// Unary ops with no argument
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
-    Exp,
-    Log,
-    Sin,
-    Cos,
-    Abs,
-    Neg,
-    Recip,
-    Sqr,
-    Sqrt,
-    Gelu,
-    GeluErf,
-    Erf,
-    Relu,
-    Silu,
-    Tanh,
-    Floor,
-    Ceil,
-    Round,
-    Sign,
-}
-
+/// A node in the autograd computation graph.
+///
+/// Each `Op` variant records the operation that produced a tensor along with references to its
+/// input tensors. During backpropagation, the graph is walked in reverse topological order and
+/// each `Op` is used to compute gradients for its inputs. Variants marked `#[allow(dead_code)]`
+/// are tracked in the graph but their backward pass is not yet implemented.
 #[derive(Clone)]
 pub enum Op {
+    /// Element-wise binary operation on two tensors.
     Binary(Tensor, Tensor, BinaryOp),
+    /// Element-wise unary operation on one tensor.
     Unary(Tensor, UnaryOp),
+    /// Element-wise comparison, producing a `u8` mask tensor.
     Cmp(Tensor, CmpOp),
-    // The third argument is the reduced shape with `keepdim=true`.
+    /// Reduction along specified dimensions. The `Vec<usize>` stores the reduced shape with
+    /// `keepdim=true`, used during backpropagation to broadcast the gradient.
     Reduce(Tensor, ReduceOp, Vec<usize>),
+    /// Matrix multiplication of two tensors.
     Matmul(Tensor, Tensor),
+    /// Gather elements along an axis using an index tensor.
     Gather(Tensor, Tensor, usize),
+    /// Scatter values into a tensor at positions given by an index tensor.
     Scatter(Tensor, Tensor, Tensor, usize),
+    /// Scatter-add: like scatter but accumulates (adds) into the destination.
     ScatterAdd(Tensor, Tensor, Tensor, usize),
+    /// Select elements along an axis using an index tensor.
     IndexSelect(Tensor, Tensor, usize),
+    /// Accumulate (add) values into a tensor at positions given by an index tensor.
     IndexAdd(Tensor, Tensor, Tensor, usize),
+    /// Conditional selection: `where(cond, on_true, on_false)`.
     WhereCond(Tensor, Tensor, Tensor),
 
     #[allow(dead_code)]
@@ -153,124 +217,107 @@ pub enum Op {
         align_corners: bool,
     },
 
+    /// Concatenation of tensors along a given axis.
     Cat(Vec<Tensor>, usize),
 
+    /// Affine transformation: `x * mul + add`.
     #[allow(dead_code)] // add is currently unused.
     Affine {
         arg: Tensor,
         mul: f64,
         add: f64,
     },
+    /// Dtype cast.
     ToDType(Tensor),
+    /// Tensor copy (identity in the graph, used for gradient routing).
     Copy(Tensor),
+    /// Broadcasting a tensor to a larger shape.
     Broadcast(Tensor),
+    /// Slicing a contiguous range along one dimension: `(tensor, dim, start, len)`.
     Narrow(Tensor, usize, usize, usize),
+    /// Writing a slice into dimension 0 at a given offset.
     SliceScatter0(Tensor, Tensor, usize),
+    /// Reshaping a tensor (changes layout, not data).
     Reshape(Tensor),
+    /// Moving a tensor to a different device.
     ToDevice(Tensor),
+    /// Transposing two dimensions.
     Transpose(Tensor, usize, usize),
+    /// Arbitrary permutation of dimensions.
     Permute(Tensor, Vec<usize>),
+    /// ELU activation with the given alpha parameter.
     Elu(Tensor, f64),
+    /// Element-wise power: `x^exponent`.
     Powf(Tensor, f64),
+    /// A user-defined unary operation (see [`crate::CustomOp1`]).
     CustomOp1(
         Tensor,
-        std::sync::Arc<Box<dyn crate::CustomOp1 + Send + Sync>>,
+        std::sync::Arc<dyn crate::CustomOp1 + Send + Sync>,
     ),
+    /// A user-defined binary operation (see [`crate::CustomOp2`]).
     CustomOp2(
         Tensor,
         Tensor,
-        std::sync::Arc<Box<dyn crate::CustomOp2 + Send + Sync>>,
+        std::sync::Arc<dyn crate::CustomOp2 + Send + Sync>,
     ),
+    /// A user-defined ternary operation (see [`crate::CustomOp3`]).
     CustomOp3(
         Tensor,
         Tensor,
         Tensor,
-        std::sync::Arc<Box<dyn crate::CustomOp3 + Send + Sync>>,
+        std::sync::Arc<dyn crate::CustomOp3 + Send + Sync>,
     ),
 }
 
-pub trait UnaryOpT {
-    const NAME: &'static str;
-    const KERNEL: &'static str;
-    const V: Self;
-    fn bf16(v1: bf16) -> bf16;
-    fn f16(v1: f16) -> f16;
-    fn f32(v1: f32) -> f32;
-    fn f64(v1: f64) -> f64;
-    fn u8(v1: u8) -> u8;
-    fn u32(v1: u32) -> u32;
-    fn i16(v1: i16) -> i16;
-    fn i32(v1: i32) -> i32;
-    fn i64(v1: i64) -> i64;
-    fn f8e4m3(v1: f8e4m3) -> f8e4m3;
-
-    // There is no very good way to represent optional function in traits so we go for an explicit
-    // boolean flag to mark the function as existing.
-    const BF16_VEC: bool = false;
-    fn bf16_vec(_xs: &[bf16], _ys: &mut [bf16]) {}
-    const F16_VEC: bool = false;
-    fn f16_vec(_xs: &[f16], _ys: &mut [f16]) {}
-    const F32_VEC: bool = false;
-    fn f32_vec(_xs: &[f32], _ys: &mut [f32]) {}
-    const F64_VEC: bool = false;
-    fn f64_vec(_xs: &[f64], _ys: &mut [f64]) {}
-}
-
-pub trait BinaryOpT {
-    const NAME: &'static str;
-    const KERNEL: &'static str;
-    const V: Self;
-    fn bf16(v1: bf16, v2: bf16) -> bf16;
-    fn f16(v1: f16, v2: f16) -> f16;
-    fn f32(v1: f32, v2: f32) -> f32;
-    fn f64(v1: f64, v2: f64) -> f64;
-    fn u8(v1: u8, v2: u8) -> u8;
-    fn u32(v1: u32, v2: u32) -> u32;
-    fn i16(v1: i16, v2: i16) -> i16;
-    fn i32(v1: i32, v2: i32) -> i32;
-    fn i64(v1: i64, v2: i64) -> i64;
-    fn f8e4m3(v1: f8e4m3, v2: f8e4m3) -> f8e4m3;
-
-    const BF16_VEC: bool = false;
-    fn bf16_vec(_xs1: &[bf16], _xs2: &[bf16], _ys: &mut [bf16]) {}
-    const F16_VEC: bool = false;
-    fn f16_vec(_xs1: &[f16], _xs2: &[f16], _ys: &mut [f16]) {}
-    const F32_VEC: bool = false;
-    fn f32_vec(_xs1: &[f32], _xs2: &[f32], _ys: &mut [f32]) {}
-    const F64_VEC: bool = false;
-    fn f64_vec(_xs1: &[f64], _xs2: &[f64], _ys: &mut [f64]) {}
-    const U8_VEC: bool = false;
-    fn u8_vec(_xs1: &[u8], _xs2: &[u8], _ys: &mut [u8]) {}
-    const U32_VEC: bool = false;
-    fn u32_vec(_xs1: &[u32], _xs2: &[u32], _ys: &mut [u32]) {}
-    const I64_VEC: bool = false;
-    fn i64_vec(_xs1: &[i64], _xs2: &[i64], _ys: &mut [i64]) {}
-}
-
+/// Element-wise addition operator. Implements [`BinaryOpT`].
 pub struct Add;
+/// Element-wise division operator. Implements [`BinaryOpT`].
 pub struct Div;
+/// Element-wise multiplication operator. Implements [`BinaryOpT`].
 pub struct Mul;
+/// Element-wise subtraction operator. Implements [`BinaryOpT`].
 pub struct Sub;
+/// Element-wise maximum operator. Implements [`BinaryOpT`].
 pub struct Maximum;
+/// Element-wise minimum operator. Implements [`BinaryOpT`].
 pub struct Minimum;
+/// Element-wise exponential (`e^x`) operator. Implements [`UnaryOpT`].
 pub struct Exp;
+/// Element-wise natural logarithm operator. Implements [`UnaryOpT`].
 pub struct Log;
+/// Element-wise sine operator. Implements [`UnaryOpT`].
 pub struct Sin;
+/// Element-wise cosine operator. Implements [`UnaryOpT`].
 pub struct Cos;
+/// Element-wise absolute value operator. Implements [`UnaryOpT`].
 pub struct Abs;
+/// Element-wise negation (`-x`) operator. Implements [`UnaryOpT`].
 pub struct Neg;
+/// Element-wise reciprocal (`1/x`) operator. Implements [`UnaryOpT`].
 pub struct Recip;
+/// Element-wise square (`x^2`) operator. Implements [`UnaryOpT`].
 pub struct Sqr;
+/// Element-wise square root operator. Implements [`UnaryOpT`].
 pub struct Sqrt;
+/// GELU activation (tanh approximation) operator. Implements [`UnaryOpT`].
 pub struct Gelu;
+/// GELU activation (exact erf) operator. Implements [`UnaryOpT`].
 pub struct GeluErf;
+/// Gauss error function operator. Implements [`UnaryOpT`].
 pub struct Erf;
+/// Rectified linear unit (`max(0, x)`) operator. Implements [`UnaryOpT`].
 pub struct Relu;
+/// SiLU (Swish) activation (`x * sigmoid(x)`) operator. Implements [`UnaryOpT`].
 pub struct Silu;
+/// Hyperbolic tangent operator. Implements [`UnaryOpT`].
 pub struct Tanh;
+/// Floor rounding operator. Implements [`UnaryOpT`].
 pub struct Floor;
+/// Ceiling rounding operator. Implements [`UnaryOpT`].
 pub struct Ceil;
+/// Round-to-nearest-integer operator. Implements [`UnaryOpT`].
 pub struct Round;
+/// Sign function (-1, 0, or 1) operator. Implements [`UnaryOpT`].
 pub struct Sign;
 
 macro_rules! bin_op {
@@ -1037,6 +1084,9 @@ impl UnaryOpT for Relu {
 pub struct BackpropOp(Option<Op>);
 
 impl BackpropOp {
+    /// Creates a no-op backpropagation node (no gradient tracking).
+    ///
+    /// Use this when creating tensors that should not participate in the autograd graph.
     pub fn none() -> Self {
         BackpropOp(None)
     }

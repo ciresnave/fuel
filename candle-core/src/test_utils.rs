@@ -24,6 +24,18 @@ macro_rules! test_device {
     };
 }
 
+/// Asserts that two tensors have the same shape and identical element values.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::{Tensor, Device, DType};
+/// use candle_core::test_utils::assert_tensor_eq;
+/// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+/// let b = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+/// assert_tensor_eq(&a, &b)?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn assert_tensor_eq(t1: &Tensor, t2: &Tensor) -> Result<()> {
     assert_eq!(t1.shape(), t2.shape());
     // Default U8 may not be large enough to hold the sum (`t.sum_all` defaults to the dtype of `t`)
@@ -33,12 +45,34 @@ pub fn assert_tensor_eq(t1: &Tensor, t2: &Tensor) -> Result<()> {
     Ok(())
 }
 
+/// Extracts a scalar f32 value from a rank-0 tensor, rounded to `digits` decimal places.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::{Tensor, Device};
+/// use candle_core::test_utils::to_vec0_round;
+/// let t = Tensor::new(3.14159f32, &Device::Cpu)?;
+/// assert_eq!(to_vec0_round(&t, 2)?, 3.14);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn to_vec0_round(t: &Tensor, digits: i32) -> Result<f32> {
     let b = 10f32.powi(digits);
     let t = t.to_vec0::<f32>()?;
     Ok(f32::round(t * b) / b)
 }
 
+/// Extracts a 1-D tensor to a `Vec<f32>`, rounding each element to `digits` decimal places.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::{Tensor, Device};
+/// use candle_core::test_utils::to_vec1_round;
+/// let t = Tensor::new(&[1.11111f32, 2.22222], &Device::Cpu)?;
+/// assert_eq!(to_vec1_round(&t, 2)?, vec![1.11, 2.22]);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn to_vec1_round(t: &Tensor, digits: i32) -> Result<Vec<f32>> {
     let b = 10f32.powi(digits);
     let t = t.to_vec1::<f32>()?;
@@ -46,6 +80,18 @@ pub fn to_vec1_round(t: &Tensor, digits: i32) -> Result<Vec<f32>> {
     Ok(t)
 }
 
+/// Extracts a 2-D tensor to a `Vec<Vec<f32>>`, rounding each element to `digits` decimal places.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::{Tensor, Device};
+/// use candle_core::test_utils::to_vec2_round;
+/// let t = Tensor::new(&[[1.005f32, 2.005], [3.005, 4.005]], &Device::Cpu)?;
+/// let r = to_vec2_round(&t, 2)?;
+/// assert_eq!(r[0][0], 1.01);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn to_vec2_round(t: &Tensor, digits: i32) -> Result<Vec<Vec<f32>>> {
     let b = 10f32.powi(digits);
     let t = t.to_vec2::<f32>()?;
@@ -56,6 +102,18 @@ pub fn to_vec2_round(t: &Tensor, digits: i32) -> Result<Vec<Vec<f32>>> {
     Ok(t)
 }
 
+/// Extracts a 3-D tensor to a `Vec<Vec<Vec<f32>>>`, rounding each element to `digits` decimal places.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::{Tensor, Device};
+/// use candle_core::test_utils::to_vec3_round;
+/// let t = Tensor::zeros((2, 2, 2), candle_core::DType::F32, &Device::Cpu)?;
+/// let r = to_vec3_round(&t, 2)?;
+/// assert_eq!(r.len(), 2);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn to_vec3_round(t: &Tensor, digits: i32) -> Result<Vec<Vec<Vec<f32>>>> {
     let b = 10f32.powi(digits);
     let t = t.to_vec3::<f32>()?;

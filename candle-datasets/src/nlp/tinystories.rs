@@ -2,6 +2,16 @@
 //! by the tools from https://github.com/karpathy/llama2.c
 use candle::{Device, Result, Tensor};
 
+/// A pre-tokenized TinyStories dataset loaded from binary token files.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_datasets::nlp::tinystories::Dataset;
+/// let ds = Dataset::new("data/tinystories")?;
+/// println!("train shards: {}", ds.train_tokens());
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub struct Dataset {
     valid_tokens: Vec<memmap2::Mmap>,
     train_tokens: Vec<memmap2::Mmap>,
@@ -49,6 +59,17 @@ impl Dataset {
     }
 }
 
+/// A random-access iterator over fixed-length token sequences from a [`Dataset`].
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_datasets::nlp::tinystories::{Dataset, DatasetRandomIter};
+/// use candle::Device;
+/// let ds = Dataset::new("data/tinystories")?;
+/// let iter = DatasetRandomIter::new(&ds, false, 512, Device::Cpu);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub struct DatasetRandomIter<'a> {
     all_tokens: &'a [memmap2::Mmap],
     tokens: Vec<&'a memmap2::Mmap>,

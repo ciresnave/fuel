@@ -150,6 +150,44 @@ cargo run --example quantized --release
 In order to use **CUDA** add `--features cuda` to the example command line. If
 you have cuDNN installed, use `--features cudnn` for even more speedups.
 
+## Cargo feature flags
+
+Candle is designed so that a CPU-only build compiles without any GPU toolkit
+installed. GPU support is opt-in via Cargo feature flags:
+
+| Feature      | What it enables                                    | Requires               |
+| ------------ | -------------------------------------------------- | ---------------------- |
+| *(none)*     | CPU-only build. No CUDA or Metal code compiled in. | —                      |
+| `cuda`       | NVIDIA GPU backend (cuBLAS, cuDNN).                | CUDA toolkit ≥ 11      |
+| `cudnn`      | Enables `cuda` + cuDNN accelerated conv/norm ops.  | CUDA toolkit + cuDNN   |
+| `nccl`       | Multi-GPU communication via NVIDIA NCCL.           | CUDA + NCCL runtime    |
+| `metal`      | Apple Silicon / macOS GPU backend (Metal).         | macOS 13+              |
+| `accelerate` | Apple Accelerate BLAS (CPU, macOS only).           | macOS                  |
+| `mkl`        | Intel MKL BLAS (CPU, Linux/Windows).               | Intel MKL installation |
+
+To add a GPU backend when running examples:
+
+```sh
+# NVIDIA GPU
+cargo run --features cuda --example <name> --release
+
+# Apple Silicon
+cargo run --features metal --example <name> --release
+
+# CPU only (no GPU toolkit needed)
+cargo run --example <name> --release
+```
+
+To add GPU support to your own project:
+
+```toml
+# Cargo.toml
+[dependencies]
+candle-core = { version = "0.10.2", features = ["cuda"] }   # NVIDIA
+candle-core = { version = "0.10.2", features = ["metal"] }  # Apple
+candle-core = { version = "0.10.2" }                        # CPU only
+```
+
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
 `trunk` or try them online:

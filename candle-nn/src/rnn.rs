@@ -1,7 +1,26 @@
-//! Recurrent Neural Networks
-use candle::{DType, Device, IndexOp, Result, Tensor};
+//! Recurrent Neural Network layers.
+//!
+//! This module provides [`LSTM`] (Long Short-Term Memory) and [`GRU`] (Gated Recurrent Unit)
+//! layers, both implementing the [`RNN`] trait. Weights are loaded through a
+//! [`VarBuilder`](crate::VarBuilder) and follow PyTorch's naming conventions
+//! (`weight_ih_l0`, `weight_hh_l0`, etc.).
+use candle::{Context, DType, Device, IndexOp, Result, Tensor};
 
 /// Trait for Recurrent Neural Networks.
+///
+/// Provides a common interface for stepping through a sequence one element at a time
+/// ([`step`](Self::step)) or processing an entire sequence ([`seq`](Self::seq),
+/// [`seq_init`](Self::seq_init)). Both [`LSTM`] and [`GRU`] implement this trait.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{lstm, LSTMConfig, RNN, VarBuilder};
+///
+/// // let lstm = lstm(input_dim, hidden_dim, LSTMConfig::default(), vb)?;
+/// // let state = lstm.zero_state(batch)?;
+/// // let states = lstm.seq(&input)?; // process a full sequence
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 pub trait RNN {
     type State: Clone;
@@ -46,7 +65,22 @@ pub trait RNN {
     fn states_to_tensor(&self, states: &[Self::State]) -> Result<Tensor>;
 }
 
-/// The state for a LSTM network, this contains two tensors.
+/// The state for an LSTM network, containing the hidden state `h` and cell state `c`.
+///
+/// The hidden state `h` is also the output of the LSTM at each time step.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rnn::LSTMState;
+///
+/// let h = Tensor::zeros((1, 8), DType::F32, &Device::Cpu)?;
+/// let c = Tensor::zeros((1, 8), DType::F32, &Device::Cpu)?;
+/// let state = LSTMState::new(h, c);
+/// assert_eq!(state.h().dims(), &[1, 8]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone)]
 pub struct LSTMState {
@@ -55,6 +89,7 @@ pub struct LSTMState {
 }
 
 impl LSTMState {
+    /// Creates a new LSTM state from the given hidden state `h` and cell state `c`.
     pub fn new(h: Tensor, c: Tensor) -> Self {
         LSTMState { h, c }
     }
@@ -70,12 +105,41 @@ impl LSTMState {
     }
 }
 
+/// Direction of an RNN layer, used for bidirectional models.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_nn::rnn::Direction;
+///
+/// let d = Direction::Forward;
+/// assert!(matches!(d, Direction::Forward));
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
+    /// Process the sequence from first to last.
     Forward,
+    /// Process the sequence from last to first.
     Backward,
 }
 
+/// Configuration for an [`LSTM`] layer.
+///
+/// Controls weight initialization, bias presence, layer index (for multi-layer stacking),
+/// and direction (forward or backward for bidirectional models). The defaults use Kaiming
+/// uniform initialization with zero biases.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_nn::rnn::{LSTMConfig, Direction};
+///
+/// let cfg = LSTMConfig::default();
+/// assert!(matches!(cfg.direction, Direction::Forward));
+/// assert_eq!(cfg.layer_idx, 0);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy)]
 pub struct LSTMConfig {
@@ -101,6 +165,7 @@ impl Default for LSTMConfig {
 }
 
 impl LSTMConfig {
+    /// Returns a config with biases disabled.
     pub fn default_no_bias() -> Self {
         Self {
             w_ih_init: super::init::DEFAULT_KAIMING_UNIFORM,
@@ -115,14 +180,31 @@ impl LSTMConfig {
 
 /// A Long Short-Term Memory (LSTM) layer.
 ///
+/// The LSTM fuses the input-to-hidden and hidden-to-hidden weight matrices into a single
+/// combined matrix at construction time, so each [`step`](RNN::step) call performs only one
+/// matrix multiplication instead of two.
+///
+/// Weights follow PyTorch naming: `weight_ih_l{idx}`, `weight_hh_l{idx}`, and optional
+/// `bias_ih_l{idx}` / `bias_hh_l{idx}`.
+///
 /// <https://en.wikipedia.org/wiki/Long_short-term_memory>
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{lstm, LSTMConfig, RNN, VarBuilder};
+///
+/// // let lstm_layer = lstm(input_size, hidden_size, LSTMConfig::default(), vb)?;
+/// // let state = lstm_layer.zero_state(1)?;
+/// // let states = lstm_layer.seq(&input)?;
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Clone, Debug)]
 pub struct LSTM {
-    w_ih: Tensor,
-    w_hh: Tensor,
-    b_ih: Option<Tensor>,
-    b_hh: Option<Tensor>,
+    // Pre-computed fused weight matrix: cat([w_ih, w_hh], dim=1), shape [4*hidden, input_size+hidden_size]
+    w_combined: Tensor,
+    // Pre-computed fused bias: b_ih + b_hh, shape [4*hidden]
+    b_combined: Option<Tensor>,
     hidden_dim: usize,
     config: LSTMConfig,
     device: Device,
@@ -168,11 +250,21 @@ impl LSTM {
             )?),
             None => None,
         };
+        // Pre-compute fused weight matrix: cat along the column dimension so that
+        // [input, h] @ w_combined^T replaces two separate matmuls.
+        // w_ih: [4*hidden, in_dim], w_hh: [4*hidden, hidden_dim]
+        // w_combined: [4*hidden, in_dim + hidden_dim]
+        let w_combined = Tensor::cat(&[&w_ih, &w_hh], 1)?;
+        // Pre-sum biases so we only do one broadcast_add per step.
+        let b_combined = match (&b_ih, &b_hh) {
+            (Some(b_ih), Some(b_hh)) => Some((b_ih + b_hh)?),
+            (Some(b_ih), None) => Some(b_ih.clone()),
+            (None, Some(b_hh)) => Some(b_hh.clone()),
+            (None, None) => None,
+        };
         Ok(Self {
-            w_ih,
-            w_hh,
-            b_ih,
-            b_hh,
+            w_combined,
+            b_combined,
             hidden_dim,
             config,
             device: vb.device().clone(),
@@ -180,12 +272,21 @@ impl LSTM {
         })
     }
 
+    /// Returns a reference to this LSTM layer's configuration.
     pub fn config(&self) -> &LSTMConfig {
         &self.config
     }
 }
 
-/// Creates a LSTM layer.
+/// Creates an [`LSTM`] layer. This is a convenience wrapper around [`LSTM::new`].
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{lstm, LSTMConfig, VarBuilder};
+///
+/// // let layer = lstm(input_size, hidden_size, LSTMConfig::default(), vb)?;
+/// ```
 pub fn lstm(
     in_dim: usize,
     hidden_dim: usize,
@@ -200,7 +301,7 @@ impl RNN for LSTM {
 
     fn zero_state(&self, batch_dim: usize) -> Result<Self::State> {
         let zeros =
-            Tensor::zeros((batch_dim, self.hidden_dim), self.dtype, &self.device)?.contiguous()?;
+            Tensor::zeros((batch_dim, self.hidden_dim), self.dtype, &self.device)?;
         Ok(Self::State {
             h: zeros.clone(),
             c: zeros.clone(),
@@ -208,27 +309,37 @@ impl RNN for LSTM {
     }
 
     fn step(&self, input: &Tensor, in_state: &Self::State) -> Result<Self::State> {
-        let w_ih = input.matmul(&self.w_ih.t()?)?;
-        let w_hh = in_state.h.matmul(&self.w_hh.t()?)?;
-        let w_ih = match &self.b_ih {
-            None => w_ih,
-            Some(b_ih) => w_ih.broadcast_add(b_ih)?,
-        };
-        let w_hh = match &self.b_hh {
-            None => w_hh,
-            Some(b_hh) => w_hh.broadcast_add(b_hh)?,
-        };
-        let chunks = (&w_ih + &w_hh)?.chunk(4, 1)?;
-        let in_gate = crate::ops::sigmoid(&chunks[0])?;
-        let forget_gate = crate::ops::sigmoid(&chunks[1])?;
-        let cell_gate = chunks[2].tanh()?;
-        let out_gate = crate::ops::sigmoid(&chunks[3])?;
+        let input_shape = input.shape().clone();
+        let in_dim = self.w_combined.dim(1).unwrap_or(0).saturating_sub(self.hidden_dim);
+        let result: Result<Self::State> = (|| {
+            // Fuse the two matmuls into one:
+            // combined_input: [batch, input_size + hidden_size]
+            // w_combined:     [4*hidden, input_size + hidden_size]
+            // gates:          [batch, 4*hidden]
+            let combined_input = Tensor::cat(&[input, &in_state.h], 1)?;
+            let gates = combined_input.matmul(&self.w_combined.t()?)?;
+            let gates = match &self.b_combined {
+                None => gates,
+                Some(b) => gates.broadcast_add(b)?,
+            };
+            let chunks = gates.chunk(4, 1)?;
+            let in_gate = crate::ops::sigmoid(&chunks[0])?;
+            let forget_gate = crate::ops::sigmoid(&chunks[1])?;
+            let cell_gate = chunks[2].tanh()?;
+            let out_gate = crate::ops::sigmoid(&chunks[3])?;
 
-        let next_c = ((forget_gate * &in_state.c)? + (in_gate * cell_gate)?)?;
-        let next_h = (out_gate * next_c.tanh()?)?;
-        Ok(LSTMState {
-            c: next_c,
-            h: next_h,
+            let next_c = ((forget_gate * &in_state.c)? + (in_gate * cell_gate)?)?;
+            let next_h = (out_gate * next_c.tanh()?)?;
+            Ok(LSTMState {
+                c: next_c,
+                h: next_h,
+            })
+        })();
+        result.with_context(|| {
+            format!(
+                "LSTM(in={in_dim}, hidden={}): input shape {input_shape:?}",
+                self.hidden_dim
+            )
         })
     }
 
@@ -238,7 +349,19 @@ impl RNN for LSTM {
     }
 }
 
-/// The state for a GRU network, this contains a single tensor.
+/// The state for a GRU network, containing a single hidden state tensor `h`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rnn::GRUState;
+///
+/// let h = Tensor::zeros((1, 16), DType::F32, &Device::Cpu)?;
+/// let state = GRUState { h };
+/// assert_eq!(state.h().dims(), &[1, 16]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone)]
 pub struct GRUState {
@@ -246,12 +369,26 @@ pub struct GRUState {
 }
 
 impl GRUState {
-    /// The hidden state vector, which is also the output of the LSTM.
+    /// The hidden state vector, which is also the output of the GRU.
     pub fn h(&self) -> &Tensor {
         &self.h
     }
 }
 
+/// Configuration for a [`GRU`] layer.
+///
+/// Controls weight initialization and bias presence. The defaults use Kaiming uniform
+/// initialization with zero biases.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_nn::rnn::GRUConfig;
+///
+/// let cfg = GRUConfig::default();
+/// assert!(cfg.b_ih_init.is_some()); // biases enabled by default
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy)]
 pub struct GRUConfig {
@@ -273,6 +410,7 @@ impl Default for GRUConfig {
 }
 
 impl GRUConfig {
+    /// Returns a config with biases disabled.
     pub fn default_no_bias() -> Self {
         Self {
             w_ih_init: super::init::DEFAULT_KAIMING_UNIFORM,
@@ -285,7 +423,20 @@ impl GRUConfig {
 
 /// A Gated Recurrent Unit (GRU) layer.
 ///
+/// The GRU is a simpler alternative to LSTM with only two gates (reset and update) and no
+/// separate cell state. Weights follow PyTorch naming: `weight_ih_l0`, `weight_hh_l0`,
+/// and optional `bias_ih_l0` / `bias_hh_l0`.
+///
 /// <https://en.wikipedia.org/wiki/Gated_recurrent_unit>
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{gru, GRUConfig, RNN, VarBuilder};
+///
+/// // let gru_layer = gru(input_size, hidden_size, GRUConfig::default(), vb)?;
+/// // let states = gru_layer.seq(&input)?;
+/// ```
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Clone, Debug)]
 pub struct GRU {
@@ -337,11 +488,21 @@ impl GRU {
         })
     }
 
+    /// Returns a reference to this GRU layer's configuration.
     pub fn config(&self) -> &GRUConfig {
         &self.config
     }
 }
 
+/// Creates a [`GRU`] layer. This is a convenience wrapper around [`GRU::new`].
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{gru, GRUConfig, VarBuilder};
+///
+/// // let layer = gru(input_size, hidden_size, GRUConfig::default(), vb)?;
+/// ```
 pub fn gru(
     in_dim: usize,
     hidden_dim: usize,
@@ -356,29 +517,39 @@ impl RNN for GRU {
 
     fn zero_state(&self, batch_dim: usize) -> Result<Self::State> {
         let h =
-            Tensor::zeros((batch_dim, self.hidden_dim), self.dtype, &self.device)?.contiguous()?;
+            Tensor::zeros((batch_dim, self.hidden_dim), self.dtype, &self.device)?;
         Ok(Self::State { h })
     }
 
     fn step(&self, input: &Tensor, in_state: &Self::State) -> Result<Self::State> {
-        let w_ih = input.matmul(&self.w_ih.t()?)?;
-        let w_hh = in_state.h.matmul(&self.w_hh.t()?)?;
-        let w_ih = match &self.b_ih {
-            None => w_ih,
-            Some(b_ih) => w_ih.broadcast_add(b_ih)?,
-        };
-        let w_hh = match &self.b_hh {
-            None => w_hh,
-            Some(b_hh) => w_hh.broadcast_add(b_hh)?,
-        };
-        let chunks_ih = w_ih.chunk(3, 1)?;
-        let chunks_hh = w_hh.chunk(3, 1)?;
-        let r_gate = crate::ops::sigmoid(&(&chunks_ih[0] + &chunks_hh[0])?)?;
-        let z_gate = crate::ops::sigmoid(&(&chunks_ih[1] + &chunks_hh[1])?)?;
-        let n_gate = (&chunks_ih[2] + (r_gate * &chunks_hh[2])?)?.tanh();
+        let input_shape = input.shape().clone();
+        let in_dim = self.w_ih.dim(1).unwrap_or(0);
+        let result: Result<Self::State> = (|| {
+            let w_ih = input.matmul(&self.w_ih.t()?)?;
+            let w_hh = in_state.h.matmul(&self.w_hh.t()?)?;
+            let w_ih = match &self.b_ih {
+                None => w_ih,
+                Some(b_ih) => w_ih.broadcast_add(b_ih)?,
+            };
+            let w_hh = match &self.b_hh {
+                None => w_hh,
+                Some(b_hh) => w_hh.broadcast_add(b_hh)?,
+            };
+            let chunks_ih = w_ih.chunk(3, 1)?;
+            let chunks_hh = w_hh.chunk(3, 1)?;
+            let r_gate = crate::ops::sigmoid(&(&chunks_ih[0] + &chunks_hh[0])?)?;
+            let z_gate = crate::ops::sigmoid(&(&chunks_ih[1] + &chunks_hh[1])?)?;
+            let n_gate = (&chunks_ih[2] + (r_gate * &chunks_hh[2])?)?.tanh();
 
-        let next_h = ((&z_gate * &in_state.h)? - ((&z_gate - 1.)? * n_gate)?)?;
-        Ok(GRUState { h: next_h })
+            let next_h = ((&z_gate * &in_state.h)? - ((&z_gate - 1.)? * n_gate)?)?;
+            Ok(GRUState { h: next_h })
+        })();
+        result.with_context(|| {
+            format!(
+                "GRU(in={in_dim}, hidden={}): input shape {input_shape:?}",
+                self.hidden_dim
+            )
+        })
     }
 
     fn states_to_tensor(&self, states: &[Self::State]) -> Result<Tensor> {

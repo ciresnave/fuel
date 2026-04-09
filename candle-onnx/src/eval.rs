@@ -6,8 +6,35 @@ use candle::{bail, DType, Device, IndexOp, Result, Tensor};
 use candle_nn::activation::PReLU;
 use std::collections::{HashMap, HashSet};
 
+/// An ONNX runtime value, represented as a [`candle::Tensor`].
+///
+/// # Example
+///
+/// ```no_run
+/// use candle::Tensor;
+/// use candle_onnx::eval::Value;
+///
+/// // Value is just a type alias for Tensor.
+/// let v: Value = Tensor::zeros((2, 3), candle::DType::F32, &candle::Device::Cpu)?;
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub type Value = Tensor;
 
+/// Converts an ONNX [`DataType`] to the corresponding candle [`DType`], if supported.
+///
+/// Returns `None` for ONNX data types that have no candle equivalent.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_onnx::onnx::tensor_proto::DataType;
+/// use candle_onnx::eval::dtype;
+/// use candle::DType;
+///
+/// assert_eq!(dtype(DataType::Float), Some(DType::F32));
+/// assert_eq!(dtype(DataType::Int64), Some(DType::I64));
+/// assert_eq!(dtype(DataType::String), None);
+/// ```
 pub fn dtype(dt: DataType) -> Option<DType> {
     match dt {
         DataType::Uint8 => Some(DType::U8),
@@ -189,6 +216,21 @@ fn get_attr_opt_owned<T: AttrOwned>(node: &onnx::NodeProto, name: &str) -> Resul
     }
 }
 
+/// Converts an ONNX [`TensorProto`] initializer into a candle [`Tensor`].
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_onnx::{read_file, eval::get_tensor};
+///
+/// let model = read_file("model.onnx")?;
+/// let graph = model.graph.as_ref().unwrap();
+/// if let Some(init) = graph.initializer.first() {
+///     let tensor = get_tensor(init, &init.name)?;
+///     println!("shape: {:?}", tensor.shape());
+/// }
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor> {
     let dims: Vec<usize> = t.dims.iter().map(|&x| x as usize).collect();
     match DataType::try_from(t.data_type) {
@@ -236,6 +278,27 @@ pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor> {
 // graph so as to make multiple evaluations more efficient.
 // An example upside of this would be to remove intermediary values when they are not needed
 // anymore.
+/// Evaluates an ONNX model by running all graph nodes in topological order.
+///
+/// Inputs are provided as a map from input name to [`Value`] (i.e. `Tensor`). The
+/// function returns a map from output name to the computed output tensor.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::collections::HashMap;
+/// use candle::Tensor;
+/// use candle_onnx::{read_file, simple_eval};
+///
+/// let model = read_file("model.onnx")?;
+/// let input = Tensor::zeros((1, 3, 224, 224), candle::DType::F32, &candle::Device::Cpu)?;
+/// let mut inputs = HashMap::new();
+/// inputs.insert("input".to_string(), input);
+/// let outputs = simple_eval(&model, inputs)?;
+/// let logits = outputs.get("output").unwrap();
+/// println!("output shape: {:?}", logits.shape());
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn simple_eval(
     model: &onnx::ModelProto,
     mut inputs: HashMap<String, Value>,

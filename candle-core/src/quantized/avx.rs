@@ -1,5 +1,6 @@
 use super::k_quants::{
-    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ5K, BlockQ6K, BlockQ8K, BlockQ8_0, QK8_0, QK_K,
+    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1, BlockQ6K,
+    BlockQ8K, BlockQ8_0, BlockQ8_1, QK4_1, QK5_0, QK5_1, QK8_0, QK8_1, QK_K,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use half::f16;
@@ -83,6 +84,161 @@ pub(crate) fn vec_dot_q8_0_q8_0(n: usize, xs: &[BlockQ8_0], ys: &[BlockQ8_0]) ->
             acc = _mm256_fmadd_ps(d, q, acc);
         }
         hsum_float_8(acc)
+    }
+}
+
+/// Expands 32 bits (from a 4-byte array) into 32 bytes, placing each bit at bit position 4
+/// (i.e., resulting byte is 0x10 if the source bit was set, 0x00 otherwise).
+/// Used for extracting the 5th high bit in Q5_0 and Q5_1 formats.
+#[inline(always)]
+pub(crate) unsafe fn bytes_from_bits_32_fifth(qh: &[u8; 4]) -> __m256i {
+    let qh_val = LittleEndian::read_u32(qh);
+    let qh_broadcast = _mm256_set1_epi32(qh_val as i32);
+
+    // Shuffle: select the right source byte for each output byte position.
+    // Low lane bytes 0-7 need qh[0], bytes 8-15 need qh[1].
+    // High lane bytes 16-23 need qh[2], bytes 24-31 need qh[3].
+    // _mm256_shuffle_epi8 operates within each 128-bit lane independently.
+    // After set1_epi32 broadcast, bytes 0-3 of each lane are [qh[0], qh[1], qh[2], qh[3]].
+    let shuffle = _mm256_set_epi8(
+        3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, // high lane
+        1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, // low lane
+    );
+    let qh_expanded = _mm256_shuffle_epi8(qh_broadcast, shuffle);
+
+    // Bit masks: within each group of 8 bytes, test bits 0..7 of the source byte.
+    // _mm256_set_epi8 takes (byte31, byte30, ..., byte1, byte0).
+    let bit_masks = _mm256_set_epi8(
+        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 31..24 (bits 7..0 of qh[3])
+        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 23..16 (bits 7..0 of qh[2])
+        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 15..8  (bits 7..0 of qh[1])
+        -128i8, 64, 32, 16, 8, 4, 2, 1, // bytes 7..0   (bits 7..0 of qh[0])
+    );
+    let qh_bits = _mm256_and_si256(qh_expanded, bit_masks);
+
+    // Compare: 0xFF where bit was set (qh_bits == bit_masks), 0x00 otherwise.
+    let qh_mask = _mm256_cmpeq_epi8(qh_bits, bit_masks);
+
+    // Convert to 0x10 or 0x00 (the 5th bit at position 4).
+    _mm256_and_si256(qh_mask, _mm256_set1_epi8(0x10))
+}
+
+#[inline(always)]
+pub(crate) fn vec_dot_q8_1_q8_1(n: usize, xs: &[BlockQ8_1], ys: &[BlockQ8_1]) -> f32 {
+    debug_assert!(
+        n.is_multiple_of(QK8_1),
+        "vec_dot_q8_1_q8_1: {n} is not divisible by {QK8_1}"
+    );
+    // Q8_1 x Q8_1: identical to Q8_0 x Q8_0 structurally.
+    // The `s` field of Q8_1 is only used when paired with Q4_1 or Q5_1.
+    unsafe {
+        let mut acc = _mm256_setzero_ps();
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let d = _mm256_set1_ps(f16::to_f32(x.d) * f16::to_f32(y.d));
+            let bx = _mm256_loadu_si256(x.qs.as_ptr() as *const __m256i);
+            let by = _mm256_loadu_si256(y.qs.as_ptr() as *const __m256i);
+            let q = mul_sum_i8_pairs_float(bx, by);
+            acc = _mm256_fmadd_ps(d, q, acc);
+        }
+        hsum_float_8(acc)
+    }
+}
+
+#[inline(always)]
+pub(crate) fn vec_dot_q4_1_q8_1(n: usize, xs: &[BlockQ4_1], ys: &[BlockQ8_1]) -> f32 {
+    debug_assert!(
+        n.is_multiple_of(QK4_1),
+        "vec_dot_q4_1_q8_1: {n} is not divisible by {QK4_1}"
+    );
+    // Q4_1: unsigned 4-bit values [0,15] with min+delta encoding.
+    // dot = sum_i(q4[i] * q8[i]) * d_x * d_y + m_x * s_y
+    // where s_y = sum(q8[i]) * d_y (precomputed in BlockQ8_1).
+    unsafe {
+        let mut acc = _mm256_setzero_ps();
+        let mut summs = 0.0f32;
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let d = _mm256_set1_ps(f16::to_f32(x.d) * f16::to_f32(y.d));
+            summs += f16::to_f32(x.m) * f16::to_f32(y.s);
+
+            // Extract 4-bit nibbles as unsigned bytes [0,15].
+            let bx = bytes_from_nibbles_32(x.qs.as_ptr());
+            let by = _mm256_loadu_si256(y.qs.as_ptr() as *const __m256i);
+
+            // Unsigned (bx) * signed (by) multiply-and-add pairs to i16, then sum pairs to f32.
+            let q = mul_sum_us8_pairs_float(bx, by);
+            acc = _mm256_fmadd_ps(d, q, acc);
+        }
+        hsum_float_8(acc) + summs
+    }
+}
+
+#[inline(always)]
+pub(crate) fn vec_dot_q5_0_q8_0(n: usize, xs: &[BlockQ5_0], ys: &[BlockQ8_0]) -> f32 {
+    debug_assert!(
+        n.is_multiple_of(QK5_0),
+        "vec_dot_q5_0_q8_0: {n} is not divisible by {QK5_0}"
+    );
+    // Q5_0: 5-bit signed values with scale-only (no minimum).
+    // Each value = ((4-bit nibble) | (5th bit << 4)) - 16, range [-16, 15].
+    // dot = sum_i(q5[i] * q8[i]) * d_x * d_y
+    unsafe {
+        let mut acc = _mm256_setzero_ps();
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let d = _mm256_set1_ps(f16::to_f32(x.d) * f16::to_f32(y.d));
+
+            // Extract low 4-bit nibbles as unsigned bytes [0,15].
+            let bx = bytes_from_nibbles_32(x.qs.as_ptr());
+
+            // Extract 5th bits from qh, placed at bit position 4 (0x10 or 0x00).
+            let qh_high = bytes_from_bits_32_fifth(&x.qh);
+
+            // Combine: 5-bit unsigned value [0,31] = nibble | high_bit.
+            let bx_5bit = _mm256_or_si256(bx, qh_high);
+
+            // Center around zero: signed value [-16, 15].
+            let bx_signed = _mm256_sub_epi8(bx_5bit, _mm256_set1_epi8(16));
+
+            let by = _mm256_loadu_si256(y.qs.as_ptr() as *const __m256i);
+
+            // Signed * signed multiply-and-accumulate.
+            let q = mul_sum_i8_pairs_float(bx_signed, by);
+            acc = _mm256_fmadd_ps(d, q, acc);
+        }
+        hsum_float_8(acc)
+    }
+}
+
+#[inline(always)]
+pub(crate) fn vec_dot_q5_1_q8_1(n: usize, xs: &[BlockQ5_1], ys: &[BlockQ8_1]) -> f32 {
+    debug_assert!(
+        n.is_multiple_of(QK5_1),
+        "vec_dot_q5_1_q8_1: {n} is not divisible by {QK5_1}"
+    );
+    // Q5_1: unsigned 5-bit values [0,31] with min+delta encoding.
+    // dot = sum_i(q5[i] * q8[i]) * d_x * d_y + m_x * s_y
+    unsafe {
+        let mut acc = _mm256_setzero_ps();
+        let mut summs = 0.0f32;
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let d = _mm256_set1_ps(f16::to_f32(x.d) * f16::to_f32(y.d));
+            summs += f16::to_f32(x.m) * f16::to_f32(y.s);
+
+            // Extract low 4-bit nibbles as unsigned bytes [0,15].
+            let bx = bytes_from_nibbles_32(x.qs.as_ptr());
+
+            // Extract 5th bits from qh, placed at bit position 4 (0x10 or 0x00).
+            let qh_high = bytes_from_bits_32_fifth(&x.qh);
+
+            // Combine: 5-bit unsigned value [0,31] = nibble | high_bit.
+            let bx_5bit = _mm256_or_si256(bx, qh_high);
+
+            let by = _mm256_loadu_si256(y.qs.as_ptr() as *const __m256i);
+
+            // Unsigned [0,31] * signed multiply-and-accumulate.
+            let q = mul_sum_us8_pairs_float(bx_5bit, by);
+            acc = _mm256_fmadd_ps(d, q, acc);
+        }
+        hsum_float_8(acc) + summs
     }
 }
 

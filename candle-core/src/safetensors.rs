@@ -1,13 +1,32 @@
-//! Module to load `safetensor` files into CPU/GPU memory.
+//! Support for the [SafeTensors](https://huggingface.co/docs/safetensors/) serialization format.
 //!
-//! There are multiple ways to load tensors from safetensor files:
-//! - `load` function for loading directly into memory and returning a HashMap of tensors
-//! - `MmapedSafetensors` for memory mapping files and avoiding full allocation
-//! - `SliceSafetensors` for working with in-memory buffers
-//! - `BufferedSafetensors` for owning a buffer of data
+//! SafeTensors is a simple, fast, and safe file format for storing tensors. It is designed to be
+//! memory-mappable and avoids the security pitfalls of formats like Python pickle.
 //!
-//! Tensors can also be serialized to safetensor format using the `save` function or
-//! `Tensor::save_safetensors` method.
+//! # Loading tensors
+//!
+//! There are several ways to load tensors depending on your use case:
+//!
+//! - [`load`] -- reads an entire safetensors file into memory and returns a
+//!   `HashMap<String, Tensor>`. Simplest option for small files.
+//! - [`load_buffer`] -- same as `load` but operates on an in-memory byte slice.
+//! - [`MmapedSafetensors`] -- memory-maps one or more files so tensors are loaded on demand
+//!   without reading the entire file upfront. Preferred for large models.
+//! - [`SliceSafetensors`] -- wraps a borrowed byte slice (`&[u8]`) and provides on-demand
+//!   tensor access. Useful when the buffer is already in memory but not owned.
+//! - [`BufferedSafetensors`] -- owns a `Vec<u8>` buffer and provides on-demand tensor access.
+//! - [`MmapedFile`] -- a lower-level memory-mapped file handle that can be deserialized into
+//!   a `SafeTensors` view for manual iteration.
+//!
+//! # Saving tensors
+//!
+//! - [`save`] -- serializes a `HashMap` of tensors to a safetensors file.
+//! - [`Tensor::save_safetensors`] -- convenience method to save a single tensor.
+//!
+//! # The `Load` trait
+//!
+//! The [`Load`] trait is implemented for `safetensors::tensor::TensorView` and provides a
+//! uniform `.load(device)` method to materialize a tensor on the given [`Device`].
 //!
 use crate::op::BackpropOp;
 use crate::storage::Storage;
@@ -19,49 +38,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
-impl From<DType> for st::Dtype {
-    fn from(value: DType) -> Self {
-        match value {
-            DType::U8 => st::Dtype::U8,
-            DType::U32 => st::Dtype::U32,
-            DType::I16 => st::Dtype::I16,
-            DType::I32 => st::Dtype::I32,
-            DType::I64 => st::Dtype::I64,
-            DType::BF16 => st::Dtype::BF16,
-            DType::F16 => st::Dtype::F16,
-            DType::F32 => st::Dtype::F32,
-            DType::F64 => st::Dtype::F64,
-            DType::F8E4M3 => st::Dtype::F8_E4M3,
-            DType::F6E2M3 => st::Dtype::F6_E2M3,
-            DType::F6E3M2 => st::Dtype::F6_E3M2,
-            DType::F4 => st::Dtype::F4,
-            DType::F8E8M0 => st::Dtype::F8_E8M0,
-        }
-    }
-}
-
-impl TryFrom<st::Dtype> for DType {
-    type Error = Error;
-    fn try_from(value: st::Dtype) -> Result<Self> {
-        match value {
-            st::Dtype::U8 => Ok(DType::U8),
-            st::Dtype::U32 => Ok(DType::U32),
-            st::Dtype::I16 => Ok(DType::I16),
-            st::Dtype::I32 => Ok(DType::I32),
-            st::Dtype::I64 => Ok(DType::I64),
-            st::Dtype::BF16 => Ok(DType::BF16),
-            st::Dtype::F16 => Ok(DType::F16),
-            st::Dtype::F32 => Ok(DType::F32),
-            st::Dtype::F64 => Ok(DType::F64),
-            st::Dtype::F8_E4M3 => Ok(DType::F8E4M3),
-            st::Dtype::F6_E2M3 => Ok(DType::F6E2M3),
-            st::Dtype::F6_E3M2 => Ok(DType::F6E3M2),
-            st::Dtype::F4 => Ok(DType::F4),
-            st::Dtype::F8_E8M0 => Ok(DType::F8E8M0),
-            dtype => Err(Error::UnsupportedSafeTensorDtype(dtype)),
-        }
-    }
-}
+// DType <-> st::Dtype conversions are in candle-core-types (where DType is defined).
+// They're available here via re-export automatically.
 
 impl st::View for Tensor {
     fn dtype(&self) -> st::Dtype {
@@ -106,6 +84,19 @@ impl st::View for &Tensor {
 }
 
 impl Tensor {
+    /// Save this tensor to a safetensors file under the given `name`.
+    ///
+    /// This is a convenience wrapper that creates a single-tensor safetensors file. Use
+    /// [`save`] to write multiple tensors at once.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::{Tensor, Device, DType};
+    /// let t = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// t.save_safetensors("weight", "weight.safetensors")?;
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn save_safetensors<P: AsRef<Path>>(&self, name: &str, filename: P) -> Result<()> {
         let data = [(name, self.clone())];
         Ok(st::serialize_to_file(data, None, filename.as_ref())?)
@@ -195,7 +186,23 @@ fn convert_back_<T: WithDType>(mut vs: Vec<T>) -> Vec<u8> {
     unsafe { Vec::from_raw_parts(ptr, length, capacity) }
 }
 
+/// Trait for loading a safetensors tensor view into a [`Tensor`] on a given device.
+///
+/// This is implemented for `safetensors::tensor::TensorView` and handles dtype conversion,
+/// alignment, and device placement (CPU, CUDA, or Metal).
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::{Device, safetensors::{Load, SliceSafetensors}};
+/// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
+/// let st = SliceSafetensors::new(&bytes)?;
+/// let view = st.get("weight")?;
+/// let tensor = view.load(&Device::Cpu)?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub trait Load {
+    /// Deserialize the raw tensor data and place it on `device`.
     fn load(&self, device: &Device) -> Result<Tensor>;
 }
 
@@ -206,6 +213,12 @@ impl Load for st::TensorView<'_> {
 }
 
 impl Tensor {
+    /// Create a tensor from a raw byte buffer with the specified dtype, shape, and target device.
+    ///
+    /// The byte buffer is interpreted according to `dtype` and must contain exactly
+    /// `shape.iter().product() * dtype.size_in_bytes()` bytes. This handles alignment
+    /// transparently: if `data` is not properly aligned for the target type, an internal copy
+    /// is made.
     pub fn from_raw_buffer(
         data: &[u8],
         dtype: DType,
@@ -273,6 +286,16 @@ impl Tensor {
                     #[cfg(not(feature = "metal"))]
                     Device::Metal(_) => {
                         return Err(Error::Msg("Metal support not compiled".to_string()));
+                    }
+                    Device::Custom(device) => {
+                        let cpu_storage = match dtype {
+                            DType::F6E2M3 => crate::cpu_backend::CpuStorage::F6E2M3(data.to_vec()),
+                            DType::F6E3M2 => crate::cpu_backend::CpuStorage::F6E3M2(data.to_vec()),
+                            DType::F4 => crate::cpu_backend::CpuStorage::F4(data.to_vec()),
+                            DType::F8E8M0 => crate::cpu_backend::CpuStorage::F8E8M0(data.to_vec()),
+                            _ => unreachable!(),
+                        };
+                        Storage::Custom(device.storage_from_cpu_storage_owned_dyn(cpu_storage)?)
                     }
                 };
 
@@ -370,6 +393,16 @@ fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
         Device::Metal(_) => {
             return Err(Error::Msg("Metal support not compiled".to_string()));
         }
+        Device::Custom(device) => {
+            let cpu_storage = match dtype {
+                DType::F6E2M3 => crate::cpu_backend::CpuStorage::F6E2M3(data.to_vec()),
+                DType::F6E3M2 => crate::cpu_backend::CpuStorage::F6E3M2(data.to_vec()),
+                DType::F4 => crate::cpu_backend::CpuStorage::F4(data.to_vec()),
+                DType::F8E8M0 => crate::cpu_backend::CpuStorage::F8E8M0(data.to_vec()),
+                _ => unreachable!(),
+            };
+            Storage::Custom(device.storage_from_cpu_storage_owned_dyn(cpu_storage)?)
+        }
     };
 
     // Create tensor with correct dtype
@@ -397,11 +430,39 @@ fn convert_back(tensor: &Tensor) -> Result<Vec<u8>> {
     }
 }
 
+/// Load all tensors from a safetensors file into a `HashMap`.
+///
+/// The entire file is read into memory before parsing. For large model files, prefer
+/// [`MmapedSafetensors`] which avoids the upfront allocation.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::{Device, safetensors::load};
+/// let tensors = load("weights.safetensors", &Device::Cpu)?;
+/// if let Some(t) = tensors.get("weight") {
+///     println!("shape: {:?}", t.shape());
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn load<P: AsRef<Path>>(filename: P, device: &Device) -> Result<HashMap<String, Tensor>> {
     let data = std::fs::read(filename.as_ref())?;
     load_buffer(&data[..], device)
 }
 
+/// Load all tensors from an in-memory safetensors byte buffer into a `HashMap`.
+///
+/// This is the same as [`load`] but operates on a byte slice that has already been read
+/// into memory.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::{Device, safetensors::load_buffer};
+/// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
+/// let tensors = load_buffer(&bytes, &Device::Cpu)?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn load_buffer(data: &[u8], device: &Device) -> Result<HashMap<String, Tensor>> {
     let st = safetensors::SafeTensors::deserialize(data)?;
     st.tensors()
@@ -410,6 +471,20 @@ pub fn load_buffer(data: &[u8], device: &Device) -> Result<HashMap<String, Tenso
         .collect()
 }
 
+/// Serialize a collection of named tensors to a safetensors file.
+///
+/// The tensors are written in a single pass. Any existing file at `filename` is overwritten.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::collections::HashMap;
+/// use candle_core::{Tensor, Device, DType, safetensors::save};
+/// let mut tensors = HashMap::new();
+/// tensors.insert("weight", Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?);
+/// save(&tensors, "weights.safetensors")?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn save<K: AsRef<str> + Ord + std::fmt::Display, P: AsRef<Path>>(
     tensors: &HashMap<K, Tensor>,
     filename: P,
@@ -420,6 +495,28 @@ pub fn save<K: AsRef<str> + Ord + std::fmt::Display, P: AsRef<Path>>(
 #[derive(yoke::Yokeable)]
 struct SafeTensors_<'a>(SafeTensors<'a>);
 
+/// Memory-mapped access to one or more safetensors files.
+///
+/// This is the recommended way to load large models because tensors are read from disk on
+/// demand via `mmap` rather than being fully loaded into memory upfront. When multiple files
+/// are provided (via [`MmapedSafetensors::multi`]), a routing table maps tensor names to the
+/// correct file.
+///
+/// # Safety
+///
+/// Construction is `unsafe` because it relies on memory-mapped I/O
+/// ([`memmap2::MmapOptions`]). The caller must ensure the underlying files are not modified
+/// or truncated while the `MmapedSafetensors` is alive.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::{Device, safetensors::MmapedSafetensors};
+/// // SAFETY: the file must not be modified while the mapping is alive.
+/// let st = unsafe { MmapedSafetensors::new("weights.safetensors")? };
+/// let tensor = st.load("weight", &Device::Cpu)?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub struct MmapedSafetensors {
     safetensors: Vec<yoke::Yoke<SafeTensors_<'static>, memmap2::Mmap>>,
     routing: Option<HashMap<String, usize>>,
@@ -434,9 +531,11 @@ impl MmapedSafetensors {
     pub unsafe fn new<P: AsRef<Path>>(p: P) -> Result<Self> {
         let p = p.as_ref();
         let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
-        let file = memmap2::MmapOptions::new()
-            .map(&file)
-            .map_err(|e| Error::from(e).with_path(p))?;
+        let file = unsafe {
+            memmap2::MmapOptions::new()
+                .map(&file)
+                .map_err(|e| Error::from(e).with_path(p))?
+        };
         let safetensors = yoke::Yoke::<SafeTensors_<'static>, memmap2::Mmap>::try_attach_to_cart(
             file,
             |data: &[u8]| {
@@ -464,9 +563,11 @@ impl MmapedSafetensors {
         for (index, p) in paths.iter().enumerate() {
             let p = p.as_ref();
             let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
-            let file = memmap2::MmapOptions::new()
-                .map(&file)
-                .map_err(|e| Error::from(e).with_path(p))?;
+            let file = unsafe {
+                memmap2::MmapOptions::new()
+                    .map(&file)
+                    .map_err(|e| Error::from(e).with_path(p))?
+            };
             let data = yoke::Yoke::<SafeTensors_<'static>, memmap2::Mmap>::try_attach_to_cart(
                 file,
                 |data: &[u8]| {
@@ -486,10 +587,12 @@ impl MmapedSafetensors {
         })
     }
 
+    /// Load a tensor by name onto the given device.
     pub fn load(&self, name: &str, dev: &Device) -> Result<Tensor> {
         self.get(name)?.load(dev)
     }
 
+    /// Return metadata (name, dtype, shape) for every tensor across all mapped files.
     pub fn tensors(&self) -> Vec<(String, st::TensorView<'_>)> {
         let mut tensors = vec![];
         for safetensors in self.safetensors.iter() {
@@ -498,6 +601,10 @@ impl MmapedSafetensors {
         tensors.into_iter().flatten().collect()
     }
 
+    /// Retrieve the raw `TensorView` for a tensor by name without loading it onto a device.
+    ///
+    /// This is useful for inspecting tensor metadata (dtype, shape) before deciding
+    /// whether to materialize it.
     pub fn get(&self, name: &str) -> Result<st::TensorView<'_>> {
         let index = match &self.routing {
             None => 0,
@@ -515,6 +622,21 @@ impl MmapedSafetensors {
     }
 }
 
+/// Non-owning wrapper around a borrowed byte slice containing safetensors data.
+///
+/// Use this when you already have the safetensors bytes in memory (e.g. from a network
+/// response or embedded data) and want to load tensors on demand without copying the buffer.
+/// For an owning variant, see [`BufferedSafetensors`].
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::{Device, safetensors::SliceSafetensors};
+/// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
+/// let st = SliceSafetensors::new(&bytes)?;
+/// let tensor = st.load("weight", &Device::Cpu)?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub struct SliceSafetensors<'a> {
     safetensors: SafeTensors<'a>,
 }
@@ -526,19 +648,36 @@ impl<'a> SliceSafetensors<'a> {
         Ok(Self { safetensors })
     }
 
+    /// Load a tensor by name onto the given device.
     pub fn load(&self, name: &str, dev: &Device) -> Result<Tensor> {
         self.safetensors.tensor(name)?.load(dev)
     }
 
+    /// Return metadata for every tensor in the buffer.
     pub fn tensors(&self) -> Vec<(String, st::TensorView<'_>)> {
         self.safetensors.tensors()
     }
 
+    /// Retrieve the raw `TensorView` for a tensor by name without loading it onto a device.
     pub fn get(&self, name: &str) -> Result<st::TensorView<'_>> {
         Ok(self.safetensors.tensor(name)?)
     }
 }
 
+/// Owning wrapper around a `Vec<u8>` containing safetensors data.
+///
+/// Similar to [`SliceSafetensors`] but takes ownership of the byte buffer, which is useful
+/// when the data source (e.g. a file read or download) produces an owned `Vec<u8>`.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::{Device, safetensors::BufferedSafetensors};
+/// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
+/// let st = BufferedSafetensors::new(bytes)?;
+/// let tensor = st.load("weight", &Device::Cpu)?;
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub struct BufferedSafetensors {
     safetensors: yoke::Yoke<SafeTensors_<'static>, Vec<u8>>,
 }
@@ -556,19 +695,45 @@ impl BufferedSafetensors {
         Ok(Self { safetensors })
     }
 
+    /// Load a tensor by name onto the given device.
     pub fn load(&self, name: &str, dev: &Device) -> Result<Tensor> {
         self.get(name)?.load(dev)
     }
 
+    /// Return metadata for every tensor in the buffer.
     pub fn tensors(&self) -> Vec<(String, st::TensorView<'_>)> {
         self.safetensors.get().0.tensors()
     }
 
+    /// Retrieve the raw `TensorView` for a tensor by name without loading it onto a device.
     pub fn get(&self, name: &str) -> Result<st::TensorView<'_>> {
         Ok(self.safetensors.get().0.tensor(name)?)
     }
 }
 
+/// A low-level memory-mapped file handle for a safetensors file.
+///
+/// Unlike [`MmapedSafetensors`], this does not eagerly deserialize the header. Call
+/// [`MmapedFile::deserialize`] to obtain a `SafeTensors` view that can be iterated or
+/// queried for individual tensors.
+///
+/// # Safety
+///
+/// Construction is `unsafe` because it relies on memory-mapped I/O. The underlying file
+/// must not be modified while this handle is alive.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::safetensors::MmapedFile;
+/// // SAFETY: the file must not be modified while the mapping is alive.
+/// let file = unsafe { MmapedFile::new("weights.safetensors")? };
+/// let st = file.deserialize()?;
+/// for (name, _view) in st.tensors() {
+///     println!("tensor: {name}");
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub struct MmapedFile {
     path: std::path::PathBuf,
     inner: memmap2::Mmap,
@@ -584,15 +749,21 @@ impl MmapedFile {
     pub unsafe fn new<P: AsRef<Path>>(p: P) -> Result<Self> {
         let p = p.as_ref();
         let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
-        let inner = memmap2::MmapOptions::new()
-            .map(&file)
-            .map_err(|e| Error::from(e).with_path(p))?;
+        let inner = unsafe {
+            memmap2::MmapOptions::new()
+                .map(&file)
+                .map_err(|e| Error::from(e).with_path(p))?
+        };
         Ok(Self {
             inner,
             path: p.to_path_buf(),
         })
     }
 
+    /// Deserialize the safetensors header and return a `SafeTensors` view.
+    ///
+    /// The returned view borrows from the memory-mapped region and can be used to iterate
+    /// over tensor names or load individual tensors via the [`Load`] trait.
     pub fn deserialize(&self) -> Result<SafeTensors<'_>> {
         let st = safetensors::SafeTensors::deserialize(&self.inner)
             .map_err(|e| Error::from(e).with_path(&self.path))?;

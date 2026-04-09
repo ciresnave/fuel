@@ -1,4 +1,18 @@
-//! Variable initialization.
+//! Variable initialization strategies.
+//!
+//! This module provides the [`Init`] enum which describes how to initialize weight tensors.
+//! Supported strategies include constant values, random normal, uniform, and Kaiming
+//! initialization (both normal and uniform variants).
+//!
+//! These initializers are used as hints by [`VarBuilder`](crate::VarBuilder) when creating
+//! new variables, and they mirror the initialization functions in PyTorch's `torch.nn.init`.
+//!
+//! # Pre-defined constants
+//!
+//! - [`ZERO`] -- all zeros
+//! - [`ONE`] -- all ones
+//! - [`DEFAULT_KAIMING_UNIFORM`] -- Kaiming uniform with fan-in and ReLU gain
+//! - [`DEFAULT_KAIMING_NORMAL`] -- Kaiming normal with fan-in and ReLU gain
 // This is based on:
 // https://github.com/pytorch/pytorch/blob/07107919297db3f8ab37f11c12666b6d6d5f692e/torch/nn/init.py#
 use candle::{DType, Device, Result, Shape, Tensor, Var};
@@ -40,9 +54,12 @@ impl FanInOut {
     }
 }
 
+/// Selects between a normal or uniform distribution for Kaiming initialization.
 #[derive(Debug, Copy, Clone)]
 pub enum NormalOrUniform {
+    /// Sample from a normal (Gaussian) distribution.
     Normal,
+    /// Sample from a uniform distribution.
     Uniform,
 }
 
@@ -71,21 +88,40 @@ impl NonLinearity {
     }
 }
 
-/// Variable initializations.
+/// Weight initialization strategy.
+///
+/// Each variant describes a different way to fill a tensor with initial values.
+/// `Init` implements `Default` (returning `Const(0.)`), so backends that do not require
+/// an explicit initializer can simply use `Default::default()`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Device, DType};
+/// use candle_nn::Init;
+///
+/// let init = Init::Uniform { lo: -0.1, up: 0.1 };
+/// let var = init.var((3, 2), DType::F32, &Device::Cpu)?;
+/// assert_eq!(var.shape().dims(), &[3, 2]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[derive(Debug, Copy, Clone)]
 pub enum Init {
-    /// Constant value.
+    /// Initialize every element to the same constant value.
     Const(f64),
 
-    /// Random normal with some mean and standard deviation.
+    /// Initialize from a normal distribution with the given `mean` and standard deviation
+    /// (`stdev`).
     Randn { mean: f64, stdev: f64 },
 
-    /// Uniform initialization between some lower and upper bounds.
+    /// Initialize from a uniform distribution over [`lo`, `up`].
     Uniform { lo: f64, up: f64 },
 
-    /// Kaiming uniform initialization.
-    /// See "Delving deep into rectifiers: Surpassing human-level performance on ImageNet classification"
-    /// He, K. et al. (2015). This uses a uniform distribution.
+    /// Kaiming initialization (He et al., 2015).
+    ///
+    /// Designed to preserve gradient magnitudes through layers with ReLU-family activations.
+    /// Choose `NormalOrUniform` to select the distribution shape, `FanInOut` to preserve
+    /// variance in the forward or backward pass, and `NonLinearity` to set the gain.
     Kaiming {
         dist: NormalOrUniform,
         fan: FanInOut,
@@ -93,15 +129,21 @@ pub enum Init {
     },
 }
 
+/// Initialization constant that fills the tensor with zeros.
 pub const ZERO: Init = Init::Const(0.);
+/// Initialization constant that fills the tensor with ones.
 pub const ONE: Init = Init::Const(1.);
 
+/// Default Kaiming uniform initialization (fan-in, ReLU gain).
+///
+/// This is the default used by most layer constructors (e.g. `Linear`, `Conv2d`).
 pub const DEFAULT_KAIMING_UNIFORM: Init = Init::Kaiming {
     dist: NormalOrUniform::Uniform,
     fan: FanInOut::FanIn,
     non_linearity: NonLinearity::ReLU,
 };
 
+/// Default Kaiming normal initialization (fan-in, ReLU gain).
 pub const DEFAULT_KAIMING_NORMAL: Init = Init::Kaiming {
     dist: NormalOrUniform::Normal,
     fan: FanInOut::FanIn,

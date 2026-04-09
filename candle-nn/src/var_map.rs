@@ -1,14 +1,42 @@
-//! A `VarMap` is a store that holds named variables.
+//! A thread-safe store for named trainable variables.
 //!
+//! A [`VarMap`] holds a collection of [`candle::Var`] instances keyed by name. It is the
+//! primary building block for training workflows: you create a `VarMap`, build your model
+//! via [`VarBuilder::from_varmap`](crate::VarBuilder::from_varmap), and then pass the
+//! variables to an optimizer.
+//!
+//! `VarMap` also supports serialization to and from the safetensors format via [`VarMap::save`]
+//! and [`VarMap::load`], making it easy to checkpoint and resume training.
 use candle::{DType, Device, Result, Shape, Tensor, Var};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// A `VarMap` is a store that holds named variables. Variables can be retrieved from the stores
-/// and new variables can be added by providing some initialization config in case they are
-/// missing.
-/// `VarMap` structures can be serialized in the safetensors format.
-#[derive(Clone)]
+/// A thread-safe store of named trainable variables ([`candle::Var`]).
+///
+/// New variables are created on demand when accessed through a [`VarBuilder`](crate::VarBuilder)
+/// backed by this map. If a variable with the requested name already exists, the existing one is
+/// returned (enabling weight sharing). The map can be serialized to safetensors via [`save`](Self::save)
+/// and loaded back via [`load`](Self::load).
+///
+/// All access is protected by a [`Mutex`], so the map can be shared across
+/// threads (e.g. for data-parallel training).
+///
+/// # Example
+///
+/// ```rust
+/// use candle_nn::{VarMap, VarBuilder};
+/// use candle::{DType, Device};
+///
+/// let vm = VarMap::new();
+/// assert_eq!(vm.all_vars().len(), 0);
+///
+/// // Build a model using a VarBuilder that writes into the map:
+/// // let vb = VarBuilder::from_varmap(&vm, DType::F32, &Device::Cpu);
+/// // let w = vb.get((4, 4), "weight")?;
+/// // vm.save("checkpoint.safetensors")?;
+/// # Ok::<(), candle::Error>(())
+/// ```
+#[derive(Clone, Debug)]
 pub struct VarMap {
     data: Arc<Mutex<HashMap<String, Var>>>,
 }
@@ -91,7 +119,11 @@ impl VarMap {
         Ok(())
     }
 
-    /// Retrieve or add a new variable.
+    /// Retrieves an existing variable or creates a new one.
+    ///
+    /// If a variable named `path` already exists in the map, it is returned (after a shape
+    /// check). Otherwise, a new variable is created using the provided `init` strategy,
+    /// inserted into the map, and returned.
     pub fn get<S: Into<Shape>>(
         &self,
         shape: S,
@@ -115,6 +147,10 @@ impl VarMap {
         Ok(tensor)
     }
 
+    /// Returns a reference to the underlying mutex-protected variable map.
+    ///
+    /// This is useful for advanced use cases such as iterating over all variables or
+    /// implementing custom serialization logic.
     pub fn data(&self) -> &Mutex<HashMap<String, Var>> {
         &self.data
     }

@@ -85,6 +85,7 @@ impl PyDevice {
             Device::Cpu => Self::Cpu,
             Device::Cuda(_) => Self::Cuda,
             Device::Metal(_) => Self::Metal,
+            Device::Custom(_) => Self::Cpu, // Custom backends map to Cpu for PyO3 purposes
         }
     }
 
@@ -757,7 +758,7 @@ impl PyTensor {
                     .0
                     .shape()
                     .broadcast_shape_binary_op(rhs.0.shape(), "cmp")
-                    .map_err(wrap_err)?;
+                    .map_err(|e| wrap_err(e.into()))?;
                 let broadcasted_lhs = self.0.broadcast_as(&broadcast_shape).map_err(wrap_err)?;
                 let broadcasted_rhs = rhs.0.broadcast_as(&broadcast_shape).map_err(wrap_err)?;
 

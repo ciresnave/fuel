@@ -1,11 +1,16 @@
 [workspace]
 members = [
     "candle-core",
+    "candle-core-types",
+    "candle-cpu-backend",
     "candle-datasets",
     "candle-examples",
+    "candle-inference",
     "candle-nn",
+    "candle-parallel",
     "candle-pyo3",
     "candle-transformers",
+    "candle-training",
     "candle-ug",
     "candle-wasm-examples/*",
     "candle-wasm-tests",
@@ -13,6 +18,8 @@ members = [
 ]
 exclude = [
     "candle-book",
+    "candle-cublaslt",
+    "candle-cuda-vmm",
     "candle-flash-attn",
     "candle-flash-attn-v3",
     "candle-kernels",
@@ -23,7 +30,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.10.2"
-edition = "2021"
+edition = "2024"
 description = "Minimalist ML framework."
 repository = "https://github.com/huggingface/candle"
 keywords = ["blas", "tensor", "machine-learning"]
@@ -36,13 +43,18 @@ accelerate-src = { version = "0.3.2" }
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
 candle = { path = "./candle-core", package = "candle-core", version = "0.10.2" }
+candle-core-types = { path = "./candle-core-types", version = "0.10.2" }
+candle-cpu-backend = { path = "./candle-cpu-backend", version = "0.10.2" }
 candle-datasets = { path = "./candle-datasets", version = "0.10.2" }
 candle-flash-attn = { path = "./candle-flash-attn", version = "0.10.2" }
 candle-flash-attn-v3 = { path = "./candle-flash-attn-v3", version = "0.10.2" }
+candle-inference = { path = "./candle-inference", version = "0.10.2" }
 candle-kernels = { path = "./candle-kernels", version = "0.10.2" }
 candle-metal-kernels = { path = "./candle-metal-kernels", version = "0.10.2" }
 candle-nn = { path = "./candle-nn", version = "0.10.2" }
 candle-onnx = { path = "./candle-onnx", version = "0.10.2" }
+candle-parallel = { path = "./candle-parallel", version = "0.10.2" }
+candle-training = { path = "./candle-training", version = "0.10.2" }
 candle-transformers = { path = "./candle-transformers", version = "0.10.2" }
 candle-ug = { path = "./candle-ug", version = "0.10.2" }
 clap = { version = "4.2.4", features = ["derive"] }
@@ -61,7 +73,7 @@ cudarc = { version = "0.19.4", features = [
 ], default-features = false }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
-hf-hub = "0.4.1"
+hf-hub = "0.5.0"
 half = { version = "2.5.0", features = [
     "num-traits",
     "use-intrinsics",
@@ -83,24 +95,25 @@ log = "0.4"
 memmap2 = { version = "0.9.3", features = ["stable_deref_trait"] }
 num_cpus = "1.15.0"
 num-traits = "0.2.15"
-parquet = "57"
-rand = "0.9.0"
-rand_distr = "0.5.1"
+parquet = "58.1.0"
+rand = "0.9"
+rand_distr = "0.5"
 rayon = "1.7.0"
 safetensors = "0.7.0"
 serde = { version = "1.0.171", features = ["derive"] }
+smallvec = { version = "1", features = ["const_new"] }
 serde_plain = "1.0.2"
 serde_json = "1.0.99"
 thiserror = "2"
 tokenizers = { version = "0.22.0", default-features = false }
 tracing = "0.1.37"
 tracing-chrome = "0.7.1"
-tracing-subscriber = "0.3.7"
+tracing-subscriber = "0.3.23"
 ug = "0.5.0"
 ug-cuda = "0.5.0"
 ug-metal = "0.5.0"
-yoke = { version = "0.8.1", features = ["derive"] }
-zip = { version = "7.2.0", default-features = false }
+yoke = { version = "0.8", features = ["derive"] }
+zip = { version = "8.5.0", default-features = false }
 objc2-metal = { version = "0.3.1" }
 objc2-foundation = { version = "0.3.1" }
 

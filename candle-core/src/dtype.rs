@@ -1,225 +1,25 @@
 //! Types for elements that can be stored and manipulated using tensors.
+//!
+//! The [`DType`] enum and its inherent methods, Display, FromStr, DTypeParseError,
+//! and safetensors interop are all defined in `candle-core-types` and re-exported here.
+//!
+//! [`WithDType`] is a local marker subtrait of `candle_core_types::dtype::WithDType`.
+//! Keeping it local lets Rust's coherence checker prove disjointness of generic impls
+//! (e.g. `NdArray for S` vs `NdArray for Vec<S>`).  All methods are inherited from
+//! the upstream trait.
 #![allow(clippy::redundant_closure_call)]
-use crate::backend::BackendStorage;
-use crate::{CpuStorage, CpuStorageRef, Error, Result};
 
-/// The different types of elements allowed in tensors.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum DType {
-    // Unsigned 8 bits integer.
-    U8,
-    // Unsigned 32 bits integer.
-    U32,
-    // Signed 16 bits integer.
-    I16,
-    // Signed 32 bits integer.
-    I32,
-    // Signed 64 bits integer.
-    I64,
-    // Brain floating-point using half precision (16 bits).
-    BF16,
-    // Floating-point using half precision (16 bits).
-    F16,
-    // Floating-point using single precision (32 bits).
-    F32,
-    // Floating-point using double precision (64 bits).
-    F64,
-    // 8-bit floating point with 4-bit exponent and 3-bit mantissa.
-    F8E4M3,
-    /// 6-bit float with 2 exponent bits and 3 mantissa bits (MX6 format)
-    F6E2M3,
-    /// 6-bit float with 3 exponent bits and 2 mantissa bits (MX6 format)
-    F6E3M2,
-    /// 4-bit float (MX4 format)
-    F4,
-    /// 8-bit float with 8 exponent bits and 0 mantissa bits
-    F8E8M0,
-}
+// Re-export DType and related types from candle-core-types.
+pub use candle_core_types::dtype::{DType, DTypeParseError};
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct DTypeParseError(String);
-
-impl std::fmt::Display for DTypeParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot parse '{}' as a dtype", self.0)
-    }
-}
-
-impl std::error::Error for DTypeParseError {}
-
-impl std::str::FromStr for DType {
-    type Err = DTypeParseError;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "u8" => Ok(Self::U8),
-            "u32" => Ok(Self::U32),
-            "i16" => Ok(Self::I16),
-            "i32" => Ok(Self::I32),
-            "i64" => Ok(Self::I64),
-            "bf16" => Ok(Self::BF16),
-            "f16" => Ok(Self::F16),
-            "f32" => Ok(Self::F32),
-            "f64" => Ok(Self::F64),
-            "f8e4m3" => Ok(Self::F8E4M3),
-            "f6e2m3" => Ok(Self::F6E2M3),
-            "f6e3m2" => Ok(Self::F6E3M2),
-            "f4" => Ok(Self::F4),
-            "f8e8m0" => Ok(Self::F8E8M0),
-            _ => Err(DTypeParseError(s.to_string())),
-        }
-    }
-}
-
-impl DType {
-    /// String representation for dtypes.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::U8 => "u8",
-            Self::U32 => "u32",
-            Self::I16 => "i16",
-            Self::I32 => "i32",
-            Self::I64 => "i64",
-            Self::BF16 => "bf16",
-            Self::F16 => "f16",
-            Self::F32 => "f32",
-            Self::F64 => "f64",
-            Self::F8E4M3 => "f8e4m3",
-            Self::F6E2M3 => "f6e2m3",
-            Self::F6E3M2 => "f6e3m2",
-            Self::F4 => "f4",
-            Self::F8E8M0 => "f8e8m0",
-        }
-    }
-
-    /// The size used by each element in bytes, i.e. 1 for `U8`, 4 for `F32`.
-    pub fn size_in_bytes(&self) -> usize {
-        match self {
-            Self::U8 => 1,
-            Self::U32 => 4,
-            Self::I16 => 2,
-            Self::I32 => 4,
-            Self::I64 => 8,
-            Self::BF16 => 2,
-            Self::F16 => 2,
-            Self::F32 => 4,
-            Self::F64 => 8,
-            Self::F8E4M3 => 1,
-            Self::F6E2M3 => 0, // 6 bits
-            Self::F6E3M2 => 0, // 6 bits
-            Self::F4 => 0,     // 4 bits
-            Self::F8E8M0 => 1,
-        }
-    }
-
-    pub fn is_int(&self) -> bool {
-        match self {
-            Self::U8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => true,
-            Self::BF16
-            | Self::F16
-            | Self::F32
-            | Self::F64
-            | Self::F8E4M3
-            | Self::F6E2M3
-            | Self::F6E3M2
-            | Self::F4
-            | Self::F8E8M0 => false,
-        }
-    }
-
-    pub fn is_float(&self) -> bool {
-        match self {
-            Self::U8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => false,
-            Self::BF16
-            | Self::F16
-            | Self::F32
-            | Self::F64
-            | Self::F8E4M3
-            | Self::F6E2M3
-            | Self::F6E3M2
-            | Self::F4
-            | Self::F8E8M0 => true,
-        }
-    }
-}
-
-pub trait WithDType:
-    Sized
-    + Copy
-    + num_traits::NumAssign
-    + std::cmp::PartialOrd
-    + std::fmt::Display
-    + 'static
-    + Send
-    + Sync
-    + std::any::Any
-    + crate::cpu::kernels::VecOps
-{
-    const DTYPE: DType;
-
-    fn from_f64(v: f64) -> Self;
-    fn to_f64(self) -> f64;
-    fn to_scalar(self) -> crate::scalar::Scalar;
-    fn cpu_storage_ref(data: &[Self]) -> CpuStorageRef<'_>;
-    fn to_cpu_storage_owned(data: Vec<Self>) -> CpuStorage;
-
-    fn to_cpu_storage(data: &[Self]) -> CpuStorage {
-        Self::to_cpu_storage_owned(data.to_vec())
-    }
-
-    fn cpu_storage_as_slice(s: &CpuStorage) -> Result<&[Self]>;
-    fn cpu_storage_data(s: CpuStorage) -> Result<Vec<Self>>;
-}
+/// Local marker subtrait — inherits every method from
+/// `candle_core_types::dtype::WithDType` but is defined in this crate so that
+/// the orphan/coherence rules treat it as a local trait.
+pub trait WithDType: candle_core_types::dtype::WithDType {}
 
 macro_rules! with_dtype {
     ($ty:ty, $dtype:ident, $from_f64:expr, $to_f64:expr) => {
-        impl WithDType for $ty {
-            const DTYPE: DType = DType::$dtype;
-
-            fn from_f64(v: f64) -> Self {
-                $from_f64(v)
-            }
-
-            fn to_f64(self) -> f64 {
-                $to_f64(self)
-            }
-
-            fn to_scalar(self) -> crate::scalar::Scalar {
-                crate::scalar::Scalar::$dtype(self)
-            }
-
-            fn cpu_storage_ref(data: &[Self]) -> CpuStorageRef<'_> {
-                CpuStorageRef::$dtype(data)
-            }
-
-            fn to_cpu_storage_owned(data: Vec<Self>) -> CpuStorage {
-                CpuStorage::$dtype(data)
-            }
-
-            fn cpu_storage_data(s: CpuStorage) -> Result<Vec<Self>> {
-                match s {
-                    CpuStorage::$dtype(data) => Ok(data),
-                    _ => Err(Error::UnexpectedDType {
-                        expected: DType::$dtype,
-                        got: s.dtype(),
-                        msg: "unexpected dtype",
-                    }
-                    .bt()),
-                }
-            }
-
-            fn cpu_storage_as_slice(s: &CpuStorage) -> Result<&[Self]> {
-                match s {
-                    CpuStorage::$dtype(data) => Ok(data),
-                    _ => Err(Error::UnexpectedDType {
-                        expected: DType::$dtype,
-                        got: s.dtype(),
-                        msg: "unexpected dtype",
-                    }
-                    .bt()),
-                }
-            }
-        }
+        impl WithDType for $ty {}
     };
 }
 use float8::F8E4M3 as f8e4m3;

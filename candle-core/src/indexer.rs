@@ -1,3 +1,35 @@
+//! Tensor indexing operations for Python-like slicing syntax.
+//!
+//! This module provides [`TensorIndexer`], the core enum that powers the
+//! [`IndexOp::i`] method on tensors. It supports three styles of indexing:
+//!
+//! - **Scalar selection** (`usize`) -- picks a single index along one dimension,
+//!   removing that dimension from the result.
+//! - **Range slicing** (e.g. `0..3`, `2..`, `..`, `..=4`) -- narrows a dimension
+//!   to a contiguous sub-range, preserving the dimension.
+//! - **Gather / advanced indexing** (`&[u32]`, `Vec<u32>`, or a 1-D `Tensor`) --
+//!   selects arbitrary indices along a dimension via [`Tensor::index_select`].
+//!
+//! Multi-dimensional indexing is expressed with tuples of up to 7 elements:
+//!
+//! ```
+//! # use candle_core::{Tensor, Device, IndexOp};
+//! let t = Tensor::arange(0f32, 24f32, &Device::Cpu)?.reshape((2, 3, 4))?;
+//!
+//! // Scalar select on dim 0 removes that dimension.
+//! let row = t.i(0)?;
+//! assert_eq!(row.dims(), &[3, 4]);
+//!
+//! // Range on dim 0, scalar on dim 1.
+//! let slice = t.i((0..1, 2))?;
+//! assert_eq!(slice.dims(), &[1, 4]);
+//!
+//! // Gather with a u32 slice on dim 0.
+//! let gathered = t.i(&[1u32, 0u32][..])?;
+//! assert_eq!(gathered.dims(), &[2, 3, 4]);
+//! # Ok::<(), candle_core::Error>(())
+//! ```
+
 use crate::{Error, Tensor};
 use std::ops::{
     Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
@@ -61,24 +93,71 @@ impl Tensor {
     }
 }
 
+/// Describes how to index into a single dimension of a [`Tensor`].
+///
+/// `TensorIndexer` is not normally constructed directly. Instead, the
+/// [`IndexOp::i`] method accepts values that implement `Into<TensorIndexer>`
+/// (integers, ranges, slices, and tensors) and converts them automatically.
+///
+/// # Variants
+///
+/// | Variant | Created from | Effect |
+/// |---------|-------------|--------|
+/// | [`Select`](TensorIndexer::Select) | `usize` | Picks one index, removes the dimension |
+/// | [`Narrow`](TensorIndexer::Narrow) | Any `Range*<usize>` or `..` | Slices a contiguous sub-range |
+/// | [`IndexSelect`](TensorIndexer::IndexSelect) | `&[u32]`, `Vec<u32>`, `&Tensor` | Gathers arbitrary indices via a 1-D index tensor |
+///
+/// # Examples
+///
+/// ```
+/// # use candle_core::{Tensor, Device, IndexOp};
+/// let a = Tensor::arange(0f32, 24f32, &Device::Cpu)?.reshape((2, 3, 4))?;
+///
+/// // Select -- picks index 0 on dim 0, result shape is [3, 4]
+/// let b = a.i(0)?;
+/// assert_eq!(b.dims(), &[3, 4]);
+///
+/// // Narrow -- keeps a range on dim 0, result shape is [1, 3, 4]
+/// let c = a.i(0..1)?;
+/// assert_eq!(c.dims(), &[1, 3, 4]);
+///
+/// // IndexSelect -- gathers indices [1, 0] on dim 0
+/// let d = a.i(&[1u32, 0u32][..])?;
+/// assert_eq!(d.dims(), &[2, 3, 4]);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 #[derive(Debug)]
-/// Generic structure used to index a slice of the tensor
 pub enum TensorIndexer {
-    /// This selects the elements for which an index has some specific value.
+    /// Selects a single index along the current dimension, removing that
+    /// dimension from the output shape. Created from a `usize` value.
     Select(usize),
-    /// This is a regular slice, purely indexing a chunk of the tensor
+
+    /// Narrows the current dimension to a contiguous sub-range defined by
+    /// start and end bounds. Created from Rust range expressions (`0..3`,
+    /// `2..`, `..`, `..=4`, etc.).
     Narrow(Bound<usize>, Bound<usize>),
-    /// Indexing via a 1d tensor
+
+    /// Gathers arbitrary indices along the current dimension using a 1-D
+    /// index tensor. Created from `&[u32]`, `Vec<u32>`, or `&Tensor`.
+    /// The index tensor must be rank-1; multi-dimensional index tensors
+    /// are not supported.
     IndexSelect(Tensor),
+
+    /// Internal variant that carries a conversion error (e.g. when building
+    /// the index tensor from a slice fails). Not constructed by user code.
     Err(Error),
 }
 
+/// Converts a `usize` into [`TensorIndexer::Select`], which picks a single
+/// index along one dimension and removes that dimension from the result.
 impl From<usize> for TensorIndexer {
     fn from(index: usize) -> Self {
         TensorIndexer::Select(index)
     }
 }
 
+/// Converts a `&[u32]` slice into [`TensorIndexer::IndexSelect`] by creating
+/// a 1-D CPU tensor from the slice.
 impl From<&[u32]> for TensorIndexer {
     fn from(index: &[u32]) -> Self {
         match Tensor::new(index, &crate::Device::Cpu) {
@@ -88,6 +167,8 @@ impl From<&[u32]> for TensorIndexer {
     }
 }
 
+/// Converts a `Vec<u32>` into [`TensorIndexer::IndexSelect`] by creating
+/// a 1-D CPU tensor from the vector contents.
 impl From<Vec<u32>> for TensorIndexer {
     fn from(index: Vec<u32>) -> Self {
         let len = index.len();
@@ -98,6 +179,8 @@ impl From<Vec<u32>> for TensorIndexer {
     }
 }
 
+/// Converts a `&Tensor` reference into [`TensorIndexer::IndexSelect`].
+/// The tensor is cloned (a cheap reference-count bump).
 impl From<&Tensor> for TensorIndexer {
     fn from(tensor: &Tensor) -> Self {
         TensorIndexer::IndexSelect(tensor.clone())
@@ -112,6 +195,9 @@ impl RB for RangeInclusive<usize> {}
 impl RB for RangeTo<usize> {}
 impl RB for RangeToInclusive<usize> {}
 
+/// Converts any Rust range type (`Range<usize>`, `RangeFrom<usize>`,
+/// `RangeFull`, `RangeInclusive<usize>`, `RangeTo<usize>`,
+/// `RangeToInclusive<usize>`) into [`TensorIndexer::Narrow`].
 impl<T: RB> From<T> for TensorIndexer {
     fn from(range: T) -> Self {
         use std::ops::Bound::*;
@@ -250,8 +336,8 @@ macro_rules! index_op_tuple {
     };
 }
 
-index_op_tuple!("see [TensorIndex#method.i]", A, B, C);
-index_op_tuple!("see [TensorIndex#method.i]", A, B, C, D);
-index_op_tuple!("see [TensorIndex#method.i]", A, B, C, D, E);
-index_op_tuple!("see [TensorIndex#method.i]", A, B, C, D, E, F);
-index_op_tuple!("see [TensorIndex#method.i]", A, B, C, D, E, F, G);
+index_op_tuple!("see [`IndexOp::i`]", A, B, C);
+index_op_tuple!("see [`IndexOp::i`]", A, B, C, D);
+index_op_tuple!("see [`IndexOp::i`]", A, B, C, D, E);
+index_op_tuple!("see [`IndexOp::i`]", A, B, C, D, E, F);
+index_op_tuple!("see [`IndexOp::i`]", A, B, C, D, E, F, G);

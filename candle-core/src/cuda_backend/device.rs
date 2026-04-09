@@ -180,7 +180,7 @@ impl CudaDevice {
         kernel: candle_ug::lang::ssa::Kernel,
     ) -> Result<CudaFunc> {
         let mut buf = vec![];
-        candle_ug::cuda::code_gen::gen(&mut buf, func_name, &kernel)?;
+        candle_ug::cuda::code_gen::r#gen(&mut buf, func_name, &kernel)?;
         let cuda_code = String::from_utf8(buf)?;
         let opts = cudarc::nvrtc::CompileOptions {
             use_fast_math: Some(true),

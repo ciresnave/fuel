@@ -72,6 +72,20 @@ fn vec_dot<T: WithDType + Sum + Copy + std::ops::Mul<Output = T>>(a: &[T], b: &[
 /// - This supports ALiBi with `max_bias` as well as softcapping with `softcap`.
 ///
 /// **Output shape:** (bs, qhead, seq, v_hidden)
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::cpu_flash_attention::run_flash_attn_cpu;
+/// use candle::{Tensor, Device};
+/// // q/k/v must be (bs, seq, heads, head_dim) on CPU
+/// let q = Tensor::zeros((1, 4, 2, 16), candle::DType::F32, &Device::Cpu)?;
+/// let k = q.clone();
+/// let v = q.clone();
+/// let out = run_flash_attn_cpu::<f32>(&q, &k, &v, None, 0.25, None, None)?;
+/// // out shape: (1, 2, 4, 16)
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn run_flash_attn_cpu<T>(
     q: &Tensor,
     k: &Tensor,

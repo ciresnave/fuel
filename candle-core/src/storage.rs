@@ -1,4 +1,5 @@
 use crate::backend::BackendStorage;
+use crate::dyn_backend::DynBackendStorage;
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
 use crate::{CpuStorage, CudaStorage, DType, Device, Error, Layout, MetalStorage, Result, Shape};
@@ -11,6 +12,8 @@ pub enum Storage {
     Cpu(CpuStorage),
     Cuda(CudaStorage),
     Metal(MetalStorage),
+    /// A third-party backend storage, accessed through dynamic dispatch.
+    Custom(Box<dyn DynBackendStorage>),
 }
 
 impl Storage {
@@ -25,6 +28,7 @@ impl Storage {
                 let storage = storage.try_clone(layout)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => Ok(Self::Custom(storage.try_clone_dyn(layout)?)),
         }
     }
 
@@ -33,6 +37,7 @@ impl Storage {
             Self::Cpu(_) => Device::Cpu,
             Self::Cuda(storage) => Device::Cuda(storage.device().clone()),
             Self::Metal(storage) => Device::Metal(storage.device().clone()),
+            Self::Custom(storage) => Device::Custom(storage.device_arc_dyn()),
         }
     }
 
@@ -41,6 +46,7 @@ impl Storage {
             Self::Cpu(storage) => storage.dtype(),
             Self::Cuda(storage) => storage.dtype(),
             Self::Metal(storage) => storage.dtype(),
+            Self::Custom(storage) => storage.dtype_dyn(),
         }
     }
 
@@ -79,6 +85,7 @@ impl Storage {
             Storage::Cpu(storage) => storage.const_set(v, l),
             Storage::Cuda(storage) => storage.const_set(v, l),
             Storage::Metal(storage) => storage.const_set(v, l),
+            Storage::Custom(storage) => storage.const_set_dyn(v, l),
         }
     }
 
@@ -96,6 +103,7 @@ impl Storage {
                 let storage = storage.affine(layout, mul, add)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => Ok(Self::Custom(storage.affine_dyn(layout, mul, add)?)),
         }
     }
 
@@ -113,6 +121,7 @@ impl Storage {
                 let storage = storage.powf(layout, alpha)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => Ok(Self::Custom(storage.powf_dyn(layout, alpha)?)),
         }
     }
 
@@ -130,6 +139,7 @@ impl Storage {
                 let storage = storage.elu(layout, alpha)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => Ok(Self::Custom(storage.elu_dyn(layout, alpha)?)),
         }
     }
 
@@ -154,6 +164,9 @@ impl Storage {
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Metal(storage))
+            }
+            (Self::Custom(lhs), Self::Custom(rhs)) => {
+                Ok(Self::Custom(lhs.cmp_dyn(op, rhs.as_ref(), lhs_layout, rhs_layout)?))
             }
             (lhs, rhs) => {
                 // Should not happen because of the same device check above but we're defensive
@@ -182,6 +195,7 @@ impl Storage {
                 let storage = storage.reduce_op(op, layout, s)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => Ok(Self::Custom(storage.reduce_op_dyn(op, layout, s)?)),
         }
     }
 
@@ -199,6 +213,7 @@ impl Storage {
                 let storage = storage.to_dtype(layout, dtype)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => Ok(Self::Custom(storage.to_dtype_dyn(layout, dtype)?)),
         }
     }
 
@@ -216,6 +231,9 @@ impl Storage {
                 let (storage, shape) = c.metal_fwd(storage, l)?;
                 Ok((Self::Metal(storage), shape))
             }
+            Self::Custom(_) => Err(Error::Msg(
+                "custom-op is not supported on custom backends".to_string(),
+            ).bt()),
         }
     }
 
@@ -277,6 +295,9 @@ impl Storage {
             Self::Cpu(storage) => c.cpu_fwd(storage, l),
             Self::Cuda(storage) => c.cuda_fwd(storage, l),
             Self::Metal(storage) => c.metal_fwd(storage, l),
+            Self::Custom(_) => Err(Error::Msg(
+                "inplace-op is not supported on custom backends".to_string(),
+            ).bt()),
         }
     }
 
@@ -331,6 +352,12 @@ impl Storage {
                 let storage = storage.unary_impl::<B>(layout)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => {
+                let op = op::UnaryOp::from_name(B::NAME).ok_or_else(|| {
+                    Error::Msg(format!("unknown unary op '{}' for custom backend", B::NAME))
+                })?;
+                Ok(Self::Custom(storage.unary_op_dyn(layout, op)?))
+            }
         }
     }
 
@@ -354,6 +381,12 @@ impl Storage {
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Metal(storage))
+            }
+            (Self::Custom(lhs), Self::Custom(rhs)) => {
+                let op = op::BinaryOp::from_name(B::NAME).ok_or_else(|| {
+                    Error::Msg(format!("unknown binary op '{}' for custom backend", B::NAME))
+                })?;
+                Ok(Self::Custom(lhs.binary_op_dyn(rhs.as_ref(), lhs_layout, rhs_layout, op)?))
             }
             (lhs, rhs) => {
                 // Should not happen because of the same device check above but we're defensive
@@ -390,6 +423,9 @@ impl Storage {
                 let s = inp.conv1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::Custom(inp), Storage::Custom(kernel)) => {
+                Ok(Self::Custom(inp.conv1d_dyn(l, kernel.as_ref(), kernel_l, params)?))
+            }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -420,6 +456,9 @@ impl Storage {
             (Storage::Metal(inp), Storage::Metal(kernel)) => {
                 let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
+            }
+            (Storage::Custom(inp), Storage::Custom(kernel)) => {
+                Ok(Self::Custom(inp.conv_transpose1d_dyn(l, kernel.as_ref(), kernel_l, params)?))
             }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
@@ -452,6 +491,9 @@ impl Storage {
                 let s = inp.conv2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::Custom(inp), Storage::Custom(kernel)) => {
+                Ok(Self::Custom(inp.conv2d_dyn(l, kernel.as_ref(), kernel_l, params)?))
+            }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -483,6 +525,9 @@ impl Storage {
                 let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::Custom(inp), Storage::Custom(kernel)) => {
+                Ok(Self::Custom(inp.conv_transpose2d_dyn(l, kernel.as_ref(), kernel_l, params)?))
+            }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -511,6 +556,9 @@ impl Storage {
                 let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => {
+                Ok(Self::Custom(storage.avg_pool2d_dyn(layout, kernel_size, stride)?))
+            }
         }
     }
 
@@ -533,6 +581,9 @@ impl Storage {
                 let storage = storage.max_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => {
+                Ok(Self::Custom(storage.max_pool2d_dyn(layout, kernel_size, stride)?))
+            }
         }
     }
 
@@ -550,6 +601,9 @@ impl Storage {
                 let storage = storage.upsample_nearest1d(layout, sz)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => {
+                Ok(Self::Custom(storage.upsample_nearest1d_dyn(layout, sz)?))
+            }
         }
     }
 
@@ -566,6 +620,9 @@ impl Storage {
             Self::Metal(storage) => {
                 let storage = storage.upsample_nearest2d(layout, h, w)?;
                 Ok(Self::Metal(storage))
+            }
+            Self::Custom(storage) => {
+                Ok(Self::Custom(storage.upsample_nearest2d_dyn(layout, h, w)?))
             }
         }
     }
@@ -595,6 +652,11 @@ impl Storage {
                     storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
                 Ok(Self::Metal(storage))
             }
+            Self::Custom(storage) => {
+                Ok(Self::Custom(
+                    storage.upsample_bilinear2d_dyn(layout, h, w, align_corners, scale_h, scale_w)?,
+                ))
+            }
         }
     }
 
@@ -621,6 +683,11 @@ impl Storage {
             (Self::Metal(cond), Self::Metal(t), Self::Metal(f)) => {
                 let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
                 Ok(Self::Metal(storage))
+            }
+            (Self::Custom(cond), Self::Custom(t), Self::Custom(f)) => {
+                Ok(Self::Custom(
+                    cond.where_cond_dyn(layout, t.as_ref(), layout_t, f.as_ref(), layout_f)?,
+                ))
             }
             (_, lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
@@ -652,6 +719,9 @@ impl Storage {
                 let storage = s.gather(l, indexes, indexes_l, d)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::Custom(s), Self::Custom(indexes)) => {
+                Ok(Self::Custom(s.gather_dyn(l, indexes.as_ref(), indexes_l, d)?))
+            }
             _ => unreachable!(),
         }
     }
@@ -676,6 +746,9 @@ impl Storage {
             }
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
+            (Self::Custom(s), Self::Custom(indexes), Self::Custom(source)) => {
+                s.scatter_set_dyn(l, source.as_ref(), source_l, indexes.as_ref(), indexes_l, d)?;
             }
             _ => unreachable!(),
         }
@@ -702,6 +775,9 @@ impl Storage {
             }
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
+            (Self::Custom(s), Self::Custom(indexes), Self::Custom(source)) => {
+                s.scatter_add_set_dyn(l, source.as_ref(), source_l, indexes.as_ref(), indexes_l, d)?;
             }
             _ => unreachable!(),
         }
@@ -732,6 +808,11 @@ impl Storage {
                 let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::Custom(s), Self::Custom(indexes), Self::Custom(source)) => {
+                Ok(Self::Custom(
+                    s.index_add_dyn(l, indexes.as_ref(), indexes_l, source.as_ref(), source_l, d)?,
+                ))
+            }
             _ => unreachable!(),
         }
     }
@@ -756,6 +837,9 @@ impl Storage {
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
                 Ok(Self::Metal(storage))
+            }
+            (Self::Custom(lhs), Self::Custom(rhs)) => {
+                Ok(Self::Custom(lhs.index_select_dyn(rhs.as_ref(), lhs_l, rhs_l, d)?))
             }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
@@ -788,6 +872,11 @@ impl Storage {
                 let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::Custom(lhs), Self::Custom(rhs)) => {
+                Ok(Self::Custom(
+                    lhs.matmul_dyn(rhs.as_ref(), bmnk, lhs_layout, rhs_layout)?,
+                ))
+            }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -809,6 +898,9 @@ impl Storage {
             (Self::Cuda(src), Self::Cuda(dst)) => Ok(src.copy_strided_src(dst, dst_offset, src_l)?),
             (Self::Metal(src), Self::Metal(dst)) => {
                 Ok(src.copy_strided_src(dst, dst_offset, src_l)?)
+            }
+            (Self::Custom(src), Self::Custom(dst)) => {
+                src.copy_strided_src_dyn(dst.as_mut(), dst_offset, src_l)
             }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
@@ -837,6 +929,9 @@ impl Storage {
             }
             (Self::Metal(src), Self::Metal(dst)) => {
                 Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
+            }
+            (Self::Custom(src), Self::Custom(dst)) => {
+                src.copy2d_dyn(dst.as_mut(), d1, d2, src_s, dst_s, src_o, dst_o)
             }
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),

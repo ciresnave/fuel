@@ -65,7 +65,7 @@ impl candle::CustomOp3 for RotaryEmbI {
                         dst[i + 1] = src[i] * sin[rope_i] + src[i + 1] * cos[rope_i];
                     }
                 });
-            let storage = candle::WithDType::to_cpu_storage_owned(dst);
+            let storage = T::to_cpu_storage_owned(dst);
             Ok((storage, (b, h, t, d).into()))
         }
 
@@ -238,6 +238,26 @@ fn rope_check_cs(cs: &Tensor, b_sz: usize) -> Result<(usize, usize)> {
     }
 }
 
+/// Applies interleaved rotary position embeddings (RoPE) using a fused kernel.
+///
+/// The `xs` tensor layout is `(batch, n_heads, seq, n_embd)` where `n_embd` must be even.
+/// `cos` and `sin` have layout `(seq, n_embd/2)` or `(batch, n_heads, seq, n_embd/2)`.
+/// All input tensors must be contiguous.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rotary_emb::rope_i;
+///
+/// let b = 1; let h = 2; let t = 4; let d = 8;
+/// let xs = Tensor::zeros((b, h, t, d), DType::F32, &Device::Cpu)?;
+/// let cos = Tensor::ones((t, d / 2), DType::F32, &Device::Cpu)?;
+/// let sin = Tensor::zeros((t, d / 2), DType::F32, &Device::Cpu)?;
+/// let out = rope_i(&xs, &cos, &sin)?;
+/// assert_eq!(out.dims(), &[b, h, t, d]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rope_i(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (b_sz, _n_head, seq_len, n_embd) = xs.dims4()?;
     let (cos_seq_len, cos_n_embd) = rope_check_cs(cos, b_sz)?;
@@ -266,6 +286,24 @@ pub fn rope_i(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     xs.apply_op3_no_bwd(cos, sin, &RotaryEmbI)
 }
 
+/// Applies interleaved rotary position embeddings (RoPE) using generic tensor ops.
+///
+/// Equivalent to [`rope_i`] but uses pure tensor operations instead of a fused kernel.
+/// Layout of `xs`: `(batch, n_heads, seq, n_embd)`. Layout of `cos`/`sin`: `(seq, n_embd/2)`.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rotary_emb::rope_i_slow;
+///
+/// let xs = Tensor::zeros((1, 2, 4, 8), DType::F32, &Device::Cpu)?;
+/// let cos = Tensor::ones((4, 4), DType::F32, &Device::Cpu)?;
+/// let sin = Tensor::zeros((4, 4), DType::F32, &Device::Cpu)?;
+/// let out = rope_i_slow(&xs, &cos, &sin)?;
+/// assert_eq!(out.dims(), &[1, 2, 4, 8]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rope_i_slow(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (b_sz, n_head, seq_len, n_embd) = x.dims4()?;
     let cos = cos
@@ -348,7 +386,7 @@ impl candle::CustomOp3 for RotaryEmb {
                         }
                     }
                 });
-            let storage = candle::WithDType::to_cpu_storage_owned(dst);
+            let storage = T::to_cpu_storage_owned(dst);
             Ok((storage, (b, h, t, d).into()))
         }
 
@@ -509,6 +547,24 @@ impl candle::CustomOp3 for RotaryEmb {
     }
 }
 
+/// Applies non-interleaved rotary position embeddings (RoPE) using a fused kernel.
+///
+/// The first and second halves of the head dimension correspond to the two rotation
+/// components. Layout of `xs`: `(batch, n_heads, seq, n_embd)`. All tensors must be contiguous.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rotary_emb::rope;
+///
+/// let xs = Tensor::zeros((1, 2, 4, 8), DType::F32, &Device::Cpu)?;
+/// let cos = Tensor::ones((4, 4), DType::F32, &Device::Cpu)?;
+/// let sin = Tensor::zeros((4, 4), DType::F32, &Device::Cpu)?;
+/// let out = rope(&xs, &cos, &sin)?;
+/// assert_eq!(out.dims(), &[1, 2, 4, 8]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rope(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (b_sz, _n_head, seq_len, n_embd) = xs.dims4()?;
     let (cos_seq_len, cos_n_embd) = rope_check_cs(cos, b_sz)?;
@@ -544,6 +600,24 @@ fn rotate_half(xs: &Tensor) -> Result<Tensor> {
     Tensor::cat(&[&xs2.neg()?, &xs1], D::Minus1)
 }
 
+/// Applies non-interleaved rotary position embeddings (RoPE) using generic tensor ops.
+///
+/// Equivalent to [`rope`] but uses pure tensor operations. Layout of `xs`:
+/// `(batch, n_heads, seq, n_embd)`.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rotary_emb::rope_slow;
+///
+/// let xs = Tensor::zeros((1, 2, 4, 8), DType::F32, &Device::Cpu)?;
+/// let cos = Tensor::ones((4, 4), DType::F32, &Device::Cpu)?;
+/// let sin = Tensor::zeros((4, 4), DType::F32, &Device::Cpu)?;
+/// let out = rope_slow(&xs, &cos, &sin)?;
+/// assert_eq!(out.dims(), &[1, 2, 4, 8]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rope_slow(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (_b_sz, _h, seq_len, _n_embd) = x.dims4()?;
     let cos = Tensor::cat(&[cos, cos], D::Minus1)?;
@@ -618,7 +692,7 @@ impl candle::CustomOp3 for RotaryEmbThd {
                         }
                     }
                 });
-            let storage = candle::WithDType::to_cpu_storage_owned(dst);
+            let storage = T::to_cpu_storage_owned(dst);
             Ok((storage, (b, t, h, d).into()))
         }
 
@@ -780,6 +854,25 @@ impl candle::CustomOp3 for RotaryEmbThd {
     }
 }
 
+/// Applies rotary position embeddings in THD (seq, heads, head-dim) layout.
+///
+/// Unlike [`rope`] and [`rope_i`] which use `(batch, heads, seq, dim)` layout,
+/// this variant processes tensors in `(batch, seq, heads, dim)` order.
+/// All input tensors must be contiguous.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::rotary_emb::rope_thd;
+///
+/// let xs = Tensor::zeros((1, 4, 2, 8), DType::F32, &Device::Cpu)?; // (b, seq, heads, dim)
+/// let cos = Tensor::ones((4, 4), DType::F32, &Device::Cpu)?;
+/// let sin = Tensor::zeros((4, 4), DType::F32, &Device::Cpu)?;
+/// let out = rope_thd(&xs, &cos, &sin)?;
+/// assert_eq!(out.dims(), &[1, 4, 2, 8]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rope_thd(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (b_sz, seq_len, _n_head, n_embd) = xs.dims4()?;
     let (cos_seq_len, cos_n_embd) = rope_check_cs(cos, b_sz)?;

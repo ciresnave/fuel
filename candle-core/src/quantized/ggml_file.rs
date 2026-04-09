@@ -130,11 +130,16 @@ fn from_raw_data<T: super::GgmlType + Send + Sync + 'static>(
         Device::Cpu => QStorage::Cpu(Box::new(data.to_vec())),
         Device::Metal(metal) => super::metal::load_quantized(metal, data)?,
         Device::Cuda(cuda) => super::cuda::load_quantized(cuda, data)?,
+        Device::Custom(_) => {
+            return Err(crate::Error::Msg(
+                "quantized tensors are not supported on custom backends".to_string(),
+            ));
+        }
     };
     super::QTensor::new(data, dims)
 }
 
-/// Creates a [Tensor] from a raw GGML tensor.
+/// Creates a [`super::QTensor`] from a raw GGML tensor.
 pub fn qtensor_from_ggml(
     ggml_dtype: GgmlDType,
     raw_data: &[u8],

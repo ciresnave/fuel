@@ -22,25 +22,57 @@ pub fn build_causal_mask(seq_len: usize, index_pos: usize, device: &Device) -> R
     Tensor::from_slice(&mask, (seq_len, kv_len), device)
 }
 
+/// Fill `on_false` with `on_true` where `mask` is true (non-zero).
+///
+/// Equivalent to PyTorch's `Tensor.masked_fill_(mask, value)`.
+/// The `on_true` scalar is automatically cast to the dtype of `on_false`.
+pub fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: f32) -> Result<Tensor> {
+    let shape = mask.shape();
+    let on_true = Tensor::new(on_true, on_false.device())?
+        .to_dtype(on_false.dtype())?
+        .broadcast_as(shape.dims())?;
+    let m = mask.where_cond(&on_true, on_false)?;
+    Ok(m)
+}
+
 pub fn apply_repeat_penalty(logits: &Tensor, penalty: f32, context: &[u32]) -> Result<Tensor> {
     let device = logits.device();
-    let mut logits = logits.to_dtype(candle::DType::F32)?.to_vec1::<f32>()?;
+    let logits = logits.to_dtype(candle::DType::F32)?;
+    let vocab_size = logits.elem_count();
+
+    // Build a penalty mask on the CPU: 1.0 at context token positions, 0.0 elsewhere.
+    // This is much smaller to transfer than pulling the entire logits tensor to CPU
+    // and avoids per-token GPU-CPU synchronization.
+    let mut penalty_mask = vec![0f32; vocab_size];
     let mut already_seen = std::collections::HashSet::new();
-    for token_id in context {
-        if already_seen.contains(token_id) {
-            continue;
-        }
-        already_seen.insert(token_id);
-        if let Some(logit) = logits.get_mut(*token_id as usize) {
-            if *logit >= 0. {
-                *logit /= penalty
-            } else {
-                *logit *= penalty
+    for &token_id in context {
+        if already_seen.insert(token_id) {
+            let idx = token_id as usize;
+            if idx < vocab_size {
+                penalty_mask[idx] = 1.0;
             }
         }
     }
-    let logits_len = logits.len();
-    Tensor::from_vec(logits, logits_len, device)
+    let penalty_mask =
+        Tensor::from_vec(penalty_mask, vocab_size, device)?;
+
+    // For tokens in the context:
+    //   positive logits  -> divide by penalty (multiply by 1/penalty)
+    //   negative logits  -> multiply by penalty
+    // For tokens NOT in the context: keep the original value (multiply by 1.0).
+    let inv_penalty = Tensor::full(1.0f32 / penalty, vocab_size, device)?;
+    let mul_penalty = Tensor::full(penalty, vocab_size, device)?;
+    let ones = Tensor::ones(vocab_size, candle::DType::F32, device)?;
+
+    // sign_mask: 1 where logit >= 0, 0 where logit < 0
+    let sign_mask = logits.ge(0f32)?;
+    // per-element factor for tokens in context: 1/penalty if positive, penalty if negative
+    let context_factor = sign_mask.where_cond(&inv_penalty, &mul_penalty)?;
+    // Only apply the factor where the penalty mask is set; use 1.0 elsewhere.
+    let mask_bool = penalty_mask.ge(1f32)?;
+    let final_factor = mask_bool.where_cond(&context_factor, &ones)?;
+
+    logits.mul(&final_factor)
 }
 
 /// Repeats a key or value tensor for grouped query attention

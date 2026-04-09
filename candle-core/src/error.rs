@@ -247,6 +247,17 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Seamless conversion from the types crate error.
+///
+/// This enables the `?` operator when candle-core calls methods on types defined
+/// in `candle-core-types` (e.g. `Shape::dim()`, `Layout::shape()`). Those methods
+/// return `candle_core_types::Result`, which wraps `candle_core_types::Error`.
+impl From<candle_core_types::Error> for Error {
+    fn from(e: candle_core_types::Error) -> Self {
+        Self::Wrapped(Box::new(e))
+    }
+}
+
 impl Error {
     pub fn wrap(err: impl std::fmt::Display + Send + Sync + 'static) -> Self {
         Self::Wrapped(Box::new(err)).bt()

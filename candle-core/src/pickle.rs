@@ -1,4 +1,27 @@
-//! Just enough pickle support to be able to read PyTorch checkpoints.
+//! Minimal Python pickle format reader for loading PyTorch `.pth` checkpoint files.
+//!
+//! This module implements just enough of the
+//! [pickle protocol](https://docs.python.org/3/library/pickle.html) (protocol 2) to
+//! deserialize the `state_dict` stored inside a PyTorch `.pth` (zip) archive. It is
+//! intentionally not a general-purpose pickle parser -- it hard-codes the object types
+//! needed for tensor reconstruction (`torch._utils._rebuild_tensor_v2`, etc.).
+//!
+//! # Main entry points
+//!
+//! | Function | Description |
+//! |---|---|
+//! | [`read_all`] | Read every tensor from a `.pth` file. |
+//! | [`read_all_with_key`] | Same, but select a sub-key inside the archive (e.g. `"state_dict"`). |
+//! | [`read_pth_tensor_info`] | Parse tensor metadata without reading the raw data. |
+//! | [`PthTensors::new`] | Lazy loader -- parse metadata once, then load tensors on demand via [`PthTensors::get`]. |
+//!
+//! # Lower-level types
+//!
+//! - [`Stack`] -- the pickle virtual-machine stack. Feed it bytes via [`Stack::read_loop`],
+//!   then call [`Stack::finalize`] to obtain the top-level [`Object`].
+//! - [`Object`] -- an algebraic representation of Python objects encountered during unpickling.
+//! - [`OpCode`] -- the subset of pickle opcodes that this module recognizes.
+//! - [`TensorInfo`] -- lightweight metadata (name, dtype, layout, path) for a single tensor.
 // This hardcodes objects that are required for tensor reading, we may want to make this a bit more
 // composable/tensor agnostic at some point.
 use crate::{Context, DType, Error as E, Layout, Result, Tensor};
@@ -9,6 +32,10 @@ use std::io::BufRead;
 const VERBOSE: bool = false;
 
 // https://docs.juliahub.com/Pickle/LAUNc/0.1.0/opcode/
+/// Subset of Python pickle opcodes recognized by this reader.
+///
+/// Only the opcodes needed to deserialize PyTorch checkpoint files are included. Encountering
+/// an unrecognized opcode will produce an error.
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum OpCode {
@@ -101,6 +128,12 @@ fn read_to_newline<R: BufRead>(r: &mut R) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// A deserialized Python object as encountered during pickle parsing.
+///
+/// This is an algebraic representation of the Python values found in a PyTorch checkpoint.
+/// Helper methods (e.g. [`Object::unicode`], [`Object::tuple`], [`Object::dict`]) provide
+/// typed extraction with an ergonomic error path -- on type mismatch they return `Err(self)`
+/// so the caller can inspect what was actually found.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Object {
     Class {
@@ -131,6 +164,7 @@ pub enum Object {
 type OResult<T> = std::result::Result<T, Object>;
 
 impl Object {
+    /// Extract the inner `String` if this is a `Unicode` variant, otherwise return `Err(self)`.
     pub fn unicode(self) -> OResult<String> {
         match self {
             Self::Unicode(t) => Ok(t),
@@ -138,6 +172,7 @@ impl Object {
         }
     }
 
+    /// Extract `(callable, args)` if this is a `Reduce` variant.
     pub fn reduce(self) -> OResult<(Self, Self)> {
         match self {
             Self::Reduce { callable, args } => Ok((*callable, *args)),
@@ -145,6 +180,7 @@ impl Object {
         }
     }
 
+    /// Succeeds if this is the `None` variant.
     pub fn none(self) -> OResult<()> {
         match self {
             Self::None => Ok(()),
@@ -152,6 +188,7 @@ impl Object {
         }
     }
 
+    /// Extract the inner object if this is a `PersistentLoad` variant.
     pub fn persistent_load(self) -> OResult<Self> {
         match self {
             Self::PersistentLoad(t) => Ok(*t),
@@ -159,6 +196,7 @@ impl Object {
         }
     }
 
+    /// Extract the inner `bool` if this is a `Bool` variant.
     pub fn bool(self) -> OResult<bool> {
         match self {
             Self::Bool(t) => Ok(t),
@@ -166,6 +204,7 @@ impl Object {
         }
     }
 
+    /// Extract the inner `i32` if this is an `Int` variant.
     pub fn int(self) -> OResult<i32> {
         match self {
             Self::Int(t) => Ok(t),
@@ -173,6 +212,7 @@ impl Object {
         }
     }
 
+    /// Extract an `i64` from either an `Int` or `Long` variant.
     pub fn int_or_long(self) -> OResult<i64> {
         match self {
             Self::Int(t) => Ok(t as i64),
@@ -181,6 +221,7 @@ impl Object {
         }
     }
 
+    /// Extract the inner vector if this is a `Tuple` variant.
     pub fn tuple(self) -> OResult<Vec<Self>> {
         match self {
             Self::Tuple(t) => Ok(t),
@@ -188,6 +229,7 @@ impl Object {
         }
     }
 
+    /// Extract the key-value pairs if this is a `Dict` variant.
     pub fn dict(self) -> OResult<Vec<(Self, Self)>> {
         match self {
             Self::Dict(t) => Ok(t),
@@ -195,6 +237,7 @@ impl Object {
         }
     }
 
+    /// Extract `(module_name, class_name)` if this is a `Class` variant.
     pub fn class(self) -> OResult<(String, String)> {
         match self {
             Self::Class {
@@ -205,6 +248,9 @@ impl Object {
         }
     }
 
+    /// Attempt to interpret this object as a PyTorch tensor reconstruction call and extract
+    /// its [`TensorInfo`]. Returns `Ok(None)` if the object does not match the expected
+    /// pattern (e.g. it is not a `_rebuild_tensor_v2` call).
     pub fn into_tensor_info(
         self,
         name: Self,
@@ -292,6 +338,11 @@ impl<T: TryFrom<Object, Error = Object>> TryFrom<Object> for Vec<T> {
     }
 }
 
+/// The pickle virtual machine's execution stack.
+///
+/// This is the core interpreter for the pickle byte stream. Feed it opcodes with
+/// [`Stack::read_loop`] (or one at a time with [`Stack::read`]), then call
+/// [`Stack::finalize`] to pop the single remaining top-level [`Object`].
 #[derive(Debug)]
 pub struct Stack {
     stack: Vec<Object>,
@@ -299,6 +350,7 @@ pub struct Stack {
 }
 
 impl Stack {
+    /// Create a new empty stack ready to execute pickle opcodes.
     pub fn empty() -> Self {
         Self {
             stack: Vec::with_capacity(512),
@@ -306,10 +358,12 @@ impl Stack {
         }
     }
 
+    /// Return a reference to the current stack contents.
     pub fn stack(&self) -> &[Object] {
         self.stack.as_slice()
     }
 
+    /// Read and execute pickle opcodes from `r` until a `STOP` opcode is encountered.
     pub fn read_loop<R: BufRead>(&mut self, r: &mut R) -> Result<()> {
         loop {
             if self.read(r)? {
@@ -319,6 +373,10 @@ impl Stack {
         Ok(())
     }
 
+    /// Consume the stack and return the single top-level object.
+    ///
+    /// This should be called after [`Stack::read_loop`] has completed. The stack must contain
+    /// exactly one object.
     pub fn finalize(mut self) -> Result<Object> {
         self.pop()
     }
@@ -434,6 +492,8 @@ impl Stack {
         }
     }
 
+    /// Read and execute a single pickle opcode. Returns `Ok(true)` when a `STOP` opcode is
+    /// encountered, indicating the stream is complete.
     pub fn read<R: BufRead>(&mut self, r: &mut R) -> Result<bool> {
         let op_code = match OpCode::try_from(r.read_u8()?) {
             Ok(op_code) => op_code,
@@ -625,7 +685,7 @@ impl From<Object> for E {
 // Arguments: storage, storage_offset, size, stride, requires_grad, backward_hooks
 fn rebuild_args(args: Object) -> Result<(Layout, DType, String, usize)> {
     let mut args = args.tuple()?;
-    let stride = Vec::<usize>::try_from(args.remove(3))?;
+    let stride = crate::DimVec::from(Vec::<usize>::try_from(args.remove(3))?);
     let size = Vec::<usize>::try_from(args.remove(2))?;
     let offset = args.remove(1).int_or_long()? as usize;
     let storage = args.remove(0).persistent_load()?;
@@ -652,12 +712,32 @@ fn rebuild_args(args: Object) -> Result<(Layout, DType, String, usize)> {
     Ok((layout, dtype, path, storage_size))
 }
 
+/// Metadata describing a single tensor inside a PyTorch `.pth` archive.
+///
+/// This is produced by [`read_pth_tensor_info`] and used by [`PthTensors`] for lazy loading.
+/// The `path` field contains the zip-internal path to the raw data file.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use candle_core::pickle::read_pth_tensor_info;
+/// let infos = read_pth_tensor_info("model.pth", false, None)?;
+/// for info in &infos {
+///     println!("{}: {:?}", info.name, info.dtype);
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct TensorInfo {
+    /// The parameter name (e.g. `"model.layers.0.weight"`).
     pub name: String,
+    /// The element data type.
     pub dtype: DType,
+    /// Shape, stride, and storage offset.
     pub layout: Layout,
+    /// Zip-internal path to the raw storage file.
     pub path: String,
+    /// Number of elements in the storage (may be larger than the tensor if storage is shared).
     pub storage_size: usize,
 }
 
@@ -667,6 +747,17 @@ pub struct TensorInfo {
 /// * `file` - The path to the .pth file.
 /// * `verbose` - Whether to print debug information.
 /// * `key` - Optional key to retrieve `state_dict` from the pth file.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use candle_core::pickle::read_pth_tensor_info;
+/// let infos = read_pth_tensor_info("model.pth", false, None)?;
+/// for info in &infos {
+///     println!("tensor: {}", info.name);
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn read_pth_tensor_info<P: AsRef<std::path::Path>>(
     file: P,
     verbose: bool,
@@ -739,7 +830,22 @@ pub fn read_pth_tensor_info<P: AsRef<std::path::Path>>(
     Ok(tensor_infos)
 }
 
-/// Lazy tensor loader.
+/// Lazy tensor loader for PyTorch `.pth` checkpoint files.
+///
+/// On construction the pickle metadata is parsed to build a name-to-[`TensorInfo`] index.
+/// Individual tensors can then be loaded on demand via [`PthTensors::get`], which re-opens
+/// the zip archive for each read (the archive is not held open between calls).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use candle_core::pickle::PthTensors;
+/// let loader = PthTensors::new("model.pth", None)?;
+/// for name in loader.tensor_infos().keys() {
+///     println!("{name}");
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub struct PthTensors {
     tensor_infos: HashMap<String, TensorInfo>,
     path: std::path::PathBuf,
@@ -748,6 +854,18 @@ pub struct PthTensors {
 }
 
 impl PthTensors {
+    /// Open a `.pth` file and parse its tensor metadata.
+    ///
+    /// If the archive contains a nested dict (e.g. `{"state_dict": {...}}`), pass the
+    /// appropriate `key` to drill into it.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use candle_core::pickle::PthTensors;
+    /// let loader = PthTensors::new("model.pth", None)?;
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn new<P: AsRef<std::path::Path>>(path: P, key: Option<&str>) -> Result<Self> {
         let tensor_infos = read_pth_tensor_info(path.as_ref(), false, key)?;
         let tensor_infos = tensor_infos
@@ -758,10 +876,36 @@ impl PthTensors {
         Ok(Self { tensor_infos, path })
     }
 
+    /// Return the tensor metadata index built during construction.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use candle_core::pickle::PthTensors;
+    /// let loader = PthTensors::new("model.pth", None)?;
+    /// for (name, info) in loader.tensor_infos() {
+    ///     println!("{name}: {:?}", info.layout);
+    /// }
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn tensor_infos(&self) -> &HashMap<String, TensorInfo> {
         &self.tensor_infos
     }
 
+    /// Load a single tensor by name, returning `Ok(None)` if the name is not in the index.
+    ///
+    /// Each call re-opens the zip archive to extract the raw storage data.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use candle_core::pickle::PthTensors;
+    /// let loader = PthTensors::new("model.pth", None)?;
+    /// if let Some(t) = loader.get("model.weight")? {
+    ///     println!("{:?}", t.dims());
+    /// }
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn get(&self, name: &str) -> Result<Option<Tensor>> {
         use std::io::Read;
         let tensor_info = match self.tensor_infos.get(name) {
@@ -817,6 +961,17 @@ impl PthTensors {
 /// * `path` - Path to the pth file.
 /// * `key` - Optional key to retrieve `state_dict` from the pth file. Sometimes the pth file
 ///   contains multiple objects and the state_dict is the one we are interested in.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use candle_core::pickle::read_all_with_key;
+/// let tensors = read_all_with_key("model.pth", Some("state_dict"))?;
+/// for (name, tensor) in &tensors {
+///     println!("{name}: {:?}", tensor.dims());
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn read_all_with_key<P: AsRef<std::path::Path>>(
     path: P,
     key: Option<&str>,
@@ -836,6 +991,17 @@ pub fn read_all_with_key<P: AsRef<std::path::Path>>(
 ///
 /// # Arguments
 /// * `path` - Path to the pth file.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use candle_core::pickle::read_all;
+/// let tensors = read_all("model.pth")?;
+/// for (name, tensor) in &tensors {
+///     println!("{name}: {:?}", tensor.dims());
+/// }
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub fn read_all<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<(String, Tensor)>> {
     read_all_with_key(path, None)
 }

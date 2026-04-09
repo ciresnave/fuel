@@ -11,12 +11,24 @@ use core::arch::arm::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
+#[cfg(all(target_arch = "aarch64", target_feature = "dotprod"))]
 #[inline(always)]
 unsafe fn vdotq_s32(a: int8x16_t, b: int8x16_t) -> int32x4_t {
-    // TODO: dotprod
-    let p0 = vmull_s8(vget_low_s8(a), vget_low_s8(b));
-    let p1 = vmull_s8(vget_high_s8(a), vget_high_s8(b));
-    vaddq_s32(vpaddlq_s16(p0), vpaddlq_s16(p1))
+    // Use the hardware dot-product instruction (SDOT) available on ARMv8.2-A+.
+    // core::arch::aarch64::vdotq_s32(acc, a, b) computes acc + dot(a, b),
+    // so we pass a zero accumulator to get just the dot product.
+    unsafe { core::arch::aarch64::vdotq_s32(vdupq_n_s32(0), a, b) }
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_feature = "dotprod")))]
+#[inline(always)]
+unsafe fn vdotq_s32(a: int8x16_t, b: int8x16_t) -> int32x4_t {
+    // Software emulation: widen to i16, pairwise-add to i32.
+    unsafe {
+        let p0 = vmull_s8(vget_low_s8(a), vget_low_s8(b));
+        let p1 = vmull_s8(vget_high_s8(a), vget_high_s8(b));
+        vaddq_s32(vpaddlq_s16(p0), vpaddlq_s16(p1))
+    }
 }
 
 #[inline(always)]

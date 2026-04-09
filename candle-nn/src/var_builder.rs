@@ -1,18 +1,49 @@
-//! A `VarBuilder` for variable retrieval from models
+//! A `VarBuilder` for variable retrieval from models.
 //!
-//! A `VarBuilder` is used to retrieve variables used by a model. These variables can either come
-//! from a pre-trained checkpoint, e.g. using `VarBuilder::from_mmaped_safetensors`, or initialized
-//! for training, e.g. using `VarBuilder::from_varmap`.
+//! A [`VarBuilder`] is the primary mechanism for loading model weights in candle. It provides
+//! a unified interface for retrieving named tensors regardless of the underlying storage format
+//! (safetensors, numpy, pytorch, or in-memory hash maps).
+//!
+//! Variables can come from a pre-trained checkpoint (e.g. via
+//! [`VarBuilder::from_mmaped_safetensors`]) or be freshly initialized for training (e.g. via
+//! [`VarBuilder::from_varmap`]).
+//!
+//! # Prefix-based namespacing
+//!
+//! `VarBuilder` supports hierarchical tensor names through a prefix mechanism. Use
+//! [`VarBuilderArgs::pp`] (or its long form [`VarBuilderArgs::push_prefix`]) to descend into
+//! a namespace. For example, `vb.pp("layer1").pp("attn")` creates a builder that looks up
+//! tensors named `"layer1.attn.<name>"`.
+//!
+//! # Example
+//!
+//! ```rust
+//! use candle::{Tensor, Device, DType};
+//! use candle_nn::VarBuilder;
+//! use std::collections::HashMap;
+//!
+//! let mut tensors = HashMap::new();
+//! tensors.insert("layer.weight".to_string(), Tensor::zeros((3, 2), DType::F32, &Device::Cpu)?);
+//! let vb = VarBuilder::from_tensors(tensors, DType::F32, &Device::Cpu);
+//! let weight = vb.pp("layer").get((3, 2), "weight")?;
+//! # Ok::<(), candle::Error>(())
+//! ```
 use crate::VarMap;
 use candle::{safetensors::Load, DType, Device, Error, Result, Shape, Tensor};
 use safetensors::{slice::IndexOp, tensor::SafeTensors};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// A structure used to retrieve variables, these variables can either come from storage or be
+/// A structure used to retrieve variables, which can come from storage or be
 /// generated via some form of initialization.
 ///
 /// The way to retrieve variables is defined in the backend embedded in the `VarBuilder`.
+/// Most users should use the [`VarBuilder`] type alias (which uses [`SimpleBackend`]) rather
+/// than working with `VarBuilderArgs` directly.
+///
+/// The builder maintains a dot-separated path prefix so that individual layers can request
+/// tensors by local name (e.g. `"weight"`) while the builder resolves the full qualified
+/// name (e.g. `"encoder.layer0.weight"`).
 pub struct VarBuilderArgs<'a, B: Backend> {
     data: Arc<TensorData<B>>,
     path: Vec<String>,
@@ -33,6 +64,25 @@ impl<B: Backend> Clone for VarBuilderArgs<'_, B> {
 
 /// A simple `VarBuilder`, this is less generic than `VarBuilderArgs` but should cover most common
 /// use cases.
+///
+/// This is the type you will interact with in nearly all model code. It is parameterized over
+/// [`SimpleBackend`], which supports loading from safetensors files, hash maps, `VarMap`, and
+/// other standard sources.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::VarBuilder;
+/// use std::collections::HashMap;
+///
+/// let mut tensors = HashMap::new();
+/// tensors.insert("weight".to_string(), Tensor::zeros((3, 2), DType::F32, &Device::Cpu)?);
+/// let vb = VarBuilder::from_tensors(tensors, DType::F32, &Device::Cpu);
+/// let weight = vb.get((3, 2), "weight")?;
+/// assert_eq!(weight.dims(), &[3, 2]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub type VarBuilder<'a> = VarBuilderArgs<'a, Box<dyn SimpleBackend + 'a>>;
 
 struct TensorData<B: Backend> {
@@ -66,6 +116,12 @@ pub trait Backend: Send + Sync {
     fn contains_tensor(&self, name: &str) -> bool;
 }
 
+/// A simplified backend trait for tensor retrieval.
+///
+/// This is the most commonly used backend trait. Unlike [`Backend`], it does not support
+/// custom hint types -- it always uses [`crate::Init`] as its hints. Implementations exist
+/// for `HashMap<String, Tensor>`, [`VarMap`], `MmapedSafetensors`, and other standard
+/// storage formats.
 pub trait SimpleBackend: Send + Sync {
     /// Retrieve a tensor based on a target name and shape.
     fn get(
@@ -106,6 +162,7 @@ impl Backend for Box<dyn SimpleBackend + '_> {
 }
 
 impl<B: Backend> VarBuilderArgs<'_, B> {
+    /// Creates a new `VarBuilder` with the given backend, dtype, and device.
     pub fn new_with_args(backend: B, dtype: DType, dev: &Device) -> Self {
         let data = TensorData {
             backend: Arc::new(backend),
@@ -145,8 +202,11 @@ impl<B: Backend> VarBuilderArgs<'_, B> {
         }
     }
 
-    /// Return a new `VarBuilder` adding `s` to the current prefix. This can be think of as `cd`
-    /// into a directory.
+    /// Returns a new `VarBuilder` with `s` appended to the current prefix.
+    ///
+    /// This is conceptually similar to `cd`-ing into a directory: if the current prefix is
+    /// `"encoder"` and you call `push_prefix("layer0")`, the resulting builder resolves
+    /// tensor names under `"encoder.layer0"`.
     pub fn push_prefix<S: ToString>(&self, s: S) -> Self {
         let mut path = self.path.clone();
         path.push(s.to_string());
@@ -158,7 +218,10 @@ impl<B: Backend> VarBuilderArgs<'_, B> {
         }
     }
 
-    /// Short alias for `push_prefix`.
+    /// Short alias for [`push_prefix`](Self::push_prefix).
+    ///
+    /// This is the idiomatic way to descend into a sub-namespace. For example,
+    /// `vb.pp("attn").get((64, 64), "weight")` resolves `"attn.weight"`.
     pub fn pp<S: ToString>(&self, s: S) -> Self {
         self.push_prefix(s)
     }
@@ -199,7 +262,12 @@ impl<B: Backend> VarBuilderArgs<'_, B> {
         self.data.backend.contains_tensor(&path)
     }
 
-    /// Retrieve the tensor associated with the given name at the current path.
+    /// Retrieves the tensor associated with the given name at the current path, passing
+    /// backend-specific `hints` (e.g. [`crate::Init`] for weight initialization or [`Shard`]
+    /// for tensor-parallel loading).
+    ///
+    /// The full tensor name is formed by joining the current prefix with `name` using `"."`.
+    /// An error is returned if the tensor is not found or if its shape does not match `s`.
     pub fn get_with_hints<S: Into<Shape>>(
         &self,
         s: S,
@@ -209,7 +277,12 @@ impl<B: Backend> VarBuilderArgs<'_, B> {
         self.get_with_hints_dtype(s, name, hints, self.dtype)
     }
 
-    /// Retrieve the tensor associated with the given name at the current path.
+    /// Retrieves the tensor associated with the given name at the current path, using
+    /// default hints.
+    ///
+    /// This is the most common way to load a weight tensor. The full tensor name is formed by
+    /// joining the current prefix with `name` using `"."`. An error is returned if the tensor
+    /// is not found or if its shape does not match `s`.
     pub fn get<S: Into<Shape>>(&self, s: S, name: &str) -> Result<Tensor> {
         self.get_with_hints(s, name, Default::default())
     }
@@ -354,6 +427,10 @@ impl SimpleBackend for VarMap {
 }
 
 #[allow(dead_code)]
+/// A collection of safetensors with an explicit name-to-index routing table.
+///
+/// This is used when loading from multiple safetensors files that have been pre-indexed
+/// so that each tensor name maps to the correct file index.
 pub struct SafeTensorWithRouting<'a> {
     routing: HashMap<String, usize>,
     safetensors: Vec<SafeTensors<'a>>,
@@ -617,8 +694,26 @@ impl<'a> VarBuilder<'a> {
         Self::from_backend(Box::new(Zeros), dtype, dev.clone())
     }
 
-    /// Initializes a `VarBuilder` that retrieves tensors stored in a hashtable. An error is
-    /// returned if no tensor is available under the requested path or on shape mismatches.
+    /// Initializes a `VarBuilder` that retrieves tensors stored in a hash map.
+    ///
+    /// An error is returned when calling [`get`](VarBuilderArgs::get) if no tensor is
+    /// available under the requested path or on shape mismatches. This constructor is useful
+    /// for tests and for loading tensors that have already been deserialized into memory.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle::{Tensor, Device, DType};
+    /// use candle_nn::VarBuilder;
+    /// use std::collections::HashMap;
+    ///
+    /// let mut tensors = HashMap::new();
+    /// tensors.insert("weight".to_string(), Tensor::zeros((3, 2), DType::F32, &Device::Cpu)?);
+    /// let vb = VarBuilder::from_tensors(tensors, DType::F32, &Device::Cpu);
+    /// let weight = vb.get((3, 2), "weight")?;
+    /// assert_eq!(weight.dims(), &[3, 2]);
+    /// # Ok::<(), candle::Error>(())
+    /// ```
     pub fn from_tensors(ts: HashMap<String, Tensor>, dtype: DType, dev: &Device) -> Self {
         Self::from_backend(Box::new(ts), dtype, dev.clone())
     }
@@ -634,17 +729,21 @@ impl<'a> VarBuilder<'a> {
     }
 
     /// Initializes a `VarBuilder` that retrieves tensors stored in a collection of safetensors
-    /// files.
+    /// files via memory mapping.
+    ///
+    /// This is the recommended way to load large pre-trained models since memory mapping avoids
+    /// reading the entire file into RAM upfront.
     ///
     /// # Safety
     ///
-    /// The unsafe is inherited from [`memmap2::MmapOptions`].
+    /// The unsafe is inherited from `memmap2::MmapOptions`. The caller must ensure that the
+    /// backing files are not modified while the returned `VarBuilder` is in use.
     pub unsafe fn from_mmaped_safetensors<P: AsRef<std::path::Path>>(
         paths: &[P],
         dtype: DType,
         dev: &Device,
     ) -> Result<Self> {
-        let tensors = candle::safetensors::MmapedSafetensors::multi(paths)?;
+        let tensors = unsafe { candle::safetensors::MmapedSafetensors::multi(paths)? };
         Ok(Self::from_backend(Box::new(tensors), dtype, dev.clone()))
     }
 
@@ -672,7 +771,7 @@ impl<'a> VarBuilder<'a> {
         Ok(Self::from_backend(Box::new(pth), dtype, dev.clone()))
     }
     /// Initializes a `VarBuilder` that retrieves tensors stored in a pytorch pth file.
-    /// similar to [`from_pth`] but requires a `state_key`.
+    /// similar to [`Self::from_pth`] but requires a `state_key`.
     pub fn from_pth_with_state<P: AsRef<std::path::Path>>(
         p: P,
         dtype: DType,
@@ -731,8 +830,17 @@ impl<'a> VarBuilder<'a> {
     }
 }
 
+/// Backend for loading sharded (tensor-parallel) safetensors.
+///
+/// When used with [`ShardedVarBuilder`], tensors are automatically sliced along a specified
+/// dimension according to the rank and world size, enabling tensor parallelism across
+/// multiple devices or processes.
 pub struct ShardedSafeTensors(candle::safetensors::MmapedSafetensors);
 
+/// A `VarBuilder` specialized for tensor-parallel (sharded) weight loading.
+///
+/// Each call to [`get_with_hints`](VarBuilderArgs::get_with_hints) accepts a [`Shard`] hint
+/// that specifies which slice of the tensor to load for the current rank.
 pub type ShardedVarBuilder<'a> = VarBuilderArgs<'a, ShardedSafeTensors>;
 
 impl ShardedSafeTensors {
@@ -741,18 +849,22 @@ impl ShardedSafeTensors {
     ///
     /// # Safety
     ///
-    /// The unsafe is inherited from [`memmap2::MmapOptions`].
+    /// The unsafe is inherited from `memmap2::MmapOptions`.
     pub unsafe fn var_builder<P: AsRef<std::path::Path>>(
         paths: &[P],
         dtype: DType,
         dev: &Device,
     ) -> Result<ShardedVarBuilder<'static>> {
-        let tensors = candle::safetensors::MmapedSafetensors::multi(paths)?;
+        let tensors = unsafe { candle::safetensors::MmapedSafetensors::multi(paths)? };
         let backend = ShardedSafeTensors(tensors);
         Ok(VarBuilderArgs::new_with_args(backend, dtype, dev))
     }
 }
 
+/// Describes how to slice a tensor for tensor parallelism.
+///
+/// Used as the hint type for [`ShardedVarBuilder`]. The tensor is split evenly along `dim`
+/// into `world_size` pieces, and the slice for `rank` is returned.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Shard {
     pub dim: usize,
@@ -862,6 +974,8 @@ pub trait Renamer {
     fn rename(&self, v: &str) -> std::borrow::Cow<'_, str>;
 }
 
+/// A [`SimpleBackend`] wrapper that renames tensor keys via a [`Renamer`] before
+/// delegating to an inner [`VarBuilder`].
 pub struct Rename<'a, R: Renamer> {
     inner: VarBuilder<'a>,
     renamer: R,

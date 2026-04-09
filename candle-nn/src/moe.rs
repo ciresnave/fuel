@@ -5,6 +5,17 @@ use candle::cuda_backend::kernels::ffi;
 use candle::quantized::{self, QTensor};
 use candle::{Result, Tensor};
 
+/// Dispatches token-to-expert GEMM using CUDA WMMA kernels.
+///
+/// Only available with the `cuda` feature; on other backends it always returns an error.
+///
+/// # Example
+///
+/// ```no_run
+/// // Requires the `cuda` feature and CUDA-resident tensors.
+/// // use candle_nn::moe_gemm;
+/// // let out = moe_gemm(&input, &weights, &None, &sorted_ids, &expert_ids, topk, false)?;
+/// ```
 #[cfg(feature = "cuda")]
 pub fn moe_gemm(
     input: &Tensor,
@@ -152,6 +163,17 @@ pub fn moe_gemm(
 }
 
 #[cfg(not(feature = "cuda"))]
+/// Mixture-of-Experts GEMM: dispatches tokens to experts and collects results.
+///
+/// On non-CUDA builds this always returns an error. Requires the `cuda` feature.
+///
+/// # Example
+///
+/// ```text
+/// // Requires the `cuda` feature and CUDA-resident tensors.
+/// // use candle_nn::moe_gemm;
+/// // let out = moe_gemm(&input, &weights, &None, &sorted_ids, &expert_ids, topk, false)?;
+/// ```
 pub fn moe_gemm(
     _: &Tensor,
     _: &Tensor,
@@ -164,6 +186,17 @@ pub fn moe_gemm(
     candle::bail!("moe_gemm is only implemented for the cuda backend")
 }
 
+/// Dispatches token-to-expert quantized GEMM (GGUF weights) using CUDA kernels.
+///
+/// Only available with the `cuda` feature; on other backends it always returns an error.
+///
+/// # Example
+///
+/// ```text
+/// // Requires the `cuda` feature and CUDA-resident tensors.
+/// // use candle_nn::moe_gemm_gguf;
+/// // let out = moe_gemm_gguf(&input, &weights, &None, &sorted_ids, &expert_ids, topk, false, candle::DType::F32)?;
+/// ```
 #[cfg(feature = "cuda")]
 #[allow(clippy::too_many_arguments)]
 pub fn moe_gemm_gguf(
@@ -336,6 +369,17 @@ pub fn moe_gemm_gguf(
     }
 }
 
+/// Dispatches token-to-expert quantized GEMM (GGUF weights) using CUDA kernels.
+///
+/// On non-CUDA builds this always returns an error. Requires the `cuda` feature.
+///
+/// # Example
+///
+/// ```text
+/// // Requires the `cuda` feature and CUDA-resident tensors.
+/// // use candle_nn::moe_gemm_gguf;
+/// // let out = moe_gemm_gguf(&input, &weights, &None, &sorted_ids, &expert_ids, topk, false, candle::DType::F32)?;
+/// ```
 #[cfg(not(feature = "cuda"))]
 #[allow(clippy::too_many_arguments)]
 pub fn moe_gemm_gguf(

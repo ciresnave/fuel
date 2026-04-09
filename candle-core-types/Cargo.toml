@@ -1,0 +1,26 @@
+[package]
+    categories.workspace = true
+    description          = "Core types and traits for the candle ML framework"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "candle-core-types"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    float8      = { workspace = true }
+    half        = { workspace = true }
+    libm        = { workspace = true }
+    num-traits  = { workspace = true }
+    safetensors = { workspace = true }
+    smallvec    = { workspace = true }
+    thiserror   = { workspace = true }
+    zip         = { workspace = true }
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
+    candle-ug = { workspace = true, optional = true }
+
+[features]
+    default = []
+    ug      = ["dep:candle-ug"]

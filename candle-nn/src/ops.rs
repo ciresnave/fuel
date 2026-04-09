@@ -1,11 +1,23 @@
-//! Tensor ops.
+//! Neural network operations.
 //!
+//! This module provides common neural network operations such as softmax, sigmoid,
+//! dropout, normalization, and scaled dot-product attention. These are typically
+//! used as building blocks within model layers.
+//!
+//! ```rust
+//! use candle::{Tensor, Device};
+//! let logits = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+//! let probs = candle_nn::ops::softmax(&logits, 0)?;
+//! # Ok::<(), candle::Error>(())
+//! ```
 
 use candle::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor, D};
 use rayon::prelude::*;
 
 /// Applies the softmax function to the input tensor, rescaling the element so that elements on
 /// a slice of fixed index on dimension `dim` are between 0 and 1 and sum to 1.
+///
+/// # Example
 ///
 /// ```rust
 /// use candle::{Tensor, Device, test_utils::to_vec2_round};
@@ -28,6 +40,24 @@ pub fn softmax<D: candle::shape::Dim>(xs: &Tensor, dim: D) -> Result<Tensor> {
     num.broadcast_div(&den)
 }
 
+/// Applies the log-softmax function to the input tensor along the given dimension.
+///
+/// This is equivalent to computing `log(softmax(xs, d))` but is more numerically stable.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec2_round};
+/// let a = Tensor::new(&[[0f32, 1., 0., 1.], [-2., 2., 3., -3.]], &Device::Cpu)?;
+/// let a = candle_nn::ops::log_softmax(&a, 1)?;
+/// assert_eq!(
+///     to_vec2_round(&a, 4)?,
+///     &[
+///         [-2.0064, -1.0064, -2.0064, -1.0064],
+///         [-5.32, -1.32, -0.32, -6.32]
+///     ]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn log_softmax<D: candle::shape::Dim>(xs: &Tensor, d: D) -> Result<Tensor> {
     let d = d.to_index(xs.shape(), "log-softmax")?;
     let max = xs.max_keepdim(d)?;
@@ -37,10 +67,37 @@ pub fn log_softmax<D: candle::shape::Dim>(xs: &Tensor, d: D) -> Result<Tensor> {
     Ok(log_sm)
 }
 
+/// Applies the SiLU (Sigmoid Linear Unit) activation function, also known as swish.
+///
+/// Computes `x * sigmoid(x)` element-wise.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-1.0f32, 0.0, 1.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::silu(&a)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[-0.2689, 0.0, 0.7311]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn silu(xs: &Tensor) -> Result<Tensor> {
     xs.silu()
 }
 
+/// Applies the SwiGLU activation function.
+///
+/// Splits the input tensor in half along the last dimension, applies SiLU to the first
+/// half, and multiplies element-wise with the second half: `silu(x1) * x2`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-1.0f32, 0.0, 1.0, 2.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::swiglu(&a)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[-0.2689, 0.0]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn swiglu(xs: &Tensor) -> Result<Tensor> {
     let xs = xs.chunk(2, D::Minus1)?;
     &xs[0].silu()? * &xs[1]
@@ -210,33 +267,109 @@ impl candle::CustomOp1 for Sigmoid {
     }
 }
 
+/// Applies the sigmoid function element-wise: `1 / (1 + exp(-x))`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-2.0f32, 0.0, 2.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::sigmoid(&a)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[0.1192, 0.5, 0.8808]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn sigmoid(xs: &Tensor) -> Result<Tensor> {
     xs.apply_op1(Sigmoid)
 }
 
+/// Applies the hard sigmoid function: `clamp((x + 3) / 6, 0, 1)`.
+///
+/// A piecewise linear approximation of the sigmoid function that is faster to compute.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-4.0f32, 0.0, 4.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::hard_sigmoid(&a)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[0.0, 0.5, 1.0]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn hard_sigmoid(xs: &Tensor) -> Result<Tensor> {
     // TODO: Should we have a specialized op for this?
     ((xs + 3.0)? / 6.0)?.clamp(0f32, 1f32)
 }
 
+/// Applies the Mish activation function: `x * tanh(ln(1 + exp(x)))`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-1.0f32, 0.0, 1.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::mish(&a)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[-0.3034, 0.0, 0.8651]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn mish(xs: &Tensor) -> Result<Tensor> {
     xs * (1.0 + xs.exp()?)?.log()?.tanh()
 }
 
+/// Applies the Leaky ReLU activation function.
+///
+/// For positive inputs, returns the input unchanged. For negative inputs, returns
+/// `negative_slope * x`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-2.0f32, -1.0, 0.0, 1.0, 2.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::leaky_relu(&a, 0.1)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[-0.2, -0.1, 0.0, 1.0, 2.0]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn leaky_relu(xs: &Tensor, negative_slope: f64) -> Result<Tensor> {
-    let zeros = xs.zeros_like()?;
-    xs.maximum(&zeros)? + xs.minimum(&zeros)? * negative_slope
+    let mask = xs.ge(0.0)?;
+    let scaled = (xs * negative_slope)?;
+    mask.where_cond(xs, &scaled)
 }
 
+/// Applies the SELU (Scaled Exponential Linear Unit) activation function.
+///
+/// Computes `gamma * (x if x > 0, alpha * (exp(x) - 1) otherwise)`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec1_round};
+/// let a = Tensor::new(&[-1.0f32, 0.0, 1.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::selu(&a, 1.6733, 1.0507)?;
+/// assert_eq!(to_vec1_round(&b, 4)?, &[-1.1114, 0.0, 1.0507]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn selu(xs: &Tensor, alpha: f32, gamma: f32) -> Result<Tensor> {
     let is_pos = xs.gt(0f32)?;
-    let alpha_t = Tensor::full(alpha, xs.dims(), xs.device())?;
-    let neg = xs.exp()?.mul(&alpha_t)?.sub(&alpha_t)?;
+    let neg = xs.exp()?.affine(alpha as f64, -(alpha as f64))?;
     let selu = is_pos.where_cond(xs, &neg)?;
-    let gamma_t = Tensor::full(gamma, xs.dims(), xs.device())?;
-    selu.broadcast_mul(&gamma_t)
+    selu * gamma as f64
 }
 
+/// Applies dropout to the input tensor during training.
+///
+/// Each element is zeroed out with probability `drop_p`, and the remaining elements
+/// are scaled by `1 / (1 - drop_p)` to preserve the expected values. The dropout
+/// probability must be in the range `[0, 1)`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use candle::{Tensor, Device};
+/// let a = Tensor::new(&[1.0f32, 2.0, 3.0, 4.0], &Device::Cpu)?;
+/// let b = candle_nn::ops::dropout(&a, 0.5)?;
+/// // Some elements are zeroed, others are scaled by 2.0
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn dropout(xs: &Tensor, drop_p: f32) -> Result<Tensor> {
     // This implementation is inefficient as it stores the full mask for the backward pass.
     // Instead we could just store the seed and have a specialized kernel that would both
@@ -253,16 +386,33 @@ pub fn dropout(xs: &Tensor, drop_p: f32) -> Result<Tensor> {
     xs * mask
 }
 
+/// A dropout layer that randomly zeroes elements during training.
+///
+/// When `train` is false, the input is passed through unchanged. When `train` is true,
+/// each element is zeroed with the configured probability and the rest are scaled up.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device};
+/// let dropout = candle_nn::ops::Dropout::new(0.5);
+/// let a = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+/// let b = dropout.forward(&a, false)?; // eval mode, no dropout
+/// assert_eq!(b.to_vec1::<f32>()?, &[1.0, 2.0, 3.0]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct Dropout {
     drop_p: f32,
 }
 
 impl Dropout {
+    /// Creates a new dropout layer with the given drop probability (0.0 to 1.0).
     pub fn new(drop_p: f32) -> Dropout {
         Self { drop_p }
     }
 
+    /// Applies dropout during training, passes through unchanged during evaluation.
     pub fn forward(&self, xs: &Tensor, train: bool) -> Result<Tensor> {
         if train {
             dropout(xs, self.drop_p)
@@ -312,7 +462,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
                         *d /= sum_exp
                     }
                 });
-            let storage = candle::WithDType::to_cpu_storage_owned(dst);
+            let storage = T::to_cpu_storage_owned(dst);
             Ok((storage, Shape::from_dims(dims)))
         }
 
@@ -426,6 +576,25 @@ impl candle::CustomOp1 for SoftmaxLastDim {
     }
 }
 
+/// Applies softmax along the last dimension using an optimized fused kernel.
+///
+/// This is functionally equivalent to `softmax(xs, D::Minus1)` but uses a fused
+/// implementation for better performance on contiguous inputs. The input must be contiguous.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec2_round};
+/// let a = Tensor::new(&[[0f32, 1., 0., 1.], [-2., 2., 3., -3.]], &Device::Cpu)?;
+/// let a = candle_nn::ops::softmax_last_dim(&a)?;
+/// assert_eq!(
+///     to_vec2_round(&a, 4)?,
+///     &[
+///         [0.1345, 0.3655, 0.1345, 0.3655],
+///         [0.0049, 0.2671, 0.7262, 0.0018]
+///     ]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn softmax_last_dim(xs: &Tensor) -> Result<Tensor> {
     xs.apply_op1_no_bwd(&SoftmaxLastDim)
 }
@@ -490,7 +659,7 @@ impl candle::CustomOp2 for RmsNorm {
                         *d = *s / m * *alpha
                     }
                 });
-            let storage = candle::WithDType::to_cpu_storage_owned(dst);
+            let storage = T::to_cpu_storage_owned(dst);
             Ok((storage, Shape::from_dims(dims)))
         }
 
@@ -619,6 +788,21 @@ impl candle::CustomOp2 for RmsNorm {
     }
 }
 
+/// Applies RMS (Root Mean Square) normalization using generic tensor operations.
+///
+/// This is a slower but more general fallback for [`rms_norm`]. It upcasts F16/BF16
+/// inputs to F32 internally for numerical stability.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec2_round};
+/// let x = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+/// let alpha = Tensor::new(&[1f32, 1., 1.], &Device::Cpu)?;
+/// let y = candle_nn::ops::rms_norm_slow(&x, &alpha, 1e-5)?;
+/// assert_eq!(to_vec2_round(&y, 4)?, &[[0.4629, 0.9258, 1.3887], [0.7895, 0.9869, 1.1843]]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rms_norm_slow(x: &Tensor, alpha: &Tensor, eps: f32) -> Result<Tensor> {
     let x_dtype = x.dtype();
     let internal_dtype = match x_dtype {
@@ -632,6 +816,22 @@ pub fn rms_norm_slow(x: &Tensor, alpha: &Tensor, eps: f32) -> Result<Tensor> {
     x_normed.to_dtype(x_dtype)?.broadcast_mul(alpha)
 }
 
+/// Applies RMS (Root Mean Square) normalization using a fused kernel.
+///
+/// Normalizes each row by its root mean square and scales by `alpha`.
+/// The input must be contiguous and the last dimension of `xs` must match the
+/// length of `alpha`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec2_round};
+/// let x = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+/// let alpha = Tensor::new(&[1f32, 1., 1.], &Device::Cpu)?;
+/// let y = candle_nn::ops::rms_norm(&x, &alpha, 1e-5)?;
+/// assert_eq!(to_vec2_round(&y, 4)?, &[[0.4629, 0.9258, 1.3887], [0.7895, 0.9869, 1.1843]]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn rms_norm(xs: &Tensor, alpha: &Tensor, eps: f32) -> Result<Tensor> {
     let hidden_size_xs = xs.dim(D::Minus1)?;
     let hidden_size_alpha = alpha.dims1()?;
@@ -719,7 +919,7 @@ impl candle::CustomOp3 for LayerNorm {
                         *d = T::from_f32(d_).unwrap_or_else(T::nan);
                     }
                 });
-            let storage = candle::WithDType::to_cpu_storage_owned(dst);
+            let storage = T::to_cpu_storage_owned(dst);
             Ok((storage, Shape::from_dims(dims)))
         }
 
@@ -866,6 +1066,22 @@ impl candle::CustomOp3 for LayerNorm {
     }
 }
 
+/// Applies layer normalization using generic tensor operations.
+///
+/// This is a slower but more general fallback for [`layer_norm`]. It upcasts F16/BF16
+/// inputs to F32 internally for numerical stability.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec2_round};
+/// let x = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+/// let alpha = Tensor::new(&[1f32, 1., 1.], &Device::Cpu)?;
+/// let beta = Tensor::new(&[0f32, 0., 0.], &Device::Cpu)?;
+/// let y = candle_nn::ops::layer_norm_slow(&x, &alpha, &beta, 1e-5)?;
+/// assert_eq!(to_vec2_round(&y, 4)?, &[[-1.2247, 0.0, 1.2247], [-1.2247, 0.0, 1.2247]]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn layer_norm_slow(x: &Tensor, alpha: &Tensor, beta: &Tensor, eps: f32) -> Result<Tensor> {
     let x_dtype = x.dtype();
     let internal_dtype = match x_dtype {
@@ -886,6 +1102,23 @@ pub fn layer_norm_slow(x: &Tensor, alpha: &Tensor, beta: &Tensor, eps: f32) -> R
         .broadcast_add(beta)
 }
 
+/// Applies layer normalization using a fused kernel.
+///
+/// Normalizes each row to zero mean and unit variance, then scales by `alpha` and
+/// shifts by `beta`. The input must be contiguous and the last dimension of `xs` must
+/// match the lengths of `alpha` and `beta`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, test_utils::to_vec2_round};
+/// let x = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+/// let alpha = Tensor::new(&[1f32, 1., 1.], &Device::Cpu)?;
+/// let beta = Tensor::new(&[0f32, 0., 0.], &Device::Cpu)?;
+/// let y = candle_nn::ops::layer_norm(&x, &alpha, &beta, 1e-5)?;
+/// assert_eq!(to_vec2_round(&y, 4)?, &[[-1.2247, 0.0, 1.2247], [-1.2247, 0.0, 1.2247]]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn layer_norm(xs: &Tensor, alpha: &Tensor, beta: &Tensor, eps: f32) -> Result<Tensor> {
     let hidden_size_xs = xs.dim(D::Minus1)?;
     let hidden_size_alpha = alpha.dims1()?;
@@ -901,7 +1134,23 @@ pub fn layer_norm(xs: &Tensor, alpha: &Tensor, beta: &Tensor, eps: f32) -> Resul
     xs.apply_op3_no_bwd(alpha, beta, &LayerNorm { eps })
 }
 
-// https://pytorch.org/docs/stable/generated/torch.nn.PixelShuffle.html
+/// Rearranges elements from channels into spatial blocks (pixel shuffle).
+///
+/// Given an input of shape `(B, C * r^2, H, W)`, produces output of shape
+/// `(B, C, H * r, W * r)` where `r` is the `upscale_factor`. This is commonly used
+/// in super-resolution models.
+///
+/// See [PyTorch docs](https://pytorch.org/docs/stable/generated/torch.nn.PixelShuffle.html).
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device};
+/// let a = Tensor::zeros((1, 8, 2, 2), candle::DType::F32, &Device::Cpu)?;
+/// let b = candle_nn::ops::pixel_shuffle(&a, 2)?;
+/// assert_eq!(b.dims(), &[1, 2, 4, 4]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn pixel_shuffle(xs: &Tensor, upscale_factor: usize) -> Result<Tensor> {
     let (b_size, c, h, w) = xs.dims4()?;
     let out_c = c / upscale_factor / upscale_factor;
@@ -910,6 +1159,20 @@ pub fn pixel_shuffle(xs: &Tensor, upscale_factor: usize) -> Result<Tensor> {
         .reshape((b_size, out_c, h * upscale_factor, w * upscale_factor))
 }
 
+/// Rearranges elements from spatial blocks into channels (inverse of pixel shuffle).
+///
+/// Given an input of shape `(B, C, H * r, W * r)`, produces output of shape
+/// `(B, C * r^2, H, W)` where `r` is the `downscale_factor`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device};
+/// let a = Tensor::zeros((1, 2, 4, 4), candle::DType::F32, &Device::Cpu)?;
+/// let b = candle_nn::ops::pixel_unshuffle(&a, 2)?;
+/// assert_eq!(b.dims(), &[1, 8, 2, 2]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn pixel_unshuffle(xs: &Tensor, downscale_factor: usize) -> Result<Tensor> {
     let (b_size, c, h, w) = xs.dims4()?;
     let out_c = c * downscale_factor * downscale_factor;
@@ -925,7 +1188,22 @@ pub fn pixel_unshuffle(xs: &Tensor, downscale_factor: usize) -> Result<Tensor> {
     .reshape((b_size, out_c, h / downscale_factor, w / downscale_factor))
 }
 
-// https://pytorch.org/docs/stable/generated/torch.nn.ReplicationPad2d.html
+/// Pads a 4D tensor using replication of border values.
+///
+/// Adds `pad` pixels on each side of the last two dimensions by replicating the
+/// edge values. Currently only supports padding of 0 or 1.
+///
+/// See [PyTorch docs](https://pytorch.org/docs/stable/generated/torch.nn.ReplicationPad2d.html).
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device};
+/// let a = Tensor::zeros((1, 1, 3, 3), candle::DType::F32, &Device::Cpu)?;
+/// let b = candle_nn::ops::replication_pad2d(&a, 1)?;
+/// assert_eq!(b.dims(), &[1, 1, 5, 5]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn replication_pad2d(xs: &Tensor, pad: usize) -> Result<Tensor> {
     match pad {
         0 => Ok(xs.clone()),
@@ -940,10 +1218,26 @@ pub fn replication_pad2d(xs: &Tensor, pad: usize) -> Result<Tensor> {
     }
 }
 
+/// An identity layer that passes input through unchanged.
+///
+/// This is useful as a placeholder or default in architectures that optionally
+/// apply a transformation.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, Module};
+/// let id = candle_nn::ops::Identity::new();
+/// let a = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+/// let b = id.forward(&a)?;
+/// assert_eq!(b.to_vec1::<f32>()?, &[1.0, 2.0, 3.0]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct Identity;
 
 impl Identity {
+    /// Creates a new identity layer.
     pub fn new() -> Identity {
         Self
     }
@@ -1258,6 +1552,25 @@ impl candle::CustomOp3 for Sdpa {
 ///     - Supports `seq` != `kv_seq` (cross attn. support)
 ///     - Supports GQA when `qhead` is a multiple of `kv_head`
 ///     - Softcapping is not supported.
+///
+/// # Example
+///
+/// ```rust
+/// use candle::{Tensor, Device, DType};
+/// use candle_nn::ops::sdpa;
+///
+/// let bs = 1;
+/// let n_heads = 2;
+/// let seq = 4;
+/// let d = 8;
+/// let q = Tensor::zeros((bs, n_heads, seq, d), DType::F32, &Device::Cpu)?;
+/// let k = Tensor::zeros((bs, n_heads, seq, d), DType::F32, &Device::Cpu)?;
+/// let v = Tensor::zeros((bs, n_heads, seq, d), DType::F32, &Device::Cpu)?;
+/// let scale = 1.0f32 / (d as f32).sqrt();
+/// let out = sdpa(&q, &k, &v, None, true, scale, 1.0)?;
+/// assert_eq!(out.dims(), &[bs, n_heads, seq, d]);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn sdpa(
     q: &Tensor,
     k: &Tensor,
@@ -1267,14 +1580,66 @@ pub fn sdpa(
     scale: f32,
     softcapping: f32,
 ) -> Result<Tensor> {
-    q.apply_op3_no_bwd(
-        k,
-        v,
-        &Sdpa {
-            scale,
-            softcapping,
-            mask: mask.cloned(),
-            do_causal,
-        },
-    )
+    if q.device().is_cpu() {
+        // CPU path: use fused flash-attention kernel.
+        // sdpa expects (bs, heads, seq, hidden) but run_flash_attn_cpu expects (bs, seq, heads, hidden).
+        let q_cpu = q.transpose(1, 2)?.contiguous()?;
+        let k_cpu = k.transpose(1, 2)?.contiguous()?;
+        let v_cpu = v.transpose(1, 2)?.contiguous()?;
+        // For causal masking, pass None and let the kernel handle it via max_bias/softcap.
+        // Note: run_flash_attn_cpu doesn't have a do_causal flag - causal masking is handled
+        // by the mask tensor. Build causal mask if needed.
+        let causal_mask;
+        let mask_ref = if do_causal && mask.is_none() {
+            let seq_len = q.dim(2)?;
+            let kv_len = k.dim(2)?;
+            let mask_data: Vec<f32> = (0..seq_len)
+                .flat_map(|i| {
+                    (0..kv_len).map(move |j| {
+                        if j > i + kv_len - seq_len {
+                            f32::NEG_INFINITY
+                        } else {
+                            0.0
+                        }
+                    })
+                })
+                .collect();
+            causal_mask =
+                Tensor::from_vec(mask_data, (1, seq_len, 1, kv_len), q.device())?;
+            Some(&causal_mask)
+        } else {
+            mask
+        };
+        let softcap = if softcapping != 1.0 {
+            Some(softcapping)
+        } else {
+            None
+        };
+        // Dispatch based on dtype
+        let result = match q.dtype() {
+            DType::F32 => crate::cpu_flash_attention::run_flash_attn_cpu::<f32>(
+                &q_cpu, &k_cpu, &v_cpu, mask_ref, scale, None, softcap,
+            )?,
+            DType::F16 => crate::cpu_flash_attention::run_flash_attn_cpu::<half::f16>(
+                &q_cpu, &k_cpu, &v_cpu, mask_ref, scale, None, softcap,
+            )?,
+            DType::BF16 => crate::cpu_flash_attention::run_flash_attn_cpu::<half::bf16>(
+                &q_cpu, &k_cpu, &v_cpu, mask_ref, scale, None, softcap,
+            )?,
+            dt => candle::bail!("sdpa CPU not supported for dtype {dt:?}"),
+        };
+        // run_flash_attn_cpu returns (bs, heads, seq, hidden) already
+        Ok(result)
+    } else {
+        q.apply_op3_no_bwd(
+            k,
+            v,
+            &Sdpa {
+                scale,
+                softcapping,
+                mask: mask.cloned(),
+                do_causal,
+            },
+        )
+    }
 }

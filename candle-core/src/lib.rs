@@ -47,6 +47,10 @@
 //! - [candle-transformers](https://docs.rs/candle-transformers/). Candle implementation of many published transformer models.
 //!
 
+/// A small-vector type for dimension/stride storage.
+/// Avoids heap allocation for tensors with up to 6 dimensions.
+pub(crate) type DimVec = smallvec::SmallVec<[usize; 6]>;
+
 #[cfg(feature = "accelerate")]
 mod accelerate;
 pub mod backend;
@@ -60,12 +64,14 @@ pub mod cuda_backend;
 mod custom_op;
 mod device;
 pub mod display;
+pub mod dyn_backend;
 mod dtype;
 pub mod dummy_cuda_backend;
 pub mod dummy_dtype;
 mod dummy_metal_backend;
 pub mod error;
 mod indexer;
+pub mod kv_cache;
 pub mod layout;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
@@ -76,6 +82,7 @@ pub mod op;
 pub mod pickle;
 pub mod quantized;
 pub mod safetensors;
+pub mod sampling;
 pub mod scalar;
 pub mod shape;
 mod sort;

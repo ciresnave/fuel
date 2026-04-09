@@ -1,132 +1,13 @@
-//! 1D and 2D Convolutions
+//! 1D and 2D convolution (and transposed convolution) operations.
 //!
+//! This module re-exports the parameter structs from `candle-core-types` and
+//! provides the [`Tensor`] methods that execute convolutions.
+
 use crate::{op::BackpropOp, op::Op, Error, Result, Tensor};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamsConv1D {
-    pub(crate) b_size: usize,
-    // Maybe we should have a version without l_in as this bit depends on the input and not only on
-    // the weights.
-    pub(crate) l_in: usize,
-    pub(crate) c_out: usize,
-    pub(crate) c_in: usize,
-    pub(crate) k_size: usize,
-    pub(crate) padding: usize,
-    pub(crate) stride: usize,
-    pub(crate) dilation: usize,
-    pub(crate) cudnn_fwd_algo: Option<CudnnFwdAlgo>,
-}
-
-impl ParamsConv1D {
-    pub(crate) fn l_out(&self) -> usize {
-        (self.l_in + 2 * self.padding - self.dilation * (self.k_size - 1) - 1) / self.stride + 1
-    }
-
-    pub(crate) fn out_dims(&self) -> Vec<usize> {
-        let l_out = self.l_out();
-        vec![self.b_size, self.c_out, l_out]
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamsConvTranspose1D {
-    pub(crate) b_size: usize,
-    pub(crate) l_in: usize,
-    pub(crate) c_out: usize,
-    pub(crate) c_in: usize,
-    pub(crate) k_size: usize,
-    pub(crate) padding: usize,
-    pub(crate) output_padding: usize,
-    pub(crate) stride: usize,
-    pub(crate) dilation: usize,
-}
-
-impl ParamsConvTranspose1D {
-    pub(crate) fn l_out(&self) -> usize {
-        (self.l_in - 1) * self.stride - 2 * self.padding
-            + self.dilation * (self.k_size - 1)
-            + self.output_padding
-            + 1
-    }
-
-    pub(crate) fn out_dims(&self) -> Vec<usize> {
-        let l_out = self.l_out();
-        vec![self.b_size, self.c_out, l_out]
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CudnnFwdAlgo {
-    ImplicitGemm,
-    ImplicitPrecompGemm,
-    Gemm,
-    Direct,
-    Fft,
-    FftTiling,
-    Winograd,
-    WinogradNonFused,
-    Count,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamsConv2D {
-    pub(crate) b_size: usize,
-    pub(crate) i_h: usize,
-    pub(crate) i_w: usize,
-    pub(crate) k_h: usize,
-    pub(crate) k_w: usize,
-    pub(crate) c_out: usize,
-    pub(crate) c_in: usize,
-    pub(crate) padding: usize,
-    pub(crate) stride: usize,
-    pub(crate) dilation: usize,
-    pub cudnn_fwd_algo: Option<CudnnFwdAlgo>,
-}
-
-impl ParamsConv2D {
-    pub(crate) fn out_h(&self) -> usize {
-        (self.i_h + 2 * self.padding - self.dilation * (self.k_h - 1) - 1) / self.stride + 1
-    }
-
-    pub(crate) fn out_w(&self) -> usize {
-        (self.i_w + 2 * self.padding - self.dilation * (self.k_w - 1) - 1) / self.stride + 1
-    }
-
-    pub(crate) fn out_dims(&self) -> Vec<usize> {
-        vec![self.b_size, self.c_out, self.out_h(), self.out_w()]
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamsConvTranspose2D {
-    pub(crate) b_size: usize,
-    pub(crate) i_h: usize,
-    pub(crate) i_w: usize,
-    pub(crate) k_h: usize,
-    pub(crate) k_w: usize,
-    pub(crate) c_out: usize,
-    pub(crate) c_in: usize,
-    pub(crate) padding: usize,
-    pub(crate) output_padding: usize,
-    pub(crate) stride: usize,
-    pub(crate) dilation: usize,
-}
-
-impl ParamsConvTranspose2D {
-    pub(crate) fn out_h(&self) -> usize {
-        (self.i_h - 1) * self.stride + self.dilation * (self.k_h - 1) + self.output_padding + 1
-            - 2 * self.padding
-    }
-
-    pub(crate) fn out_w(&self) -> usize {
-        (self.i_w - 1) * self.stride + self.dilation * (self.k_w - 1) + self.output_padding + 1
-            - 2 * self.padding
-    }
-
-    pub(crate) fn out_dims(&self) -> Vec<usize> {
-        vec![self.b_size, self.c_out, self.out_h(), self.out_w()]
-    }
-}
+pub use candle_core_types::conv::{
+    CudnnFwdAlgo, ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
+};
 
 impl Tensor {
     fn conv1d_single_group(&self, kernel: &Self, params: &ParamsConv1D) -> Result<Self> {
@@ -145,6 +26,21 @@ impl Tensor {
     }
 
     /// Applies a 1D convolution over the input tensor.
+    ///
+    /// Input shape: `(batch, in_channels, length)`  
+    /// Kernel shape: `(out_channels, in_channels/groups, k_size)`  
+    /// Output shape: `(batch, out_channels, l_out)`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, DType};
+    /// let inp = Tensor::zeros((1, 1, 5), DType::F32, &Device::Cpu)?;
+    /// let kernel = Tensor::zeros((1, 1, 3), DType::F32, &Device::Cpu)?;
+    /// let out = inp.conv1d(&kernel, 0, 1, 1, 1)?;
+    /// assert_eq!(out.dims(), &[1, 1, 3]); // l_out = 5 - 3 + 1 = 3
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn conv1d(
         &self,
         kernel: &Self,
@@ -228,6 +124,20 @@ impl Tensor {
     }
 
     /// Applies a 1D transposed convolution over the input tensor.
+    ///
+    /// Input shape: `(batch, in_channels, length)`  
+    /// Kernel shape: `(in_channels, out_channels/groups, k_size)`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, DType};
+    /// let inp = Tensor::zeros((1, 1, 3), DType::F32, &Device::Cpu)?;
+    /// let kernel = Tensor::zeros((1, 1, 3), DType::F32, &Device::Cpu)?;
+    /// let out = inp.conv_transpose1d(&kernel, 0, 0, 1, 1, 1)?;
+    /// assert_eq!(out.dims(), &[1, 1, 5]);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn conv_transpose1d(
         &self,
         kernel: &Self,
@@ -286,6 +196,21 @@ impl Tensor {
     }
 
     /// Applies a 2D convolution over the input tensor.
+    ///
+    /// Input shape: `(batch, in_channels, height, width)`  
+    /// Kernel shape: `(out_channels, in_channels/groups, k_h, k_w)`  
+    /// Output shape: `(batch, out_channels, out_h, out_w)`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, DType};
+    /// let inp = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::Cpu)?;
+    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::Cpu)?;
+    /// let out = inp.conv2d(&kernel, 0, 1, 1, 1)?;
+    /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn conv2d(
         &self,
         kernel: &Self,
@@ -297,6 +222,20 @@ impl Tensor {
         self.conv2d_with_algo(kernel, padding, stride, dilation, groups, None)
     }
 
+    /// Like [`conv2d`](Self::conv2d) but allows specifying an optional cuDNN algorithm hint.
+    ///
+    /// When `cudnn_fwd_algo` is `None`, cuDNN (if available) will auto-select the algorithm.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, DType};
+    /// let inp = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::Cpu)?;
+    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::Cpu)?;
+    /// let out = inp.conv2d_with_algo(&kernel, 0, 1, 1, 1, None)?;
+    /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn conv2d_with_algo(
         &self,
         kernel: &Self,
@@ -327,6 +266,18 @@ impl Tensor {
             cudnn_fwd_algo,
         };
         if groups == 1 {
+            // Fast path: a 1x1 convolution with stride=1, no padding, and no dilation
+            // is equivalent to a matrix multiply, avoiding the im2col transform.
+            if k_h == 1 && k_w == 1 && stride == 1 && padding == 0 && dilation == 1 {
+                // kernel: (c_out, c_in, 1, 1) -> (c_out, c_in)
+                let w = kernel.reshape((c_out, c_in))?;
+                // input: (b_size, c_in, i_h, i_w) -> (b_size, c_in, i_h * i_w)
+                let x = self.reshape((b_size, c_in, i_h * i_w))?;
+                // matmul: (c_out, c_in) @ (b_size, c_in, i_h * i_w) -> (b_size, c_out, i_h * i_w)
+                let out = w.broadcast_matmul(&x)?;
+                // reshape back to (b_size, c_out, i_h, i_w)
+                return out.reshape((b_size, c_out, i_h, i_w));
+            }
             self.conv2d_single_group(kernel, &params)
         } else {
             let blocks = self.chunk(groups, 1)?;
@@ -341,6 +292,20 @@ impl Tensor {
     }
 
     /// Applies a 2D transposed convolution over the input tensor.
+    ///
+    /// Input shape: `(batch, in_channels, height, width)`  
+    /// Kernel shape: `(in_channels, out_channels, k_h, k_w)`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, DType};
+    /// let inp = Tensor::zeros((1, 1, 2, 2), DType::F32, &Device::Cpu)?;
+    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::Cpu)?;
+    /// let out = inp.conv_transpose2d(&kernel, 0, 0, 1, 1)?;
+    /// assert_eq!(out.dims(), &[1, 1, 4, 4]);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn conv_transpose2d(
         &self,
         kernel: &Self,

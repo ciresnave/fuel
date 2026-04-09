@@ -1,16 +1,38 @@
-//! Loss Calculations
+//! Loss functions for training neural networks.
 //!
+//! This module provides common loss functions including cross-entropy, MSE,
+//! binary cross-entropy, and Huber loss.
 use candle::{Result, Tensor};
 
 /// The negative log likelihood loss.
 ///
-/// Arguments
+/// Computes the negative log likelihood between log-probabilities and integer class labels.
+/// This is typically used after applying [`log_softmax`](crate::ops::log_softmax) to model
+/// outputs. For raw logits, use [`cross_entropy`] which applies log-softmax internally.
 ///
-/// * [inp]: The input tensor of dimensions `N, C` where `N` is the batch size and `C` the number
-///   of categories. This is expected to contain log probabilities.
-/// * [target]: The ground truth labels as a tensor of u32 of dimension `N`.
+/// # Arguments
 ///
-/// The resulting tensor is a scalar containing the average value over the batch.
+/// * `inp` - The input tensor of dimensions `[N, C]` where `N` is the batch size and `C` the
+///   number of categories. This is expected to contain log probabilities.
+/// * `target` - The ground truth labels as a tensor of u32 of dimension `[N]`.
+///
+/// # Returns
+///
+/// A scalar tensor containing the average NLL over the batch.
+///
+/// # Examples
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// // Two samples, three classes — log-probabilities (already log-softmaxed)
+/// let log_probs = Tensor::new(&[[-0.1054f32, -2.3026, -6.9078],
+///                                [-2.3026, -0.1054, -6.9078]], &Device::Cpu)?;
+/// let targets = Tensor::new(&[0u32, 1], &Device::Cpu)?;
+/// let loss = candle_nn::loss::nll(&log_probs, &targets)?;
+/// // Loss should be close to 0.1054 (average of the two correct-class log-probs, negated)
+/// assert!(loss.to_scalar::<f32>()? < 0.2);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn nll(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
     let b_sz = match target.dims() {
         &[b_sz] => b_sz,
@@ -29,15 +51,54 @@ pub fn nll(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
         .affine(-1f64 / b_sz as f64, 0.)
 }
 
+/// The negative log likelihood loss (descriptive alias for [`nll`]).
+///
+/// This is identical to [`nll`] — see its documentation for full details.
+///
+/// # Example
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// let log_probs = Tensor::new(&[[-0.1054f32, -2.3026, -6.9078],
+///                                [-2.3026, -0.1054, -6.9078]], &Device::Cpu)?;
+/// let targets = Tensor::new(&[0u32, 1], &Device::Cpu)?;
+/// let loss = candle_nn::loss::negative_log_likelihood(&log_probs, &targets)?;
+/// assert!(loss.to_scalar::<f32>()? < 0.2);
+/// # Ok::<(), candle::Error>(())
+/// ```
+pub fn negative_log_likelihood(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
+    nll(inp, target)
+}
+
 /// The cross-entropy loss.
 ///
-/// Arguments
+/// Applies [`log_softmax`](crate::ops::log_softmax) to the input logits and then computes the
+/// negative log likelihood against integer class labels. This is the standard loss for
+/// multi-class classification.
 ///
-/// * [inp]: The input tensor of dimensions `N, C` where `N` is the batch size and `C` the number
-///   of categories. This is expected to raw logits.
-/// * [target]: The ground truth labels as a tensor of u32 of dimension `N`.
+/// # Arguments
 ///
-/// The resulting tensor is a scalar containing the average value over the batch.
+/// * `inp` - The input tensor of dimensions `[N, C]` where `N` is the batch size and `C` the
+///   number of categories. This is expected to be raw (unnormalized) logits.
+/// * `target` - The ground truth labels as a tensor of u32 of dimension `[N]`.
+///
+/// # Returns
+///
+/// A scalar tensor containing the average cross-entropy loss over the batch.
+///
+/// # Examples
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// // Raw logits for 2 samples over 3 classes
+/// let logits = Tensor::new(&[[2.0f32, 1.0, 0.1],
+///                             [0.5, 2.5, 0.3]], &Device::Cpu)?;
+/// let targets = Tensor::new(&[0u32, 1], &Device::Cpu)?;
+/// let loss = candle_nn::loss::cross_entropy(&logits, &targets)?;
+/// let loss_val = loss.to_scalar::<f32>()?;
+/// assert!(loss_val > 0.0);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn cross_entropy(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
     if inp.rank() != 2 {
         candle::bail!("cross_entropy expects an input tensor of rank 2")
@@ -47,44 +108,103 @@ pub fn cross_entropy(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
 }
 
 /// The mean squared error loss.
+///
+/// Computes the element-wise squared difference between `inp` and `target`, then returns
+/// the mean over all elements. Commonly used for regression tasks.
+///
+/// # Arguments
+///
+/// * `inp` - Predictions tensor of any shape.
+/// * `target` - Ground truth tensor with the same shape as `inp`.
+///
+/// # Returns
+///
+/// A scalar tensor containing the mean squared error.
+///
+/// # Examples
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// let predictions = Tensor::new(&[0.5f32, 0.8, 0.1], &Device::Cpu)?;
+/// let targets = Tensor::new(&[1.0f32, 1.0, 0.0], &Device::Cpu)?;
+/// let loss = candle_nn::loss::mse(&predictions, &targets)?;
+/// let loss_val = loss.to_scalar::<f32>()?;
+/// // MSE = ((0.5)^2 + (0.2)^2 + (0.1)^2) / 3 = 0.1
+/// assert!((loss_val - 0.1).abs() < 1e-6);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn mse(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
     (inp - target)?.sqr()?.mean_all()
 }
 
 /// The binary cross-entropy with logit loss.
 ///
-/// Arguments
+/// Computes numerically stable binary cross-entropy from raw logits using the identity:
+/// `max(x, 0) - x*t + log(1 + exp(-|x|))`. This avoids overflow when computing `exp(x)`
+/// for large positive logits.
 ///
-/// * [inp]: The input tensor of dimensions `N, C` where `N` is the batch size and `C` the number
-///   of categories. This is expected to raw logits.
-/// * [target]: The ground truth labels as a tensor of u32 of dimension `N, C` where `N` is the batch size and `C` the number
-///   of categories.
+/// Suitable for multi-label classification where each element is an independent binary
+/// prediction.
 ///
-/// The resulting tensor is a scalar containing the average value over the batch.
+/// # Arguments
+///
+/// * `inp` - The input tensor containing raw logits (before sigmoid). Can be any shape.
+/// * `target` - The ground truth labels (0.0 or 1.0) with the same shape as `inp`.
+///
+/// # Returns
+///
+/// A scalar tensor containing the mean binary cross-entropy loss.
+///
+/// # Examples
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// let logits = Tensor::new(&[1.0f32, -1.0, 0.0], &Device::Cpu)?;
+/// let targets = Tensor::new(&[1.0f32, 0.0, 1.0], &Device::Cpu)?;
+/// let loss = candle_nn::loss::binary_cross_entropy_with_logit(&logits, &targets)?;
+/// let loss_val = loss.to_scalar::<f32>()?;
+/// assert!(loss_val > 0.0);
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn binary_cross_entropy_with_logit(inp: &Tensor, target: &Tensor) -> Result<Tensor> {
-    let inp = crate::ops::sigmoid(inp)?;
-
-    let left_side = target * inp.log()?;
-    let right_side = (target.affine(-1., 1.))? * inp.affine(-1., 1.)?.log()?;
-
-    let loss = left_side? + right_side?;
-    let loss = loss?.neg()?.mean_all()?;
-
-    Ok(loss)
+    // Numerically stable form: max(x,0) - x*t + log(1 + exp(-|x|))
+    let relu_inp = inp.relu()?;
+    let neg_abs_inp = inp.abs()?.neg()?;
+    let loss = ((&relu_inp - inp.mul(target)?)? + (neg_abs_inp.exp()? + 1.0)?.log()?)?;
+    loss.mean_all()
 }
 
-/// HuberLoss
+/// Huber loss (smooth L1 loss).
 ///
-/// A robust loss function that combines `MAE` and `MSE` losses:
+/// A robust loss function that combines MAE and MSE losses, making it less sensitive to
+/// outliers than pure MSE:
 ///
-/// - When the absolute element-wise error is less than `delta`, it uses a squared term (MSE loss).
-/// - When the absolute element-wise error is greater than or equal to `delta`, it uses a linear term (MAE loss scaled by `delta`).
-/// # Formula
+/// - When `|x - y| < delta`: uses the squared term `0.5 * (x - y)^2` (like MSE).
+/// - When `|x - y| >= delta`: uses the linear term `delta * (|x - y| - 0.5 * delta)` (like MAE).
 ///
-/// HuberLoss =
-/// ```tex
-/// 0.5(x_n - y_n)^2, & |x_n - y_n| < delta
-/// delta(|x_n - y_n| - 0.5delta), & |x_n - y_n| >= delta
+/// # Arguments
+///
+/// * `inp` - Predictions tensor of any shape.
+/// * `target` - Ground truth tensor with the same shape as `inp`.
+/// * `delta` - Threshold at which the loss transitions from quadratic to linear.
+///
+/// # Returns
+///
+/// A scalar tensor containing the mean Huber loss.
+///
+/// # Examples
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// let predictions = Tensor::new(&[0.5f32, 3.0], &Device::Cpu)?;
+/// let targets = Tensor::new(&[1.0f32, 1.0], &Device::Cpu)?;
+/// let loss = candle_nn::loss::huber(&predictions, &targets, 1.0)?;
+/// let loss_val = loss.to_scalar::<f32>()?;
+/// // First element: |0.5-1.0|=0.5 < 1.0 => 0.5*0.25 = 0.125
+/// // Second element: |3.0-1.0|=2.0 >= 1.0 => 1.0*(2.0-0.5) = 1.5
+/// // Mean = (0.125 + 1.5) / 2 = 0.8125
+/// assert!((loss_val - 0.8125).abs() < 1e-4);
+/// # Ok::<(), candle::Error>(())
 /// ```
 pub fn huber(inp: &Tensor, target: &Tensor, delta: f64) -> Result<Tensor> {
     if inp.dims() != target.dims() {

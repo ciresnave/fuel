@@ -47,7 +47,7 @@ impl CustomOp1 for LayerNorm {
             let s_variance = 1f32 / (variance / dim2 as f32 + self.eps).sqrt();
             dst.extend(src.iter().map(|x| x * s_variance))
         }
-        let storage = candle::WithDType::to_cpu_storage_owned(dst);
+        let storage = candle::CpuStorage::F32(dst);
         Ok((storage, layout.shape().clone()))
     }
 

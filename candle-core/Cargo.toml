@@ -12,6 +12,8 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
+candle-core-types = { workspace = true }
+candle-cpu-backend = { workspace = true }
 candle-kernels = { workspace = true, optional = true }
 candle-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
@@ -30,6 +32,7 @@ rand = { workspace = true }
 rand_distr = { workspace = true }
 rayon = { workspace = true }
 safetensors = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 yoke = { workspace = true }
 zip = { workspace = true }
@@ -45,19 +48,38 @@ clap = { workspace = true }
 criterion = { workspace = true }
 
 [features]
+# CPU-only build is the default. Omitting all GPU features produces a clean
+# CPU-only binary with zero GPU code compiled in.
 default = []
+
+# NVIDIA GPU backend via cuBLAS. Requires the CUDA toolkit (≥ 11).
+# Use: cargo build --features cuda
 cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
+
+# Enables cuda + cuDNN accelerated convolution and normalization.
+# Requires CUDA toolkit + cuDNN runtime.
 cudnn = ["cuda", "cudarc/cudnn"]
+
+# Multi-GPU communication via NVIDIA NCCL. Requires CUDA + NCCL runtime.
 nccl = ["cuda", "cudarc/nccl"]
-mkl = ["dep:libc", "dep:intel-mkl-src"]
-accelerate = ["dep:libc", "dep:accelerate-src"]
+
+# Intel MKL BLAS for CPU (Linux/Windows). Faster matmul on Intel hardware.
+mkl = ["dep:libc", "dep:intel-mkl-src", "candle-cpu-backend/mkl"]
+
+# Apple Accelerate BLAS for CPU (macOS only). Faster matmul on Apple hardware.
+accelerate = ["dep:libc", "dep:accelerate-src", "candle-cpu-backend/accelerate"]
+
+# Apple Metal GPU backend (macOS 13+, Apple Silicon or AMD GPU on Intel Mac).
+# Use: cargo build --features metal
 metal = [
     "dep:objc2-metal",
     "dep:objc2-foundation",
     "dep:candle-metal-kernels",
     "candle-ug?/metal",
 ]
-ug = ["dep:candle-ug"]
+
+# candle-ug (μGPU) experimental backend.
+ug = ["dep:candle-ug", "candle-core-types/ug"]
 
 [[bench]]
 name = "bench_main"

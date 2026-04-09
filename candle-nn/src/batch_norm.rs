@@ -1,26 +1,55 @@
 //! Batch Normalization.
 //!
-//! This layer applies Batch Normalization over a mini-batch of inputs as described in [`Batch
-//! Normalization`]. The input is expected to have at least three dimensions.
+//! This layer applies [Batch Normalization](https://arxiv.org/abs/1502.03167) over a mini-batch
+//! of inputs. The input tensor is expected to have at least three dimensions `(N, C, ...)` where
+//! `N` is the batch size and `C` is the number of channels (features). Normalization is performed
+//! per-channel across the batch and spatial dimensions.
 //!
-//! Note that this implementation is for inference only, there is no possibility to track the
-//! running stats.
+//! During training ([`BatchNorm::forward_train`]), the layer computes batch statistics and updates
+//! exponential moving averages stored in `running_mean` and `running_var`. During evaluation
+//! (`forward_t` with `train=false`), it uses the stored running statistics for
+//! normalization.
 //!
-//! [`Batch Normalization`]: https://arxiv.org/abs/1502.03167
-use candle::{DType, Result, Tensor, Var};
+//! When `affine` is enabled (the default), learnable scale (`weight`) and shift (`bias`)
+//! parameters are applied after normalization.
+//!
+//! Use [`batch_norm`] to construct a `BatchNorm` from a [`VarBuilder`](crate::VarBuilder), or
+//! use [`BatchNorm::new`] to construct one directly from tensors.
+use candle::{Context, DType, Result, Tensor, Var};
 
+/// Configuration for [`BatchNorm`].
+///
+/// Can be constructed from an `f64` epsilon value via the `From<f64>` implementation,
+/// or use `Default::default()` for standard settings (`eps=1e-5`, `affine=true`,
+/// `remove_mean=true`, `momentum=0.1`).
+///
+/// # Example
+///
+/// ```rust
+/// use candle_nn::BatchNormConfig;
+///
+/// let cfg = BatchNormConfig::default();
+/// assert_eq!(cfg.eps, 1e-5);
+/// assert!(cfg.affine);
+/// assert_eq!(cfg.momentum, 0.1);
+/// # Ok::<(), candle::Error>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BatchNormConfig {
+    /// Small constant added to the variance for numerical stability. Default: `1e-5`.
     pub eps: f64,
+    /// Whether to subtract the mean during normalization. Default: `true`.
     pub remove_mean: bool,
 
-    /// The meaning of affine here is different from LayerNorm: when false there is no learnable
-    /// parameter at all, 1 used for gamma and 0 for beta.
+    /// When `true`, learnable `weight` and `bias` parameters are used. When `false`, no
+    /// learnable parameters are created (gamma is fixed to 1, beta to 0). Note that this
+    /// differs from [`LayerNormConfig::affine`](crate::LayerNormConfig::affine) where
+    /// `false` still creates a weight but omits the bias.
     pub affine: bool,
 
-    /// Controls exponential moving average of running stats. Defaults to 0.1
+    /// Controls exponential moving average of running stats. Default: `0.1`.
     ///
-    /// `running_stat * (1.0 - momentum) + stat * momentum`.
+    /// Updated as: `running_stat * (1.0 - momentum) + batch_stat * momentum`.
     pub momentum: f64,
 }
 
@@ -44,6 +73,48 @@ impl From<f64> for BatchNormConfig {
     }
 }
 
+impl BatchNormConfig {
+    /// Set the epsilon for numerical stability (default: `1e-5`).
+    pub fn with_eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    /// Disable mean subtraction during normalization.
+    pub fn no_mean_removal(mut self) -> Self {
+        self.remove_mean = false;
+        self
+    }
+
+    /// Disable learnable affine parameters (`weight` and `bias`).
+    pub fn no_affine(mut self) -> Self {
+        self.affine = false;
+        self
+    }
+
+    /// Set the momentum for the running statistics update (default: `0.1`).
+    pub fn with_momentum(mut self, momentum: f64) -> Self {
+        self.momentum = momentum;
+        self
+    }
+}
+
+/// Batch Normalization layer.
+///
+/// Normalizes each channel across the batch and spatial dimensions. Maintains running
+/// statistics (`running_mean`, `running_var`) that are updated during training and used
+/// for normalization during evaluation. Implements [`ModuleT`](crate::ModuleT) so that
+/// the caller can select training vs. evaluation behavior.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{batch_norm, BatchNormConfig, VarBuilder};
+///
+/// // Typically constructed via VarBuilder:
+/// // let bn = batch_norm(16, BatchNormConfig::default(), vb.pp("bn"))?;
+/// // let out = candle_nn::ModuleT::forward_t(&bn, &input, true)?; // training mode
+/// ```
 #[derive(Clone, Debug)]
 pub struct BatchNorm {
     running_mean: Var,
@@ -77,7 +148,7 @@ impl BatchNorm {
                 self.running_var.shape(),
             )
         }
-        if let Some((ref weight, ref bias)) = self.weight_and_bias.as_ref() {
+        if let Some((weight, bias)) = self.weight_and_bias.as_ref() {
             if weight.dims() != [num_features] {
                 candle::bail!(
                     "batch-norm weight has unexpected shape {:?} should have shape [{num_features}]",
@@ -94,6 +165,9 @@ impl BatchNorm {
         Ok(())
     }
 
+    /// Creates a new `BatchNorm` layer with learnable `weight` and `bias`.
+    ///
+    /// All tensors must have shape `[num_features]`. Uses default momentum of `0.1`.
     pub fn new(
         num_features: usize,
         running_mean: Tensor,
@@ -114,6 +188,9 @@ impl BatchNorm {
         Ok(out)
     }
 
+    /// Creates a new `BatchNorm` layer without learnable `weight`/`bias` parameters.
+    ///
+    /// The running statistics tensors must have shape `[num_features]`.
     pub fn new_no_bias(
         num_features: usize,
         running_mean: Tensor,
@@ -132,6 +209,7 @@ impl BatchNorm {
         Ok(out)
     }
 
+    /// Creates a new `BatchNorm` layer with learnable parameters and a custom `momentum`.
     pub fn new_with_momentum(
         num_features: usize,
         running_mean: Tensor,
@@ -153,6 +231,7 @@ impl BatchNorm {
         Ok(out)
     }
 
+    /// Creates a new `BatchNorm` layer without learnable parameters and with a custom `momentum`.
     pub fn new_no_bias_with_momentum(
         num_features: usize,
         running_mean: Tensor,
@@ -172,26 +251,33 @@ impl BatchNorm {
         Ok(out)
     }
 
+    /// Returns a reference to the running mean tensor.
     pub fn running_mean(&self) -> &Tensor {
         self.running_mean.as_tensor()
     }
 
+    /// Returns a reference to the running variance tensor.
     pub fn running_var(&self) -> &Tensor {
         self.running_var.as_tensor()
     }
 
+    /// Returns the epsilon value used for numerical stability.
     pub fn eps(&self) -> f64 {
         self.eps
     }
 
+    /// Returns the learnable weight and bias tensors, if present.
     pub fn weight_and_bias(&self) -> Option<(&Tensor, &Tensor)> {
         self.weight_and_bias.as_ref().map(|v| (&v.0, &v.1))
     }
 
+    /// Returns the momentum value for running statistics updates.
     pub fn momentum(&self) -> f64 {
         self.momentum
     }
 
+    /// Runs the forward pass in training mode, computing batch statistics and updating
+    /// the running mean and variance via exponential moving average.
     pub fn forward_train(&self, x: &Tensor) -> Result<Tensor> {
         let num_features = self.running_mean.as_tensor().dim(0)?;
         let x_dtype = x.dtype();
@@ -261,28 +347,26 @@ impl BatchNorm {
             .collect();
         let target_shape = target_shape.as_slice();
 
-        let x = x
-            .broadcast_sub(
-                &self
-                    .running_mean
-                    .as_detached_tensor()
-                    .reshape(target_shape)?,
-            )?
-            .broadcast_div(
-                &(self
-                    .running_var
-                    .as_detached_tensor()
-                    .reshape(target_shape)?
-                    + self.eps)?
-                    .sqrt()?,
-            )?;
+        let mean = self.running_mean.as_detached_tensor().reshape(target_shape)?;
+        let std = (self
+            .running_var
+            .as_detached_tensor()
+            .reshape(target_shape)?
+            + self.eps)?
+            .sqrt()?;
 
         match &self.weight_and_bias {
-            None => Ok(x),
+            None => x.broadcast_sub(&mean)?.broadcast_div(&std),
             Some((weight, bias)) => {
+                // Pre-compute combined scale and offset so we only need 2 passes
+                // over x instead of 4:
+                //   y = weight/std * x + (bias - mean * weight/std)
+                //     = scale * x + offset
                 let weight = weight.reshape(target_shape)?;
                 let bias = bias.reshape(target_shape)?;
-                x.broadcast_mul(&weight)?.broadcast_add(&bias)
+                let scale = (&weight / &std)?;
+                let offset = (&bias - (&mean * &scale)?)?;
+                x.broadcast_mul(&scale)?.broadcast_add(&offset)
             }
         }
     }
@@ -290,14 +374,36 @@ impl BatchNorm {
 
 impl crate::ModuleT for BatchNorm {
     fn forward_t(&self, x: &Tensor, train: bool) -> Result<Tensor> {
-        if train {
+        let input_shape = x.shape().clone();
+        let num_features = self.running_mean.as_tensor().dim(0).unwrap_or(0);
+        let result = if train {
             self.forward_train(x)
         } else {
             self.forward_eval(x)
-        }
+        };
+        result.with_context(|| {
+            format!(
+                "BatchNorm(num_features={num_features}): input shape {input_shape:?}"
+            )
+        })
     }
 }
 
+/// Creates a [`BatchNorm`] layer by loading parameters from a [`VarBuilder`](crate::VarBuilder).
+///
+/// Loads `running_mean`, `running_var`, and (when `affine=true`) `weight` and `bias`
+/// tensors from the variable store.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_nn::{batch_norm, BatchNormConfig, VarBuilder};
+/// use candle::DType;
+/// // vb: VarBuilder with "running_mean", "running_var", "weight", "bias" tensors
+/// # let vb: VarBuilder = unimplemented!();
+/// let bn = batch_norm(64, BatchNormConfig::default(), vb)?;
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn batch_norm<C: Into<BatchNormConfig>>(
     num_features: usize,
     config: C,

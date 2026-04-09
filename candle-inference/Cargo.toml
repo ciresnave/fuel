@@ -1,0 +1,26 @@
+[package]
+    categories.workspace = true
+    description          = "Inference orchestration layer for the Candle ML framework."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "candle-inference"
+    readme               = "README.md"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    candle              = { workspace = true }
+    candle-transformers = { workspace = true }
+    rand                = { workspace = true }
+    serde               = { workspace = true }
+    serde_json          = { workspace = true }
+    tracing             = { workspace = true }
+
+[features]
+    accelerate = ["candle-transformers/accelerate", "candle/accelerate"]
+    cuda       = ["candle-transformers/cuda", "candle/cuda"]
+    cudnn      = ["candle-transformers/cudnn", "candle/cudnn"]
+    default    = []
+    metal      = ["candle-transformers/metal", "candle/metal"]
+    mkl        = ["candle-transformers/mkl", "candle/mkl"]

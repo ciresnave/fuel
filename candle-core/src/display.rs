@@ -77,6 +77,14 @@ impl std::fmt::Debug for Tensor {
 }
 
 /// Options for Tensor pretty printing
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display::PrinterOptions;
+/// let opts = PrinterOptions { precision: 2, threshold: 100, edge_items: 3, line_width: 80, sci_mode: None };
+/// assert_eq!(opts.precision, 2);
+/// ```
 #[derive(Debug, Clone)]
 pub struct PrinterOptions {
     pub precision: usize,
@@ -102,18 +110,52 @@ impl PrinterOptions {
     }
 }
 
+/// Returns a reference to the global print options mutex.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// let opts = display::print_options().lock().unwrap();
+/// assert!(opts.precision > 0);
+/// ```
 pub fn print_options() -> &'static std::sync::Mutex<PrinterOptions> {
     &PRINT_OPTS
 }
 
+/// Replaces the global print options with the given value.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display::{self, PrinterOptions};
+/// display::set_print_options(PrinterOptions { precision: 6, threshold: 500, edge_items: 4, line_width: 120, sci_mode: Some(true) });
+/// ```
 pub fn set_print_options(options: PrinterOptions) {
     *PRINT_OPTS.lock().unwrap() = options
 }
 
+/// Resets the global print options to their default values (`precision=4`, `threshold=1000`, etc.).
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_print_options_default();
+/// ```
 pub fn set_print_options_default() {
     *PRINT_OPTS.lock().unwrap() = PrinterOptions::const_default()
 }
 
+/// Sets compact print options: `precision=2`, `threshold=1000`, `edge_items=2`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_print_options_short();
+/// assert_eq!(display::print_options().lock().unwrap().precision, 2);
+/// ```
 pub fn set_print_options_short() {
     *PRINT_OPTS.lock().unwrap() = PrinterOptions {
         precision: 2,
@@ -124,6 +166,15 @@ pub fn set_print_options_short() {
     }
 }
 
+/// Sets full print options: `precision=4`, `threshold=usize::MAX` (print all elements), `edge_items=3`.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_print_options_full();
+/// assert_eq!(display::print_options().lock().unwrap().threshold, usize::MAX);
+/// ```
 pub fn set_print_options_full() {
     *PRINT_OPTS.lock().unwrap() = PrinterOptions {
         precision: 4,
@@ -134,22 +185,70 @@ pub fn set_print_options_full() {
     }
 }
 
+/// Sets the maximum number of characters per line when printing tensors.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_line_width(120);
+/// assert_eq!(display::print_options().lock().unwrap().line_width, 120);
+/// ```
 pub fn set_line_width(line_width: usize) {
     PRINT_OPTS.lock().unwrap().line_width = line_width
 }
 
+/// Sets the number of decimal places displayed for floating-point elements.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_precision(6);
+/// assert_eq!(display::print_options().lock().unwrap().precision, 6);
+/// ```
 pub fn set_precision(precision: usize) {
     PRINT_OPTS.lock().unwrap().precision = precision
 }
 
+/// Sets how many elements are shown at the beginning and end of a truncated dimension.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_edge_items(5);
+/// assert_eq!(display::print_options().lock().unwrap().edge_items, 5);
+/// ```
 pub fn set_edge_items(edge_items: usize) {
     PRINT_OPTS.lock().unwrap().edge_items = edge_items
 }
 
+/// Sets the total element count above which a tensor is truncated when printed.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_threshold(200);
+/// assert_eq!(display::print_options().lock().unwrap().threshold, 200);
+/// ```
 pub fn set_threshold(threshold: usize) {
     PRINT_OPTS.lock().unwrap().threshold = threshold
 }
 
+/// Overrides automatic scientific-notation detection.
+///
+/// Pass `Some(true)` to always use scientific notation, `Some(false)` to never use it,
+/// or `None` to let the printer decide automatically.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::display;
+/// display::set_sci_mode(Some(true));
+/// assert_eq!(display::print_options().lock().unwrap().sci_mode, Some(true));
+/// ```
 pub fn set_sci_mode(sci_mode: Option<bool>) {
     PRINT_OPTS.lock().unwrap().sci_mode = sci_mode
 }

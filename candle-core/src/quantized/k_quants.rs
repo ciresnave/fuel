@@ -275,7 +275,11 @@ impl GgmlType for BlockQ4_1 {
     const BLCK_SIZE: usize = QK4_1;
     type VecDotType = BlockQ8_1;
 
+    #[allow(unreachable_code)]
     fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
+        #[cfg(target_feature = "avx2")]
+        return super::avx::vec_dot_q4_1_q8_1(n, xs, ys);
+
         Self::vec_dot_unopt(n, xs, ys)
     }
 
@@ -376,6 +380,7 @@ impl GgmlType for BlockQ5_0 {
     const BLCK_SIZE: usize = QK5_0;
     type VecDotType = BlockQ8_0;
 
+    #[allow(unreachable_code)]
     fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
         let qk = Self::BLCK_SIZE;
 
@@ -387,6 +392,10 @@ impl GgmlType for BlockQ5_0 {
             (n / qk).is_multiple_of(2),
             "vec_dot_q5_0_q8_0: {n}, nb is not divisible by 2"
         );
+
+        #[cfg(target_feature = "avx2")]
+        return super::avx::vec_dot_q5_0_q8_0(n, xs, ys);
+
         Self::vec_dot_unopt(n, xs, ys)
     }
 
@@ -482,7 +491,11 @@ impl GgmlType for BlockQ5_1 {
     const BLCK_SIZE: usize = QK5_1;
     type VecDotType = BlockQ8_1;
 
+    #[allow(unreachable_code)]
     fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
+        #[cfg(target_feature = "avx2")]
+        return super::avx::vec_dot_q5_1_q8_1(n, xs, ys);
+
         Self::vec_dot_unopt(n, xs, ys)
     }
 
@@ -685,7 +698,11 @@ impl GgmlType for BlockQ8_1 {
     const BLCK_SIZE: usize = QK8_1;
     type VecDotType = BlockQ8_1;
 
+    #[allow(unreachable_code)]
     fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
+        #[cfg(target_feature = "avx2")]
+        return super::avx::vec_dot_q8_1_q8_1(n, xs, ys);
+
         Self::vec_dot_unopt(n, xs, ys)
     }
 
@@ -2328,10 +2345,13 @@ pub fn matmul_f16<T: GgmlType>(
     let k_in_lhs_blocks = k.div_ceil(T::BLCK_SIZE);
     let k_in_rhs_blocks = k.div_ceil(T::VecDotType::BLCK_SIZE);
     let mut lhs_b = vec![T::VecDotType::zeros(); m * k_in_lhs_blocks];
+    let mut lhs_f32 = vec![0f32; k];
     for row_idx in 0..m {
         let lhs_b = &mut lhs_b[row_idx * k_in_lhs_blocks..(row_idx + 1) * k_in_lhs_blocks];
         let lhs = &lhs[row_idx * k..(row_idx + 1) * k];
-        let lhs_f32: Vec<_> = lhs.iter().map(|&x| x.to_f32()).collect();
+        for (dst, &src) in lhs_f32.iter_mut().zip(lhs.iter()) {
+            *dst = src.to_f32();
+        }
         T::VecDotType::from_float(&lhs_f32, lhs_b);
     }
     let lhs_b = lhs_b.as_slice();
@@ -2340,11 +2360,16 @@ pub fn matmul_f16<T: GgmlType>(
         let lhs_row = &lhs_b[row_idx * k_in_lhs_blocks..(row_idx + 1) * k_in_lhs_blocks];
         let dst_row = &mut dst[row_idx * n..(row_idx + 1) * n];
 
-        for (col_idx, dst) in dst_row.iter_mut().enumerate() {
-            let rhs_col = &rhs_t[col_idx * k_in_rhs_blocks..(col_idx + 1) * k_in_rhs_blocks];
-            let value = T::vec_dot(k, rhs_col, lhs_row);
-            *dst = f16::from_f32(value);
-        }
+        dst_row
+            .into_par_iter()
+            .enumerate()
+            .with_min_len(128)
+            .with_max_len(512)
+            .for_each(|(col_idx, dst)| {
+                let rhs_col = &rhs_t[col_idx * k_in_rhs_blocks..(col_idx + 1) * k_in_rhs_blocks];
+                let value = T::vec_dot(k, rhs_col, lhs_row);
+                *dst = f16::from_f32(value);
+            });
     }
     Ok(())
 }

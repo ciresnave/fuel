@@ -43,6 +43,12 @@ impl Cpu<ARR> for CurrentCpu {
         _mm256_add_ps(a, b)
     }
 
+    #[cfg(target_feature = "fma")]
+    unsafe fn vec_fma(a: Self::Unit, b: Self::Unit, c: Self::Unit) -> Self::Unit {
+        _mm256_fmadd_ps(b, c, a)
+    }
+
+    #[cfg(not(target_feature = "fma"))]
     unsafe fn vec_fma(a: Self::Unit, b: Self::Unit, c: Self::Unit) -> Self::Unit {
         _mm256_add_ps(_mm256_mul_ps(b, c), a)
     }
@@ -110,6 +116,12 @@ impl CpuF16<ARR> for CurrentCpuF16 {
         _mm256_add_ps(a, b)
     }
 
+    #[cfg(target_feature = "fma")]
+    unsafe fn vec_fma(a: Self::Unit, b: Self::Unit, c: Self::Unit) -> Self::Unit {
+        _mm256_fmadd_ps(b, c, a)
+    }
+
+    #[cfg(not(target_feature = "fma"))]
     unsafe fn vec_fma(a: Self::Unit, b: Self::Unit, c: Self::Unit) -> Self::Unit {
         _mm256_add_ps(_mm256_mul_ps(b, c), a)
     }
@@ -173,7 +185,11 @@ impl CpuBF16<ARR> for CurrentCpuBF16 {
 
     #[cfg(target_feature = "f16c")]
     unsafe fn load(mem_addr: *const bf16) -> Self::Unit {
-        _mm256_cvtph_ps(_mm_loadu_si128(mem_addr as *const __m128i))
+        // BF16 is the upper 16 bits of f32, so zero-extend to 32-bit and shift left by 16
+        let bf16_data = _mm_loadu_si128(mem_addr as *const __m128i);
+        let extended = _mm256_cvtepu16_epi32(bf16_data);
+        let shifted = _mm256_slli_epi32(extended, 16);
+        _mm256_castsi256_ps(shifted)
     }
 
     #[cfg(not(target_feature = "f16c"))]
@@ -189,13 +205,26 @@ impl CpuBF16<ARR> for CurrentCpuBF16 {
         _mm256_add_ps(a, b)
     }
 
+    #[cfg(target_feature = "fma")]
+    unsafe fn vec_fma(a: Self::Unit, b: Self::Unit, c: Self::Unit) -> Self::Unit {
+        _mm256_fmadd_ps(b, c, a)
+    }
+
+    #[cfg(not(target_feature = "fma"))]
     unsafe fn vec_fma(a: Self::Unit, b: Self::Unit, c: Self::Unit) -> Self::Unit {
         _mm256_add_ps(_mm256_mul_ps(b, c), a)
     }
 
     #[cfg(target_feature = "f16c")]
     unsafe fn vec_store(mem_addr: *mut bf16, a: Self::Unit) {
-        _mm_storeu_si128(mem_addr as *mut __m128i, _mm256_cvtps_ph(a, 0))
+        // Truncate f32 to bf16 by taking top 16 bits of each 32-bit float
+        let ai = _mm256_castps_si256(a);
+        let shifted = _mm256_srli_epi32(ai, 16);
+        // Pack 32-bit to 16-bit
+        let lo = _mm256_castsi256_si128(shifted);
+        let hi = _mm256_extracti128_si256(shifted, 1);
+        let packed = _mm_packus_epi32(lo, hi);
+        _mm_storeu_si128(mem_addr as *mut __m128i, packed)
     }
 
     #[cfg(not(target_feature = "f16c"))]

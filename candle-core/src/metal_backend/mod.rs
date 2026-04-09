@@ -995,7 +995,7 @@ impl BackendStorage for MetalStorage {
                 // This merges the last two dimensions of the kernel together.
                 let kernel_l_mm = Layout::new(
                     (b_size, c_in, k_size * c_out).into(),
-                    vec![0, k_size * c_out, 1],
+                    smallvec::smallvec![0, k_size * c_out, 1],
                     k_layout.start_offset(),
                 );
                 self.matmul(

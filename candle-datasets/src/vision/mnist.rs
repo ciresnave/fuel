@@ -46,6 +46,15 @@ fn read_images(filename: &std::path::Path) -> Result<Tensor> {
     tensor.to_dtype(DType::F32)? / 255.
 }
 
+/// Load the MNIST dataset from a directory containing the original IDX binary files.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_datasets::vision::mnist;
+/// let dataset = mnist::load_dir("data/mnist")?;
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<crate::vision::Dataset> {
     let dir = dir.as_ref();
     let train_images = read_images(&dir.join("train-images-idx3-ubyte"))?;
@@ -120,6 +129,16 @@ pub(crate) fn load_mnist_like(
     })
 }
 
+/// Download and load the MNIST dataset via the Hugging Face hub.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_datasets::vision::mnist;
+/// let dataset = mnist::load()?;
+/// println!("train images: {:?}", dataset.train_images.dims());
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn load() -> Result<crate::vision::Dataset> {
     load_mnist_like(
         "ylecun/mnist",

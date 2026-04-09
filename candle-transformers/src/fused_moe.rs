@@ -1,19 +1,44 @@
+//! Fused Mixture-of-Experts (MoE) feed-forward layer.
+//!
+//! Provides a memory-efficient MoE implementation that packs all expert
+//! weight matrices into a single stacked tensor and dispatches tokens via
+//! a kernel-level grouped GEMM (`moe_gemm`).
+//!
+//! The routing logic uses a learned gating network to select the
+//! `num_experts_per_tok` highest-scoring experts for each token, optionally
+//! normalising the routing weights before accumulation.
+//!
+//! Adapted from <https://github.com/guoqingbao/vllm.rs/blob/main/src/models/layers/moe.rs>.
 // Adapted from: https://github.com/guoqingbao/vllm.rs/blob/main/src/models/layers/moe.rs
 use candle::Module;
 use candle::{quantized::QTensor, DType, Result, Tensor, D};
 use candle_nn::{linear_no_bias, moe, Activation, Linear, VarBuilder};
 use std::sync::Arc;
 
+/// Configuration for a [`FusedMoe`] layer.
 pub struct MoeCfg {
+    /// Input/output feature dimension shared across all experts.
     pub hidden_size: usize,
+    /// Total number of experts in the MoE pool.
     pub num_experts: usize,
+    /// Number of experts activated per token during a forward pass.
     pub num_experts_per_tok: usize,
+    /// Hidden (intermediate) dimension inside each expert's FFN.
     pub moe_intermediate_size: usize,
+    /// If `true`, routing weights are re-normalised to sum to 1 before accumulation.
     pub norm_topk_prob: bool,
+    /// Activation function applied inside each expert's gated FFN.
     pub act: Activation,
+    /// When set, only every `decoder_sparse_step`-th decoder layer uses MoE;
+    /// other layers use a dense FFN.
     pub decoder_sparse_step: Option<usize>,
 }
 
+/// A fused Mixture-of-Experts layer with stacked expert weights.
+///
+/// Expert `gate_proj` and `up_proj` weights are concatenated along the output
+/// dimension and stored in a single `(num_experts, 2 * moe_intermediate_size,
+/// hidden_size)` tensor, enabling a single batched GEMM call.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FusedMoe {
@@ -29,6 +54,12 @@ pub struct FusedMoe {
 }
 
 impl FusedMoe {
+    /// Constructs a `FusedMoe` layer, loading all expert weights from `vb`.
+    ///
+    /// Expert tensors are expected at paths of the form
+    /// `experts.<i>.{gate_proj,up_proj,down_proj}.weight` within `vb`.
+    /// The gate and up projections are packed into a single tensor for
+    /// efficient batched matrix multiplication.
     pub fn new(cfg: &MoeCfg, vb: VarBuilder, dtype: DType) -> Result<Self> {
         let num_experts = cfg.num_experts;
 
@@ -88,6 +119,14 @@ impl FusedMoe {
         })
     }
 
+    /// Runs the MoE forward pass for a batch of tokens.
+    ///
+    /// # Arguments
+    /// * `xs`         – input tensor of shape `(batch, seq_len, hidden_size)`.
+    /// * `is_prefill` – when `true`, the token dimension may be large (prefill
+    ///                  phase); when `false`, it is typically 1 (decode step).
+    ///
+    /// Returns a tensor of the same shape as `xs`.
     pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
         let (batch, seq_len, hidden_dim) = xs.dims3()?;
         let xs = xs.reshape(((), hidden_dim))?;

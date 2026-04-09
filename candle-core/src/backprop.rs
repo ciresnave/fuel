@@ -157,14 +157,19 @@ impl Tensor {
             }
             (track_grad, nodes)
         }
-        let (_tg, mut nodes) = walk(self, vec![], &mut HashMap::new());
+        let (_tg, mut nodes) = walk(self, vec![], &mut HashMap::with_capacity(256));
         nodes.reverse();
         nodes
     }
 
+    /// Compute the gradients of this tensor with respect to all dependent variables.
+    ///
+    /// Performs reverse-mode automatic differentiation (backpropagation) starting from
+    /// this tensor. The tensor should typically be a scalar loss value. Returns a
+    /// [`GradStore`] mapping each variable's [`TensorId`] to its gradient tensor.
     pub fn backward(&self) -> Result<GradStore> {
         let sorted_nodes = self.sorted_nodes();
-        let mut grads = GradStore::new();
+        let mut grads = GradStore::with_capacity(sorted_nodes.len());
         grads.insert(self, self.ones_like()?.contiguous()?);
         for node in sorted_nodes.iter() {
             if node.is_variable() {
@@ -728,37 +733,123 @@ impl Tensor {
     }
 }
 
-/// A store for gradients, associating a tensor id to the corresponding gradient tensor, used for back propagation.
-#[derive(Debug)]
+/// A store for gradients produced by backpropagation.
+///
+/// Maps each [`TensorId`] to its corresponding gradient [`Tensor`]. Returned by
+/// [`Tensor::backward`] and used to retrieve the gradient for any variable that
+/// participated in the computation graph.
+///
+/// # Example
+///
+/// ```rust
+/// use candle_core::{Tensor, Device, Var};
+/// let x = Var::new(&[1f32, 2., 3.], &Device::Cpu)?;
+/// let y = x.powf(2.)?.sum_all()?;
+/// let grads = y.backward()?;
+/// // d(sum(x^2))/dx = 2*x
+/// let x_grad = grads.get(&x).unwrap();
+/// assert_eq!(x_grad.to_vec1::<f32>()?, vec![2.0, 4.0, 6.0]);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
+#[derive(Debug, Default)]
 pub struct GradStore(HashMap<TensorId, Tensor>);
 
 impl GradStore {
-    /// Create a new gradient store
-    fn new() -> Self {
+    /// Creates an empty gradient store.
+    pub fn new() -> Self {
         GradStore(HashMap::new())
     }
 
-    /// Get the gradient tensor corresponding to the given tensor id
+    /// Creates a new gradient store pre-allocated for `capacity` entries.
+    fn with_capacity(capacity: usize) -> Self {
+        GradStore(HashMap::with_capacity(capacity))
+    }
+
+    /// Returns the gradient tensor for the given [`TensorId`], if present.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, Var};
+    /// let x = Var::new(2f32, &Device::Cpu)?;
+    /// let y = x.sqr()?;
+    /// let grads = y.backward()?;
+    /// assert!(grads.get_id(x.id()).is_some());
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn get_id(&self, id: TensorId) -> Option<&Tensor> {
         self.0.get(&id)
     }
 
-    /// Get the gradient tensor associated with the given tensor
+    /// Returns the gradient tensor for the given tensor, if present.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, Var};
+    /// let x = Var::new(3f32, &Device::Cpu)?;
+    /// let y = x.sqr()?;
+    /// let grads = y.backward()?;
+    /// let g = grads.get(&x).unwrap();
+    /// assert_eq!(g.to_scalar::<f32>()?, 6.0); // d(x^2)/dx = 2x = 6
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn get(&self, tensor: &Tensor) -> Option<&Tensor> {
         self.0.get(&tensor.id())
     }
 
-    /// Remove the gradient tensor associated with the given tensor, returning it if it exists
+    /// Removes and returns the gradient tensor for the given tensor, if present.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Device, Var};
+    /// let x = Var::new(1f32, &Device::Cpu)?;
+    /// let y = x.sqr()?;
+    /// let mut grads = y.backward()?;
+    /// let g = grads.remove(&x);
+    /// assert!(g.is_some());
+    /// assert!(grads.get(&x).is_none());
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn remove(&mut self, tensor: &Tensor) -> Option<Tensor> {
         self.0.remove(&tensor.id())
     }
 
-    /// Insert a gradient tensor associated with the given tensor, returning the previous gradient tensor if it existed
+    /// Inserts a gradient tensor for the given tensor. Returns the previous gradient if one
+    /// was already stored.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Device, Tensor, Var};
+    /// let x = Var::new(1f32, &Device::Cpu)?;
+    /// let y = x.sqr()?;
+    /// let mut grads = y.backward()?;
+    /// let new_grad = Tensor::new(99f32, &Device::Cpu)?;
+    /// grads.insert(&x, new_grad);
+    /// assert_eq!(grads.get(&x).unwrap().to_scalar::<f32>()?, 99.0);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn insert(&mut self, tensor: &Tensor, grad: Tensor) -> Option<Tensor> {
         self.0.insert(tensor.id(), grad)
     }
 
-    /// Insert a gradient tensor associated with the given tensor id, returning the previous gradient tensor if it existed
+    /// Inserts a gradient tensor for the given [`TensorId`]. Returns the previous gradient if
+    /// one was already stored.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Device, Tensor, Var};
+    /// let x = Var::new(1f32, &Device::Cpu)?;
+    /// let y = x.sqr()?;
+    /// let mut grads = y.backward()?;
+    /// let new_grad = Tensor::new(42f32, &Device::Cpu)?;
+    /// grads.insert_id(x.id(), new_grad);
+    /// assert_eq!(grads.get_id(x.id()).unwrap().to_scalar::<f32>()?, 42.0);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn insert_id(&mut self, id: TensorId, grad: Tensor) -> Option<Tensor> {
         self.0.insert(id, grad)
     }
@@ -777,7 +868,18 @@ impl GradStore {
         Ok(grad)
     }
 
-    /// Get the tensor ids of the stored gradient tensors
+    /// Returns an iterator over all [`TensorId`]s that have stored gradients.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::{Device, Var};
+    /// let x = Var::new(2f32, &Device::Cpu)?;
+    /// let y = x.sqr()?;
+    /// let grads = y.backward()?;
+    /// assert_eq!(grads.get_ids().count(), 1);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn get_ids(&self) -> impl Iterator<Item = &TensorId> {
         self.0.keys()
     }

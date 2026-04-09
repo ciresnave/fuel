@@ -1,0 +1,27 @@
+[package]
+    categories.workspace = true
+    description          = "CPU backend computation kernels for the candle ML framework"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "candle-cpu-backend"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    candle-core-types = { workspace = true }
+    float8            = { workspace = true }
+    gemm              = { workspace = true }
+    half              = { workspace = true }
+    libc              = { workspace = true, optional = true }
+    num-traits        = { workspace = true }
+    num_cpus          = { workspace = true }
+    rayon             = { workspace = true }
+
+    accelerate-src = { workspace = true, optional = true }
+    intel-mkl-src  = { workspace = true, optional = true }
+
+[features]
+    accelerate = ["dep:accelerate-src", "dep:libc"]
+    default    = []
+    mkl        = ["dep:intel-mkl-src", "dep:libc"]

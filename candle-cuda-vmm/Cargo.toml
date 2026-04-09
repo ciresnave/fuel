@@ -1,0 +1,15 @@
+[package]
+name = "candle-cuda-vmm"
+version = "0.10.2"
+edition = "2024"
+description = "CUDA Virtual Memory Management bindings for elastic KV cache allocation in Candle."
+homepage = "https://github.com/huggingface/candle"
+repository = "https://github.com/huggingface/candle"
+keywords = ["blas", "tensor", "machine-learning"]
+categories = ["science"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+candle = { path = "../candle-core", package = "candle-core", version = "0.10.2", features = ["cuda"] }
+cudarc = { version = "0.19.4" }
+thiserror = "2"

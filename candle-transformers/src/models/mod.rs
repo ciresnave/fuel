@@ -1,139 +1,169 @@
 //! Candle implementations for various deep learning models
 //!
-//! This crate provides implementations of popular machine learning models and architectures for different modalities.
+//! This crate provides implementations of popular machine learning models and architectures
+//! organized by modality:
 //!
-//!  - Large language models: [`llama`], [`phi3`], [`mamba`], [`mixtral`], [`bert`], ...
-//!  - Text to text models: [`t5`], ...
-//!  - Image to text models: [`blip`], ...
-//!  - Text to image models: [`stable_diffusion`] and [`wuerstchen`], ...
-//!  - Audio models: [`whisper`], [`encodec`], [`metavoice`], [`parler_tts`], ...
-//!  - Computer vision models: [`dinov2`], [`convmixer`], [`efficientnet`], ...
-//!  
-//! Some of the models also have quantized variants, e.g.  [`quantized_blip`], [`quantized_llama`] and  [`quantized_qwen2`].
+//! - [`llm`] — Large language models: LLaMA, Mistral, Falcon, Phi, Gemma, Qwen, DeepSeek, …
+//! - [`encoders`] — Encoder-only models: BERT, DeBERTa, DistilBERT, ModernBERT, …
+//! - [`vision`] — Computer vision: ViT, DINOv2, EfficientNet, ResNet, SegFormer, …
+//! - [`audio`] — Audio models: Whisper, EnCodec, Mimi, Parler TTS, DAC, …
+//! - [`diffusion`] — Image generation: Stable Diffusion, Flux, Wuerstchen, …
+//! - [`multimodal`] — Vision-language: CLIP, LLaVA, PaliGemma, Pixtral, Moondream, …
+//! - [`quantized`] — GGUF/GGML quantized variants of the above
+//! - [`common`] — Shared utilities (traced wrappers, common primitives)
 //!
-//! The implementations aim to be readable while maintaining good performance. For more information
-//! on each model see the model's module docs in the links below.
+//! All models are also re-exported at the top level of this module for backward
+//! compatibility — `crate::models::llama` and `crate::models::llm::llama` both work.
 
-pub mod based;
-pub mod beit;
-pub mod bert;
-pub mod bigcode;
-pub mod blip;
-pub mod blip_text;
-pub mod chatglm;
-pub mod chinese_clip;
-pub mod clip;
-pub mod codegeex4_9b;
-pub mod colpali;
-pub mod convmixer;
-pub mod convnext;
-pub mod csm;
-pub mod dac;
-pub mod debertav2;
-pub mod deepseek2;
-pub mod depth_anything_v2;
-pub mod dinov2;
-pub mod dinov2reg4;
-pub mod distilbert;
-pub mod efficientnet;
-pub mod efficientvit;
-pub mod encodec;
-pub mod eva2;
-pub mod falcon;
-pub mod fastvit;
-pub mod flux;
-pub mod gemma;
-pub mod gemma2;
-pub mod gemma3;
-pub mod gemma4;
-pub mod glm4;
-pub mod glm4_new;
-pub mod granite;
-pub mod granitemoehybrid;
-pub mod helium;
-pub mod hiera;
-pub mod jina_bert;
-pub mod llama;
-pub mod llama2_c;
-pub mod llama2_c_weights;
-pub mod llava;
-pub mod mamba;
-pub mod mamba2;
-pub mod marian;
-pub mod metavoice;
-pub mod mimi;
-pub mod mistral;
-pub mod mixformer;
-pub mod mixtral;
-pub mod mmdit;
-pub mod mobileclip;
-pub mod mobilenetv4;
-pub mod mobileone;
-pub mod modernbert;
-pub mod moondream;
-pub mod mpt;
-pub mod nomic_bert;
-pub mod nvembed_v2;
-pub mod olmo;
-pub mod olmo2;
-pub mod openclip;
-pub mod paddleocr_vl;
-pub mod paligemma;
-pub mod parler_tts;
-pub mod persimmon;
-pub mod phi;
-pub mod phi3;
-pub mod pixtral;
-pub mod quantized_blip;
-pub mod quantized_blip_text;
-pub mod quantized_gemma3;
-pub mod quantized_glm4;
-pub mod quantized_lfm2;
-pub mod quantized_llama;
-pub mod quantized_llama2_c;
-pub mod quantized_metavoice;
-pub mod quantized_mistral;
-pub mod quantized_mixformer;
-pub mod quantized_moondream;
-pub mod quantized_mpt;
-pub mod quantized_phi;
-pub mod quantized_phi3;
-pub mod quantized_qwen2;
-pub mod quantized_qwen3;
-pub mod quantized_qwen3_moe;
-pub mod quantized_recurrent_gemma;
-pub mod quantized_rwkv_v5;
-pub mod quantized_rwkv_v6;
-pub mod quantized_stable_lm;
-pub mod quantized_t5;
-pub mod qwen2;
-pub mod qwen2_moe;
-pub mod qwen3;
-pub mod qwen3_moe;
-pub mod qwen3_vl;
-pub mod recurrent_gemma;
-pub mod repvgg;
-pub mod resnet;
-pub mod rwkv_v5;
-pub mod rwkv_v6;
-pub mod rwkv_v7;
-pub mod segformer;
-pub mod segment_anything;
-pub mod siglip;
-pub mod smol;
-pub mod snac;
-pub mod stable_diffusion;
-pub mod stable_lm;
-pub mod starcoder2;
-pub mod stella_en_v5;
-pub mod t5;
-pub mod trocr;
-pub mod vgg;
-pub mod vit;
-pub mod voxtral;
-pub mod whisper;
-pub mod with_tracing;
-pub mod wuerstchen;
-pub mod xlm_roberta;
-pub mod yi;
-pub mod z_image;
+// ── Category modules ──────────────────────────────────────────────────
+pub mod llm;
+pub mod vision;
+pub mod audio;
+pub mod diffusion;
+pub mod multimodal;
+pub mod encoders;
+pub mod common;
+pub mod quantized;
+
+// ── Backward-compatible re-exports ────────────────────────────────────
+// Every model that previously lived at `crate::models::<name>` is re-exported
+// here so that existing `use crate::models::llama` paths continue to compile.
+
+// common
+pub use common::with_tracing;
+
+// llm
+pub use llm::based;
+pub use llm::bigcode;
+pub use llm::chatglm;
+pub use llm::codegeex4_9b;
+pub use llm::deepseek2;
+pub use llm::falcon;
+pub use llm::gemma;
+pub use llm::gemma2;
+pub use llm::gemma3;
+pub use llm::gemma4;
+pub use llm::glm4;
+pub use llm::glm4_new;
+pub use llm::granite;
+pub use llm::granitemoehybrid;
+pub use llm::helium;
+pub use llm::llama;
+pub use llm::llama2_c;
+pub use llm::llama2_c_weights;
+pub use llm::mamba;
+pub use llm::mamba2;
+pub use llm::marian;
+pub use llm::mistral;
+pub use llm::mixformer;
+pub use llm::mixtral;
+pub use llm::mpt;
+pub use llm::olmo;
+pub use llm::olmo2;
+pub use llm::persimmon;
+pub use llm::phi;
+pub use llm::phi3;
+pub use llm::qwen2;
+pub use llm::qwen2_moe;
+pub use llm::qwen3;
+pub use llm::qwen3_moe;
+pub use llm::recurrent_gemma;
+pub use llm::rwkv_v5;
+pub use llm::rwkv_v6;
+pub use llm::rwkv_v7;
+pub use llm::smol;
+pub use llm::stable_lm;
+pub use llm::starcoder2;
+pub use llm::t5;
+pub use llm::yi;
+
+// vision
+pub use vision::beit;
+pub use vision::convmixer;
+pub use vision::convnext;
+pub use vision::depth_anything_v2;
+pub use vision::dinov2;
+pub use vision::dinov2reg4;
+pub use vision::efficientnet;
+pub use vision::efficientvit;
+pub use vision::eva2;
+pub use vision::fastvit;
+pub use vision::hiera;
+pub use vision::mobilenetv4;
+pub use vision::mobileone;
+pub use vision::repvgg;
+pub use vision::resnet;
+pub use vision::segformer;
+pub use vision::segment_anything;
+pub use vision::trocr;
+pub use vision::vgg;
+pub use vision::vit;
+
+// audio
+pub use audio::csm;
+pub use audio::dac;
+pub use audio::encodec;
+pub use audio::metavoice;
+pub use audio::mimi;
+pub use audio::parler_tts;
+pub use audio::snac;
+pub use audio::whisper;
+
+// diffusion
+pub use diffusion::flux;
+pub use diffusion::mmdit;
+pub use diffusion::stable_diffusion;
+pub use diffusion::wuerstchen;
+pub use diffusion::z_image;
+
+// multimodal
+pub use multimodal::blip;
+pub use multimodal::blip_text;
+pub use multimodal::chinese_clip;
+pub use multimodal::clip;
+pub use multimodal::colpali;
+pub use multimodal::llava;
+pub use multimodal::mobileclip;
+pub use multimodal::moondream;
+pub use multimodal::openclip;
+pub use multimodal::paddleocr_vl;
+pub use multimodal::paligemma;
+pub use multimodal::pixtral;
+pub use multimodal::qwen3_vl;
+pub use multimodal::siglip;
+pub use multimodal::voxtral;
+
+// encoders
+pub use encoders::bert;
+pub use encoders::debertav2;
+pub use encoders::distilbert;
+pub use encoders::jina_bert;
+pub use encoders::modernbert;
+pub use encoders::nomic_bert;
+pub use encoders::nvembed_v2;
+pub use encoders::stella_en_v5;
+pub use encoders::xlm_roberta;
+
+// quantized
+pub use quantized::quantized_blip;
+pub use quantized::quantized_blip_text;
+pub use quantized::quantized_gemma3;
+pub use quantized::quantized_glm4;
+pub use quantized::quantized_lfm2;
+pub use quantized::quantized_llama;
+pub use quantized::quantized_llama2_c;
+pub use quantized::quantized_metavoice;
+pub use quantized::quantized_mistral;
+pub use quantized::quantized_mixformer;
+pub use quantized::quantized_moondream;
+pub use quantized::quantized_mpt;
+pub use quantized::quantized_phi;
+pub use quantized::quantized_phi3;
+pub use quantized::quantized_qwen2;
+pub use quantized::quantized_qwen3;
+pub use quantized::quantized_qwen3_moe;
+pub use quantized::quantized_recurrent_gemma;
+pub use quantized::quantized_rwkv_v5;
+pub use quantized::quantized_rwkv_v6;
+pub use quantized::quantized_stable_lm;
+pub use quantized::quantized_t5;

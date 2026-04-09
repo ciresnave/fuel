@@ -39,6 +39,15 @@ fn read_file(filename: &std::path::Path) -> Result<(Tensor, Tensor)> {
     Ok((images, labels))
 }
 
+/// Load the CIFAR-10 dataset from a directory of `.bin` files.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_datasets::vision::cifar;
+/// let dataset = cifar::load_dir("data/cifar-10-batches-bin")?;
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<Dataset> {
     let dir = dir.as_ref();
     let (test_images, test_labels) = read_file(&dir.join("test_batch.bin"))?;
@@ -92,6 +101,16 @@ fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor,
     Ok((images, labels))
 }
 
+/// Download and load the CIFAR-10 dataset via the Hugging Face hub.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_datasets::vision::cifar;
+/// let dataset = cifar::load()?;
+/// println!("train images: {:?}", dataset.train_images.dims());
+/// # Ok::<(), candle::Error>(())
+/// ```
 pub fn load() -> Result<Dataset> {
     let api = Api::new().map_err(|e| Error::Msg(format!("Api error: {e}")))?;
     let dataset_id = "cifar10".to_string();

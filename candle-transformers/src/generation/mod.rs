@@ -6,28 +6,56 @@
 use candle::{DType, Error, Result, Tensor};
 use rand::{distr::Distribution, SeedableRng};
 
+/// Token-sampling strategy used during autoregressive text generation.
+///
+/// Each variant selects a different decode-time algorithm that controls the
+/// trade-off between output diversity and quality.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Sampling {
+    /// Deterministic greedy decoding – always pick the highest-logit token.
     ArgMax,
+    /// Full-vocabulary sampling re-scaled by `temperature`.
+    ///
+    /// A temperature near `0.0` approaches greedy behaviour; `1.0` samples
+    /// from the raw model distribution; values above `1.0` increase entropy.
     All { temperature: f64 },
+    /// Restrict sampling to the `k` highest-probability tokens before applying
+    /// the temperature re-scaling.
     TopK { k: usize, temperature: f64 },
+    /// Nucleus (top-*p*) sampling: keep only the smallest set of tokens whose
+    /// cumulative probability reaches `p`, then sample from that subset.
     TopP { p: f64, temperature: f64 },
+    /// Apply top-*k* truncation first, then nucleus sampling within the survivors.
     TopKThenTopP { k: usize, p: f64, temperature: f64 },
+    /// Gumbel-Softmax sampling: add Gumbel noise before argmax, equivalent to
+    /// sampling proportionally from the softmax distribution.
     // Note that the rng is not used for the Gumbel-Softmax sampling.
     GumbelSoftmax { temperature: f64 },
 }
 
+/// Applies a [`Sampling`] strategy to raw model logits to produce the next token id.
+///
+/// An internal seeded RNG is used for all stochastic strategies.  For
+/// reproducible outputs, always construct the processor with the same seed.
 pub struct LogitsProcessor {
     rng: rand::rngs::StdRng,
     sampling: Sampling,
 }
 
 impl LogitsProcessor {
+    /// Creates a `LogitsProcessor` with an explicit [`Sampling`] strategy.
     pub fn from_sampling(seed: u64, sampling: Sampling) -> Self {
         let rng = rand::rngs::StdRng::seed_from_u64(seed);
         Self { rng, sampling }
     }
 
+    /// Creates a `LogitsProcessor` using the legacy `temperature` / `top_p` API.
+    ///
+    /// | `temperature` | `top_p`  | Resulting strategy            |
+    /// |--------------|----------|-------------------------------|
+    /// | `None` or ≈0  | any      | [`Sampling::ArgMax`]          |
+    /// | `Some(t)`     | `None`   | [`Sampling::All`]             |
+    /// | `Some(t)`     | `Some(p)`| [`Sampling::TopP`]            |
     pub fn new(seed: u64, temperature: Option<f64>, top_p: Option<f64>) -> Self {
         let temperature = temperature.and_then(|v| if v < 1e-7 { None } else { Some(v) });
         let sampling = match temperature {
@@ -45,7 +73,7 @@ impl LogitsProcessor {
     }
 
     fn sample_gumbel_softmax(&mut self, logits: &Tensor, temperature: f64) -> Result<u32> {
-        let sampled = candle_nn::sampling::gumbel_softmax(logits, temperature, candle::D::Minus1)?;
+        let sampled = candle::sampling::gumbel_softmax(logits, temperature, candle::D::Minus1)?;
         sampled.to_scalar::<u32>()
     }
 
@@ -111,15 +139,29 @@ impl LogitsProcessor {
         }
     }
 
+    /// Samples the next token id from `logits` using the configured strategy.
+    ///
+    /// `logits` should be a 1-D tensor of length equal to the vocabulary size.
     pub fn sample(&mut self, logits: &Tensor) -> Result<u32> {
         self.sample_f(logits, |_| {})
     }
 
+    /// Samples the next token id, allowing a closure `f` to mutate the
+    /// probability vector before the final sampling step.
+    ///
+    /// The closure receives a mutable slice of `f32` probabilities (after
+    /// temperature scaling and softmax) and can be used to implement custom
+    /// logit processors such as repetition penalties.
     pub fn sample_f(&mut self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<u32> {
         let logits = logits.to_dtype(DType::F32)?;
         let prs = |temperature: f64| -> Result<Vec<f32>> {
             let logits = (&logits / temperature)?;
-            let prs = candle_nn::ops::softmax_last_dim(&logits)?;
+            // Numerically stable softmax using basic candle-core ops
+            let max = logits.max_keepdim(candle::D::Minus1)?;
+            let shifted = logits.broadcast_sub(&max)?;
+            let exp = shifted.exp()?;
+            let sum = exp.sum_keepdim(candle::D::Minus1)?;
+            let prs = exp.broadcast_div(&sum)?;
             let mut prs = prs.to_vec1()?;
             f(&mut prs);
             Ok(prs)

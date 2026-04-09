@@ -97,7 +97,7 @@ impl candle::CustomOp1 for Im2Col {
                 }
             }
         }
-        let storage = candle::WithDType::to_cpu_storage_owned(dst);
+        let storage = candle::CpuStorage::F32(dst);
         Ok((storage, (b * h_out * w_out, c * h_k * w_k).into()))
     }
 }

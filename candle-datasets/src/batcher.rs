@@ -1,5 +1,23 @@
 use candle::{Result, Tensor};
 
+/// An iterator adapter that groups items from an inner iterator into fixed-size batches.
+///
+/// # Example
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// use candle_datasets::Batcher;
+///
+/// let tensors: Vec<Tensor> = (0..10u32)
+///     .map(|i| Tensor::new(&[i], &Device::Cpu).unwrap())
+///     .collect();
+/// let batcher = Batcher::new1(tensors.into_iter()).batch_size(3);
+/// // Produces batches of 3 (plus a remainder of 1 if return_last_incomplete_batch is set).
+/// for batch in batcher {
+///     let batch = batch.unwrap();
+///     assert!(batch.dim(0).unwrap() <= 3);
+/// }
+/// ```
 pub struct Batcher<I> {
     inner: I,
     batch_size: usize,
@@ -26,10 +44,37 @@ impl<I> Batcher<I> {
     }
 }
 
+/// Inner iterator type for [`Batcher`] that collects `Tensor` items.
+///
+/// # Example
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// use candle_datasets::Batcher;
+/// let tensors: Vec<Tensor> = (0..4u32)
+///     .map(|i| Tensor::new(&[i], &Device::Cpu).unwrap())
+///     .collect();
+/// let _batcher = Batcher::new1(tensors.into_iter());
+/// ```
 pub struct Iter1<I: Iterator<Item = Tensor>> {
     inner: I,
 }
 
+/// Inner iterator type for [`Batcher`] that collects `(Tensor, Tensor)` pairs (e.g. images + labels).
+///
+/// # Example
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// use candle_datasets::Batcher;
+/// let pairs: Vec<(Tensor, Tensor)> = (0..4u32)
+///     .map(|i| (
+///         Tensor::new(&[i], &Device::Cpu).unwrap(),
+///         Tensor::new(&[i * 2], &Device::Cpu).unwrap(),
+///     ))
+///     .collect();
+/// let _batcher = Batcher::new2(pairs.into_iter());
+/// ```
 pub struct Iter2<I: Iterator<Item = (Tensor, Tensor)>> {
     inner: I,
 }
@@ -46,10 +91,37 @@ impl<I: Iterator<Item = (Tensor, Tensor)>> Batcher<Iter2<I>> {
     }
 }
 
+/// Inner iterator type for [`Batcher`] over fallible `Result<Tensor>` items.
+///
+/// # Example
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// use candle_datasets::Batcher;
+/// let tensors: Vec<candle::Result<Tensor>> = (0..4u32)
+///     .map(|i| Tensor::new(&[i], &Device::Cpu))
+///     .collect();
+/// let _batcher = Batcher::new_r1(tensors.into_iter());
+/// ```
 pub struct IterResult1<I: Iterator<Item = Result<Tensor>>> {
     inner: I,
 }
 
+/// Inner iterator type for [`Batcher`] over fallible `Result<(Tensor, Tensor)>` pairs.
+///
+/// # Example
+///
+/// ```
+/// use candle::{Tensor, Device};
+/// use candle_datasets::Batcher;
+/// let pairs: Vec<candle::Result<(Tensor, Tensor)>> = (0..4u32)
+///     .map(|i| Ok((
+///         Tensor::new(&[i], &Device::Cpu)?,
+///         Tensor::new(&[i * 2], &Device::Cpu)?,
+///     )))
+///     .collect();
+/// let _batcher = Batcher::new_r2(pairs.into_iter());
+/// ```
 pub struct IterResult2<I: Iterator<Item = Result<(Tensor, Tensor)>>> {
     inner: I,
 }

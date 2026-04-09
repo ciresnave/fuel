@@ -270,6 +270,15 @@ impl Tensor {
     }
 
     /// Reads a npy file and return the stored multi-dimensional array as a tensor.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::Tensor;
+    /// let t = Tensor::read_npy("array.npy")?;
+    /// println!("shape: {:?}", t.shape());
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn read_npy<T: AsRef<Path>>(path: T) -> Result<Self> {
         let mut reader = File::open(path.as_ref())?;
         let header = read_header(&mut reader)?;
@@ -281,6 +290,17 @@ impl Tensor {
     }
 
     /// Reads a npz file and returns the stored multi-dimensional arrays together with their names.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::Tensor;
+    /// let arrays = Tensor::read_npz("arrays.npz")?;
+    /// for (name, t) in &arrays {
+    ///     println!("{name}: {:?}", t.shape());
+    /// }
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn read_npz<T: AsRef<Path>>(path: T) -> Result<Vec<(String, Self)>> {
         let zip_reader = BufReader::new(File::open(path.as_ref())?);
         let mut zip = zip::ZipArchive::new(zip_reader)?;
@@ -303,6 +323,15 @@ impl Tensor {
     }
 
     /// Reads a npz file and returns the stored multi-dimensional arrays for some specified names.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::Tensor;
+    /// let tensors = Tensor::read_npz_by_name("arrays.npz", &["weight", "bias"])?;
+    /// println!("weight shape: {:?}", tensors[0].shape());
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn read_npz_by_name<T: AsRef<Path>>(path: T, names: &[&str]) -> Result<Vec<Self>> {
         let zip_reader = BufReader::new(File::open(path.as_ref())?);
         let mut zip = zip::ZipArchive::new(zip_reader)?;
@@ -346,12 +375,31 @@ impl Tensor {
     }
 
     /// Writes a multi-dimensional array in the npy format.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::{Tensor, Device, DType};
+    /// let t = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// t.write_npy("array.npy")?;
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn write_npy<T: AsRef<Path>>(&self, path: T) -> Result<()> {
         let mut f = File::create(path.as_ref())?;
         self.write(&mut f)
     }
 
     /// Writes multiple multi-dimensional arrays using the npz format.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::{Tensor, Device, DType};
+    /// let w = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// let b = Tensor::zeros((3,), DType::F32, &Device::Cpu)?;
+    /// Tensor::write_npz(&[("weight", &w), ("bias", &b)], "arrays.npz")?;
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn write_npz<S: AsRef<str>, T: AsRef<Tensor>, P: AsRef<Path>>(
         ts: &[(S, T)],
         path: P,
@@ -368,7 +416,21 @@ impl Tensor {
     }
 }
 
-/// Lazy tensor loader.
+/// Lazy tensor loader for `.npz` archive files.
+///
+/// Opens the archive once at construction time to index its contents, then re-opens it on
+/// each [`NpzTensors::get`] call to avoid holding an open file handle. This is suitable
+/// for loading large archives where you only need a subset of the tensors.
+///
+/// # Example
+///
+/// ```no_run
+/// use candle_core::npy::NpzTensors;
+/// let npz = NpzTensors::new("weights.npz")?;
+/// let names = npz.names();
+/// println!("tensors: {:?}", names);
+/// # Ok::<(), candle_core::Error>(())
+/// ```
 pub struct NpzTensors {
     index_per_name: HashMap<String, usize>,
     path: std::path::PathBuf,
@@ -377,6 +439,16 @@ pub struct NpzTensors {
 }
 
 impl NpzTensors {
+    /// Open an `.npz` archive and build an index mapping tensor names to their
+    /// positions within the archive.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::npy::NpzTensors;
+    /// let npz = NpzTensors::new("weights.npz")?;
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn new<T: AsRef<Path>>(path: T) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let zip_reader = BufReader::new(File::open(&path)?);
@@ -396,12 +468,34 @@ impl NpzTensors {
         })
     }
 
+    /// Returns a list of tensor names stored in the archive.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::npy::NpzTensors;
+    /// let npz = NpzTensors::new("weights.npz")?;
+    /// for name in npz.names() {
+    ///     println!("{name}");
+    /// }
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn names(&self) -> Vec<&String> {
         self.index_per_name.keys().collect()
     }
 
     /// This only returns the shape and dtype for a named tensor. Compared to `get`, this avoids
     /// reading the whole tensor data.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::npy::NpzTensors;
+    /// let npz = NpzTensors::new("weights.npz")?;
+    /// let (shape, dtype) = npz.get_shape_and_dtype("weight")?;
+    /// println!("shape: {shape:?}, dtype: {dtype:?}");
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn get_shape_and_dtype(&self, name: &str) -> Result<(Shape, DType)> {
         let index = match self.index_per_name.get(name) {
             None => crate::bail!("cannot find tensor {name}"),
@@ -415,6 +509,20 @@ impl NpzTensors {
         Ok((header.shape(), header.descr))
     }
 
+    /// Load a tensor by name from the archive.
+    ///
+    /// Returns `Ok(None)` if no tensor with that name exists in the archive.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use candle_core::npy::NpzTensors;
+    /// let npz = NpzTensors::new("weights.npz")?;
+    /// if let Some(t) = npz.get("weight")? {
+    ///     println!("shape: {:?}", t.shape());
+    /// }
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
     pub fn get(&self, name: &str) -> Result<Option<Tensor>> {
         let index = match self.index_per_name.get(name) {
             None => return Ok(None),

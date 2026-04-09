@@ -95,18 +95,20 @@ pub(crate) unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f
 
     for i in (0..np).step_by(CurrentCpu::STEP) {
         for j in 0..CurrentCpu::n() {
-            ax[j] = CurrentCpu::load(a_row.add(i + j * CurrentCpu::EPR));
-            ay[j] = CurrentCpu::load(b_row.add(i + j * CurrentCpu::EPR));
+            unsafe {
+                ax[j] = CurrentCpu::load(a_row.add(i + j * CurrentCpu::EPR));
+                ay[j] = CurrentCpu::load(b_row.add(i + j * CurrentCpu::EPR));
 
-            sum[j] = CurrentCpu::vec_fma(sum[j], ax[j], ay[j]);
+                sum[j] = CurrentCpu::vec_fma(sum[j], ax[j], ay[j]);
+            }
         }
     }
 
-    CurrentCpu::vec_reduce(sum, c);
+    unsafe { CurrentCpu::vec_reduce(sum, c) };
 
     // leftovers
     for i in np..k {
-        *c += *a_row.add(i) * (*b_row.add(i));
+        unsafe { *c += *a_row.add(i) * (*b_row.add(i)) };
     }
 }
 
@@ -119,7 +121,7 @@ pub(crate) unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f
 pub(crate) unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     // leftovers
     for i in 0..k {
-        *c += *a_row.add(i) * (*b_row.add(i));
+        unsafe { *c += *a_row.add(i) * (*b_row.add(i)) };
     }
 }
 
@@ -137,16 +139,18 @@ pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
 
     for i in (0..np).step_by(CurrentCpu::STEP) {
         for j in 0..CurrentCpu::n() {
-            x[j] = CurrentCpu::load(row.add(i + j * CurrentCpu::EPR));
-            sum[j] = CurrentCpu::vec_add(sum[j], x[j]);
+            unsafe {
+                x[j] = CurrentCpu::load(row.add(i + j * CurrentCpu::EPR));
+                sum[j] = CurrentCpu::vec_add(sum[j], x[j]);
+            }
         }
     }
 
-    CurrentCpu::vec_reduce(sum, b);
+    unsafe { CurrentCpu::vec_reduce(sum, b) };
 
     // leftovers
     for i in np..k {
-        *b += *row.add(i)
+        unsafe { *b += *row.add(i) }
     }
 }
 
@@ -157,9 +161,11 @@ pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
 )))]
 #[inline(always)]
 pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
-    *b = 0f32;
-    for i in 0..k {
-        *b += *row.add(i)
+    unsafe {
+        *b = 0f32;
+        for i in 0..k {
+            *b += *row.add(i)
+        }
     }
 }
 
@@ -175,20 +181,22 @@ pub(crate) unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f
 
     for i in (0..np).step_by(CurrentCpuF16::STEP) {
         for j in 0..CurrentCpuF16::n() {
-            ax[j] = CurrentCpuF16::load(a_row.add(i + j * CurrentCpuF16::EPR));
-            ay[j] = CurrentCpuF16::load(b_row.add(i + j * CurrentCpuF16::EPR));
+            unsafe {
+                ax[j] = CurrentCpuF16::load(a_row.add(i + j * CurrentCpuF16::EPR));
+                ay[j] = CurrentCpuF16::load(b_row.add(i + j * CurrentCpuF16::EPR));
 
-            sum[j] = CurrentCpuF16::vec_fma(sum[j], ax[j], ay[j]);
+                sum[j] = CurrentCpuF16::vec_fma(sum[j], ax[j], ay[j]);
+            }
         }
     }
 
-    CurrentCpuF16::vec_reduce(sum, &mut sumf);
+    unsafe { CurrentCpuF16::vec_reduce(sum, &mut sumf) };
 
     // leftovers
     for i in np..k {
-        sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+        sumf += unsafe { (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32() };
     }
-    *c = sumf;
+    unsafe { *c = sumf };
 }
 
 #[cfg(target_feature = "avx2")]
@@ -203,20 +211,22 @@ pub(crate) unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mu
 
     for i in (0..np).step_by(CurrentCpuBF16::STEP) {
         for j in 0..CurrentCpuBF16::n() {
-            ax[j] = CurrentCpuBF16::load(a_row.add(i + j * CurrentCpuBF16::EPR));
-            ay[j] = CurrentCpuBF16::load(b_row.add(i + j * CurrentCpuBF16::EPR));
+            unsafe {
+                ax[j] = CurrentCpuBF16::load(a_row.add(i + j * CurrentCpuBF16::EPR));
+                ay[j] = CurrentCpuBF16::load(b_row.add(i + j * CurrentCpuBF16::EPR));
 
-            sum[j] = CurrentCpuBF16::vec_fma(sum[j], ax[j], ay[j]);
+                sum[j] = CurrentCpuBF16::vec_fma(sum[j], ax[j], ay[j]);
+            }
         }
     }
 
-    CurrentCpuBF16::vec_reduce(sum, &mut sumf);
+    unsafe { CurrentCpuBF16::vec_reduce(sum, &mut sumf) };
 
     // leftovers
     for i in np..k {
-        sumf += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+        sumf += unsafe { (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32() };
     }
-    *c = sumf;
+    unsafe { *c = sumf };
 }
 
 #[cfg(not(target_feature = "avx2"))]
@@ -225,9 +235,9 @@ pub(crate) unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f
     // leftovers
     let mut sum = 0.0;
     for i in 0..k {
-        sum += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+        sum += unsafe { (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32() };
     }
-    *c = sum;
+    unsafe { *c = sum };
 }
 
 #[cfg(not(target_feature = "avx2"))]
@@ -236,7 +246,7 @@ pub(crate) unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mu
     // leftovers
     let mut sum = 0.0;
     for i in 0..k {
-        sum += (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32();
+        sum += unsafe { (*a_row.add(i)).to_f32() * (*b_row.add(i)).to_f32() };
     }
-    *c = sum;
+    unsafe { *c = sum };
 }

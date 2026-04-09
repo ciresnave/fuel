@@ -30,12 +30,20 @@
 //! [`Layer Normalization`]: https://arxiv.org/abs/1607.06450
 use candle::{DType, Module, Result, Tensor, D};
 
+/// Configuration for [`LayerNorm`].
+///
+/// Can be constructed from an `f64` epsilon value via `From<f64>`, or use
+/// `Default::default()` for standard settings (`eps=1e-5`, `remove_mean=true`,
+/// `affine=true`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerNormConfig {
+    /// Small constant added to the variance for numerical stability. Default: `1e-5`.
     pub eps: f64,
-    /// Whether to remove the mean or not, the default is true and when set to false, this turns
-    /// this layer into RmsNorm.
+    /// Whether to subtract the mean during normalization. Default: `true`.
+    /// When set to `false`, this layer behaves as RMS normalization.
     pub remove_mean: bool,
+    /// When `true` (the default), a learnable `bias` parameter is created. When `false`,
+    /// only the `weight` parameter is used.
     pub affine: bool,
 }
 
@@ -59,7 +67,31 @@ impl From<f64> for LayerNormConfig {
     }
 }
 
-// This layer norm version handles both weight and bias so removes the mean.
+impl LayerNormConfig {
+    /// Set the epsilon for numerical stability (default: `1e-5`).
+    pub fn with_eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    /// Disable mean subtraction; equivalent to RMS normalization.
+    pub fn no_mean_removal(mut self) -> Self {
+        self.remove_mean = false;
+        self
+    }
+
+    /// Disable the learnable `bias` parameter.
+    pub fn no_bias(mut self) -> Self {
+        self.affine = false;
+        self
+    }
+}
+
+/// Layer Normalization layer.
+///
+/// Normalizes the input over the last dimension using the mean and variance. Optionally
+/// applies a learnable affine transformation (scale and shift). When `remove_mean` is
+/// `false`, this behaves as RMS normalization. Implements [`Module`].
 #[derive(Clone, Debug)]
 pub struct LayerNorm {
     weight: Tensor,
@@ -69,6 +101,7 @@ pub struct LayerNorm {
 }
 
 impl LayerNorm {
+    /// Creates a new `LayerNorm` with both `weight` and `bias`, subtracting the mean.
     pub fn new(weight: Tensor, bias: Tensor, eps: f64) -> Self {
         Self {
             weight,
@@ -78,6 +111,7 @@ impl LayerNorm {
         }
     }
 
+    /// Creates a new `LayerNorm` with only a `weight` parameter (no bias), subtracting the mean.
     pub fn new_no_bias(weight: Tensor, eps: f64) -> Self {
         Self {
             weight,
@@ -87,6 +121,7 @@ impl LayerNorm {
         }
     }
 
+    /// Creates a `LayerNorm` that acts as RMS normalization (no mean removal, no bias).
     pub fn rms_norm(weight: Tensor, eps: f64) -> Self {
         Self {
             weight,
@@ -96,18 +131,22 @@ impl LayerNorm {
         }
     }
 
+    /// Returns a reference to the weight (scale) tensor.
     pub fn weight(&self) -> &Tensor {
         &self.weight
     }
 
+    /// Returns a reference to the bias tensor, if present.
     pub fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
     }
 
+    /// Returns the epsilon value used for numerical stability.
     pub fn eps(&self) -> f64 {
         self.eps
     }
 
+    /// Returns whether mean removal is enabled (`true` for LayerNorm, `false` for RmsNorm).
     pub fn remove_mean(&self) -> bool {
         self.remove_mean
     }
@@ -115,9 +154,15 @@ impl LayerNorm {
 
 impl Module for LayerNorm {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        use candle::Context;
+        let norm_size = self.weight.dim(0).unwrap_or(0);
+        let input_shape = x.shape().clone();
         if x.is_contiguous() && self.remove_mean {
             if let Some(bias) = self.bias.as_ref() {
-                return crate::ops::layer_norm(x, &self.weight, bias, self.eps as f32);
+                return crate::ops::layer_norm(x, &self.weight, bias, self.eps as f32)
+                    .with_context(|| {
+                        format!("LayerNorm(size={norm_size}): input shape {input_shape:?}")
+                    });
             }
         }
         let x_dtype = x.dtype();
@@ -140,9 +185,13 @@ impl Module for LayerNorm {
             None => Ok(x),
             Some(bias) => x.broadcast_add(bias),
         }
+        .with_context(|| format!("LayerNorm(size={norm_size}): input shape {input_shape:?}"))
     }
 }
 
+/// Creates a [`LayerNorm`] layer by loading parameters from a [`VarBuilder`](crate::VarBuilder).
+///
+/// Loads `weight` and (when `affine=true`) `bias` from the variable store.
 pub fn layer_norm<C: Into<LayerNormConfig>>(
     size: usize,
     config: C,
@@ -163,6 +212,7 @@ pub fn layer_norm<C: Into<LayerNormConfig>>(
     })
 }
 
+/// Creates a [`LayerNorm`] layer without a bias parameter via a [`VarBuilder`](crate::VarBuilder).
 pub fn layer_norm_no_bias(size: usize, eps: f64, vb: crate::VarBuilder) -> Result<LayerNorm> {
     let config = LayerNormConfig {
         eps,
@@ -177,18 +227,22 @@ pub fn layer_norm_no_bias(size: usize, eps: f64, vb: crate::VarBuilder) -> Resul
 pub struct RmsNorm(LayerNorm);
 
 impl RmsNorm {
+    /// Creates a new `RmsNorm` layer with the given weight and epsilon.
     pub fn new(weight: Tensor, eps: f64) -> Self {
         Self(LayerNorm::rms_norm(weight, eps))
     }
 
+    /// Unwraps the inner [`LayerNorm`].
     pub fn into_inner(self) -> LayerNorm {
         self.0
     }
 
+    /// Returns a reference to the weight (scale) tensor.
     pub fn weight(&self) -> &Tensor {
         self.0.weight()
     }
 
+    /// Returns the epsilon value used for numerical stability.
     pub fn eps(&self) -> f64 {
         self.0.eps()
     }
@@ -209,6 +263,7 @@ impl Module for RmsNorm {
     }
 }
 
+/// Creates an [`RmsNorm`] layer by loading the weight from a [`VarBuilder`](crate::VarBuilder).
 pub fn rms_norm(size: usize, eps: f64, vb: crate::VarBuilder) -> Result<RmsNorm> {
     let config = LayerNormConfig {
         eps,
