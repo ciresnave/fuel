@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "tensor-tools"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-candle = { workspace = true }
+fuel = { workspace = true }
 clap = { workspace = true }
 rayon = { workspace = true }
 safetensors = { workspace = true }

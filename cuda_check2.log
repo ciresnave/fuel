@@ -1,0 +1,236 @@
+warning: candle-kernels@0.10.2: Using 16 threads for compilation
+warning: candle-kernels@0.10.2: All kernels up-to-date, skipping compilation
+    Checking candle-cuda v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-cuda)
+    Checking candle-core v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-core)
+warning: unused import: `WithDType`
+ --> candle-core\src\cpu_backend\mod.rs:4:50
+  |
+4 | use crate::{DType, Error, Layout, Result, Shape, WithDType};
+  |                                                  ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: private item shadows public glob re-export
+  --> candle-core\src\cuda_backend\mod.rs:14:25
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                         ^^^^^
+   |
+note: the name `DType` in the type namespace is supposed to be publicly re-exported here
+  --> candle-core\src\cuda_backend\mod.rs:10:9
+   |
+10 | pub use candle_cuda::*;
+   |         ^^^^^^^^^^^^^^
+note: but the private item here shadows it
+  --> candle-core\src\cuda_backend\mod.rs:14:25
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                         ^^^^^
+   = note: `#[warn(hidden_glob_reexports)]` on by default
+
+warning: private item shadows public glob re-export
+  --> candle-core\src\cuda_backend\mod.rs:14:32
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                                ^^^^^^
+   |
+note: the name `Layout` in the type namespace is supposed to be publicly re-exported here
+  --> candle-core\src\cuda_backend\mod.rs:10:9
+   |
+10 | pub use candle_cuda::*;
+   |         ^^^^^^^^^^^^^^
+note: but the private item here shadows it
+  --> candle-core\src\cuda_backend\mod.rs:14:32
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                                ^^^^^^
+
+warning: private item shadows public glob re-export
+  --> candle-core\src\cuda_backend\mod.rs:14:40
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                                        ^^^^^^
+   |
+note: the name `Result` in the type namespace is supposed to be publicly re-exported here
+  --> candle-core\src\cuda_backend\mod.rs:10:9
+   |
+10 | pub use candle_cuda::*;
+   |         ^^^^^^^^^^^^^^
+note: but the private item here shadows it
+  --> candle-core\src\cuda_backend\mod.rs:14:40
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                                        ^^^^^^
+
+warning: private item shadows public glob re-export
+  --> candle-core\src\cuda_backend\mod.rs:14:48
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                                                ^^^^^
+   |
+note: the name `Shape` in the type namespace is supposed to be publicly re-exported here
+  --> candle-core\src\cuda_backend\mod.rs:10:9
+   |
+10 | pub use candle_cuda::*;
+   |         ^^^^^^^^^^^^^^
+note: but the private item here shadows it
+  --> candle-core\src\cuda_backend\mod.rs:14:48
+   |
+14 | use crate::{CpuStorage, DType, Layout, Result, Shape};
+   |                                                ^^^^^
+
+warning: unused import: `candle_core_types::error::private`
+  --> candle-core\src\error.rs:13:16
+   |
+13 | pub(crate) use candle_core_types::error::private;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::backend::BackendStorage`
+ --> candle-core\src\cpu_backend\utils.rs:2:5
+  |
+2 | use crate::backend::BackendStorage;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `rayon::prelude`
+  --> candle-core\src\cpu_backend\mod.rs:13:5
+   |
+13 | use rayon::prelude::*;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `backend::BackendStorage`
+ --> candle-core\src\quantized\mod.rs:2:5
+  |
+2 |     backend::BackendStorage, CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::backend::BackendStorage`
+   --> candle-core\src\quantized\cuda.rs:800:13
+    |
+800 |         use crate::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::fmt::Display`
+ --> candle-core\src\error.rs:6:5
+  |
+6 | use std::fmt::Display;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::backend::BackendStorage`
+   --> candle-core\src\sort.rs:158:13
+    |
+158 |         use crate::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `backend::BackendDevice`
+ --> candle-core\src\quantized\cuda.rs:3:13
+  |
+3 | use crate::{backend::BackendDevice, cuda_backend::WrapErr};
+  |             ^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1503:17
+     |
+1503 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+    --> candle-core\src\cpu_backend\mod.rs:1494:5
+     |
+1494 |     unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<CpuStorage> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1508:17
+     |
+1508 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1513:17
+     |
+1513 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1518:17
+     |
+1518 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1523:17
+     |
+1523 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1528:17
+     |
+1528 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1533:17
+     |
+1533 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1538:17
+     |
+1538 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1543:17
+     |
+1543 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1548:17
+     |
+1548 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning: function `vec_sum` is never used
+   --> candle-core\src\cpu\mod.rs:163:22
+    |
+163 | pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
+    |                      ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `candle-core` (lib) generated 24 warnings (run `cargo fix --lib -p candle-core` to apply 3 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.16s

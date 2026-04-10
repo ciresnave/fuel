@@ -1,0 +1,26 @@
+﻿[package]
+    categories.workspace = true
+    description          = "Inference orchestration layer for the Fuel ML framework."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-inference"
+    readme               = "README.md"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel              = { workspace = true }
+    fuel-transformers = { workspace = true }
+    rand                = { workspace = true }
+    serde               = { workspace = true }
+    serde_json          = { workspace = true }
+    tracing             = { workspace = true }
+
+[features]
+    accelerate = ["fuel-transformers/accelerate", "fuel/accelerate"]
+    cuda       = ["fuel-transformers/cuda", "fuel/cuda"]
+    cudnn      = ["fuel-transformers/cudnn", "fuel/cudnn"]
+    default    = []
+    metal      = ["fuel-transformers/metal", "fuel/metal"]
+    mkl        = ["fuel-transformers/mkl", "fuel/mkl"]

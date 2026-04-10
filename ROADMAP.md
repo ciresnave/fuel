@@ -1,4 +1,4 @@
-# Candle Fork — Roadmap
+﻿# Fuel Fork — Roadmap
 
 This document describes the current state of this fork, the structural and ergonomic
 problems it aims to solve, and the planned order of work.
@@ -28,41 +28,41 @@ stack flow downward only. No lower layer may depend on a higher one.
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
 │  Use-Case Orchestration                                                    │
-│  candle-inference, candle-training  (leaf crates — nothing depends on     │
+│  fuel-inference, fuel-training  (leaf crates — nothing depends on     │
 │  either of these)                                                          │
 │                                                                            │
-│  candle-inference: sampling, logits processing, KV-cache policy,          │
+│  fuel-inference: sampling, logits processing, KV-cache policy,          │
 │  token generation loops, speculative decoding, batching, streaming         │
 │  decode, cancellation, inference session abstractions                      │
 │                                                                            │
-│  candle-training: training loops, gradient accumulation, LR scheduling,   │
+│  fuel-training: training loops, gradient accumulation, LR scheduling,   │
 │  gradient clipping, mixed precision policy, run-time checkpointing,        │
 │  training session abstractions                                              │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Models                                                                    │
-│  candle-transformers  (will be restructured internally)                   │
+│  fuel-transformers  (will be restructured internally)                   │
 │  Architecture config structs, layer composition, forward passes,          │
 │  weight name mapping. No serving logic, no decode loops, no sessions.     │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  IO                                                                        │
-│  candle-core (safetensors, npy, pickle), candle-onnx                      │
+│  fuel-core (safetensors, npy, pickle), fuel-onnx                      │
 │  Bidirectional data exchange across any boundary: files, network,         │
 │  memory buffers. Checkpoint load and save, format translation, ONNX       │
 │  import/export, HF Hub integration glue, config normalization,            │
 │  tokenizer glue. To be consolidated.                                       │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  NN                                                                        │
-│  candle-nn                                                                 │
+│  fuel-nn                                                                 │
 │  Layers, losses, optimizers, parameter utilities, initialization,         │
 │  VarBuilder, VarMap. No model-family assumptions. No serving abstractions.│
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Foundation                                                                │
-│  candle-core                                                               │
+│  fuel-core                                                               │
 │  Tensors, devices, dtypes, shapes, layouts, base ops, autograd,           │
 │  storage backends, error types. No tokenization. No model-level concepts. │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Backends / Kernels                                                        │
-│  candle-kernels, candle-metal-kernels, candle-flash-attn, candle-ug       │
+│  fuel-kernels, fuel-metal-kernels, fuel-flash-attn, fuel-ug       │
 │  Hardware and runtime targets (CPU, CUDA, Metal) plus the concrete        │
 │  mathematical kernel implementations for each: matrix multiply, conv,     │
 │  flash attention, quantized dot products, SIMD/BLAS dispatch. This layer  │
@@ -71,7 +71,7 @@ stack flow downward only. No lower layer may depend on a higher one.
 │  losses, tokens, or any other ML abstraction.                              │
 │                                                                            │
 │  Foundation: `BackendDevice` and `BackendStorage` traits already exist    │
-│  in candle-core. CUDA and Metal are behind feature flags. Phase 5         │
+│  in fuel-core. CUDA and Metal are behind feature flags. Phase 5         │
 │  formalizes these as a published plugin contract and opens the type for   │
 │  third-party backends.                                                     │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -84,12 +84,12 @@ stack flow downward only. No lower layer may depend on a higher one.
 ### What is working well
 
 - Dependency direction between published crates is already mostly correct.
-  `candle-core` does not depend on `candle-nn`, which does not depend on
-  `candle-transformers`. The early-exit property is structurally present.
-- `candle-core` has a reasonable backend abstraction (CPU, CUDA, Metal).
-- Quantization has a meaningful home in `candle-core::quantized`, better
+  `fuel-core` does not depend on `fuel-nn`, which does not depend on
+  `fuel-transformers`. The early-exit property is structurally present.
+- `fuel-core` has a reasonable backend abstraction (CPU, CUDA, Metal).
+- Quantization has a meaningful home in `fuel-core::quantized`, better
   centralized than most frameworks at a comparable stage.
-- The breadth of model implementations in `candle-transformers` is genuinely
+- The breadth of model implementations in `fuel-transformers` is genuinely
   impressive and is a key asset.
 
 ### Identified problems
@@ -101,21 +101,21 @@ public API items across all crates lack doc comments or runnable examples in the
 documentation itself.
 
 **Ergonomics / developer experience**
-Using Candle non-trivially requires understanding `Var`, `VarBuilder`, `VarMap`,
+Using Fuel non-trivially requires understanding `Var`, `VarBuilder`, `VarMap`,
 device management, and dtype handling simultaneously before anything works. There
 is no convenience path for common cases. Error messages often carry the right
 information but do not always present it in a form that immediately tells you what
 went wrong and how to fix it.
 
 **Inference and training concerns are scattered**
-`candle-nn` currently contains `kv_cache.rs` and `sampling.rs`.
-`candle-transformers` contains `generation/` with `LogitsProcessor` and the
+`fuel-nn` currently contains `kv_cache.rs` and `sampling.rs`.
+`fuel-transformers` contains `generation/` with `LogitsProcessor` and the
 `Sampling` enum, as well as a `pipelines/` directory intended for orchestration
 logic. These are inference-specific tools with no natural home below the
-orchestration layer. The consequence is that `candle-nn` carries inference
+orchestration layer. The consequence is that `fuel-nn` carries inference
 weight that pure layer-building users never need.
 
-**`candle-transformers` is a flat namespace with no internal structure**
+**`fuel-transformers` is a flat namespace with no internal structure**
 Over 100 model files coexist in a single `models/` directory alongside their
 quantized variants, shared utilities, object detection helpers, and generation
 logic. There is no enforced separation between architecture definitions and
@@ -140,21 +140,21 @@ stable but phases within a group can proceed in parallel.
 *Immediate. Prerequisite for everything else. Without this, engineers new to the
 fork can't get a working build.*
 
-#### What Candlelight revealed
+#### What Fuellight revealed
 
-The Candle ecosystem consists of more than a dozen crates that must be kept in
+The Fuel ecosystem consists of more than a dozen crates that must be kept in
 version sync with each other. In practice they are not. Engineers who try to use
-more than `candle-core` + `candle-nn` find that:
+more than `fuel-core` + `fuel-nn` find that:
 
-- `candle-optimisers`, `candle-layer-norm`, `candle-bhop`, `candle-einops`,
-  `candle-birnn`, `candle-lstm`, `candle-crf`, and `candle-approx` each require
-  separate forks to compile against the current Candle version.
-- `candle-layer-norm` does not build on Windows with CUDA 13.0 without a
+- `fuel-optimisers`, `fuel-layer-norm`, `fuel-bhop`, `fuel-einops`,
+  `fuel-birnn`, `fuel-lstm`, `fuel-crf`, and `fuel-approx` each require
+  separate forks to compile against the current Fuel version.
+- `fuel-layer-norm` does not build on Windows with CUDA 13.0 without a
   patch. The Windows + MSVC path is not tested upstream.
-- `candle-cublaslt` (cuBLASLt bindings for fused GEMM) and `candle-cuda-vmm`
+- `fuel-cublaslt` (cuBLASLt bindings for fused GEMM) and `fuel-cuda-vmm`
   (CUDA Virtual Memory Management for elastic KV cache) have no home in the
   main crate tree at all.
-- The result is that every downstream project must maintain its own Candlelight
+- The result is that every downstream project must maintain its own Fuellight
   fork just to get a building dependency set.
 
 This means the ecosystem is only usable by engineers willing to maintain those
@@ -162,26 +162,26 @@ forks themselves. The barrier is too high to attract contributors or users.
 
 #### Work items
 
-- [x] Audit every ecosystem crate (`candle-optimisers`, `candle-layer-norm`,
-      `candle-bhop`, `candle-einops`, `candle-birnn`, `candle-lstm`,
-      `candle-crf`, `candle-approx`) for version compatibility and build
-      failures against the current workspace version of `candle-core`.
+- [x] Audit every ecosystem crate (`fuel-optimisers`, `fuel-layer-norm`,
+      `fuel-bhop`, `fuel-einops`, `fuel-birnn`, `fuel-lstm`,
+      `fuel-crf`, `fuel-approx`) for version compatibility and build
+      failures against the current workspace version of `fuel-core`.
       *Findings documented in `COMPATIBILITY.md`.*
 - [x] Fix all build failures, including the Windows + CUDA 13.0 / MSVC
-      path for `candle-layer-norm`. Fixed `gen` reserved keyword in
-      `candle-core/src/cuda_backend/device.rs` (Rust edition 2024 reserved
+      path for `fuel-layer-norm`. Fixed `gen` reserved keyword in
+      `fuel-core/src/cuda_backend/device.rs` (Rust edition 2024 reserved
       `gen` as a keyword; replaced with `r#gen` at the call site to
-      `candle_ug::cuda::code_gen::gen`). CUDA + cudnn features both check
+      `fuel_ug::cuda::code_gen::gen`). CUDA + cudnn features both check
       clean; CUDA tests pass on RTX 4070.
-- [x] Bring `candle-cublaslt` and `candle-cuda-vmm` into this workspace as
+- [x] Bring `fuel-cublaslt` and `fuel-cuda-vmm` into this workspace as
       first-class crates rather than external dependencies (or, at minimum,
       ensure they are version-pinned and buildable).
-- [x] Extract a new `candle-vmm` crate from `candle-cuda-vmm`. The page-tracking
+- [x] Extract a new `fuel-vmm` crate from `fuel-cuda-vmm`. The page-tracking
       logic in `VirtualMemoryPool` (page state table, physical-handle map,
       allocation/deallocation math) is already free of any CUDA-specific code —
       CUDA calls appear at exactly three sites that map cleanly to an 8-method
-      `VmmBackend` trait. `candle-vmm` holds the trait and the generic pool
-      structs (`VirtualMemoryPool<B>`, `SharedMemoryPool<B>`); `candle-cuda-vmm`
+      `VmmBackend` trait. `fuel-vmm` holds the trait and the generic pool
+      structs (`VirtualMemoryPool<B>`, `SharedMemoryPool<B>`); `fuel-cuda-vmm`
       becomes `impl VmmBackend for CudaVmmBackend` with type aliases for
       backward compatibility. Benefits: (a) ROCm's HIP VMM API is a near-exact
       mirror of CUDA's, so Phase 5 multi-backend support gets elastic KV cache
@@ -214,10 +214,10 @@ without any manual patching or private fork git dependencies.
 
 *Low risk. Reversible. Highest return per unit of effort.*
 
-- [x] Add `# Example` doc blocks to every public API in `candle-core`
-- [x] Add `# Example` doc blocks to every public API in `candle-nn`
-- [x] Add `# Example` doc blocks to every public API in `candle-datasets`
-- [x] Add `# Example` doc blocks to every public API in `candle-onnx`
+- [x] Add `# Example` doc blocks to every public API in `fuel-core`
+- [x] Add `# Example` doc blocks to every public API in `fuel-nn`
+- [x] Add `# Example` doc blocks to every public API in `fuel-datasets`
+- [x] Add `# Example` doc blocks to every public API in `fuel-onnx`
 - [x] Add a top-level decision guide (in `README.md` or a dedicated `GUIDE.md`)
       routing users by intent: tensor math, custom layers, pretrained models,
       inference pipelines, ONNX, custom backends
@@ -245,33 +245,33 @@ without any manual patching or private fork git dependencies.
 
 The goal is to give inference-specific and training-specific tooling their own
 canonical homes without changing anything below them in the dependency graph.
-Nothing in `candle-core`, `candle-nn`, or `candle-transformers` will depend on
+Nothing in `fuel-core`, `fuel-nn`, or `fuel-transformers` will depend on
 either of these crates. They are opt-in by definition.
 
 **On naming and scope**
 These crates are named for what they orchestrate, not for what they are made of.
-`candle-inference` is the right name because the crate exists to support the act
-of running inference — not because it is a generic "runtime." `candle-training`
+`fuel-inference` is the right name because the crate exists to support the act
+of running inference — not because it is a generic "runtime." `fuel-training`
 exists to support the act of training. Domain-specific applications (a
 recommendation engine, a categorization pipeline) are applications composed from
 these building blocks, not parts of the framework; they belong in user code or
 separate ecosystem projects, not in this repository.
 
-**Create `candle-inference` as a leaf crate**
+**Create `fuel-inference` as a leaf crate**
 
-Move into `candle-inference`:
+Move into `fuel-inference`:
 
-- `candle-nn/src/kv_cache.rs` — all cache implementations (`Cache`, `KvCache`,
+- `fuel-nn/src/kv_cache.rs` — all cache implementations (`Cache`, `KvCache`,
   `RotatingKvCache`, `ConcatKvCache`, `ScatteredKvCache`)
-- `candle-nn/src/sampling.rs` — `gumbel_softmax`
-- `candle-transformers/src/generation/mod.rs` — `LogitsProcessor`, `Sampling`,
+- `fuel-nn/src/sampling.rs` — `gumbel_softmax`
+- `fuel-transformers/src/generation/mod.rs` — `LogitsProcessor`, `Sampling`,
   all logit processing strategies
-- `candle-transformers/src/pipelines/` — the planned (currently stub) pipeline
+- `fuel-transformers/src/pipelines/` — the planned (currently stub) pipeline
   and session abstractions belong here
 - Any future: batching, streaming decode, token generation loops, speculative
   decoding, cancellation, inference session management
 
-**Create `candle-training` as a leaf crate**
+**Create `fuel-training` as a leaf crate**
 
 Initially empty beyond its scaffolding. As training-orchestration code accumulates
 (whether migrated from examples or written fresh), this is where it lives:
@@ -285,15 +285,15 @@ Initially empty beyond its scaffolding. As training-orchestration code accumulat
 - Training session management
 
 **Key property to document explicitly on both crates:**
-> Nothing in the Candle ecosystem depends on `candle-inference` or
-> `candle-training`. Both are leaf crates. They aggregate; they do not define.
+> Nothing in the Fuel ecosystem depends on `fuel-inference` or
+> `fuel-training`. Both are leaf crates. They aggregate; they do not define.
 
 #### Inference capabilities to contribute from Lightbulb
 
-Lightbulb is an inference engine built on top of this Candle fork that was
+Lightbulb is an inference engine built on top of this Fuel fork that was
 developed independently because the pieces needed to build a production-quality
-inference engine were not available or not usable in Candle as-is. Its
-implementations are now the intended source material for `candle-inference`.
+inference engine were not available or not usable in Fuel as-is. Its
+implementations are now the intended source material for `fuel-inference`.
 Contributing them back avoids others having to reinvent the same work.
 
 *KV cache management* (from `lightbulb::cache`):
@@ -350,16 +350,16 @@ Contributing them back avoids others having to reinvent the same work.
 
 ### Phase 3 — Structural: model area organization ✅ (directory reorganization complete)
 
-*Medium complexity. `candle-transformers` internal only. Published API surface unchanged.*
+*Medium complexity. `fuel-transformers` internal only. Published API surface unchanged.*
 
-`candle-transformers` is approaching the point where its flat structure creates
+`fuel-transformers` is approaching the point where its flat structure creates
 genuine contributor confusion. Reorganize its internal module hierarchy before
 it grows further.
 
 Proposed internal structure (not new crates — internal modules only, for now):
 
 ```text
-candle-transformers/src/
+fuel-transformers/src/
   models/
     llm/          LLaMA, Mistral, Falcon, Phi, Gemma, Qwen, DeepSeek, etc.
     vision/       ViT, DINOv2, EfficientNet, ResNet, CLIP, SigLIP, etc.
@@ -374,38 +374,38 @@ candle-transformers/src/
 Separate architecture definitions from inference glue within each model file:
 
 - Config structs and forward passes stay in `models/`
-- KV-cache handling, decode loops, and sampling hooks move to `candle-inference`
+- KV-cache handling, decode loops, and sampling hooks move to `fuel-inference`
 
 #### Model-layer capabilities to contribute from Lightbulb
 
 Lightbulb also accumulated implementations at the model/kernel layer that
-belong in `candle-transformers` or `candle-nn`, not in `candle-inference`.
+belong in `fuel-transformers` or `fuel-nn`, not in `fuel-inference`.
 
-*Fused operations* (from `lightbulb::model::fused_kernels`) — **added to `candle-nn/src/fused_ops.rs`** ✅:
+*Fused operations* (from `lightbulb::model::fused_kernels`) — **added to `fuel-nn/src/fused_ops.rs`** ✅:
 
 - **`fused_linear_silu`**: Combines linear projection + SiLU activation in a
   single pass, eliminating one intermediate tensor allocation. ~11% bandwidth
   reduction in MLP forward passes.
 - **`fused_matmul_residual`**: Combines the output write of matmul with the
   residual addition, avoiding a second memory round-trip.
-- **`fused_rmsnorm`**: Portable fallback using candle-core tensor ops so
+- **`fused_rmsnorm`**: Portable fallback using fuel-core tensor ops so
   RMSNorm does not materialize a separate squared-norms tensor. Provides a
-  stable dispatch point for a future `candle-layer-norm` CUDA kernel.
+  stable dispatch point for a future `fuel-layer-norm` CUDA kernel.
 
 *Unified quantized/float linear layer* (from `lightbulb::model`):
 
-- **`QuantizableLinear`**: An enum over `candle_nn::Linear` (fp32/fp16/bf16
+- **`QuantizableLinear`**: An enum over `fuel_nn::Linear` (fp32/fp16/bf16
   from safetensors) and `QMatMul` (Q4\_0, Q4\_K, Q8\_0, etc. from GGUF),
   both implementing the `Module` trait identically. Inference code written
   against `QuantizableLinear` works with either weight format without changes.
-  This belongs in `candle-nn` so that every model can adopt it without
+  This belongs in `fuel-nn` so that every model can adopt it without
   importing an external crate.
 
 *LoRA adapter support* (from `lightbulb::lora`):
 
 - Low-Rank Adaptation weight injection as a `Module`-compatible wrapper.
-  Currently in `candle-examples`; should be a first-class type in
-  `candle-nn` so adapter-enabled models don't need to re-implement it.
+  Currently in `fuel-examples`; should be a first-class type in
+  `fuel-nn` so adapter-enabled models don't need to re-implement it.
 
 *Multi-GPU support* (from `lightbulb::multi_gpu`):
 
@@ -420,131 +420,131 @@ belong in `candle-transformers` or `candle-nn`, not in `candle-inference`.
 - **Distributed cache**: Cache state synchronisation protocol across GPUs for
   paged and prefix caches.
 
-The multi-GPU work belongs in `candle-transformers` (or a new
-`candle-parallel` crate if it grows large enough) because it is model-topology
+The multi-GPU work belongs in `fuel-transformers` (or a new
+`fuel-parallel` crate if it grows large enough) because it is model-topology
 infrastructure, not inference policy.
 
 #### Phase 2 work items
 
-- [x] Scaffold `candle-inference` crate (re-exports `kv_cache`, `generation`,
+- [x] Scaffold `fuel-inference` crate (re-exports `kv_cache`, `generation`,
       `sampling` from their current locations for discoverability; physical code
       migration is the next step).
-- [x] Scaffold `candle-training` crate (empty framework; training-loop
+- [x] Scaffold `fuel-training` crate (empty framework; training-loop
       abstractions will migrate here as they are written or ported).
 - [x] Update workspace `Cargo.toml` to include both crates in the `[members]`
       list and `[workspace.dependencies]` so all crates can reference them
       without version drift.
-- [x] Add `[x] QuantizableLinear` enum to `candle-nn` — wraps `Linear` (float)
+- [x] Add `[x] QuantizableLinear` enum to `fuel-nn` — wraps `Linear` (float)
       and `QMatMul` (quantized/GGUF) behind a single `Module`-compatible
       interface. `dequantized_weight()` helper returns the weight as a plain
       tensor regardless of storage format.
 - [x] Add `LoraLinear` type and `lora_linear` / `lora_linear_peft` /
-      `lora_linear_with_base` constructors to `candle-nn`. LoRA adapters are
+      `lora_linear_with_base` constructors to `fuel-nn`. LoRA adapters are
       now a first-class type — no external crate or per-model reimplementation
       required. `merge_weights()` bakes the adapter into a plain `Linear` for
       zero-overhead export.
-- [x] Physically move `candle-nn/src/kv_cache.rs` into `candle-core` (better
-      than `candle-inference` — avoids circular deps entirely). `candle-nn`
-      now has a 7-line backward-compat shim (`pub use candle::kv_cache::*`);
-      `candle-inference` re-exports from `candle::kv_cache::*`. All existing
-      callers are unaffected. Doctest references updated to `candle_core::`.
-- [x] Physically move `candle-nn/src/sampling.rs` into `candle-core` (same
-      reasoning — `candle-core` is at the bottom of the dep graph, no cycle
-      possible). `candle-nn` now has a 7-line shim (`pub use candle::sampling::*`);
-      `candle-inference` re-exports from `candle::sampling::*`. `candle-inference`
-      no longer depends on `candle-nn` at all.
-- [x] Decouple `candle-transformers/src/generation/mod.rs` from `candle-nn`:
-      replaced `candle_nn::sampling::gumbel_softmax` with
-      `candle::sampling::gumbel_softmax` (now in `candle-core`) and replaced
-      `candle_nn::ops::softmax_last_dim` with an inline numerically stable
-      softmax using only `candle-core` ops (`max_keepdim`, `broadcast_sub`,
+- [x] Physically move `fuel-nn/src/kv_cache.rs` into `fuel-core` (better
+      than `fuel-inference` — avoids circular deps entirely). `fuel-nn`
+      now has a 7-line backward-compat shim (`pub use fuel::kv_cache::*`);
+      `fuel-inference` re-exports from `fuel::kv_cache::*`. All existing
+      callers are unaffected. Doctest references updated to `fuel_core::`.
+- [x] Physically move `fuel-nn/src/sampling.rs` into `fuel-core` (same
+      reasoning — `fuel-core` is at the bottom of the dep graph, no cycle
+      possible). `fuel-nn` now has a 7-line shim (`pub use fuel::sampling::*`);
+      `fuel-inference` re-exports from `fuel::sampling::*`. `fuel-inference`
+      no longer depends on `fuel-nn` at all.
+- [x] Decouple `fuel-transformers/src/generation/mod.rs` from `fuel-nn`:
+      replaced `fuel_nn::sampling::gumbel_softmax` with
+      `fuel::sampling::gumbel_softmax` (now in `fuel-core`) and replaced
+      `fuel_nn::ops::softmax_last_dim` with an inline numerically stable
+      softmax using only `fuel-core` ops (`max_keepdim`, `broadcast_sub`,
       `exp`, `sum_keepdim`, `broadcast_div`). Generation stays in
-      `candle-transformers` — moving it to `candle-inference` would require
-      `candle-transformers` to depend on `candle-inference`, violating the
-      leaf principle. `candle-inference` re-exports from
-      `candle_transformers::generation` — the public API is already in the
+      `fuel-transformers` — moving it to `fuel-inference` would require
+      `fuel-transformers` to depend on `fuel-inference`, violating the
+      leaf principle. `fuel-inference` re-exports from
+      `fuel_transformers::generation` — the public API is already in the
       right namespace for callers.
 
 **Phase 2 current status**: Scaffolding is complete. Both crates exist in the
-workspace and `cargo check` passes. `candle-inference` is a re-export facade
+workspace and `cargo check` passes. `fuel-inference` is a re-export facade
 surfacing `kv_cache`, `sampling`, and `generation` from their current locations
-— no physical code migration has occurred yet. `candle-training` is an empty
+— no physical code migration has occurred yet. `fuel-training` is an empty
 scaffold with documentation describing what will live there. The Lightbulb
 inference and scheduling capabilities listed above remain to be contributed:
 
 - [x] Contribute prefix caching (hash-based KV reuse for shared prompt prefixes).
-      Implemented `PrefixCache` in `candle-inference/src/prefix_cache.rs` — stores
+      Implemented `PrefixCache` in `fuel-inference/src/prefix_cache.rs` — stores
       per-layer `(K, V)` tensor pairs keyed by token-sequence hash with LRU eviction.
       `lookup()`, `insert()`, `longest_prefix_match()`, `cached_seq_len()`.
       10 unit tests, 1 doctest, 0 failures.
 - [x] Contribute composable eviction policies (`EvictionPolicy` trait,
       `VotingAggregator`, LRU, H2O). Implemented in
-      `candle-inference/src/eviction.rs` — `EvictionPolicy` trait with `score()`
+      `fuel-inference/src/eviction.rs` — `EvictionPolicy` trait with `score()`
       method, `LruPolicy` (recency-based), `H2oPolicy` (attention-importance),
       `VotingAggregator` (weighted combination with `select_keep()`/`select_evict()`).
       10 unit tests, 4 doctests, 0 failures.
 - [x] Contribute KV cache compression (KIVI quantization, R-KV importance
       scoring, low-rank approximation). Implemented in
-      `candle-inference/src/kv_compress.rs` — `KvCompressor` trait with
+      `fuel-inference/src/kv_compress.rs` — `KvCompressor` trait with
       `CompressedKv` decompress round-trip. Three strategies: `KiviCompressor`
       (2/4-bit per-channel asymmetric quantization), `RkvCompressor`
       (importance-redundancy scoring with budget fraction and redundancy
       weight), `LowRankCompressor` (rank-R mean-centered projection).
       20 unit tests, 1 doctest, 0 failures.
 - [x] Contribute segmented eviction (`SpanRegistry`, per-span tracking).
-      Implemented `SpanRegistry` in `candle-inference/src/segmented_eviction.rs` —
+      Implemented `SpanRegistry` in `fuel-inference/src/segmented_eviction.rs` —
       span-level KV cache management where logical segments (system prompts,
       turns, documents, tool outputs) are tracked and evicted as complete units.
       `SpanKind`-based priority, pin/unpin, custom priority, FIFO tie-breaking,
       `plan_eviction()` produces `EvictionPlan` with position ranges.
       13 unit tests, 1 doctest, 0 failures.
 - [x] Contribute tiered storage (GPU → CPU → Disk demotion/promotion).
-      Implemented `TieredStore` in `candle-inference/src/tiered_storage.rs` —
+      Implemented `TieredStore` in `fuel-inference/src/tiered_storage.rs` —
       GPU/CPU/Disk tiers with byte-budget tracking, `demote()`/`promote()`
       returning `TierTransfer` descriptors, position range preservation for
       RoPE re-injection, access-count-based demotion candidate selection,
       `touch()`, unbounded disk tier. 17 unit tests, 1 doctest, 0 failures.
 - [x] Contribute streaming policy (StreamingLLM sink-token + recent-window).
-      Implemented `StreamingPolicy` in `candle-inference/src/streaming.rs` —
+      Implemented `StreamingPolicy` in `fuel-inference/src/streaming.rs` —
       sink-token + recent-window strategy (Xiao et al., ICLR 2024).
       `select_keep()`, `select_evict()`, `position_ids()` for RoPE correction,
       `needs_eviction()`. 12 unit tests, 1 doctest, 0 failures.
 - [x] Contribute memory-aware scheduler (budget tracking, priority queue,
       eviction-pressure admission control). Implemented `MemoryScheduler` in
-      `candle-inference/src/scheduler.rs` — byte-budget tracking, 4-level
+      `fuel-inference/src/scheduler.rs` — byte-budget tracking, 4-level
       `Priority` (Low/Normal/High/Critical), pressure-threshold gating,
       `try_admit()`/`release()`/`drain_queue()`/`update_usage()`.
       11 unit tests, 1 doctest, 0 failures.
 - [x] Contribute speculative decoding (draft/verify pattern, auto-fallback).
-      Implemented in `candle-inference/src/speculative.rs` —
+      Implemented in `fuel-inference/src/speculative.rs` —
       `verify_draft()` implements the core accept/reject algorithm comparing
       draft vs target log-probabilities. `SpeculativeConfig` (draft_len,
       acceptance thresholds), `SpeculativeStats` (rolling acceptance rate,
       auto-fallback detection). Deterministic `pseudo_uniform()` for
       reproducible verification. 9 unit tests, 0 failures.
 - [x] Contribute chunked prefill (bounded TTFT, decode interleaving).
-      Implemented `ChunkedPrefill` in `candle-inference/src/chunked_prefill.rs` —
+      Implemented `ChunkedPrefill` in `fuel-inference/src/chunked_prefill.rs` —
       splits long prompts into bounded-size chunks with `PrefillChunk` yielding
       tokens, `index_pos`, and `is_last` flag. Supports reset, progress
       tracking, and arbitrary chunk sizes. 11 unit tests, 1 doctest, 0 failures.
 - [x] Contribute MoE routing (capacity-aware top-K, Token Drop / Expanded Drop).
-      Implemented `MoeRouter` in `candle-inference/src/moe_routing.rs` —
+      Implemented `MoeRouter` in `fuel-inference/src/moe_routing.rs` —
       top-K softmax gating, `OverflowPolicy` (TokenDrop/NoDrop), per-expert
       capacity control, `ExpertBatch` construction, expert load distribution.
       11 unit tests, 1 doctest, 0 failures.
 - [x] Contribute context compression (conversation summarization for long contexts).
-      Implemented `ContextCompressor` in `candle-inference/src/context_compress.rs` —
+      Implemented `ContextCompressor` in `fuel-inference/src/context_compress.rs` —
       turn-level token budgeting with `Role` (System/User/Assistant/Tool),
       recency × importance scoring, `plan_compression()` selecting lowest-scored
       turns, `mark_compressed()` for caller-driven summarisation, pinned turns,
       compressed fraction tracking. 12 unit tests, 1 doctest, 0 failures.
 - [x] Contribute tool call infrastructure (structured parsing, dispatch, result injection).
-      Implemented in `candle-inference/src/tool_call.rs` — `ToolRegistry` with
+      Implemented in `fuel-inference/src/tool_call.rs` — `ToolRegistry` with
       `ToolDef`/`ParamDef` schema, `ToolCall` parsing/validation (required
       params, unknown params, JSON check), `ToolResult` with
       `format_for_injection()`, `extract_tool_calls()` heuristic JSON extractor,
       `system_prompt()` generation. 20 unit tests, 1 doctest, 0 failures.
-- [x] Populate `candle-training` with training loop abstractions, gradient
+- [x] Populate `fuel-training` with training loop abstractions, gradient
       accumulation, LR schedulers, gradient clipping, checkpoint save/resume.
       Implemented 5 modules: `lr_scheduler` (6 schedulers: constant, step decay,
       cosine annealing, linear warmup, cosine-with-warmup, sequential
@@ -553,12 +553,12 @@ inference and scheduling capabilities listed above remain to be contributed:
       `checkpoint` (save/load with epoch, step, and named metrics metadata),
       `training_loop` (composable driver wiring clipping + scheduling + logging).
       31 tests (17 unit + 14 doctest), 0 failures. Mixed-precision policy is
-      deferred — it requires `DType` autocast hooks in `candle-core` that do
+      deferred — it requires `DType` autocast hooks in `fuel-core` that do
       not yet exist.
 
 #### Phase 3 work items
 
-- [x] Create category subdirectory structure in `candle-transformers/src/models/`
+- [x] Create category subdirectory structure in `fuel-transformers/src/models/`
       (`llm/`, `vision/`, `audio/`, `diffusion/`, `multimodal/`, `encoders/`,
       `common/`, `quantized/`)
 - [x] Move LLM models (LLaMA, Mistral, Falcon, Phi, Gemma, Qwen, DeepSeek,
@@ -576,7 +576,7 @@ inference and scheduling capabilities listed above remain to be contributed:
 - [x] Consolidate quantized model variants into `quantized/` subdirectory
 - [x] Contribute Lightbulb multi-GPU support (tensor parallelism, pipeline
       parallelism, device topology, distributed cache) to a new
-      `candle-parallel` crate. Implemented 5 modules with 58 tests:
+      `fuel-parallel` crate. Implemented 5 modules with 58 tests:
       - `topology.rs`: `DeviceTopology` graph with `DeviceInfo`, `DeviceKind`,
         `Interconnect` enum (NvLink/PCIe/InfinityFabric/SharedMemory/Network),
         `Link` with bandwidth/latency, `fastest_peer()`, `transfer_time_us()`.
@@ -604,14 +604,14 @@ inference and scheduling capabilities listed above remain to be contributed:
 *Ongoing. Parallel with other phases. Highest impact on adoption.*
 
 **Error messages with shape context**
-Candle's error types already carry shape information in many cases. The goal is
+Fuel's error types already carry shape information in many cases. The goal is
 to ensure this information surfaces consistently in a form that immediately
 identifies the operation, the shapes involved, and what was expected. An error
 that reads "expected `(batch, seq, 768)`, got `(batch, seq, 512)` in layer
 `output_proj`" eliminates a class of debugging that currently requires reading
 source code.
 
-Shape-context `.with_context()` wrapping status in `candle-nn`:
+Shape-context `.with_context()` wrapping status in `fuel-nn`:
 
 - [x] `Linear` — format includes in/out features and input shape
 - [x] `Conv1d` — format includes in/out channels, kernel size, input shape
@@ -629,7 +629,7 @@ Shape-context `.with_context()` wrapping status in `candle-nn`:
 **Initialization convenience path** ✅
 Currently getting a trainable model running requires understanding `Var`,
 `VarBuilder`, `VarMap`, and their relationships before anything produces output.
-`TrainingContext` (added to `candle-nn`) bundles all four into a single struct
+`TrainingContext` (added to `fuel-nn`) bundles all four into a single struct
 with `cpu_f32()` / `cpu_bf16()` shorthands, `vb()` / `vb_pp()` for building,
 `vars()` for the optimizer, and `varmap()` for checkpointing.
 
@@ -643,7 +643,7 @@ Fluent builder methods (`.with_lr()`, `.with_stride()`, `.no_bias()`, etc.) adde
 - `BatchNormConfig` — `with_eps`, `no_mean_removal`, `no_affine`, `with_momentum`
 
 - [x] **Function and parameter naming audit**: Comprehensive audit of all public
-      API names across `candle-core` and `candle-nn`. Added non-breaking
+      API names across `fuel-core` and `fuel-nn`. Added non-breaking
       descriptive aliases for the most confusing APIs:
   - `Tensor::transpose_last_two()` → alias for `t()`
   - `Tensor::matvec()` → alias for `mv()`
@@ -660,17 +660,17 @@ failure modes, and a runnable example. Phase 1 begins this work; Phase 4
 completes it by raising quality beyond the minimum bar.
 
 - [x] **`cargo doc` warning elimination**: Fixed all rustdoc warnings across
-      `candle-core` (13 warnings: unresolved cross-crate links, bare URLs),
-      `candle-nn` (15 warnings: unresolved links, empty code blocks, ambiguous
-      paths), and `candle-transformers` (39 warnings: 16 double-semicolons `;;`
+      `fuel-core` (13 warnings: unresolved cross-crate links, bare URLs),
+      `fuel-nn` (15 warnings: unresolved links, empty code blocks, ambiguous
+      paths), and `fuel-transformers` (39 warnings: 16 double-semicolons `;;`
       in real code, 5 `[CLS]`/`[GH]`/`[CSM]` bracket-token links, 3 private
       item links, 14 bare URLs). Zero warnings now emitted by any of the three
-      packages (the 6 remaining `candle-core` "unused doc comment" warnings are
+      packages (the 6 remaining `fuel-core` "unused doc comment" warnings are
       upstream macro-generated items not fixable without changing the macro).
 
-- [x] **`cargo test --doc` full compliance**: Fixed all 167 candle-transformers
+- [x] **`cargo test --doc` full compliance**: Fixed all 167 fuel-transformers
       doctest failures (887 now pass, 0 fail). Seven root causes addressed:
-      (1) `candle_core` → `candle` import fix across 49 files (130 failures);
+      (1) `fuel_core` → `fuel` import fix across 49 files (130 failures);
       (2) `unimplemented!()` examples changed to `no_run` in 11 files (17 failures);
       (3) pub(crate) field assertions removed from mixtral/stable_lm doctests (4);
       (4) `pub use` added for `VarBuilder` in quantized_rwkv_v5/v6 (4);
@@ -683,22 +683,22 @@ completes it by raising quality beyond the minimum bar.
 
 ### Phase 5 — Backend modularity and pluggable dispatch
 
-*Large scope. Affects only the Backends/Kernels layer and candle-core's Device
+*Large scope. Affects only the Backends/Kernels layer and fuel-core's Device
 type. Layers 1–4 are untouched and do not need to wait for this phase.*
 
 #### Starting point — what already exists
 
-The seam is present. `candle-core/src/backend.rs` defines `BackendDevice` and
+The seam is present. `fuel-core/src/backend.rs` defines `BackendDevice` and
 `BackendStorage` as associated-type traits; CPU, CUDA, and Metal all implement
 them. CUDA and Metal are already behind Cargo feature flags, meaning a
-CPU-only user never compiles GPU code. The kernel crates (`candle-kernels`,
-`candle-metal-kernels`, `candle-flash-attn`, `candle-ug`) are already separate
-from `candle-core`.
+CPU-only user never compiles GPU code. The kernel crates (`fuel-kernels`,
+`fuel-metal-kernels`, `fuel-flash-attn`, `fuel-ug`) are already separate
+from `fuel-core`.
 
 What is absent:
 
 - The `Device` enum is closed: `Cpu`, `Cuda(CudaDevice)`, `Metal(MetalDevice)`.
-  Adding a fourth backend means modifying `candle-core`, which is a breaking
+  Adding a fourth backend means modifying `fuel-core`, which is a breaking
   change. Third parties cannot extend the type without forking.
 - Routing is device-level. Once a tensor has a `Device`, every operation on it
   uses that device's single backend. There is no mechanism for per-operation
@@ -712,7 +712,7 @@ What is absent:
 #### Reference point — faster-blaster
 
 The faster-blaster project (sibling workspace) is a fully-realized modular
-dispatch system for linear algebra. Studying it sharpens what Candle's backend
+dispatch system for linear algebra. Studying it sharpens what Fuel's backend
 story should eventually look like:
 
 - Each backend is a plugin with a `probe-score-init` lifecycle. Plugins score
@@ -736,7 +736,7 @@ story should eventually look like:
   the next GEMM goes to cuBLAS if the DAG planner determines the PCIe round trip
   is worth it.
 
-This is the far end of what a modular backend system can look like. Candle's
+This is the far end of what a modular backend system can look like. Fuel's
 path arrives there through three well-sequenced tiers. None of them require
 changing anything above the Backends/Kernels layer.
 
@@ -745,7 +745,7 @@ changing anything above the Backends/Kernels layer.
 This is a documentation-only change.
 
 - [x] Document the `cuda` and `metal` Cargo feature flags prominently: in
-  `candle-core/src/lib.rs` (feature table added to crate header) and the top-level
+  `fuel-core/src/lib.rs` (feature table added to crate header) and the top-level
   `README.md` (new "Cargo feature flags" section with table + code examples).
 - [x] Add a one-line note to each feature confirming that omitting it produces a
   clean CPU-only build with no GPU code compiled in.
@@ -759,7 +759,7 @@ implementation details with no documentation. Promote them to a published,
 stable interface:
 
 - [x] Write full API documentation for both traits, covering every method's
-  contract, preconditions, and expected error conditions. (`candle-core/src/backend.rs`
+  contract, preconditions, and expected error conditions. (`fuel-core/src/backend.rs`
   now documents all 30+ methods on both traits, including layout semantics,
   dtype contracts, safety requirements for `alloc_uninit`, synchronization
   guarantees for `to_cpu_storage` and `synchronize`, and the ordinal model
@@ -776,63 +776,63 @@ foundation crate; the backend implementation is separable.
 **Three-layer architecture** (in progress):
 
 ```text
-candle-core-types       ← Shape, DType, Layout, Error, CpuStorage (enum def),
+fuel-core-types       ← Shape, DType, Layout, Error, CpuStorage (enum def),
                           BackendStorage/BackendDevice traits, WithDType, VecOps,
                           SIMD kernels, conv params, op traits
         ↑
-candle-cpu-backend      ← impl BackendStorage for CpuStorage, impl BackendDevice
+fuel-cpu-backend      ← impl BackendStorage for CpuStorage, impl BackendDevice
         ↑                 for CpuDevice (matmul, binary ops, reductions, etc.)
-candle-core             ← Device/Storage enums, Tensor, Var, backprop,
+fuel-core             ← Device/Storage enums, Tensor, Var, backprop,
                           custom_op, quantized, re-exports everything
 ```
 
 Progress:
 
-- [x] Created `candle-core-types` crate with 21 source files extracting all
-  foundational types, traits, and CPU SIMD infrastructure from `candle-core`.
+- [x] Created `fuel-core-types` crate with 21 source files extracting all
+  foundational types, traits, and CPU SIMD infrastructure from `fuel-core`.
   Compiles standalone. Added to workspace members.
-- [x] Verified full workspace builds with `candle-core-types` present
+- [x] Verified full workspace builds with `fuel-core-types` present
   (`cargo check --workspace` passes).
-- [x] Wire `candle-core` to re-export from `candle-core-types` — **partial**:
+- [x] Wire `fuel-core` to re-export from `fuel-core-types` — **partial**:
   - ✅ Wired: `shape.rs`, `layout.rs`, `strided_index.rs`, `dummy_dtype.rs`
-    (candle-core re-exports these entirely from candle-core-types)
+    (fuel-core re-exports these entirely from fuel-core-types)
   - ❌ Blocked: `dtype.rs` (orphan rule: `TryFrom<safetensors::Dtype> for DType`),
-    `backend.rs` (BackendStorage methods return candle-core-types `Result`, but
-    implementations use candle-core `Result`), `error.rs` (MetalError conflict)
+    `backend.rs` (BackendStorage methods return fuel-core-types `Result`, but
+    implementations use fuel-core `Result`), `error.rs` (MetalError conflict)
   - ❌ Blocked: `convert.rs` blanket impls `impl<T: WithDType> TryFrom<&Tensor> for Vec<T>`
     cause coherence errors when `WithDType` comes from upstream crate
-  - Note: `From<candle_core_types::Error> for candle_core::Error` bridge enables
+  - Note: `From<fuel_core_types::Error> for fuel_core::Error` bridge enables
     `?` operator across crate boundary for re-exported shape/layout methods
-- [x] Create `candle-cpu-backend` crate (extract cpu_backend module from
-  candle-core). Created with 6 source files: `lib.rs`, `ops.rs` (~1770 lines of
+- [x] Create `fuel-cpu-backend` crate (extract cpu_backend module from
+  fuel-core). Created with 6 source files: `lib.rs`, `ops.rs` (~1770 lines of
   CPU computation kernels — MatMul, pooling, convolution, reductions, index ops),
   `utils.rs` (Map traits + vectorised helpers), `conv2d.rs` (tiled/im2col Conv2D),
   `mkl.rs` (Intel MKL FFI), `accelerate.rs` (Apple Accelerate FFI). Compiles
-  standalone against `candle-core-types`. Added as workspace member and as
-  dependency of `candle-core` with `mkl`/`accelerate` feature forwarding.
-- [x] Delegation: candle-core's `cpu_backend/mod.rs` now delegates all major
-  operations to `candle-cpu-backend` via 5 macros (`cpu_map1!`, `cpu_map1any!`,
+  standalone against `fuel-core-types`. Added as workspace member and as
+  dependency of `fuel-core` with `mkl`/`accelerate` feature forwarding.
+- [x] Delegation: fuel-core's `cpu_backend/mod.rs` now delegates all major
+  operations to `fuel-cpu-backend` via 5 macros (`cpu_map1!`, `cpu_map1any!`,
   `cpu_map2!`, `cpu_map2u8!`, `cpu_map2_in_place!`).
   Delegated: affine, avg_pool2d, max_pool2d, upsample_nearest1d/2d,
   upsample_bilinear2d, reduce_op (Sum/Min/Max/ArgMin/ArgMax), index_select,
   gather, where_cond, index_add, matmul, cmp, conv1d, conv2d,
   conv_transpose1d, conv_transpose2d, scatter_set, scatter_add_set.
-  Type unification: CmpOp, ReduceOp re-exported from candle-core-types;
+  Type unification: CmpOp, ReduceOp re-exported from fuel-core-types;
   ParamsConv1D/2D/Transpose1D/Transpose2D + CudnnFwdAlgo re-exported from
-  candle-core-types (~250 lines of duplicate struct defs removed from conv.rs).
+  fuel-core-types (~250 lines of duplicate struct defs removed from conv.rs).
   Dead local helper structs removed (~1370 lines total: MatMul, Conv1D/2D,
   ConvTranspose1D/2D, Im2Col, Im2Col1D, Col2Im1D, Cmp, WCond, ReduceIndex,
   ReduceSum, Affine, AvgPool2D, MaxPool2D, UpsampleNearest1D/2D,
   UpsampleBilinear2D, Gather, IndexSelect, ElemUpdate, Set, Add,
   Scatter, IndexAdd, plus conv2d.rs submodule deleted).
   mod.rs reduced from 3284 → 1917 lines. Zero errors, zero test failures
-  (462 candle-core tests pass).
-  Trait consolidation: UnaryOpT/BinaryOpT re-exported from candle-core-types
+  (462 fuel-core tests pass).
+  Trait consolidation: UnaryOpT/BinaryOpT re-exported from fuel-core-types
   (eliminated ~65 lines of duplicate trait definitions in op.rs).
-  `unary_dispatch<B>`/`binary_dispatch<B>` functions added to candle-cpu-backend
-  for standalone use. candle-core's `unary_impl`/`binary_impl` retain thin enum
-  dispatch calling candle-cpu-backend's `unary_map`/`binary_map` helpers
-  (full delegation blocked until CpuStorage is re-exported from candle-core-types,
+  `unary_dispatch<B>`/`binary_dispatch<B>` functions added to fuel-cpu-backend
+  for standalone use. fuel-core's `unary_impl`/`binary_impl` retain thin enum
+  dispatch calling fuel-cpu-backend's `unary_map`/`binary_map` helpers
+  (full delegation blocked until CpuStorage is re-exported from fuel-core-types,
   which requires resolving dtype.rs/convert.rs orphan rule issues).
 - [ ] Extract cuda/metal backends into separate crates (future, lower priority —
   already behind feature flags with separate kernel crates).
@@ -841,14 +841,14 @@ Progress:
 
 `Device::Custom(Arc<dyn DynBackendDevice>)` and `Storage::Custom(Box<dyn DynBackendStorage>)`
 are now fully wired. Object-safe `DynBackendStorage` (31 methods) and `DynBackendDevice`
-(11 methods) traits live in `candle-core/src/dyn_backend.rs`.
+(11 methods) traits live in `fuel-core/src/dyn_backend.rs`.
 
 **Implementation summary:**
 
 - `Device::Custom` arm handled in all 16 match sites in `device.rs`
 - `Storage::Custom` arm handled in all match sites across `storage.rs` (~30 methods),
   `tensor.rs` (4 sites), `safetensors.rs` (2 sites), `quantized/mod.rs` (3 sites),
-  `quantized/ggml_file.rs` (1 site), and `candle-pyo3` (1 site)
+  `quantized/ggml_file.rs` (1 site), and `fuel-pyo3` (1 site)
 - `UnaryOp::from_name` / `BinaryOp::from_name` helpers bridge generic `UnaryOpT`/`BinaryOpT`
   to enum-based dynamic dispatch for custom backends
 - `CustomOp1/2/3` and `InplaceOp1/2/3` return errors on custom backends (these use
@@ -866,8 +866,8 @@ are now fully wired. Object-safe `DynBackendStorage` (31 methods) and `DynBacken
 **Usage example:**
 
 ```rust
-use candle_core::dyn_backend::{DynBackendDevice, DynBackendStorage};
-use candle_core::Device;
+use fuel_core::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_core::Device;
 use std::sync::Arc;
 
 struct MyDevice { /* ... */ }
@@ -876,303 +876,52 @@ impl DynBackendDevice for MyDevice { /* ... */ }
 let device = Device::custom(Arc::new(MyDevice::new()));
 ```
 
-#### Tier 3b — Full enum-to-trait-object migration (in progress)
+#### Tier 3b (ABANDONED) — Full enum-to-trait-object migration
 
-Tier 3 added `Device::Custom` and `Storage::Custom` variants carrying
-`Arc<dyn DynBackendDevice>` and `Box<dyn DynBackendStorage>` respectively.
-This opened the type system for third-party backends but **did not solve the
-core ergonomic problem**: every operation in `device.rs` and `storage.rs` still
-matches on 4+ enum arms (`Cpu | Cuda | Metal | Custom`) with near-identical
-code per arm. Adding a backend still means touching every match site.
+*Note: April 2026 Architectural Pivot — The `dyn` dispatch migration has been officially halted. While it solved the closed-enum problem, it created runtime overhead, required internal downcasting (`as_any().downcast_mut()`) violating strict type safety, and masked the physical reality of hardware memory boundaries.*
 
-This tier replaces the closed enums with **opaque newtype structs** wrapping
-trait objects:
+---
 
-```rust
-// Target architecture:
-pub struct Device(pub(crate) Arc<dyn DynBackendDevice>);
-pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
-```
+### Phase 6 — Lazy Execution & Autonomous DAG Scheduling ("Burn the Boats")
 
-All backends — CPU, CUDA, Metal, and any third-party backend — implement the
-same `DynBackendStorage`/`DynBackendDevice` traits. All 52+ match sites in
-`device.rs` and `storage.rs` collapse to single-line delegations. No more
-`match self { Cpu => …, Cuda(d) => …, Metal(d) => …, Custom(d) => … }`.
+*Massive scope. Fundamental systemic rewrite of the entire ecosystem transitioning from Eager Execution to a Lazy Computation Graph with an Autonomous Router. This permanently severs upstream model compatibility with HuggingFace's Fuel repository in exchange for kernel fusion, autonomous multi-device orchestration, and asynchronous execution.*
 
-##### Prerequisites completed
+**The Concept:**
+Invert the tensor design to strictly separate the backend-agnostic frontend from the backend-specific execution. The user-facing API remains completely hardware-agnostic (`Tensor`), building a lazy computation graph. Fuel acts as an autonomous compiler and router: analyzing hardware load, profiling kernels, and dynamically selecting the optimal backend(s) to execute the graph, inserting data transfers across PCIe boundaries automatically.
 
-- [x] Moved `BinaryOp` (6 variants) and `UnaryOp` (19 variants) enums from
-  `candle-core/src/op.rs` to `candle-core-types/src/op.rs` (both crates
-  compile clean; candle-core re-exports them)
-- [x] Moved `DynBackendStorage` (33 methods) and `DynBackendDevice` (13
-  methods) traits from `candle-core/src/dyn_backend.rs` to
-  `candle-core-types/src/dyn_backend.rs` (candle-core has 5-line re-export shim)
-- [x] Added `supports_bf16()` default method to `DynBackendDevice`
+#### Step 1: The Backend-Agnostic Frontend (User API)
 
-##### Orphan rule constraint and newtype solution
+- Define `Tensor` as a pure handle (node ID) to a Lazy Computation Graph. It tracks `Shape`, `DType`, and the pending operation tree, but has *no generic hardware tags* (`<B>`).
+- This prevents viral generics from infecting `fuel-nn` and `fuel-transformers`. The user writes pure math, unaware of whether it will execute on CPU, Metal, or CUDA.
 
-Both `DynBackendStorage`/`DynBackendDevice` (traits) and `CpuStorage`/
-`CpuDevice` (types) live in `candle-core-types`. The Rust orphan rule
-forbids implementing these traits for these types in any downstream crate
-like `candle-core`.
+#### Step 2: The Handle-Based Shadowed State (ECS)
 
-**Solution**: each backend crate defines a **newtype wrapper** around its
-storage/device types and implements the `DynBackend*` traits on the newtype.
-This is zero-cost (transparent wrapper) and architecturally clean — it
-separates "CpuStorage as data exchange format" from "CpuStorage as a backend
-implementation with concrete computation logic":
+- Implement backend registries that map agnostic Tensor IDs to physical, device-specific storage types (e.g., `CudaStorage`).
+- **Deferred Garbage Collection:** When an `AgnosticTensor`'s `Arc` drops to zero, notify the backend registry via a lock-free queue to batch-deallocate the VRAM safely without blocking the CPU's graph-building thread.
 
-```rust
-// candle-cpu-backend/src/dyn_impl.rs
-pub struct CpuBackendStorage(pub CpuStorage);
-pub struct CpuBackendDevice;
+#### Step 3: The Autonomous Router & DAG Planner
 
-impl DynBackendStorage for CpuBackendStorage { /* 33 methods */ }
-impl DynBackendDevice for CpuBackendDevice { /* 13 methods */ }
-```
+- When the user asks for concrete data (`.realize()`, `.to_vec()`, or `.wait()`), the DAG Planner analyzes the pending graph.
+- **Hardware & Kernel Profiling:** The planner looks at available devices, current memory usage, and pre-profiled software kernels (from Phase 5).
+- **Dynamic Routing:** The planner natively assigns subgraphs to specific backends, dynamically inserting `.to_backend()` transfer nodes if computing on a different device is faster than the PCIe transfer penalty.
 
-Users never see the newtype directly. They use `Device::cpu()` which
-internally creates `Device(Arc::new(CpuBackendDevice))`, and all tensor
-operations go through `&dyn DynBackendStorage` / `&dyn DynBackendDevice`.
+#### Step 4: Backend-Specific Execution Engines
 
-##### Step 1: CPU backend (✅ complete)
+- While the frontend is untyped, the internal dispatch boundary maps the localized graph directly to strongly typed backend engines.
+- Backends operate strictly on their native typed storage (`CpuStorage`, `CudaStorage`), eliminating the previous inner `dyn` downcasting.
+- Implement **Kernel Fusion**: The backend engines compile localized sequences (e.g., `MatMul` + `Add` + `ReLU`) into single hardware kernel launches.
 
-`candle-cpu-backend/src/dyn_impl.rs` — implements all 33 `DynBackendStorage`
-methods and all 13 `DynBackendDevice` methods via newtype wrappers:
+#### Step 5: Ecosystem Adaptation
 
-- **`CpuBackendStorage(CpuStorage)`** delegates to existing `Map1`/`Map2`/
-  `Map2U8`/`Map2InPlace` operation structs in `candle-cpu-backend::ops`:
-  `Affine`, `MatMul`, `Conv1D`/`Conv2D`/`ConvTranspose1D`/`ConvTranspose2D`,
-  `AvgPool2D`/`MaxPool2D`, `UpsampleNearest1D`/`2D`/`UpsampleBilinear2D`,
-  `ReduceSum`/`ReduceIndex`, `Cmp`, `Gather`/`Scatter`/`IndexSelect`/`IndexAdd`,
-  `WCond`, `Im2Col1D`, `Col2Im1D`
-- `unary_op_dyn(op: UnaryOp)` matches on the 19-variant enum and dispatches
-  to per-element math using `unary_map`. Simple float ops (exp, log, sin, cos,
-  tanh, sqrt, etc.) use `num_traits::Float`; activation functions (Gelu, Silu,
-  GeluErf) inline their formulas; Erf uses `candle_core_types::cpu::erf`
-- `binary_op_dyn(op: BinaryOp)` matches on the 6-variant enum and dispatches
-  to `binary_map` with the appropriate closure (+, -, *, /, max, min)
-- Multi-operand methods (matmul, conv, where_cond, gather, scatter, index ops)
-  downcast `&dyn DynBackendStorage` to `&CpuBackendStorage` via `as_any()`
-- **`CpuBackendDevice`** is stateless (unit-struct-like). `zeros_impl_dyn` /
-  `alloc_uninit_dyn` create `Vec`-backed `CpuStorage`; `rand_uniform_dyn` /
-  `rand_normal_dyn` use the `rand` / `rand_distr` crates; `set_seed_dyn` /
-  `get_current_seed_dyn` return errors (CPU rng has no global seed);
-  `synchronize_dyn` is a no-op
-
-This establishes the **canonical pattern** that CUDA and Metal follow.
-
-##### Step 2: CUDA backend
-
-**Crate**: `candle-cuda` (behind `cuda` feature flag in candle-core)
-
-**Newtypes to create**:
-
-```rust
-// candle-cuda/src/dyn_impl.rs  (new file)
-pub struct CudaBackendStorage(pub CudaStorage);
-pub struct CudaBackendDevice(pub CudaDevice);
-```
-
-**Implementation strategy**:
-
-- `CudaBackendDevice(CudaDevice)` wraps the existing `CudaDevice` which holds
-  `cudarc::driver::CudaDevice`, ordinal, cuBLAS handle, and cuDNN handle.
-  The `DynBackendDevice` impl delegates to the existing `BackendDevice for
-  CudaDevice` methods:
-  - `location_dyn()` → `DeviceLocation::Cuda { gpu_id: self.0.ordinal() }`
-  - `same_device_dyn()` → downcast other to `CudaBackendDevice`, compare ordinals
-  - `supports_bf16()` → `true` (all modern CUDA GPUs support bf16)
-  - `zeros_impl_dyn()` → existing `CudaDevice::zeros_impl()`
-  - `alloc_uninit_dyn()` → existing `CudaDevice::alloc_uninit()`
-  - `storage_from_cpu_storage_dyn()` → existing `CudaDevice::storage_from_cpu_storage()`
-  - `rand_uniform_dyn()` / `rand_normal_dyn()` → existing cuRAND-based implementations
-  - `set_seed_dyn()` / `get_current_seed_dyn()` → existing cuRAND seed management
-  - `synchronize_dyn()` → `cudarc::driver::CudaDevice::synchronize()`
-
-- `CudaBackendStorage(CudaStorage)` wraps `CudaStorage` which holds a
-  `cudarc::driver::CudaSlice<T>` + device reference. The `DynBackendStorage`
-  impl delegates to the existing `BackendStorage for CudaStorage` methods:
-  - `to_cpu_storage_dyn()` → device-to-host copy via `dtoh_sync_copy`
-  - `unary_op_dyn()` → match on enum, call existing CUDA kernels
-    (`candle-kernels` crate: `unary.cu`, `affine.cu`, etc.)
-  - `binary_op_dyn()` → match on enum, call existing CUDA kernels
-  - `matmul_dyn()` → existing cuBLAS GEMM dispatch
-  - Conv/pool/upsample → existing cuDNN or custom kernel paths
-  - `copy_strided_src_dyn()` / `copy2d_dyn()` → existing CUDA copy kernels
-
-**Key difference from CPU**: CUDA storage is device memory (`CudaSlice`),
-not host `Vec`. All `to_cpu_storage_dyn()` calls involve a D2H transfer.
-Multi-operand methods downcast to `CudaBackendStorage` and verify device
-ordinals match (error if tensors are on different GPUs).
-
-**Estimated scope**: ~400 lines. Mostly mechanical delegation since all the
-actual kernel dispatch already exists in `BackendStorage for CudaStorage`.
-
-**Dependencies needed**: `cudarc`, `candle-kernels` (already present in
-candle-core behind `cuda` feature)
-
-##### Step 3: Metal backend
-
-**Crate**: `candle-metal` (behind `metal` feature flag in candle-core)
-
-**Newtypes to create**:
-
-```rust
-// candle-metal/src/dyn_impl.rs  (new file)
-pub struct MetalBackendStorage(pub MetalStorage);
-pub struct MetalBackendDevice(pub MetalDevice);
-```
-
-**Implementation strategy**:
-
-- `MetalBackendDevice(MetalDevice)` wraps the existing `MetalDevice` which
-  holds a `metal::Device`, command queue, compute pipeline states, and buffer
-  allocator. The `DynBackendDevice` impl is structurally identical to CUDA:
-  - `location_dyn()` → `DeviceLocation::Metal { gpu_id: self.0.registry_id() }`
-  - `supports_bf16()` → `true` (Apple Silicon supports bf16 natively)
-  - `synchronize_dyn()` → commit + wait on command buffer
-  - Other methods delegate to existing `BackendDevice for MetalDevice`
-
-- `MetalBackendStorage(MetalStorage)` wraps `MetalStorage` which holds a
-  `metal::Buffer` + device reference. Delegates to existing Metal compute
-  pipeline dispatch:
-  - `unary_op_dyn()` / `binary_op_dyn()` → `candle-metal-kernels` dispatch
-  - `matmul_dyn()` → Metal Performance Shaders or custom GEMM kernel
-  - Conv/pool → Metal compute kernels
-
-**Key difference from CPU**: Metal uses command buffers and compute encoders.
-Operations are recorded and submitted asynchronously. `synchronize_dyn()`
-must commit and wait for completion. `to_cpu_storage_dyn()` involves a
-GPU→CPU buffer copy.
-
-**Platform constraint**: Metal backend only compiles on macOS/iOS. The
-`DynBackendDevice`/`DynBackendStorage` impls will be behind
-`#[cfg(feature = "metal")]` just like the existing Metal code.
-
-**Estimated scope**: ~350 lines. Same mechanical delegation pattern as CUDA.
-
-##### Step 4: Convert Device and Storage enums to structs
-
-Once all three built-in backends implement `DynBackendDevice`/
-`DynBackendStorage`, the enums can be replaced:
-
-```rust
-// candle-core/src/device.rs — BEFORE:
-pub enum Device {
-    Cpu,
-    Cuda(CudaDevice),
-    Metal(MetalDevice),
-    Custom(Arc<dyn DynBackendDevice>),
-}
-
-// AFTER:
-pub struct Device(pub(crate) Arc<dyn DynBackendDevice>);
-
-impl Device {
-    pub fn cpu() -> Self {
-        Device(Arc::new(CpuBackendDevice))
-    }
-    pub fn cuda(ordinal: usize) -> Result<Self> {
-        Ok(Device(Arc::new(CudaBackendDevice::new(ordinal)?)))
-    }
-    pub fn metal(ordinal: usize) -> Result<Self> {
-        Ok(Device(Arc::new(MetalBackendDevice::new(ordinal)?)))
-    }
-}
-```
-
-```rust
-// candle-core/src/storage.rs — BEFORE:
-pub enum Storage {
-    Cpu(CpuStorage),
-    Cuda(CudaStorage),
-    Metal(MetalStorage),
-    Custom(Box<dyn DynBackendStorage>),
-}
-
-// AFTER:
-pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
-```
-
-**Impact**: All 52+ match sites collapse to one-liner delegations:
-
-```rust
-// BEFORE (device.rs):
-pub fn location(&self) -> DeviceLocation {
-    match self {
-        Self::Cpu => DeviceLocation::Cpu,
-        Self::Cuda(d) => d.location(),
-        Self::Metal(d) => d.location(),
-        Self::Custom(d) => d.location_dyn(),
-    }
-}
-
-// AFTER:
-pub fn location(&self) -> DeviceLocation {
-    self.0.location_dyn()
-}
-```
-
-**Backward compatibility**: `Device::is_cpu()`, `Device::is_cuda()`,
-`Device::is_metal()` are preserved as downcast checks:
-
-```rust
-impl Device {
-    pub fn is_cpu(&self) -> bool {
-        self.0.as_any().downcast_ref::<CpuBackendDevice>().is_some()
-    }
-}
-```
-
-##### Step 5: Redesign CustomOp traits (Option B)
-
-Current `CustomOp1`/`CustomOp2`/`CustomOp3` traits have backend-specific
-methods: `cpu_fwd(&CpuStorage, …)`, `cuda_fwd(&CudaStorage, …)`,
-`metal_fwd(&MetalStorage, …)`. This is incompatible with the trait-object
-architecture.
-
-**Redesign (Option B — clean break, no downcasting)**:
-
-```rust
-pub trait CustomOp1 {
-    fn name(&self) -> &str;
-    fn fwd(
-        &self,
-        storage: &dyn DynBackendStorage,
-        layout: &Layout,
-    ) -> Result<(Box<dyn DynBackendStorage>, Shape)>;
-
-    fn bwd(
-        &self,
-        storage: &dyn DynBackendStorage,
-        layout: &Layout,
-        grad: &dyn DynBackendStorage,
-        grad_layout: &Layout,
-    ) -> Result<Option<Box<dyn DynBackendStorage>>>;
-}
-```
-
-Implementations that need backend-specific behavior use `as_any()` +
-`downcast_ref()` internally — the trait signature itself is backend-agnostic.
-
-**Migration path**: Existing `CustomOp` implementations will need updating.
-A compatibility shim can bridge old-style ops during the transition.
-
-##### Step 6: Remove dummy backends
-
-Once Device/Storage are structs, the `dummy_cuda_backend.rs` and
-`dummy_metal_backend.rs` files (empty stubs compiled when features are
-disabled) become unnecessary and can be deleted. Feature flags control
-which `DynBackendDevice`/`DynBackendStorage` implementations are
-available, not which enum variants exist.
+- Refactor `fuel-core` operations to push nodes to the graph instead of executing eagerly.
+- Adapt `fuel-transformers` to batch requests and use the asynchronous `.realize()` boundary optimally, unlocking massive performance gains for large LLMs.
 
 ##### Vulkan backend (future — new crate)
 
 A Vulkan/WebGPU backend would follow the exact same pattern:
 
 ```rust
-// candle-vulkan/src/dyn_impl.rs  (future)
+// fuel-vulkan/src/dyn_impl.rs  (future)
 pub struct VulkanBackendStorage { /* Vulkan buffer + device ref */ }
 pub struct VulkanBackendDevice { /* VkDevice, queues, pipeline cache */ }
 
@@ -1180,7 +929,7 @@ impl DynBackendStorage for VulkanBackendStorage { /* ... */ }
 impl DynBackendDevice for VulkanBackendDevice { /* ... */ }
 ```
 
-No changes to `candle-core` would be required — the user just creates a
+No changes to `fuel-core` would be required — the user just creates a
 `Device(Arc::new(VulkanBackendDevice::new()?))` and everything works
 through the trait-object dispatch. This is the plug-and-play extensibility
 that Tier 3b enables.
@@ -1191,12 +940,12 @@ Tiers 1–3 solve compile-time selection and third-party extensibility. They do
 not address cross-backend routing: can operations within the same computation
 use different backends?
 
-Today, Candle executes eagerly. A tensor is on a device; an op runs immediately
+Today, Fuel executes eagerly. A tensor is on a device; an op runs immediately
 on that device's backend. There is no mechanism to compile a sequence of
 operations first, consult routing tables, and then execute with per-op backend
 selection.
 
-A future `candle-dispatch` crate could provide this without changing the eager
+A future `fuel-dispatch` crate could provide this without changing the eager
 programming model for users who do not opt in:
 
 - A **lazy op-sequence builder**: accepts operation descriptors without executing
@@ -1204,7 +953,7 @@ programming model for users who do not opt in:
 - A **probe/score mechanism**: at startup, probe all registered backends against
   the available hardware and rate each one per operation type.
 - A **judge equivalent**: benchmark candidate backends against a
-  `candle-reference-backend` (the correctness oracle; analogous to
+  `fuel-reference-backend` (the correctness oracle; analogous to
   `faster-blaster-reference`) and store latency profiles and precision curves.
 - A **ranked dispatch table**: top-N backends per (op, dtype, size class), per
   criterion (fastest / most accurate / balanced). O(1) per-dispatch lookup.
@@ -1212,14 +961,14 @@ programming model for users who do not opt in:
   (step, backend) node against a data transfer cost model for cross-device edges,
   and selects the minimum-cost execution path using dynamic programming.
 
-This tier requires `candle-core` to support at least a thin deferred execution
+This tier requires `fuel-core` to support at least a thin deferred execution
 mode — tensors that record their op sequence before committing to a device — or
 alternatively it operates at a higher level, emitting explicit `.to_device()`
 transfers between steps as the DAG planner directs. The former is a deeper
 change; the latter is composable on top of today's eager model. Either way,
 it depends on Tiers 2 and 3 being stable first.
 
-This is the point at which Candle's dispatch story converges with the
+This is the point at which Fuel's dispatch story converges with the
 architecture that faster-blaster was designed around from the beginning.
 
 ---
@@ -1231,12 +980,12 @@ the answer is always no for that layer — find the right layer instead.
 
 | Layer                                 | Will never contain                                                                                                    |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Foundation (`candle-core`)            | Tokenization, model-family assumptions, serving abstractions, HF Hub client code                                      |
-| NN (`candle-nn`)                      | Model-architecture implementations, inference session management, decode loops, training loops                        |
-| Models (`candle-transformers`)        | Serving infrastructure, batching schedulers, streaming decode loops, session lifecycle, training policy               |
-| IO (`candle-core` IO + `candle-onnx`) | Runtime policy, model architecture logic, serving abstractions                                                        |
-| Inference (`candle-inference`)        | New tensor primitives, new dtypes, new backend dispatch, training policy, anything that redefines foundation concepts |
-| Training (`candle-training`)          | New tensor primitives, new dtypes, inference-specific concerns (KV caches, sampling, decode loops)                    |
+| Foundation (`fuel-core`)            | Tokenization, model-family assumptions, serving abstractions, HF Hub client code                                      |
+| NN (`fuel-nn`)                      | Model-architecture implementations, inference session management, decode loops, training loops                        |
+| Models (`fuel-transformers`)        | Serving infrastructure, batching schedulers, streaming decode loops, session lifecycle, training policy               |
+| IO (`fuel-core` IO + `fuel-onnx`) | Runtime policy, model architecture logic, serving abstractions                                                        |
+| Inference (`fuel-inference`)        | New tensor primitives, new dtypes, new backend dispatch, training policy, anything that redefines foundation concepts |
+| Training (`fuel-training`)          | New tensor primitives, new dtypes, inference-specific concerns (KV caches, sampling, decode loops)                    |
 | Backends/Kernels                      | ML concepts, model logic, layer abstractions, training or inference policy, anything above shaped memory and math     |
 
 ---
@@ -1248,7 +997,7 @@ the answer is always no for that layer — find the right layer instead.
   document → reorganize → extract → rename.
 - The early-exit property. A user who only wants tensor math must never be
   required to carry inference infrastructure.
-- The breadth of model implementations. `candle-transformers` is a genuine asset.
+- The breadth of model implementations. `fuel-transformers` is a genuine asset.
   The goal is to give it structure, not reduce its scope.
 - Minimum viable complexity. Simple programs should stay simple. The framework
   should feel small from the bottom and powerful from the top.
@@ -1258,36 +1007,36 @@ the answer is always no for that layer — find the right layer instead.
 ## Dependency graph (target state)
 
 ```text
-candle-inference ─────────────────────────────────────────────────┐
-candle-training  ─────────────────────────────────────────────────┤
+fuel-inference ─────────────────────────────────────────────────┐
+fuel-training  ─────────────────────────────────────────────────┤
        │                                                      leaf crates
        │  both depend on                                          │
        ▼                                                          │
-candle-transformers ──────────────────────────────────────────────┤
+fuel-transformers ──────────────────────────────────────────────┤
        │                                                          │
        │  depends on                                          IO layer
        ▼                                                          │
-candle-nn ────────────────────────────────────────────────────────┘
+fuel-nn ────────────────────────────────────────────────────────┘
        │
        │  depends on
        ▼
-candle-core
+fuel-core
        │
        │  depends on  [feature flags select which backend crates are compiled]
        ▼
-candle-cpu-backend          candle-cuda-backend         candle-metal-backend
+fuel-cpu-backend          fuel-cuda-backend         fuel-metal-backend
     (always)                [feature = "cuda"]          [feature = "metal"]
                                    │                           │
                                    ▼                           ▼
-                       candle-kernels              candle-metal-kernels
-                       candle-flash-attn
+                       fuel-kernels              fuel-metal-kernels
+                       fuel-flash-attn
 ```
 
 The backend crate split is the Tier 2 target state from Phase 5. Before that
-landmark, the graph is the same but the backend code lives inside `candle-core`
+landmark, the graph is the same but the backend code lives inside `fuel-core`
 modules rather than separate crates.
 
-Side dependencies: `candle-onnx` and `candle-datasets` depend downward as needed.
-`candle-pyo3` wraps whichever layers it needs without influencing them.
-`candle-dispatch` (Phase 5 Tier 4, long-term) sits between `candle-core` and
+Side dependencies: `fuel-onnx` and `fuel-datasets` depend downward as needed.
+`fuel-pyo3` wraps whichever layers it needs without influencing them.
+`fuel-dispatch` (Phase 5 Tier 4, long-term) sits between `fuel-core` and
 new user-facing op-sequence APIs, with no effect on any layer above or below.

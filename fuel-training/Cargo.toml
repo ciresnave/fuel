@@ -1,0 +1,25 @@
+﻿[package]
+    categories.workspace = true
+    description          = "Training orchestration layer for the Fuel ML framework."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-training"
+    readme               = "README.md"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel     = { workspace = true }
+    fuel-nn  = { workspace = true }
+    serde      = { workspace = true }
+    serde_json = { workspace = true }
+    tracing    = { workspace = true }
+
+[features]
+    accelerate = ["fuel-nn/accelerate", "fuel/accelerate"]
+    cuda       = ["fuel-nn/cuda", "fuel/cuda"]
+    cudnn      = ["fuel-nn/cudnn", "fuel/cudnn"]
+    default    = []
+    metal      = ["fuel-nn/metal", "fuel/metal"]
+    mkl        = ["fuel-nn/mkl", "fuel/mkl"]

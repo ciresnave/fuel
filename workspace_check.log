@@ -1,0 +1,258 @@
+   Compiling ring v0.17.14
+   Compiling pyo3-build-config v0.27.2
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+    Checking candle-core v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-core)
+warning: candle-kernels@0.10.2: Using 16 threads for compilation
+warning: candle-kernels@0.10.2: Compiling 3 of 3 kernels
+    Checking candle-cuda v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-cuda)
+warning: unused import: `WithDType`
+ --> candle-core\src\cpu_backend\mod.rs:4:50
+  |
+4 | use crate::{DType, Error, Layout, Result, Shape, WithDType};
+  |                                                  ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `candle_core_types::error::private`
+  --> candle-core\src\error.rs:13:16
+   |
+13 | pub(crate) use candle_core_types::error::private;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling pyo3-macros-backend v0.27.2
+   Compiling pyo3-ffi v0.27.2
+   Compiling pyo3 v0.27.2
+   Compiling candle-pyo3 v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-pyo3)
+warning: unused import: `crate::backend::BackendStorage`
+ --> candle-core\src\cpu_backend\utils.rs:2:5
+  |
+2 | use crate::backend::BackendStorage;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `rayon::prelude`
+  --> candle-core\src\cpu_backend\mod.rs:13:5
+   |
+13 | use rayon::prelude::*;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `backend::BackendStorage`
+ --> candle-core\src\quantized\mod.rs:2:5
+  |
+2 |     backend::BackendStorage, CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::fmt::Display`
+ --> candle-core\src\error.rs:6:5
+  |
+6 | use std::fmt::Display;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1503:17
+     |
+1503 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+    --> candle-core\src\cpu_backend\mod.rs:1494:5
+     |
+1494 |     unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<CpuStorage> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1508:17
+     |
+1508 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1513:17
+     |
+1513 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1518:17
+     |
+1518 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1523:17
+     |
+1523 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1528:17
+     |
+1528 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1533:17
+     |
+1533 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1538:17
+     |
+1538 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1543:17
+     |
+1543 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block
+    --> candle-core\src\cpu_backend\mod.rs:1548:17
+     |
+1548 |                 v.set_len(elem_count);
+     |                 ^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning: function `vec_sum` is never used
+   --> candle-core\src\cpu\mod.rs:163:22
+    |
+163 | pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
+    |                      ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `candle-core` (lib) generated 17 warnings (run `cargo fix --lib -p candle-core` to apply 3 suggestions)
+    Checking candle-nn v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-nn)
+    Checking tensor-tools v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\tensor-tools)
+    Checking candle-wasm-tests v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-tests)
+   Compiling rustls v0.23.37
+   Compiling zstd-safe v7.2.4
+warning: unused import: `candle::backend::BackendStorage`
+   --> candle-nn\src\rotary_emb.rs:393:13
+    |
+393 |         use candle::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `candle::backend::BackendStorage`
+   --> candle-nn\src\ops.rs:114:13
+    |
+114 |         use candle::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `candle::backend::BackendStorage`
+   --> candle-nn\src\rotary_emb.rs:699:13
+    |
+699 |         use candle::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `candle::backend::BackendStorage`
+   --> candle-nn\src\ops.rs:619:13
+    |
+619 |         use candle::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `candle::backend::BackendStorage`
+   --> candle-nn\src\ops.rs:867:13
+    |
+867 |         use candle::backend::BackendStorage;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `candle::backend::BackendStorage`
+  --> candle-nn\src\rotary_emb.rs:72:13
+   |
+72 |         use candle::backend::BackendStorage;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    Checking rustls-webpki v0.103.10
+warning: `candle-nn` (lib) generated 6 warnings
+    Checking candle-transformers v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-transformers)
+    Checking candle-wasm-example-yolo v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\yolo)
+    Checking candle-training v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-training)
+    Checking candle-parallel v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-parallel)
+    Checking zstd v0.13.3
+    Checking parquet v58.1.0
+   Compiling pyo3-macros v0.27.2
+    Checking ureq v3.3.0
+    Checking hf-hub v0.5.0
+    Checking candle-datasets v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-datasets)
+   Compiling candle-examples v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-examples)
+warning: unreachable pattern
+   --> candle-pyo3\src\lib.rs:232:13
+    |
+232 |             dtype => Err(PyErr::new::<PyTypeError, _>(format!(
+    |             ^^^^^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> candle-pyo3\src\lib.rs:232:13
+    |
+210 |             DType::U8 => self.f::<u8>(t),
+    |             --------- matches some of the same values
+211 |             DType::U32 => self.f::<u32>(t),
+    |             ---------- matches some of the same values
+212 |             DType::I64 => self.f::<i64>(t),
+    |             ---------- matches some of the same values
+213 |             DType::BF16 => self.f::<bf16>(t),
+    |             ----------- matches some of the same values
+...
+232 |             dtype => Err(PyErr::new::<PyTypeError, _>(format!(
+    |             ^^^^^ ...and 7 other patterns collectively make this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: `candle-pyo3` (lib) generated 1 warning
+warning: field `span` is never read
+   --> candle-transformers\src\models\audio\whisper\model.rs:314:5
+    |
+308 | pub struct TextDecoder {
+    |            ----------- field in this struct
+...
+314 |     span: tracing::Span,
+    |     ^^^^
+    |
+    = note: `TextDecoder` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `candle-transformers` (lib) generated 1 warning
+    Checking candle-wasm-example-llama2 v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\llama2-c)
+    Checking candle-wasm-example-whisper v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\whisper)
+    Checking candle-wasm-example-t5 v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\t5)
+    Checking candle-wasm-example-bert v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\bert)
+    Checking candle-wasm-example-moondream v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\moondream)
+    Checking candle-wasm-example-blip v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\blip)
+    Checking candle-wasm-example-phi v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\phi)
+    Checking candle-wasm-example-sam v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\segment-anything)
+    Checking candle-wasm-example-quant-qwen3 v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-wasm-examples\quant-qwen3)
+    Checking candle-inference v0.10.2 (C:\Users\cires\OneDrive\Documents\projects\candle\candle-inference)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.19s
