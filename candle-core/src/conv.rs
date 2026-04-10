@@ -35,8 +35,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let inp = Tensor::zeros((1, 1, 5), DType::F32, &Device::Cpu)?;
-    /// let kernel = Tensor::zeros((1, 1, 3), DType::F32, &Device::Cpu)?;
+    /// let inp = Tensor::zeros((1, 1, 5), DType::F32, &Device::cpu())?;
+    /// let kernel = Tensor::zeros((1, 1, 3), DType::F32, &Device::cpu())?;
     /// let out = inp.conv1d(&kernel, 0, 1, 1, 1)?;
     /// assert_eq!(out.dims(), &[1, 1, 3]); // l_out = 5 - 3 + 1 = 3
     /// # Ok::<(), candle_core::Error>(())
@@ -132,8 +132,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let inp = Tensor::zeros((1, 1, 3), DType::F32, &Device::Cpu)?;
-    /// let kernel = Tensor::zeros((1, 1, 3), DType::F32, &Device::Cpu)?;
+    /// let inp = Tensor::zeros((1, 1, 3), DType::F32, &Device::cpu())?;
+    /// let kernel = Tensor::zeros((1, 1, 3), DType::F32, &Device::cpu())?;
     /// let out = inp.conv_transpose1d(&kernel, 0, 0, 1, 1, 1)?;
     /// assert_eq!(out.dims(), &[1, 1, 5]);
     /// # Ok::<(), candle_core::Error>(())
@@ -205,8 +205,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let inp = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::Cpu)?;
-    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::Cpu)?;
+    /// let inp = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::cpu())?;
+    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::cpu())?;
     /// let out = inp.conv2d(&kernel, 0, 1, 1, 1)?;
     /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -230,8 +230,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let inp = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::Cpu)?;
-    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::Cpu)?;
+    /// let inp = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::cpu())?;
+    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::cpu())?;
     /// let out = inp.conv2d_with_algo(&kernel, 0, 1, 1, 1, None)?;
     /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -300,8 +300,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let inp = Tensor::zeros((1, 1, 2, 2), DType::F32, &Device::Cpu)?;
-    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::Cpu)?;
+    /// let inp = Tensor::zeros((1, 1, 2, 2), DType::F32, &Device::cpu())?;
+    /// let kernel = Tensor::zeros((1, 1, 3, 3), DType::F32, &Device::cpu())?;
     /// let out = inp.conv_transpose2d(&kernel, 0, 0, 1, 1)?;
     /// assert_eq!(out.dims(), &[1, 1, 4, 4]);
     /// # Ok::<(), candle_core::Error>(())

@@ -118,32 +118,33 @@ fn quantized_matmul(device: &Device) -> Result<()> {
     let qtensor = quantized::QTensor::quantize(&tensor_rhs.t()?, GgmlDType::Q4_0)?;
     let matmul = quantized::QMatMul::from_qtensor(qtensor)?;
     let res = matmul.forward(&lhs)?;
-    match device {
-        Device::Metal(_) => assert_eq!(
+    if device.is_metal() {
+        assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
                 [84946.0, 214126.0, 344757.0, 473798.0],
                 [213458.0, 604350.0, 1000469.0, 1387990.0],
                 [341970.0, 994574.0, 1656181.0, 2302182.0]
             ]
-        ),
-        Device::Cuda(_) => assert_eq!(
+        );
+    } else if device.is_cuda() {
+        assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
                 [84866.0, 214045.0, 344676.0, 473707.0],
                 [213425.0, 604313.0, 1000431.0, 1387960.0],
                 [342030.0, 994630.0, 1656248.0, 2302250.0]
             ]
-        ),
-        Device::Cpu => assert_eq!(
+        );
+    } else {
+        assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
                 [85120.0, 214562.0, 345455.0, 474748.0],
                 [213475.0, 604465.0, 1000686.0, 1388317.0],
                 [341876.0, 994283.0, 1655709.0, 2301518.0]
             ]
-        ),
-        _ => unreachable!("quantized tests cannot run on custom backends"),
+        );
     }
     Ok(())
 }
@@ -182,32 +183,33 @@ fn quantized_matmul_neg(device: &Device) -> Result<()> {
     let qtensor = quantized::QTensor::quantize(&tensor_rhs.t()?, GgmlDType::Q4_0)?;
     let matmul = quantized::QMatMul::from_qtensor(qtensor)?;
     let res = matmul.forward(&lhs)?;
-    match device {
-        Device::Metal(_) => assert_eq!(
+    if device.is_metal() {
+        assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
                 [243659.0, -19716.0, -285444.0, -550439.0],
                 [23779.0, 21653.0, 19404.0, 18349.0],
                 [-196101.0, 63021.0, 324252.0, 587137.0]
             ]
-        ),
-        Device::Cuda(_) => assert_eq!(
+        );
+    } else if device.is_cuda() {
+        assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
                 [243740.0, -19762.0, -285476.0, -550498.0],
                 [23774.0, 21645.0, 19395.0, 18364.0],
                 [-196045.0, 63030.0, 324120.0, 587079.0]
             ]
-        ),
-        Device::Cpu => assert_eq!(
+        );
+    } else {
+        assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
                 [243524.0, -19596.0, -285051.0, -549815.0],
                 [23777.0, 21651.0, 19398.0, 18367.0],
                 [-196472.0, 63012.0, 324585.0, 587902.0]
             ]
-        ),
-        _ => unreachable!("quantized tests cannot run on custom backends"),
+        );
     }
     let lhs2 = Tensor::stack(&[&lhs, &lhs], 0)?;
     let res2 = matmul.forward(&lhs2)?;
@@ -473,7 +475,7 @@ fn ggml_quantization_error_test(dtype: GgmlDType, device: &Device, max_error: f3
 
 #[test]
 fn imatrix_quantize_q6k() -> Result<()> {
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -511,7 +513,7 @@ fn imatrix_quantize_q6k() -> Result<()> {
 
 #[test]
 fn imatrix_quantize_q5k() -> Result<()> {
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -556,7 +558,7 @@ fn imatrix_quantize_q4k() -> Result<()> {
     // }
     // dbg!(&data["blk.0.attn_q.weight"].len());
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -594,7 +596,7 @@ fn imatrix_quantize_q4k() -> Result<()> {
 
 #[test]
 fn imatrix_quantize_q3k() -> Result<()> {
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -632,7 +634,7 @@ fn imatrix_quantize_q3k() -> Result<()> {
 
 #[test]
 fn imatrix_quantize_q2k() -> Result<()> {
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -1251,7 +1253,7 @@ quantized_matmul!(
 fn quantized_matmul_q2k() -> Result<()> {
     use k_quants::BlockQ2K;
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1277,7 +1279,7 @@ fn quantized_matmul_q2k() -> Result<()> {
 fn quantized_matmul_q3k() -> Result<()> {
     use k_quants::BlockQ3K;
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1303,7 +1305,7 @@ fn quantized_matmul_q3k() -> Result<()> {
 fn quantized_matmul_q4k() -> Result<()> {
     use k_quants::BlockQ4K;
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1329,7 +1331,7 @@ fn quantized_matmul_q4k() -> Result<()> {
 fn quantized_matmul_q5k() -> Result<()> {
     use k_quants::BlockQ5K;
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1356,7 +1358,7 @@ fn quantized_matmul_q5k() -> Result<()> {
 fn quantized_matmul_q6k() -> Result<()> {
     use k_quants::BlockQ6K;
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1381,7 +1383,7 @@ fn quantized_matmul_q6k() -> Result<()> {
 fn quantized_matmul_q8k() -> Result<()> {
     use k_quants::BlockQ8K;
 
-    let cpu = &Device::Cpu;
+    let cpu = &Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);

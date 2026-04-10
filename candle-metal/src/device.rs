@@ -1,4 +1,4 @@
-use crate::{DType, Result};
+use candle_core_types::{DType, Result};
 
 #[cfg(feature = "ug")]
 use candle_metal_kernels::metal::ComputePipeline;
@@ -15,7 +15,7 @@ use objc2_metal::{MTLCaptureDescriptor, MTLCaptureDestination, MTLCaptureManager
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::MetalError;
+use crate::storage::MetalError;
 
 /// Unique identifier for metal devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -743,7 +743,7 @@ impl Tensor {
 ///
 /// ```rust
 /// use candle_core::{Tensor, Device, Var};
-/// let x = Var::new(&[1f32, 2., 3.], &Device::Cpu)?;
+/// let x = Var::new(&[1f32, 2., 3.], &Device::cpu())?;
 /// let y = x.powf(2.)?.sum_all()?;
 /// let grads = y.backward()?;
 /// // d(sum(x^2))/dx = 2*x
@@ -771,7 +771,7 @@ impl GradStore {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, Var};
-    /// let x = Var::new(2f32, &Device::Cpu)?;
+    /// let x = Var::new(2f32, &Device::cpu())?;
     /// let y = x.sqr()?;
     /// let grads = y.backward()?;
     /// assert!(grads.get_id(x.id()).is_some());
@@ -787,7 +787,7 @@ impl GradStore {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, Var};
-    /// let x = Var::new(3f32, &Device::Cpu)?;
+    /// let x = Var::new(3f32, &Device::cpu())?;
     /// let y = x.sqr()?;
     /// let grads = y.backward()?;
     /// let g = grads.get(&x).unwrap();
@@ -804,7 +804,7 @@ impl GradStore {
     ///
     /// ```rust
     /// use candle_core::{Device, Var};
-    /// let x = Var::new(1f32, &Device::Cpu)?;
+    /// let x = Var::new(1f32, &Device::cpu())?;
     /// let y = x.sqr()?;
     /// let mut grads = y.backward()?;
     /// let g = grads.remove(&x);
@@ -823,10 +823,10 @@ impl GradStore {
     ///
     /// ```rust
     /// use candle_core::{Device, Tensor, Var};
-    /// let x = Var::new(1f32, &Device::Cpu)?;
+    /// let x = Var::new(1f32, &Device::cpu())?;
     /// let y = x.sqr()?;
     /// let mut grads = y.backward()?;
-    /// let new_grad = Tensor::new(99f32, &Device::Cpu)?;
+    /// let new_grad = Tensor::new(99f32, &Device::cpu())?;
     /// grads.insert(&x, new_grad);
     /// assert_eq!(grads.get(&x).unwrap().to_scalar::<f32>()?, 99.0);
     /// # Ok::<(), candle_core::Error>(())
@@ -842,10 +842,10 @@ impl GradStore {
     ///
     /// ```rust
     /// use candle_core::{Device, Tensor, Var};
-    /// let x = Var::new(1f32, &Device::Cpu)?;
+    /// let x = Var::new(1f32, &Device::cpu())?;
     /// let y = x.sqr()?;
     /// let mut grads = y.backward()?;
-    /// let new_grad = Tensor::new(42f32, &Device::Cpu)?;
+    /// let new_grad = Tensor::new(42f32, &Device::cpu())?;
     /// grads.insert_id(x.id(), new_grad);
     /// assert_eq!(grads.get_id(x.id()).unwrap().to_scalar::<f32>()?, 42.0);
     /// # Ok::<(), candle_core::Error>(())
@@ -874,7 +874,7 @@ impl GradStore {
     ///
     /// ```rust
     /// use candle_core::{Device, Var};
-    /// let x = Var::new(2f32, &Device::Cpu)?;
+    /// let x = Var::new(2f32, &Device::cpu())?;
     /// let y = x.sqr()?;
     /// let grads = y.backward()?;
     /// assert_eq!(grads.get_ids().count(), 1);

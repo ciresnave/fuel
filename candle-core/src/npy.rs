@@ -214,54 +214,54 @@ impl Tensor {
             DType::BF16 => {
                 let mut data_t = vec![bf16::ZERO; elem_count];
                 reader.read_u16_into::<LittleEndian>(data_t.reinterpret_cast_mut())?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::F16 => {
                 let mut data_t = vec![f16::ZERO; elem_count];
                 reader.read_u16_into::<LittleEndian>(data_t.reinterpret_cast_mut())?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::F32 => {
                 let mut data_t = vec![0f32; elem_count];
                 reader.read_f32_into::<LittleEndian>(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::F64 => {
                 let mut data_t = vec![0f64; elem_count];
                 reader.read_f64_into::<LittleEndian>(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::U8 => {
                 let mut data_t = vec![0u8; elem_count];
                 reader.read_exact(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::U32 => {
                 let mut data_t = vec![0u32; elem_count];
                 reader.read_u32_into::<LittleEndian>(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::I16 => {
                 let mut data_t = vec![0i16; elem_count];
                 reader.read_i16_into::<LittleEndian>(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::I32 => {
                 let mut data_t = vec![0i32; elem_count];
                 reader.read_i32_into::<LittleEndian>(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::I64 => {
                 let mut data_t = vec![0i64; elem_count];
                 reader.read_i64_into::<LittleEndian>(&mut data_t)?;
-                Tensor::from_vec(data_t, shape, &Device::Cpu)
+                Tensor::from_vec(data_t, shape, &Device::cpu())
             }
             DType::F8E4M3 => {
                 let mut data_t = vec![0u8; elem_count];
                 reader.read_exact(&mut data_t)?;
                 let data_f8: Vec<float8::F8E4M3> =
                     data_t.into_iter().map(float8::F8E4M3::from_bits).collect();
-                Tensor::from_vec(data_f8, shape, &Device::Cpu)
+                Tensor::from_vec(data_f8, shape, &Device::cpu())
             }
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
                 Err(Error::UnsupportedDTypeForOp(dtype, "from_reader").bt())
@@ -380,7 +380,7 @@ impl Tensor {
     ///
     /// ```no_run
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((3, 4), DType::F32, &Device::cpu())?;
     /// t.write_npy("array.npy")?;
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -395,8 +395,8 @@ impl Tensor {
     ///
     /// ```no_run
     /// use candle_core::{Tensor, Device, DType};
-    /// let w = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::zeros((3,), DType::F32, &Device::Cpu)?;
+    /// let w = Tensor::zeros((3, 4), DType::F32, &Device::cpu())?;
+    /// let b = Tensor::zeros((3,), DType::F32, &Device::cpu())?;
     /// Tensor::write_npz(&[("weight", &w), ("bias", &b)], "arrays.npz")?;
     /// # Ok::<(), candle_core::Error>(())
     /// ```

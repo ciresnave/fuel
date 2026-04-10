@@ -1,6 +1,5 @@
 //! Tensors are N-dimensional matrixes of elements using a single data type.
 #![allow(clippy::redundant_closure_call)]
-use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp};
 use crate::scalar::TensorOrScalar;
 use crate::shape::{Dim, Dims, ShapeWithOneHole};
@@ -14,8 +13,8 @@ use std::sync::{Arc, RwLock};
 ///
 /// ```rust
 /// use candle_core::{Tensor, DType, Device};
-/// let a = Tensor::zeros(1, DType::F32, &Device::Cpu)?;
-/// let b = Tensor::zeros(1, DType::F32, &Device::Cpu)?;
+/// let a = Tensor::zeros(1, DType::F32, &Device::cpu())?;
+/// let b = Tensor::zeros(1, DType::F32, &Device::cpu())?;
 /// assert_ne!(a.id(), b.id());
 /// // Clones share the same id
 /// assert_eq!(a.id(), a.clone().id());
@@ -73,8 +72,8 @@ impl AsRef<Tensor> for Tensor {
 /// ```rust
 /// use candle_core::{Tensor, DType, Device};
 ///
-/// let a = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
-/// let b = Tensor::arange(0f32, 12f32, &Device::Cpu)?.reshape((3, 4))?;
+/// let a = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
+/// let b = Tensor::arange(0f32, 12f32, &Device::cpu())?.reshape((3, 4))?;
 ///
 /// let c = a.matmul(&b)?;
 /// # Ok::<(), candle_core::Error>(())
@@ -217,8 +216,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::ones((2, 3), DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::from_slice(&[1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0], (2, 3), &Device::Cpu)?;
+    /// let a = Tensor::ones((2, 3), DType::F32, &Device::cpu())?;
+    /// let b = Tensor::from_slice(&[1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0], (2, 3), &Device::cpu())?;
     /// // a == b
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -232,7 +231,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// a.const_set(candle_core::scalar::Scalar::F32(5.0))?;
     /// assert_eq!(a.to_vec2::<f32>()?, &[[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -247,7 +246,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::ones((2, 2), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::ones((2, 2), DType::F32, &Device::cpu())?;
     /// a.zero_set()?;
     /// assert_eq!(a.to_vec2::<f32>()?, &[[0.0, 0.0], [0.0, 0.0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -262,7 +261,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 2), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 2), DType::F32, &Device::cpu())?;
     /// a.one_set()?;
     /// assert_eq!(a.to_vec2::<f32>()?, &[[1.0, 1.0], [1.0, 1.0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -277,7 +276,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// let b = a.ones_like()?;
     /// // b == a + 1
     /// # Ok::<(), candle_core::Error>(())
@@ -306,8 +305,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::from_slice(&[0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0], (2, 3), &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
+    /// let b = Tensor::from_slice(&[0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0], (2, 3), &Device::cpu())?;
     /// // a == b
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -322,7 +321,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// let b = a.zeros_like()?;
     /// // b is on CPU f32.
     /// # Ok::<(), candle_core::Error>(())
@@ -354,7 +353,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = unsafe { Tensor::empty((2, 3), DType::F32, &Device::Cpu)? };
+    /// let a = unsafe { Tensor::empty((2, 3), DType::F32, &Device::cpu())? };
     /// // a == b
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -372,7 +371,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// let b = unsafe { a.empty_like()? };
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -413,7 +412,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::rand(0f32, 1f32, (2, 3), &Device::Cpu)?;
+    /// let t = Tensor::rand(0f32, 1f32, (2, 3), &Device::cpu())?;
     /// assert_eq!(t.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -433,7 +432,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((3, 4), DType::F32, &Device::cpu())?;
     /// let b = a.rand_like(0., 1.)?;
     /// assert_eq!(b.dims(), &[3, 4]);
     /// assert_eq!(b.dtype(), DType::F32);
@@ -477,7 +476,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((3, 4), DType::F32, &Device::cpu())?;
     /// let b = a.randn_like(0., 1.)?;
     /// assert_eq!(b.dims(), &[3, 4]);
     /// # Ok::<(), candle_core::Error>(())
@@ -500,7 +499,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::randn(0f32, 1f32, (2, 3), &Device::Cpu)?;
+    /// let t = Tensor::randn(0f32, 1f32, (2, 3), &Device::cpu())?;
     /// assert_eq!(t.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -539,15 +538,15 @@ impl Tensor {
     /// ```rust
     /// use candle_core::{Tensor, Device};
     /// // Scalar
-    /// let s = Tensor::new(42f32, &Device::Cpu)?;
+    /// let s = Tensor::new(42f32, &Device::cpu())?;
     /// assert_eq!(s.to_scalar::<f32>()?, 42.0);
     ///
     /// // 1D
-    /// let v = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let v = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// assert_eq!(v.to_vec1::<f32>()?, &[1., 2., 3.]);
     ///
     /// // 2D
-    /// let m = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let m = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// assert_eq!(m.dims(), &[2, 2]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -562,7 +561,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::full(3.5, (2, 4), &Device::Cpu)?;
+    /// let a = Tensor::full(3.5, (2, 4), &Device::cpu())?;
     ///
     /// assert_eq!(a.to_vec2::<f64>()?, &[
     ///     [3.5, 3.5, 3.5, 3.5],
@@ -588,7 +587,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::from_iter( [1.0, 2.0, 3.0, 4.0].into_iter(), &Device::Cpu)?;
+    /// let a = Tensor::from_iter( [1.0, 2.0, 3.0, 4.0].into_iter(), &Device::cpu())?;
     ///
     /// assert_eq!(a.to_vec1::<f64>()?, &[1.0, 2.0, 3.0, 4.0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -609,7 +608,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::arange(2., 5., &Device::Cpu)?;
+    /// let a = Tensor::arange(2., 5., &Device::cpu())?;
     ///
     /// assert_eq!(a.to_vec1::<f64>()?, &[2., 3., 4.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -625,7 +624,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::arange_step(2.0, 4.0, 0.5, &Device::Cpu)?;
+    /// let a = Tensor::arange_step(2.0, 4.0, 0.5, &Device::cpu())?;
     ///
     /// assert_eq!(a.to_vec1::<f64>()?, &[2.0, 2.5, 3.0, 3.5]);
     /// # Ok::<(), candle_core::Error>(())
@@ -676,7 +675,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::from_vec(vec!{1., 2., 3., 4., 5., 6.}, (2, 3), &Device::Cpu)?;
+    /// let a = Tensor::from_vec(vec!{1., 2., 3., 4., 5., 6.}, (2, 3), &Device::cpu())?;
     ///
     /// assert_eq!(a.to_vec2::<f64>()?, &[
     ///     [1., 2., 3.],
@@ -700,7 +699,7 @@ impl Tensor {
     /// ```rust
     /// use candle_core::{Tensor, Device};
     /// let values = vec![1., 2., 3., 4., 5., 6., 7., 8.];
-    /// let a = Tensor::from_slice(&values[1..7], (2, 3), &Device::Cpu)?;
+    /// let a = Tensor::from_slice(&values[1..7], (2, 3), &Device::cpu())?;
     ///
     /// assert_eq!(a.to_vec2::<f64>()?, &[
     ///     [2., 3., 4.],
@@ -741,9 +740,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Var, Device, DType};
-    /// let t = Tensor::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert!(!t.track_op());
-    /// let v = Var::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let v = Var::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert!(v.track_op());
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -772,8 +771,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
-        /// let b = Tensor::new(&[4f32, 5., 6.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+        /// let b = Tensor::new(&[4f32, 5., 6.], &Device::cpu())?;
         /// let c = a.add(&b)?;
         /// assert_eq!(c.to_vec1::<f32>()?, [5., 7., 9.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -787,8 +786,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[2f32, 3., 4.], &Device::Cpu)?;
-        /// let b = Tensor::new(&[5f32, 6., 7.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[2f32, 3., 4.], &Device::cpu())?;
+        /// let b = Tensor::new(&[5f32, 6., 7.], &Device::cpu())?;
         /// let c = a.mul(&b)?;
         /// assert_eq!(c.to_vec1::<f32>()?, [10., 18., 28.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -802,8 +801,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[5f32, 7., 9.], &Device::Cpu)?;
-        /// let b = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[5f32, 7., 9.], &Device::cpu())?;
+        /// let b = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
         /// let c = a.sub(&b)?;
         /// assert_eq!(c.to_vec1::<f32>()?, [4., 5., 6.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -817,8 +816,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[10f32, 20., 30.], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 5., 10.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[10f32, 20., 30.], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 5., 10.], &Device::cpu())?;
         /// let c = a.div(&b)?;
         /// assert_eq!(c.to_vec1::<f32>()?, [5., 4., 3.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -832,7 +831,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[-1f32, 2., -3., 4.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[-1f32, 2., -3., 4.], &Device::cpu())?;
         /// let c = a.maximum(0f64)?;
         /// assert_eq!(c.to_vec1::<f32>()?, [0., 2., 0., 4.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -846,7 +845,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1f32, 5., 3., 7.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1f32, 5., 3., 7.], &Device::cpu())?;
         /// let c = a.minimum(4f64)?;
         /// assert_eq!(c.to_vec1::<f32>()?, [1., 4., 3., 4.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -860,8 +859,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[10f32, 20.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[10f32, 20.], &Device::cpu())?;
         /// let c = a.broadcast_add(&b)?;
         /// assert_eq!(c.to_vec2::<f32>()?, &[[11., 22.], [13., 24.]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -875,8 +874,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[10f32, 20.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[10f32, 20.], &Device::cpu())?;
         /// let c = a.broadcast_mul(&b)?;
         /// assert_eq!(c.to_vec2::<f32>()?, &[[10., 40.], [30., 80.]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -890,8 +889,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[10f32, 20.], [30., 40.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[1f32, 2.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[10f32, 20.], [30., 40.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[1f32, 2.], &Device::cpu())?;
         /// let c = a.broadcast_sub(&b)?;
         /// assert_eq!(c.to_vec2::<f32>()?, &[[9., 18.], [29., 38.]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -905,8 +904,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[10f32, 20.], [30., 40.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 5.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[10f32, 20.], [30., 40.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 5.], &Device::cpu())?;
         /// let c = a.broadcast_div(&b)?;
         /// assert_eq!(c.to_vec2::<f32>()?, &[[5., 4.], [15., 8.]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -920,8 +919,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 5.], [3., 2.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 5.], [3., 2.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 3.], &Device::cpu())?;
         /// let c = a.broadcast_maximum(&b)?;
         /// assert_eq!(c.to_vec2::<f32>()?, &[[2., 5.], [3., 3.]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -935,8 +934,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 5.], [3., 2.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 5.], [3., 2.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 3.], &Device::cpu())?;
         /// let c = a.broadcast_minimum(&b)?;
         /// assert_eq!(c.to_vec2::<f32>()?, &[[1., 3.], [2., 2.]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -950,8 +949,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1u32, 2], [3, 4]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[1u32, 4], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1u32, 2], [3, 4]], &Device::cpu())?;
+        /// let b = Tensor::new(&[1u32, 4], &Device::cpu())?;
         /// let c = a.broadcast_eq(&b)?;
         /// assert_eq!(c.to_vec2::<u8>()?, &[[1, 0], [0, 1]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -965,8 +964,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1u32, 2], [3, 4]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[1u32, 4], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1u32, 2], [3, 4]], &Device::cpu())?;
+        /// let b = Tensor::new(&[1u32, 4], &Device::cpu())?;
         /// let c = a.broadcast_ne(&b)?;
         /// assert_eq!(c.to_vec2::<u8>()?, &[[0, 1], [1, 0]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -980,8 +979,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 3.], &Device::cpu())?;
         /// let c = a.broadcast_lt(&b)?;
         /// assert_eq!(c.to_vec2::<u8>()?, &[[1, 0], [0, 1]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -995,8 +994,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 3.], &Device::cpu())?;
         /// let c = a.broadcast_le(&b)?;
         /// assert_eq!(c.to_vec2::<u8>()?, &[[1, 1], [0, 1]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1010,8 +1009,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 3.], &Device::cpu())?;
         /// let c = a.broadcast_gt(&b)?;
         /// assert_eq!(c.to_vec2::<u8>()?, &[[0, 0], [1, 0]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1025,8 +1024,8 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::Cpu)?;
-        /// let b = Tensor::new(&[2f32, 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[[1f32, 3.], [5., 2.]], &Device::cpu())?;
+        /// let b = Tensor::new(&[2f32, 3.], &Device::cpu())?;
         /// let c = a.broadcast_ge(&b)?;
         /// assert_eq!(c.to_vec2::<u8>()?, &[[0, 1], [1, 0]]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1041,7 +1040,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[2f32, 4., 5.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[2f32, 4., 5.], &Device::cpu())?;
         /// let b = a.recip()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [0.5, 0.25, 0.2]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1055,7 +1054,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1f32, -2., 3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1f32, -2., 3.], &Device::cpu())?;
         /// let b = a.neg()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [-1., 2., -3.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1069,7 +1068,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, 1.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, 1.], &Device::cpu())?;
         /// let b = a.exp()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!((v[0] - 1.0).abs() < 1e-5);
@@ -1085,7 +1084,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1f32, std::f32::consts::E], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1f32, std::f32::consts::E], &Device::cpu())?;
         /// let b = a.log()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[0].abs() < 1e-5);
@@ -1101,7 +1100,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, std::f32::consts::FRAC_PI_2], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, std::f32::consts::FRAC_PI_2], &Device::cpu())?;
         /// let b = a.sin()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[0].abs() < 1e-5);
@@ -1117,7 +1116,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, std::f32::consts::PI], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, std::f32::consts::PI], &Device::cpu())?;
         /// let b = a.cos()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!((v[0] - 1.0).abs() < 1e-5);
@@ -1133,7 +1132,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, 1.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, 1.], &Device::cpu())?;
         /// let b = a.tanh()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[0].abs() < 1e-5);
@@ -1149,7 +1148,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[-1f32, 2., -3.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[-1f32, 2., -3.], &Device::cpu())?;
         /// let b = a.abs()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [1., 2., 3.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1163,7 +1162,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[2f32, 3., -4.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[2f32, 3., -4.], &Device::cpu())?;
         /// let b = a.sqr()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [4., 9., 16.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1177,7 +1176,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[4f32, 9., 16.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[4f32, 9., 16.], &Device::cpu())?;
         /// let b = a.sqrt()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [2., 3., 4.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1193,7 +1192,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[-1f32, 0., 1.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[-1f32, 0., 1.], &Device::cpu())?;
         /// let b = a.gelu()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[1].abs() < 1e-5); // gelu(0) = 0
@@ -1208,7 +1207,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, 1.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, 1.], &Device::cpu())?;
         /// let b = a.gelu_erf()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[0].abs() < 1e-5);
@@ -1223,7 +1222,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, 1.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, 1.], &Device::cpu())?;
         /// let b = a.erf()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[0].abs() < 1e-5);
@@ -1238,7 +1237,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[-2f32, -1., 0., 1., 2.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[-2f32, -1., 0., 1., 2.], &Device::cpu())?;
         /// let b = a.relu()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [0., 0., 0., 1., 2.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1252,7 +1251,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[0f32, 1.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[0f32, 1.], &Device::cpu())?;
         /// let b = a.silu()?;
         /// let v = b.to_vec1::<f32>()?;
         /// assert!(v[0].abs() < 1e-5); // silu(0) = 0
@@ -1267,7 +1266,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1.5f32, -1.5, 2.0], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1.5f32, -1.5, 2.0], &Device::cpu())?;
         /// let b = a.ceil()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [2., -1., 2.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1281,7 +1280,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1.5f32, -1.5, 2.0], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1.5f32, -1.5, 2.0], &Device::cpu())?;
         /// let b = a.floor()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [1., -2., 2.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1295,7 +1294,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[1.3f32, -1.7, 2.0], &Device::Cpu)?;
+        /// let a = Tensor::new(&[1.3f32, -1.7, 2.0], &Device::cpu())?;
         /// let b = a.round()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [1., -2., 2.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1309,7 +1308,7 @@ impl Tensor {
         ///
         /// ```rust
         /// use candle_core::{Tensor, Device};
-        /// let a = Tensor::new(&[-3f32, 0., 5.], &Device::Cpu)?;
+        /// let a = Tensor::new(&[-3f32, 0., 5.], &Device::cpu())?;
         /// let b = a.sign()?;
         /// assert_eq!(b.to_vec1::<f32>()?, [-1., 0., 1.]);
         /// # Ok::<(), candle_core::Error>(())
@@ -1326,7 +1325,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(&[1.5f32, 2.75, -0.125], &Device::Cpu)?;
+    /// let t = Tensor::new(&[1.5f32, 2.75, -0.125], &Device::cpu())?;
     /// let r = t.round_to(1)?;
     /// assert_eq!(r.to_vec1::<f32>()?, [1.5, 2.8, -0.1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1343,7 +1342,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(3.14f32, &Device::Cpu)?;
+    /// let t = Tensor::new(3.14f32, &Device::cpu())?;
     /// assert_eq!(t.to_scalar::<f32>()?, 3.14);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -1360,11 +1359,9 @@ impl Tensor {
             let data = S::cpu_storage_as_slice(cpu_storage)?;
             Ok::<_, Error>(data[self.layout().start_offset()])
         };
-        match &*self.storage() {
-            Storage::Cpu(cpu_storage) => from_cpu_storage(cpu_storage),
-            Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Custom(storage) => from_cpu_storage(&storage.to_cpu_storage_dyn()?),
+        {
+            let cpu_storage = self.storage().to_cpu_storage()?;
+            from_cpu_storage(&cpu_storage)
         }
     }
 
@@ -1374,7 +1371,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(42f32, &Device::Cpu)?;
+    /// let t = Tensor::new(42f32, &Device::cpu())?;
     /// assert_eq!(t.to_vec0::<f32>()?, 42.0);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -1391,7 +1388,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let t = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = t.repeat((2, 3))?;
     /// assert_eq!(r.to_vec2::<f32>()?, &[
     ///     [1., 2., 3., 1., 2., 3., 1., 2., 3.],
@@ -1431,8 +1428,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, Shape};
-    /// let x = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
-    /// let y = Tensor::new(&[4f32, 5., 6.], &Device::Cpu)?;
+    /// let x = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    /// let y = Tensor::new(&[4f32, 5., 6.], &Device::cpu())?;
     ///
     /// let grids_xy = Tensor::meshgrid(&[&x, &y], true)?;
     ///
@@ -1494,7 +1491,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::cpu())?;
     /// let a = a.affine(4., -2.)?;
     /// assert_eq!(a.to_vec2::<f32>()?, &[[-2.0, 2.0], [6.0, 10.0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1516,7 +1513,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let b = a.scale_and_shift(2., 10.)?;
     /// assert_eq!(b.to_vec1::<f32>()?, &[12., 14., 16.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1531,7 +1528,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 0., -1.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 0., -1.], &Device::cpu())?;
     /// let b = a.elu(1.0)?;
     /// let v = b.to_vec1::<f32>()?;
     /// assert_eq!(v[0], 1.0);
@@ -1554,7 +1551,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[2f32, 3., 4.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[2f32, 3., 4.], &Device::cpu())?;
     /// let b = a.powf(2.0)?;
     /// assert_eq!(b.to_vec1::<f32>()?, [4., 9., 16.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1589,7 +1586,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::arange(0f32, 7f32, &Device::Cpu)?;
+    /// let a = Tensor::arange(0f32, 7f32, &Device::cpu())?;
     /// let c = a.chunk(3, 0)?;
     /// assert_eq!(c.len(), 3);
     /// assert_eq!(c[0].to_vec1::<f32>()?, [0., 1., 2.]);
@@ -1632,7 +1629,7 @@ impl Tensor {
     ///     [0f32, 1., 2.],
     ///     [3.  , 4., 5.],
     ///     [6.  , 7., 8.]
-    /// ], &Device::Cpu)?;
+    /// ], &Device::cpu())?;
     ///
     /// let b = a.narrow(0, 1, 2)?;
     /// assert_eq!(b.shape().dims(), &[2, 3]);
@@ -1755,10 +1752,10 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.roll(1, 0)?;
     /// assert_eq!(tensor.to_vec2::<f32>()?, &[[4., 5.], [0., 1.], [2., 3.]]);
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.roll(-1, 0)?;
     /// assert_eq!(tensor.to_vec2::<f32>()?, &[[2., 3.], [4., 5.], [0., 1.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1789,7 +1786,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::cpu())?;
     /// let s = a.sum_keepdim(0)?;
     /// assert_eq!(s.to_vec2::<f32>()?, &[[2., 4.]]);
     /// let s = a.sum_keepdim(1)?;
@@ -1808,7 +1805,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// let s = a.sum(0)?;
     /// assert_eq!(s.to_vec1::<f32>()?, [4., 6.]);
     /// let s = a.sum(1)?;
@@ -1831,7 +1828,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::cpu())?;
     /// let s = a.mean_keepdim(0)?;
     /// assert_eq!(s.to_vec2::<f32>()?, &[[1., 2.]]);
     /// let s = a.mean_keepdim(1)?;
@@ -1853,7 +1850,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// let m = a.mean(0)?;
     /// assert_eq!(m.to_vec1::<f32>()?, [2., 3.]);
     /// let m = a.mean(1)?;
@@ -1873,7 +1870,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::cpu())?;
     /// let v = a.var_keepdim(1)?;
     /// assert_eq!(v.dims(), &[2, 1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1891,7 +1888,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::cpu())?;
     /// let v = a.var(1)?;
     /// assert_eq!(v.dims(), &[2]);
     /// assert_eq!(v.to_vec1::<f32>()?, [1., 1.]);
@@ -1908,7 +1905,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::cpu())?;
     /// let m = a.max_keepdim(1)?;
     /// assert_eq!(m.to_vec2::<f32>()?, &[[3.], [4.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1923,7 +1920,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::cpu())?;
     /// let m = a.max(1)?;
     /// assert_eq!(m.to_vec1::<f32>()?, [3., 4.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1938,7 +1935,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::cpu())?;
     /// let m = a.min_keepdim(1)?;
     /// assert_eq!(m.to_vec2::<f32>()?, &[[1.], [2.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1953,7 +1950,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [2., 4.]], &Device::cpu())?;
     /// let m = a.min(1)?;
     /// assert_eq!(m.to_vec1::<f32>()?, [1., 2.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1968,7 +1965,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::cpu())?;
     /// let idx = a.argmax_keepdim(1)?;
     /// assert_eq!(idx.to_vec2::<u32>()?, &[[1], [0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1983,7 +1980,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::cpu())?;
     /// let idx = a.argmax(1)?;
     /// assert_eq!(idx.to_vec1::<u32>()?, [1, 0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -1998,7 +1995,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::cpu())?;
     /// let idx = a.argmin_keepdim(1)?;
     /// assert_eq!(idx.to_vec2::<u32>()?, &[[0], [1]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2013,7 +2010,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 3.], [4., 2.]], &Device::cpu())?;
     /// let idx = a.argmin(1)?;
     /// assert_eq!(idx.to_vec1::<u32>()?, [0, 1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2030,7 +2027,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.cmp(2f64, candle_core::op::CmpOp::Ge)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [0, 1, 1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2057,7 +2054,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.eq(2f64)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [0, 1, 0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2072,7 +2069,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.ne(2f64)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [1, 0, 1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2087,7 +2084,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.lt(2f64)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [1, 0, 0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2102,7 +2099,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.gt(2f64)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [0, 0, 1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2117,7 +2114,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.ge(2f64)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [0, 1, 1]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2132,7 +2129,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let r = a.le(2f64)?;
     /// assert_eq!(r.to_vec1::<u8>()?, [1, 1, 0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2147,7 +2144,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[-1f32, 0., 1., 2., 5.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[-1f32, 0., 1., 2., 5.], &Device::cpu())?;
     /// let c = a.clamp(0f64, 3f64)?;
     /// assert_eq!(c.to_vec1::<f32>()?, [0., 0., 1., 2., 3.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2165,7 +2162,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((1, 1, 6))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((1, 1, 6))?;
     /// let up = t.interpolate1d(12)?;
     /// assert_eq!(up.dims(), &[1, 1, 12]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2185,7 +2182,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((1, 1, 6))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((1, 1, 6))?;
     /// let up = t.upsample_nearest1d(12)?;
     /// assert_eq!(up.dims(), &[1, 1, 12]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2204,7 +2201,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let up = t.interpolate2d(8, 8)?;
     /// assert_eq!(up.dims(), &[1, 1, 8, 8]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2228,7 +2225,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let up = t.upsample_nearest2d(8, 8)?;
     /// assert_eq!(up.dims(), &[1, 1, 8, 8]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2254,7 +2251,7 @@ impl Tensor {
     /// ```rust
     /// use candle_core::{Tensor, Device};
     /// # fn main() -> candle_core::Result<()> {
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let upsampled = t.upsample_bilinear2d(8, 8, false)?;
     /// assert_eq!(upsampled.dims(), &[1, 1, 8, 8]);
     /// # Ok(())
@@ -2301,7 +2298,7 @@ impl Tensor {
     /// ```rust
     /// use candle_core::{Tensor, Device};
     /// # fn main() -> candle_core::Result<()> {
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// // Scale by 2x in both dimensions
     /// let upsampled = t.upsample_bilinear2d_with_scale(2.0, 2.0, false)?;
     /// assert_eq!(upsampled.dims(), &[1, 1, 8, 8]);
@@ -2361,7 +2358,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let out = t.avg_pool2d(2)?;
     /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2378,7 +2375,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let out = t.avg_pool2d_with_stride(2, 2)?;
     /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2419,7 +2416,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let out = t.max_pool2d(2)?;
     /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2436,7 +2433,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 16f32, &Device::Cpu)?.reshape((1, 1, 4, 4))?;
+    /// let t = Tensor::arange(0f32, 16f32, &Device::cpu())?.reshape((1, 1, 4, 4))?;
     /// let out = t.max_pool2d_with_stride(2, 2)?;
     /// assert_eq!(out.dims(), &[1, 1, 2, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2475,8 +2472,8 @@ impl Tensor {
     /// # Example (vectors)
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t1 = Tensor::new(&[1.0, 2.0, 3.0], &Device::Cpu)?;
-    /// let t2 = Tensor::new(&[4.0, 5.0, 6.0], &Device::Cpu)?;
+    /// let t1 = Tensor::new(&[1.0, 2.0, 3.0], &Device::cpu())?;
+    /// let t2 = Tensor::new(&[4.0, 5.0, 6.0], &Device::cpu())?;
     /// let res = t1.dot(&t2)?;
     /// assert_eq!(res.to_scalar::<f64>()?, 32.);
     /// # Ok::<(), candle_core::Error>(())
@@ -2500,7 +2497,7 @@ impl Tensor {
     /// # Example
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(&[[3., 4.], [0., 0.]], &Device::Cpu)?;
+    /// let t = Tensor::new(&[[3., 4.], [0., 0.]], &Device::cpu())?;
     /// let norm = t.norm()?;
     /// assert_eq!(norm.to_scalar::<f64>()?, 5.);
     /// # Ok::<(), candle_core::Error>(())
@@ -2521,8 +2518,8 @@ impl Tensor {
     /// # Example
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
-    /// let vec = Tensor::new(&[1., 1., 1.], &Device::Cpu)?;
+    /// let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &Device::cpu())?;
+    /// let vec = Tensor::new(&[1., 1., 1.], &Device::cpu())?;
     /// let res = mat.mv(&vec)?;
     /// assert_eq!(res.to_vec1::<f64>()?, [6., 15.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2552,8 +2549,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
-    /// let vec = Tensor::new(&[1., 1., 1.], &Device::Cpu)?;
+    /// let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &Device::cpu())?;
+    /// let vec = Tensor::new(&[1., 1., 1.], &Device::cpu())?;
     /// let res = mat.matvec(&vec)?;
     /// assert_eq!(res.to_vec1::<f64>()?, [6., 15.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2572,8 +2569,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
-    /// let b = Tensor::new(&[[5f32, 6.], [7., 8.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
+    /// let b = Tensor::new(&[[5f32, 6.], [7., 8.]], &Device::cpu())?;
     /// let c = a.matmul(&b)?;
     /// assert_eq!(c.to_vec2::<f32>()?, &[[19., 22.], [43., 50.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2634,8 +2631,8 @@ impl Tensor {
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
     /// // (2, 1, 3, 4) broadcast-matmul with (2, 4, 5) → (2, 2, 3, 5)
-    /// let a = Tensor::zeros((2, 1, 3, 4), DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::zeros((2, 4, 5), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 1, 3, 4), DType::F32, &Device::cpu())?;
+    /// let b = Tensor::zeros((2, 4, 5), DType::F32, &Device::cpu())?;
     /// let c = a.broadcast_matmul(&b)?;
     /// assert_eq!(c.dims(), &[2, 2, 3, 5]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2663,9 +2660,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let cond = Tensor::new(&[1u8, 0, 1], &Device::Cpu)?;
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
-    /// let b = Tensor::new(&[4f32, 5., 6.], &Device::Cpu)?;
+    /// let cond = Tensor::new(&[1u8, 0, 1], &Device::cpu())?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    /// let b = Tensor::new(&[4f32, 5., 6.], &Device::cpu())?;
     /// let c = cond.where_cond(&a, &b)?;
     /// assert_eq!(c.to_vec1::<f32>()?, [1., 5., 3.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2699,8 +2696,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let values = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
-    /// let ids = Tensor::new(&[2u32, 1u32, 2u32], &Device::Cpu)?;
+    /// let values = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
+    /// let ids = Tensor::new(&[2u32, 1u32, 2u32], &Device::cpu())?;
     /// let emb = values.embedding(&ids)?;
     /// assert_eq!(emb.to_vec2::<f32>()?, &[[4., 5.], [2., 3.], [4., 5.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2758,9 +2755,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::zeros((3, 2), candle_core::DType::F32, &Device::Cpu)?;
-    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::Cpu)?;
-    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let t = Tensor::zeros((3, 2), candle_core::DType::F32, &Device::cpu())?;
+    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::cpu())?;
+    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// let r = t.scatter(&idx, &src, 0)?;
     /// assert_eq!(r.to_vec2::<f32>()?, [[1., 4.], [3., 2.], [0., 0.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2794,9 +2791,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((3, 2), DType::F32, &Device::Cpu)?;
-    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::Cpu)?;
-    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let t = Tensor::zeros((3, 2), DType::F32, &Device::cpu())?;
+    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::cpu())?;
+    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// t.scatter_set(&idx, &src, 0)?;
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -2826,9 +2823,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::ones((3, 2), DType::F32, &Device::Cpu)?;
-    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::Cpu)?;
-    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let t = Tensor::ones((3, 2), DType::F32, &Device::cpu())?;
+    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::cpu())?;
+    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// let r = t.scatter_add(&idx, &src, 0)?;
     /// assert_eq!(r.dims(), &[3, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2862,9 +2859,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((3, 2), DType::F32, &Device::Cpu)?;
-    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::Cpu)?;
-    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let t = Tensor::zeros((3, 2), DType::F32, &Device::cpu())?;
+    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::cpu())?;
+    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// t.scatter_add_set(&idx, &src, 0)?;
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -2891,8 +2888,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let base = Tensor::arange(0f32, 9f32, &Device::Cpu)?.reshape((3, 3))?;
-    /// let src = Tensor::new(&[[10f32, 20., 30.]], &Device::Cpu)?;
+    /// let base = Tensor::arange(0f32, 9f32, &Device::cpu())?.reshape((3, 3))?;
+    /// let src = Tensor::new(&[[10f32, 20., 30.]], &Device::cpu())?;
     /// let out = base.slice_scatter(&src, 0, 1)?;
     /// assert_eq!(out.dims(), &[3, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2915,8 +2912,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let base = Tensor::arange(0f32, 9f32, &Device::Cpu)?.reshape((3, 3))?;
-    /// let src = Tensor::new(&[[10f32, 20., 30.]], &Device::Cpu)?;
+    /// let base = Tensor::arange(0f32, 9f32, &Device::cpu())?.reshape((3, 3))?;
+    /// let src = Tensor::new(&[[10f32, 20., 30.]], &Device::cpu())?;
     /// let out = base.slice_scatter0(&src, 1)?;
     /// assert_eq!(out.dims(), &[3, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -2982,9 +2979,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let base = Tensor::zeros((3, 2), DType::F32, &Device::Cpu)?;
-    /// let idx = Tensor::new(&[0u32, 2], &Device::Cpu)?;
-    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let base = Tensor::zeros((3, 2), DType::F32, &Device::cpu())?;
+    /// let idx = Tensor::new(&[0u32, 2], &Device::cpu())?;
+    /// let src = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// let out = base.index_add(&idx, &src, 0)?;
     /// assert_eq!(out.dims(), &[3, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3049,8 +3046,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
-    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
+    /// let idx = Tensor::new(&[[0u32, 1], [1, 0]], &Device::cpu())?;
     /// let g = a.gather(&idx, 1)?;
     /// assert_eq!(g.to_vec2::<f32>()?, &[[1., 2.], [4., 3.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3096,8 +3093,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.], [5., 6.]], &Device::Cpu)?;
-    /// let idx = Tensor::new(&[0u32, 2], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.], [5., 6.]], &Device::cpu())?;
+    /// let idx = Tensor::new(&[0u32, 2], &Device::cpu())?;
     /// let b = a.index_select(&idx, 0)?;
     /// assert_eq!(b.to_vec2::<f32>()?, &[[1., 2.], [5., 6.]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3132,7 +3129,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
     /// let indices: Vec<usize> = t.strided_index().collect();
     /// assert_eq!(indices, [0, 1, 2, 3, 4, 5]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3150,7 +3147,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, StridedBlocks};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?;
     /// // For a contiguous 1D tensor, one block covers all elements.
     /// match t.strided_blocks() {
     ///     StridedBlocks::SingleBlock { start_offset, len } => {
@@ -3171,7 +3168,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 5f32, &Device::Cpu)?;
+    /// let t = Tensor::arange(0f32, 5f32, &Device::cpu())?;
     /// assert_eq!(t.to_vec1::<f32>()?, [0., 1., 2., 3., 4.]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3192,11 +3189,9 @@ impl Tensor {
             };
             Ok::<Vec<_>, Error>(data)
         };
-        match &*self.storage() {
-            Storage::Cpu(storage) => from_cpu_storage(storage),
-            Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Custom(storage) => from_cpu_storage(&storage.to_cpu_storage_dyn()?),
+        {
+            let cpu_storage = self.storage().to_cpu_storage()?;
+            from_cpu_storage(&cpu_storage)
         }
     }
 
@@ -3206,7 +3201,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
     /// assert_eq!(t.to_vec2::<f32>()?, [[0., 1., 2.], [3., 4., 5.]]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3233,11 +3228,9 @@ impl Tensor {
             }
             Ok(rows)
         };
-        match &*self.storage() {
-            Storage::Cpu(storage) => from_cpu_storage(storage),
-            Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Custom(storage) => from_cpu_storage(&storage.to_cpu_storage_dyn()?),
+        {
+            let cpu_storage = self.storage().to_cpu_storage()?;
+            from_cpu_storage(&cpu_storage)
         }
     }
 
@@ -3247,7 +3240,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 24f32, &Device::Cpu)?.reshape((2, 3, 4))?;
+    /// let t = Tensor::arange(0f32, 24f32, &Device::cpu())?.reshape((2, 3, 4))?;
     /// let v = t.to_vec3::<f32>()?;
     /// assert_eq!(v.len(), 2);
     /// assert_eq!(v[0].len(), 3);
@@ -3287,11 +3280,9 @@ impl Tensor {
             }
             Ok(top_rows)
         };
-        match &*self.storage() {
-            Storage::Cpu(storage) => from_cpu_storage(storage),
-            Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            Storage::Custom(storage) => from_cpu_storage(&storage.to_cpu_storage_dyn()?),
+        {
+            let cpu_storage = self.storage().to_cpu_storage()?;
+            from_cpu_storage(&cpu_storage)
         }
     }
 
@@ -3301,7 +3292,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dtype(), DType::F32);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3315,7 +3306,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert!(t.device().is_cpu());
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3329,7 +3320,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.shape().dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3343,7 +3334,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3357,7 +3348,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dim(0)?, 2);
     /// assert_eq!(t.dim(1)?, 3);
     /// # Ok::<(), candle_core::Error>(())
@@ -3374,7 +3365,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// let layout = t.layout();
     /// assert_eq!(layout.shape().dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3389,7 +3380,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::zeros((2, 3), candle_core::DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), candle_core::DType::F32, &Device::cpu())?;
     /// assert_eq!(t.stride(), &[3, 1]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3403,7 +3394,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3, 4), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3, 4), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.rank(), 3);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3417,7 +3408,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.elem_count(), 6);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3431,8 +3422,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device, DType};
-    /// let t1 = Tensor::zeros((2,), DType::F32, &Device::Cpu)?;
-    /// let t2 = Tensor::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let t1 = Tensor::zeros((2,), DType::F32, &Device::cpu())?;
+    /// let t2 = Tensor::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert_ne!(t1.id(), t2.id());
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3447,9 +3438,9 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Var, Device, DType};
-    /// let t = Tensor::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert!(!t.is_variable());
-    /// let v = Var::zeros((2,), DType::F32, &Device::Cpu)?;
+    /// let v = Var::zeros((2,), DType::F32, &Device::cpu())?;
     /// assert!(v.is_variable());
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3468,7 +3459,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.max_all()?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 5.);
     /// # Ok::<(), candle_core::Error>(())
@@ -3488,7 +3479,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.min_all()?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 0.);
     /// # Ok::<(), candle_core::Error>(())
@@ -3508,7 +3499,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.sum_all()?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 15.);
     /// # Ok::<(), candle_core::Error>(())
@@ -3524,7 +3515,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(&[2f32, 4., 6.], &Device::Cpu)?;
+    /// let t = Tensor::new(&[2f32, 4., 6.], &Device::cpu())?;
     /// let m = t.mean_all()?.to_scalar::<f32>()?;
     /// assert_eq!(m, 4.0);
     /// # Ok::<(), candle_core::Error>(())
@@ -3569,7 +3560,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3, 4), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3, 4), DType::F32, &Device::cpu())?;
     /// let b = a.flatten(1, 2)?;
     /// assert_eq!(b.dims(), &[2, 12]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3584,7 +3575,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3, 4), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3, 4), DType::F32, &Device::cpu())?;
     /// let b = a.flatten_to(1)?;
     /// assert_eq!(b.dims(), &[6, 4]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3599,7 +3590,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3, 4), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3, 4), DType::F32, &Device::cpu())?;
     /// let b = a.flatten_from(1)?;
     /// assert_eq!(b.dims(), &[2, 12]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3614,7 +3605,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.flatten_all()?;
     /// assert_eq!(tensor.to_vec1::<f32>()?, &[0., 1., 2., 3., 4., 5.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3629,7 +3620,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let t = tensor.get(0)?;
     /// assert_eq!(t.to_vec1::<f32>()?, &[0., 1.]);
     /// let t = tensor.get(1)?;
@@ -3651,7 +3642,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let t = tensor.get_on_dim(1, 0)?;
     /// assert_eq!(t.to_vec1::<f32>()?, &[0., 2., 4.]);
     /// let t = tensor.get_on_dim(1, 1)?;
@@ -3672,7 +3663,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.t()?;
     /// assert_eq!(tensor.to_vec2::<f32>()?, &[[0.0, 2.0, 4.0], [1.0, 3.0, 5.0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3700,7 +3691,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::cpu())?;
     /// let tensor = tensor.transpose_last_two()?;
     /// assert_eq!(tensor.to_vec2::<f32>()?, &[[0.0, 2.0, 4.0], [1.0, 3.0, 5.0]]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3716,7 +3707,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
     /// let t_t = t.transpose(0, 1)?;
     /// assert_eq!(t_t.dims(), &[3, 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3747,7 +3738,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::arange(0u32, 120u32, &Device::Cpu)?.reshape((2, 3, 4, 5))?;
+    /// let tensor = Tensor::arange(0u32, 120u32, &Device::cpu())?.reshape((2, 3, 4, 5))?;
     /// assert_eq!(tensor.dims(), &[2, 3, 4, 5]);
     /// let tensor = tensor.permute((2, 3, 1, 0))?;
     /// assert_eq!(tensor.dims(), &[4, 5, 3, 2]);
@@ -3784,7 +3775,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
     /// assert!(t.is_contiguous());
     /// let t_t = t.transpose(0, 1)?;
     /// assert!(!t_t.is_contiguous());
@@ -3800,7 +3791,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
     /// let t_t = t.transpose(0, 1)?;
     /// // A transposed row-major tensor becomes Fortran contiguous.
     /// assert!(t_t.is_fortran_contiguous());
@@ -3818,7 +3809,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let b = a.copy()?;
     /// assert_eq!(b.to_vec1::<f32>()?, [1., 2., 3.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3846,7 +3837,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Var, Device, DType};
-    /// let v = Var::zeros((3,), DType::F32, &Device::Cpu)?;
+    /// let v = Var::zeros((3,), DType::F32, &Device::cpu())?;
     /// let t = v.as_tensor().detach();
     /// assert!(!t.is_variable());
     /// assert!(!t.track_op());
@@ -3875,8 +3866,8 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
-    /// let b = a.to_device(&Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    /// let b = a.to_device(&Device::cpu())?;
     /// assert_eq!(b.to_vec1::<f32>()?, [1., 2., 3.]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -3884,29 +3875,12 @@ impl Tensor {
         if self.device().same_device(device) {
             Ok(self.clone())
         } else {
-            let storage = match (&*self.storage(), device) {
-                (Storage::Cpu(storage), Device::Cuda(cuda)) => {
-                    Storage::Cuda(cuda.storage_from_cpu_storage(storage)?)
-                }
-                (Storage::Cpu(storage), Device::Metal(metal)) => {
-                    Storage::Metal(metal.storage_from_cpu_storage(storage)?)
-                }
-                (Storage::Cuda(storage), Device::Cpu) => Storage::Cpu(storage.to_cpu_storage()?),
-                (Storage::Metal(storage), Device::Cpu) => Storage::Cpu(storage.to_cpu_storage()?),
-                (Storage::Cuda(storage), Device::Cuda(cuda)) => {
-                    // can't clone storage if it's the same device because of the underlying device ptr
-                    let dst_storage = storage.transfer_to_device(cuda)?;
-                    Storage::Cuda(dst_storage)
-                }
-                (Storage::Cpu(storage), Device::Cpu) => Storage::Cpu(storage.clone()),
-                _ => {
-                    bail!(
-                        "not implemented yet, self.device: {:?}, device: {:?}",
-                        self.device(),
-                        device
-                    )
-                }
-            };
+            // General path: source → CPU → target device.
+            // For GPU→GPU on the same vendor this adds a CPU roundtrip; a direct
+            // peer transfer optimisation can be added later via DynBackendStorage.
+            let cpu_storage = self.storage().to_cpu_storage()?;
+            let storage =
+                Storage(device.inner.storage_from_cpu_storage_owned_dyn(cpu_storage)?);
             let op = BackpropOp::new1(self, Op::ToDevice);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
@@ -3927,7 +3901,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let b = a.broadcast_left((2, 4))?;
     /// assert_eq!(b.dims(), &[2, 4, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3951,7 +3925,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let t = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let b = t.broadcast_as((2, 3))?;
     /// assert_eq!(b.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3975,7 +3949,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let t = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let e = t.expand((2, 3))?;
     /// assert_eq!(e.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -3990,7 +3964,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let tensor = Tensor::new(3.14159265358979f64, &Device::Cpu)?;
+    /// let tensor = Tensor::new(3.14159265358979f64, &Device::cpu())?;
     /// assert_eq!(tensor.to_scalar::<f64>()?, 3.14159265358979);
     /// let tensor = tensor.to_dtype(candle_core::DType::F32)?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 3.1415927);
@@ -4013,7 +3987,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
     /// let b = a.t()?.contiguous()?;
     /// assert!(b.is_contiguous());
     /// assert_eq!(b.to_vec2::<f32>()?, &[[1., 3.], [2., 4.]]);
@@ -4038,7 +4012,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
     /// let t_t = t.transpose(0, 1)?;
     /// let c = t_t.force_contiguous()?;
     /// assert!(c.is_contiguous());
@@ -4076,7 +4050,7 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, DType, Device, D};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     ///
     /// let c = a.reshape((1, 6))?;
     /// assert_eq!(c.shape().dims(), &[1, 6]);
@@ -4125,7 +4099,7 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, DType, Device, D};
-    /// let a = Tensor::zeros((2, 3, 1), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3, 1), DType::F32, &Device::cpu())?;
     ///
     /// let c = a.squeeze(2)?;
     /// assert_eq!(c.shape().dims(), &[2, 3]);
@@ -4165,7 +4139,7 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, DType, Device, D};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     ///
     /// let c = a.unsqueeze(0)?;
     /// assert_eq!(c.shape().dims(), &[1, 2, 3]);
@@ -4204,8 +4178,8 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
+    /// let b = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     ///
     /// let c = Tensor::stack(&[&a, &b], 0)?;
     /// assert_eq!(c.shape().dims(), &[2, 2, 3]);
@@ -4234,7 +4208,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let b = a.pad_with_zeros(0, 2, 1)?;
     /// assert_eq!(b.to_vec1::<f32>()?, [0., 0., 1., 2., 3., 0.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -4273,7 +4247,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     /// let b = a.pad_with_same(0, 2, 1)?;
     /// assert_eq!(b.to_vec1::<f32>()?, [1., 1., 1., 2., 3., 3.]);
     /// # Ok::<(), candle_core::Error>(())
@@ -4506,7 +4480,7 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, Device};
-    /// let t = Tensor::arange(0., 6., &Device::Cpu)?.reshape((2, 3))?;
+    /// let t = Tensor::arange(0., 6., &Device::cpu())?.reshape((2, 3))?;
     /// assert_eq!(t.to_vec2::<f64>()?, &[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]);
     /// let t_flipped = t.flip(&[0])?;
     /// assert_eq!(t_flipped.to_vec2::<f64>()?, &[[3.0, 4.0, 5.0], [0.0, 1.0, 2.0]]);

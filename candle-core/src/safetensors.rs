@@ -32,6 +32,7 @@ use crate::op::BackpropOp;
 use crate::storage::Storage;
 use crate::tensor::from_storage;
 use crate::{DType, Device, Error, Result, Tensor, WithDType};
+use crate::cpu_backend::CpuStorage;
 use safetensors::tensor as st;
 use safetensors::tensor::SafeTensors;
 use std::borrow::Cow;
@@ -93,7 +94,7 @@ impl Tensor {
     ///
     /// ```no_run
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((3, 4), DType::F32, &Device::cpu())?;
     /// t.save_safetensors("weight", "weight.safetensors")?;
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -198,7 +199,7 @@ fn convert_back_<T: WithDType>(mut vs: Vec<T>) -> Vec<u8> {
 /// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
 /// let st = SliceSafetensors::new(&bytes)?;
 /// let view = st.get("weight")?;
-/// let tensor = view.load(&Device::Cpu)?;
+/// let tensor = view.load(&Device::cpu())?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
 pub trait Load {
@@ -238,66 +239,7 @@ impl Tensor {
             DType::F8E4M3 => convert_slice::<float8::F8E4M3>(data, shape, device),
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
                 // For dummy types, create storage with raw bytes
-                let storage = match device {
-                    Device::Cpu => {
-                        let cpu_storage = match dtype {
-                            DType::F6E2M3 => crate::cpu_backend::CpuStorage::F6E2M3(data.to_vec()),
-                            DType::F6E3M2 => crate::cpu_backend::CpuStorage::F6E3M2(data.to_vec()),
-                            DType::F4 => crate::cpu_backend::CpuStorage::F4(data.to_vec()),
-                            DType::F8E8M0 => crate::cpu_backend::CpuStorage::F8E8M0(data.to_vec()),
-                            _ => unreachable!(),
-                        };
-                        Storage::Cpu(cpu_storage)
-                    }
-                    #[cfg(feature = "cuda")]
-                    Device::Cuda(device) => {
-                        let mut slice = unsafe { device.alloc::<u8>(data.len())? };
-                        device.memcpy_htod(data, &mut slice)?;
-
-                        let slice = match dtype {
-                            DType::F6E2M3 => crate::cuda_backend::CudaStorageSlice::F6E2M3(slice),
-                            DType::F6E3M2 => crate::cuda_backend::CudaStorageSlice::F6E3M2(slice),
-                            DType::F4 => crate::cuda_backend::CudaStorageSlice::F4(slice),
-                            DType::F8E8M0 => crate::cuda_backend::CudaStorageSlice::F8E8M0(slice),
-                            _ => unreachable!(),
-                        };
-                        let storage = crate::cuda_backend::CudaStorage {
-                            slice,
-                            device: device.clone(),
-                        };
-                        Storage::Cuda(storage)
-                    }
-                    #[cfg(not(feature = "cuda"))]
-                    Device::Cuda(_) => {
-                        return Err(Error::Msg("CUDA support not compiled".to_string()));
-                    }
-                    #[cfg(feature = "metal")]
-                    Device::Metal(device) => {
-                        let buffer = device.new_buffer_with_data(data)?;
-
-                        let storage = crate::metal_backend::MetalStorage::new(
-                            buffer,
-                            device.clone(),
-                            data.len(),
-                            dtype,
-                        );
-                        Storage::Metal(storage)
-                    }
-                    #[cfg(not(feature = "metal"))]
-                    Device::Metal(_) => {
-                        return Err(Error::Msg("Metal support not compiled".to_string()));
-                    }
-                    Device::Custom(device) => {
-                        let cpu_storage = match dtype {
-                            DType::F6E2M3 => crate::cpu_backend::CpuStorage::F6E2M3(data.to_vec()),
-                            DType::F6E3M2 => crate::cpu_backend::CpuStorage::F6E3M2(data.to_vec()),
-                            DType::F4 => crate::cpu_backend::CpuStorage::F4(data.to_vec()),
-                            DType::F8E8M0 => crate::cpu_backend::CpuStorage::F8E8M0(data.to_vec()),
-                            _ => unreachable!(),
-                        };
-                        Storage::Custom(device.storage_from_cpu_storage_owned_dyn(cpu_storage)?)
-                    }
-                };
+                let storage = dummy_storage_for_device(data, dtype, device)?;
 
                 let op = BackpropOp::none();
                 Ok(from_storage(storage, shape, op, false))
@@ -332,6 +274,69 @@ fn convert(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
     }
 }
 
+/// Create a [`Storage`] for a dummy dtype (F4/F6E2M3/F6E3M2/F8E8M0) on the given device.
+///
+/// CUDA/Metal backends reject these types through the normal `storage_from_cpu_storage` path,
+/// so we handle them with device-specific raw-byte uploads.
+fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Result<Storage> {
+    use candle_core_types::DeviceLocation;
+
+    let make_cpu = || -> CpuStorage {
+        match dtype {
+            DType::F6E2M3 => CpuStorage::F6E2M3(data.to_vec()),
+            DType::F6E3M2 => CpuStorage::F6E3M2(data.to_vec()),
+            DType::F4 => CpuStorage::F4(data.to_vec()),
+            DType::F8E8M0 => CpuStorage::F8E8M0(data.to_vec()),
+            _ => unreachable!(),
+        }
+    };
+
+    match device.location() {
+        DeviceLocation::Cpu => Ok(Storage::from_cpu(make_cpu())),
+        #[cfg(feature = "cuda")]
+        DeviceLocation::Cuda { .. } => {
+            let cuda_dev = device.as_cuda_device().unwrap();
+            let mut slice = unsafe { cuda_dev.alloc::<u8>(data.len())? };
+            cuda_dev.memcpy_htod(data, &mut slice)?;
+            let slice = match dtype {
+                DType::F6E2M3 => crate::cuda_backend::CudaStorageSlice::F6E2M3(slice),
+                DType::F6E3M2 => crate::cuda_backend::CudaStorageSlice::F6E3M2(slice),
+                DType::F4 => crate::cuda_backend::CudaStorageSlice::F4(slice),
+                DType::F8E8M0 => crate::cuda_backend::CudaStorageSlice::F8E8M0(slice),
+                _ => unreachable!(),
+            };
+            let storage = crate::cuda_backend::CudaStorage {
+                slice,
+                device: cuda_dev.clone(),
+            };
+            Ok(Storage::from_cuda(storage))
+        }
+        #[cfg(not(feature = "cuda"))]
+
+        DeviceLocation::Cuda { .. } => {
+            Err(Error::Msg("CUDA support not compiled".to_string()))
+        }
+        #[cfg(feature = "metal")]
+        DeviceLocation::Metal { .. } => {
+            let metal_dev = device.as_metal_device().unwrap();
+            let buffer = metal_dev.new_buffer_with_data(data)?;
+            let storage =
+                crate::metal_backend::MetalStorage::new(buffer, metal_dev.clone(), data.len(), dtype);
+            Ok(Storage::from_metal(storage))
+        }
+        #[cfg(not(feature = "metal"))]
+
+        DeviceLocation::Metal { .. } => {
+            Err(Error::Msg("Metal support not compiled".to_string()))
+        }
+        _ => {
+            // Custom / Vulkan: try the general CPU→device path
+            let cpu_storage = make_cpu();
+            Ok(Storage(device.inner.storage_from_cpu_storage_owned_dyn(cpu_storage)?))
+        }
+    }
+}
+
 fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
     // For dummy types, we'll create the appropriate storage variant that preserves
     // both the raw data and the correct dtype
@@ -348,62 +353,7 @@ fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
     let shape = view.shape();
 
     // Create storage with the appropriate dummy type variant
-    let storage = match device {
-        Device::Cpu => {
-            let cpu_storage = match dtype {
-                DType::F6E2M3 => crate::cpu_backend::CpuStorage::F6E2M3(data.to_vec()),
-                DType::F6E3M2 => crate::cpu_backend::CpuStorage::F6E3M2(data.to_vec()),
-                DType::F4 => crate::cpu_backend::CpuStorage::F4(data.to_vec()),
-                DType::F8E8M0 => crate::cpu_backend::CpuStorage::F8E8M0(data.to_vec()),
-                _ => unreachable!(),
-            };
-            Storage::Cpu(cpu_storage)
-        }
-        #[cfg(feature = "cuda")]
-        Device::Cuda(device) => {
-            let mut slice = unsafe { device.alloc::<u8>(data.len())? };
-            device.memcpy_htod(data, &mut slice)?;
-
-            let slice = match dtype {
-                DType::F6E2M3 => crate::cuda_backend::CudaStorageSlice::F6E2M3(slice),
-                DType::F6E3M2 => crate::cuda_backend::CudaStorageSlice::F6E3M2(slice),
-                DType::F4 => crate::cuda_backend::CudaStorageSlice::F4(slice),
-                DType::F8E8M0 => crate::cuda_backend::CudaStorageSlice::F8E8M0(slice),
-                _ => unreachable!(),
-            };
-            let storage = crate::cuda_backend::CudaStorage {
-                slice,
-                device: device.clone(),
-            };
-            Storage::Cuda(storage)
-        }
-        #[cfg(not(feature = "cuda"))]
-        Device::Cuda(_) => {
-            return Err(Error::Msg("CUDA support not compiled".to_string()));
-        }
-        #[cfg(feature = "metal")]
-        Device::Metal(device) => {
-            let buffer = device.new_buffer_with_data(data)?;
-
-            let storage =
-                crate::metal_backend::MetalStorage::new(buffer, device.clone(), data.len(), dtype);
-            Storage::Metal(storage)
-        }
-        #[cfg(not(feature = "metal"))]
-        Device::Metal(_) => {
-            return Err(Error::Msg("Metal support not compiled".to_string()));
-        }
-        Device::Custom(device) => {
-            let cpu_storage = match dtype {
-                DType::F6E2M3 => crate::cpu_backend::CpuStorage::F6E2M3(data.to_vec()),
-                DType::F6E3M2 => crate::cpu_backend::CpuStorage::F6E3M2(data.to_vec()),
-                DType::F4 => crate::cpu_backend::CpuStorage::F4(data.to_vec()),
-                DType::F8E8M0 => crate::cpu_backend::CpuStorage::F8E8M0(data.to_vec()),
-                _ => unreachable!(),
-            };
-            Storage::Custom(device.storage_from_cpu_storage_owned_dyn(cpu_storage)?)
-        }
-    };
+    let storage = dummy_storage_for_device(data, dtype, device)?;
 
     // Create tensor with correct dtype
     let op = BackpropOp::none();
@@ -439,7 +389,7 @@ fn convert_back(tensor: &Tensor) -> Result<Vec<u8>> {
 ///
 /// ```no_run
 /// use candle_core::{Device, safetensors::load};
-/// let tensors = load("weights.safetensors", &Device::Cpu)?;
+/// let tensors = load("weights.safetensors", &Device::cpu())?;
 /// if let Some(t) = tensors.get("weight") {
 ///     println!("shape: {:?}", t.shape());
 /// }
@@ -460,7 +410,7 @@ pub fn load<P: AsRef<Path>>(filename: P, device: &Device) -> Result<HashMap<Stri
 /// ```no_run
 /// use candle_core::{Device, safetensors::load_buffer};
 /// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
-/// let tensors = load_buffer(&bytes, &Device::Cpu)?;
+/// let tensors = load_buffer(&bytes, &Device::cpu())?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
 pub fn load_buffer(data: &[u8], device: &Device) -> Result<HashMap<String, Tensor>> {
@@ -481,7 +431,7 @@ pub fn load_buffer(data: &[u8], device: &Device) -> Result<HashMap<String, Tenso
 /// use std::collections::HashMap;
 /// use candle_core::{Tensor, Device, DType, safetensors::save};
 /// let mut tensors = HashMap::new();
-/// tensors.insert("weight", Tensor::zeros((3, 4), DType::F32, &Device::Cpu)?);
+/// tensors.insert("weight", Tensor::zeros((3, 4), DType::F32, &Device::cpu())?);
 /// save(&tensors, "weights.safetensors")?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
@@ -514,7 +464,7 @@ struct SafeTensors_<'a>(SafeTensors<'a>);
 /// use candle_core::{Device, safetensors::MmapedSafetensors};
 /// // SAFETY: the file must not be modified while the mapping is alive.
 /// let st = unsafe { MmapedSafetensors::new("weights.safetensors")? };
-/// let tensor = st.load("weight", &Device::Cpu)?;
+/// let tensor = st.load("weight", &Device::cpu())?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
 pub struct MmapedSafetensors {
@@ -634,7 +584,7 @@ impl MmapedSafetensors {
 /// use candle_core::{Device, safetensors::SliceSafetensors};
 /// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
 /// let st = SliceSafetensors::new(&bytes)?;
-/// let tensor = st.load("weight", &Device::Cpu)?;
+/// let tensor = st.load("weight", &Device::cpu())?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
 pub struct SliceSafetensors<'a> {
@@ -675,7 +625,7 @@ impl<'a> SliceSafetensors<'a> {
 /// use candle_core::{Device, safetensors::BufferedSafetensors};
 /// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
 /// let st = BufferedSafetensors::new(bytes)?;
-/// let tensor = st.load("weight", &Device::Cpu)?;
+/// let tensor = st.load("weight", &Device::cpu())?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
 pub struct BufferedSafetensors {
@@ -778,7 +728,7 @@ mod tests {
 
     #[test]
     fn save_single_tensor() {
-        let t = Tensor::zeros((2, 2), DType::F32, &Device::Cpu).unwrap();
+        let t = Tensor::zeros((2, 2), DType::F32, &Device::cpu()).unwrap();
         t.save_safetensors("t", "t.safetensors").unwrap();
         let bytes = std::fs::read("t.safetensors").unwrap();
         assert_eq!(bytes, b"@\0\0\0\0\0\0\0{\"t\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]}}       \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
@@ -787,12 +737,12 @@ mod tests {
 
     #[test]
     fn save_load_multiple_tensors() {
-        let t = Tensor::zeros((2, 2), DType::F32, &Device::Cpu).unwrap();
-        let u = Tensor::zeros((1, 2), DType::F32, &Device::Cpu).unwrap();
+        let t = Tensor::zeros((2, 2), DType::F32, &Device::cpu()).unwrap();
+        let u = Tensor::zeros((1, 2), DType::F32, &Device::cpu()).unwrap();
         let map: HashMap<_, _> = [("t", t), ("u", u)].into_iter().collect();
         save(&map, "multi.safetensors").unwrap();
 
-        let weights = load("multi.safetensors", &Device::Cpu).unwrap();
+        let weights = load("multi.safetensors", &Device::cpu()).unwrap();
         assert_eq!(weights.get("t").unwrap().dims(), &[2, 2]);
         assert_eq!(weights.get("u").unwrap().dims(), &[1, 2]);
         let bytes = std::fs::read("multi.safetensors").unwrap();
@@ -804,7 +754,7 @@ mod tests {
     fn load_u8() {
         let bytes = b"8\0\0\0\0\0\0\0{\"x\":{\"dtype\":\"U8\",\"shape\":[2],\"data_offsets\":[0,2]}}   \x01\x03";
         std::fs::write("test_u8.safetensors", bytes).unwrap();
-        let weights = load("test_u8.safetensors", &Device::Cpu).unwrap();
+        let weights = load("test_u8.safetensors", &Device::cpu()).unwrap();
         let tensor = weights.get("x").unwrap();
         assert_eq!(tensor.dims(), &[2]);
         assert_eq!(tensor.dtype(), DType::U8);

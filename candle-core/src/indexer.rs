@@ -14,7 +14,7 @@
 //!
 //! ```
 //! # use candle_core::{Tensor, Device, IndexOp};
-//! let t = Tensor::arange(0f32, 24f32, &Device::Cpu)?.reshape((2, 3, 4))?;
+//! let t = Tensor::arange(0f32, 24f32, &Device::cpu())?.reshape((2, 3, 4))?;
 //!
 //! // Scalar select on dim 0 removes that dimension.
 //! let row = t.i(0)?;
@@ -40,7 +40,7 @@ impl Tensor {
     ///
     /// ```
     /// # use candle_core::{Tensor, DType, Device, IndexOp};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     ///
     /// let c = a.i(0..1)?;
     /// assert_eq!(c.shape().dims(), &[1, 3]);
@@ -111,7 +111,7 @@ impl Tensor {
 ///
 /// ```
 /// # use candle_core::{Tensor, Device, IndexOp};
-/// let a = Tensor::arange(0f32, 24f32, &Device::Cpu)?.reshape((2, 3, 4))?;
+/// let a = Tensor::arange(0f32, 24f32, &Device::cpu())?.reshape((2, 3, 4))?;
 ///
 /// // Select -- picks index 0 on dim 0, result shape is [3, 4]
 /// let b = a.i(0)?;
@@ -160,7 +160,7 @@ impl From<usize> for TensorIndexer {
 /// a 1-D CPU tensor from the slice.
 impl From<&[u32]> for TensorIndexer {
     fn from(index: &[u32]) -> Self {
-        match Tensor::new(index, &crate::Device::Cpu) {
+        match Tensor::new(index, &crate::Device::cpu()) {
             Ok(tensor) => TensorIndexer::IndexSelect(tensor),
             Err(e) => TensorIndexer::Err(e),
         }
@@ -172,7 +172,7 @@ impl From<&[u32]> for TensorIndexer {
 impl From<Vec<u32>> for TensorIndexer {
     fn from(index: Vec<u32>) -> Self {
         let len = index.len();
-        match Tensor::from_vec(index, len, &crate::Device::Cpu) {
+        match Tensor::from_vec(index, len, &crate::Device::cpu()) {
             Ok(tensor) => TensorIndexer::IndexSelect(tensor),
             Err(e) => TensorIndexer::Err(e),
         }
@@ -233,7 +233,7 @@ where
     ///     [0., 1.],
     ///     [2., 3.],
     ///     [4., 5.]
-    /// ], &Device::Cpu)?;
+    /// ], &Device::cpu())?;
     ///
     /// let b = a.i(0)?;
     /// assert_eq!(b.shape().dims(), &[2]);
@@ -269,7 +269,7 @@ where
     ///     [0f32, 1.],
     ///     [2.  , 3.],
     ///     [4.  , 5.]
-    /// ], &Device::Cpu)?;
+    /// ], &Device::cpu())?;
     ///
     /// let b = a.i((0,))?;
     /// assert_eq!(b.shape().dims(), &[2]);
@@ -302,7 +302,7 @@ where
 {
     ///```rust
     /// use candle_core::{Tensor, DType, Device, IndexOp};
-    /// let a = Tensor::new(&[[0f32, 1., 2.], [3., 4., 5.], [6., 7., 8.]], &Device::Cpu)?;
+    /// let a = Tensor::new(&[[0f32, 1., 2.], [3., 4., 5.], [6., 7., 8.]], &Device::cpu())?;
     ///
     /// let b = a.i((1, 0))?;
     /// assert_eq!(b.to_vec0::<f32>()?, 3.);

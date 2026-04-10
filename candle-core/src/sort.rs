@@ -59,7 +59,8 @@ mod cuda {
         CudaSlice, DeviceRepr, LaunchConfig, ValidAsZeroBits,
     };
     use crate::cuda_backend::{kernel_name, kernels, CudaStorageSlice as S, WrapErr};
-    use crate::{CudaDevice, WithDType};
+    use crate::CudaDevice;
+    use candle_core_types::dtype::WithDType;
 
     impl crate::cuda_backend::Map1Any for ArgSort {
         fn f<T: DeviceRepr + WithDType + ValidAsZeroBits, W: Fn(CudaSlice<T>) -> S>(

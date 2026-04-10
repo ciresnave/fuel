@@ -8,8 +8,8 @@ impl Tensor {
     ///
     /// ```rust
     /// # use candle_core::{Tensor, DType, Device};
-    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
+    /// let b = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     ///
     /// let c = Tensor::cat(&[&a, &b], 0)?;
     /// assert_eq!(c.shape().dims(), &[4, 3]);

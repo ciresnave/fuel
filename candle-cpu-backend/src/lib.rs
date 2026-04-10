@@ -12,6 +12,7 @@ pub mod mkl;
 
 #[allow(dead_code)] // Not yet wired to candle-core delegation; kept for future use
 pub mod conv2d;
+pub mod dyn_impl;
 pub mod ops;
 pub mod utils;
 

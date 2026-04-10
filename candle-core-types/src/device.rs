@@ -17,4 +17,6 @@ pub enum DeviceLocation {
     Cuda { gpu_id: usize },
     /// A Metal GPU with the given ordinal.
     Metal { gpu_id: usize },
+    /// A Vulkan GPU with the given ordinal.
+    Vulkan { gpu_id: usize },
 }

@@ -1,53 +1,46 @@
-use crate::backend::BackendStorage;
 use crate::dyn_backend::DynBackendStorage;
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
-use crate::{CpuStorage, CudaStorage, DType, Device, Error, Layout, MetalStorage, Result, Shape};
+use crate::{CpuStorage, DType, Device, Error, Layout, Result, Shape};
 use crate::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};
+use candle_core_types::DeviceLocation;
+use candle_cpu_backend::dyn_impl::CpuBackendStorage;
 
 // We do not want to implement Clone on Storage as cloning may fail because of
 // out of memory. Instead try_clone should be used.
 #[derive(Debug)]
-pub enum Storage {
-    Cpu(CpuStorage),
-    Cuda(CudaStorage),
-    Metal(MetalStorage),
-    /// A third-party backend storage, accessed through dynamic dispatch.
-    Custom(Box<dyn DynBackendStorage>),
-}
+pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
 
 impl Storage {
+    /// Construct storage wrapping a CPU buffer.
+    pub fn from_cpu(s: CpuStorage) -> Self {
+        Storage(Box::new(CpuBackendStorage(s)))
+    }
+
+    /// Construct storage wrapping a CUDA buffer.
+    #[cfg(feature = "cuda")]
+    pub fn from_cuda(s: crate::CudaStorage) -> Self {
+        Storage(Box::new(candle_cuda::CudaBackendStorage::new(s)))
+    }
+
+    /// Construct storage wrapping a Metal buffer.
+    #[cfg(feature = "metal")]
+    pub fn from_metal(s: crate::MetalStorage) -> Self {
+        Storage(Box::new(candle_metal::MetalBackendStorage::new(s)))
+    }
+
     pub fn try_clone(&self, layout: &Layout) -> Result<Self> {
-        match self {
-            Self::Cpu(storage) => Ok(Self::Cpu(storage.clone())),
-            Self::Cuda(storage) => {
-                let storage = storage.try_clone(layout)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.try_clone(layout)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => Ok(Self::Custom(storage.try_clone_dyn(layout)?)),
-        }
+        Ok(Storage(self.0.try_clone_dyn(layout)?))
     }
 
     pub fn device(&self) -> Device {
-        match self {
-            Self::Cpu(_) => Device::Cpu,
-            Self::Cuda(storage) => Device::Cuda(storage.device().clone()),
-            Self::Metal(storage) => Device::Metal(storage.device().clone()),
-            Self::Custom(storage) => Device::Custom(storage.device_arc_dyn()),
+        Device {
+            inner: self.0.device_arc_dyn(),
         }
     }
 
     pub fn dtype(&self) -> DType {
-        match self {
-            Self::Cpu(storage) => storage.dtype(),
-            Self::Cuda(storage) => storage.dtype(),
-            Self::Metal(storage) => storage.dtype(),
-            Self::Custom(storage) => storage.dtype_dyn(),
-        }
+        self.0.dtype_dyn()
     }
 
     pub(crate) fn same_device(&self, rhs: &Self, op: &'static str) -> Result<()> {
@@ -55,10 +48,9 @@ impl Storage {
         let rhs_device = rhs.device();
         let lhs = lhs_device.location();
         let rhs = rhs_device.location();
-        let same_device = if self.device().is_metal() {
+        let same_device = if lhs_device.is_metal() {
             // On metal, we require the device to be exactly the same rather than
-            // having the same location. In cuda this is not necessary as all CudaDevice on the
-            // same GPU will use the same cuda stream.
+            // having the same location.
             lhs_device.same_device(&rhs_device)
         } else {
             lhs == rhs
@@ -81,66 +73,19 @@ impl Storage {
     }
 
     pub(crate) fn const_set(&mut self, v: Scalar, l: &Layout) -> Result<()> {
-        match self {
-            Storage::Cpu(storage) => storage.const_set(v, l),
-            Storage::Cuda(storage) => storage.const_set(v, l),
-            Storage::Metal(storage) => storage.const_set(v, l),
-            Storage::Custom(storage) => storage.const_set_dyn(v, l),
-        }
+        self.0.const_set_dyn(v, l)
     }
 
     pub(crate) fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.affine(layout, mul, add)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.affine(layout, mul, add)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.affine(layout, mul, add)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => Ok(Self::Custom(storage.affine_dyn(layout, mul, add)?)),
-        }
+        Ok(Storage(self.0.affine_dyn(layout, mul, add)?))
     }
 
-    pub(crate) fn powf(&self, layout: &Layout, alpha: f64) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.powf(layout, alpha)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.powf(layout, alpha)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.powf(layout, alpha)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => Ok(Self::Custom(storage.powf_dyn(layout, alpha)?)),
-        }
+    pub(crate) fn powf(&self, layout: &Layout, e: f64) -> Result<Self> {
+        Ok(Storage(self.0.powf_dyn(layout, e)?))
     }
 
     pub(crate) fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.elu(layout, alpha)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.elu(layout, alpha)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.elu(layout, alpha)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => Ok(Self::Custom(storage.elu_dyn(layout, alpha)?)),
-        }
+        Ok(Storage(self.0.elu_dyn(layout, alpha)?))
     }
 
     pub(crate) fn cmp(
@@ -150,90 +95,113 @@ impl Storage {
         lhs_layout: &Layout,
         rhs_layout: &Layout,
     ) -> Result<Self> {
-        self.same_device(rhs, "cmp")?;
-        self.same_dtype(rhs, "cmp")?;
-        match (self, rhs) {
-            (Storage::Cpu(lhs), Storage::Cpu(rhs)) => {
-                let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(lhs), Self::Metal(rhs)) => {
-                let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(lhs), Self::Custom(rhs)) => {
-                Ok(Self::Custom(lhs.cmp_dyn(op, rhs.as_ref(), lhs_layout, rhs_layout)?))
-            }
-            (lhs, rhs) => {
-                // Should not happen because of the same device check above but we're defensive
-                // anyway.
-                Err(Error::DeviceMismatchBinaryOp {
-                    lhs: lhs.device().location(),
-                    rhs: rhs.device().location(),
-                    op: "cmp",
-                }
-                .bt())
-            }
-        }
+        Ok(Storage(
+            self.0.cmp_dyn(op, &*rhs.0, lhs_layout, rhs_layout)?,
+        ))
     }
 
-    pub(crate) fn reduce_op(&self, op: ReduceOp, layout: &Layout, s: &[usize]) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.reduce_op(op, layout, s)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.reduce_op(op, layout, s)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.reduce_op(op, layout, s)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => Ok(Self::Custom(storage.reduce_op_dyn(op, layout, s)?)),
-        }
+    pub(crate) fn reduce_op(
+        &self,
+        op: ReduceOp,
+        layout: &Layout,
+        reduce_dims: &[usize],
+    ) -> Result<Self> {
+        Ok(Storage(self.0.reduce_op_dyn(op, layout, reduce_dims)?))
     }
 
     pub(crate) fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.to_dtype(layout, dtype)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.to_dtype(layout, dtype)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.to_dtype(layout, dtype)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => Ok(Self::Custom(storage.to_dtype_dyn(layout, dtype)?)),
-        }
+        Ok(Storage(self.0.to_dtype_dyn(layout, dtype)?))
+    }
+
+    pub(crate) fn to_cpu_storage(&self) -> Result<CpuStorage> {
+        self.0.to_cpu_storage_dyn()
+    }
+
+    // -----------------------------------------------------------------------
+    // CustomOp bridge (temporary — will be removed when CustomOp traits are
+    // redesigned in Step 9 to use &dyn DynBackendStorage directly)
+    // -----------------------------------------------------------------------
+
+    /// Downcast helper: get a `&CpuStorage` from the inner trait object.
+    pub fn as_cpu_storage(&self) -> Result<&CpuStorage> {
+        self.0
+            .as_any()
+            .downcast_ref::<CpuBackendStorage>()
+            .map(|s| &s.0)
+            .ok_or_else(|| Error::Msg("expected cpu storage".into()).bt())
+    }
+
+    /// Downcast helper: get a `&mut CpuStorage` from the inner trait object.
+    fn as_cpu_storage_mut(&mut self) -> Result<&mut CpuStorage> {
+        self.0
+            .as_any_mut()
+            .downcast_mut::<CpuBackendStorage>()
+            .map(|s| &mut s.0)
+            .ok_or_else(|| Error::Msg("expected cpu storage".into()).bt())
+    }
+
+    /// Downcast helper: get a `&CudaStorage` from the inner trait object.
+    #[cfg(feature = "cuda")]
+    pub fn as_cuda_storage(&self) -> Option<&crate::CudaStorage> {
+        self.0
+            .as_any()
+            .downcast_ref::<candle_cuda::CudaBackendStorage>()
+            .map(|s| s.inner())
+    }
+
+    /// Downcast helper: get a `&MetalStorage` from the inner trait object.
+    #[cfg(feature = "metal")]
+    pub fn as_metal_storage(&self) -> Option<&crate::MetalStorage> {
+        self.0
+            .as_any()
+            .downcast_ref::<candle_metal::MetalBackendStorage>()
+            .map(|s| s.inner())
     }
 
     pub(crate) fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Self, Shape)> {
-        match self {
-            Self::Cpu(storage) => {
-                let (storage, shape) = c.cpu_fwd(storage, l)?;
-                Ok((Self::Cpu(storage), shape))
+        let location = self.0.device_dyn().location_dyn();
+        match location {
+            DeviceLocation::Cpu => {
+                let s = self.as_cpu_storage()?;
+                let (storage, shape) = c.cpu_fwd(s, l)?;
+                Ok((Self::from_cpu(storage), shape))
             }
-            Self::Cuda(storage) => {
-                let (storage, shape) = c.cuda_fwd(storage, l)?;
-                Ok((Self::Cuda(storage), shape))
+            DeviceLocation::Cuda { .. } => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s = self
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let (storage, shape) = c.cuda_fwd(s.inner(), l)?;
+                    Ok((Self::from_cuda(storage), shape))
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Err(Error::NotCompiledWithCudaSupport.bt())
+                }
             }
-            Self::Metal(storage) => {
-                let (storage, shape) = c.metal_fwd(storage, l)?;
-                Ok((Self::Metal(storage), shape))
+            DeviceLocation::Metal { .. } => {
+                #[cfg(feature = "metal")]
+                {
+                    let s = self
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let (storage, shape) = c.metal_fwd(s.inner(), l)?;
+                    Ok((Self::from_metal(storage), shape))
+                }
+                #[cfg(not(feature = "metal"))]
+                {
+                    Err(Error::NotCompiledWithMetalSupport.bt())
+                }
             }
-            Self::Custom(_) => Err(Error::Msg(
-                "custom-op is not supported on custom backends".to_string(),
-            ).bt()),
+            _ => Err(Error::Msg(
+                "custom-op is not supported on this backend".to_string(),
+            )
+            .bt()),
         }
     }
 
@@ -245,18 +213,55 @@ impl Storage {
         c: &dyn CustomOp2,
     ) -> Result<(Self, Shape)> {
         self.same_device(t2, c.name())?;
-        match (self, t2) {
-            (Self::Cpu(s1), Self::Cpu(s2)) => {
+        let location = self.0.device_dyn().location_dyn();
+        match location {
+            DeviceLocation::Cpu => {
+                let s1 = self.as_cpu_storage()?;
+                let s2 = t2.as_cpu_storage()?;
                 let (s, shape) = c.cpu_fwd(s1, l1, s2, l2)?;
-                Ok((Self::Cpu(s), shape))
+                Ok((Self::from_cpu(s), shape))
             }
-            (Self::Cuda(s1), Self::Cuda(s2)) => {
-                let (s, shape) = c.cuda_fwd(s1, l1, s2, l2)?;
-                Ok((Self::Cuda(s), shape))
+            DeviceLocation::Cuda { .. } => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s1 = self
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let (s, shape) = c.cuda_fwd(s1.inner(), l1, s2.inner(), l2)?;
+                    Ok((Self::from_cuda(s), shape))
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Err(Error::NotCompiledWithCudaSupport.bt())
+                }
             }
-            (Self::Metal(s1), Self::Metal(s2)) => {
-                let (s, shape) = c.metal_fwd(s1, l1, s2, l2)?;
-                Ok((Self::Metal(s), shape))
+            DeviceLocation::Metal { .. } => {
+                #[cfg(feature = "metal")]
+                {
+                    let s1 = self
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let (s, shape) = c.metal_fwd(s1.inner(), l1, s2.inner(), l2)?;
+                    Ok((Self::from_metal(s), shape))
+                }
+                #[cfg(not(feature = "metal"))]
+                {
+                    Err(Error::NotCompiledWithMetalSupport.bt())
+                }
             }
             _ => unreachable!(),
         }
@@ -273,31 +278,114 @@ impl Storage {
     ) -> Result<(Self, Shape)> {
         self.same_device(t2, c.name())?;
         self.same_device(t3, c.name())?;
-        match (self, t2, t3) {
-            (Self::Cpu(s1), Self::Cpu(s2), Self::Cpu(s3)) => {
+        let location = self.0.device_dyn().location_dyn();
+        match location {
+            DeviceLocation::Cpu => {
+                let s1 = self.as_cpu_storage()?;
+                let s2 = t2.as_cpu_storage()?;
+                let s3 = t3.as_cpu_storage()?;
                 let (s, shape) = c.cpu_fwd(s1, l1, s2, l2, s3, l3)?;
-                Ok((Self::Cpu(s), shape))
+                Ok((Self::from_cpu(s), shape))
             }
-            (Self::Cuda(s1), Self::Cuda(s2), Self::Cuda(s3)) => {
-                let (s, shape) = c.cuda_fwd(s1, l1, s2, l2, s3, l3)?;
-                Ok((Self::Cuda(s), shape))
+            DeviceLocation::Cuda { .. } => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s1 = self
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let s3 = t3
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let (s, shape) =
+                        c.cuda_fwd(s1.inner(), l1, s2.inner(), l2, s3.inner(), l3)?;
+                    Ok((Self::from_cuda(s), shape))
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Err(Error::NotCompiledWithCudaSupport.bt())
+                }
             }
-            (Self::Metal(s1), Self::Metal(s2), Self::Metal(s3)) => {
-                let (s, shape) = c.metal_fwd(s1, l1, s2, l2, s3, l3)?;
-                Ok((Self::Metal(s), shape))
+            DeviceLocation::Metal { .. } => {
+                #[cfg(feature = "metal")]
+                {
+                    let s1 = self
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let s3 = t3
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let (s, shape) =
+                        c.metal_fwd(s1.inner(), l1, s2.inner(), l2, s3.inner(), l3)?;
+                    Ok((Self::from_metal(s), shape))
+                }
+                #[cfg(not(feature = "metal"))]
+                {
+                    Err(Error::NotCompiledWithMetalSupport.bt())
+                }
             }
             _ => unreachable!(),
         }
     }
 
     pub(crate) fn inplace_op1(&mut self, l: &Layout, c: &dyn InplaceOp1) -> Result<()> {
-        match self {
-            Self::Cpu(storage) => c.cpu_fwd(storage, l),
-            Self::Cuda(storage) => c.cuda_fwd(storage, l),
-            Self::Metal(storage) => c.metal_fwd(storage, l),
-            Self::Custom(_) => Err(Error::Msg(
-                "inplace-op is not supported on custom backends".to_string(),
-            ).bt()),
+        let location = self.0.device_dyn().location_dyn();
+        match location {
+            DeviceLocation::Cpu => {
+                let s = self.as_cpu_storage_mut()?;
+                c.cpu_fwd(s, l)
+            }
+            DeviceLocation::Cuda { .. } => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s = self
+                        .0
+                        .as_any_mut()
+                        .downcast_mut::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    c.cuda_fwd(s.inner_mut(), l)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Err(Error::NotCompiledWithCudaSupport.bt())
+                }
+            }
+            DeviceLocation::Metal { .. } => {
+                #[cfg(feature = "metal")]
+                {
+                    let s = self
+                        .0
+                        .as_any_mut()
+                        .downcast_mut::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    c.metal_fwd(s.inner_mut(), l)
+                }
+                #[cfg(not(feature = "metal"))]
+                {
+                    Err(Error::NotCompiledWithMetalSupport.bt())
+                }
+            }
+            _ => Err(Error::Msg(
+                "inplace-op is not supported on this backend".to_string(),
+            )
+            .bt()),
         }
     }
 
@@ -309,10 +397,59 @@ impl Storage {
         c: &dyn InplaceOp2,
     ) -> Result<()> {
         self.same_device(t2, c.name())?;
-        match (self, t2) {
-            (Self::Cpu(s1), Self::Cpu(s2)) => c.cpu_fwd(s1, l1, s2, l2),
-            (Self::Cuda(s1), Self::Cuda(s2)) => c.cuda_fwd(s1, l1, s2, l2),
-            (Self::Metal(s1), Self::Metal(s2)) => c.metal_fwd(s1, l1, s2, l2),
+        let location = self.0.device_dyn().location_dyn();
+        match location {
+            DeviceLocation::Cpu => {
+                let s2 = t2.as_cpu_storage()?;
+                let s1 = self.as_cpu_storage_mut()?;
+                c.cpu_fwd(s1, l1, s2, l2)
+            }
+            DeviceLocation::Cuda { .. } => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let s2_inner: &crate::CudaStorage = s2.inner();
+                    // SAFETY: s2_inner borrows from t2 (not self), so it's fine
+                    // to borrow self mutably next.
+                    let s2_ptr = s2_inner as *const crate::CudaStorage;
+                    let s1 = self
+                        .0
+                        .as_any_mut()
+                        .downcast_mut::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    c.cuda_fwd(s1.inner_mut(), l1, unsafe { &*s2_ptr }, l2)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Err(Error::NotCompiledWithCudaSupport.bt())
+                }
+            }
+            DeviceLocation::Metal { .. } => {
+                #[cfg(feature = "metal")]
+                {
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let s2_inner: &crate::MetalStorage = s2.inner();
+                    let s2_ptr = s2_inner as *const crate::MetalStorage;
+                    let s1 = self
+                        .0
+                        .as_any_mut()
+                        .downcast_mut::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    c.metal_fwd(s1.inner_mut(), l1, unsafe { &*s2_ptr }, l2)
+                }
+                #[cfg(not(feature = "metal"))]
+                {
+                    Err(Error::NotCompiledWithMetalSupport.bt())
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -328,37 +465,95 @@ impl Storage {
     ) -> Result<()> {
         self.same_device(t2, c.name())?;
         self.same_device(t3, c.name())?;
-        match (self, t2, t3) {
-            (Self::Cpu(s1), Self::Cpu(s2), Self::Cpu(s3)) => c.cpu_fwd(s1, l1, s2, l2, s3, l3),
-            (Self::Cuda(s1), Self::Cuda(s2), Self::Cuda(s3)) => c.cuda_fwd(s1, l1, s2, l2, s3, l3),
-            (Self::Metal(s1), Self::Metal(s2), Self::Metal(s3)) => {
-                c.metal_fwd(s1, l1, s2, l2, s3, l3)
+        let location = self.0.device_dyn().location_dyn();
+        match location {
+            DeviceLocation::Cpu => {
+                let s2 = t2.as_cpu_storage()?;
+                let s3 = t3.as_cpu_storage()?;
+                let s1 = self.as_cpu_storage_mut()?;
+                c.cpu_fwd(s1, l1, s2, l2, s3, l3)
+            }
+            DeviceLocation::Cuda { .. } => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let s3 = t3
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    let s2_ptr = s2.inner() as *const crate::CudaStorage;
+                    let s3_ptr = s3.inner() as *const crate::CudaStorage;
+                    let s1 = self
+                        .0
+                        .as_any_mut()
+                        .downcast_mut::<candle_cuda::CudaBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
+                    c.cuda_fwd(
+                        s1.inner_mut(),
+                        l1,
+                        unsafe { &*s2_ptr },
+                        l2,
+                        unsafe { &*s3_ptr },
+                        l3,
+                    )
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Err(Error::NotCompiledWithCudaSupport.bt())
+                }
+            }
+            DeviceLocation::Metal { .. } => {
+                #[cfg(feature = "metal")]
+                {
+                    let s2 = t2
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let s3 = t3
+                        .0
+                        .as_any()
+                        .downcast_ref::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    let s2_ptr = s2.inner() as *const crate::MetalStorage;
+                    let s3_ptr = s3.inner() as *const crate::MetalStorage;
+                    let s1 = self
+                        .0
+                        .as_any_mut()
+                        .downcast_mut::<candle_metal::MetalBackendStorage>()
+                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
+                    c.metal_fwd(
+                        s1.inner_mut(),
+                        l1,
+                        unsafe { &*s2_ptr },
+                        l2,
+                        unsafe { &*s3_ptr },
+                        l3,
+                    )
+                }
+                #[cfg(not(feature = "metal"))]
+                {
+                    Err(Error::NotCompiledWithMetalSupport.bt())
+                }
             }
             _ => unreachable!(),
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Unary / Binary dispatch
+    // -----------------------------------------------------------------------
+
     pub(crate) fn unary_impl<B: op::UnaryOpT>(&self, layout: &Layout) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.unary_impl::<B>(layout)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.unary_impl::<B>(layout)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.unary_impl::<B>(layout)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => {
-                let op = op::UnaryOp::from_name(B::NAME).ok_or_else(|| {
-                    Error::Msg(format!("unknown unary op '{}' for custom backend", B::NAME))
-                })?;
-                Ok(Self::Custom(storage.unary_op_dyn(layout, op)?))
-            }
-        }
+        let op = op::UnaryOp::from_name(B::NAME).ok_or_else(|| {
+            Error::Msg(format!("unknown unary op '{}'", B::NAME))
+        })?;
+        Ok(Storage(self.0.unary_op_dyn(layout, op)?))
     }
 
     pub(crate) fn binary_impl<B: op::BinaryOpT>(
@@ -369,37 +564,18 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(rhs, B::NAME)?;
         self.same_dtype(rhs, B::NAME)?;
-        match (self, rhs) {
-            (Storage::Cpu(lhs), Storage::Cpu(rhs)) => {
-                let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(lhs), Self::Metal(rhs)) => {
-                let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(lhs), Self::Custom(rhs)) => {
-                let op = op::BinaryOp::from_name(B::NAME).ok_or_else(|| {
-                    Error::Msg(format!("unknown binary op '{}' for custom backend", B::NAME))
-                })?;
-                Ok(Self::Custom(lhs.binary_op_dyn(rhs.as_ref(), lhs_layout, rhs_layout, op)?))
-            }
-            (lhs, rhs) => {
-                // Should not happen because of the same device check above but we're defensive
-                // anyway.
-                Err(Error::DeviceMismatchBinaryOp {
-                    lhs: lhs.device().location(),
-                    rhs: rhs.device().location(),
-                    op: B::NAME,
-                }
-                .bt())
-            }
-        }
+        let op = op::BinaryOp::from_name(B::NAME).ok_or_else(|| {
+            Error::Msg(format!("unknown binary op '{}'", B::NAME))
+        })?;
+        Ok(Storage(
+            self.0
+                .binary_op_dyn(&*rhs.0, lhs_layout, rhs_layout, op)?,
+        ))
     }
+
+    // -----------------------------------------------------------------------
+    // Convolutions, pooling, upsampling
+    // -----------------------------------------------------------------------
 
     pub(crate) fn conv1d(
         &self,
@@ -410,29 +586,9 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv1d")?;
         self.same_dtype(kernel, "conv1d")?;
-        match (self, &kernel) {
-            (Storage::Cpu(inp), Storage::Cpu(kernel)) => {
-                let s = inp.conv1d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cpu(s))
-            }
-            (Storage::Cuda(inp), Storage::Cuda(kernel)) => {
-                let s = inp.conv1d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cuda(s))
-            }
-            (Storage::Metal(inp), Storage::Metal(kernel)) => {
-                let s = inp.conv1d(l, kernel, kernel_l, params)?;
-                Ok(Self::Metal(s))
-            }
-            (Storage::Custom(inp), Storage::Custom(kernel)) => {
-                Ok(Self::Custom(inp.conv1d_dyn(l, kernel.as_ref(), kernel_l, params)?))
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "conv1d",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0.conv1d_dyn(l, &*kernel.0, kernel_l, params)?,
+        ))
     }
 
     pub(crate) fn conv_transpose1d(
@@ -444,29 +600,10 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv-transpose1d")?;
         self.same_dtype(kernel, "conv-transpose1d")?;
-        match (self, &kernel) {
-            (Storage::Cpu(inp), Storage::Cpu(kernel)) => {
-                let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cpu(s))
-            }
-            (Storage::Cuda(inp), Storage::Cuda(kernel)) => {
-                let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cuda(s))
-            }
-            (Storage::Metal(inp), Storage::Metal(kernel)) => {
-                let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
-                Ok(Self::Metal(s))
-            }
-            (Storage::Custom(inp), Storage::Custom(kernel)) => {
-                Ok(Self::Custom(inp.conv_transpose1d_dyn(l, kernel.as_ref(), kernel_l, params)?))
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "conv-transpose1d",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0
+                .conv_transpose1d_dyn(l, &*kernel.0, kernel_l, params)?,
+        ))
     }
 
     pub(crate) fn conv2d(
@@ -478,29 +615,9 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv2d")?;
         self.same_dtype(kernel, "conv2d")?;
-        match (self, &kernel) {
-            (Storage::Cpu(inp), Storage::Cpu(kernel)) => {
-                let s = inp.conv2d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cpu(s))
-            }
-            (Storage::Cuda(inp), Storage::Cuda(kernel)) => {
-                let s = inp.conv2d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cuda(s))
-            }
-            (Storage::Metal(inp), Storage::Metal(kernel)) => {
-                let s = inp.conv2d(l, kernel, kernel_l, params)?;
-                Ok(Self::Metal(s))
-            }
-            (Storage::Custom(inp), Storage::Custom(kernel)) => {
-                Ok(Self::Custom(inp.conv2d_dyn(l, kernel.as_ref(), kernel_l, params)?))
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "conv2d",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0.conv2d_dyn(l, &*kernel.0, kernel_l, params)?,
+        ))
     }
 
     pub(crate) fn conv_transpose2d(
@@ -512,29 +629,10 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(kernel, "conv_transpose2d")?;
         self.same_dtype(kernel, "conv_transpose2d")?;
-        match (self, &kernel) {
-            (Storage::Cpu(inp), Storage::Cpu(kernel)) => {
-                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cpu(s))
-            }
-            (Storage::Cuda(inp), Storage::Cuda(kernel)) => {
-                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
-                Ok(Self::Cuda(s))
-            }
-            (Storage::Metal(inp), Storage::Metal(kernel)) => {
-                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
-                Ok(Self::Metal(s))
-            }
-            (Storage::Custom(inp), Storage::Custom(kernel)) => {
-                Ok(Self::Custom(inp.conv_transpose2d_dyn(l, kernel.as_ref(), kernel_l, params)?))
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "conv_transpose2d",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0
+                .conv_transpose2d_dyn(l, &*kernel.0, kernel_l, params)?,
+        ))
     }
 
     pub(crate) fn avg_pool2d(
@@ -543,23 +641,9 @@ impl Storage {
         kernel_size: (usize, usize),
         stride: (usize, usize),
     ) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => {
-                Ok(Self::Custom(storage.avg_pool2d_dyn(layout, kernel_size, stride)?))
-            }
-        }
+        Ok(Storage(
+            self.0.avg_pool2d_dyn(layout, kernel_size, stride)?,
+        ))
     }
 
     pub(crate) fn max_pool2d(
@@ -568,65 +652,20 @@ impl Storage {
         kernel_size: (usize, usize),
         stride: (usize, usize),
     ) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.max_pool2d(layout, kernel_size, stride)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.max_pool2d(layout, kernel_size, stride)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.max_pool2d(layout, kernel_size, stride)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => {
-                Ok(Self::Custom(storage.max_pool2d_dyn(layout, kernel_size, stride)?))
-            }
-        }
+        Ok(Storage(
+            self.0.max_pool2d_dyn(layout, kernel_size, stride)?,
+        ))
     }
 
     pub(crate) fn upsample_nearest1d(&self, layout: &Layout, sz: usize) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.upsample_nearest1d(layout, sz)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.upsample_nearest1d(layout, sz)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.upsample_nearest1d(layout, sz)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => {
-                Ok(Self::Custom(storage.upsample_nearest1d_dyn(layout, sz)?))
-            }
-        }
+        Ok(Storage(self.0.upsample_nearest1d_dyn(layout, sz)?))
     }
 
     pub(crate) fn upsample_nearest2d(&self, layout: &Layout, h: usize, w: usize) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage = storage.upsample_nearest2d(layout, h, w)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage = storage.upsample_nearest2d(layout, h, w)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage = storage.upsample_nearest2d(layout, h, w)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => {
-                Ok(Self::Custom(storage.upsample_nearest2d_dyn(layout, h, w)?))
-            }
-        }
+        Ok(Storage(self.0.upsample_nearest2d_dyn(layout, h, w)?))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn upsample_bilinear2d(
         &self,
         layout: &Layout,
@@ -636,29 +675,15 @@ impl Storage {
         scale_h: Option<f64>,
         scale_w: Option<f64>,
     ) -> Result<Self> {
-        match self {
-            Storage::Cpu(storage) => {
-                let storage =
-                    storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
-                Ok(Self::Cpu(storage))
-            }
-            Self::Cuda(storage) => {
-                let storage =
-                    storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
-                Ok(Self::Cuda(storage))
-            }
-            Self::Metal(storage) => {
-                let storage =
-                    storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
-                Ok(Self::Metal(storage))
-            }
-            Self::Custom(storage) => {
-                Ok(Self::Custom(
-                    storage.upsample_bilinear2d_dyn(layout, h, w, align_corners, scale_h, scale_w)?,
-                ))
-            }
-        }
+        Ok(Storage(
+            self.0
+                .upsample_bilinear2d_dyn(layout, h, w, align_corners, scale_h, scale_w)?,
+        ))
     }
+
+    // -----------------------------------------------------------------------
+    // Gather / Scatter / Index
+    // -----------------------------------------------------------------------
 
     pub(crate) fn where_cond(
         &self,
@@ -671,31 +696,10 @@ impl Storage {
         self.same_device(t, "where")?;
         self.same_device(f, "where")?;
         t.same_dtype(f, "where")?;
-        match (self, t, f) {
-            (Storage::Cpu(cond), Storage::Cpu(t), Storage::Cpu(f)) => {
-                let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(cond), Self::Cuda(t), Self::Cuda(f)) => {
-                let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(cond), Self::Metal(t), Self::Metal(f)) => {
-                let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(cond), Self::Custom(t), Self::Custom(f)) => {
-                Ok(Self::Custom(
-                    cond.where_cond_dyn(layout, t.as_ref(), layout_t, f.as_ref(), layout_f)?,
-                ))
-            }
-            (_, lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "where",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0
+                .where_cond_dyn(layout, &*t.0, layout_t, &*f.0, layout_f)?,
+        ))
     }
 
     pub(crate) fn gather(
@@ -706,24 +710,9 @@ impl Storage {
         d: usize,
     ) -> Result<Self> {
         self.same_device(indexes, "index-add")?;
-        match (self, indexes) {
-            (Self::Cpu(s), Self::Cpu(indexes)) => {
-                let storage = s.gather(l, indexes, indexes_l, d)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(s), Self::Cuda(indexes)) => {
-                let storage = s.gather(l, indexes, indexes_l, d)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(s), Self::Metal(indexes)) => {
-                let storage = s.gather(l, indexes, indexes_l, d)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(s), Self::Custom(indexes)) => {
-                Ok(Self::Custom(s.gather_dyn(l, indexes.as_ref(), indexes_l, d)?))
-            }
-            _ => unreachable!(),
-        }
+        Ok(Storage(
+            self.0.gather_dyn(l, &*indexes.0, indexes_l, d)?,
+        ))
     }
 
     pub(crate) fn scatter_set(
@@ -737,22 +726,8 @@ impl Storage {
     ) -> Result<()> {
         self.same_device(indexes, "scatter-set")?;
         self.same_device(source, "scatter-set")?;
-        match (self, indexes, source) {
-            (Self::Cpu(s), Self::Cpu(indexes), Self::Cpu(source)) => {
-                s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
-            }
-            (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
-                s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
-            }
-            (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
-                s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
-            }
-            (Self::Custom(s), Self::Custom(indexes), Self::Custom(source)) => {
-                s.scatter_set_dyn(l, source.as_ref(), source_l, indexes.as_ref(), indexes_l, d)?;
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
+        self.0
+            .scatter_set_dyn(l, &*source.0, source_l, &*indexes.0, indexes_l, d)
     }
 
     pub(crate) fn scatter_add(
@@ -766,22 +741,8 @@ impl Storage {
     ) -> Result<()> {
         self.same_device(indexes, "scatter-add")?;
         self.same_device(source, "scatter-add")?;
-        match (self, indexes, source) {
-            (Self::Cpu(s), Self::Cpu(indexes), Self::Cpu(source)) => {
-                s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
-            }
-            (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
-                s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
-            }
-            (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
-                s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
-            }
-            (Self::Custom(s), Self::Custom(indexes), Self::Custom(source)) => {
-                s.scatter_add_set_dyn(l, source.as_ref(), source_l, indexes.as_ref(), indexes_l, d)?;
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
+        self.0
+            .scatter_add_set_dyn(l, &*source.0, source_l, &*indexes.0, indexes_l, d)
     }
 
     pub(crate) fn index_add(
@@ -795,26 +756,10 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(indexes, "index-add")?;
         self.same_device(source, "index-add")?;
-        match (self, indexes, source) {
-            (Self::Cpu(s), Self::Cpu(indexes), Self::Cpu(source)) => {
-                let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
-                let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
-                let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(s), Self::Custom(indexes), Self::Custom(source)) => {
-                Ok(Self::Custom(
-                    s.index_add_dyn(l, indexes.as_ref(), indexes_l, source.as_ref(), source_l, d)?,
-                ))
-            }
-            _ => unreachable!(),
-        }
+        Ok(Storage(
+            self.0
+                .index_add_dyn(l, &*indexes.0, indexes_l, &*source.0, source_l, d)?,
+        ))
     }
 
     pub(crate) fn index_select(
@@ -825,30 +770,14 @@ impl Storage {
         d: usize,
     ) -> Result<Self> {
         self.same_device(rhs, "index-select")?;
-        match (self, rhs) {
-            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
-                let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(lhs), Self::Metal(rhs)) => {
-                let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(lhs), Self::Custom(rhs)) => {
-                Ok(Self::Custom(lhs.index_select_dyn(rhs.as_ref(), lhs_l, rhs_l, d)?))
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "index-select",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0.index_select_dyn(&*rhs.0, lhs_l, rhs_l, d)?,
+        ))
     }
+
+    // -----------------------------------------------------------------------
+    // Matmul and copy
+    // -----------------------------------------------------------------------
 
     pub(crate) fn matmul(
         &self,
@@ -859,31 +788,10 @@ impl Storage {
     ) -> Result<Self> {
         self.same_device(rhs, "matmul")?;
         self.same_dtype(rhs, "matmul")?;
-        match (self, rhs) {
-            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
-                let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
-                Ok(Self::Cpu(storage))
-            }
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
-                Ok(Self::Cuda(storage))
-            }
-            (Self::Metal(lhs), Self::Metal(rhs)) => {
-                let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
-                Ok(Self::Metal(storage))
-            }
-            (Self::Custom(lhs), Self::Custom(rhs)) => {
-                Ok(Self::Custom(
-                    lhs.matmul_dyn(rhs.as_ref(), bmnk, lhs_layout, rhs_layout)?,
-                ))
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "matmul",
-            }
-            .bt()),
-        }
+        Ok(Storage(
+            self.0
+                .matmul_dyn(&*rhs.0, bmnk, lhs_layout, rhs_layout)?,
+        ))
     }
 
     // self, the source can be strided whereas dst is contiguous.
@@ -893,22 +801,7 @@ impl Storage {
         dst_offset: usize,
         src_l: &Layout,
     ) -> Result<()> {
-        match (self, dst) {
-            (Self::Cpu(src), Self::Cpu(dst)) => src.copy_strided_src(dst, dst_offset, src_l),
-            (Self::Cuda(src), Self::Cuda(dst)) => Ok(src.copy_strided_src(dst, dst_offset, src_l)?),
-            (Self::Metal(src), Self::Metal(dst)) => {
-                Ok(src.copy_strided_src(dst, dst_offset, src_l)?)
-            }
-            (Self::Custom(src), Self::Custom(dst)) => {
-                src.copy_strided_src_dyn(dst.as_mut(), dst_offset, src_l)
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "copy",
-            }
-            .bt()),
-        }
+        self.0.copy_strided_src_dyn(&mut *dst.0, dst_offset, src_l)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -922,23 +815,7 @@ impl Storage {
         src_o: usize,
         dst_o: usize,
     ) -> Result<()> {
-        match (self, dst) {
-            (Self::Cpu(src), Self::Cpu(dst)) => src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o),
-            (Self::Cuda(src), Self::Cuda(dst)) => {
-                Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
-            }
-            (Self::Metal(src), Self::Metal(dst)) => {
-                Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
-            }
-            (Self::Custom(src), Self::Custom(dst)) => {
-                src.copy2d_dyn(dst.as_mut(), d1, d2, src_s, dst_s, src_o, dst_o)
-            }
-            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
-                lhs: lhs.device().location(),
-                rhs: rhs.device().location(),
-                op: "copy2d",
-            }
-            .bt()),
-        }
+        self.0
+            .copy2d_dyn(&mut *dst.0, d1, d2, src_s, dst_s, src_o, dst_o)
     }
 }

@@ -29,7 +29,7 @@ impl crate::Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, Device};
-    /// let t = Tensor::new(42f32, &Device::Cpu)?;
+    /// let t = Tensor::new(42f32, &Device::cpu())?;
     /// assert_eq!(t.dims0()?, ());
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -43,7 +43,7 @@ impl crate::Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let t = Tensor::zeros(5, DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros(5, DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dims1()?, 5);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -57,7 +57,7 @@ impl crate::Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dims2()?, (2, 3));
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -71,7 +71,7 @@ impl crate::Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let t = Tensor::zeros((2, 3, 4), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3, 4), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dims3()?, (2, 3, 4));
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -85,7 +85,7 @@ impl crate::Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let t = Tensor::zeros((2, 3, 4, 5), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3, 4, 5), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dims4()?, (2, 3, 4, 5));
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -99,7 +99,7 @@ impl crate::Tensor {
     ///
     /// ```rust
     /// use candle_core::{Tensor, DType, Device};
-    /// let t = Tensor::zeros((2, 3, 4, 5, 6), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3, 4, 5, 6), DType::F32, &Device::cpu())?;
     /// assert_eq!(t.dims5()?, (2, 3, 4, 5, 6));
     /// # Ok::<(), candle_core::Error>(())
     /// ```

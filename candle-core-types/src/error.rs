@@ -1,7 +1,7 @@
 //! Candle-specific Error and Result types.
 use std::{convert::Infallible, fmt::Display};
 
-use crate::{DType, DeviceLocation, Layout, MetalError, Shape};
+use crate::{DType, DeviceLocation, Layout, Shape};
 
 /// Diagnostic information for a matrix multiplication that encountered unexpected striding.
 #[derive(Debug, Clone)]
@@ -168,6 +168,9 @@ pub enum Error {
     #[error("the candle crate has not been built with metal support")]
     NotCompiledWithMetalSupport,
 
+    #[error("the candle crate has not been built with vulkan support")]
+    NotCompiledWithVulkanSupport,
+
     #[error("cannot find tensor {path}")]
     CannotFindTensor { path: String },
 
@@ -175,8 +178,11 @@ pub enum Error {
     #[error(transparent)]
     Cuda(Box<dyn std::error::Error + Send + Sync>),
 
-    #[error("Metal error {0}")]
-    Metal(#[from] MetalError),
+    #[error(transparent)]
+    Metal(Box<dyn std::error::Error + Send + Sync>),
+
+    #[error(transparent)]
+    Vulkan(Box<dyn std::error::Error + Send + Sync>),
 
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), feature = "ug"))]
     #[error(transparent)]
@@ -268,6 +274,21 @@ impl Error {
         Self::Msg(format!("{err:?}")).bt()
     }
 
+    /// Wraps a CUDA backend error.
+    pub fn cuda(err: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Cuda(Box::new(err)).bt()
+    }
+
+    /// Wraps a Metal backend error.
+    pub fn metal(err: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Metal(Box::new(err)).bt()
+    }
+
+    /// Wraps a Vulkan backend error.
+    pub fn vulkan(err: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Vulkan(Box::new(err)).bt()
+    }
+
     /// Captures a backtrace and attaches it to this error.
     pub fn bt(self) -> Self {
         let backtrace = std::backtrace::Backtrace::capture();
@@ -321,7 +342,8 @@ pub fn zip<T, U>(r1: Result<T>, r2: Result<U>) -> Result<(T, U)> {
     }
 }
 
-pub(crate) mod private {
+#[doc(hidden)]
+pub mod private {
     pub trait Sealed {}
 
     impl<T, E> Sealed for std::result::Result<T, E> where E: std::error::Error {}

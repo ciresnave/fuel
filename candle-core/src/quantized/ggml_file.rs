@@ -126,15 +126,20 @@ fn from_raw_data<T: super::GgmlType + Send + Sync + 'static>(
     let raw_data_ptr = raw_data.as_ptr();
     let n_blocks = size_in_bytes / std::mem::size_of::<T>();
     let data = unsafe { std::slice::from_raw_parts(raw_data_ptr as *const T, n_blocks) };
-    let data: QStorage = match device {
-        Device::Cpu => QStorage::Cpu(Box::new(data.to_vec())),
-        Device::Metal(metal) => super::metal::load_quantized(metal, data)?,
-        Device::Cuda(cuda) => super::cuda::load_quantized(cuda, data)?,
-        Device::Custom(_) => {
-            return Err(crate::Error::Msg(
-                "quantized tensors are not supported on custom backends".to_string(),
-            ));
+    let data: QStorage = if device.is_cpu() {
+        QStorage::Cpu(Box::new(data.to_vec()))
+    } else {
+        #[cfg(feature = "metal")]
+        if let Ok(metal) = device.as_metal_device() {
+            return super::QTensor::new(super::metal::load_quantized(metal, data)?, dims);
         }
+        #[cfg(feature = "cuda")]
+        if let Ok(cuda) = device.as_cuda_device() {
+            return super::QTensor::new(super::cuda::load_quantized(cuda, data)?, dims);
+        }
+        return Err(crate::Error::Msg(
+            "quantized tensors are not supported on this backend".to_string(),
+        ));
     };
     super::QTensor::new(data, dims)
 }

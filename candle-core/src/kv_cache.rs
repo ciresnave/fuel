@@ -123,15 +123,15 @@ impl Cache {
 /// assert_eq!(cache.current_seq_len(), 0);
 ///
 /// // Simulate a prefill step with 5 tokens: shape [batch=1, heads=4, seq=5, head_dim=8].
-/// let k = Tensor::zeros((1, 4, 5, 8), DType::F32, &Device::Cpu)?;
-/// let v = Tensor::zeros((1, 4, 5, 8), DType::F32, &Device::Cpu)?;
+/// let k = Tensor::zeros((1, 4, 5, 8), DType::F32, &Device::cpu())?;
+/// let v = Tensor::zeros((1, 4, 5, 8), DType::F32, &Device::cpu())?;
 /// let (full_k, full_v) = cache.append(&k, &v)?;
 /// assert_eq!(full_k.dims(), &[1, 4, 5, 8]);
 /// assert_eq!(cache.current_seq_len(), 5);
 ///
 /// // Simulate a single decode step.
-/// let k1 = Tensor::zeros((1, 4, 1, 8), DType::F32, &Device::Cpu)?;
-/// let v1 = Tensor::zeros((1, 4, 1, 8), DType::F32, &Device::Cpu)?;
+/// let k1 = Tensor::zeros((1, 4, 1, 8), DType::F32, &Device::cpu())?;
+/// let v1 = Tensor::zeros((1, 4, 1, 8), DType::F32, &Device::cpu())?;
 /// let (full_k, full_v) = cache.append(&k1, &v1)?;
 /// assert_eq!(full_k.dims(), &[1, 4, 6, 8]);
 /// assert_eq!(cache.current_seq_len(), 6);
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn test_scattered_kv_cache() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let mut cache = ScatteredCacheBuilder::new(2, 5, DType::F32, &device)?;
         let inf = f32::INFINITY;
 
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn test_concat_cache_basic() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let mut cache = ConcatKvCache::new(2);
 
         assert!(cache.is_empty());
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_concat_cache_reset() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let mut cache = ConcatKvCache::new(2);
 
         let k = Tensor::zeros((1, 8, 10, 64), DType::F32, &device)?;
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_concat_cache_multiple_appends() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let mut cache = ConcatKvCache::new(2);
 
         // Simulate autoregressive generation
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_concat_cache_different_dim() -> Result<()> {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let mut cache = ConcatKvCache::new(1); // Concatenate on dim 1 instead of 2
 
         let k1 = Tensor::zeros((1, 3, 8, 64), DType::F32, &device)?;

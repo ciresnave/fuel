@@ -35,7 +35,7 @@ impl TensorOrScalar for &Tensor {
 
 impl<T: WithDType> TensorOrScalar for T {
     fn to_tensor_scalar(self) -> Result<TensorScalar> {
-        let scalar = Tensor::new(self, &crate::Device::Cpu)?;
+        let scalar = Tensor::new(self, &crate::Device::cpu())?;
         Ok(TensorScalar::Scalar(scalar))
     }
 }
