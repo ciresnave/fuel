@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     } else {
         usize::from_str(&args[1])?
     };
-    let xys_cpu = cos_sin(n, &Device::Cpu)?;
+    let xys_cpu = cos_sin(n, &Device::cpu())?;
     let xys = cos_sin(n, &device)?;
     println!("{xys_cpu:?} {xys:?}");
     let sum_keepdim_cpu = xys_cpu.sum_keepdim(1)?;

@@ -876,6 +876,315 @@ impl DynBackendDevice for MyDevice { /* ... */ }
 let device = Device::custom(Arc::new(MyDevice::new()));
 ```
 
+#### Tier 3b — Full enum-to-trait-object migration (in progress)
+
+Tier 3 added `Device::Custom` and `Storage::Custom` variants carrying
+`Arc<dyn DynBackendDevice>` and `Box<dyn DynBackendStorage>` respectively.
+This opened the type system for third-party backends but **did not solve the
+core ergonomic problem**: every operation in `device.rs` and `storage.rs` still
+matches on 4+ enum arms (`Cpu | Cuda | Metal | Custom`) with near-identical
+code per arm. Adding a backend still means touching every match site.
+
+This tier replaces the closed enums with **opaque newtype structs** wrapping
+trait objects:
+
+```rust
+// Target architecture:
+pub struct Device(pub(crate) Arc<dyn DynBackendDevice>);
+pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
+```
+
+All backends — CPU, CUDA, Metal, and any third-party backend — implement the
+same `DynBackendStorage`/`DynBackendDevice` traits. All 52+ match sites in
+`device.rs` and `storage.rs` collapse to single-line delegations. No more
+`match self { Cpu => …, Cuda(d) => …, Metal(d) => …, Custom(d) => … }`.
+
+##### Prerequisites completed
+
+- [x] Moved `BinaryOp` (6 variants) and `UnaryOp` (19 variants) enums from
+  `candle-core/src/op.rs` to `candle-core-types/src/op.rs` (both crates
+  compile clean; candle-core re-exports them)
+- [x] Moved `DynBackendStorage` (33 methods) and `DynBackendDevice` (13
+  methods) traits from `candle-core/src/dyn_backend.rs` to
+  `candle-core-types/src/dyn_backend.rs` (candle-core has 5-line re-export shim)
+- [x] Added `supports_bf16()` default method to `DynBackendDevice`
+
+##### Orphan rule constraint and newtype solution
+
+Both `DynBackendStorage`/`DynBackendDevice` (traits) and `CpuStorage`/
+`CpuDevice` (types) live in `candle-core-types`. The Rust orphan rule
+forbids implementing these traits for these types in any downstream crate
+like `candle-core`.
+
+**Solution**: each backend crate defines a **newtype wrapper** around its
+storage/device types and implements the `DynBackend*` traits on the newtype.
+This is zero-cost (transparent wrapper) and architecturally clean — it
+separates "CpuStorage as data exchange format" from "CpuStorage as a backend
+implementation with concrete computation logic":
+
+```rust
+// candle-cpu-backend/src/dyn_impl.rs
+pub struct CpuBackendStorage(pub CpuStorage);
+pub struct CpuBackendDevice;
+
+impl DynBackendStorage for CpuBackendStorage { /* 33 methods */ }
+impl DynBackendDevice for CpuBackendDevice { /* 13 methods */ }
+```
+
+Users never see the newtype directly. They use `Device::cpu()` which
+internally creates `Device(Arc::new(CpuBackendDevice))`, and all tensor
+operations go through `&dyn DynBackendStorage` / `&dyn DynBackendDevice`.
+
+##### Step 1: CPU backend (✅ complete)
+
+`candle-cpu-backend/src/dyn_impl.rs` — implements all 33 `DynBackendStorage`
+methods and all 13 `DynBackendDevice` methods via newtype wrappers:
+
+- **`CpuBackendStorage(CpuStorage)`** delegates to existing `Map1`/`Map2`/
+  `Map2U8`/`Map2InPlace` operation structs in `candle-cpu-backend::ops`:
+  `Affine`, `MatMul`, `Conv1D`/`Conv2D`/`ConvTranspose1D`/`ConvTranspose2D`,
+  `AvgPool2D`/`MaxPool2D`, `UpsampleNearest1D`/`2D`/`UpsampleBilinear2D`,
+  `ReduceSum`/`ReduceIndex`, `Cmp`, `Gather`/`Scatter`/`IndexSelect`/`IndexAdd`,
+  `WCond`, `Im2Col1D`, `Col2Im1D`
+- `unary_op_dyn(op: UnaryOp)` matches on the 19-variant enum and dispatches
+  to per-element math using `unary_map`. Simple float ops (exp, log, sin, cos,
+  tanh, sqrt, etc.) use `num_traits::Float`; activation functions (Gelu, Silu,
+  GeluErf) inline their formulas; Erf uses `candle_core_types::cpu::erf`
+- `binary_op_dyn(op: BinaryOp)` matches on the 6-variant enum and dispatches
+  to `binary_map` with the appropriate closure (+, -, *, /, max, min)
+- Multi-operand methods (matmul, conv, where_cond, gather, scatter, index ops)
+  downcast `&dyn DynBackendStorage` to `&CpuBackendStorage` via `as_any()`
+- **`CpuBackendDevice`** is stateless (unit-struct-like). `zeros_impl_dyn` /
+  `alloc_uninit_dyn` create `Vec`-backed `CpuStorage`; `rand_uniform_dyn` /
+  `rand_normal_dyn` use the `rand` / `rand_distr` crates; `set_seed_dyn` /
+  `get_current_seed_dyn` return errors (CPU rng has no global seed);
+  `synchronize_dyn` is a no-op
+
+This establishes the **canonical pattern** that CUDA and Metal follow.
+
+##### Step 2: CUDA backend
+
+**Crate**: `candle-cuda` (behind `cuda` feature flag in candle-core)
+
+**Newtypes to create**:
+
+```rust
+// candle-cuda/src/dyn_impl.rs  (new file)
+pub struct CudaBackendStorage(pub CudaStorage);
+pub struct CudaBackendDevice(pub CudaDevice);
+```
+
+**Implementation strategy**:
+
+- `CudaBackendDevice(CudaDevice)` wraps the existing `CudaDevice` which holds
+  `cudarc::driver::CudaDevice`, ordinal, cuBLAS handle, and cuDNN handle.
+  The `DynBackendDevice` impl delegates to the existing `BackendDevice for
+  CudaDevice` methods:
+  - `location_dyn()` → `DeviceLocation::Cuda { gpu_id: self.0.ordinal() }`
+  - `same_device_dyn()` → downcast other to `CudaBackendDevice`, compare ordinals
+  - `supports_bf16()` → `true` (all modern CUDA GPUs support bf16)
+  - `zeros_impl_dyn()` → existing `CudaDevice::zeros_impl()`
+  - `alloc_uninit_dyn()` → existing `CudaDevice::alloc_uninit()`
+  - `storage_from_cpu_storage_dyn()` → existing `CudaDevice::storage_from_cpu_storage()`
+  - `rand_uniform_dyn()` / `rand_normal_dyn()` → existing cuRAND-based implementations
+  - `set_seed_dyn()` / `get_current_seed_dyn()` → existing cuRAND seed management
+  - `synchronize_dyn()` → `cudarc::driver::CudaDevice::synchronize()`
+
+- `CudaBackendStorage(CudaStorage)` wraps `CudaStorage` which holds a
+  `cudarc::driver::CudaSlice<T>` + device reference. The `DynBackendStorage`
+  impl delegates to the existing `BackendStorage for CudaStorage` methods:
+  - `to_cpu_storage_dyn()` → device-to-host copy via `dtoh_sync_copy`
+  - `unary_op_dyn()` → match on enum, call existing CUDA kernels
+    (`candle-kernels` crate: `unary.cu`, `affine.cu`, etc.)
+  - `binary_op_dyn()` → match on enum, call existing CUDA kernels
+  - `matmul_dyn()` → existing cuBLAS GEMM dispatch
+  - Conv/pool/upsample → existing cuDNN or custom kernel paths
+  - `copy_strided_src_dyn()` / `copy2d_dyn()` → existing CUDA copy kernels
+
+**Key difference from CPU**: CUDA storage is device memory (`CudaSlice`),
+not host `Vec`. All `to_cpu_storage_dyn()` calls involve a D2H transfer.
+Multi-operand methods downcast to `CudaBackendStorage` and verify device
+ordinals match (error if tensors are on different GPUs).
+
+**Estimated scope**: ~400 lines. Mostly mechanical delegation since all the
+actual kernel dispatch already exists in `BackendStorage for CudaStorage`.
+
+**Dependencies needed**: `cudarc`, `candle-kernels` (already present in
+candle-core behind `cuda` feature)
+
+##### Step 3: Metal backend
+
+**Crate**: `candle-metal` (behind `metal` feature flag in candle-core)
+
+**Newtypes to create**:
+
+```rust
+// candle-metal/src/dyn_impl.rs  (new file)
+pub struct MetalBackendStorage(pub MetalStorage);
+pub struct MetalBackendDevice(pub MetalDevice);
+```
+
+**Implementation strategy**:
+
+- `MetalBackendDevice(MetalDevice)` wraps the existing `MetalDevice` which
+  holds a `metal::Device`, command queue, compute pipeline states, and buffer
+  allocator. The `DynBackendDevice` impl is structurally identical to CUDA:
+  - `location_dyn()` → `DeviceLocation::Metal { gpu_id: self.0.registry_id() }`
+  - `supports_bf16()` → `true` (Apple Silicon supports bf16 natively)
+  - `synchronize_dyn()` → commit + wait on command buffer
+  - Other methods delegate to existing `BackendDevice for MetalDevice`
+
+- `MetalBackendStorage(MetalStorage)` wraps `MetalStorage` which holds a
+  `metal::Buffer` + device reference. Delegates to existing Metal compute
+  pipeline dispatch:
+  - `unary_op_dyn()` / `binary_op_dyn()` → `candle-metal-kernels` dispatch
+  - `matmul_dyn()` → Metal Performance Shaders or custom GEMM kernel
+  - Conv/pool → Metal compute kernels
+
+**Key difference from CPU**: Metal uses command buffers and compute encoders.
+Operations are recorded and submitted asynchronously. `synchronize_dyn()`
+must commit and wait for completion. `to_cpu_storage_dyn()` involves a
+GPU→CPU buffer copy.
+
+**Platform constraint**: Metal backend only compiles on macOS/iOS. The
+`DynBackendDevice`/`DynBackendStorage` impls will be behind
+`#[cfg(feature = "metal")]` just like the existing Metal code.
+
+**Estimated scope**: ~350 lines. Same mechanical delegation pattern as CUDA.
+
+##### Step 4: Convert Device and Storage enums to structs
+
+Once all three built-in backends implement `DynBackendDevice`/
+`DynBackendStorage`, the enums can be replaced:
+
+```rust
+// candle-core/src/device.rs — BEFORE:
+pub enum Device {
+    Cpu,
+    Cuda(CudaDevice),
+    Metal(MetalDevice),
+    Custom(Arc<dyn DynBackendDevice>),
+}
+
+// AFTER:
+pub struct Device(pub(crate) Arc<dyn DynBackendDevice>);
+
+impl Device {
+    pub fn cpu() -> Self {
+        Device(Arc::new(CpuBackendDevice))
+    }
+    pub fn cuda(ordinal: usize) -> Result<Self> {
+        Ok(Device(Arc::new(CudaBackendDevice::new(ordinal)?)))
+    }
+    pub fn metal(ordinal: usize) -> Result<Self> {
+        Ok(Device(Arc::new(MetalBackendDevice::new(ordinal)?)))
+    }
+}
+```
+
+```rust
+// candle-core/src/storage.rs — BEFORE:
+pub enum Storage {
+    Cpu(CpuStorage),
+    Cuda(CudaStorage),
+    Metal(MetalStorage),
+    Custom(Box<dyn DynBackendStorage>),
+}
+
+// AFTER:
+pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
+```
+
+**Impact**: All 52+ match sites collapse to one-liner delegations:
+
+```rust
+// BEFORE (device.rs):
+pub fn location(&self) -> DeviceLocation {
+    match self {
+        Self::Cpu => DeviceLocation::Cpu,
+        Self::Cuda(d) => d.location(),
+        Self::Metal(d) => d.location(),
+        Self::Custom(d) => d.location_dyn(),
+    }
+}
+
+// AFTER:
+pub fn location(&self) -> DeviceLocation {
+    self.0.location_dyn()
+}
+```
+
+**Backward compatibility**: `Device::is_cpu()`, `Device::is_cuda()`,
+`Device::is_metal()` are preserved as downcast checks:
+
+```rust
+impl Device {
+    pub fn is_cpu(&self) -> bool {
+        self.0.as_any().downcast_ref::<CpuBackendDevice>().is_some()
+    }
+}
+```
+
+##### Step 5: Redesign CustomOp traits (Option B)
+
+Current `CustomOp1`/`CustomOp2`/`CustomOp3` traits have backend-specific
+methods: `cpu_fwd(&CpuStorage, …)`, `cuda_fwd(&CudaStorage, …)`,
+`metal_fwd(&MetalStorage, …)`. This is incompatible with the trait-object
+architecture.
+
+**Redesign (Option B — clean break, no downcasting)**:
+
+```rust
+pub trait CustomOp1 {
+    fn name(&self) -> &str;
+    fn fwd(
+        &self,
+        storage: &dyn DynBackendStorage,
+        layout: &Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)>;
+
+    fn bwd(
+        &self,
+        storage: &dyn DynBackendStorage,
+        layout: &Layout,
+        grad: &dyn DynBackendStorage,
+        grad_layout: &Layout,
+    ) -> Result<Option<Box<dyn DynBackendStorage>>>;
+}
+```
+
+Implementations that need backend-specific behavior use `as_any()` +
+`downcast_ref()` internally — the trait signature itself is backend-agnostic.
+
+**Migration path**: Existing `CustomOp` implementations will need updating.
+A compatibility shim can bridge old-style ops during the transition.
+
+##### Step 6: Remove dummy backends
+
+Once Device/Storage are structs, the `dummy_cuda_backend.rs` and
+`dummy_metal_backend.rs` files (empty stubs compiled when features are
+disabled) become unnecessary and can be deleted. Feature flags control
+which `DynBackendDevice`/`DynBackendStorage` implementations are
+available, not which enum variants exist.
+
+##### Vulkan backend (future — new crate)
+
+A Vulkan/WebGPU backend would follow the exact same pattern:
+
+```rust
+// candle-vulkan/src/dyn_impl.rs  (future)
+pub struct VulkanBackendStorage { /* Vulkan buffer + device ref */ }
+pub struct VulkanBackendDevice { /* VkDevice, queues, pipeline cache */ }
+
+impl DynBackendStorage for VulkanBackendStorage { /* ... */ }
+impl DynBackendDevice for VulkanBackendDevice { /* ... */ }
+```
+
+No changes to `candle-core` would be required — the user just creates a
+`Device(Arc::new(VulkanBackendDevice::new()?))` and everything works
+through the trait-object dispatch. This is the plug-and-play extensibility
+that Tier 3b enables.
+
 #### Tier 4 — Operation-level routing (long-term vision)
 
 Tiers 1–3 solve compile-time selection and third-party extensibility. They do

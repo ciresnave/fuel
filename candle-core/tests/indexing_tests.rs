@@ -3,7 +3,7 @@ use candle_core::{Device, IndexOp, Tensor};
 
 #[test]
 fn integer_index() -> Result<()> {
-    let dev = Device::Cpu;
+    let dev = Device::cpu();
 
     let tensor = Tensor::arange(0u32, 2 * 3, &dev)?.reshape((2, 3))?;
     let result = tensor.i(1)?;
@@ -19,7 +19,7 @@ fn integer_index() -> Result<()> {
 
 #[test]
 fn range_index() -> Result<()> {
-    let dev = Device::Cpu;
+    let dev = Device::cpu();
     // RangeFull
     let tensor = Tensor::arange(0u32, 2 * 3, &dev)?.reshape((2, 3))?;
     let result = tensor.i(..)?;
@@ -74,7 +74,7 @@ fn range_index() -> Result<()> {
 
 #[test]
 fn index_3d() -> Result<()> {
-    let tensor = Tensor::from_iter(0..24u32, &Device::Cpu)?.reshape((2, 3, 4))?;
+    let tensor = Tensor::from_iter(0..24u32, &Device::cpu())?.reshape((2, 3, 4))?;
     assert_eq!(tensor.i((0, 0, 0))?.to_scalar::<u32>()?, 0);
     assert_eq!(tensor.i((1, 0, 0))?.to_scalar::<u32>()?, 12);
     assert_eq!(tensor.i((0, 1, 0))?.to_scalar::<u32>()?, 4);
@@ -94,7 +94,7 @@ fn index_3d() -> Result<()> {
 
 #[test]
 fn slice_assign() -> Result<()> {
-    let dev = Device::Cpu;
+    let dev = Device::cpu();
 
     let tensor = Tensor::arange(0u32, 4 * 5, &dev)?.reshape((4, 5))?;
     let src = Tensor::arange(0u32, 2 * 3, &dev)?.reshape((3, 2))?;

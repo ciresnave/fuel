@@ -11,7 +11,7 @@ use crate::{DType, Result, Tensor};
 /// ```rust
 /// use candle_core::{Tensor, Device};
 /// // With temperature=0, acts as argmax (deterministic).
-/// let logits = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+/// let logits = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu())?;
 /// let idx = candle_core::sampling::gumbel_softmax(&logits, 0.0, 0)?;;
 /// assert_eq!(idx.to_scalar::<u32>()?, 2);
 /// # Ok::<(), candle_core::Error>(())

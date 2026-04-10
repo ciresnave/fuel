@@ -2,43 +2,35 @@
 //!
 //! ```rust
 //! use candle_core::Device;
-//! let dev = Device::Cpu;
+//! let dev = Device::cpu();
 //! assert!(dev.is_cpu());
 //! assert_eq!(dev.location(), candle_core::DeviceLocation::Cpu);
 //! ```
-use crate::backend::BackendDevice;
-use crate::cpu_backend::CpuDevice;
 use crate::dyn_backend::DynBackendDevice;
-use crate::{CpuStorage, DType, Result, Shape, Storage, WithDType};
+use crate::{CpuStorage, DType, Error, Result, Shape, Storage, WithDType};
+use candle_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
 
 pub use candle_core_types::DeviceLocation;
 
 /// A device on which tensors can be created and computations performed.
 ///
+/// Internally this is an `Arc<dyn DynBackendDevice>` — a trait-object handle
+/// to the concrete backend device.  CPU, CUDA, Metal, and arbitrary third-party
+/// backends are all accessed through this single type.
+///
 /// # Example
 ///
 /// ```rust
 /// use candle_core::{Device, Tensor, DType};
-/// let dev = Device::Cpu;
+/// let dev = Device::cpu();
 /// let t = Tensor::zeros((2, 3), DType::F32, &dev)?;
 /// assert_eq!(t.dims(), &[2, 3]);
 /// # Ok::<(), candle_core::Error>(())
 /// ```
-#[derive(Debug, Clone)]
-pub enum Device {
-    /// The CPU backend.
-    Cpu,
-    /// A CUDA GPU backend.
-    Cuda(crate::CudaDevice),
-    /// An Apple Metal GPU backend.
-    Metal(crate::MetalDevice),
-    /// A third-party backend, accessed through dynamic dispatch.
-    ///
-    /// The `Cpu`, `Cuda`, and `Metal` arms retain zero-overhead static dispatch.
-    /// The `Custom` arm pays `Arc<dyn>` indirection, which is acceptable because
-    /// the alternative is forking `candle-core`.
-    Custom(Arc<dyn DynBackendDevice>),
+#[derive(Clone, Debug)]
+pub struct Device {
+    pub(crate) inner: Arc<dyn DynBackendDevice>,
 }
 
 /// Trait for types that can be converted to tensor storage, providing shape and CPU data.
@@ -52,9 +44,9 @@ pub enum Device {
 /// ```rust
 /// use candle_core::{Device, Tensor};
 /// // Scalars, arrays, and nested arrays all implement NdArray
-/// let scalar = Tensor::new(3.14f32, &Device::Cpu)?;
-/// let vec1d = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
-/// let mat2d = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::Cpu)?;
+/// let scalar = Tensor::new(3.14f32, &Device::cpu())?;
+/// let vec1d = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+/// let mat2d = Tensor::new(&[[1f32, 2.], [3., 4.]], &Device::cpu())?;
 /// assert_eq!(scalar.dims(), &[] as &[usize]);
 /// assert_eq!(vec1d.dims(), &[3]);
 /// assert_eq!(mat2d.dims(), &[2, 2]);
@@ -274,6 +266,21 @@ impl<S: WithDType> NdArray for Vec<Vec<Vec<Vec<S>>>> {
 }
 
 impl Device {
+    /// Returns a CPU device.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use candle_core::Device;
+    /// let dev = Device::cpu();
+    /// assert!(dev.is_cpu());
+    /// ```
+    pub fn cpu() -> Self {
+        Device {
+            inner: Arc::new(CpuBackendDevice),
+        }
+    }
+
     /// Creates a new CUDA device with the given GPU ordinal.
     ///
     /// Requires CUDA support compiled in and a compatible GPU.
@@ -287,37 +294,82 @@ impl Device {
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn new_cuda(ordinal: usize) -> Result<Self> {
-        Ok(Self::Cuda(crate::CudaDevice::new(ordinal)?))
+        #[cfg(feature = "cuda")]
+        {
+            let dev = crate::CudaDevice::new(ordinal)?;
+            Ok(Device {
+                inner: Arc::new(candle_cuda::CudaBackendDevice(dev)),
+            })
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = ordinal;
+            Err(Error::NotCompiledWithCudaSupport.bt())
+        }
     }
 
     /// Returns the underlying CUDA device, or an error if this is not a CUDA device.
     pub fn as_cuda_device(&self) -> Result<&crate::CudaDevice> {
-        match self {
-            Self::Cuda(d) => Ok(d),
-            Self::Cpu => crate::bail!("expected a cuda device, got cpu"),
-            Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
-            Self::Custom(_) => crate::bail!("expected a cuda device, got custom"),
+        #[cfg(feature = "cuda")]
+        {
+            self.inner
+                .as_any()
+                .downcast_ref::<candle_cuda::CudaBackendDevice>()
+                .map(|d| &d.0)
+                .ok_or_else(|| Error::Msg("expected a cuda device".into()).bt())
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            Err(Error::NotCompiledWithCudaSupport.bt())
         }
     }
 
     /// Returns the underlying Metal device, or an error if this is not a Metal device.
     pub fn as_metal_device(&self) -> Result<&crate::MetalDevice> {
-        match self {
-            Self::Cuda(_) => crate::bail!("expected a metal device, got cuda"),
-            Self::Cpu => crate::bail!("expected a metal device, got cpu"),
-            Self::Metal(d) => Ok(d),
-            Self::Custom(_) => crate::bail!("expected a metal device, got custom"),
+        #[cfg(feature = "metal")]
+        {
+            self.inner
+                .as_any()
+                .downcast_ref::<candle_metal::MetalBackendDevice>()
+                .map(|d| &d.0)
+                .ok_or_else(|| Error::Msg("expected a metal device".into()).bt())
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            Err(Error::NotCompiledWithMetalSupport.bt())
         }
     }
 
     /// Creates a new CUDA device with a dedicated stream.
     pub fn new_cuda_with_stream(ordinal: usize) -> Result<Self> {
-        Ok(Self::Cuda(crate::CudaDevice::new_with_stream(ordinal)?))
+        #[cfg(feature = "cuda")]
+        {
+            let dev = crate::CudaDevice::new_with_stream(ordinal)?;
+            Ok(Device {
+                inner: Arc::new(candle_cuda::CudaBackendDevice(dev)),
+            })
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = ordinal;
+            Err(Error::NotCompiledWithCudaSupport.bt())
+        }
     }
 
     /// Creates a new Metal device with the given ordinal.
     pub fn new_metal(ordinal: usize) -> Result<Self> {
-        Ok(Self::Metal(crate::MetalDevice::new(ordinal)?))
+        #[cfg(feature = "metal")]
+        {
+            let dev = crate::MetalDevice::new(ordinal)?;
+            Ok(Device {
+                inner: Arc::new(candle_metal::MetalBackendDevice(dev)),
+            })
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            let _ = ordinal;
+            Err(Error::NotCompiledWithMetalSupport.bt())
+        }
     }
 
     /// Creates a device backed by a custom [`DynBackendDevice`].
@@ -325,36 +377,38 @@ impl Device {
     /// The device uses dynamic dispatch for all operations, enabling
     /// third-party backends without modifying `candle-core`.
     pub fn custom(device: Arc<dyn DynBackendDevice>) -> Self {
-        Self::Custom(device)
+        Device { inner: device }
+    }
+
+    /// Wraps an existing [`CudaDevice`](crate::CudaDevice) into a `Device`.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn from_cuda_device(dev: crate::CudaDevice) -> Self {
+        Device {
+            inner: Arc::new(candle_cuda::CudaBackendDevice(dev)),
+        }
+    }
+
+    /// Wraps an existing [`MetalDevice`](crate::MetalDevice) into a `Device`.
+    #[cfg(feature = "metal")]
+    pub(crate) fn from_metal_device(dev: crate::MetalDevice) -> Self {
+        Device {
+            inner: Arc::new(candle_metal::MetalBackendDevice(dev)),
+        }
     }
 
     /// Returns `true` if this is a custom (third-party) device.
     pub fn is_custom(&self) -> bool {
-        matches!(self, Self::Custom(_))
+        !self.is_cpu() && !self.is_cuda() && !self.is_metal()
     }
 
     /// Sets the random seed for this device's random number generator.
-    ///
-    /// Only supported on CUDA and Metal devices.
     pub fn set_seed(&self, seed: u64) -> Result<()> {
-        match self {
-            Self::Cpu => CpuDevice.set_seed(seed),
-            Self::Cuda(c) => c.set_seed(seed),
-            Self::Metal(m) => m.set_seed(seed),
-            Self::Custom(d) => d.set_seed_dyn(seed),
-        }
+        self.inner.set_seed_dyn(seed)
     }
 
     /// Returns the current random seed for this device.
-    ///
-    /// Only supported on CUDA and Metal devices.
     pub fn get_current_seed(&self) -> Result<u64> {
-        match self {
-            Self::Cpu => CpuDevice.get_current_seed(),
-            Self::Cuda(c) => c.get_current_seed(),
-            Self::Metal(m) => m.get_current_seed(),
-            Self::Custom(d) => d.get_current_seed_dyn(),
-        }
+        self.inner.get_current_seed_dyn()
     }
 
     /// Returns `true` if both devices refer to the same physical device.
@@ -363,15 +417,10 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::Device;
-    /// assert!(Device::Cpu.same_device(&Device::Cpu));
+    /// assert!(Device::cpu().same_device(&Device::cpu()));
     /// ```
     pub fn same_device(&self, rhs: &Self) -> bool {
-        match (self, rhs) {
-            (Self::Cpu, Self::Cpu) => true,
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => lhs.same_device(rhs),
-            (Self::Metal(lhs), Self::Metal(rhs)) => lhs.same_device(rhs),
-            _ => false,
-        }
+        self.inner.same_device_dyn(&*rhs.inner)
     }
 
     /// Returns the physical [`DeviceLocation`] for this device.
@@ -380,15 +429,10 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::{Device, DeviceLocation};
-    /// assert_eq!(Device::Cpu.location(), DeviceLocation::Cpu);
+    /// assert_eq!(Device::cpu().location(), DeviceLocation::Cpu);
     /// ```
     pub fn location(&self) -> DeviceLocation {
-        match self {
-            Self::Cpu => DeviceLocation::Cpu,
-            Self::Cuda(device) => device.location(),
-            Device::Metal(device) => device.location(),
-            Device::Custom(device) => device.location_dyn(),
-        }
+        self.inner.location_dyn()
     }
 
     /// Returns `true` if this is the CPU device.
@@ -397,10 +441,10 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::Device;
-    /// assert!(Device::Cpu.is_cpu());
+    /// assert!(Device::cpu().is_cpu());
     /// ```
     pub fn is_cpu(&self) -> bool {
-        matches!(self, Self::Cpu)
+        matches!(self.location(), DeviceLocation::Cpu)
     }
 
     /// Returns `true` if this is a CUDA device.
@@ -409,10 +453,10 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::Device;
-    /// assert!(!Device::Cpu.is_cuda());
+    /// assert!(!Device::cpu().is_cuda());
     /// ```
     pub fn is_cuda(&self) -> bool {
-        matches!(self, Self::Cuda(_))
+        matches!(self.location(), DeviceLocation::Cuda { .. })
     }
 
     /// Returns `true` if this is a Metal device.
@@ -421,10 +465,10 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::Device;
-    /// assert!(!Device::Cpu.is_metal());
+    /// assert!(!Device::cpu().is_metal());
     /// ```
     pub fn is_metal(&self) -> bool {
-        matches!(self, Self::Metal(_))
+        matches!(self.location(), DeviceLocation::Metal { .. })
     }
 
     /// Returns `true` if this device has native BF16 support.
@@ -434,14 +478,10 @@ impl Device {
     /// ```rust
     /// use candle_core::Device;
     /// // CPU does not have native BF16 support
-    /// assert!(!Device::Cpu.supports_bf16());
+    /// assert!(!Device::cpu().supports_bf16());
     /// ```
     pub fn supports_bf16(&self) -> bool {
-        match self {
-            Self::Cuda(_) | Self::Metal(_) => true,
-            Self::Cpu => false,
-            Self::Custom(_) => false,
-        }
+        self.inner.supports_bf16()
     }
 
     /// Returns [`DType::BF16`] if supported, otherwise [`DType::F32`].
@@ -450,7 +490,7 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::{Device, DType};
-    /// assert_eq!(Device::Cpu.bf16_default_to_f32(), DType::F32);
+    /// assert_eq!(Device::cpu().bf16_default_to_f32(), DType::F32);
     /// ```
     pub fn bf16_default_to_f32(&self) -> DType {
         if self.supports_bf16() {
@@ -465,7 +505,7 @@ impl Device {
         if crate::utils::cuda_is_available() {
             Self::new_cuda(ordinal)
         } else {
-            Ok(Self::Cpu)
+            Ok(Self::cpu())
         }
     }
 
@@ -474,7 +514,7 @@ impl Device {
         if crate::utils::metal_is_available() {
             Self::new_metal(ordinal)
         } else {
-            Ok(Self::Cpu)
+            Ok(Self::cpu())
         }
     }
 
@@ -485,29 +525,12 @@ impl Device {
         shape: &Shape,
         dtype: DType,
     ) -> Result<Storage> {
-        match self {
-            Device::Cpu => {
-                let storage = CpuDevice.rand_uniform(shape, dtype, lo, up)?;
-                Ok(Storage::Cpu(storage))
-            }
-            Device::Cuda(device) => {
-                // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
-                if dtype == DType::F16 || dtype == DType::BF16 {
-                    let storage = device.rand_uniform(shape, DType::F32, lo, up)?;
-                    Storage::Cuda(storage).to_dtype(&crate::Layout::contiguous(shape), dtype)
-                } else {
-                    let storage = device.rand_uniform(shape, dtype, lo, up)?;
-                    Ok(Storage::Cuda(storage))
-                }
-            }
-            Device::Metal(device) => {
-                let storage = device.rand_uniform(shape, dtype, lo, up)?;
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let storage = device.rand_uniform_dyn(shape, dtype, lo, up)?;
-                Ok(Storage::Custom(storage))
-            }
+        // CUDA doesn't support generating F16/BF16 directly; generate as F32 then convert.
+        if self.is_cuda() && (dtype == DType::F16 || dtype == DType::BF16) {
+            let storage = Storage(self.inner.rand_uniform_dyn(shape, DType::F32, lo, up)?);
+            storage.to_dtype(&crate::Layout::contiguous(shape), dtype)
+        } else {
+            Ok(Storage(self.inner.rand_uniform_dyn(shape, dtype, lo, up)?))
         }
     }
 
@@ -527,29 +550,12 @@ impl Device {
         shape: &Shape,
         dtype: DType,
     ) -> Result<Storage> {
-        match self {
-            Device::Cpu => {
-                let storage = CpuDevice.rand_normal(shape, dtype, mean, std)?;
-                Ok(Storage::Cpu(storage))
-            }
-            Device::Cuda(device) => {
-                // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
-                if dtype == DType::F16 || dtype == DType::BF16 {
-                    let storage = device.rand_normal(shape, DType::F32, mean, std)?;
-                    Storage::Cuda(storage).to_dtype(&crate::Layout::contiguous(shape), dtype)
-                } else {
-                    let storage = device.rand_normal(shape, dtype, mean, std)?;
-                    Ok(Storage::Cuda(storage))
-                }
-            }
-            Device::Metal(device) => {
-                let storage = device.rand_normal(shape, dtype, mean, std)?;
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let storage = device.rand_normal_dyn(shape, dtype, mean, std)?;
-                Ok(Storage::Custom(storage))
-            }
+        // CUDA doesn't support generating F16/BF16 directly; generate as F32 then convert.
+        if self.is_cuda() && (dtype == DType::F16 || dtype == DType::BF16) {
+            let storage = Storage(self.inner.rand_normal_dyn(shape, DType::F32, mean, std)?);
+            storage.to_dtype(&crate::Layout::contiguous(shape), dtype)
+        } else {
+            Ok(Storage(self.inner.rand_normal_dyn(shape, dtype, mean, std)?))
         }
     }
 
@@ -563,106 +569,28 @@ impl Device {
     }
 
     pub(crate) fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
-        match self {
-            Device::Cpu => {
-                let storage = CpuDevice.zeros_impl(shape, dtype)?;
-                Ok(Storage::Cpu(storage))
-            }
-            Device::Cuda(device) => {
-                let storage = device.zeros_impl(shape, dtype)?;
-                Ok(Storage::Cuda(storage))
-            }
-            Device::Metal(device) => {
-                let storage = device.zeros_impl(shape, dtype)?;
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let storage = device.zeros_impl_dyn(shape, dtype)?;
-                Ok(Storage::Custom(storage))
-            }
-        }
+        Ok(Storage(self.inner.zeros_impl_dyn(shape, dtype)?))
     }
 
     pub(crate) unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
-        match self {
-            Device::Cpu => {
-                let storage = unsafe { CpuDevice.alloc_uninit(shape, dtype)? };
-                Ok(Storage::Cpu(storage))
-            }
-            Device::Cuda(device) => {
-                let storage = unsafe { device.alloc_uninit(shape, dtype)? };
-                Ok(Storage::Cuda(storage))
-            }
-            Device::Metal(device) => {
-                let storage = unsafe { device.alloc_uninit(shape, dtype)? };
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let storage = unsafe { device.alloc_uninit_dyn(shape, dtype)? };
-                Ok(Storage::Custom(storage))
-            }
-        }
+        Ok(Storage(unsafe {
+            self.inner.alloc_uninit_dyn(shape, dtype)?
+        }))
     }
 
     pub(crate) fn storage_from_slice<D: WithDType>(&self, data: &[D]) -> Result<Storage> {
-        match self {
-            Device::Cpu => Ok(Storage::Cpu(data.to_cpu_storage())),
-            Device::Cuda(device) => {
-                let storage = device.storage_from_slice(data)?;
-                Ok(Storage::Cuda(storage))
-            }
-            Device::Metal(device) => {
-                let storage = device.storage_from_slice(data)?;
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let cpu = data.to_cpu_storage();
-                let storage = device.storage_from_cpu_storage_owned_dyn(cpu)?;
-                Ok(Storage::Custom(storage))
-            }
-        }
+        let cpu = data.to_cpu_storage();
+        Ok(Storage(self.inner.storage_from_cpu_storage_owned_dyn(cpu)?))
     }
 
     pub(crate) fn storage<A: NdArray>(&self, array: A) -> Result<Storage> {
-        match self {
-            Device::Cpu => Ok(Storage::Cpu(array.to_cpu_storage())),
-            Device::Cuda(device) => {
-                let storage = array.to_cpu_storage();
-                let storage = device.storage_from_cpu_storage_owned(storage)?;
-                Ok(Storage::Cuda(storage))
-            }
-            Device::Metal(device) => {
-                let storage = array.to_cpu_storage();
-                let storage = device.storage_from_cpu_storage_owned(storage)?;
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let cpu = array.to_cpu_storage();
-                let storage = device.storage_from_cpu_storage_owned_dyn(cpu)?;
-                Ok(Storage::Custom(storage))
-            }
-        }
+        let cpu = array.to_cpu_storage();
+        Ok(Storage(self.inner.storage_from_cpu_storage_owned_dyn(cpu)?))
     }
 
     pub(crate) fn storage_owned<S: WithDType>(&self, data: Vec<S>) -> Result<Storage> {
-        match self {
-            Device::Cpu => Ok(Storage::Cpu(S::to_cpu_storage_owned(data))),
-            Device::Cuda(device) => {
-                let storage = S::to_cpu_storage_owned(data);
-                let storage = device.storage_from_cpu_storage_owned(storage)?;
-                Ok(Storage::Cuda(storage))
-            }
-            Device::Metal(device) => {
-                let storage = S::to_cpu_storage_owned(data);
-                let storage = device.storage_from_cpu_storage_owned(storage)?;
-                Ok(Storage::Metal(storage))
-            }
-            Device::Custom(device) => {
-                let cpu = S::to_cpu_storage_owned(data);
-                let storage = device.storage_from_cpu_storage_owned_dyn(cpu)?;
-                Ok(Storage::Custom(storage))
-            }
-        }
+        let cpu = S::to_cpu_storage_owned(data);
+        Ok(Storage(self.inner.storage_from_cpu_storage_owned_dyn(cpu)?))
     }
 
     /// Synchronizes the device, waiting for all pending operations to complete.
@@ -671,15 +599,10 @@ impl Device {
     ///
     /// ```rust
     /// use candle_core::Device;
-    /// Device::Cpu.synchronize()?;
+    /// Device::cpu().synchronize()?;
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn synchronize(&self) -> Result<()> {
-        match self {
-            Self::Cpu => Ok(()),
-            Self::Cuda(d) => d.synchronize(),
-            Self::Metal(d) => d.synchronize(),
-            Self::Custom(d) => d.synchronize_dyn(),
-        }
+        self.inner.synchronize_dyn()
     }
 }

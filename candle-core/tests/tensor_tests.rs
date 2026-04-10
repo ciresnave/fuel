@@ -926,8 +926,8 @@ fn embeddings(device: &Device) -> Result<()> {
 #[test]
 fn index_select_fail() -> Result<()> {
     // Check that an error is properly reported on out of bounds.
-    let ids = Tensor::new(&[4u32, 2u32, 1u32], &Device::Cpu)?;
-    let t = Tensor::new(&[[0f32, 1f32], [2f32, 3f32], [4f32, 5f32]], &Device::Cpu)?;
+    let ids = Tensor::new(&[4u32, 2u32, 1u32], &Device::cpu())?;
+    let t = Tensor::new(&[[0f32, 1f32], [2f32, 3f32], [4f32, 5f32]], &Device::cpu())?;
     let hs = t.index_select(&ids, 0);
     assert!(hs.is_err());
     Ok(())
@@ -1771,7 +1771,7 @@ test_device!(
 // https://github.com/huggingface/candle/issues/381
 #[test]
 fn randn_hasneg() -> Result<()> {
-    let t = Tensor::randn(0f32, 1f32, 200, &Device::Cpu)?.to_vec1::<f32>()?;
+    let t = Tensor::randn(0f32, 1f32, 200, &Device::cpu())?.to_vec1::<f32>()?;
     if t.iter().all(|&v| v >= 0.) {
         candle_core::bail!("all values in tensors are non-negative")
     }
@@ -1780,7 +1780,7 @@ fn randn_hasneg() -> Result<()> {
 
 #[test]
 fn pad_with_same() -> Result<()> {
-    let t = Tensor::arange(1f32, 5f32, &Device::Cpu)?.reshape((2, 2))?;
+    let t = Tensor::arange(1f32, 5f32, &Device::cpu())?.reshape((2, 2))?;
     let t0 = t.pad_with_same(0, 1, 2)?;
     assert_eq!(
         t0.to_vec2::<f32>()?,
@@ -1796,7 +1796,7 @@ fn pad_with_same() -> Result<()> {
 
 #[test]
 fn i64_abs() -> Result<()> {
-    let t = Tensor::new(&[-42i64, 1337], &Device::Cpu)?;
+    let t = Tensor::new(&[-42i64, 1337], &Device::cpu())?;
     let t = t.abs()?;
     assert_eq!(t.to_vec1::<i64>()?, [42, 1337]);
     Ok(())
@@ -1804,7 +1804,7 @@ fn i64_abs() -> Result<()> {
 
 #[test]
 fn tril_triu_eye() -> Result<()> {
-    let t = Tensor::tril2(4, DType::F32, &Device::Cpu)?;
+    let t = Tensor::tril2(4, DType::F32, &Device::cpu())?;
     assert_eq!(
         t.to_vec2::<f32>()?,
         [
@@ -1814,7 +1814,7 @@ fn tril_triu_eye() -> Result<()> {
             [1.0, 1.0, 1.0, 1.0]
         ],
     );
-    let t = Tensor::triu2(4, DType::F32, &Device::Cpu)?;
+    let t = Tensor::triu2(4, DType::F32, &Device::cpu())?;
     assert_eq!(
         t.to_vec2::<f32>()?,
         [
@@ -1824,7 +1824,7 @@ fn tril_triu_eye() -> Result<()> {
             [0.0, 0.0, 0.0, 1.0]
         ]
     );
-    let t = Tensor::eye(4, DType::F32, &Device::Cpu)?;
+    let t = Tensor::eye(4, DType::F32, &Device::cpu())?;
     assert_eq!(
         t.to_vec2::<f32>()?,
         [
@@ -1840,7 +1840,7 @@ fn tril_triu_eye() -> Result<()> {
 #[test]
 fn cumsum() -> Result<()> {
     let t = &[3f32, 1., 4., 1., 5.];
-    let t = Tensor::new(t, &Device::Cpu)?;
+    let t = Tensor::new(t, &Device::cpu())?;
     assert_eq!(t.cumsum(0)?.to_vec1::<f32>()?, [3., 4., 8., 9., 14.]);
     let t = t.unsqueeze(1)?;
     assert_eq!(
@@ -1852,7 +1852,7 @@ fn cumsum() -> Result<()> {
         [[3.0], [1.0], [4.0], [1.0], [5.0]]
     );
     let t = &[[3f32, 1., 4., 1., 5.], [2., 1., 7., 8., 2.]];
-    let t = Tensor::new(t, &Device::Cpu)?;
+    let t = Tensor::new(t, &Device::cpu())?;
     assert_eq!(
         t.cumsum(1)?.to_vec2::<f32>()?,
         [[3.0, 4.0, 8.0, 9.0, 14.0], [2.0, 3.0, 10.0, 18.0, 20.0]],
@@ -1884,12 +1884,12 @@ fn log_sum_exp() -> Result<()> {
             [[1f64, 2., 3.], [4., 5., 6.]],
             [[-1000.0, -999.0, -1001.0], [1000.0, 999.0, 1001.0]],
         ],
-        &Device::Cpu,
+        &Device::cpu(),
     )?;
 
     let output = input.log_sum_exp(D::Minus1)?;
     // The expectations obtained from pytorch.
-    let expected = Tensor::new(&[[3.4076, 6.4076], [-998.5924, 1001.4076]], &Device::Cpu)?;
+    let expected = Tensor::new(&[[3.4076, 6.4076], [-998.5924, 1001.4076]], &Device::cpu())?;
     assert_eq!(output.dims(), expected.dims());
     assert_close(&output.flatten_all()?, &expected.flatten_all()?, 0.00001)?;
 
@@ -1907,7 +1907,7 @@ fn log_sum_exp() -> Result<()> {
 
 #[test]
 fn pow() -> Result<()> {
-    let lhs = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+    let lhs = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::cpu())?;
     let rhs = (&lhs - 2.)?;
     let res = lhs.pow(&rhs)?;
     assert_eq!(
@@ -1920,10 +1920,10 @@ fn pow() -> Result<()> {
 #[test]
 fn test_flip_1d() -> Result<()> {
     // 1D: [0, 1, 2, 3, 4]
-    let t = Tensor::arange(0.0, 5.0, &Device::Cpu)?.reshape((5,))?;
+    let t = Tensor::arange(0.0, 5.0, &Device::cpu())?.reshape((5,))?;
     let flipped = t.flip(&[0])?;
     // Expected: [4, 3, 2, 1, 0]
-    let expected = Tensor::from_vec(vec![4.0, 3.0, 2.0, 1.0, 0.0], (5,), &Device::Cpu)?;
+    let expected = Tensor::from_vec(vec![4.0, 3.0, 2.0, 1.0, 0.0], (5,), &Device::cpu())?;
     candle_core::test_utils::assert_tensor_eq(&flipped, &expected)?;
     Ok(())
 }
@@ -1933,12 +1933,12 @@ fn test_flip_2d() -> Result<()> {
     // 2D:
     // [[0, 1, 2],
     //  [3, 4, 5]]
-    let t = Tensor::arange(0.0, 6.0, &Device::Cpu)?.reshape((2, 3))?;
+    let t = Tensor::arange(0.0, 6.0, &Device::cpu())?.reshape((2, 3))?;
     let flipped = t.flip(&[0, 1])?;
     // Expected:
     // [[5, 4, 3],
     //  [2, 1, 0]]
-    let expected = Tensor::from_vec(vec![5.0, 4.0, 3.0, 2.0, 1.0, 0.0], (2, 3), &Device::Cpu)?;
+    let expected = Tensor::from_vec(vec![5.0, 4.0, 3.0, 2.0, 1.0, 0.0], (2, 3), &Device::cpu())?;
     candle_core::test_utils::assert_tensor_eq(&flipped, &expected)?;
     Ok(())
 }
@@ -1951,7 +1951,7 @@ fn test_flip_3d_channels() -> Result<()> {
     //
     //  [[6,7,8],
     //   [9,10,11]]]
-    let t = Tensor::arange(0.0, 12.0, &Device::Cpu)?.reshape((2, 2, 3))?;
+    let t = Tensor::arange(0.0, 12.0, &Device::cpu())?.reshape((2, 2, 3))?;
     let flipped = t.flip(&[2])?;
     // Expected:
     // [[[2,1,0],
@@ -1962,7 +1962,7 @@ fn test_flip_3d_channels() -> Result<()> {
     let expected = Tensor::from_vec(
         vec![2.0, 1.0, 0.0, 5.0, 4.0, 3.0, 8.0, 7.0, 6.0, 11.0, 10.0, 9.0],
         (2, 2, 3),
-        &Device::Cpu,
+        &Device::cpu(),
     )?;
     candle_core::test_utils::assert_tensor_eq(&flipped, &expected)?;
     Ok(())
@@ -1970,16 +1970,16 @@ fn test_flip_3d_channels() -> Result<()> {
 
 #[test]
 fn tensor_new() -> Result<()> {
-    let t1 = Tensor::new(vec![1f32, 2.0, 3.0], &Device::Cpu)?;
+    let t1 = Tensor::new(vec![1f32, 2.0, 3.0], &Device::cpu())?;
     assert_eq!(t1.to_vec1::<f32>()?, [1.0, 2.0, 3.0]);
-    let t2 = Tensor::new(vec![vec![1f32, 2., 3.], vec![4., 5., 6.]], &Device::Cpu)?;
+    let t2 = Tensor::new(vec![vec![1f32, 2., 3.], vec![4., 5., 6.]], &Device::cpu())?;
     assert_eq!(t2.to_vec2::<f32>()?, [[1., 2., 3.], [4., 5., 6.]]);
     let t3 = Tensor::new(
         vec![
             vec![vec![1f32, 2., 3.], vec![4., 5., 6.]],
             vec![vec![3f32, 1., 4.], vec![1., 5., 9.]],
         ],
-        &Device::Cpu,
+        &Device::cpu(),
     )?;
     assert_eq!(
         t3.to_vec3::<f32>()?,
@@ -1993,7 +1993,7 @@ fn tensor_new() -> Result<()> {
 
 #[test]
 fn tensor_norm() -> Result<()> {
-    let t = Tensor::new(&[[3., 4.], [0., 0.]], &Device::Cpu)?;
+    let t = Tensor::new(&[[3., 4.], [0., 0.]], &Device::cpu())?;
     let norm = t.norm()?;
     assert_eq!(norm.to_scalar::<f64>()?, 5.);
     Ok(())
@@ -2046,14 +2046,12 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
 
     let (storage1, _) = t1.storage_and_layout();
     let (storage2, _) = t2.storage_and_layout();
-    let extract = |s: RwLockReadGuard<'_, Storage>| match &s.deref() {
-        Storage::Cuda(c) => {
-            use cudarc::driver::DevicePtr;
-            let slice = c.as_cuda_slice::<u32>().unwrap();
-            let ptr = slice.device_ptr(slice.stream()).0;
-            ptr
-        }
-        _ => unimplemented!(),
+    let extract = |s: RwLockReadGuard<'_, Storage>| {
+        use cudarc::driver::DevicePtr;
+        let c = s.as_cuda_storage().expect("expected cuda storage");
+        let slice = c.as_cuda_slice::<u32>().unwrap();
+        let ptr = slice.device_ptr(slice.stream()).0;
+        ptr
     };
     let id1 = extract(storage1);
     let id2 = extract(storage2);

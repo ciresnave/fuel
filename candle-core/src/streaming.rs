@@ -32,7 +32,7 @@ impl<T: crate::shape::Dim + Copy> Dim for T {}
 /// ```rust
 /// use candle_core::streaming::StreamTensor;
 /// use candle_core::{Tensor, Device, DType};
-/// let t = Tensor::zeros((1, 4), DType::F32, &Device::Cpu)?;
+/// let t = Tensor::zeros((1, 4), DType::F32, &Device::cpu())?;
 /// let st = StreamTensor::from_tensor(t);
 /// assert!(st.as_option().is_some());
 /// let empty = StreamTensor::empty();
@@ -90,7 +90,7 @@ impl StreamTensor {
     /// ```rust
     /// use candle_core::streaming::StreamTensor;
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((1, 4), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((1, 4), DType::F32, &Device::cpu())?;
     /// let st = StreamTensor::from_tensor(t);
     /// assert!(st.as_option().is_some());
     /// # Ok::<(), candle_core::Error>(())
@@ -106,7 +106,7 @@ impl StreamTensor {
     /// ```rust
     /// use candle_core::streaming::StreamTensor;
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// let st = StreamTensor::from_tensor(t);
     /// assert_eq!(st.shape().unwrap().dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
@@ -136,7 +136,7 @@ impl StreamTensor {
     /// ```rust
     /// use candle_core::streaming::StreamTensor;
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((2, 5), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((2, 5), DType::F32, &Device::cpu())?;
     /// let st = StreamTensor::from_tensor(t);
     /// assert_eq!(st.seq_len(1)?, 5);
     /// assert_eq!(StreamTensor::empty().seq_len(0)?, 0);
@@ -205,7 +205,7 @@ impl StreamTensor {
     /// ```rust
     /// use candle_core::streaming::StreamTensor;
     /// use candle_core::{Tensor, Device, DType};
-    /// let t = Tensor::zeros((1,), DType::F32, &Device::Cpu)?;
+    /// let t = Tensor::zeros((1,), DType::F32, &Device::cpu())?;
     /// let st = StreamTensor::from_tensor(t);
     /// assert!(st.as_option().is_some());
     /// assert!(StreamTensor::empty().as_option().is_none());

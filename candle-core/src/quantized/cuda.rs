@@ -614,7 +614,7 @@ impl QCudaStorage {
         };
         let src_len = src.len();
         let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));
-        let mut qcpu_storage = crate::Device::Cpu.qzeros(src_len, self.dtype)?;
+        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
         qcpu_storage.quantize(&src)?;
         let data = qcpu_storage.data()?;
         let padded_len =
@@ -642,7 +642,7 @@ impl QCudaStorage {
         };
         let src_len = src.len();
         let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));
-        let mut qcpu_storage = crate::Device::Cpu.qzeros(src_len, self.dtype)?;
+        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
         qcpu_storage.quantize_imatrix(&src, imatrix_weights, n_per_row)?;
         let data = qcpu_storage.data()?;
         let padded_len =
@@ -665,7 +665,7 @@ impl QCudaStorage {
     ) -> Result<()> {
         // Run the quantization on cpu.
         let src_len = src.as_slice::<f32>()?.len();
-        let mut qcpu_storage = crate::Device::Cpu.qzeros(src_len, self.dtype)?;
+        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
 
         if let QStorage::Cpu(storage) = &mut qcpu_storage {
             storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
@@ -689,7 +689,7 @@ impl QCudaStorage {
     pub fn quantize_onto(&mut self, src: &crate::CpuStorage) -> Result<()> {
         // Run the quantization on cpu.
         let src_len = src.as_slice::<f32>()?.len();
-        let mut qcpu_storage = crate::Device::Cpu.qzeros(src_len, self.dtype)?;
+        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
 
         if let QStorage::Cpu(storage) = &mut qcpu_storage {
             storage.from_float(src.as_slice::<f32>()?);

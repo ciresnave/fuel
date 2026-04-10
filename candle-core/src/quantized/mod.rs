@@ -1,6 +1,4 @@
-use crate::{
-    backend::BackendStorage, CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D,
-};
+use crate::{CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D};
 use k_quants::*;
 use std::borrow::Cow;
 
@@ -59,23 +57,23 @@ pub struct QTensor {
 
 impl Device {
     fn qzeros(&self, elem_count: usize, dtype: GgmlDType) -> Result<QStorage> {
-        match self {
-            Device::Cpu => {
-                let storage = dtype.cpu_zeros(elem_count);
-                Ok(QStorage::Cpu(storage))
-            }
-            Device::Metal(metal) => {
-                let storage = metal::QMetalStorage::zeros(metal, elem_count, dtype)?;
-                Ok(QStorage::Metal(storage))
-            }
-            Device::Cuda(cuda) => {
-                let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
-                Ok(QStorage::Cuda(storage))
-            }
-            Device::Custom(_) => Err(crate::Error::Msg(
-                "quantized tensors are not supported on custom backends".to_string(),
-            )),
+        if self.is_cpu() {
+            let storage = dtype.cpu_zeros(elem_count);
+            return Ok(QStorage::Cpu(storage));
         }
+        #[cfg(feature = "metal")]
+        if let Ok(metal) = self.as_metal_device() {
+            let storage = metal::QMetalStorage::zeros(metal, elem_count, dtype)?;
+            return Ok(QStorage::Metal(storage));
+        }
+        #[cfg(feature = "cuda")]
+        if let Ok(cuda) = self.as_cuda_device() {
+            let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
+            return Ok(QStorage::Cuda(storage));
+        }
+        Err(crate::Error::Msg(
+            "quantized tensors are not supported on this backend".to_string(),
+        ))
     }
 }
 
@@ -87,9 +85,12 @@ pub enum QStorage {
 
 impl QStorage {
     pub fn from_data(data: Cow<'_, [u8]>, device: &Device, dtype: GgmlDType) -> Result<Self> {
-        match device {
-            Device::Cpu => Ok(Self::Cpu(dtype.from_data(data))),
-            Device::Metal(d) => match dtype {
+        if device.is_cpu() {
+            return Ok(Self::Cpu(dtype.from_data(data)));
+        }
+        #[cfg(feature = "metal")]
+        if let Ok(d) = device.as_metal_device() {
+            return match dtype {
                 GgmlDType::F32 => metal::load_quantized(d, as_t_slice::<f32>(data)),
                 GgmlDType::F16 => metal::load_quantized(d, as_t_slice::<f16>(data)),
                 GgmlDType::Q4_0 => metal::load_quantized(d, as_t_slice::<BlockQ4_0>(data)),
@@ -105,8 +106,11 @@ impl QStorage {
                 GgmlDType::Q6K => metal::load_quantized(d, as_t_slice::<BlockQ6K>(data)),
                 GgmlDType::Q8K => metal::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => metal::load_quantized(d, as_t_slice::<bf16>(data)),
-            },
-            Device::Cuda(d) => match dtype {
+            };
+        }
+        #[cfg(feature = "cuda")]
+        if let Ok(d) = device.as_cuda_device() {
+            return match dtype {
                 GgmlDType::F32 => cuda::load_quantized(d, as_t_slice::<f32>(data)),
                 GgmlDType::F16 => cuda::load_quantized(d, as_t_slice::<f16>(data)),
                 GgmlDType::Q4_0 => cuda::load_quantized(d, as_t_slice::<BlockQ4_0>(data)),
@@ -122,11 +126,11 @@ impl QStorage {
                 GgmlDType::Q6K => cuda::load_quantized(d, as_t_slice::<BlockQ6K>(data)),
                 GgmlDType::Q8K => cuda::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => cuda::load_quantized(d, as_t_slice::<bf16>(data)),
-            },
-            Device::Custom(_) => Err(crate::Error::Msg(
-                "quantized tensors are not supported on custom backends".to_string(),
-            )),
+            };
         }
+        Err(crate::Error::Msg(
+            "quantized tensors are not supported on this backend".to_string(),
+        ))
     }
 
     fn block_size(&self) -> usize {
@@ -147,9 +151,19 @@ impl QStorage {
 
     fn device(&self) -> Device {
         match self {
-            QStorage::Cpu(_storage) => Device::Cpu,
-            QStorage::Metal(storage) => Device::Metal(storage.device().clone()),
-            QStorage::Cuda(storage) => Device::Cuda(storage.device().clone()),
+            QStorage::Cpu(_storage) => Device::cpu(),
+            QStorage::Metal(storage) => {
+                #[cfg(feature = "metal")]
+                { Device::from_metal_device(storage.device().clone()) }
+                #[cfg(not(feature = "metal"))]
+                { let _ = storage; unreachable!() }
+            }
+            QStorage::Cuda(storage) => {
+                #[cfg(feature = "cuda")]
+                { Device::from_cuda_device(storage.device().clone()) }
+                #[cfg(not(feature = "cuda"))]
+                { let _ = storage; unreachable!() }
+            }
         }
     }
 
@@ -162,13 +176,31 @@ impl QStorage {
     }
 
     fn quantize(&mut self, src: &Storage) -> Result<()> {
-        match (self, src) {
-            (QStorage::Cpu(storage), Storage::Cpu(src)) => {
+        match self {
+            QStorage::Cpu(storage) => {
+                let src = src.as_cpu_storage()?;
                 storage.from_float(src.as_slice::<f32>()?);
             }
-            (QStorage::Metal(storage), Storage::Metal(src)) => storage.quantize(src)?,
-            (QStorage::Cuda(storage), Storage::Cuda(src)) => storage.quantize(src)?,
-            _ => crate::bail!("Invalid quantize storage locations do not match"),
+            QStorage::Metal(storage) => {
+                #[cfg(feature = "metal")]
+                {
+                    let metal_src = src.as_metal_storage()
+                        .ok_or_else(|| crate::Error::Msg("quantize: expected metal storage".into()))?;
+                    storage.quantize(metal_src)?;
+                }
+                #[cfg(not(feature = "metal"))]
+                { let _ = (storage, src); unreachable!(); }
+            }
+            QStorage::Cuda(storage) => {
+                #[cfg(feature = "cuda")]
+                {
+                    let cuda_src = src.as_cuda_storage()
+                        .ok_or_else(|| crate::Error::Msg("quantize: expected cuda storage".into()))?;
+                    storage.quantize(cuda_src)?;
+                }
+                #[cfg(not(feature = "cuda"))]
+                { let _ = (storage, src); unreachable!(); }
+            }
         }
         Ok(())
     }
@@ -179,29 +211,53 @@ impl QStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        match (self, src) {
-            (QStorage::Cpu(storage), Storage::Cpu(src)) => {
+        match self {
+            QStorage::Cpu(storage) => {
+                let src = src.as_cpu_storage()?;
                 storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
             }
-            (QStorage::Metal(storage), Storage::Metal(src)) => {
-                storage.quantize_imatrix(src, imatrix_weights, n_per_row)?
+            QStorage::Metal(storage) => {
+                #[cfg(feature = "metal")]
+                {
+                    let metal_src = src.as_metal_storage()
+                        .ok_or_else(|| crate::Error::Msg("quantize_imatrix: expected metal storage".into()))?;
+                    storage.quantize_imatrix(metal_src, imatrix_weights, n_per_row)?;
+                }
+                #[cfg(not(feature = "metal"))]
+                { let _ = (storage, src, imatrix_weights, n_per_row); unreachable!(); }
             }
-            (QStorage::Cuda(storage), Storage::Cuda(src)) => {
-                storage.quantize_imatrix(src, imatrix_weights, n_per_row)?
+            QStorage::Cuda(storage) => {
+                #[cfg(feature = "cuda")]
+                {
+                    let cuda_src = src.as_cuda_storage()
+                        .ok_or_else(|| crate::Error::Msg("quantize_imatrix: expected cuda storage".into()))?;
+                    storage.quantize_imatrix(cuda_src, imatrix_weights, n_per_row)?;
+                }
+                #[cfg(not(feature = "cuda"))]
+                { let _ = (storage, src, imatrix_weights, n_per_row); unreachable!(); }
             }
-            _ => crate::bail!("Invalid quantize storage locations do not match"),
         }
         Ok(())
     }
 
     fn quantize_onto(&mut self, src: &Storage) -> Result<()> {
-        match (self, src) {
-            (QStorage::Cpu(storage), Storage::Cpu(src)) => {
-                storage.from_float(src.as_slice::<f32>()?);
+        let cpu_src = src.as_cpu_storage()?;
+        match self {
+            QStorage::Cpu(storage) => {
+                storage.from_float(cpu_src.as_slice::<f32>()?);
             }
-            (QStorage::Metal(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
-            (QStorage::Cuda(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
-            _ => crate::bail!("Invalid quantize source storage locations: not on cpu"),
+            QStorage::Metal(storage) => {
+                #[cfg(feature = "metal")]
+                storage.quantize_onto(cpu_src)?;
+                #[cfg(not(feature = "metal"))]
+                { let _ = storage; unreachable!(); }
+            }
+            QStorage::Cuda(storage) => {
+                #[cfg(feature = "cuda")]
+                storage.quantize_onto(cpu_src)?;
+                #[cfg(not(feature = "cuda"))]
+                { let _ = storage; unreachable!(); }
+            }
         }
         Ok(())
     }
@@ -212,26 +268,42 @@ impl QStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        match (self, src) {
-            (QStorage::Cpu(storage), Storage::Cpu(src)) => {
-                storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
+        let cpu_src = src.as_cpu_storage()?;
+        match self {
+            QStorage::Cpu(storage) => {
+                storage.from_float_imatrix(cpu_src.as_slice::<f32>()?, imatrix_weights, n_per_row);
             }
-            (QStorage::Metal(storage), Storage::Cpu(src)) => {
-                storage.quantize_imatrix_onto(src, imatrix_weights, n_per_row)?
+            QStorage::Metal(storage) => {
+                #[cfg(feature = "metal")]
+                storage.quantize_imatrix_onto(cpu_src, imatrix_weights, n_per_row)?;
+                #[cfg(not(feature = "metal"))]
+                { let _ = (storage, imatrix_weights, n_per_row); unreachable!(); }
             }
-            (QStorage::Cuda(storage), Storage::Cpu(src)) => {
-                storage.quantize_imatrix_onto(src, imatrix_weights, n_per_row)?
+            QStorage::Cuda(storage) => {
+                #[cfg(feature = "cuda")]
+                storage.quantize_imatrix_onto(cpu_src, imatrix_weights, n_per_row)?;
+                #[cfg(not(feature = "cuda"))]
+                { let _ = (storage, imatrix_weights, n_per_row); unreachable!(); }
             }
-            _ => crate::bail!("Invalid quantize storage locations do not match"),
         }
         Ok(())
     }
 
     fn dequantize(&self, elem_count: usize) -> Result<Storage> {
         match self {
-            QStorage::Cpu(storage) => Ok(Storage::Cpu(storage.dequantize(elem_count)?)),
-            QStorage::Metal(storage) => Ok(Storage::Metal(storage.dequantize(elem_count)?)),
-            QStorage::Cuda(storage) => Ok(Storage::Cuda(storage.dequantize(elem_count)?)),
+            QStorage::Cpu(storage) => Ok(Storage::from_cpu(storage.dequantize(elem_count)?)),
+            QStorage::Metal(storage) => {
+                #[cfg(feature = "metal")]
+                { Ok(Storage::from_metal(storage.dequantize(elem_count)?)) }
+                #[cfg(not(feature = "metal"))]
+                { let _ = (storage, elem_count); unreachable!() }
+            }
+            QStorage::Cuda(storage) => {
+                #[cfg(feature = "cuda")]
+                { Ok(Storage::from_cuda(storage.dequantize(elem_count)?)) }
+                #[cfg(not(feature = "cuda"))]
+                { let _ = (storage, elem_count); unreachable!() }
+            }
         }
     }
 
@@ -642,8 +714,21 @@ impl QTensor {
             QStorage::Cuda(s) => {
                 let s = s.dequantize_f16(self.shape.elem_count())?;
                 let none = crate::op::BackpropOp::none();
-                crate::tensor::from_storage(Storage::Cuda(s), self.shape.clone(), none, false)
+                #[cfg(feature = "cuda")]
+                {
+                    crate::tensor::from_storage(
+                        Storage::from_cuda(s),
+                        self.shape.clone(),
+                        none,
+                        false,
+                    )
                     .to_device(device)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    let _ = (s, none, device);
+                    unreachable!()
+                }
             }
             _ => {
                 let s = self.dequantize(device)?.to_dtype(crate::DType::F16)?;
@@ -662,8 +747,15 @@ impl QTensor {
 
     pub fn indexed_moe_forward(&self, x: &Tensor, ids: &Tensor) -> Result<Tensor> {
         match &self.storage {
-            QStorage::Cuda(s) => match (&*x.storage(), &*ids.storage()) {
-                (Storage::Cuda(x_storage), Storage::Cuda(ids_storage)) => {
+            QStorage::Cuda(s) => {
+                #[cfg(feature = "cuda")]
+                {
+                    let x_guard = x.storage();
+                    let ids_guard = ids.storage();
+                    let x_storage = x_guard.as_cuda_storage()
+                        .ok_or_else(|| crate::Error::Msg("indexed_moe_forward: x must be on CUDA".into()))?;
+                    let ids_storage = ids_guard.as_cuda_storage()
+                        .ok_or_else(|| crate::Error::Msg("indexed_moe_forward: ids must be on CUDA".into()))?;
                     let (storage, out_shape) = s.indexed_moe_forward(
                         self.shape(),
                         x_storage,
@@ -672,16 +764,18 @@ impl QTensor {
                         ids.layout(),
                     )?;
                     Ok(crate::tensor::from_storage(
-                        Storage::Cuda(storage),
+                        Storage::from_cuda(storage),
                         out_shape,
                         crate::op::BackpropOp::none(),
                         false,
                     ))
                 }
-                _ => {
-                    panic!("Non-cuda indexed_moe_forward is not implemented!");
+                #[cfg(not(feature = "cuda"))]
+                {
+                    let _ = (s, x, ids);
+                    unreachable!()
                 }
-            },
+            }
             _ => {
                 panic!("indexed_moe_forward is not implemented in this platform!");
             }

@@ -5,8 +5,8 @@
 //! # use candle_core::Error;
 //! # fn main() -> Result<(), Error>{
 //!
-//! let a = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
-//! let b = Tensor::arange(0f32, 12f32, &Device::Cpu)?.reshape((3, 4))?;
+//! let a = Tensor::arange(0f32, 6f32, &Device::cpu())?.reshape((2, 3))?;
+//! let b = Tensor::arange(0f32, 12f32, &Device::cpu())?.reshape((3, 4))?;
 //! let c = a.matmul(&b)?;
 //!
 //! # Ok(())}
@@ -117,6 +117,9 @@ pub use variable::Var;
 
 #[cfg(feature = "cuda")]
 pub use cuda_backend as cuda;
+
+#[cfg(feature = "cuda")]
+pub use candle_cuda::builder_arg;
 
 #[cfg(not(feature = "cuda"))]
 pub use dummy_cuda_backend as cuda;

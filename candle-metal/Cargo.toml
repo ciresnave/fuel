@@ -1,0 +1,27 @@
+[package]
+    categories.workspace = true
+    description          = "Metal backend for the candle ML framework"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "candle-metal"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    candle-core-types = { workspace = true }
+    half              = { workspace = true }
+    num-traits        = { workspace = true }
+    thiserror         = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+    candle-metal-kernels = { workspace = true }
+    objc2-foundation     = { workspace = true }
+    objc2-metal          = { workspace = true }
+
+[features]
+    default = []
+    ug      = ["dep:candle-ug"]
+
+[target.'cfg(all(any(target_os = "macos", target_os = "ios"), not(target_arch = "wasm32")))'.dependencies]
+    candle-ug = { workspace = true, optional = true }

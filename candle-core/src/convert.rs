@@ -48,7 +48,7 @@ impl<T: WithDType> TryFrom<Tensor> for Vec<Vec<Vec<T>>> {
 impl<T: WithDType> TryFrom<&[T]> for Tensor {
     type Error = Error;
     fn try_from(v: &[T]) -> Result<Self, Self::Error> {
-        Tensor::from_slice(v, v.len(), &Device::Cpu)
+        Tensor::from_slice(v, v.len(), &Device::cpu())
     }
 }
 
@@ -56,7 +56,7 @@ impl<T: WithDType> TryFrom<Vec<T>> for Tensor {
     type Error = Error;
     fn try_from(v: Vec<T>) -> Result<Self, Self::Error> {
         let len = v.len();
-        Tensor::from_vec(v, len, &Device::Cpu)
+        Tensor::from_vec(v, len, &Device::cpu())
     }
 }
 
@@ -82,7 +82,7 @@ macro_rules! from_tensor {
             type Error = Error;
 
             fn try_from(v: $typ) -> Result<Self, Self::Error> {
-                Tensor::new(v, &Device::Cpu)
+                Tensor::new(v, &Device::cpu())
             }
         }
     };

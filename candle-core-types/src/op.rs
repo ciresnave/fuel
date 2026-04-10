@@ -1,11 +1,115 @@
 //! Enums and traits representing tensor operations.
 //!
 //! This module defines the core operation enums and traits needed by backend implementations.
-//! The `Op` enum (computation graph) and concrete operation types (`Add`, `Mul`, etc.) remain
-//! in `candle-core`.
+//! The `Op` enum (computation graph) remains in `candle-core`.
 #![allow(clippy::redundant_closure_call)]
 use float8::F8E4M3 as f8e4m3;
 use half::{bf16, f16};
+
+/// Element-wise binary operations on two tensors of the same shape.
+///
+/// These operations preserve the input dtype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    /// Element-wise addition.
+    Add,
+    /// Element-wise multiplication.
+    Mul,
+    /// Element-wise subtraction.
+    Sub,
+    /// Element-wise division.
+    Div,
+    /// Element-wise maximum of two tensors.
+    Maximum,
+    /// Element-wise minimum of two tensors.
+    Minimum,
+}
+
+impl BinaryOp {
+    /// Look up a [`BinaryOp`] variant by its `BinaryOpT::NAME` string.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "add" => Some(Self::Add),
+            "sub" => Some(Self::Sub),
+            "mul" => Some(Self::Mul),
+            "div" => Some(Self::Div),
+            "maximum" => Some(Self::Maximum),
+            "minimum" => Some(Self::Minimum),
+            _ => None,
+        }
+    }
+}
+
+/// Element-wise unary operations applied to a single tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// Exponential function (`e^x`).
+    Exp,
+    /// Natural logarithm (`ln(x)`).
+    Log,
+    /// Sine.
+    Sin,
+    /// Cosine.
+    Cos,
+    /// Absolute value.
+    Abs,
+    /// Negation (`-x`).
+    Neg,
+    /// Reciprocal (`1/x`).
+    Recip,
+    /// Square (`x^2`).
+    Sqr,
+    /// Square root.
+    Sqrt,
+    /// GELU activation using the tanh approximation.
+    Gelu,
+    /// GELU activation using the exact erf formulation.
+    GeluErf,
+    /// Gauss error function.
+    Erf,
+    /// Rectified linear unit (`max(0, x)`).
+    Relu,
+    /// SiLU (Swish) activation (`x * sigmoid(x)`).
+    Silu,
+    /// Hyperbolic tangent.
+    Tanh,
+    /// Floor rounding.
+    Floor,
+    /// Ceiling rounding.
+    Ceil,
+    /// Round to nearest integer.
+    Round,
+    /// Sign function (-1, 0, or 1).
+    Sign,
+}
+
+impl UnaryOp {
+    /// Look up a [`UnaryOp`] variant by its `UnaryOpT::NAME` string.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "exp" => Some(Self::Exp),
+            "log" => Some(Self::Log),
+            "sin" => Some(Self::Sin),
+            "cos" => Some(Self::Cos),
+            "abs" => Some(Self::Abs),
+            "neg" => Some(Self::Neg),
+            "recip" => Some(Self::Recip),
+            "sqr" => Some(Self::Sqr),
+            "sqrt" => Some(Self::Sqrt),
+            "gelu" => Some(Self::Gelu),
+            "gelu_erf" => Some(Self::GeluErf),
+            "erf" => Some(Self::Erf),
+            "relu" => Some(Self::Relu),
+            "silu" => Some(Self::Silu),
+            "tanh" => Some(Self::Tanh),
+            "floor" => Some(Self::Floor),
+            "ceil" => Some(Self::Ceil),
+            "round" => Some(Self::Round),
+            "sign" => Some(Self::Sign),
+            _ => None,
+        }
+    }
+}
 
 /// Element-wise comparison operations.
 ///

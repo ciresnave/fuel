@@ -7,7 +7,7 @@ macro_rules! test_device {
     ($fn_name: ident, $test_cpu: ident, $test_cuda: ident, $test_metal: ident) => {
         #[test]
         fn $test_cpu() -> Result<()> {
-            $fn_name(&Device::Cpu)
+            $fn_name(&Device::cpu())
         }
 
         #[cfg(feature = "cuda")]
@@ -31,8 +31,8 @@ macro_rules! test_device {
 /// ```rust
 /// use candle_core::{Tensor, Device, DType};
 /// use candle_core::test_utils::assert_tensor_eq;
-/// let a = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
-/// let b = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+/// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+/// let b = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
 /// assert_tensor_eq(&a, &b)?;
 /// # Ok::<(), candle_core::Error>(())
 /// ```
@@ -52,7 +52,7 @@ pub fn assert_tensor_eq(t1: &Tensor, t2: &Tensor) -> Result<()> {
 /// ```rust
 /// use candle_core::{Tensor, Device};
 /// use candle_core::test_utils::to_vec0_round;
-/// let t = Tensor::new(3.14159f32, &Device::Cpu)?;
+/// let t = Tensor::new(3.14159f32, &Device::cpu())?;
 /// assert_eq!(to_vec0_round(&t, 2)?, 3.14);
 /// # Ok::<(), candle_core::Error>(())
 /// ```
@@ -69,7 +69,7 @@ pub fn to_vec0_round(t: &Tensor, digits: i32) -> Result<f32> {
 /// ```rust
 /// use candle_core::{Tensor, Device};
 /// use candle_core::test_utils::to_vec1_round;
-/// let t = Tensor::new(&[1.11111f32, 2.22222], &Device::Cpu)?;
+/// let t = Tensor::new(&[1.11111f32, 2.22222], &Device::cpu())?;
 /// assert_eq!(to_vec1_round(&t, 2)?, vec![1.11, 2.22]);
 /// # Ok::<(), candle_core::Error>(())
 /// ```
@@ -87,7 +87,7 @@ pub fn to_vec1_round(t: &Tensor, digits: i32) -> Result<Vec<f32>> {
 /// ```rust
 /// use candle_core::{Tensor, Device};
 /// use candle_core::test_utils::to_vec2_round;
-/// let t = Tensor::new(&[[1.005f32, 2.005], [3.005, 4.005]], &Device::Cpu)?;
+/// let t = Tensor::new(&[[1.005f32, 2.005], [3.005, 4.005]], &Device::cpu())?;
 /// let r = to_vec2_round(&t, 2)?;
 /// assert_eq!(r[0][0], 1.01);
 /// # Ok::<(), candle_core::Error>(())
@@ -109,7 +109,7 @@ pub fn to_vec2_round(t: &Tensor, digits: i32) -> Result<Vec<Vec<f32>>> {
 /// ```rust
 /// use candle_core::{Tensor, Device};
 /// use candle_core::test_utils::to_vec3_round;
-/// let t = Tensor::zeros((2, 2, 2), candle_core::DType::F32, &Device::Cpu)?;
+/// let t = Tensor::zeros((2, 2, 2), candle_core::DType::F32, &Device::cpu())?;
 /// let r = to_vec3_round(&t, 2)?;
 /// assert_eq!(r.len(), 2);
 /// # Ok::<(), candle_core::Error>(())

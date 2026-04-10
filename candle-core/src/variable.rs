@@ -18,7 +18,7 @@ use crate::{DType, Device, Error, Result, Shape, Tensor};
 /// use candle_core::{Var, DType, Device};
 ///
 /// // Create a variable, use it in a computation, and compute gradients.
-/// let x = Var::new(&[3.0f32, 1.0, 4.0], &Device::Cpu)?;
+/// let x = Var::new(&[3.0f32, 1.0, 4.0], &Device::cpu())?;
 /// let y = x.as_tensor().sqr()?;
 /// let grads = y.sum_all()?.backward()?;
 /// let grad_x = grads.get(x.as_tensor()).unwrap();
@@ -52,7 +52,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, DType, Device};
     ///
-    /// let v = Var::zeros((2, 3), DType::F32, &Device::Cpu)?;
+    /// let v = Var::zeros((2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(v.dims(), &[2, 3]);
     /// assert_eq!(v.to_vec2::<f32>()?, vec![vec![0.0; 3]; 2]);
     /// # Ok::<(), candle_core::Error>(())
@@ -69,7 +69,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, DType, Device};
     ///
-    /// let v = Var::ones((1, 4), DType::F32, &Device::Cpu)?;
+    /// let v = Var::ones((1, 4), DType::F32, &Device::cpu())?;
     /// assert_eq!(v.to_vec2::<f32>()?, vec![vec![1.0; 4]]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -87,7 +87,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, Tensor, Device};
     ///
-    /// let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+    /// let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu())?;
     /// let v = Var::from_tensor(&t)?;
     /// assert_eq!(v.to_vec1::<f32>()?, vec![1.0, 2.0, 3.0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -109,7 +109,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, DType, Device};
     ///
-    /// let v = Var::rand_f64(0.0, 1.0, (2, 3), DType::F32, &Device::Cpu)?;
+    /// let v = Var::rand_f64(0.0, 1.0, (2, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(v.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -133,7 +133,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, DType, Device};
     ///
-    /// let v = Var::randn_f64(0.0, 1.0, (3, 3), DType::F32, &Device::Cpu)?;
+    /// let v = Var::randn_f64(0.0, 1.0, (3, 3), DType::F32, &Device::cpu())?;
     /// assert_eq!(v.dims(), &[3, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -156,7 +156,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, Device};
     ///
-    /// let v = Var::rand(-1.0f32, 1.0f32, (4,), &Device::Cpu)?;
+    /// let v = Var::rand(-1.0f32, 1.0f32, (4,), &Device::cpu())?;
     /// assert_eq!(v.dims(), &[4]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -178,7 +178,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, Device};
     ///
-    /// let v = Var::randn(0.0f32, 1.0f32, (2, 2), &Device::Cpu)?;
+    /// let v = Var::randn(0.0f32, 1.0f32, (2, 2), &Device::cpu())?;
     /// assert_eq!(v.dims(), &[2, 2]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -202,11 +202,11 @@ impl Var {
     /// use candle_core::{Var, Device};
     ///
     /// // From a 1-D slice
-    /// let v = Var::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+    /// let v = Var::new(&[1.0f32, 2.0, 3.0], &Device::cpu())?;
     /// assert_eq!(v.dims(), &[3]);
     ///
     /// // From a 2-D array
-    /// let v = Var::new(&[[1.0f32, 0.0], [0.0, 1.0]], &Device::Cpu)?;
+    /// let v = Var::new(&[[1.0f32, 0.0], [0.0, 1.0]], &Device::cpu())?;
     /// assert_eq!(v.dims(), &[2, 2]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -224,7 +224,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, Device};
     ///
-    /// let v = Var::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], (2, 2), &Device::Cpu)?;
+    /// let v = Var::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], (2, 2), &Device::cpu())?;
     /// assert_eq!(v.to_vec2::<f32>()?, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -246,7 +246,7 @@ impl Var {
     /// use candle_core::{Var, Device};
     ///
     /// let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-    /// let v = Var::from_slice(&data, (2, 3), &Device::Cpu)?;
+    /// let v = Var::from_slice(&data, (2, 3), &Device::cpu())?;
     /// assert_eq!(v.dims(), &[2, 3]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
@@ -268,7 +268,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, Device};
     ///
-    /// let v = Var::new(&[1.0f32, 2.0], &Device::Cpu)?;
+    /// let v = Var::new(&[1.0f32, 2.0], &Device::cpu())?;
     /// let t = v.as_detached_tensor();
     /// assert!(!t.is_variable());
     /// assert_eq!(t.to_vec1::<f32>()?, vec![1.0, 2.0]);
@@ -286,7 +286,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, DType, Device};
     ///
-    /// let v = Var::zeros(3, DType::F32, &Device::Cpu)?;
+    /// let v = Var::zeros(3, DType::F32, &Device::cpu())?;
     /// let t = v.as_tensor();
     /// assert!(t.is_variable());
     /// assert_eq!(t.dims(), &[3]);
@@ -303,7 +303,7 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, DType, Device};
     ///
-    /// let v = Var::ones((2,), DType::F32, &Device::Cpu)?;
+    /// let v = Var::ones((2,), DType::F32, &Device::cpu())?;
     /// let t = v.into_inner();
     /// assert!(t.is_variable());
     /// assert_eq!(t.to_vec1::<f32>()?, vec![1.0, 1.0]);
@@ -325,8 +325,8 @@ impl Var {
     /// ```rust
     /// use candle_core::{Var, Tensor, DType, Device};
     ///
-    /// let v = Var::zeros(3, DType::F32, &Device::Cpu)?;
-    /// let new_vals = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu)?;
+    /// let v = Var::zeros(3, DType::F32, &Device::cpu())?;
+    /// let new_vals = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu())?;
     /// v.set(&new_vals)?;
     /// assert_eq!(v.to_vec1::<f32>()?, vec![1.0, 2.0, 3.0]);
     /// # Ok::<(), candle_core::Error>(())
