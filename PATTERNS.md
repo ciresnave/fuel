@@ -1,4 +1,4 @@
-# Candle Canonical Patterns
+﻿# Fuel Canonical Patterns
 
 Architecture guides — not API demos. Each pattern captures the minimal correct
 structure for a common task. Copy, adapt, and extend.
@@ -7,13 +7,13 @@ structure for a common task. Copy, adapt, and extend.
 
 ## 1. Minimal tensor program
 
-The atoms of Candle: create tensors on a device, perform arithmetic, move
+The atoms of Fuel: create tensors on a device, perform arithmetic, move
 results to the host.
 
 ```rust
-use candle_core::{Device, DType, Tensor};
+use fuel_core::{Device, DType, Tensor};
 
-fn main() -> candle_core::Result<()> {
+fn main() -> fuel_core::Result<()> {
     // All computation is tied to a device. CPU is always available.
     let device = Device::Cpu;
 
@@ -36,7 +36,7 @@ fn main() -> candle_core::Result<()> {
 
 Key properties:
 
-- All fallible operations return `candle_core::Result<T>`. Use `?` throughout.
+- All fallible operations return `fuel_core::Result<T>`. Use `?` throughout.
 - `&device` is borrowed; multiple tensors share one device handle.
 - Tensors are reference-counted; cloning is O(1) (no data copy).
 
@@ -48,8 +48,8 @@ How to wire autograd through custom layers. The pattern that every real model
 follows regardless of size.
 
 ```rust
-use candle_core::{Device, DType, Tensor};
-use candle_nn::{Linear, Module, VarBuilder, VarMap, linear, AdamW, ParamsAdamW, Optimizer};
+use fuel_core::{Device, DType, Tensor};
+use fuel_nn::{Linear, Module, VarBuilder, VarMap, linear, AdamW, ParamsAdamW, Optimizer};
 
 /// A two-layer MLP with a skip connection.
 struct TwoLayerMlp {
@@ -62,7 +62,7 @@ impl TwoLayerMlp {
     ///
     /// `vb` namespaces weight tensors in the checkpoint so that
     /// `fc1.weight`, `fc2.weight`, etc. are stored without collision.
-    fn new(in_dim: usize, hidden: usize, out_dim: usize, vb: VarBuilder) -> candle_core::Result<Self> {
+    fn new(in_dim: usize, hidden: usize, out_dim: usize, vb: VarBuilder) -> fuel_core::Result<Self> {
         Ok(Self {
             fc1: linear(in_dim, hidden, vb.pp("fc1"))?,
             fc2: linear(hidden, out_dim, vb.pp("fc2"))?,
@@ -71,14 +71,14 @@ impl TwoLayerMlp {
 }
 
 impl Module for TwoLayerMlp {
-    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+    fn forward(&self, x: &Tensor) -> fuel_core::Result<Tensor> {
         // fc1 → ReLU → fc2. Gradients flow automatically.
         let h = self.fc1.forward(x)?.relu()?;
         self.fc2.forward(&h)
     }
 }
 
-fn main() -> candle_core::Result<()> {
+fn main() -> fuel_core::Result<()> {
     let device = Device::Cpu;
 
     // VarMap owns all trainable parameters. Every tensor created through it is
@@ -119,20 +119,20 @@ How to load weights from a `.safetensors` file and run a forward pass. The
 same steps apply to HuggingFace Hub downloads.
 
 ```rust
-use candle_core::{Device, Tensor};
-use candle_nn::{VarBuilder};
-// Replace `MyModel` with the concrete model type from candle-transformers.
-// use candle_transformers::models::llama::{Llama, Config};
+use fuel_core::{Device, Tensor};
+use fuel_nn::{VarBuilder};
+// Replace `MyModel` with the concrete model type from fuel-transformers.
+// use fuel_transformers::models::llama::{Llama, Config};
 
-fn main() -> candle_core::Result<()> {
+fn main() -> fuel_core::Result<()> {
     let device = Device::Cpu;  // swap for Device::new_cuda(0)? on GPU
 
     // Load weights from a local safetensors file.
     // For multi-shard checkpoints pass a Vec of paths.
     let vb = unsafe {
-        candle_nn::VarBuilder::from_mmaped_safetensors(
+        fuel_nn::VarBuilder::from_mmaped_safetensors(
             &["model.safetensors"],
-            candle_core::DType::F32,
+            fuel_core::DType::F32,
             &device,
         )?
     };
@@ -169,8 +169,8 @@ How to autoregressively decode tokens. This is the inner loop of every LLM
 chat server.
 
 ```rust
-use candle_core::{Device, Tensor};
-use candle_transformers::generation::LogitsProcessor;
+use fuel_core::{Device, Tensor};
+use fuel_transformers::generation::LogitsProcessor;
 
 /// Decode up to `max_new_tokens` tokens given a prompt.
 fn generate(
@@ -179,7 +179,7 @@ fn generate(
     max_new_tokens: usize,
     temperature: f64,
     device: &Device,
-) -> candle_core::Result<Vec<u32>> {
+) -> fuel_core::Result<Vec<u32>> {
     let mut tokens = prompt_tokens;
     let mut logits_proc = LogitsProcessor::new(
         /*seed=*/ 42,
@@ -209,7 +209,7 @@ fn generate(
     Ok(tokens)
 }
 
-fn main() -> candle_core::Result<()> {
+fn main() -> fuel_core::Result<()> {
     let _device = Device::Cpu;
     // let tokens = generate(&mut model, prompt_ids, 200, 0.7, &device)?;
     Ok(())
@@ -229,14 +229,14 @@ Key properties:
 ## 5. Minimal custom operation extension
 
 How to register a new differentiable operation and plug it into autograd.
-Use this when you need an op that isn't in `candle-core`.
+Use this when you need an op that isn't in `fuel-core`.
 
 ```rust
-use candle_core::{Tensor, Result, op::{Op, BackpropOp, UnaryOpT}};
+use fuel_core::{Tensor, Result, op::{Op, BackpropOp, UnaryOpT}};
 
 /// A custom element-wise activation: f(x) = x * sigmoid(x)  (Swish / SiLU).
 ///
-/// Candle already has `Tensor::silu()` — this is only for illustration.
+/// Fuel already has `Tensor::silu()` — this is only for illustration.
 #[derive(Debug, Clone)]
 struct SwishOp;
 
@@ -278,7 +278,7 @@ fn swish(x: &Tensor) -> Result<Tensor> {
 }
 
 fn main() -> Result<()> {
-    let device = candle_core::Device::Cpu;
+    let device = fuel_core::Device::Cpu;
     let x = Tensor::new(&[-2f32, -1., 0., 1., 2.], &device)?;
     let y = swish(&x)?;
     println!("{y}");

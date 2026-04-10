@@ -1,0 +1,17 @@
+﻿[package]
+    categories  = ["science"]
+    description = "CUBLASLt fused GEMM with activation/bias for the Fuel ML framework."
+    edition     = "2024"
+    homepage    = "https://github.com/huggingface/fuel"
+    keywords    = ["blas", "machine-learning", "tensor"]
+    license     = "MIT OR Apache-2.0"
+    name        = "fuel-cublaslt"
+    repository  = "https://github.com/huggingface/fuel"
+    version     = "0.10.2"
+
+[dependencies]
+    fuel = { path = "../fuel-core", package = "fuel-core", version = "0.10.2", features = [
+        "cuda",
+    ] }
+    cudarc = { version = "0.19.4", features = ["cublaslt", "f16"] }
+    half = { version = "2.3.1", features = ["num-traits"] }

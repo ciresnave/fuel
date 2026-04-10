@@ -1,0 +1,19 @@
+﻿[package]
+name = "fuel-parallel"
+version.workspace = true
+edition.workspace = true
+description = "Multi-GPU parallelism primitives for the Fuel ML framework."
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[dependencies]
+fuel = { workspace = true }
+fuel-nn = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+
+[features]
+default = []
