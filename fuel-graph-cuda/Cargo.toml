@@ -1,0 +1,16 @@
+[package]
+    categories.workspace = true
+    description          = "CUDA GPU executor for the fuel lazy-graph layer. Dispatches ops through fuel-cuda's cublas/kernel infrastructure."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-graph-cuda"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types        = { workspace = true }
+    fuel-graph             = { workspace = true }
+    fuel-cuda              = { workspace = true }
+    fuel-reference-backend = { workspace = true }
+    half                   = { workspace = true }
