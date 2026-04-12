@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 fuel = { workspace = true }
+fuel-cpu-backend = { workspace = true }
 half = { workspace = true }
 thiserror = { workspace = true }
 intel-mkl-src = { workspace = true, optional = true }

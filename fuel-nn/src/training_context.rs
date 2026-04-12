@@ -85,12 +85,12 @@ impl TrainingContext {
 
     /// Shorthand for `TrainingContext::new(DType::F32, Device::Cpu)`.
     pub fn cpu_f32() -> Self {
-        Self::new(DType::F32, Device::Cpu)
+        Self::new(DType::F32, Device::cpu())
     }
 
-    /// Shorthand for `TrainingContext::new(DType::BF16, Device::Cpu)`.
+    /// Shorthand for `TrainingContext::new(DType::BF16, Device::cpu())`.
     pub fn cpu_bf16() -> Self {
-        Self::new(DType::BF16, Device::Cpu)
+        Self::new(DType::BF16, Device::cpu())
     }
 
     // ── Issuing VarBuilders ──────────────────────────────────────────────
