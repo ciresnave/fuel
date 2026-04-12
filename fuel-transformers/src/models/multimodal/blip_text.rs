@@ -537,8 +537,8 @@ impl TextLMHeadModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let mut model = TextLMHeadModel::new(&cfg, vb)?;
-    /// let input_ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let encoder_hidden_states = Tensor::zeros((1, 8, 768), DType::F32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let encoder_hidden_states = Tensor::zeros((1, 8, 768), DType::F32, &Device::cpu())?;
     /// let logits = model.forward(&input_ids, &encoder_hidden_states)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

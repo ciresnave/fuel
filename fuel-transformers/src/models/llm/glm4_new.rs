@@ -396,7 +396,7 @@ impl Model {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::glm4_new::Model;
     /// # let mut model: Model = unimplemented!();
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let hidden = model.forward(&input, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -466,7 +466,7 @@ impl ModelForCausalLM {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::glm4_new::ModelForCausalLM;
     /// # let mut model: ModelForCausalLM = unimplemented!();
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

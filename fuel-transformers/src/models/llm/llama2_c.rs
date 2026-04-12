@@ -445,7 +445,7 @@ impl Llama {
     /// let cfg = Config::tiny_15m();
     /// let model = Llama::load(vb.clone(), cfg.clone())?;
     /// let mut cache = Cache::new(true, &cfg, vb)?;
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, 0, &mut cache)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

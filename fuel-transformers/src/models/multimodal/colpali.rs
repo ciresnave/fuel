@@ -63,8 +63,8 @@ impl Model {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::colpali::Model;
     /// # let mut model: Model = unimplemented!();
-    /// let pixel_values = Tensor::zeros((1, 3, 448, 448), DType::F32, &Device::Cpu)?;
-    /// let input_ids = Tensor::zeros((1, 256), DType::U32, &Device::Cpu)?;
+    /// let pixel_values = Tensor::zeros((1, 3, 448, 448), DType::F32, &Device::cpu())?;
+    /// let input_ids = Tensor::zeros((1, 256), DType::U32, &Device::cpu())?;
     /// let embeddings = model.forward_images(&pixel_values, &input_ids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -85,7 +85,7 @@ impl Model {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::colpali::Model;
     /// # let mut model: Model = unimplemented!();
-    /// let input_ids = Tensor::zeros((1, 32), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 32), DType::U32, &Device::cpu())?;
     /// let embeddings = model.forward_text(&input_ids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

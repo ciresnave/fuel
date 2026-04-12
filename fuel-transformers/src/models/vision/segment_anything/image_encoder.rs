@@ -47,18 +47,28 @@ impl fuel::CustomOp3 for Add3 {
         "add3"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        s1: &fuel::CpuStorage,
+        s1: &dyn fuel::dyn_backend::DynBackendStorage,
         l1: &fuel::Layout,
-        s2: &fuel::CpuStorage,
+        s2: &dyn fuel::dyn_backend::DynBackendStorage,
         l2: &fuel::Layout,
-        s3: &fuel::CpuStorage,
+        s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &fuel::Layout,
-    ) -> Result<(fuel::CpuStorage, fuel::Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, fuel::Shape)> {
+        use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
         use rayon::prelude::*;
 
         let Add3(b, q_h, q_w, k_h, k_w) = *self;
+        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s1 = s1.inner();
+        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s2 = s2.inner();
+        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s3 = s3.inner();
         let s1 = s1.as_slice::<f32>()?;
         let s1 = match l1.contiguous_offsets() {
             None => fuel::bail!("input1 has to be contiguous"),
@@ -94,7 +104,7 @@ impl fuel::CustomOp3 for Add3 {
                 }
             });
         let dst = fuel::CpuStorage::F32(dst);
-        Ok((dst, (b, q_h * q_w, k_h * k_w).into()))
+        Ok((Box::new(CpuBackendStorage::from(dst)), (b, q_h * q_w, k_h * k_w).into()))
     }
 }
 

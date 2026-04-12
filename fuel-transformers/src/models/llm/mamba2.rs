@@ -153,7 +153,7 @@ impl Config {
 /// use fuel::{DType, Device};
 /// let cfg = Config { d_model: 512, n_layer: 4, vocab_size: 50280,
 ///     d_state: 64, expand: 2, headdim: 64, ngroups: 1, pad_vocab_size_multiple: 16 };
-/// let state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
+/// let state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
 /// assert_eq!(state.pos, 0);
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -173,7 +173,7 @@ impl State {
     /// use fuel::{DType, Device};
     /// let cfg = Config { d_model: 512, n_layer: 4, vocab_size: 50280,
     ///     d_state: 64, expand: 2, headdim: 64, ngroups: 1, pad_vocab_size_multiple: 16 };
-    /// let state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
+    /// let state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn new(batch_size: usize, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
@@ -295,8 +295,8 @@ impl Mamba2Block {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let block = Mamba2Block::new(0, &cfg, vb)?;
-    /// let mut state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
-    /// let xs = Tensor::zeros((1, cfg.d_model), DType::F32, &Device::Cpu)?;
+    /// let mut state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
+    /// let xs = Tensor::zeros((1, cfg.d_model), DType::F32, &Device::cpu())?;
     /// let out = block.forward(&xs, &mut state)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -526,8 +526,8 @@ impl Mamba2Block {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let block = Mamba2Block::new(0, &cfg, vb)?;
-    /// let mut state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
-    /// let xs = Tensor::zeros((1, 8, cfg.d_model), DType::F32, &Device::Cpu)?;
+    /// let mut state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
+    /// let xs = Tensor::zeros((1, 8, cfg.d_model), DType::F32, &Device::cpu())?;
     /// let out = block.forward_prefill(&xs, &mut state, 4)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -776,8 +776,8 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Model::new(&cfg, vb)?;
-    /// let mut state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
-    /// let input = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
+    /// let mut state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
+    /// let input = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, &mut state)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -803,8 +803,8 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Model::new(&cfg, vb)?;
-    /// let mut state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let mut state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward_prefill(&input, &mut state, 4)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

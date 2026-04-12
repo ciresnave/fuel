@@ -499,7 +499,7 @@ impl VisionTower {
             }
         }
         let positions =
-            Tensor::from_vec(pos_data, (1, num_patches, 2), &Device::Cpu)?.to_device(device)?;
+            Tensor::from_vec(pos_data, (1, num_patches, 2), &Device::cpu())?.to_device(device)?;
 
         let embeds = self.patch_embedder.forward(pv, &positions)?;
 

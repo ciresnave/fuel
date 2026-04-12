@@ -81,7 +81,7 @@ impl ViTImageProcessor {
 
             data.iter()
                 .map(|image| {
-                    Tensor::from_vec(image.clone(), (height, width, channels), &Device::Cpu)
+                    Tensor::from_vec(image.clone(), (height, width, channels), &Device::cpu())
                         .unwrap()
                         .permute((2, 0, 1))
                         .unwrap()
@@ -124,8 +124,8 @@ impl ViTImageProcessor {
             None => self.image_std.clone(),
         };
 
-        let mean = Tensor::from_vec(mean, (3, 1, 1), &Device::Cpu)?;
-        let std = Tensor::from_vec(std, (3, 1, 1), &Device::Cpu)?;
+        let mean = Tensor::from_vec(mean, (3, 1, 1), &Device::cpu())?;
+        let std = Tensor::from_vec(std, (3, 1, 1), &Device::cpu())?;
 
         let image = image.to_rgb8();
         let data = image.into_raw();
@@ -135,7 +135,7 @@ impl ViTImageProcessor {
         let channels = 3;
 
         let data =
-            Tensor::from_vec(data, &[height, width, channels], &Device::Cpu)?.permute((2, 0, 1))?;
+            Tensor::from_vec(data, &[height, width, channels], &Device::cpu())?.permute((2, 0, 1))?;
 
         (data.to_dtype(DType::F32)? / 255.)?
             .broadcast_sub(&mean)?

@@ -903,7 +903,7 @@ impl T5EncoderModel {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: T5EncoderModel = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let hidden = model.forward(&ids)?; // shape [1, 8, d_model]
     /// # Ok(())
     /// # }
@@ -921,7 +921,7 @@ impl T5EncoderModel {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: T5EncoderModel = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let hidden = model.forward_dt(&ids, Some(DType::F32))?;
     /// # Ok(())
     /// # }
@@ -1042,7 +1042,7 @@ impl T5ForConditionalGeneration {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: T5ForConditionalGeneration = unimplemented!();
-    /// let input_ids = Tensor::zeros((1, 16), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 16), DType::U32, &Device::cpu())?;
     /// let enc = model.encode(&input_ids)?; // shape [1, 16, d_model]
     /// # Ok(())
     /// # }
@@ -1059,9 +1059,9 @@ impl T5ForConditionalGeneration {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: T5ForConditionalGeneration = unimplemented!();
-    /// let input_ids = Tensor::zeros((1, 16), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 16), DType::U32, &Device::cpu())?;
     /// let enc = model.encode(&input_ids)?;
-    /// let dec_ids = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
+    /// let dec_ids = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
     /// let logits = model.decode(&dec_ids, &enc)?; // shape [1, vocab_size]
     /// # Ok(())
     /// # }
@@ -1105,8 +1105,8 @@ impl T5ForConditionalGeneration {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: T5ForConditionalGeneration = unimplemented!();
-    /// let input_ids = Tensor::zeros((1, 16), DType::U32, &Device::Cpu)?;
-    /// let dec_ids = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 16), DType::U32, &Device::cpu())?;
+    /// let dec_ids = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input_ids, &dec_ids)?;
     /// # Ok(())
     /// # }

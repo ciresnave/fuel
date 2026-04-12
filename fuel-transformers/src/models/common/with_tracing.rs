@@ -43,7 +43,7 @@ impl Embedding {
     /// ```
     /// use fuel_transformers::models::with_tracing::Embedding;
     /// use fuel::{Device, DType, Tensor};
-    /// let weights = Tensor::zeros((1000, 128), DType::F32, &Device::Cpu)?;
+    /// let weights = Tensor::zeros((1000, 128), DType::F32, &Device::cpu())?;
     /// let emb = Embedding::from_weights(weights)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -61,7 +61,7 @@ impl Embedding {
     /// ```
     /// use fuel_transformers::models::with_tracing::Embedding;
     /// use fuel::{Device, DType, Tensor};
-    /// let weights = Tensor::zeros((1000, 128), DType::F32, &Device::Cpu)?;
+    /// let weights = Tensor::zeros((1000, 128), DType::F32, &Device::cpu())?;
     /// let emb = Embedding::from_weights(weights)?;
     /// let w = emb.embeddings();
     /// assert_eq!(w.dims(), &[1000, 128]);
@@ -86,7 +86,7 @@ impl Module for Embedding {
 /// ```
 /// use fuel_transformers::models::with_tracing::Linear;
 /// use fuel::{Device, DType, Tensor};
-/// let w = Tensor::zeros((64, 64), DType::F32, &Device::Cpu)?;
+/// let w = Tensor::zeros((64, 64), DType::F32, &Device::cpu())?;
 /// let layer = Linear::from_weights(w, None);
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -104,7 +104,7 @@ impl Linear {
     /// ```
     /// use fuel_transformers::models::with_tracing::Linear;
     /// use fuel::{Device, DType, Tensor};
-    /// let w = Tensor::zeros((64, 64), DType::F32, &Device::Cpu)?;
+    /// let w = Tensor::zeros((64, 64), DType::F32, &Device::cpu())?;
     /// let layer = Linear::from_weights(w, None);
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -301,8 +301,8 @@ impl std::fmt::Debug for QMatMul {
 /// ```
 /// use fuel_transformers::models::with_tracing::LayerNorm;
 /// use fuel::{Device, DType, Tensor};
-/// let w = Tensor::ones(64usize, DType::F32, &Device::Cpu)?;
-/// let b = Tensor::zeros(64usize, DType::F32, &Device::Cpu)?;
+/// let w = Tensor::ones(64usize, DType::F32, &Device::cpu())?;
+/// let b = Tensor::zeros(64usize, DType::F32, &Device::cpu())?;
 /// let norm = LayerNorm::new(w, b, 1e-5);
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -320,8 +320,8 @@ impl LayerNorm {
     /// ```
     /// use fuel_transformers::models::with_tracing::LayerNorm;
     /// use fuel::{Device, DType, Tensor};
-    /// let w = Tensor::ones(64usize, DType::F32, &Device::Cpu)?;
-    /// let b = Tensor::zeros(64usize, DType::F32, &Device::Cpu)?;
+    /// let w = Tensor::ones(64usize, DType::F32, &Device::cpu())?;
+    /// let b = Tensor::zeros(64usize, DType::F32, &Device::cpu())?;
     /// let norm = LayerNorm::new(w, b, 1e-5);
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -405,7 +405,7 @@ impl RmsNorm {
     /// # use fuel_nn::VarBuilder;
     /// # let vb: VarBuilder = unimplemented!();
     /// let norm = RmsNorm::new(64, 1e-5, vb)?;
-    /// let x = Tensor::zeros((1, 64), DType::F32, &Device::Cpu)?;
+    /// let x = Tensor::zeros((1, 64), DType::F32, &Device::cpu())?;
     /// let out = norm.forward_diff(&x)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

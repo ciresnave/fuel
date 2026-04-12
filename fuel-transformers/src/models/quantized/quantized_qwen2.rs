@@ -141,7 +141,7 @@ impl LayerWeights {
 /// # fn main() -> fuel::Result<()> {
 /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
 /// # let mut reader: std::fs::File = unimplemented!();
-/// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::Cpu)?;
+/// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::cpu())?;
 /// # Ok(())
 /// # }
 /// ```
@@ -185,7 +185,7 @@ impl ModelWeights {
     /// # fn main() -> fuel::Result<()> {
     /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
     /// # let mut reader: std::fs::File = unimplemented!();
-    /// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::Cpu)?;
+    /// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::cpu())?;
     /// # Ok(())
     /// # }
     /// ```
@@ -320,7 +320,7 @@ impl ModelWeights {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: ModelWeights = unimplemented!();
-    /// let x = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let x = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&x, 0)?;
     /// # Ok(())
     /// # }

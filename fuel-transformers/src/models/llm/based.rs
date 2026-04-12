@@ -634,7 +634,7 @@ impl Model {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::based::Model;
     /// # let mut model: Model = unimplemented!();
-    /// let input_ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input_ids, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

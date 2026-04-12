@@ -390,8 +390,8 @@ impl DistilBertModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let model = DistilBertModel::load(vb, &cfg)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::cpu())?;
     /// let hidden = model.forward(&ids, &mask)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -586,8 +586,8 @@ impl DistilBertForMaskedLM {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let model = DistilBertForMaskedLM::load(vb, &cfg)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::cpu())?;
     /// let logits = model.forward(&ids, &mask)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

@@ -54,7 +54,7 @@ pub struct Config {
 /// ```
 /// use fuel_transformers::models::snac::repeat_interleave;
 /// use fuel::{Device, DType, Tensor};
-/// let t = Tensor::ones((2usize, 3usize), DType::F32, &Device::Cpu)?;
+/// let t = Tensor::ones((2usize, 3usize), DType::F32, &Device::cpu())?;
 /// let r = repeat_interleave(&t, 2, 0)?;
 /// assert_eq!(r.dims(), &[4, 3]);
 /// # Ok::<(), fuel::Error>(())
@@ -944,7 +944,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Model::new(&cfg, vb)?;
-    /// let audio = Tensor::zeros((1usize, 1usize, 24000usize), DType::F32, &Device::Cpu)?;
+    /// let audio = Tensor::zeros((1usize, 1usize, 24000usize), DType::F32, &Device::cpu())?;
     /// let codes = model.encode(&audio)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

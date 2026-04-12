@@ -200,7 +200,7 @@ pub struct GraniteMoeHybridInternalConfig {
 /// # use fuel_transformers::models::granitemoehybrid::{GraniteMoeHybridCache, GraniteMoeHybridInternalConfig};
 /// # use fuel::{DType, Device};
 /// # let cfg: GraniteMoeHybridInternalConfig = unimplemented!();
-/// let cache = GraniteMoeHybridCache::new(true, DType::F32, &cfg, &Device::Cpu)?;
+/// let cache = GraniteMoeHybridCache::new(true, DType::F32, &cfg, &Device::cpu())?;
 /// # Ok::<(), fuel::Error>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -230,7 +230,7 @@ impl GraniteMoeHybridCache {
     /// # use fuel_transformers::models::granitemoehybrid::{GraniteMoeHybridCache, GraniteMoeHybridInternalConfig};
     /// # use fuel::{DType, Device};
     /// # let cfg: GraniteMoeHybridInternalConfig = unimplemented!();
-    /// let cache = GraniteMoeHybridCache::new(true, DType::F32, &cfg, &Device::Cpu)?;
+    /// let cache = GraniteMoeHybridCache::new(true, DType::F32, &cfg, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn new(
@@ -591,8 +591,8 @@ impl GraniteMoeHybrid {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: GraniteMoeHybridInternalConfig = unimplemented!();
     /// let model = GraniteMoeHybrid::load(vb, &cfg)?;
-    /// let mut cache = GraniteMoeHybridCache::new(true, DType::F32, &cfg, &Device::Cpu)?;
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let mut cache = GraniteMoeHybridCache::new(true, DType::F32, &cfg, &Device::cpu())?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, 0, &mut cache)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

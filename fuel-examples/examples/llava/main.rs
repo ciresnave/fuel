@@ -143,7 +143,7 @@ fn tokenizer_image_token(
         input_ids.extend(x[1..].to_vec())
     }
     let input_len = input_ids.len();
-    Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu).map_err(E::msg)
+    Tensor::from_vec(input_ids, (1, input_len), &Device::cpu()).map_err(E::msg)
 }
 
 fn main() -> Result<()> {

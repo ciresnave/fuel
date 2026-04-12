@@ -8,7 +8,7 @@ use fuel_nn::{linear, seq, Activation, AdamW, Optimizer, VarBuilder, VarMap};
 
 use crate::gym_env::GymEnv;
 
-const DEVICE: Device = Device::Cpu;
+const DEVICE: Device = Device::cpu();
 const EPISODES: usize = 200;
 const BATCH_SIZE: usize = 64;
 const GAMMA: f64 = 0.99;

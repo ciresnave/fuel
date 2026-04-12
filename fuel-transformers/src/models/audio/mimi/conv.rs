@@ -575,7 +575,7 @@ mod tests {
         bias: bool,
     ) -> Result<()> {
         // TODO: We should ensure for the seed to be constant when running these tests.
-        let dev = &fuel::Device::Cpu;
+        let dev = &fuel::Device::cpu();
         let vm = fuel_nn::VarMap::new();
         let vb = VarBuilder::from_varmap(&vm, fuel::DType::F32, dev);
         let conv1d = StreamableConv1d::new(
@@ -625,7 +625,7 @@ mod tests {
         bias: bool,
     ) -> Result<()> {
         // TODO: We should ensure for the seed to be constant when running these tests.
-        let dev = &fuel::Device::Cpu;
+        let dev = &fuel::Device::cpu();
         let vm = fuel_nn::VarMap::new();
         let vb = VarBuilder::from_varmap(&vm, fuel::DType::F32, dev);
         let conv1d = StreamableConvTranspose1d::new(

@@ -191,7 +191,7 @@ fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Ten
 /// # fn main() -> fuel::Result<()> {
 /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
 /// # let mut reader: std::fs::File = unimplemented!();
-/// let model = ModelWeights::from_gguf(false, ct, &mut reader, &Device::Cpu)?;
+/// let model = ModelWeights::from_gguf(false, ct, &mut reader, &Device::cpu())?;
 /// # Ok(())
 /// # }
 /// ```
@@ -236,7 +236,7 @@ impl ModelWeights {
     /// # fn main() -> fuel::Result<()> {
     /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
     /// # let mut reader: std::fs::File = unimplemented!();
-    /// let model = ModelWeights::from_gguf(false, ct, &mut reader, &Device::Cpu)?;
+    /// let model = ModelWeights::from_gguf(false, ct, &mut reader, &Device::cpu())?;
     /// # Ok(())
     /// # }
     /// ```
@@ -338,7 +338,7 @@ impl ModelWeights {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: ModelWeights = unimplemented!();
-    /// let xs = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&xs, 0)?;
     /// # Ok(())
     /// # }

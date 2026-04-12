@@ -26,7 +26,7 @@
 //! use fuel_nn::VarBuilder;
 //!
 //! # fn main() -> anyhow::Result<()> {
-//! let device = Device::Cpu;
+//! let device = Device::cpu();
 //!
 //! // Load full precision model
 //! let vb = VarBuilder::zeros(fuel::DType::F32, &device);

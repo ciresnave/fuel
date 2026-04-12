@@ -712,7 +712,7 @@ impl T5EncoderModel {
     /// use fuel_transformers::models::quantized_t5::T5EncoderModel;
     /// use fuel::{Device, Tensor};
     /// # let mut model: T5EncoderModel = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let hidden = model.forward(&ids)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
@@ -840,7 +840,7 @@ impl T5ForConditionalGeneration {
     /// use fuel_transformers::models::quantized_t5::T5ForConditionalGeneration;
     /// use fuel::{Device, Tensor};
     /// # let mut model: T5ForConditionalGeneration = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let enc = model.encode(&ids)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
@@ -856,8 +856,8 @@ impl T5ForConditionalGeneration {
     /// use fuel_transformers::models::quantized_t5::T5ForConditionalGeneration;
     /// use fuel::{Device, Tensor};
     /// # let mut model: T5ForConditionalGeneration = unimplemented!();
-    /// let enc_ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
-    /// let dec_ids = Tensor::zeros((1, 1), fuel::DType::U32, &Device::Cpu)?;
+    /// let enc_ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
+    /// let dec_ids = Tensor::zeros((1, 1), fuel::DType::U32, &Device::cpu())?;
     /// let enc_out = model.encode(&enc_ids)?;
     /// let logits = model.decode(&dec_ids, &enc_out)?;
     /// # Ok::<_, fuel::Error>(())
@@ -901,8 +901,8 @@ impl T5ForConditionalGeneration {
     /// use fuel_transformers::models::quantized_t5::T5ForConditionalGeneration;
     /// use fuel::{Device, Tensor};
     /// # let mut model: T5ForConditionalGeneration = unimplemented!();
-    /// let enc_ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
-    /// let dec_ids = Tensor::zeros((1, 1), fuel::DType::U32, &Device::Cpu)?;
+    /// let enc_ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
+    /// let dec_ids = Tensor::zeros((1, 1), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&enc_ids, &dec_ids)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

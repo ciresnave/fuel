@@ -274,7 +274,7 @@ impl QuantizedAttention {
         // For q and k weights, we need to dequantize, reconstruct, then re-quantize
         // IMPORTANT: Do reconstruction on CPU to avoid VRAM exhaustion during model loading
         let device = vb.device();
-        let cpu = Device::Cpu;
+        let cpu = Device::cpu();
 
         let q_weight_qtensor = vb.get_no_shape("attn_q.weight")?;
         let q_weight_raw = q_weight_qtensor.dequantize(&cpu)?; // Dequantize to CPU
@@ -450,7 +450,7 @@ impl QuantizedModelForCausalLM {
 
         // Load embedding tensor - dequantize on CPU first to save VRAM
         // (will be used for both embed_tokens and lm_head - tied embeddings)
-        let cpu = Device::Cpu;
+        let cpu = Device::cpu();
         let embed_tensor = vb.get_no_shape("token_embd.weight")?.dequantize(&cpu)?;
         let embed_tensor_gpu = embed_tensor.to_device(device)?; // Move to GPU for embedding layer
         let embed_tokens = fuel_nn::Embedding::new(embed_tensor_gpu, config.hidden_size);

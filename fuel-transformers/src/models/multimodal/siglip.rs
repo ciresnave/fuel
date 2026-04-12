@@ -957,7 +957,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let model: Model = unimplemented!();
-    /// let ids = Tensor::zeros((1, 64), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 64), DType::U32, &Device::cpu())?;
     /// let feats = model.get_text_features(&ids)?; // shape [1, hidden_size]
     /// # Ok(())
     /// # }
@@ -974,7 +974,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let model: Model = unimplemented!();
-    /// let pixels = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::Cpu)?;
+    /// let pixels = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::cpu())?;
     /// let feats = model.get_image_features(&pixels)?; // shape [1, hidden_size]
     /// # Ok(())
     /// # }
@@ -991,8 +991,8 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let model: Model = unimplemented!();
-    /// let pixels = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::Cpu)?;
-    /// let ids = Tensor::zeros((1, 64), DType::U32, &Device::Cpu)?;
+    /// let pixels = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::cpu())?;
+    /// let ids = Tensor::zeros((1, 64), DType::U32, &Device::cpu())?;
     /// let (logits_text, logits_image) = model.forward(&pixels, &ids)?;
     /// # Ok(())
     /// # }

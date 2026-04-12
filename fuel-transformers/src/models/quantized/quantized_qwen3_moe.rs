@@ -51,7 +51,7 @@ impl MoeOrMlp {
 /// # let rotary = std::sync::Arc::new(unimplemented!());
 /// let attn = QuantizedAttention::new(
 ///     &mut gg, "blk.0", fuel::DType::F16,
-///     32, 8, 128, 1e-6, &fuel::Device::Cpu, rotary,
+///     32, 8, 128, 1e-6, &fuel::Device::cpu(), rotary,
 /// )?;
 /// # Ok::<_, fuel::Error>(())
 /// ```
@@ -87,7 +87,7 @@ impl QuantizedAttention {
     /// # let rotary = std::sync::Arc::new(unimplemented!());
     /// let attn = QuantizedAttention::new(
     ///     &mut gg, "blk.0", fuel::DType::F16,
-    ///     32, 8, 128, 1e-6, &fuel::Device::Cpu, rotary,
+    ///     32, 8, 128, 1e-6, &fuel::Device::cpu(), rotary,
     /// )?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
@@ -162,7 +162,7 @@ impl QuantizedAttention {
     /// use fuel_transformers::models::quantized_qwen3_moe::QuantizedAttention;
     /// use fuel::{Device, Tensor};
     /// # let mut attn: QuantizedAttention = unimplemented!();
-    /// let x = Tensor::zeros((1, 4, 4096), fuel::DType::F16, &Device::Cpu)?;
+    /// let x = Tensor::zeros((1, 4, 4096), fuel::DType::F16, &Device::cpu())?;
     /// let out = attn.forward(&x, None, 0)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
@@ -285,7 +285,7 @@ impl LayerWeights {
 /// use fuel::{Device, DType};
 /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
 /// # let mut reader: std::fs::File = unimplemented!();
-/// let model = GGUFQWenMoE::from_gguf(ct, &mut reader, &Device::Cpu, DType::F16)?;
+/// let model = GGUFQWenMoE::from_gguf(ct, &mut reader, &Device::cpu(), DType::F16)?;
 /// # Ok::<_, fuel::Error>(())
 /// ```
 pub struct GGUFQWenMoE {
@@ -307,7 +307,7 @@ impl GGUFQWenMoE {
     /// use fuel::{Device, DType};
     /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
     /// # let mut reader: std::fs::File = unimplemented!();
-    /// let model = GGUFQWenMoE::from_gguf(ct, &mut reader, &Device::Cpu, DType::F16)?;
+    /// let model = GGUFQWenMoE::from_gguf(ct, &mut reader, &Device::cpu(), DType::F16)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
@@ -494,7 +494,7 @@ impl GGUFQWenMoE {
     /// use fuel_transformers::models::quantized_qwen3_moe::GGUFQWenMoE;
     /// use fuel::{Device, Tensor};
     /// # let mut model: GGUFQWenMoE = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

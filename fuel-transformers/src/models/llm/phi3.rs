@@ -88,7 +88,7 @@ impl Config {
 /// # use fuel::{DType, Device};
 /// # fn main() -> fuel::Result<()> {
 /// # let cfg: Config = unimplemented!();
-/// let rope = RotaryEmbedding::new(DType::F32, &cfg, &Device::Cpu)?;
+/// let rope = RotaryEmbedding::new(DType::F32, &cfg, &Device::cpu())?;
 /// # Ok(())
 /// # }
 /// ```
@@ -108,7 +108,7 @@ impl RotaryEmbedding {
     /// # use fuel::{DType, Device};
     /// # fn main() -> fuel::Result<()> {
     /// # let cfg: Config = unimplemented!();
-    /// let rope = RotaryEmbedding::new(DType::F32, &cfg, &Device::Cpu)?;
+    /// let rope = RotaryEmbedding::new(DType::F32, &cfg, &Device::cpu())?;
     /// # Ok(())
     /// # }
     /// ```
@@ -204,8 +204,8 @@ impl RotaryEmbedding {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let rope: RotaryEmbedding = unimplemented!();
-    /// let q = Tensor::zeros((1, 32, 8, 96), DType::F32, &Device::Cpu)?;
-    /// let k = Tensor::zeros((1, 32, 8, 96), DType::F32, &Device::Cpu)?;
+    /// let q = Tensor::zeros((1, 32, 8, 96), DType::F32, &Device::cpu())?;
+    /// let k = Tensor::zeros((1, 32, 8, 96), DType::F32, &Device::cpu())?;
     /// let (q_r, k_r) = rope.apply_rotary_emb_qkv(&q, &k, 0)?;
     /// assert_eq!(q_r.dims(), q.dims());
     /// # Ok(())
@@ -499,7 +499,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: Model = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok(())
     /// # }

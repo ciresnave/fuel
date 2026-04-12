@@ -184,7 +184,7 @@ fn load_image<T: AsRef<std::path::Path>>(path: T, image_size: usize) -> anyhow::
     );
     let img = img.to_rgb8();
     let img = img.into_raw();
-    let img = Tensor::from_vec(img, (height, width, 3), &Device::Cpu)?
+    let img = Tensor::from_vec(img, (height, width, 3), &Device::cpu())?
         .permute((2, 0, 1))?
         .to_dtype(DType::F32)?
         .affine(2. / 255., -1.)?;

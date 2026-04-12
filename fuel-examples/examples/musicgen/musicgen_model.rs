@@ -85,17 +85,17 @@ fn get_embedding(num_embeddings: usize, embedding_dim: usize) -> Result<Tensor> 
     let half_dim = embedding_dim / 2;
     let emb = f64::ln(10000.) / (half_dim - 1) as f64;
     let xs: Vec<_> = (0..num_embeddings).map(|v| v as f32).collect();
-    let xs = Tensor::from_vec(xs, (num_embeddings, 1), &Device::Cpu)?;
+    let xs = Tensor::from_vec(xs, (num_embeddings, 1), &Device::cpu())?;
     let ys: Vec<_> = (0..half_dim)
         .map(|v| f64::exp(v as f64 * -emb) as f32)
         .collect();
-    let ys = Tensor::from_vec(ys, (1, half_dim), &Device::Cpu)?;
+    let ys = Tensor::from_vec(ys, (1, half_dim), &Device::cpu())?;
     let shape = (num_embeddings, half_dim);
     let emb = (xs.broadcast_as(shape)? * ys.broadcast_as(shape)?)?;
     let emb =
         Tensor::cat(&[&emb.cos()?, &emb.sin()?], 1)?.reshape((num_embeddings, 2 * half_dim))?;
     let emb = if embedding_dim % 2 == 1 {
-        let zeros = Tensor::zeros((num_embeddings, 1), DType::F32, &Device::Cpu)?;
+        let zeros = Tensor::zeros((num_embeddings, 1), DType::F32, &Device::cpu())?;
         Tensor::cat(&[&emb, &zeros], 1)?
     } else {
         emb

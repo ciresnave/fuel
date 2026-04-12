@@ -71,7 +71,7 @@ impl GymEnv {
             state.bind(py).get_item(0)?.extract()
         })
         .map_err(w)?;
-        Tensor::new(state, &Device::Cpu)
+        Tensor::new(state, &Device::cpu())
     }
 
     /// Applies an environment step using the specified action.
@@ -91,7 +91,7 @@ impl GymEnv {
             Ok((state, reward, terminated, truncated))
         })
         .map_err(w)?;
-        let state = Tensor::new(state, &Device::Cpu)?;
+        let state = Tensor::new(state, &Device::cpu())?;
         Ok(Step {
             state,
             action,

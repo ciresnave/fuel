@@ -7,6 +7,7 @@ use fuel::{
     shape::Dim, CpuStorage, CustomOp1, DType, Device, Error, IndexOp, Layout, Result, Shape,
     Tensor, WithDType, D,
 };
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 use fuel_nn::{embedding, kv_cache::KvCache, rms_norm, Activation, Embedding, Linear, Module, RmsNorm, VarBuilder};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Deserialize;
@@ -39,7 +40,10 @@ impl CustomOp1 for NonZero {
         "nonzero"
     }
 
-    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
+    fn fwd(&self, storage: &dyn fuel::dyn_backend::DynBackendStorage, layout: &Layout) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let storage = storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let storage = storage.inner();
         if !layout.is_contiguous() {
             return Err(Error::RequiresContiguous { op: "nonzero" });
         }
@@ -78,7 +82,7 @@ impl CustomOp1 for NonZero {
         let result_len = result.len() / index_len;
         let result = CpuStorage::U32(result);
         let shape = Shape::from_dims(&[result_len, index_len]);
-        Ok((result, shape))
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 }
 
@@ -93,7 +97,7 @@ impl NonZeroOp for Tensor {
             return Err(fuel::Error::RequiresContiguous { op: "nonzero" });
         }
         let original_device = self.device();
-        self.to_device(&fuel::Device::Cpu)?
+        self.to_device(&fuel::Device::cpu())?
             .apply_op1_no_bwd(&NonZero {})?
             .to_device(original_device)
     }

@@ -54,7 +54,7 @@ pub fn run() -> Result<()> {
         env.observation_space(),
         env.action_space(),
         DType::F32,
-        &Device::Cpu,
+        &Device::cpu(),
     )?;
 
     let optimizer_params = ParamsAdamW {
@@ -107,7 +107,7 @@ pub fn run() -> Result<()> {
 
         let batch_size = steps.len();
 
-        let rewards = Tensor::from_vec(accumulate_rewards(&steps), batch_size, &Device::Cpu)?
+        let rewards = Tensor::from_vec(accumulate_rewards(&steps), batch_size, &Device::cpu())?
             .to_dtype(DType::F32)?
             .detach();
 
@@ -120,7 +120,7 @@ pub fn run() -> Result<()> {
                     let mut action_mask = vec![0.0; env.action_space()];
                     action_mask[action as usize] = 1.0;
 
-                    Tensor::from_vec(action_mask, env.action_space(), &Device::Cpu)
+                    Tensor::from_vec(action_mask, env.action_space(), &Device::cpu())
                         .unwrap()
                         .to_dtype(DType::F32)
                         .unwrap()

@@ -486,7 +486,7 @@ impl VectorQuantizer {
     /// # use fuel_nn::VarBuilder;
     /// # let vb: VarBuilder = unimplemented!();
     /// let vq = VectorQuantizer::new(64, 1024, 8, vb)?;
-    /// let ids = Tensor::zeros(16_usize, DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros(16_usize, DType::U32, &Device::cpu())?;
     /// let emb = vq.embed_code(&ids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -504,7 +504,7 @@ impl VectorQuantizer {
     /// # use fuel_nn::VarBuilder;
     /// # let vb: VarBuilder = unimplemented!();
     /// let vq = VectorQuantizer::new(64, 1024, 8, vb)?;
-    /// let ids = Tensor::zeros(16_usize, DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros(16_usize, DType::U32, &Device::cpu())?;
     /// let feats = vq.decode_code(&ids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -567,7 +567,7 @@ impl ResidualVectorQuantizer {
     /// # use fuel_nn::VarBuilder;
     /// # let vb: VarBuilder = unimplemented!();
     /// let rvq = ResidualVectorQuantizer::new(64, 12, 1024, 8, vb)?;
-    /// let codes = Tensor::zeros((1, 12, 50), DType::U32, &Device::Cpu)?;
+    /// let codes = Tensor::zeros((1, 12, 50), DType::U32, &Device::cpu())?;
     /// let feats = rvq.from_codes(&codes)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -650,7 +650,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Model::new(&cfg, vb)?;
-    /// let codes = Tensor::zeros((1, 12, 50), DType::U32, &Device::Cpu)?;
+    /// let codes = Tensor::zeros((1, 12, 50), DType::U32, &Device::cpu())?;
     /// let audio = model.decode_codes(&codes)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

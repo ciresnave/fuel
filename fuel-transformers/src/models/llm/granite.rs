@@ -162,7 +162,7 @@ pub struct Config {
 /// # use fuel_transformers::models::granite::{Cache, Config};
 /// # use fuel::{DType, Device};
 /// # let cfg: Config = unimplemented!();
-/// let mut cache = Cache::new(true, DType::F32, &cfg, &Device::Cpu)?;
+/// let mut cache = Cache::new(true, DType::F32, &cfg, &Device::cpu())?;
 /// # Ok::<(), fuel::Error>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -192,7 +192,7 @@ impl Cache {
     /// # use fuel_transformers::models::granite::{Cache, Config};
     /// # use fuel::{DType, Device};
     /// # let cfg: Config = unimplemented!();
-    /// let mut cache = Cache::new(true, DType::F32, &cfg, &Device::Cpu)?;
+    /// let mut cache = Cache::new(true, DType::F32, &cfg, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn new(use_kv_cache: bool, dtype: DType, config: &Config, device: &Device) -> Result<Self> {
@@ -503,8 +503,8 @@ impl Granite {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Granite::load(vb, &cfg)?;
-    /// let mut cache = Cache::new(true, DType::F32, &cfg, &Device::Cpu)?;
-    /// let input = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let mut cache = Cache::new(true, DType::F32, &cfg, &Device::cpu())?;
+    /// let input = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, 0, &mut cache)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

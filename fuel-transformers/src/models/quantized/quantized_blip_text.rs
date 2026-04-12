@@ -520,8 +520,8 @@ impl TextLMHeadModel {
     /// use fuel_transformers::models::quantized_blip_text::TextLMHeadModel;
     /// use fuel::{Device, Tensor};
     /// # let mut model: TextLMHeadModel = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
-    /// let enc = Tensor::zeros((1, 8, 768), fuel::DType::F32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
+    /// let enc = Tensor::zeros((1, 8, 768), fuel::DType::F32, &Device::cpu())?;
     /// let logits = model.forward(&ids, &enc)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

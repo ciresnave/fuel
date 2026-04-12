@@ -214,9 +214,9 @@ pub fn load_image<P: AsRef<std::path::Path>>(p: P) -> fuel::Result<Tensor> {
         .resize_to_fill(378, 378, image::imageops::FilterType::Triangle); // Adjusted to 378x378
     let img = img.to_rgb8();
     let data = img.into_raw();
-    let data = Tensor::from_vec(data, (378, 378, 3), &Device::Cpu)?.permute((2, 0, 1))?;
-    let mean = Tensor::new(&[0.5f32, 0.5, 0.5], &Device::Cpu)?.reshape((3, 1, 1))?;
-    let std = Tensor::new(&[0.5f32, 0.5, 0.5], &Device::Cpu)?.reshape((3, 1, 1))?;
+    let data = Tensor::from_vec(data, (378, 378, 3), &Device::cpu())?.permute((2, 0, 1))?;
+    let mean = Tensor::new(&[0.5f32, 0.5, 0.5], &Device::cpu())?.reshape((3, 1, 1))?;
+    let std = Tensor::new(&[0.5f32, 0.5, 0.5], &Device::cpu())?.reshape((3, 1, 1))?;
     (data.to_dtype(fuel::DType::F32)? / 255.)?
         .broadcast_sub(&mean)?
         .broadcast_div(&std)

@@ -169,7 +169,7 @@ fn main() -> Result<()> {
     let second_stage_model = gpt::Model::new(second_stage_config.clone(), second_stage_vb)?;
 
     let encodec_device = if device.is_metal() {
-        &fuel::Device::Cpu
+        &fuel::Device::cpu()
     } else {
         &device
     };
@@ -186,7 +186,7 @@ fn main() -> Result<()> {
         Some(w) => std::path::PathBuf::from(w),
         None => repo.get("spk_emb.safetensors")?,
     };
-    let spk_emb = fuel::safetensors::load(&spk_emb_file, &fuel::Device::Cpu)?;
+    let spk_emb = fuel::safetensors::load(&spk_emb_file, &fuel::Device::cpu())?;
     let spk_emb = match spk_emb.get("spk_emb") {
         None => anyhow::bail!("missing spk_emb tensor in {spk_emb_file:?}"),
         Some(spk_emb) => spk_emb.to_dtype(dtype)?,

@@ -363,7 +363,7 @@ impl MixFormerSequentialForCausalLM {
     /// use fuel_transformers::models::quantized_mixformer::MixFormerSequentialForCausalLM;
     /// use fuel::{Device, Tensor};
     /// # let mut model: MixFormerSequentialForCausalLM = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
@@ -390,9 +390,9 @@ impl MixFormerSequentialForCausalLM {
     /// use fuel_transformers::models::quantized_mixformer::MixFormerSequentialForCausalLM;
     /// use fuel::{Device, Tensor};
     /// # let mut model: MixFormerSequentialForCausalLM = unimplemented!();
-    /// let bos = Tensor::zeros((1, 1), fuel::DType::U32, &Device::Cpu)?;
-    /// let ids = Tensor::zeros((1, 4), fuel::DType::U32, &Device::Cpu)?;
-    /// let img = Tensor::zeros((1, 16, 2048), fuel::DType::F32, &Device::Cpu)?;
+    /// let bos = Tensor::zeros((1, 1), fuel::DType::U32, &Device::cpu())?;
+    /// let ids = Tensor::zeros((1, 4), fuel::DType::U32, &Device::cpu())?;
+    /// let img = Tensor::zeros((1, 16, 2048), fuel::DType::F32, &Device::cpu())?;
     /// let logits = model.forward_with_img(&bos, &ids, &img)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

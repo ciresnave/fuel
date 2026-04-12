@@ -553,7 +553,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: Model = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok(())
     /// # }

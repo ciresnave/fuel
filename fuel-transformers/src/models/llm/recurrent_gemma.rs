@@ -688,7 +688,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let mut model = Model::new(&cfg, vb)?;
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

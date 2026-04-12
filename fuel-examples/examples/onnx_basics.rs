@@ -70,7 +70,7 @@ pub fn main() -> Result<()> {
                                     fuel_onnx::onnx::tensor_shape_proto::dimension::Value::DimParam(_) => Ok(42),
                                 })
                                 .collect::<Result<Vec<usize>>>()?;
-                        Tensor::zeros(dims, dt, &Device::Cpu)?
+                        Tensor::zeros(dims, dt, &Device::cpu())?
                     }
                     type_ => anyhow::bail!("unsupported input type {type_:?}"),
                 };

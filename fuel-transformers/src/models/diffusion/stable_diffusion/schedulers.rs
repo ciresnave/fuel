@@ -71,5 +71,5 @@ pub(crate) fn betas_for_alpha_bar(num_diffusion_timesteps: usize, max_beta: f64)
         betas.push((1.0 - alpha_bar(t2) / alpha_bar(t1)).min(max_beta));
     }
     let betas_len = betas.len();
-    Tensor::from_vec(betas, betas_len, &fuel::Device::Cpu)
+    Tensor::from_vec(betas, betas_len, &fuel::Device::cpu())
 }

@@ -225,7 +225,7 @@ impl MPTBlock {
 pub(crate) fn build_alibi_bias(cfg: &Config) -> Result<Tensor> {
     let full = !cfg.is_causal();
     let seq_len = cfg.max_seq_len;
-    let alibi_bias = Tensor::arange(1 - seq_len as i64, 1, &Device::Cpu)?;
+    let alibi_bias = Tensor::arange(1 - seq_len as i64, 1, &Device::cpu())?;
     let alibi_bias = if full {
         let a1 = alibi_bias.reshape((1, 1, 1, seq_len))?;
         let a2 = alibi_bias.reshape((1, 1, seq_len, 1))?;
@@ -252,7 +252,7 @@ pub(crate) fn build_alibi_bias(cfg: &Config) -> Result<Tensor> {
             .cloned()
             .collect::<Vec<f32>>()
     };
-    let slopes = Tensor::new(slopes, &Device::Cpu)?.reshape((1, (), 1, 1))?;
+    let slopes = Tensor::new(slopes, &Device::cpu())?.reshape((1, (), 1, 1))?;
     alibi_bias.to_dtype(DType::F32)?.broadcast_mul(&slopes)
 }
 
@@ -321,7 +321,7 @@ impl Model {
     /// use fuel_transformers::models::mpt::Model;
     /// use fuel::{Device, Tensor};
     /// # let mut model: Model = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

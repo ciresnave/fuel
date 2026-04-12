@@ -525,8 +525,8 @@ impl BertEncoder {
     /// # fn main() -> fuel::Result<()> {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let encoder = BertEncoder::load(vb, &Config::default())?;
-    /// let hidden = Tensor::zeros((1, 8, 768), DType::F32, &Device::Cpu)?;
-    /// let mask = Tensor::zeros((1, 1, 1, 8), DType::F32, &Device::Cpu)?;
+    /// let hidden = Tensor::zeros((1, 8, 768), DType::F32, &Device::cpu())?;
+    /// let mask = Tensor::zeros((1, 1, 1, 8), DType::F32, &Device::cpu())?;
     /// let out = encoder.forward(&hidden, &mask)?;
     /// assert_eq!(out.dims(), &[1, 8, 768]);
     /// # Ok(())
@@ -633,8 +633,8 @@ impl BertModel {
     /// # fn main() -> fuel::Result<()> {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let model = BertModel::load(vb, &Config::default())?;
-    /// let input_ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let type_ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let type_ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let out = model.forward(&input_ids, &type_ids, None)?;
     /// assert_eq!(out.dims(), &[1, 8, 768]);
     /// # Ok(())
@@ -856,7 +856,7 @@ impl BertForMaskedLM {
     /// # fn main() -> fuel::Result<()> {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let model = BertForMaskedLM::load(vb, &Config::default())?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let type_ids = Tensor::zeros_like(&ids)?;
     /// let logits = model.forward(&ids, &type_ids, None)?;
     /// assert_eq!(logits.dims()[0..2], [1, 8]);

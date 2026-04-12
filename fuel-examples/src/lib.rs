@@ -10,7 +10,7 @@ use fuel::{Device, Result, Tensor};
 
 pub fn device(cpu: bool) -> Result<Device> {
     if cpu {
-        Ok(Device::Cpu)
+        Ok(Device::cpu())
     } else if cuda_is_available() {
         Ok(Device::new_cuda(0)?)
     } else if metal_is_available() {
@@ -26,7 +26,7 @@ pub fn device(cpu: bool) -> Result<Device> {
         {
             println!("Running on CPU, to run on GPU, build this example with `--features cuda`");
         }
-        Ok(Device::Cpu)
+        Ok(Device::cpu())
     }
 }
 
@@ -56,7 +56,7 @@ pub fn load_image<P: AsRef<std::path::Path>>(
     let (height, width) = (img.height() as usize, img.width() as usize);
     let img = img.to_rgb8();
     let data = img.into_raw();
-    let data = Tensor::from_vec(data, (height, width, 3), &Device::Cpu)?.permute((2, 0, 1))?;
+    let data = Tensor::from_vec(data, (height, width, 3), &Device::cpu())?.permute((2, 0, 1))?;
     Ok((data, initial_h, initial_w))
 }
 
@@ -75,7 +75,7 @@ pub fn load_image_and_resize<P: AsRef<std::path::Path>>(
         );
     let img = img.to_rgb8();
     let data = img.into_raw();
-    Tensor::from_vec(data, (width, height, 3), &Device::Cpu)?.permute((2, 0, 1))
+    Tensor::from_vec(data, (width, height, 3), &Device::cpu())?.permute((2, 0, 1))
 }
 
 /// Saves an image to disk using the image crate, this expects an input with shape
