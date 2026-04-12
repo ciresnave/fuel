@@ -436,7 +436,7 @@ impl Model {
     /// use fuel_transformers::models::helium::Model;
     /// use fuel::{Device, Tensor};
     /// # let mut model: Model = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

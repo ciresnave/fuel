@@ -52,7 +52,7 @@ impl Config {
 /// use fuel_transformers::models::mamba::{Config, State};
 /// use fuel::{DType, Device};
 /// let cfg = Config { d_model: 256, n_layer: 4, vocab_size: 50280, pad_vocab_size_multiple: 8 };
-/// let state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
+/// let state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
 /// assert_eq!(state.pos, 0);
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -71,7 +71,7 @@ impl State {
     /// use fuel_transformers::models::mamba::{Config, State};
     /// use fuel::{DType, Device};
     /// let cfg = Config { d_model: 256, n_layer: 4, vocab_size: 50280, pad_vocab_size_multiple: 8 };
-    /// let state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
+    /// let state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn new(batch_size: usize, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
@@ -174,8 +174,8 @@ impl MambaBlock {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config { d_model: 256, n_layer: 4, vocab_size: 50280, pad_vocab_size_multiple: 8 };
     /// let block = MambaBlock::new(0, &cfg, vb)?;
-    /// let mut state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
-    /// let xs = Tensor::zeros((1, 256), DType::F32, &Device::Cpu)?;
+    /// let mut state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
+    /// let xs = Tensor::zeros((1, 256), DType::F32, &Device::cpu())?;
     /// let out = block.forward(&xs, &mut state)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -336,8 +336,8 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config { d_model: 256, n_layer: 4, vocab_size: 50280, pad_vocab_size_multiple: 8 };
     /// let model = Model::new(&cfg, vb)?;
-    /// let mut state = State::new(1, &cfg, DType::F32, &Device::Cpu)?;
-    /// let input = Tensor::zeros(1usize, DType::U32, &Device::Cpu)?;
+    /// let mut state = State::new(1, &cfg, DType::F32, &Device::cpu())?;
+    /// let input = Tensor::zeros(1usize, DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, &mut state)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

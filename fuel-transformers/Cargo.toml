@@ -13,6 +13,7 @@ readme = "README.md"
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
 fuel = { workspace = true }
+fuel-cpu-backend = { workspace = true }
 fuel-flash-attn = { workspace = true, optional = true }
 fuel-nn = { workspace = true }
 fancy-regex = { workspace = true }

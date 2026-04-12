@@ -465,12 +465,12 @@ fn make_causal_mask(t: usize) -> Result<Tensor> {
     let mask: Vec<_> = (0..t)
         .flat_map(|i| (0..t).map(move |j| u8::from(j > i)))
         .collect();
-    let mask = Tensor::from_slice(&mask, (t, t), &Device::Cpu)?;
+    let mask = Tensor::from_slice(&mask, (t, t), &Device::cpu())?;
     Ok(mask)
 }
 
 fn prepare_attn_mask(b_sz: usize, seq_len: usize) -> Result<Tensor> {
-    // let mask = Tensor::ones((b_sz, seq_len), DType::U32, &Device::Cpu)?;
+    // let mask = Tensor::ones((b_sz, seq_len), DType::U32, &Device::cpu())?;
     let mask = make_causal_mask(seq_len)?;
     let mask = mask.broadcast_as((b_sz, 1, seq_len, seq_len))?;
     Ok(mask)
@@ -537,7 +537,7 @@ impl Falcon {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: Falcon = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids)?;
     /// # Ok(())
     /// # }

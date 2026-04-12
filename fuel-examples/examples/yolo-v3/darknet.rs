@@ -229,7 +229,7 @@ fn detect(
         .transpose(1, 2)?
         .contiguous()?
         .reshape((bsize, grid_size * grid_size * nanchors, bbox_attrs))?;
-    let grid = Tensor::arange(0u32, grid_size as u32, &Device::Cpu)?;
+    let grid = Tensor::arange(0u32, grid_size as u32, &Device::cpu())?;
     let a = grid.repeat((grid_size, 1))?;
     let b = a.t()?.contiguous()?;
     let x_offset = a.flatten_all()?.unsqueeze(1)?;
@@ -243,7 +243,7 @@ fn detect(
         .iter()
         .flat_map(|&(x, y)| vec![x as f32 / stride as f32, y as f32 / stride as f32].into_iter())
         .collect();
-    let anchors = Tensor::new(anchors.as_slice(), &Device::Cpu)?
+    let anchors = Tensor::new(anchors.as_slice(), &Device::cpu())?
         .reshape((anchors.len() / 2, 2))?
         .repeat((grid_size * grid_size, 1))?
         .unsqueeze(0)?;
@@ -301,7 +301,7 @@ impl Darknet {
                     Bl::Yolo(classes, anchors) => {
                         let xs = prev_ys.last().unwrap_or(xs);
                         detections.push(detect(xs, image_height, *classes, anchors)?);
-                        Tensor::new(&[0u32], &Device::Cpu)?
+                        Tensor::new(&[0u32], &Device::cpu())?
                     }
                 };
                 prev_ys.push(ys);

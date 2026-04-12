@@ -176,7 +176,7 @@ impl EncoderConfig {
 /// use fuel_nn::VarBuilder;
 /// use fuel_transformers::models::chinese_clip::{ChineseClipModel, ChineseClipConfig};
 /// let config = ChineseClipConfig::clip_vit_base_patch16();
-/// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+/// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
 /// let model = ChineseClipModel::new(vb, &config)?;
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -198,7 +198,7 @@ impl ChineseClipModel {
     /// use fuel_nn::VarBuilder;
     /// use fuel_transformers::models::chinese_clip::{ChineseClipModel, ChineseClipConfig};
     /// let config = ChineseClipConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let model = ChineseClipModel::new(vb, &config)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -291,7 +291,7 @@ impl ChineseClipModel {
 /// # fn main() -> fuel::Result<()> {
 /// use fuel::{Device, Tensor};
 /// use fuel_transformers::models::chinese_clip::div_l2_norm;
-/// let v = Tensor::new(&[[3f32, 4f32]], &Device::Cpu)?;
+/// let v = Tensor::new(&[[3f32, 4f32]], &Device::cpu())?;
 /// let normed = div_l2_norm(&v)?;
 /// let vals = normed.to_vec2::<f32>()?;
 /// // L2 norm of [3, 4] is 5; result should be [0.6, 0.8]

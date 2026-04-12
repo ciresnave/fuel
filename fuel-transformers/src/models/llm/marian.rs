@@ -560,7 +560,7 @@ impl Encoder {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::opus_mt_fr_en();
     /// let mut model = MTModel::new(&cfg, vb)?;
-    /// let src = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let src = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let hidden = model.encoder().forward(&src, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -655,10 +655,10 @@ impl Decoder {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::opus_mt_fr_en();
     /// let mut model = MTModel::new(&cfg, vb)?;
-    /// let src = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let tgt = Tensor::zeros((1, 4), DType::U32, &Device::Cpu)?;
+    /// let src = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let tgt = Tensor::zeros((1, 4), DType::U32, &Device::cpu())?;
     /// let enc = model.encoder().forward(&src, 0)?;
-    /// let mask = Tensor::zeros((4, 4), fuel::DType::F32, &Device::Cpu)?;
+    /// let mask = Tensor::zeros((4, 4), fuel::DType::F32, &Device::cpu())?;
     /// let out = model.decoder().forward(&tgt, Some(&enc), 0, &mask)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -824,8 +824,8 @@ impl MTModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::opus_mt_fr_en();
     /// let mut model = MTModel::new(&cfg, vb)?;
-    /// let src = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let tgt = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
+    /// let src = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let tgt = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
     /// let enc = model.encoder().forward(&src, 0)?;
     /// let logits = model.decode(&tgt, &enc, 0)?;
     /// # Ok::<(), fuel::Error>(())

@@ -245,14 +245,22 @@ impl fuel::CustomOp2 for CodebookEncode {
         "cb"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        lhs_storage: &fuel::CpuStorage,
+        lhs_storage: &dyn fuel::dyn_backend::DynBackendStorage,
         lhs_layout: &Layout,
-        rhs_storage: &fuel::CpuStorage,
+        rhs_storage: &dyn fuel::dyn_backend::DynBackendStorage,
         rhs_layout: &Layout,
-    ) -> Result<(fuel::CpuStorage, Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
         use rayon::prelude::*;
+
+        let lhs_storage = lhs_storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let lhs_storage = lhs_storage.inner();
+        let rhs_storage = rhs_storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let rhs_storage = rhs_storage.inner();
 
         let (lhs_dim1, lhs_dim2) = lhs_layout.shape().dims2()?;
         let (rhs_dim1, rhs_dim2) = rhs_layout.shape().dims2()?;
@@ -297,7 +305,7 @@ impl fuel::CustomOp2 for CodebookEncode {
             })
             .collect();
         let storage = fuel::CpuStorage::U32(dst);
-        Ok((storage, (lhs_dim1,).into()))
+        Ok((Box::new(CpuBackendStorage::from(storage)), (lhs_dim1,).into()))
     }
 }
 
@@ -364,7 +372,7 @@ impl EuclideanCodebook {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let codebook = EuclideanCodebook::new(&cfg, vb)?;
-    /// let xs = Tensor::zeros((16, 128), DType::F32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((16, 128), DType::F32, &Device::cpu())?;
     /// let codes = codebook.encode_slow(&xs)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -389,7 +397,7 @@ impl EuclideanCodebook {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let codebook = EuclideanCodebook::new(&cfg, vb)?;
-    /// let xs = Tensor::zeros((16, 128), DType::F32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((16, 128), DType::F32, &Device::cpu())?;
     /// let codes = codebook.encode(&xs)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -413,7 +421,7 @@ impl EuclideanCodebook {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let codebook = EuclideanCodebook::new(&cfg, vb)?;
-    /// let indices = Tensor::zeros(16_usize, DType::U32, &Device::Cpu)?;
+    /// let indices = Tensor::zeros(16_usize, DType::U32, &Device::cpu())?;
     /// let vecs = codebook.decode(&indices)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -469,7 +477,7 @@ impl VectorQuantization {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let vq = VectorQuantization::new(&cfg, vb)?;
-    /// let xs = Tensor::zeros((1, 128, 10), DType::F32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((1, 128, 10), DType::F32, &Device::cpu())?;
     /// let codes = vq.encode(&xs)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -489,7 +497,7 @@ impl VectorQuantization {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let vq = VectorQuantization::new(&cfg, vb)?;
-    /// let indices = Tensor::zeros((1, 10), DType::U32, &Device::Cpu)?;
+    /// let indices = Tensor::zeros((1, 10), DType::U32, &Device::cpu())?;
     /// let feats = vq.decode(&indices)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -554,7 +562,7 @@ impl ResidualVectorQuantizer {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let rvq = ResidualVectorQuantizer::new(&cfg, vb)?;
-    /// let xs = Tensor::zeros((1, 128, 10), DType::F32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((1, 128, 10), DType::F32, &Device::cpu())?;
     /// let codes = rvq.encode(&xs)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -581,7 +589,7 @@ impl ResidualVectorQuantizer {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let rvq = ResidualVectorQuantizer::new(&cfg, vb)?;
-    /// let codes = Tensor::zeros((5, 1, 10), DType::U32, &Device::Cpu)?;
+    /// let codes = Tensor::zeros((5, 1, 10), DType::U32, &Device::cpu())?;
     /// let feats = rvq.decode(&codes)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1203,7 +1211,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let model = Model::new(&cfg, vb)?;
-    /// let audio = Tensor::zeros((1, 1, 24000), DType::F32, &Device::Cpu)?;
+    /// let audio = Tensor::zeros((1, 1, 24000), DType::F32, &Device::cpu())?;
     /// let codes = model.encode(&audio)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1224,7 +1232,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let model = Model::new(&cfg, vb)?;
-    /// let codes = Tensor::zeros((1, 5, 75), DType::U32, &Device::Cpu)?;
+    /// let codes = Tensor::zeros((1, 5, 75), DType::U32, &Device::cpu())?;
     /// let audio = model.decode(&codes)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

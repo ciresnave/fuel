@@ -326,7 +326,7 @@ fn save_image(
     timestep_ids: Option<usize>,
 ) -> Result<()> {
     let images = vae.decode(&(latents / vae_scale)?)?;
-    let images = ((images / 2.)? + 0.5)?.to_device(&Device::Cpu)?;
+    let images = ((images / 2.)? + 0.5)?.to_device(&Device::cpu())?;
     let images = (images.clamp(0f32, 1.)? * 255.)?.to_dtype(DType::U8)?;
     for batch in 0..bsize {
         let image = images.i(batch)?;
@@ -444,7 +444,7 @@ fn image_preprocess<T: AsRef<std::path::Path>>(path: T) -> anyhow::Result<Tensor
     );
     let img = img.to_rgb8();
     let img = img.into_raw();
-    let img = Tensor::from_vec(img, (height, width, 3), &Device::Cpu)?
+    let img = Tensor::from_vec(img, (height, width, 3), &Device::cpu())?
         .permute((2, 0, 1))?
         .to_dtype(DType::F32)?
         .affine(2. / 255., -1.)?
@@ -466,7 +466,7 @@ fn mask_preprocess<T: AsRef<std::path::Path>>(path: T) -> anyhow::Result<Tensor>
         image::imageops::FilterType::CatmullRom,
     )
     .into_raw();
-    let mask = Tensor::from_vec(img, (new_height as usize, new_width as usize), &Device::Cpu)?
+    let mask = Tensor::from_vec(img, (new_height as usize, new_width as usize), &Device::cpu())?
         .unsqueeze(0)?
         .to_dtype(DType::F32)?
         .div(255.0)?

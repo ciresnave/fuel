@@ -245,7 +245,7 @@ impl QLlama {
     /// # fn main() -> fuel::Result<()> {
     /// # let model: QLlama = unimplemented!();
     /// # let mut cache: Cache = unimplemented!();
-    /// let x = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let x = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&x, 0, &mut cache)?;
     /// # Ok(())
     /// # }

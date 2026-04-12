@@ -518,7 +518,7 @@ impl MixFormerSequentialForCausalLM {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::v1_5();
     /// let mut model = MixFormerSequentialForCausalLM::new(&cfg, vb)?;
-    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let input = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -552,9 +552,9 @@ impl MixFormerSequentialForCausalLM {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::v1_5();
     /// let mut model = MixFormerSequentialForCausalLM::new(&cfg, vb)?;
-    /// let bos = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
-    /// let tokens = Tensor::zeros((1, 4), DType::U32, &Device::Cpu)?;
-    /// let img = Tensor::zeros((1, 64, 2048), DType::F32, &Device::Cpu)?;
+    /// let bos = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
+    /// let tokens = Tensor::zeros((1, 4), DType::U32, &Device::cpu())?;
+    /// let img = Tensor::zeros((1, 64, 2048), DType::F32, &Device::cpu())?;
     /// let logits = model.forward_with_img(&bos, &tokens, &img)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

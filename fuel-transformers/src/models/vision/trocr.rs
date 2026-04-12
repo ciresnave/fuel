@@ -492,7 +492,7 @@ impl TrOCREncoder {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let enc_cfg: Config = unimplemented!();
     /// let encoder = TrOCREncoder::new(&enc_cfg, vb)?;
-    /// let img = Tensor::zeros((1, 3, 384, 384), DType::F32, &Device::Cpu)?;
+    /// let img = Tensor::zeros((1, 3, 384, 384), DType::F32, &Device::cpu())?;
     /// let feats = encoder.forward(&img)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -560,8 +560,8 @@ impl TrOCRForCausalLM {
     /// # use fuel_nn::VarBuilder;
     /// # let vb: VarBuilder = unimplemented!();
     /// let mut head = TrOCRForCausalLM::new(&TrOCRConfig::default(), vb)?;
-    /// let ids = Tensor::zeros((1, 5), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::zeros((5, 5), DType::F32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 5), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::zeros((5, 5), DType::F32, &Device::cpu())?;
     /// let logits = head.forward(&ids, None, 0, &mask)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -672,8 +672,8 @@ impl TrOCRModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let enc_cfg: Config = unimplemented!();
     /// let mut model = TrOCRModel::new(&enc_cfg, &TrOCRConfig::default(), vb)?;
-    /// let ids = Tensor::zeros((1, 5), DType::U32, &Device::Cpu)?;
-    /// let enc_out = Tensor::zeros((1, 577, 768), DType::F32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 5), DType::U32, &Device::cpu())?;
+    /// let enc_out = Tensor::zeros((1, 577, 768), DType::F32, &Device::cpu())?;
     /// let logits = model.decode(&ids, &enc_out, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

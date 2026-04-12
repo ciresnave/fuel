@@ -244,7 +244,7 @@ impl Cache {
     /// use fuel::{DType, Device};
     /// # fn main() -> fuel::Result<()> {
     /// let cfg = Config::config_7b_v1(false);
-    /// let cache = Cache::new(true, DType::F32, &cfg, &Device::Cpu)?;
+    /// let cache = Cache::new(true, DType::F32, &cfg, &Device::cpu())?;
     /// assert!(cache.use_kv_cache);
     /// # Ok(())
     /// # }
@@ -554,7 +554,7 @@ impl Llama {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let model: Llama = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let embeds = model.embed(&ids)?; // shape [1, 8, hidden_size]
     /// # Ok(())
     /// # }
@@ -580,8 +580,8 @@ impl Llama {
     /// # fn main() -> fuel::Result<()> {
     /// # let model: Llama = unimplemented!();
     /// # let cfg = Config::config_7b_v1(false);
-    /// # let mut cache = Cache::new(true, DType::F32, &cfg, &Device::Cpu)?;
-    /// let embeds = Tensor::zeros((1, 8, 4096), DType::F32, &Device::Cpu)?;
+    /// # let mut cache = Cache::new(true, DType::F32, &cfg, &Device::cpu())?;
+    /// let embeds = Tensor::zeros((1, 8, 4096), DType::F32, &Device::cpu())?;
     /// let logits = model.forward_input_embed(&embeds, 0, &mut cache)?;
     /// # Ok(())
     /// # }
@@ -619,8 +619,8 @@ impl Llama {
     /// # fn main() -> fuel::Result<()> {
     /// # let model: Llama = unimplemented!();
     /// # let cfg = Config::config_7b_v1(false);
-    /// # let mut cache = Cache::new(true, DType::F32, &cfg, &Device::Cpu)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// # let mut cache = Cache::new(true, DType::F32, &cfg, &Device::cpu())?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0, &mut cache)?;
     /// assert_eq!(logits.dims()[0], 1);
     /// # Ok(())

@@ -195,8 +195,8 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::paligemma_3b_224();
     /// let mut model = Model::new(&cfg, vb)?;
-    /// let pixels = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::Cpu)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let pixels = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::cpu())?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let out = model.setup(&pixels, &ids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -224,7 +224,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::paligemma_3b_224();
     /// let mut model = Model::new(&cfg, vb)?;
-    /// let input_ids = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
+    /// let input_ids = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input_ids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

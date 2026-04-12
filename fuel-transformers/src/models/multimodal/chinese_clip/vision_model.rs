@@ -103,7 +103,7 @@ impl ChineseClipVisionEmbeddings {
     /// use fuel_nn::VarBuilder;
     /// use fuel_transformers::models::chinese_clip::vision_model::{ChineseClipVisionEmbeddings, ChineseClipVisionConfig};
     /// let config = ChineseClipVisionConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let emb = ChineseClipVisionEmbeddings::new(vb, &config)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -334,7 +334,7 @@ impl ChineseClipVisionEncoder {
     /// use fuel_transformers::models::chinese_clip::{EncoderConfig, ChineseClipConfig};
     /// use fuel_transformers::models::chinese_clip::vision_model::ChineseClipVisionEncoder;
     /// let cfg = ChineseClipConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let enc = ChineseClipVisionEncoder::new(vb.pp("encoder"), &EncoderConfig::Vision(cfg.vision_config))?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -394,7 +394,7 @@ impl ChineseClipVisionTransformer {
     /// use fuel_nn::VarBuilder;
     /// use fuel_transformers::models::chinese_clip::vision_model::{ChineseClipVisionTransformer, ChineseClipVisionConfig};
     /// let config = ChineseClipVisionConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let model = ChineseClipVisionTransformer::new(vb, &config)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

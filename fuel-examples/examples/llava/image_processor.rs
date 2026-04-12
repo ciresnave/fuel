@@ -134,7 +134,7 @@ impl ImageProcessor {
     pub fn to_tensor(&self, image: &DynamicImage) -> Result<Tensor> {
         let img = image.to_rgb8().into_raw();
         let (width, height) = image.dimensions();
-        Tensor::from_vec(img, (height as usize, width as usize, 3), &Device::Cpu)?
+        Tensor::from_vec(img, (height as usize, width as usize, 3), &Device::cpu())?
             .to_dtype(DType::F32) // only for internal compute
     }
 
@@ -146,8 +146,8 @@ impl ImageProcessor {
     pub fn normalize(&self, tensor: &Tensor) -> Result<Tensor> {
         let image_mean = self.image_mean.clone();
         let image_std = self.image_std.clone();
-        let mean = Tensor::from_vec(image_mean, (3,), &Device::Cpu)?;
-        let std = Tensor::from_vec(image_std, (3,), &Device::Cpu)?;
+        let mean = Tensor::from_vec(image_mean, (3,), &Device::cpu())?;
+        let std = Tensor::from_vec(image_std, (3,), &Device::cpu())?;
         tensor.broadcast_sub(&mean)?.broadcast_div(&std)
     }
 

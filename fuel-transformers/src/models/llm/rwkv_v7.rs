@@ -97,7 +97,7 @@ fn infer_lora_dims(vb: &VarBuilder) -> Result<(usize, usize, usize, usize)> {
 /// # use fuel_transformers::models::rwkv_v7::{Config, State};
 /// # use fuel::Device;
 /// # let cfg: Config = unimplemented!();
-/// let state = State::new(&cfg, &Device::Cpu)?;
+/// let state = State::new(&cfg, &Device::cpu())?;
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub struct StatePerLayer {
@@ -118,7 +118,7 @@ pub struct StatePerLayer {
 /// # use fuel::Device;
 /// # let cfg: Config = unimplemented!();
 /// // v7b model state includes a DeaState
-/// let state = State::new(&cfg, &Device::Cpu)?;
+/// let state = State::new(&cfg, &Device::cpu())?;
 /// assert!(state.dea.is_some() || state.dea.is_none()); // present only for v7b
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -141,7 +141,7 @@ pub struct DeaState {
 /// # use fuel_transformers::models::rwkv_v7::{Config, State};
 /// # use fuel::Device;
 /// # let cfg: Config = unimplemented!();
-/// let mut state = State::new(&cfg, &Device::Cpu)?;
+/// let mut state = State::new(&cfg, &Device::cpu())?;
 /// assert_eq!(state.pos, 0);
 /// # Ok::<(), fuel::Error>(())
 /// ```
@@ -160,7 +160,7 @@ impl State {
     /// # use fuel_transformers::models::rwkv_v7::{Config, State};
     /// # use fuel::Device;
     /// # let cfg: Config = unimplemented!();
-    /// let mut state = State::new(&cfg, &Device::Cpu)?;
+    /// let mut state = State::new(&cfg, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn new(cfg: &Config, dev: &Device) -> Result<Self> {
@@ -178,7 +178,7 @@ impl State {
     /// # use fuel_transformers::models::rwkv_v7::{Config, State};
     /// # use fuel::{Device, DType};
     /// # let cfg: Config = unimplemented!();
-    /// let mut state = State::new_with_dtype(&cfg, &Device::Cpu, DType::F32)?;
+    /// let mut state = State::new_with_dtype(&cfg, &Device::cpu(), DType::F32)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn new_with_dtype(cfg: &Config, dev: &Device, dtype: DType) -> Result<Self> {
@@ -1019,8 +1019,8 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Model::new(&cfg, vb)?;
-    /// let mut state = State::new(&cfg, &Device::Cpu)?;
-    /// let input = Tensor::zeros((1, 1), DType::U32, &Device::Cpu)?;
+    /// let mut state = State::new(&cfg, &Device::cpu())?;
+    /// let input = Tensor::zeros((1, 1), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&input, &mut state, &[0u32])?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1071,7 +1071,7 @@ impl Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = Model::new(&cfg, vb)?;
-    /// let mut state = State::new(&cfg, &Device::Cpu)?;
+    /// let mut state = State::new(&cfg, &Device::cpu())?;
     /// let logits = model.forward_seq(&[42u32, 7, 13], &mut state)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

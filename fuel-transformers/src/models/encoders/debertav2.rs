@@ -149,7 +149,7 @@ impl StableDropout {
     /// use fuel_transformers::models::debertav2::StableDropout;
     /// use fuel::{Device, DType, Tensor};
     /// let dropout = StableDropout::new(0.1);
-    /// let x = Tensor::ones((2, 3), DType::F32, &Device::Cpu)?;
+    /// let x = Tensor::ones((2, 3), DType::F32, &Device::cpu())?;
     /// let y = dropout.forward(&x)?;
     /// assert_eq!(x.dims(), y.dims());
     /// # Ok::<(), fuel::Error>(())
@@ -273,7 +273,7 @@ impl DebertaV2Embeddings {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let emb = DebertaV2Embeddings::load(vb, &cfg)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let out = emb.forward(Some(&ids), None, None, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -527,8 +527,8 @@ impl DebertaV2DisentangledSelfAttention {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let attn = DebertaV2DisentangledSelfAttention::load(vb, &cfg)?;
-    /// let hidden = Tensor::zeros((1, 8, 768), DType::F32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::Cpu)?;
+    /// let hidden = Tensor::zeros((1, 8, 768), DType::F32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::cpu())?;
     /// let out = attn.forward(&hidden, &mask, None, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -988,7 +988,7 @@ impl DebertaV2Intermediate {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let layer = DebertaV2Intermediate::load(vb, &cfg)?;
-    /// let h = Tensor::zeros((1, 8, 768), DType::F32, &Device::Cpu)?;
+    /// let h = Tensor::zeros((1, 8, 768), DType::F32, &Device::cpu())?;
     /// let out = layer.forward(&h)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1341,8 +1341,8 @@ impl DebertaV2Encoder {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let encoder = DebertaV2Encoder::load(vb, &cfg)?;
-    /// let h = Tensor::zeros((1, 8, 768), DType::F32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::Cpu)?;
+    /// let h = Tensor::zeros((1, 8, 768), DType::F32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::F32, &Device::cpu())?;
     /// let out = encoder.forward(&h, &mask, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1528,7 +1528,7 @@ impl DebertaV2Model {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = DebertaV2Model::load(vb, &cfg)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let out = model.forward(&ids, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1682,7 +1682,7 @@ impl DebertaV2NERModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = DebertaV2NERModel::load(vb, &cfg, None)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1764,7 +1764,7 @@ impl DebertaV2SeqClassificationModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = DebertaV2SeqClassificationModel::load(vb, &cfg, None)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -1850,7 +1850,7 @@ impl DebertaV2ContextPooler {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let pooler = DebertaV2ContextPooler::load(vb, &cfg)?;
-    /// let h = Tensor::zeros((1, 8, 768), DType::F32, &Device::Cpu)?;
+    /// let h = Tensor::zeros((1, 8, 768), DType::F32, &Device::cpu())?;
     /// let pooled = pooler.forward(&h)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

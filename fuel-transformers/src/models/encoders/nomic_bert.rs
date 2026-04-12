@@ -481,7 +481,7 @@ impl NomicBertModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// let cfg = Config::default();
     /// let model = NomicBertModel::load(vb, &cfg)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let hidden = model.forward(&ids, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -516,8 +516,8 @@ impl NomicBertModel {
 /// ```
 /// use fuel_transformers::models::nomic_bert::mean_pooling;
 /// use fuel::{Device, DType, Tensor};
-/// let hidden = Tensor::ones((1, 4, 16), DType::F32, &Device::Cpu)?;
-/// let mask = Tensor::ones((1, 4), DType::U32, &Device::Cpu)?;
+/// let hidden = Tensor::ones((1, 4, 16), DType::F32, &Device::cpu())?;
+/// let mask = Tensor::ones((1, 4), DType::U32, &Device::cpu())?;
 /// let pooled = mean_pooling(&hidden, &mask)?;
 /// assert_eq!(pooled.dims(), &[1, 16]);
 /// # Ok::<(), fuel::Error>(())
@@ -544,7 +544,7 @@ pub fn mean_pooling(hidden_states: &Tensor, attention_mask: &Tensor) -> Result<T
 /// ```
 /// use fuel_transformers::models::nomic_bert::l2_normalize;
 /// use fuel::{Device, DType, Tensor};
-/// let x = Tensor::ones((2, 8), DType::F32, &Device::Cpu)?;
+/// let x = Tensor::ones((2, 8), DType::F32, &Device::cpu())?;
 /// let normed = l2_normalize(&x)?;
 /// # Ok::<(), fuel::Error>(())
 /// ```

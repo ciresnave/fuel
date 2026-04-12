@@ -656,7 +656,7 @@ impl Model {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::glm4::Model;
     /// # let mut model: Model = unimplemented!();
-    /// let xs = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&xs)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

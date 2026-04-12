@@ -21,7 +21,7 @@ impl OuNoise {
             mu,
             theta,
             sigma,
-            state: Tensor::ones(size_action, DType::F32, &Device::Cpu)?,
+            state: Tensor::ones(size_action, DType::F32, &Device::cpu())?,
         })
     }
 
@@ -486,7 +486,7 @@ pub fn run() -> Result<()> {
     let size_action = env.action_space();
 
     let mut agent = DDPG::new(
-        &Device::Cpu,
+        &Device::cpu(),
         size_state,
         size_action,
         true,
@@ -514,8 +514,8 @@ pub fn run() -> Result<()> {
 
             agent.remember(
                 &state,
-                &Tensor::new(vec![action], &Device::Cpu)?,
-                &Tensor::new(vec![step.reward as f32], &Device::Cpu)?,
+                &Tensor::new(vec![action], &Device::cpu())?,
+                &Tensor::new(vec![step.reward as f32], &Device::cpu())?,
                 &step.state,
                 step.terminated,
                 step.truncated,

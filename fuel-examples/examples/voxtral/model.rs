@@ -41,7 +41,7 @@ impl VoxtralModel {
         let device = if !use_cpu && utils::cuda_is_available() {
             Device::new_cuda(0).context("Failed to create CUDA device")?
         } else {
-            Device::Cpu
+            Device::cpu()
         };
 
         let (model_files, tokenizer_file) = download::model_files(model_id)?;

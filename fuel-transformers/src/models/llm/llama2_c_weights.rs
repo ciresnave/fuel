@@ -22,7 +22,7 @@ use super::llama2_c::Config;
 /// # let data: Vec<u8> = unimplemented!();
 /// let mut reader = Cursor::new(data);
 /// let cfg = Config::tiny_15m();
-/// let tw = TransformerWeights::from_reader(&mut reader, &cfg, &Device::Cpu)?;
+/// let tw = TransformerWeights::from_reader(&mut reader, &cfg, &Device::cpu())?;
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub struct TransformerWeights {
@@ -124,7 +124,7 @@ impl TransformerWeights {
     /// # let data: Vec<u8> = unimplemented!();
     /// let cfg = Config::tiny_15m();
     /// let mut reader = Cursor::new(data);
-    /// let tw = TransformerWeights::from_reader(&mut reader, &cfg, &Device::Cpu)?;
+    /// let tw = TransformerWeights::from_reader(&mut reader, &cfg, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn from_reader<R: std::io::Read>(r: &mut R, c: &Config, dev: &Device) -> Result<Self> {
@@ -171,8 +171,8 @@ impl TransformerWeights {
     /// # let data: Vec<u8> = unimplemented!();
     /// let cfg = Config::tiny_15m();
     /// let mut reader = Cursor::new(data);
-    /// let tw = TransformerWeights::from_reader(&mut reader, &cfg, &Device::Cpu)?;
-    /// let vb = tw.var_builder(&cfg, &Device::Cpu)?;
+    /// let tw = TransformerWeights::from_reader(&mut reader, &cfg, &Device::cpu())?;
+    /// let vb = tw.var_builder(&cfg, &Device::cpu())?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
     pub fn var_builder(&self, cfg: &Config, device: &Device) -> Result<VarBuilder<'static>> {

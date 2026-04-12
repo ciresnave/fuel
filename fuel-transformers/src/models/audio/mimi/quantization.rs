@@ -12,14 +12,22 @@ impl fuel::CustomOp2 for CodebookEncode {
         "cb"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        lhs_storage: &fuel::CpuStorage,
+        lhs_storage: &dyn fuel::dyn_backend::DynBackendStorage,
         lhs_layout: &Layout,
-        rhs_storage: &fuel::CpuStorage,
+        rhs_storage: &dyn fuel::dyn_backend::DynBackendStorage,
         rhs_layout: &Layout,
-    ) -> Result<(fuel::CpuStorage, Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
         use rayon::prelude::*;
+
+        let lhs_storage = lhs_storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let lhs_storage = lhs_storage.inner();
+        let rhs_storage = rhs_storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let rhs_storage = rhs_storage.inner();
 
         let (lhs_dim1, lhs_dim2) = lhs_layout.shape().dims2()?;
         let (rhs_dim1, rhs_dim2) = rhs_layout.shape().dims2()?;
@@ -64,7 +72,7 @@ impl fuel::CustomOp2 for CodebookEncode {
             })
             .collect();
         let storage = fuel::CpuStorage::U32(dst);
-        Ok((storage, (lhs_dim1,).into()))
+        Ok((Box::new(CpuBackendStorage::from(storage)), (lhs_dim1,).into()))
     }
 }
 

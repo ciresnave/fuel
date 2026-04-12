@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// use fuel::Device;
 /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
 /// # let reader: std::fs::File = unimplemented!();
-/// let gg = Gguf::new(ct, reader, Device::Cpu);
+/// let gg = Gguf::new(ct, reader, Device::cpu());
 /// ```
 pub struct Gguf<R: Read + Seek> {
     ct: gguf_file::Content,
@@ -41,7 +41,7 @@ impl<R: Read + Seek> Gguf<R> {
     /// use fuel::Device;
     /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
     /// # let reader: std::fs::File = unimplemented!();
-    /// let gg = Gguf::new(ct, reader, Device::Cpu);
+    /// let gg = Gguf::new(ct, reader, Device::cpu());
     /// ```
     pub fn new(ct: gguf_file::Content, reader: R, device: Device) -> Self {
         Self { ct, reader, device }
@@ -152,7 +152,7 @@ impl Module for MlpWeights {
 /// ```no_run
 /// use fuel_transformers::models::quantized_qwen3::RotaryEmbedding;
 /// use fuel::{Device, DType};
-/// let rope = RotaryEmbedding::new(DType::F32, 128, 4096, 10000.0, &Device::Cpu)?;
+/// let rope = RotaryEmbedding::new(DType::F32, 128, 4096, 10000.0, &Device::cpu())?;
 /// # Ok::<_, fuel::Error>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -169,7 +169,7 @@ impl RotaryEmbedding {
     /// ```no_run
     /// use fuel_transformers::models::quantized_qwen3::RotaryEmbedding;
     /// use fuel::{Device, DType};
-    /// let rope = RotaryEmbedding::new(DType::F32, 128, 4096, 10000.0, &Device::Cpu)?;
+    /// let rope = RotaryEmbedding::new(DType::F32, 128, 4096, 10000.0, &Device::cpu())?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
     pub fn new(
@@ -205,8 +205,8 @@ impl RotaryEmbedding {
     /// use fuel_transformers::models::quantized_qwen3::RotaryEmbedding;
     /// use fuel::{Device, DType, Tensor};
     /// # let rope: RotaryEmbedding = unimplemented!();
-    /// let q = Tensor::zeros((1, 8, 4, 128), DType::F32, &Device::Cpu)?;
-    /// let k = Tensor::zeros((1, 8, 4, 128), DType::F32, &Device::Cpu)?;
+    /// let q = Tensor::zeros((1, 8, 4, 128), DType::F32, &Device::cpu())?;
+    /// let k = Tensor::zeros((1, 8, 4, 128), DType::F32, &Device::cpu())?;
     /// let (q_rot, k_rot) = rope.apply(&q, &k, 0)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
@@ -399,7 +399,7 @@ impl LayerWeights {
 /// use fuel::Device;
 /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
 /// # let mut reader: std::fs::File = unimplemented!();
-/// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::Cpu)?;
+/// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::cpu())?;
 /// # Ok::<_, fuel::Error>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -424,7 +424,7 @@ impl ModelWeights {
     /// use fuel::Device;
     /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
     /// # let mut reader: std::fs::File = unimplemented!();
-    /// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::Cpu)?;
+    /// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::cpu())?;
     /// # Ok::<_, fuel::Error>(())
     /// ```
     pub fn from_gguf<R: Read + Seek>(
@@ -536,7 +536,7 @@ impl ModelWeights {
     /// use fuel_transformers::models::quantized_qwen3::ModelWeights;
     /// use fuel::{Device, Tensor};
     /// # let mut model: ModelWeights = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

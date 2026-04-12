@@ -56,7 +56,7 @@ impl VecGymEnv {
             obs.extract::<Vec<f32>>(py)
         })
         .map_err(w)?;
-        Tensor::new(obs, &Device::Cpu)?.reshape(self.observation_space.as_slice())
+        Tensor::new(obs, &Device::cpu())?.reshape(self.observation_space.as_slice())
     }
 
     pub fn step(&self, action: Vec<usize>) -> Result<Step> {
@@ -71,10 +71,10 @@ impl VecGymEnv {
             Ok((obs, reward, is_done))
         })
         .map_err(w)?;
-        let obs = Tensor::from_vec(obs, self.observation_space.as_slice(), &Device::Cpu)?
+        let obs = Tensor::from_vec(obs, self.observation_space.as_slice(), &Device::cpu())?
             .to_dtype(DType::F32)?;
-        let reward = Tensor::new(reward, &Device::Cpu)?;
-        let is_done = Tensor::new(is_done, &Device::Cpu)?;
+        let reward = Tensor::new(reward, &Device::cpu())?;
+        let is_done = Tensor::new(is_done, &Device::cpu())?;
         Ok(Step {
             obs,
             reward,

@@ -128,7 +128,7 @@ impl ChineseClipTextEmbeddings {
     /// use fuel_nn::VarBuilder;
     /// use fuel_transformers::models::chinese_clip::text_model::{ChineseClipTextEmbeddings, ChineseClipTextConfig};
     /// let config = ChineseClipTextConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let emb = ChineseClipTextEmbeddings::new(vb, &config)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -521,7 +521,7 @@ impl ChineseClipTextTransformer {
     /// use fuel_nn::VarBuilder;
     /// use fuel_transformers::models::chinese_clip::text_model::{ChineseClipTextTransformer, ChineseClipTextConfig};
     /// let config = ChineseClipTextConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let model = ChineseClipTextTransformer::new(vb, &config)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -555,9 +555,9 @@ impl ChineseClipTextTransformer {
     /// use fuel_nn::VarBuilder;
     /// use fuel_transformers::models::chinese_clip::text_model::{ChineseClipTextTransformer, ChineseClipTextConfig};
     /// let config = ChineseClipTextConfig::clip_vit_base_patch16();
-    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::Cpu);
+    /// let vb = VarBuilder::zeros(fuel::DType::F32, &Device::cpu());
     /// let model = ChineseClipTextTransformer::new(vb, &config)?;
-    /// let ids = Tensor::zeros((1usize, 16usize), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1usize, 16usize), fuel::DType::U32, &Device::cpu())?;
     /// let out = model.forward(&ids, None, None)?;
     /// assert_eq!(out.dims(), &[1, 768]);
     /// # Ok(())

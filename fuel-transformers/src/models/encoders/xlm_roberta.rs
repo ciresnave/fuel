@@ -412,9 +412,9 @@ impl XLMRobertaModel {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = XLMRobertaModel::new(&cfg, vb)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::U8, &Device::Cpu)?;
-    /// let ttids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::U8, &Device::cpu())?;
+    /// let ttids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let hidden = model.forward(&ids, &mask, &ttids, None, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -510,9 +510,9 @@ impl XLMRobertaForMaskedLM {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = XLMRobertaForMaskedLM::new(&cfg, vb)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::U8, &Device::Cpu)?;
-    /// let ttids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::U8, &Device::cpu())?;
+    /// let ttids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, &mask, &ttids, None, None, None)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -620,9 +620,9 @@ impl XLMRobertaForSequenceClassification {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let cfg: Config = unimplemented!();
     /// let model = XLMRobertaForSequenceClassification::new(2, &cfg, vb)?;
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 8), DType::U8, &Device::Cpu)?;
-    /// let ttids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 8), DType::U8, &Device::cpu())?;
+    /// let ttids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, &mask, &ttids)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

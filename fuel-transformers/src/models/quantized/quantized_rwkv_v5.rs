@@ -318,7 +318,7 @@ impl Model {
     /// use fuel::{Device, Tensor};
     /// # let model: Model = unimplemented!();
     /// # let mut state: State = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), fuel::DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, &mut state)?;
     /// # Ok::<_, fuel::Error>(())
     /// ```

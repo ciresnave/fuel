@@ -226,7 +226,7 @@ impl Embeddings {
     /// # fn main() -> fuel::Result<()> {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let emb = Embeddings::new(&Config::vit_base_patch16_224(), false, vb)?;
-    /// let img = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::Cpu)?;
+    /// let img = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::cpu())?;
     /// let tokens = emb.forward(&img, None, false)?;
     /// // 224/16 * 224/16 + 1 = 197 tokens
     /// assert_eq!(tokens.dims(), &[1, 197, 768]);
@@ -556,7 +556,7 @@ impl Model {
     /// # fn main() -> fuel::Result<()> {
     /// # let vb: VarBuilder = unimplemented!();
     /// # let model = Model::new(&Config::vit_base_patch16_224(), 1000, vb)?;
-    /// let img = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::Cpu)?;
+    /// let img = Tensor::zeros((1, 3, 224, 224), DType::F32, &Device::cpu())?;
     /// let logits = model.forward(&img)?;
     /// assert_eq!(logits.dims(), &[1, 1000]);
     /// # Ok(())

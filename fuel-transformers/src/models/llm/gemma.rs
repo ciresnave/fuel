@@ -421,7 +421,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: Model = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok(())
     /// # }
@@ -457,7 +457,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: Model = unimplemented!();
-    /// let embeds = Tensor::zeros((1, 8, 2048), DType::F32, &Device::Cpu)?;
+    /// let embeds = Tensor::zeros((1, 8, 2048), DType::F32, &Device::cpu())?;
     /// let logits = model.forward_embeds(&embeds, None, 0)?;
     /// # Ok(())
     /// # }
@@ -496,7 +496,7 @@ impl Model {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: Model = unimplemented!();
-    /// let embeds = Tensor::zeros((1, 8, 2048), DType::F32, &Device::Cpu)?;
+    /// let embeds = Tensor::zeros((1, 8, 2048), DType::F32, &Device::cpu())?;
     /// let hidden = model.forward_embeds_without_projection(&embeds, None, 0)?;
     /// # Ok(())
     /// # }

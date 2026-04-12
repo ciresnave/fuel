@@ -395,7 +395,7 @@ impl EVA2VisionTransformer {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let model: EVA2VisionTransformer = unimplemented!();
-    /// let img = Tensor::zeros((1, 3, 518, 518), DType::F32, &Device::Cpu)?;
+    /// let img = Tensor::zeros((1, 3, 518, 518), DType::F32, &Device::cpu())?;
     /// let feats = model.get_intermediate_layers(&img, &[11], false, false, true)?;
     /// # Ok(())
     /// # }

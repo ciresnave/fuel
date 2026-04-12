@@ -452,7 +452,7 @@ impl LlamaModel {
     /// # use fuel::{DType, Device, Tensor};
     /// # use fuel_transformers::models::csm::LlamaModel;
     /// # let mut model: LlamaModel = unimplemented!();
-    /// let xs = Tensor::zeros((1, 8, 2048), DType::F32, &Device::Cpu)?;
+    /// let xs = Tensor::zeros((1, 8, 2048), DType::F32, &Device::cpu())?;
     /// let hidden = model.forward(&xs, 0)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```
@@ -582,8 +582,8 @@ impl Model {
     /// # use fuel_transformers::generation::LogitsProcessor;
     /// # let mut model: Model = unimplemented!();
     /// # let mut lp: LogitsProcessor = unimplemented!();
-    /// let tokens = Tensor::zeros((1, 1, 33), DType::U32, &Device::Cpu)?;
-    /// let mask = Tensor::ones((1, 1, 33), DType::U8, &Device::Cpu)?;
+    /// let tokens = Tensor::zeros((1, 1, 33), DType::U32, &Device::cpu())?;
+    /// let mask = Tensor::ones((1, 1, 33), DType::U8, &Device::cpu())?;
     /// let codes = model.generate_frame(&tokens, &mask, 0, &mut lp)?;
     /// # Ok::<(), fuel::Error>(())
     /// ```

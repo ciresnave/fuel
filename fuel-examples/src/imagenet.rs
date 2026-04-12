@@ -22,9 +22,9 @@ pub fn load_image_with_std_mean<P: AsRef<std::path::Path>>(
         );
     let img = img.to_rgb8();
     let data = img.into_raw();
-    let data = Tensor::from_vec(data, (res, res, 3), &Device::Cpu)?.permute((2, 0, 1))?;
-    let mean = Tensor::new(mean, &Device::Cpu)?.reshape((3, 1, 1))?;
-    let std = Tensor::new(std, &Device::Cpu)?.reshape((3, 1, 1))?;
+    let data = Tensor::from_vec(data, (res, res, 3), &Device::cpu())?.permute((2, 0, 1))?;
+    let mean = Tensor::new(mean, &Device::cpu())?.reshape((3, 1, 1))?;
+    let std = Tensor::new(std, &Device::cpu())?.reshape((3, 1, 1))?;
     (data.to_dtype(fuel::DType::F32)? / 255.)?
         .broadcast_sub(&mean)?
         .broadcast_div(&std)

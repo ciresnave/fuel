@@ -563,7 +563,7 @@ impl Model {
         all_audio_tokens.iter_mut().for_each(|v| {
             v.resize(min_len, 0);
         });
-        let all_audio_tokens = Tensor::new(all_audio_tokens, &fuel::Device::Cpu)?;
+        let all_audio_tokens = Tensor::new(all_audio_tokens, &fuel::Device::cpu())?;
         Ok(all_audio_tokens)
     }
 

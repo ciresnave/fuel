@@ -267,8 +267,8 @@ pub mod transformer {
         /// use fuel_transformers::models::quantized_metavoice::transformer::Model;
         /// use fuel::{Device, Tensor};
         /// # let mut model: Model = unimplemented!();
-        /// let ids = Tensor::zeros((1, 4), fuel::DType::U32, &Device::Cpu)?;
-        /// let spk = Tensor::zeros((1, 1, 512), fuel::DType::F32, &Device::Cpu)?;
+        /// let ids = Tensor::zeros((1, 4), fuel::DType::U32, &Device::cpu())?;
+        /// let spk = Tensor::zeros((1, 1, 512), fuel::DType::F32, &Device::cpu())?;
         /// let logits = model.forward(&ids, &spk, 0)?;
         /// # Ok::<_, fuel::Error>(())
         /// ```

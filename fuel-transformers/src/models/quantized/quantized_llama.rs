@@ -254,7 +254,7 @@ impl LayerWeights {
 /// # fn main() -> fuel::Result<()> {
 /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
 /// # let mut reader: std::fs::File = unimplemented!();
-/// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::Cpu)?;
+/// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::cpu())?;
 /// # Ok(())
 /// # }
 /// ```
@@ -373,7 +373,7 @@ impl ModelWeights {
     /// # fn main() -> fuel::Result<()> {
     /// # let ct: fuel::quantized::gguf_file::Content = unimplemented!();
     /// # let mut reader: std::fs::File = unimplemented!();
-    /// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::Cpu)?;
+    /// let model = ModelWeights::from_gguf(ct, &mut reader, &Device::cpu())?;
     /// # Ok(())
     /// # }
     /// ```
@@ -541,7 +541,7 @@ impl ModelWeights {
     /// # use fuel::{Device, DType, Tensor};
     /// # fn main() -> fuel::Result<()> {
     /// # let mut model: ModelWeights = unimplemented!();
-    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::Cpu)?;
+    /// let ids = Tensor::zeros((1, 8), DType::U32, &Device::cpu())?;
     /// let logits = model.forward(&ids, 0)?;
     /// # Ok(())
     /// # }
@@ -587,7 +587,7 @@ mod tests {
     /// Classic square mask: index_pos=0 produces (seq_len, seq_len).
     #[test]
     fn causal_mask_square_shape() -> Result<()> {
-        let mask = build_causal_mask(4, 0, &Device::Cpu)?;
+        let mask = build_causal_mask(4, 0, &Device::cpu())?;
         assert_eq!(mask.dims(), [4, 4]);
         Ok(())
     }
@@ -595,7 +595,7 @@ mod tests {
     /// Rectangular mask: index_pos=N produces (seq_len, N + seq_len).
     #[test]
     fn causal_mask_rectangular_shape() -> Result<()> {
-        let mask = build_causal_mask(4, 65, &Device::Cpu)?;
+        let mask = build_causal_mask(4, 65, &Device::cpu())?;
         assert_eq!(mask.dims(), [4, 69]);
         Ok(())
     }
@@ -610,7 +610,7 @@ mod tests {
     ///   row 2 (global pos 2): attend to pos 0..2           → [0, 0, 0]
     #[test]
     fn causal_mask_square_values() -> Result<()> {
-        let mask = build_causal_mask(3, 0, &Device::Cpu)?;
+        let mask = build_causal_mask(3, 0, &Device::cpu())?;
         let data: Vec<u8> = mask.flatten_all()?.to_vec1()?;
         assert_eq!(data, [0, 1, 1, 0, 0, 1, 0, 0, 0]);
         Ok(())
@@ -625,7 +625,7 @@ mod tests {
     ///   row 2 (global pos 4): attend to kv 0..4  → [0,0, 0,0,0]
     #[test]
     fn causal_mask_rectangular_values() -> Result<()> {
-        let mask = build_causal_mask(3, 2, &Device::Cpu)?;
+        let mask = build_causal_mask(3, 2, &Device::cpu())?;
         let data: Vec<u8> = mask.flatten_all()?.to_vec1()?;
         #[rustfmt::skip]
         assert_eq!(data, [
@@ -640,7 +640,7 @@ mod tests {
     /// of all zeros — it can attend to every key including itself.
     #[test]
     fn causal_mask_single_query_with_prefix() -> Result<()> {
-        let mask = build_causal_mask(1, 10, &Device::Cpu)?;
+        let mask = build_causal_mask(1, 10, &Device::cpu())?;
         assert_eq!(mask.dims(), [1, 11]);
         let data: Vec<u8> = mask.flatten_all()?.to_vec1()?;
         assert!(
@@ -662,7 +662,7 @@ mod tests {
         let seq_len = 4usize;
         let index_pos = 10usize;
 
-        let mask = build_causal_mask(seq_len, index_pos, &Device::Cpu)?;
+        let mask = build_causal_mask(seq_len, index_pos, &Device::cpu())?;
         // Simulate the attention score shape Q @ K^T → (batch, heads, seq_len, kv_len)
         let kv_len = index_pos + seq_len;
         let att_shape = &[batch, heads, seq_len, kv_len];
