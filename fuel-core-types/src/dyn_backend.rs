@@ -53,8 +53,13 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     /// Return a cloned `Arc` handle to the owning device.
     fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice>;
 
-    /// Copy the entire storage to CPU.
-    fn to_cpu_storage_dyn(&self) -> Result<CpuStorage>;
+    /// Copy the entire storage to a [`HostBuffer`](crate::HostBuffer).
+    fn to_host_buffer_dyn(&self) -> Result<CpuStorage>;
+
+    /// Deprecated alias for [`to_host_buffer_dyn`].
+    fn to_cpu_storage_dyn(&self) -> Result<CpuStorage> {
+        self.to_host_buffer_dyn()
+    }
 
     /// Elementwise affine: `x * mul + add`.
     fn affine_dyn(&self, layout: &Layout, mul: f64, add: f64)
@@ -312,14 +317,33 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
         dtype: DType,
     ) -> Result<Box<dyn DynBackendStorage>>;
 
-    /// Create storage from a CPU buffer (borrowed).
-    fn storage_from_cpu_storage_dyn(&self, cpu: &CpuStorage) -> Result<Box<dyn DynBackendStorage>>;
+    /// Create storage from a host buffer (borrowed).
+    fn storage_from_host_buffer_dyn(
+        &self,
+        buf: &CpuStorage,
+    ) -> Result<Box<dyn DynBackendStorage>>;
 
-    /// Create storage from a CPU buffer (owned).
+    /// Create storage from a host buffer (owned).
+    fn storage_from_host_buffer_owned_dyn(
+        &self,
+        buf: CpuStorage,
+    ) -> Result<Box<dyn DynBackendStorage>>;
+
+    /// Deprecated alias for [`storage_from_host_buffer_dyn`].
+    fn storage_from_cpu_storage_dyn(
+        &self,
+        cpu: &CpuStorage,
+    ) -> Result<Box<dyn DynBackendStorage>> {
+        self.storage_from_host_buffer_dyn(cpu)
+    }
+
+    /// Deprecated alias for [`storage_from_host_buffer_owned_dyn`].
     fn storage_from_cpu_storage_owned_dyn(
         &self,
         cpu: CpuStorage,
-    ) -> Result<Box<dyn DynBackendStorage>>;
+    ) -> Result<Box<dyn DynBackendStorage>> {
+        self.storage_from_host_buffer_owned_dyn(cpu)
+    }
 
     /// Fill storage with uniform random values in `[lo, hi)`.
     fn rand_uniform_dyn(

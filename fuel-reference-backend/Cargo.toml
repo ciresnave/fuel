@@ -1,0 +1,18 @@
+[package]
+    categories.workspace = true
+    description          = "Correctness oracle for the fuel ML framework. Pure-Rust reference implementations of tensor operations, used only for validation, never for production."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-reference-backend"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types = { workspace = true }
+    fuel-graph      = { workspace = true }
+    half            = { workspace = true }
+    num-traits      = { workspace = true }
+
+# The reference backend uses `num_traits::PrimInt` as the bound for index
+# tensors (gather/scatter etc.). Float ops use `num_traits::Float`.

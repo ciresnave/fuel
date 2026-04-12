@@ -63,6 +63,16 @@ impl From<CpuBackendStorage> for CpuStorage {
     }
 }
 
+impl fuel_core_types::backend::HostStorage for CpuBackendStorage {
+    fn as_host_buffer(&self) -> fuel_core_types::Result<&fuel_core_types::HostBuffer> {
+        Ok(&self.0)
+    }
+
+    fn into_host_buffer(self) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
+        Ok(self.0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CpuBackendDevice — newtype wrapper
 // ---------------------------------------------------------------------------
@@ -469,7 +479,7 @@ impl DynBackendStorage for CpuBackendStorage {
         Arc::new(CpuBackendDevice)
     }
 
-    fn to_cpu_storage_dyn(&self) -> Result<CpuStorage> {
+    fn to_host_buffer_dyn(&self) -> Result<CpuStorage> {
         Ok(self.0.clone())
     }
 
@@ -1018,18 +1028,18 @@ impl DynBackendDevice for CpuBackendDevice {
         Ok(Box::new(CpuBackendStorage(storage)))
     }
 
-    fn storage_from_cpu_storage_dyn(
+    fn storage_from_host_buffer_dyn(
         &self,
-        cpu: &CpuStorage,
+        buf: &CpuStorage,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        Ok(Box::new(CpuBackendStorage(cpu.clone())))
+        Ok(Box::new(CpuBackendStorage(buf.clone())))
     }
 
-    fn storage_from_cpu_storage_owned_dyn(
+    fn storage_from_host_buffer_owned_dyn(
         &self,
-        cpu: CpuStorage,
+        buf: CpuStorage,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        Ok(Box::new(CpuBackendStorage(cpu)))
+        Ok(Box::new(CpuBackendStorage(buf)))
     }
 
     fn rand_uniform_dyn(

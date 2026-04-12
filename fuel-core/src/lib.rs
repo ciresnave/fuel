@@ -72,6 +72,7 @@ mod dummy_metal_backend;
 pub mod error;
 mod indexer;
 pub mod kv_cache;
+pub mod lazy;
 pub mod layout;
 #[cfg(feature = "metal")]
 pub mod metal_backend;

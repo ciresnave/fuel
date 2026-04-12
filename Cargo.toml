@@ -3,6 +3,10 @@ members = [
     "fuel-core",
     "fuel-core-types",
     "fuel-cpu-backend",
+    "fuel-graph",
+    "fuel-graph-cpu",
+    "fuel-lazy-examples",
+    "fuel-reference-backend",
     "fuel-cuda",
     "fuel-metal",
     "fuel-datasets",
@@ -24,7 +28,7 @@ exclude = [
     "fuel-cuda-vmm",
     "fuel-flash-attn",
     "fuel-flash-attn-v3",
-    "fuel-kernels",
+    "fuel-cuda-kernels",
     "fuel-metal-kernels",
     "fuel-onnx",
 ]
@@ -47,17 +51,20 @@ byteorder = "1.4.3"
 fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.2" }
 fuel-core-types = { path = "./fuel-core-types", version = "0.10.2" }
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
+fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
+fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
 fuel-cuda = { path = "./fuel-cuda", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
 fuel-flash-attn = { path = "./fuel-flash-attn", version = "0.10.2" }
 fuel-flash-attn-v3 = { path = "./fuel-flash-attn-v3", version = "0.10.2" }
 fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
-fuel-kernels = { path = "./fuel-kernels", version = "0.10.2" }
+fuel-cuda-kernels = { path = "./fuel-cuda-kernels", version = "0.10.2" }
 fuel-metal = { path = "./fuel-metal", version = "0.10.2" }
 fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.10.2" }
 fuel-nn = { path = "./fuel-nn", version = "0.10.2" }
 fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }
 fuel-parallel = { path = "./fuel-parallel", version = "0.10.2" }
+fuel-reference-backend = { path = "./fuel-reference-backend", version = "0.10.2" }
 fuel-training = { path = "./fuel-training", version = "0.10.2" }
 fuel-transformers = { path = "./fuel-transformers", version = "0.10.2" }
 fuel-ug = { path = "./fuel-ug", version = "0.10.2" }

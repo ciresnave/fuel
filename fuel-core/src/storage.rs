@@ -3,7 +3,6 @@ use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
 use crate::{CpuStorage, DType, Device, Error, Layout, Result, Shape};
 use crate::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};
-use fuel_core_types::DeviceLocation;
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 
 // We do not want to implement Clone on Storage as cloning may fail because of
@@ -114,7 +113,7 @@ impl Storage {
     }
 
     pub(crate) fn to_cpu_storage(&self) -> Result<CpuStorage> {
-        self.0.to_cpu_storage_dyn()
+        self.0.to_host_buffer_dyn()
     }
 
     // -----------------------------------------------------------------------
@@ -128,15 +127,6 @@ impl Storage {
             .as_any()
             .downcast_ref::<CpuBackendStorage>()
             .map(|s| &s.0)
-            .ok_or_else(|| Error::Msg("expected cpu storage".into()).bt())
-    }
-
-    /// Downcast helper: get a `&mut CpuStorage` from the inner trait object.
-    fn as_cpu_storage_mut(&mut self) -> Result<&mut CpuStorage> {
-        self.0
-            .as_any_mut()
-            .downcast_mut::<CpuBackendStorage>()
-            .map(|s| &mut s.0)
             .ok_or_else(|| Error::Msg("expected cpu storage".into()).bt())
     }
 
@@ -159,50 +149,8 @@ impl Storage {
     }
 
     pub(crate) fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Self, Shape)> {
-        let location = self.0.device_dyn().location_dyn();
-        match location {
-            DeviceLocation::Cpu => {
-                let s = self.as_cpu_storage()?;
-                let (storage, shape) = c.cpu_fwd(s, l)?;
-                Ok((Self::from_cpu(storage), shape))
-            }
-            DeviceLocation::Cuda { .. } => {
-                #[cfg(feature = "cuda")]
-                {
-                    let s = self
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let (storage, shape) = c.cuda_fwd(s.inner(), l)?;
-                    Ok((Self::from_cuda(storage), shape))
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Err(Error::NotCompiledWithCudaSupport.bt())
-                }
-            }
-            DeviceLocation::Metal { .. } => {
-                #[cfg(feature = "metal")]
-                {
-                    let s = self
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let (storage, shape) = c.metal_fwd(s.inner(), l)?;
-                    Ok((Self::from_metal(storage), shape))
-                }
-                #[cfg(not(feature = "metal"))]
-                {
-                    Err(Error::NotCompiledWithMetalSupport.bt())
-                }
-            }
-            _ => Err(Error::Msg(
-                "custom-op is not supported on this backend".to_string(),
-            )
-            .bt()),
-        }
+        let (storage, shape) = c.fwd(&*self.0, l)?;
+        Ok((Self(storage), shape))
     }
 
     pub(crate) fn apply_op2(
@@ -213,58 +161,8 @@ impl Storage {
         c: &dyn CustomOp2,
     ) -> Result<(Self, Shape)> {
         self.same_device(t2, c.name())?;
-        let location = self.0.device_dyn().location_dyn();
-        match location {
-            DeviceLocation::Cpu => {
-                let s1 = self.as_cpu_storage()?;
-                let s2 = t2.as_cpu_storage()?;
-                let (s, shape) = c.cpu_fwd(s1, l1, s2, l2)?;
-                Ok((Self::from_cpu(s), shape))
-            }
-            DeviceLocation::Cuda { .. } => {
-                #[cfg(feature = "cuda")]
-                {
-                    let s1 = self
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let (s, shape) = c.cuda_fwd(s1.inner(), l1, s2.inner(), l2)?;
-                    Ok((Self::from_cuda(s), shape))
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Err(Error::NotCompiledWithCudaSupport.bt())
-                }
-            }
-            DeviceLocation::Metal { .. } => {
-                #[cfg(feature = "metal")]
-                {
-                    let s1 = self
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let (s, shape) = c.metal_fwd(s1.inner(), l1, s2.inner(), l2)?;
-                    Ok((Self::from_metal(s), shape))
-                }
-                #[cfg(not(feature = "metal"))]
-                {
-                    Err(Error::NotCompiledWithMetalSupport.bt())
-                }
-            }
-            _ => unreachable!(),
-        }
+        let (storage, shape) = c.fwd(&*self.0, l1, &*t2.0, l2)?;
+        Ok((Self(storage), shape))
     }
 
     pub(crate) fn apply_op3(
@@ -278,115 +176,12 @@ impl Storage {
     ) -> Result<(Self, Shape)> {
         self.same_device(t2, c.name())?;
         self.same_device(t3, c.name())?;
-        let location = self.0.device_dyn().location_dyn();
-        match location {
-            DeviceLocation::Cpu => {
-                let s1 = self.as_cpu_storage()?;
-                let s2 = t2.as_cpu_storage()?;
-                let s3 = t3.as_cpu_storage()?;
-                let (s, shape) = c.cpu_fwd(s1, l1, s2, l2, s3, l3)?;
-                Ok((Self::from_cpu(s), shape))
-            }
-            DeviceLocation::Cuda { .. } => {
-                #[cfg(feature = "cuda")]
-                {
-                    let s1 = self
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let s3 = t3
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let (s, shape) =
-                        c.cuda_fwd(s1.inner(), l1, s2.inner(), l2, s3.inner(), l3)?;
-                    Ok((Self::from_cuda(s), shape))
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Err(Error::NotCompiledWithCudaSupport.bt())
-                }
-            }
-            DeviceLocation::Metal { .. } => {
-                #[cfg(feature = "metal")]
-                {
-                    let s1 = self
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let s3 = t3
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let (s, shape) =
-                        c.metal_fwd(s1.inner(), l1, s2.inner(), l2, s3.inner(), l3)?;
-                    Ok((Self::from_metal(s), shape))
-                }
-                #[cfg(not(feature = "metal"))]
-                {
-                    Err(Error::NotCompiledWithMetalSupport.bt())
-                }
-            }
-            _ => unreachable!(),
-        }
+        let (storage, shape) = c.fwd(&*self.0, l1, &*t2.0, l2, &*t3.0, l3)?;
+        Ok((Self(storage), shape))
     }
 
     pub(crate) fn inplace_op1(&mut self, l: &Layout, c: &dyn InplaceOp1) -> Result<()> {
-        let location = self.0.device_dyn().location_dyn();
-        match location {
-            DeviceLocation::Cpu => {
-                let s = self.as_cpu_storage_mut()?;
-                c.cpu_fwd(s, l)
-            }
-            DeviceLocation::Cuda { .. } => {
-                #[cfg(feature = "cuda")]
-                {
-                    let s = self
-                        .0
-                        .as_any_mut()
-                        .downcast_mut::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    c.cuda_fwd(s.inner_mut(), l)
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Err(Error::NotCompiledWithCudaSupport.bt())
-                }
-            }
-            DeviceLocation::Metal { .. } => {
-                #[cfg(feature = "metal")]
-                {
-                    let s = self
-                        .0
-                        .as_any_mut()
-                        .downcast_mut::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    c.metal_fwd(s.inner_mut(), l)
-                }
-                #[cfg(not(feature = "metal"))]
-                {
-                    Err(Error::NotCompiledWithMetalSupport.bt())
-                }
-            }
-            _ => Err(Error::Msg(
-                "inplace-op is not supported on this backend".to_string(),
-            )
-            .bt()),
-        }
+        c.fwd(&mut *self.0, l)
     }
 
     pub(crate) fn inplace_op2(
@@ -397,61 +192,7 @@ impl Storage {
         c: &dyn InplaceOp2,
     ) -> Result<()> {
         self.same_device(t2, c.name())?;
-        let location = self.0.device_dyn().location_dyn();
-        match location {
-            DeviceLocation::Cpu => {
-                let s2 = t2.as_cpu_storage()?;
-                let s1 = self.as_cpu_storage_mut()?;
-                c.cpu_fwd(s1, l1, s2, l2)
-            }
-            DeviceLocation::Cuda { .. } => {
-                #[cfg(feature = "cuda")]
-                {
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let s2_inner: &crate::CudaStorage = s2.inner();
-                    // SAFETY: s2_inner borrows from t2 (not self), so it's fine
-                    // to borrow self mutably next.
-                    let s2_ptr = s2_inner as *const crate::CudaStorage;
-                    let s1 = self
-                        .0
-                        .as_any_mut()
-                        .downcast_mut::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    c.cuda_fwd(s1.inner_mut(), l1, unsafe { &*s2_ptr }, l2)
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Err(Error::NotCompiledWithCudaSupport.bt())
-                }
-            }
-            DeviceLocation::Metal { .. } => {
-                #[cfg(feature = "metal")]
-                {
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let s2_inner: &crate::MetalStorage = s2.inner();
-                    let s2_ptr = s2_inner as *const crate::MetalStorage;
-                    let s1 = self
-                        .0
-                        .as_any_mut()
-                        .downcast_mut::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    c.metal_fwd(s1.inner_mut(), l1, unsafe { &*s2_ptr }, l2)
-                }
-                #[cfg(not(feature = "metal"))]
-                {
-                    Err(Error::NotCompiledWithMetalSupport.bt())
-                }
-            }
-            _ => unreachable!(),
-        }
+        c.fwd(&mut *self.0, l1, &*t2.0, l2)
     }
 
     pub(crate) fn inplace_op3(
@@ -465,84 +206,7 @@ impl Storage {
     ) -> Result<()> {
         self.same_device(t2, c.name())?;
         self.same_device(t3, c.name())?;
-        let location = self.0.device_dyn().location_dyn();
-        match location {
-            DeviceLocation::Cpu => {
-                let s2 = t2.as_cpu_storage()?;
-                let s3 = t3.as_cpu_storage()?;
-                let s1 = self.as_cpu_storage_mut()?;
-                c.cpu_fwd(s1, l1, s2, l2, s3, l3)
-            }
-            DeviceLocation::Cuda { .. } => {
-                #[cfg(feature = "cuda")]
-                {
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let s3 = t3
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    let s2_ptr = s2.inner() as *const crate::CudaStorage;
-                    let s3_ptr = s3.inner() as *const crate::CudaStorage;
-                    let s1 = self
-                        .0
-                        .as_any_mut()
-                        .downcast_mut::<fuel_cuda::CudaBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected cuda storage".into()).bt())?;
-                    c.cuda_fwd(
-                        s1.inner_mut(),
-                        l1,
-                        unsafe { &*s2_ptr },
-                        l2,
-                        unsafe { &*s3_ptr },
-                        l3,
-                    )
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Err(Error::NotCompiledWithCudaSupport.bt())
-                }
-            }
-            DeviceLocation::Metal { .. } => {
-                #[cfg(feature = "metal")]
-                {
-                    let s2 = t2
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let s3 = t3
-                        .0
-                        .as_any()
-                        .downcast_ref::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    let s2_ptr = s2.inner() as *const crate::MetalStorage;
-                    let s3_ptr = s3.inner() as *const crate::MetalStorage;
-                    let s1 = self
-                        .0
-                        .as_any_mut()
-                        .downcast_mut::<fuel_metal::MetalBackendStorage>()
-                        .ok_or_else(|| Error::Msg("expected metal storage".into()).bt())?;
-                    c.metal_fwd(
-                        s1.inner_mut(),
-                        l1,
-                        unsafe { &*s2_ptr },
-                        l2,
-                        unsafe { &*s3_ptr },
-                        l3,
-                    )
-                }
-                #[cfg(not(feature = "metal"))]
-                {
-                    Err(Error::NotCompiledWithMetalSupport.bt())
-                }
-            }
-            _ => unreachable!(),
-        }
+        c.fwd(&mut *self.0, l1, &*t2.0, l2, &*t3.0, l3)
     }
 
     // -----------------------------------------------------------------------
