@@ -1,0 +1,12 @@
+[package]
+    categories.workspace = true
+    description          = "Runnable binaries demonstrating fuel's Phase 6a lazy graph layer. Kept separate from fuel-examples so it does not pull in the eager-path model code in fuel-transformers / fuel-nn."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-lazy-examples"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel = { workspace = true }

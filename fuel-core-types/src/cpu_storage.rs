@@ -1,14 +1,24 @@
-//! CPU storage types for tensor data.
+//! Host-side tensor storage types.
+//!
+//! The canonical type is [`HostBuffer`] — a dtype-tagged owned `Vec<T>`
+//! representing contiguous tensor data in host-addressable RAM. The
+//! type alias [`CpuStorage`] = [`HostBuffer`] preserves backwards
+//! compatibility so existing code doesn't need to change.
 
 use crate::{DType, WithDType};
 use float8::F8E4M3;
 use half::{bf16, f16};
 
-/// CPU-backed tensor storage holding a typed vector of elements.
+/// Host-addressable tensor storage holding a typed vector of elements.
 ///
-/// Each variant holds the data for the corresponding [`DType`].
+/// This is the universal interchange format for moving tensor data
+/// between backends: every `BackendStorage` can produce one via
+/// `to_host_buffer()`, and every `BackendDevice` can ingest one via
+/// `storage_from_host_buffer()`.
+///
+/// Previously named `CpuStorage` — that name remains as a type alias.
 #[derive(Debug, Clone)]
-pub enum CpuStorage {
+pub enum HostBuffer {
     U8(Vec<u8>),
     U32(Vec<u32>),
     I16(Vec<i16>),
@@ -26,9 +36,12 @@ pub enum CpuStorage {
     F8E8M0(Vec<u8>),
 }
 
-/// A borrowed reference to CPU tensor storage.
+/// Backwards-compatibility alias. New code should use [`HostBuffer`].
+pub type CpuStorage = HostBuffer;
+
+/// A borrowed reference to host tensor storage.
 #[derive(Debug, Clone)]
-pub enum CpuStorageRef<'a> {
+pub enum HostBufferRef<'a> {
     U8(&'a [u8]),
     U32(&'a [u32]),
     I16(&'a [i16]),
@@ -46,11 +59,14 @@ pub enum CpuStorageRef<'a> {
     F8E8M0(&'a [u8]),
 }
 
+/// Backwards-compatibility alias. New code should use [`HostBufferRef`].
+pub type CpuStorageRef<'a> = HostBufferRef<'a>;
+
 /// A CPU device handle (unit struct — the CPU needs no state).
 #[derive(Debug, Clone)]
 pub struct CpuDevice;
 
-impl CpuStorage {
+impl HostBuffer {
     /// Returns the [`DType`] of the elements stored.
     pub fn dtype(&self) -> DType {
         match self {

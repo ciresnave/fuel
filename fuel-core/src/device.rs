@@ -579,18 +579,18 @@ impl Device {
     }
 
     pub(crate) fn storage_from_slice<D: WithDType>(&self, data: &[D]) -> Result<Storage> {
-        let cpu = data.to_cpu_storage();
-        Ok(Storage(self.inner.storage_from_cpu_storage_owned_dyn(cpu)?))
+        let buf = data.to_cpu_storage();
+        Ok(Storage(self.inner.storage_from_host_buffer_owned_dyn(buf)?))
     }
 
     pub(crate) fn storage<A: NdArray>(&self, array: A) -> Result<Storage> {
-        let cpu = array.to_cpu_storage();
-        Ok(Storage(self.inner.storage_from_cpu_storage_owned_dyn(cpu)?))
+        let buf = array.to_cpu_storage();
+        Ok(Storage(self.inner.storage_from_host_buffer_owned_dyn(buf)?))
     }
 
     pub(crate) fn storage_owned<S: WithDType>(&self, data: Vec<S>) -> Result<Storage> {
-        let cpu = S::to_cpu_storage_owned(data);
-        Ok(Storage(self.inner.storage_from_cpu_storage_owned_dyn(cpu)?))
+        let buf = S::to_cpu_storage_owned(data);
+        Ok(Storage(self.inner.storage_from_host_buffer_owned_dyn(buf)?))
     }
 
     /// Synchronizes the device, waiting for all pending operations to complete.

@@ -1,13 +1,13 @@
-﻿# Fuel Fork — Roadmap
+﻿# Fuel — Roadmap
 
-This document describes the current state of this fork, the structural and ergonomic
+This document describes the current state of this project, the structural and ergonomic
 problems it aims to solve, and the planned order of work.
 
 ---
 
 ## Identity
 
-This fork is a **layered Rust ML framework**.
+Fuel is a **layered Rust ML framework**.
 
 It aims to feel small at the bottom and powerful toward the top, without forcing
 any particular use case on the layers below it. Someone doing tensor math should
@@ -62,7 +62,7 @@ stack flow downward only. No lower layer may depend on a higher one.
 │  storage backends, error types. No tokenization. No model-level concepts. │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Backends / Kernels                                                        │
-│  fuel-kernels, fuel-metal-kernels, fuel-flash-attn, fuel-ug       │
+│  fuel-cuda-kernels, fuel-metal-kernels, fuel-flash-attn, fuel-ug  │
 │  Hardware and runtime targets (CPU, CUDA, Metal) plus the concrete        │
 │  mathematical kernel implementations for each: matrix multiply, conv,     │
 │  flash attention, quantized dot products, SIMD/BLAS dispatch. This layer  │
@@ -140,21 +140,21 @@ stable but phases within a group can proceed in parallel.
 *Immediate. Prerequisite for everything else. Without this, engineers new to the
 fork can't get a working build.*
 
-#### What Fuellight revealed
+#### What Candlelight revealed
 
-The Fuel ecosystem consists of more than a dozen crates that must be kept in
+The Candle ecosystem consists of more than a dozen crates that must be kept in
 version sync with each other. In practice they are not. Engineers who try to use
-more than `fuel-core` + `fuel-nn` find that:
+more than `candle-core` + `candle-nn` find that:
 
-- `fuel-optimisers`, `fuel-layer-norm`, `fuel-bhop`, `fuel-einops`,
-  `fuel-birnn`, `fuel-lstm`, `fuel-crf`, and `fuel-approx` each require
-  separate forks to compile against the current Fuel version.
-- `fuel-layer-norm` does not build on Windows with CUDA 13.0 without a
+- `candle-optimisers`, `candle-layer-norm`, `candle-bhop`, `candle-einops`,
+  `candle-birnn`, `candle-lstm`, `candle-crf`, and `candle-approx` each require
+  separate forks to compile against the current Candle version.
+- `candle-layer-norm` does not build on Windows with CUDA 13.0 without a
   patch. The Windows + MSVC path is not tested upstream.
-- `fuel-cublaslt` (cuBLASLt bindings for fused GEMM) and `fuel-cuda-vmm`
+- `candle-cublaslt` (cuBLASLt bindings for fused GEMM) and `candle-cuda-vmm`
   (CUDA Virtual Memory Management for elastic KV cache) have no home in the
   main crate tree at all.
-- The result is that every downstream project must maintain its own Fuellight
+- The result is that every downstream project must maintain its own Candlelight
   fork just to get a building dependency set.
 
 This means the ecosystem is only usable by engineers willing to maintain those
@@ -290,9 +290,9 @@ Initially empty beyond its scaffolding. As training-orchestration code accumulat
 
 #### Inference capabilities to contribute from Lightbulb
 
-Lightbulb is an inference engine built on top of this Fuel fork that was
+Lightbulb is an inference engine built on top of this Candle fork that was
 developed independently because the pieces needed to build a production-quality
-inference engine were not available or not usable in Fuel as-is. Its
+inference engine were not available or not usable in Candle as-is. Its
 implementations are now the intended source material for `fuel-inference`.
 Contributing them back avoids others having to reinvent the same work.
 
@@ -691,7 +691,7 @@ type. Layers 1–4 are untouched and do not need to wait for this phase.*
 The seam is present. `fuel-core/src/backend.rs` defines `BackendDevice` and
 `BackendStorage` as associated-type traits; CPU, CUDA, and Metal all implement
 them. CUDA and Metal are already behind Cargo feature flags, meaning a
-CPU-only user never compiles GPU code. The kernel crates (`fuel-kernels`,
+CPU-only user never compiles GPU code. The kernel crates (`fuel-cuda-kernels`,
 `fuel-metal-kernels`, `fuel-flash-attn`, `fuel-ug`) are already separate
 from `fuel-core`.
 
@@ -834,8 +834,7 @@ Progress:
   dispatch calling fuel-cpu-backend's `unary_map`/`binary_map` helpers
   (full delegation blocked until CpuStorage is re-exported from fuel-core-types,
   which requires resolving dtype.rs/convert.rs orphan rule issues).
-- [ ] Extract cuda/metal backends into separate crates (future, lower priority —
-  already behind feature flags with separate kernel crates).
+- [ ] Extract cuda/metal backends into separate crates (already behind feature flags with separate kernel crates).
 
 #### Tier 3 — Open Device for third-party backends ✅ COMPLETE
 
@@ -882,94 +881,436 @@ let device = Device::custom(Arc::new(MyDevice::new()));
 
 ---
 
-### Phase 6 — Lazy Execution & Autonomous DAG Scheduling ("Burn the Boats")
+### Phase 6 — Lazy Execution & Autonomous Scheduling
 
-*Massive scope. Fundamental systemic rewrite of the entire ecosystem transitioning from Eager Execution to a Lazy Computation Graph with an Autonomous Router. This permanently severs upstream model compatibility with HuggingFace's Fuel repository in exchange for kernel fusion, autonomous multi-device orchestration, and asynchronous execution.*
+*Large scope. Transitions Fuel from eager execution to a lazy computation
+graph with an autonomous router that selects backends per operation, fuses
+kernels, and minimizes cross-device transfer cost. The rewrite deliberately
+severs upstream compatibility with HuggingFace Candle; models are re-ported
+against Fuel's new semantics rather than kept in sync with upstream.
+Multi-node execution is explicitly out of scope for this phase and is
+deferred indefinitely.*
 
-**The Concept:**
-Invert the tensor design to strictly separate the backend-agnostic frontend from the backend-specific execution. The user-facing API remains completely hardware-agnostic (`Tensor`), building a lazy computation graph. Fuel acts as an autonomous compiler and router: analyzing hardware load, profiling kernels, and dynamically selecting the optimal backend(s) to execute the graph, inserting data transfers across PCIe boundaries automatically.
+#### Why lazy execution is required
 
-#### Step 1: The Backend-Agnostic Frontend (User API)
+The end-state Fuel is aiming for — per-operation backend selection,
+cross-device routing, kernel fusion, and transfer-cost-aware scheduling —
+is fundamentally incompatible with eager execution. An eager op commits to
+a backend the moment it runs, so there is nothing for a planner to analyze,
+fuse, or re-route after the fact. Opt-in "compile this region" approaches
+(PyTorch's `torch.compile`, for example) are notoriously leaky: graph
+breaks, partial coverage, recompilation surprises, and a two-mode mental
+model developers have to keep in their heads. Fuel commits to lazy-by-
+default to keep the ceiling clean and the mental model single.
 
-- Define `Tensor` as a pure handle (node ID) to a Lazy Computation Graph. It tracks `Shape`, `DType`, and the pending operation tree, but has *no generic hardware tags* (`<B>`).
-- This prevents viral generics from infecting `fuel-nn` and `fuel-transformers`. The user writes pure math, unaware of whether it will execute on CPU, Metal, or CUDA.
+The cost of this decision is the loss of direct HF Candle model
+portability. The ~100 models in `fuel-transformers` today will need to be
+re-validated under lazy semantics; Phase 6 validates against a focused
+anchor set rather than the full catalog (see Anchor models below). Models
+outside the anchor set may be ported later as demand warrants or retired
+where they are not earning their maintenance cost.
 
-#### Step 2: The Handle-Based Shadowed State (ECS)
+#### Prerequisites (hard gates before 6a can start)
 
-- Implement backend registries that map agnostic Tensor IDs to physical, device-specific storage types (e.g., `CudaStorage`).
-- **Deferred Garbage Collection:** When an `AgnosticTensor`'s `Arc` drops to zero, notify the backend registry via a lock-free queue to batch-deallocate the VRAM safely without blocking the CPU's graph-building thread.
+- [x] **`fuel-reference-backend` crate.** Landed. 173 tests covering every
+      op in the catalog as textbook-correct implementations. Used as the
+      correctness oracle for `fuel-graph-cpu` via equivalence tests —
+      every op the fast executor runs has a reference counterpart that
+      the test suite verifies it agrees with.
+- [ ] **CI oracle gate.** The anchor-model suite runs on both the reference
+      backend and the optimized pipeline, and CI asserts outputs match
+      within tolerance on every PR. This gate applies to every sub-phase
+      below. (Not yet wired into CI — the equivalence tests in
+      `fuel-graph-cpu::tests` are the precursor, but they only cover the
+      per-op level, not full anchor models.)
+- [ ] **Debuggability requirements**, non-negotiable from day one:
+  - `Tensor::realize_eagerly()` — forces immediate execution of any pending
+    graph for a single tensor, for use in debug prints and interactive
+    development. The lazy model must not force developers to fly blind.
+  - Planner "why did I pick this" traces — for any dispatched operation,
+    the planner can emit a human-readable explanation of which backend was
+    selected, which candidates were considered, and the cost-model inputs
+    that drove the decision. Controlled by an environment variable and a
+    per-graph flag.
+  - Shape mismatch errors report *where in the graph* the mismatch
+    occurred, not just "at realize time," using the source location of the
+    op that introduced the conflict. (Build-time shape validation in the
+    `Tensor::*` builders already catches most of these with source
+    locations via Rust panics; the structured graph-traversal version is
+    still owed.)
 
-#### Step 3: The Autonomous Router & DAG Planner
+#### Sub-phase 6a — Lazy frontend + single-backend (CPU) planner
 
-- When the user asks for concrete data (`.realize()`, `.to_vec()`, or `.wait()`), the DAG Planner analyzes the pending graph.
-- **Hardware & Kernel Profiling:** The planner looks at available devices, current memory usage, and pre-profiled software kernels (from Phase 5).
-- **Dynamic Routing:** The planner natively assigns subgraphs to specific backends, dynamically inserting `.to_backend()` transfer nodes if computing on a different device is faster than the PCIe transfer penalty.
+*The smallest working version. Prove the architecture on the simplest
+possible hardware configuration.*
 
-#### Step 4: Backend-Specific Execution Engines
+- [x] Define `Tensor` as a pure handle (node ID) referencing a lazy
+      computation graph. **Landed** as `fuel_graph::Tensor`. Tracks `Shape`,
+      `DType`, and the pending op tree. No hardware generics. Lives in the
+      `fuel-graph` crate.
+- [x] Build the graph data structure, node types, and basic graph-walking
+      utilities. **Landed**: `fuel_graph::Graph`, `fuel_graph::Op` with 60+
+      variants, `fuel_graph::Node`, `fuel_graph::topo_order` as iterative
+      post-order DFS (deep graphs up to 10k+ nodes tested). 64 unit tests
+      in fuel-graph.
+- [x] Implement `.realize()` as the boundary between graph-building and
+      execution. **Landed**: `fuel_reference_backend::exec::realize_*` and
+      `fuel_graph_cpu::realize_*` (fast path) both expose this boundary.
+      `LazyTensor::realize_f32()` on top of them.
+- [x] Implement a **minimal planner**. **Landed** as the topo-walk
+      executor. Not yet ranked, profiled, or size-class-aware — that's
+      Sub-phase 6b's Judge module. The interface is defined and later
+      phases extend it.
+- [x] Implement the **saved-tensors tracker**. **Landed** implicitly: the
+      forward graph itself IS the saved-tensors store. Backward rules
+      reference forward node IDs directly, and the executor's cache holds
+      each node's result through the combined forward+backward walk.
+- [x] Implement **unfused backward autograd**. **Landed**: `Tensor::backward`
+      in `fuel-graph` with per-op gradient rules for every differentiable
+      op, including MatMul, Transpose, Permute, Softmax, LayerNorm, RoPE
+      (compositional), RmsNorm (compositional), and SwiGLU / SiLU. Full
+      forward-and-backward tests on a 3-layer LLaMA-style transformer
+      block passing as of this session.
+- [ ] Implement **sequence-length bucketing** for dynamic shapes. Not yet
+      started.
+- [x] **KV cache for autoregressive decode.** `LlamaKVCache` /
+      `LayerKVCache` types, `forward_with_cache` method that prepends
+      cached K/V via concat, `realize_many_f32` (both executors) for
+      single-walk multi-root evaluation. `generate()` uses prefill-then-
+      decode: one O(prompt²) forward, then O(total_seq) per token.
+      Correctness validated by `generate_with_cache_matches_non_cached_
+      generate` test (token-for-token equivalence under greedy).
+- [x] **Causal attention mask.** Additive lower-triangular mask applied to
+      scores before softmax in both `apply_layer` and
+      `apply_layer_with_cache`. During single-token decode the mask is
+      all-zeros (no-op); during prefill it's the standard triangular.
+      Without this, the model produced token salad.
+- [x] **Streaming token output.** `generate_streaming()` takes an
+      `FnMut(u32)` callback invoked per freshly sampled token. The
+      `llama-lazy` and `qwen-lazy` binaries use delta-decoding (decode
+      full sequence, print only the new text) for correct multi-byte
+      UTF-8 streaming.
+- [x] **Qwen2 architectural support (anchor model #2).** Optional Q/K/V
+      attention biases on `LayerWeights`, auto-detected by the safetensors
+      loader (LLaMA stores `None`). `apply_optional_bias` helper.
+      `qwen-lazy` binary defaults to `Qwen/Qwen2-0.5B-Instruct`. EOS
+      scan includes `<|im_end|>` for Qwen2 chat. Two new tests covering
+      bias correctness and cached-vs-non-cached equivalence with biases.
+- [x] **Performance: Arc-shared weights.** `ConstData` variants hold
+      `Arc<[T]>`, `RefTensor` stores `Arc<[T]>`, `LlamaWeights` fields
+      are `Arc<[f32]>`. Const-node evaluation in both executors is now a
+      refcount bump, not a memcpy. Eliminated ~8 GB/call of allocation
+      churn on TinyLlama.
+- [x] **Performance: zero-copy broadcast and reshape.** `broadcast_to`
+      detects pure-padding cases (e.g. `[M,K]` → `[1,M,K]`) and Arc-
+      shares the source buffer. General path preallocates scratch outside
+      the inner loop (was allocating per-element). `reshape` shares via
+      Arc since row-major reshape is metadata-only.
+- [x] **Performance: gemm parallelism + shared RoPE tables.** fast_matmul
+      uses `Parallelism::Rayon(0)` (all cores). `build_rope_tables` +
+      `rope_with_tables` let all 22 layers share one pair of cos/sin
+      const nodes per forward instead of each building its own.
+- [x] **Fast CPU executor as a step beyond the original 6a plan.** Landed
+      as `fuel-graph-cpu` — a gemm-backed executor that's ~50-200× faster
+      than the reference path on matmul-bound workloads. Equivalence
+      tested against reference on 6 matmul + transformer-block tests.
+      `LazyTensor::realize_*` defaults to this fast path;
+      `realize_f32_reference` is available for oracle/debugging use.
+- [x] **HuggingFace Hub integration.** `LlamaModel::from_hub(repo_id)`
+      and `LlamaTokenizer::from_hub(repo_id)` in `fuel_core::lazy` wrap
+      `hf-hub` for one-call download + load. Supports both sharded and
+      non-sharded safetensors layouts. Handles bf16/f16/f32/f64 loading
+      with automatic conversion to f32 for the graph.
+- [x] **`LazyTensor` bridge in `fuel-core`.** A wrapper around
+      `fuel_graph::Tensor` that presents fuel-core-style method names
+      (add, mul, matmul, softmax_last_dim, etc.) so existing model code
+      has a gradual migration path onto the lazy backend. 38 lib tests
+      in fuel-core covering the bridge, realization, the Llama end-to-end
+      pipeline, and the `generate()` decode loop.
+- [x] **Runnable end-to-end example**: `fuel-lazy-examples` crate with a
+      `llama-lazy` binary that downloads a LLaMA-family model from HF
+      Hub, tokenizes a prompt, runs the full forward pass through the
+      lazy graph, samples tokens, and prints the decoded result.
+      Defaults to TinyLlama for auth-free execution; works with Llama 3
+      (requires HF token + license acceptance) via command-line override.
+- [ ] Port the **anchor model set** (see below) to the lazy API, one at a
+      time, validating each against the reference backend via the oracle
+      gate. Partially done:
+  - **LLaMA family** (Llama 1/2/3, TinyLlama, Mistral): end-to-end via
+    `LlamaConfig`/`LlamaModel`. TinyLlama 1.1B generates coherent text
+    at ~0.28 s/token on a modern desktop CPU (DRAM-bandwidth-bound at
+    f32). Mistral is architecturally identical and runs without code
+    changes.
+  - **Qwen2**: end-to-end via the same model code with optional Q/K/V
+    attention biases. `Qwen/Qwen2-0.5B-Instruct` generates coherent
+    text at ~0.25 s/token. Bias detection is automatic from safetensors.
+  - Whisper, ConvNeXt, SD 1.5, YOLOv8, BERT, Qwen2-MoE — not yet
+    ported.
 
-- While the frontend is untyped, the internal dispatch boundary maps the localized graph directly to strongly typed backend engines.
-- Backends operate strictly on their native typed storage (`CpuStorage`, `CudaStorage`), eliminating the previous inner `dyn` downcasting.
-- Implement **Kernel Fusion**: The backend engines compile localized sequences (e.g., `MatMul` + `Add` + `ReLU`) into single hardware kernel launches.
+**Exit criterion for 6a**: all seven anchor models run end-to-end on the
+lazy CPU backend, produce output bit-equivalent to the reference backend
+within tolerance, and training works on at least one anchor (suggested: a
+small Llama 3 variant). Performance does not yet need to match eager CPU
+Candle — correctness is the 6a gate. **Status**: 2 of 7 anchors landed
+(Llama family + Qwen2). Training on LLaMA has been validated on a
+2-layer variant with full backward-pass gradient-descent loops in tests.
 
-#### Step 5: Ecosystem Adaptation
+#### Sub-phase 6b — Multi-backend routing on one device
 
-- Refactor `fuel-core` operations to push nodes to the graph instead of executing eagerly.
-- Adapt `fuel-transformers` to batch requests and use the asynchronous `.realize()` boundary optimally, unlocking massive performance gains for large LLMs.
+*Introduce backend choice. Prove the planner can pick between alternatives
+on a single piece of hardware.*
 
-##### Vulkan backend (future — new crate)
+- Add CUDA and Metal as selectable backends in the planner. Backends
+  operate strictly on their native typed storage (`CpuStorage`,
+  `CudaStorage`, `MetalStorage`); the internal dispatch boundary maps the
+  localized graph onto strongly typed backend engines. No inner `dyn`
+  downcasting.
+- Implement the **probe-score-init lifecycle**: at startup, each backend
+  reports its hardware compatibility score (0–100) for the available
+  hardware, and the planner learns which backends are viable.
+- Implement the **Judge module**: profile every
+  (operation, backend, dtype, size class) tuple for latency and numerical
+  precision against the reference backend. Results stored in a persistent
+  on-disk dispatch table so the Judge runs once at install time, not per
+  execution.
+- Implement **ranked dispatch tables**: top-N backends per
+  (op, dtype, size class), per criterion (fastest / most accurate /
+  balanced). Runtime dispatch is an O(1) table lookup.
+- The **cost model** for 6b is simple: one device means no transfer costs,
+  just per-op latency from the dispatch table.
+- Validate all anchor models on CUDA and (where available) Metal,
+  oracle-gated.
 
-A Vulkan/WebGPU backend would follow the exact same pattern:
+**Exit criterion for 6b**: anchor models run on CUDA and Metal with
+per-operation backend selection, oracle-equivalent to the reference
+backend, and measurably faster than the lazy-CPU baseline on workloads
+where the GPU is an improvement.
 
-```rust
-// fuel-vulkan/src/dyn_impl.rs  (future)
-pub struct VulkanBackendStorage { /* Vulkan buffer + device ref */ }
-pub struct VulkanBackendDevice { /* VkDevice, queues, pipeline cache */ }
+#### Sub-phase 6c — Multi-device routing on one node
 
-impl DynBackendStorage for VulkanBackendStorage { /* ... */ }
-impl DynBackendDevice for VulkanBackendDevice { /* ... */ }
-```
+*Introduce cross-device routing. This is where the DAG planner earns its
+keep.*
 
-No changes to `fuel-core` would be required — the user just creates a
-`Device(Arc::new(VulkanBackendDevice::new()?))` and everything works
-through the trait-object dispatch. This is the plug-and-play extensibility
-that Tier 3b enables.
+- Extend the cost model with **transfer costs**: H2D, D2H, D2D (where
+  supported), and inter-GPU bandwidth sourced from `fuel-parallel`'s
+  `DeviceTopology`.
+- Implement the **DAG planner**: transform the forward+backward graph into
+  a layered DAG where each node is a (step, backend) pair, price each edge
+  against the transfer cost model, and find the minimum-cost execution
+  path via forward dynamic programming. This is the point at which a
+  single computation can span CPU and GPU when the compute savings
+  outweigh the transfer penalty.
+- Insert **automatic transfer nodes** into the optimized graph where the
+  planner decides a cross-device hop is worth it.
+- Multi-GPU cases specifically (tensor parallelism, pipeline parallelism)
+  use the existing `fuel-parallel` primitives rather than inventing new
+  ones.
+- Validate anchor models with artificial memory constraints that force
+  cross-device execution (for example, a model too large for one GPU's
+  VRAM).
 
-#### Tier 4 — Operation-level routing (long-term vision)
+**Exit criterion for 6c**: at least one anchor model that does not fit on
+a single GPU runs correctly and faster under the DAG planner than under
+any hand-tuned placement.
 
-Tiers 1–3 solve compile-time selection and third-party extensibility. They do
-not address cross-backend routing: can operations within the same computation
-use different backends?
+#### Sub-phase 6d — Kernel fusion, symbolic autograd, paged attention
 
-Today, Fuel executes eagerly. A tensor is on a device; an op runs immediately
-on that device's backend. There is no mechanism to compile a sequence of
-operations first, consult routing tables, and then execute with per-op backend
-selection.
+*Optimization phase. Everything here is an improvement on a working 6c
+baseline, not a prerequisite for it. Sub-phase 6d may be broken into
+parallel tracks; its pieces are independent.*
 
-A future `fuel-dispatch` crate could provide this without changing the eager
-programming model for users who do not opt in:
+- **Kernel fusion.** Backend engines compile localized sequences (e.g.
+  `MatMul → Add → ReLU`) into single kernel launches where a fused kernel
+  exists in the catalog. New fused kernels enter the catalog via the
+  oracle acceptance gate — no fused kernel ships without bit-equivalent
+  validation against the reference backend on a matrix of
+  (dtype × shape × input distribution) tests.
+- **Symbolic autograd transform.** Replace 6a's unfused backward with a
+  graph-to-graph rewrite pass. Per-op gradient rules become graph
+  constructors that emit new nodes representing the gradient computation,
+  and the resulting backward graph is fused and scheduled by the planner
+  alongside the forward graph. Backward fusion happens for free. Unlocks
+  automatic gradient checkpointing (the planner decides which forward
+  activations to drop and recompute) and higher-order gradients.
+- **Paged attention.** Replace 6a's bucketing with a true paged attention
+  kernel that consults a page table to fetch only populated cache blocks.
+  Collapses all LLM decode shapes into a single execution path. The
+  planner does not need to change — it simply picks the paged kernel when
+  available and the bucketing fallback otherwise. Paged attention ships
+  only after passing the oracle acceptance gate against sequence lengths
+  up to the maximum supported context. Scheduled *after* the rest of Phase
+  6 is stable and proven correct.
+- **Scheduler integration.** The Lightbulb-contributed inference scheduler
+  (`fuel-inference`) already handles speculative decoding and MoE expert
+  routing as runtime policy. 6d integrates those with the planner so that,
+  for example, expert batches land on backends the planner knows are best
+  suited for them.
 
-- A **lazy op-sequence builder**: accepts operation descriptors without executing
-  them, building an operation DAG equivalent to faster-blaster's `op_chain`.
-- A **probe/score mechanism**: at startup, probe all registered backends against
-  the available hardware and rate each one per operation type.
-- A **judge equivalent**: benchmark candidate backends against a
-  `fuel-reference-backend` (the correctness oracle; analogous to
-  `faster-blaster-reference`) and store latency profiles and precision curves.
-- A **ranked dispatch table**: top-N backends per (op, dtype, size class), per
-  criterion (fastest / most accurate / balanced). O(1) per-dispatch lookup.
-- A **DAG planner**: transforms the op sequence into a layered DAG, prices each
-  (step, backend) node against a data transfer cost model for cross-device edges,
-  and selects the minimum-cost execution path using dynamic programming.
+**Exit criterion for 6d**: Fuel's performance ceiling matches or exceeds
+the best hand-tuned execution on each anchor model at the time of writing.
+This is the "we built what we set out to build" gate.
 
-This tier requires `fuel-core` to support at least a thin deferred execution
-mode — tensors that record their op sequence before committing to a device — or
-alternatively it operates at a higher level, emitting explicit `.to_device()`
-transfers between steps as the DAG planner directs. The former is a deeper
-change; the latter is composable on top of today's eager model. Either way,
-it depends on Tiers 2 and 3 being stable first.
+#### Explicitly out of scope for Phase 6
 
-This is the point at which Fuel's dispatch story converges with the
-architecture that faster-blaster was designed around from the beginning.
+- **Multi-node execution.** Networking, cluster membership, distributed
+  graph serialization, fault tolerance, and cross-node scheduling are a
+  separate project sitting on top of a stable Phase 6, not part of it.
+  Deferred for now.
+- **Additional backends beyond CPU / CUDA / Metal.** A Vulkan or WebGPU
+  backend is a natural future addition — once Phase 6 is stable it slots
+  in as another implementation of the backend-engine contract and joins
+  the Judge's profiling matrix like any other backend. Not a Phase 6
+  deliverable.
+
+#### Anchor models
+
+The Phase 6 validation suite. Each is chosen to stress a different part of
+the architecture; a bug that escapes all seven is unlikely to matter.
+
+| Model     | Category           | Stresses                                                  |
+| --------- | ------------------ | --------------------------------------------------------- |
+| Llama 3   | Decoder-only LLM   | KV cache growth, grouped-query attention, bucketing       |
+| Whisper   | Encoder-decoder    | Cross-attention, fixed-length mel input, separate encoder |
+| ConvNeXt  | Pure conv vision   | Depthwise separable convs, channel-last LayerNorm         |
+| SD 1.5    | Diffusion pipeline | UNet, VAE, text encoder, scheduler loop                   |
+| YOLOv8    | Object detection   | NMS (data-dependent postprocessing), anchor box ops       |
+| BERT      | Encoder-only       | Bidirectional attention, maximum checkpoint compatibility |
+| Qwen2-MoE | Mixture of experts | Dynamic expert routing, per-token subgraph selection      |
+
+Each anchor model is ported to the lazy API in 6a and is a Phase 6a
+milestone. Sub-phases 6b, 6c, and 6d each re-run the full anchor suite as
+a regression gate before the sub-phase can be declared complete.
+
+SD 1.5 may be extended to SDXL after Phase 6 ships; SDXL shares ~90% of
+the structure of SD 1.5 and is a follow-up rather than a Phase 6
+requirement.
+
+---
+
+### Phase 7 — Storage hierarchy refactor and vendor-optimized CPU backends
+
+*Architectural cleanup that pays for itself in three places: fixing a
+long-standing layering inconsistency, unblocking the per-vendor CPU
+backend crates, and establishing the foundation for future multi-host
+execution. Sequenced deliberately — the storage refactor has to land
+first because the vendor backends depend on it, and the multi-host
+support builds on both.*
+
+#### Why this phase exists
+
+Today `CpuStorage` lives in `fuel-core-types`, one crate up from where
+it conceptually belongs (`fuel-cpu-backend`). That inconsistency was
+fine when there was only one CPU backend, but it becomes an active
+blocker as soon as you want more than one: external code that wants
+to implement a custom op against the CPU backend ends up depending on
+both `fuel-core-types` (for `CpuStorage`) and `fuel-cpu-backend`
+(for the `BackendStorage` trait's impls), and can't cleanly hold its
+own `BackendStorage` type that wraps `HostStorage` without duplicating
+the underlying enum.
+
+There is also no trait-level abstraction for "data that lives in host
+RAM." Today `CpuStorage` is the concrete type everything reaches for,
+but the needs are broader: mmap'd safetensors for lazy weight loading,
+pinned memory for GPU DMA, shared-memory regions for IPC, and
+(eventually) remote host references for the networked-execution
+future. All of these are conceptually "host storage" but none of them
+are `Vec<T>`.
+
+#### 7a — Trait hierarchy for storage
+
+- [x] **`HostBuffer` / `HostBufferRef` as canonical names.** The enum
+      previously called `CpuStorage` is now `HostBuffer` in
+      `fuel-core-types`. `CpuStorage` and `CpuStorageRef` remain as
+      transparent type aliases (pattern matching, `impl` blocks, and
+      all 46 downstream files work unchanged).
+- [x] **`HostStorage` trait.** Standalone capability trait in
+      `fuel-core-types::backend` — orthogonal to the static-vs-dyn
+      dispatch axis. Two methods: `as_host_buffer() -> &HostBuffer`
+      (zero-copy borrow) and `into_host_buffer() -> HostBuffer` (owned
+      extraction). Implemented by `CpuBackendStorage` in
+      `fuel-cpu-backend`. Future impls slot in alongside: mmap, pinned,
+      shared-mem, remote.
+- [x] **New trait method names.** `BackendStorage::to_host_buffer`,
+      `DynBackendStorage::to_host_buffer_dyn`,
+      `BackendDevice::storage_from_host_buffer[_owned]`,
+      `DynBackendDevice::storage_from_host_buffer[_owned]_dyn`. Old
+      `*_cpu_storage*` names have default impls that delegate, so
+      nothing breaks. Hot-path call sites in fuel-core (`storage.rs`,
+      `device.rs`, `tensor.rs`, `safetensors.rs`) already migrated.
+- [ ] **Relocate `HostBuffer` from `fuel-core-types` to
+      `fuel-cpu-backend`.** The alias stays in `fuel-core-types` for
+      path compatibility. Deferred until vendor backends land.
+- [ ] **Additional `HostStorage` impls** (unblocked by the trait):
+  - `MmappedHostStorage` for zero-copy safetensors loading.
+  - `PinnedHostStorage` for page-locked GPU DMA memory.
+  - `SharedMemHostStorage` for IPC across processes.
+- [ ] **Fix `fuel-core/tests/custom_op_tests.rs`** — still gated with
+      `#![cfg(any())]`. Post-refactor, rewrite against `HostStorage`
+      trait methods with `fuel-cpu-backend` as a dev-dep.
+
+#### 7b — Vendor-optimized CPU backend crates
+
+*Each is a self-contained crate implementing the backend trait against
+a specific vendor library. Users opt in at their own Cargo.toml level,
+so there are no feature-flag conflicts across transitive deps. The
+pure-Rust `fuel-cpu-backend` stays the default; these are for users
+who want the last 20-40% of performance out of specific hardware.*
+
+- [ ] **`fuel-mkl-ffi` crate.** Thin FFI wrappers around Intel oneMKL's
+      cblas interface. Adapted from rstsr-mkl-ffi's approach — copy the
+      core wrappers into the Fuel tree so we control the release
+      cadence and can adapt the Rust API to Fuel conventions. Minimal
+      scope: `sgemm`, `dgemm`, a few common LAPACK routines. Can grow
+      as Fuel's op catalog needs more FFI targets.
+- [ ] **`fuel-aocl-ffi` crate.** Same pattern for AMD's AOCL. AOCL is
+      BLIS under the hood with AMD-specific kernel tunings; on Zen 4
+      and Zen 5 it typically wins 10-30% over MKL for large GEMMs.
+      Adapted from rstsr-aocl-ffi.
+- [ ] **`fuel-mkl-cpu-backend` crate.** Depends on `fuel-core-types`
+      (for `HostStorage` and `BackendStorage`) and `fuel-mkl-ffi`.
+      Provides `MklCpuBackendStorage` that wraps any `HostStorage`,
+      implements `BackendStorage`, dispatches matmul / conv / the
+      obvious BLAS targets through MKL, and falls back to `gemm` for
+      anything MKL doesn't have a native implementation of. Builds
+      require the Intel oneMKL runtime to be installed; the crate's
+      README documents the setup.
+- [ ] **`fuel-aocl-cpu-backend` crate.** Same for AOCL. Builds require
+      AMD AOCL runtime to be installed.
+- [ ] **Runtime CPU detection (optional wrapper crate).** A
+      `fuel-cpu-auto-backend` that depends on all three and picks at
+      startup via `raw-cpuid`: Intel → MKL, AMD → AOCL, unknown →
+      pure-Rust. Opt-in; not wired into the default dep chain.
+
+**Naming note**: the crate names are library-named
+(`fuel-mkl-cpu-backend`, `fuel-aocl-cpu-backend`) rather than
+vendor-named (`fuel-intelcpu-backend`, `fuel-amdcpu-backend`) because
+the crate is defined by the library it wraps, not by the CPU brand
+running it. Users can in principle run MKL on an AMD CPU or AOCL on
+an Intel CPU, so the library-based name stays accurate regardless of
+execution hardware. If you want vendor aliases on top for
+discoverability, they're easy to add as re-exports.
+
+#### 7c — Multi-host foundation (deferred)
+
+Eventually Fuel will execute across multiple machines. The storage
+refactor in 7a lays the groundwork without yet committing to any
+particular transport. The piece needed when the multi-host work
+actually starts is:
+
+- [ ] **`RemoteHostStorage` impl of `HostStorage`.** Holds a handle to
+      data on another machine. `as_slice_*()` methods block on a
+      network fetch the first time they're called, then cache the
+      result locally. Any fuel code generic over `H: HostStorage`
+      works uniformly on local and remote data; only the latency
+      profile changes.
+- [ ] **Cluster membership and routing** live in a separate future
+      `fuel-cluster` crate — not Phase 7, not Phase 6. They depend on
+      `RemoteHostStorage` being a working trait impl first.
+
+Multi-host execution is explicitly out of scope for the current
+roadmap, but Phase 7's trait-based storage design is chosen with it
+in mind so that when it does land, no fundamental interface changes
+are required in the frontend.
 
 ---
 
@@ -980,12 +1321,12 @@ the answer is always no for that layer — find the right layer instead.
 
 | Layer                                 | Will never contain                                                                                                    |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Foundation (`fuel-core`)            | Tokenization, model-family assumptions, serving abstractions, HF Hub client code                                      |
-| NN (`fuel-nn`)                      | Model-architecture implementations, inference session management, decode loops, training loops                        |
-| Models (`fuel-transformers`)        | Serving infrastructure, batching schedulers, streaming decode loops, session lifecycle, training policy               |
-| IO (`fuel-core` IO + `fuel-onnx`) | Runtime policy, model architecture logic, serving abstractions                                                        |
-| Inference (`fuel-inference`)        | New tensor primitives, new dtypes, new backend dispatch, training policy, anything that redefines foundation concepts |
-| Training (`fuel-training`)          | New tensor primitives, new dtypes, inference-specific concerns (KV caches, sampling, decode loops)                    |
+| Foundation (`fuel-core`)              | Tokenization, model-family assumptions, serving abstractions, HF Hub client code                                      |
+| NN (`fuel-nn`)                        | Model-architecture implementations, inference session management, decode loops, training loops                        |
+| Models (`fuel-transformers`)          | Serving infrastructure, batching schedulers, streaming decode loops, session lifecycle, training policy               |
+| IO (`fuel-core` IO + `fuel-onnx`)     | Runtime policy, model architecture logic, serving abstractions                                                        |
+| Inference (`fuel-inference`)          | New tensor primitives, new dtypes, new backend dispatch, training policy, anything that redefines foundation concepts |
+| Training (`fuel-training`)            | New tensor primitives, new dtypes, inference-specific concerns (KV caches, sampling, decode loops)                    |
 | Backends/Kernels                      | ML concepts, model logic, layer abstractions, training or inference policy, anything above shaped memory and math     |
 
 ---
@@ -1020,16 +1361,65 @@ fuel-nn ────────────────────────
        │
        │  depends on
        ▼
-fuel-core
-       │
-       │  depends on  [feature flags select which backend crates are compiled]
-       ▼
+fuel-core  (eager path today; the lazy path in fuel_core::lazy
+   │        wraps fuel-graph + fuel-graph-cpu + fuel-reference-backend)
+   │
+   │  depends on  [feature flags select which backend crates are compiled]
+   ▼
 fuel-cpu-backend          fuel-cuda-backend         fuel-metal-backend
     (always)                [feature = "cuda"]          [feature = "metal"]
                                    │                           │
                                    ▼                           ▼
-                       fuel-kernels              fuel-metal-kernels
+                       fuel-cuda-kernels         fuel-metal-kernels
                        fuel-flash-attn
+```
+
+### Phase 6 sub-graph (the lazy layer)
+
+```text
+fuel-lazy-examples ─────────────────────┐
+                                        │
+                                      runnable
+                                        │
+                                        ▼
+fuel-core::lazy (LazyTensor, LlamaModel, LlamaTokenizer, generate)
+    │
+    │  builds on
+    ▼
+fuel-graph-cpu (gemm-backed fast executor; `realize_*` entry points)
+    │
+    │  depends on, for non-matmul ops
+    ▼
+fuel-reference-backend (textbook-correct oracle; also provides RefTensor)
+    │
+    │  depends on
+    ▼
+fuel-graph (Op enum, Graph arena, Tensor handle, topo_order, backward)
+    │
+    │  depends on
+    ▼
+fuel-core-types (Shape, DType, Layout, BackendStorage trait, errors)
+```
+
+### Phase 7 sub-graph (vendor-optimized CPU backends)
+
+```text
+                            fuel-cpu-auto-backend   (optional runtime dispatch)
+                                      │
+                     ┌────────────────┼────────────────┐
+                     ▼                ▼                ▼
+         fuel-mkl-cpu-backend    fuel-cpu-backend    fuel-aocl-cpu-backend
+                     │            (pure Rust;              │
+                     ▼             gemm under              ▼
+               fuel-mkl-ffi        the hood)         fuel-aocl-ffi
+                     │                                     │
+                     ▼                                     ▼
+              Intel oneMKL runtime                    AMD AOCL runtime
+                 (system lib)                         (system lib)
+
+All three implement the same BackendStorage / BackendDevice trait surface
+and operate on HostStorage-backed tensors. Consumers pick one (or several
+via fuel-cpu-auto-backend) at Cargo.toml level; no feature flags.
 ```
 
 The backend crate split is the Tier 2 target state from Phase 5. Before that

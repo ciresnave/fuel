@@ -24,7 +24,7 @@ pub mod scalar;
 pub mod shape;
 pub mod strided_index;
 
-pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef};
+pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 pub use device::DeviceLocation;
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use dummy_dtype::{F4, F6E2M3, F6E3M2, F8E8M0};

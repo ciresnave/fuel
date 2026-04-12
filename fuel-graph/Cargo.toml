@@ -1,0 +1,13 @@
+[package]
+    categories.workspace = true
+    description          = "Lazy computation graph for the fuel ML framework (Phase 6). Hardware-agnostic Tensor handles, an Op enum, and a Graph arena."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-graph"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types = { workspace = true }
+    half            = { workspace = true }

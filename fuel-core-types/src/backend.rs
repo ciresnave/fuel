@@ -7,7 +7,7 @@
 //!
 //! - [`BackendDevice`] — a handle to a physical or virtual compute device.
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Layout, Result, Shape};
+use crate::{CpuStorage, DType, HostBuffer, Layout, Result, Shape};
 
 /// A typed, device-resident buffer that implements all tensor operations for
 /// one backend.
@@ -28,8 +28,13 @@ pub trait BackendStorage: Sized {
     /// Returns a reference to the device that owns this storage.
     fn device(&self) -> &Self::Device;
 
-    /// Copies the data to a [`CpuStorage`].
-    fn to_cpu_storage(&self) -> Result<CpuStorage>;
+    /// Copies the data to a [`HostBuffer`].
+    fn to_host_buffer(&self) -> Result<HostBuffer>;
+
+    /// Deprecated alias for [`to_host_buffer`].
+    fn to_cpu_storage(&self) -> Result<CpuStorage> {
+        self.to_host_buffer()
+    }
 
     /// Applies the elementwise affine map `x ↦ x * mul + add`.
     fn affine(&self, _: &Layout, _mul: f64, _add: f64) -> Result<Self>;
@@ -226,6 +231,33 @@ pub trait BackendStorage: Sized {
     fn const_set(&mut self, _value: crate::scalar::Scalar, _: &Layout) -> Result<()>;
 }
 
+/// Capability trait for storage types whose data lives in
+/// host-addressable RAM — i.e., the storage can be viewed as a
+/// [`HostBuffer`] without a device-to-host copy.
+///
+/// This is intentionally NOT a supertrait of `BackendStorage` or
+/// `DynBackendStorage`. Host-residency is orthogonal to the
+/// static-vs-dyn dispatch axis: a storage type can implement
+/// `HostStorage` alongside either (or both) of those.
+///
+/// Today the only implementor is the CPU backend's
+/// `CpuBackendStorage`. Future implementors:
+///
+/// - `MmappedHostStorage` — memory-mapped weights via `mmap2`
+/// - `PinnedHostStorage` — page-locked memory for GPU DMA
+/// - `RemoteHostStorage` — network-accessible buffers for multi-host
+pub trait HostStorage {
+    /// Borrow the underlying data as a [`HostBuffer`] (zero-copy).
+    fn as_host_buffer(&self) -> Result<&HostBuffer>;
+
+    /// Extract the underlying data as an owned [`HostBuffer`]. May
+    /// clone if the storage is shared; prefer [`as_host_buffer`] when
+    /// a borrow suffices.
+    fn into_host_buffer(self) -> Result<HostBuffer>
+    where
+        Self: Sized;
+}
+
 /// A handle to a physical or virtual compute device.
 ///
 /// `BackendDevice` manufactures [`BackendStorage`] instances and manages
@@ -257,11 +289,21 @@ pub trait BackendDevice: Sized + std::fmt::Debug + Clone {
     /// Creates a storage by copying elements from a host slice.
     fn storage_from_slice<T: crate::WithDType>(&self, _data: &[T]) -> Result<Self::Storage>;
 
-    /// Creates a storage by copying data from a [`CpuStorage`].
-    fn storage_from_cpu_storage(&self, _: &CpuStorage) -> Result<Self::Storage>;
+    /// Creates a storage by copying data from a [`HostBuffer`].
+    fn storage_from_host_buffer(&self, _: &HostBuffer) -> Result<Self::Storage>;
 
-    /// Creates a storage from a [`CpuStorage`], taking ownership.
-    fn storage_from_cpu_storage_owned(&self, _: CpuStorage) -> Result<Self::Storage>;
+    /// Creates a storage from a [`HostBuffer`], taking ownership.
+    fn storage_from_host_buffer_owned(&self, _: HostBuffer) -> Result<Self::Storage>;
+
+    /// Deprecated alias for [`storage_from_host_buffer`].
+    fn storage_from_cpu_storage(&self, s: &CpuStorage) -> Result<Self::Storage> {
+        self.storage_from_host_buffer(s)
+    }
+
+    /// Deprecated alias for [`storage_from_host_buffer_owned`].
+    fn storage_from_cpu_storage_owned(&self, s: CpuStorage) -> Result<Self::Storage> {
+        self.storage_from_host_buffer_owned(s)
+    }
 
     /// Generates a storage filled with uniform random values in `[lo, hi)`.
     fn rand_uniform(
