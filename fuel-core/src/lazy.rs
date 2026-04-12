@@ -251,6 +251,11 @@ impl LazyTensor {
         Self { inner: self.inner.silu() }
     }
 
+    /// GELU activation (tanh approximation).
+    pub fn gelu(&self) -> Self {
+        Self { inner: self.inner.gelu() }
+    }
+
     /// Logistic sigmoid.
     pub fn sigmoid(&self) -> Self {
         Self { inner: self.inner.sigmoid() }
@@ -1975,7 +1980,7 @@ impl LlamaModel {
 /// Pick the next token from a logits vector using the configured
 /// sampling strategy. Pulled out of `generate` so both the cached and
 /// future non-cached callers can share it.
-fn sample_logits(
+pub fn sample_logits(
     logits: &[f32],
     strategy: SamplingStrategy,
     rng_state: &mut u64,
@@ -2102,6 +2107,500 @@ impl LlamaModel {
         let weights = LlamaWeights::load_from_mmapped(&st, &config)?;
 
         Ok(LlamaModel { config, weights })
+    }
+}
+
+// ---- Gemma 2 model assembly -------------------------------------------------
+
+/// Hyperparameters for a Gemma 2 model.
+///
+/// Key differences from LLaMA:
+/// - `head_dim` is decoupled from `dim / n_heads`
+/// - GeGLU activation instead of SwiGLU
+/// - Embedding scaled by `sqrt(dim)`
+/// - Four RmsNorms per layer (pre+post attention, pre+post FFN)
+/// - RmsNorm offset: `(gain + 1) * normalized`
+/// - Attention logit softcapping before softmax
+/// - Final logit softcapping after output projection
+/// - Alternating sliding-window and full attention layers
+/// - `query_pre_attn_scalar` for attention scale
+#[derive(Debug, Clone)]
+pub struct Gemma2Config {
+    pub vocab_size:             usize,
+    pub dim:                    usize,
+    pub n_layers:               usize,
+    pub n_heads:                usize,
+    pub n_kv_heads:             usize,
+    pub head_dim:               usize,
+    pub ffn_dim:                usize,
+    pub norm_eps:               f64,
+    pub rope_base:              f64,
+    pub query_pre_attn_scalar:  f64,
+    pub attn_logit_softcapping: Option<f64>,
+    pub final_logit_softcapping: Option<f64>,
+    pub sliding_window:         Option<usize>,
+}
+
+impl Gemma2Config {
+    pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))?;
+
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let dim = get_usize("hidden_size")?;
+        let n_layers = get_usize("num_hidden_layers")?;
+        let n_heads = get_usize("num_attention_heads")?;
+        let n_kv_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(n_heads);
+        let ffn_dim = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(dim / n_heads);
+        let norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-6);
+        let rope_base = get_f64("rope_theta").unwrap_or(10000.0);
+        let query_pre_attn_scalar = get_f64("query_pre_attn_scalar")
+            .unwrap_or(head_dim as f64);
+        let attn_logit_softcapping = get_f64("attn_logit_softcapping");
+        let final_logit_softcapping = get_f64("final_logit_softcapping");
+        let sliding_window = v
+            .get("sliding_window")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+
+        Ok(Self {
+            vocab_size,
+            dim,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            ffn_dim,
+            norm_eps,
+            rope_base,
+            query_pre_attn_scalar,
+            attn_logit_softcapping,
+            final_logit_softcapping,
+            sliding_window,
+        })
+    }
+}
+
+/// Per-layer weights for a Gemma 2 transformer block.
+///
+/// Four norm gains (pre/post attention + pre/post FFN) instead of LLaMA's two.
+#[derive(Debug, Clone)]
+pub struct Gemma2LayerWeights {
+    pub attn_q:                  Arc<[f32]>,
+    pub attn_k:                  Arc<[f32]>,
+    pub attn_v:                  Arc<[f32]>,
+    pub attn_o:                  Arc<[f32]>,
+    pub ffn_gate:                Arc<[f32]>,
+    pub ffn_up:                  Arc<[f32]>,
+    pub ffn_down:                Arc<[f32]>,
+    pub input_layernorm:         Arc<[f32]>,
+    pub post_attention_layernorm: Arc<[f32]>,
+    pub pre_feedforward_layernorm: Arc<[f32]>,
+    pub post_feedforward_layernorm: Arc<[f32]>,
+}
+
+/// Top-level weights for a Gemma 2 model.
+#[derive(Debug, Clone)]
+pub struct Gemma2Weights {
+    pub token_embedding: Arc<[f32]>,
+    pub layers:          Vec<Gemma2LayerWeights>,
+    pub final_norm_gain: Arc<[f32]>,
+}
+
+pub struct Gemma2Model {
+    pub config:  Gemma2Config,
+    pub weights: Gemma2Weights,
+}
+
+/// Gemma's RmsNorm: `(gain + 1) * (x / rms)`. The `+1` centers the
+/// initial gain around 1 (HF initializes to 0 rather than 1).
+fn apply_gemma_rms_norm(
+    x: &LazyTensor,
+    gain: &Arc<[f32]>,
+    dim: usize,
+    eps: f64,
+) -> LazyTensor {
+    let normalized = x.rms_norm_last_dim(eps);
+    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
+    let gain_plus_one = gain_t.add_scalar(1.0);
+    normalized.broadcast_mul(&gain_plus_one)
+}
+
+/// Softcapping: `tanh(x / cap) * cap`. Bounds values to `[-cap, cap]`.
+fn softcap(x: &LazyTensor, cap: f64) -> LazyTensor {
+    x.mul_scalar(1.0 / cap).tanh().mul_scalar(cap)
+}
+
+impl Gemma2Model {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> LazyTensor {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+
+        // Embedding + scale by sqrt(dim).
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+        );
+        let token_ids =
+            embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids)
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .mul_scalar((cfg.dim as f64).sqrt());
+
+        // Shared RoPE tables.
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base,
+            start_pos,
+            seq,
+            cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        for (li, layer) in weights.layers.iter().enumerate() {
+            h = self.apply_layer(&h, layer, li, start_pos, &rope_cos, &rope_sin);
+        }
+
+        // Final norm.
+        let h_norm = apply_gemma_rms_norm(
+            &h,
+            &weights.final_norm_gain,
+            cfg.dim,
+            cfg.norm_eps,
+        );
+
+        // Output projection (tied embeddings — transpose embed_tokens).
+        // embed_tokens is [vocab_size, dim]; for `h @ W` we need [dim, vocab_size].
+        // We store the already-transposed version.
+        let w_out_data = {
+            let e = weights.token_embedding.as_ref();
+            let mut t = vec![0.0_f32; cfg.dim * cfg.vocab_size];
+            for i in 0..cfg.vocab_size {
+                for j in 0..cfg.dim {
+                    t[j * cfg.vocab_size + i] = e[i * cfg.dim + j];
+                }
+            }
+            t
+        };
+        let w_out = h_norm.const_f32_like(
+            w_out_data,
+            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
+        );
+        let logits = h_norm.matmul(&w_out);
+
+        // Final logit softcapping.
+        match cfg.final_logit_softcapping {
+            Some(cap) if cap > 0.0 => softcap(&logits, cap),
+            _ => logits,
+        }
+    }
+
+    fn apply_layer(
+        &self,
+        x: &LazyTensor,
+        layer: &Gemma2LayerWeights,
+        layer_idx: usize,
+        start_pos: usize,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+    ) -> LazyTensor {
+        let cfg = &self.config;
+        let dims = x.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let qk_dim = cfg.n_heads * cfg.head_dim;
+        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+
+        // Pre-attention RmsNorm (Gemma offset style).
+        let x_norm = apply_gemma_rms_norm(x, &layer.input_layernorm, cfg.dim, cfg.norm_eps);
+
+        // Q/K/V projections. Note: Gemma 2 projects to head_dim * n_heads
+        // which may differ from dim when head_dim != dim/n_heads.
+        let w_q = x.const_f32_like(layer.attn_q.clone(), Shape::from_dims(&[cfg.dim, qk_dim]));
+        let w_k = x.const_f32_like(layer.attn_k.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
+        let w_v = x.const_f32_like(layer.attn_v.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
+        let w_o = x.const_f32_like(layer.attn_o.clone(), Shape::from_dims(&[qk_dim, cfg.dim]));
+        let q = x_norm.matmul(&w_q);
+        let k = x_norm.matmul(&w_k);
+        let v = x_norm.matmul(&w_v);
+
+        // Split heads.
+        let q_h = q
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+        let k_h = k
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+
+        // RoPE.
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
+
+        // GQA expansion.
+        let (k_r, v_h) = if cfg.n_kv_heads == cfg.n_heads {
+            (k_r, v_h)
+        } else {
+            assert_eq!(cfg.n_heads % cfg.n_kv_heads, 0);
+            let n_rep = cfg.n_heads / cfg.n_kv_heads;
+            let expand = |t: LazyTensor| -> LazyTensor {
+                t.reshape(Shape::from_dims(&[batch, cfg.n_kv_heads, 1, seq, cfg.head_dim]))
+                    .broadcast_to(Shape::from_dims(&[batch, cfg.n_kv_heads, n_rep, seq, cfg.head_dim]))
+                    .reshape(Shape::from_dims(&[batch, cfg.n_heads, seq, cfg.head_dim]))
+            };
+            (expand(k_r), expand(v_h))
+        };
+
+        // Attention with query_pre_attn_scalar and optional softcapping.
+        let k_t = k_r.transpose();
+        let scale = 1.0 / cfg.query_pre_attn_scalar.sqrt();
+        let scores = q_r.matmul(&k_t);
+        let scores_scaled = scores.mul_scalar(scale);
+
+        // Attention logit softcapping.
+        let scores_capped = match cfg.attn_logit_softcapping {
+            Some(cap) if cap > 0.0 => softcap(&scores_scaled, cap),
+            _ => scores_scaled,
+        };
+
+        // Causal mask (with optional sliding window on alternating layers).
+        let use_sliding = cfg.sliding_window.is_some() && layer_idx % 2 == 0;
+        let window = cfg.sliding_window.unwrap_or(usize::MAX);
+        let mut mask_data = vec![0.0_f32; seq * seq];
+        for q_pos in 0..seq {
+            for k_pos in 0..seq {
+                let abs_q = start_pos + q_pos;
+                let abs_k = start_pos + k_pos;
+                let causal_ok = abs_k <= abs_q;
+                let window_ok = !use_sliding || abs_q.saturating_sub(abs_k) < window;
+                if !(causal_ok && window_ok) {
+                    mask_data[q_pos * seq + k_pos] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let scores_masked = scores_capped.broadcast_add(&mask);
+        let attn = scores_masked.softmax_last_dim();
+        let attn_v = attn.matmul(&v_h);
+
+        // Merge heads + output projection.
+        let merged = attn_v
+            .permute(&[0, 2, 1, 3])
+            .reshape(Shape::from_dims(&[batch, seq, qk_dim]));
+        let attn_out = merged.matmul(&w_o);
+
+        // Post-attention RmsNorm (Gemma has this; LLaMA does not).
+        let attn_out_norm = apply_gemma_rms_norm(
+            &attn_out,
+            &layer.post_attention_layernorm,
+            cfg.dim,
+            cfg.norm_eps,
+        );
+
+        // First residual.
+        let h1 = x.add(&attn_out_norm);
+
+        // Pre-FFN RmsNorm.
+        let h1_norm = apply_gemma_rms_norm(
+            &h1,
+            &layer.pre_feedforward_layernorm,
+            cfg.dim,
+            cfg.norm_eps,
+        );
+
+        // GeGLU FFN (GELU activation instead of SiLU).
+        let w_gate = x.const_f32_like(layer.ffn_gate.clone(), Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
+        let w_up = x.const_f32_like(layer.ffn_up.clone(), Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
+        let w_down = x.const_f32_like(layer.ffn_down.clone(), Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
+        let gate = h1_norm.matmul(&w_gate);
+        let up = h1_norm.matmul(&w_up);
+        let geglu = gate.gelu().mul(&up);
+        let ffn_out = geglu.matmul(&w_down);
+
+        // Post-FFN RmsNorm.
+        let ffn_out_norm = apply_gemma_rms_norm(
+            &ffn_out,
+            &layer.post_feedforward_layernorm,
+            cfg.dim,
+            cfg.norm_eps,
+        );
+
+        // Second residual.
+        h1.add(&ffn_out_norm)
+    }
+}
+
+impl Gemma2Weights {
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Gemma2Config,
+    ) -> crate::Result<Self> {
+        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+        let qk_dim = cfg.n_heads * cfg.head_dim;
+        let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
+
+        let mut layers = Vec::with_capacity(cfg.n_layers);
+        for i in 0..cfg.n_layers {
+            let attn_q = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.self_attn.q_proj.weight"),
+                qk_dim,
+                cfg.dim,
+            )?;
+            let attn_k = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.self_attn.k_proj.weight"),
+                kv_dim,
+                cfg.dim,
+            )?;
+            let attn_v = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.self_attn.v_proj.weight"),
+                kv_dim,
+                cfg.dim,
+            )?;
+            let attn_o = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.self_attn.o_proj.weight"),
+                cfg.dim,
+                qk_dim,
+            )?;
+            let ffn_gate = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.mlp.gate_proj.weight"),
+                cfg.ffn_dim,
+                cfg.dim,
+            )?;
+            let ffn_up = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.mlp.up_proj.weight"),
+                cfg.ffn_dim,
+                cfg.dim,
+            )?;
+            let ffn_down = load_transposed_matrix(
+                st,
+                &format!("model.layers.{i}.mlp.down_proj.weight"),
+                cfg.dim,
+                cfg.ffn_dim,
+            )?;
+            let input_layernorm = load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.input_layernorm.weight"),
+            )?;
+            let post_attention_layernorm = load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.post_attention_layernorm.weight"),
+            )?;
+            let pre_feedforward_layernorm = load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.pre_feedforward_layernorm.weight"),
+            )?;
+            let post_feedforward_layernorm = load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.post_feedforward_layernorm.weight"),
+            )?;
+            layers.push(Gemma2LayerWeights {
+                attn_q:                    Arc::from(attn_q),
+                attn_k:                    Arc::from(attn_k),
+                attn_v:                    Arc::from(attn_v),
+                attn_o:                    Arc::from(attn_o),
+                ffn_gate:                  Arc::from(ffn_gate),
+                ffn_up:                    Arc::from(ffn_up),
+                ffn_down:                  Arc::from(ffn_down),
+                input_layernorm:           Arc::from(input_layernorm),
+                post_attention_layernorm:  Arc::from(post_attention_layernorm),
+                pre_feedforward_layernorm: Arc::from(pre_feedforward_layernorm),
+                post_feedforward_layernorm: Arc::from(post_feedforward_layernorm),
+            });
+        }
+
+        let final_norm_gain = load_tensor_as_f32(st, "model.norm.weight")?;
+
+        Ok(Gemma2Weights {
+            token_embedding: Arc::from(token_embedding),
+            layers,
+            final_norm_gain: Arc::from(final_norm_gain),
+        })
+    }
+}
+
+impl Gemma2Model {
+    pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| crate::Error::Msg(format!("hf-hub config.json: {e}")))?;
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let config = Gemma2Config::from_hf_json_str(&config_str)?;
+
+        let weight_paths: Vec<std::path::PathBuf> =
+            match repo.get("model.safetensors.index.json") {
+                Ok(index_path) => {
+                    let index_str = std::fs::read_to_string(&index_path)?;
+                    let index: serde_json::Value = serde_json::from_str(&index_str)
+                        .map_err(|e| crate::Error::Msg(format!("parsing index: {e}")))?;
+                    let weight_map = index
+                        .get("weight_map")
+                        .and_then(|x| x.as_object())
+                        .ok_or_else(|| crate::Error::Msg("index: missing weight_map".into()))?;
+                    let mut unique = std::collections::HashSet::new();
+                    for v in weight_map.values() {
+                        if let Some(s) = v.as_str() {
+                            unique.insert(s.to_string());
+                        }
+                    }
+                    let mut paths = Vec::new();
+                    for name in &unique {
+                        paths.push(
+                            repo.get(name)
+                                .map_err(|e| crate::Error::Msg(format!("hf-hub {name}: {e}")))?,
+                        );
+                    }
+                    paths
+                }
+                Err(_) => {
+                    vec![repo
+                        .get("model.safetensors")
+                        .map_err(|e| {
+                            crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                        })?]
+                }
+            };
+
+        let st = unsafe {
+            crate::safetensors::MmapedSafetensors::multi(&weight_paths)
+        }?;
+        let weights = Gemma2Weights::load_from_mmapped(&st, &config)?;
+
+        Ok(Gemma2Model { config, weights })
     }
 }
 
@@ -2844,6 +3343,122 @@ mod llama_tests {
             (pred as usize) < cfg.vocab_size,
             "argmax should return a valid vocab index",
         );
+    }
+}
+
+#[cfg(test)]
+mod gemma2_tests {
+    use super::*;
+
+    fn make_tiny_gemma2_config() -> Gemma2Config {
+        Gemma2Config {
+            vocab_size:             16,
+            dim:                    8,
+            n_layers:               2,
+            n_heads:                4,
+            n_kv_heads:             2,
+            head_dim:               4,
+            ffn_dim:                16,
+            norm_eps:               1e-6,
+            rope_base:              10000.0,
+            query_pre_attn_scalar:  4.0,
+            attn_logit_softcapping: Some(50.0),
+            final_logit_softcapping: Some(30.0),
+            sliding_window:         Some(4),
+        }
+    }
+
+    fn make_tiny_gemma2_weights(cfg: &Gemma2Config) -> Gemma2Weights {
+        let mut s: u32 = 7777;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
+        };
+        let mut vec_of = |n: usize| -> Arc<[f32]> {
+            let v: Vec<f32> = (0..n).map(|_| next()).collect();
+            Arc::from(v)
+        };
+        let qk_dim = cfg.n_heads * cfg.head_dim;
+        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+        Gemma2Weights {
+            token_embedding: vec_of(cfg.vocab_size * cfg.dim),
+            layers: (0..cfg.n_layers)
+                .map(|_| Gemma2LayerWeights {
+                    attn_q:                    vec_of(cfg.dim * qk_dim),
+                    attn_k:                    vec_of(cfg.dim * kv_dim),
+                    attn_v:                    vec_of(cfg.dim * kv_dim),
+                    attn_o:                    vec_of(qk_dim * cfg.dim),
+                    ffn_gate:                  vec_of(cfg.dim * cfg.ffn_dim),
+                    ffn_up:                    vec_of(cfg.dim * cfg.ffn_dim),
+                    ffn_down:                  vec_of(cfg.ffn_dim * cfg.dim),
+                    input_layernorm:           Arc::from(vec![0.0_f32; cfg.dim]),
+                    post_attention_layernorm:  Arc::from(vec![0.0_f32; cfg.dim]),
+                    pre_feedforward_layernorm: Arc::from(vec![0.0_f32; cfg.dim]),
+                    post_feedforward_layernorm: Arc::from(vec![0.0_f32; cfg.dim]),
+                })
+                .collect(),
+            final_norm_gain: Arc::from(vec![0.0_f32; cfg.dim]),
+        }
+    }
+
+    #[test]
+    fn gemma2_forward_produces_finite_logits() {
+        let cfg = make_tiny_gemma2_config();
+        let model = Gemma2Model {
+            config:  cfg.clone(),
+            weights: make_tiny_gemma2_weights(&cfg),
+        };
+        let logits = model.forward(&[1, 2, 3], 0);
+        let v = logits.realize_f32();
+        assert_eq!(v.len(), 1 * 3 * cfg.vocab_size);
+        for &x in &v {
+            assert!(x.is_finite(), "logit is non-finite: {x}");
+        }
+    }
+
+    #[test]
+    fn gemma2_softcapping_bounds_logits() {
+        let cfg = make_tiny_gemma2_config();
+        let model = Gemma2Model {
+            config:  cfg.clone(),
+            weights: make_tiny_gemma2_weights(&cfg),
+        };
+        let logits = model.forward(&[1, 2, 3], 0);
+        let v = logits.realize_f32();
+        let cap = cfg.final_logit_softcapping.unwrap() as f32;
+        for &x in &v {
+            assert!(
+                x.abs() <= cap + 1e-3,
+                "logit {x} exceeds softcap {cap}",
+            );
+        }
+    }
+
+    #[test]
+    fn gemma2_config_parses_hf_format() {
+        let json = r#"{
+            "architectures": ["Gemma2ForCausalLM"],
+            "hidden_size": 2304,
+            "intermediate_size": 9216,
+            "num_hidden_layers": 26,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "vocab_size": 256000,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "query_pre_attn_scalar": 256,
+            "attn_logit_softcapping": 50.0,
+            "final_logit_softcapping": 30.0,
+            "sliding_window": 4096
+        }"#;
+        let cfg = Gemma2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.dim, 2304);
+        assert_eq!(cfg.head_dim, 256);
+        assert_eq!(cfg.n_kv_heads, 4);
+        assert_eq!(cfg.vocab_size, 256000);
+        assert_eq!(cfg.sliding_window, Some(4096));
+        assert!((cfg.query_pre_attn_scalar - 256.0).abs() < 1e-6);
     }
 }
 
