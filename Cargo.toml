@@ -5,6 +5,7 @@ members = [
     "fuel-cpu-backend",
     "fuel-graph",
     "fuel-graph-cpu",
+    "fuel-graph-cuda",
     "fuel-lazy-examples",
     "fuel-reference-backend",
     "fuel-cuda",
@@ -53,6 +54,7 @@ fuel-core-types = { path = "./fuel-core-types", version = "0.10.2" }
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
+fuel-graph-cuda = { path = "./fuel-graph-cuda", version = "0.10.2" }
 fuel-cuda = { path = "./fuel-cuda", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
 fuel-flash-attn = { path = "./fuel-flash-attn", version = "0.10.2" }
