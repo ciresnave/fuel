@@ -1,6 +1,7 @@
 ﻿//! Rotary Embeddings
 //!
 use fuel::{CpuStorage, Layout, Result, Shape, Tensor, D};
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 use rayon::prelude::*;
 
 /// Interleaved variant of rotary embeddings.
@@ -16,15 +17,24 @@ impl fuel::CustomOp3 for RotaryEmbI {
         "rotary-emb-int"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        s1: &CpuStorage,
+        s1: &dyn fuel::dyn_backend::DynBackendStorage,
         l1: &Layout,
-        s2: &CpuStorage,
+        s2: &dyn fuel::dyn_backend::DynBackendStorage,
         l2: &Layout,
-        s3: &CpuStorage,
+        s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s1 = s1.inner();
+        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s2 = s2.inner();
+        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s3 = s3.inner();
         fn inner<T: fuel::WithDType + num_traits::Float>(
             src: &[T],
             l_src: &Layout,
@@ -69,20 +79,20 @@ impl fuel::CustomOp3 for RotaryEmbI {
             Ok((storage, (b, h, t, d).into()))
         }
 
-        use fuel::backend::BackendStorage;
-        use CpuStorage::{BF16, F16, F32, F64};
-        match (s1, s2, s3) {
-            (BF16(s1), BF16(s2), BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F16(s1), F16(s2), F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F32(s1), F32(s2), F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F64(s1), F64(s2), F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
+        use CpuStorage as C;
+        let (result, shape) = match (s1, s2, s3) {
+            (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
             _ => fuel::bail!(
                 "unsupported dtype for rope {:?} {:?} {:?}",
                 s1.dtype(),
                 s2.dtype(),
                 s3.dtype()
             ),
-        }
+        }?;
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
     #[cfg(feature = "cuda")]
@@ -333,15 +343,24 @@ impl fuel::CustomOp3 for RotaryEmb {
         "rotary-emb"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        s1: &CpuStorage,
+        s1: &dyn fuel::dyn_backend::DynBackendStorage,
         l1: &Layout,
-        s2: &CpuStorage,
+        s2: &dyn fuel::dyn_backend::DynBackendStorage,
         l2: &Layout,
-        s3: &CpuStorage,
+        s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s1 = s1.inner();
+        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s2 = s2.inner();
+        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s3 = s3.inner();
         fn inner<T: fuel::WithDType + num_traits::Float>(
             src: &[T],
             l_src: &Layout,
@@ -390,20 +409,20 @@ impl fuel::CustomOp3 for RotaryEmb {
             Ok((storage, (b, h, t, d).into()))
         }
 
-        use fuel::backend::BackendStorage;
-        use CpuStorage::{BF16, F16, F32, F64};
-        match (s1, s2, s3) {
-            (BF16(s1), BF16(s2), BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F16(s1), F16(s2), F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F32(s1), F32(s2), F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F64(s1), F64(s2), F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
+        use CpuStorage as C;
+        let (result, shape) = match (s1, s2, s3) {
+            (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
             _ => fuel::bail!(
                 "unsupported dtype for rope {:?} {:?} {:?}",
                 s1.dtype(),
                 s2.dtype(),
                 s3.dtype()
             ),
-        }
+        }?;
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
     #[cfg(feature = "cuda")]
@@ -638,15 +657,24 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         "rotary-emb"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        s1: &CpuStorage,
+        s1: &dyn fuel::dyn_backend::DynBackendStorage,
         l1: &Layout,
-        s2: &CpuStorage,
+        s2: &dyn fuel::dyn_backend::DynBackendStorage,
         l2: &Layout,
-        s3: &CpuStorage,
+        s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s1 = s1.inner();
+        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s2 = s2.inner();
+        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s3 = s3.inner();
         fn inner<T: fuel::WithDType + num_traits::Float>(
             src: &[T],
             l_src: &Layout,
@@ -696,20 +724,20 @@ impl fuel::CustomOp3 for RotaryEmbThd {
             Ok((storage, (b, t, h, d).into()))
         }
 
-        use fuel::backend::BackendStorage;
-        use CpuStorage::{BF16, F16, F32, F64};
-        match (s1, s2, s3) {
-            (BF16(s1), BF16(s2), BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F16(s1), F16(s2), F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F32(s1), F32(s2), F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (F64(s1), F64(s2), F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
+        use CpuStorage as C;
+        let (result, shape) = match (s1, s2, s3) {
+            (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
+            (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
             _ => fuel::bail!(
                 "unsupported dtype for rope {:?} {:?} {:?}",
                 s1.dtype(),
                 s2.dtype(),
                 s3.dtype()
             ),
-        }
+        }?;
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
     #[cfg(feature = "cuda")]

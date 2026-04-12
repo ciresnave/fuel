@@ -12,6 +12,7 @@
 //! ```
 
 use fuel::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor, D};
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 use rayon::prelude::*;
 
 /// Applies the softmax function to the input tensor, rescaling the element so that elements on
@@ -110,15 +111,17 @@ impl fuel::CustomOp1 for Sigmoid {
         "sigmoid"
     }
 
-    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
-        use fuel::backend::BackendStorage;
+    fn fwd(&self, storage: &dyn fuel::dyn_backend::DynBackendStorage, layout: &Layout) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let storage = storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let storage = storage.inner();
 
         fn fwd<T: num_traits::Float>(v: T) -> T {
             (v.neg().exp() + T::one()).recip()
         }
 
         // FIXME: using `fuel::map_dtype` causes compilation errors.
-        let storage = match storage {
+        let result = match storage {
             CpuStorage::BF16(slice) => {
                 CpuStorage::BF16(fuel::cpu_backend::unary_map(slice, layout, fwd))
             }
@@ -136,7 +139,7 @@ impl fuel::CustomOp1 for Sigmoid {
                 self.name(),
             ))?,
         };
-        Ok((storage, layout.shape().clone()))
+        Ok((Box::new(CpuBackendStorage::from(result)), layout.shape().clone()))
     }
 
     #[cfg(feature = "cuda")]
@@ -435,7 +438,11 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
         "softmax-last-dim"
     }
 
-    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
+    fn fwd(&self, storage: &dyn fuel::dyn_backend::DynBackendStorage, layout: &Layout) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let storage = storage.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let storage = storage.inner();
+
         fn softmax<T: fuel::WithDType + num_traits::Float>(
             src: &[T],
             layout: &Layout,
@@ -466,13 +473,14 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
             Ok((storage, Shape::from_dims(dims)))
         }
 
-        match storage {
+        let (result, shape) = match storage {
             CpuStorage::BF16(slice) => softmax::<half::bf16>(slice, layout),
             CpuStorage::F16(slice) => softmax::<half::f16>(slice, layout),
             CpuStorage::F32(slice) => softmax::<f32>(slice, layout),
             CpuStorage::F64(slice) => softmax::<f64>(slice, layout),
             _ => fuel::bail!("unsupported dtype for softmax {:?}", storage),
-        }
+        }?;
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
     #[cfg(feature = "cuda")]
@@ -609,14 +617,19 @@ impl fuel::CustomOp2 for RmsNorm {
         "rms-norm"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        s1: &CpuStorage,
+        s1: &dyn fuel::dyn_backend::DynBackendStorage,
         l1: &Layout,
-        s2: &CpuStorage,
+        s2: &dyn fuel::dyn_backend::DynBackendStorage,
         l2: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
-        use fuel::backend::BackendStorage;
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s1 = s1.inner();
+        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s2 = s2.inner();
 
         let eps = self.eps;
         fn inner<
@@ -664,12 +677,13 @@ impl fuel::CustomOp2 for RmsNorm {
         }
 
         use CpuStorage as C;
-        match (s1, s2) {
-            (C::BF16(s1), C::BF16(s2)) => inner::<half::bf16>(s1, l1, s2, l2, eps),
-            (C::F16(s1), C::F16(s2)) => inner::<half::f16>(s1, l1, s2, l2, eps),
-            (C::F32(s1), C::F32(s2)) => inner::<f32>(s1, l1, s2, l2, eps),
+        let (result, shape) = match (s1, s2) {
+            (C::BF16(s1), C::BF16(s2)) => inner::<half::bf16>(s1.as_slice(), l1, s2.as_slice(), l2, eps),
+            (C::F16(s1), C::F16(s2)) => inner::<half::f16>(s1.as_slice(), l1, s2.as_slice(), l2, eps),
+            (C::F32(s1), C::F32(s2)) => inner::<f32>(s1.as_slice(), l1, s2.as_slice(), l2, eps),
             _ => fuel::bail!("unsupported dtype for rmsnorm {:?}", s1.dtype()),
-        }
+        }?;
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
     #[cfg(feature = "cuda")]
@@ -855,16 +869,24 @@ impl fuel::CustomOp3 for LayerNorm {
         "layer-norm"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        s1: &CpuStorage,
+        s1: &dyn fuel::dyn_backend::DynBackendStorage,
         l1: &Layout,
-        s2: &CpuStorage,
+        s2: &dyn fuel::dyn_backend::DynBackendStorage,
         l2: &Layout,
-        s3: &CpuStorage,
+        s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
-        use fuel::backend::BackendStorage;
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
+        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s1 = s1.inner();
+        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s2 = s2.inner();
+        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+        let s3 = s3.inner();
 
         let eps = self.eps;
         fn inner<
@@ -924,14 +946,15 @@ impl fuel::CustomOp3 for LayerNorm {
         }
 
         use CpuStorage as C;
-        match (s1, s2, s3) {
+        let (result, shape) = match (s1, s2, s3) {
             (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => {
                 inner::<half::bf16>(s1, l1, s2, l2, s3, l3, eps)
             }
             (C::F16(s1), C::F16(s2), C::F16(s3)) => inner::<half::f16>(s1, l1, s2, l2, s3, l3, eps),
             (C::F32(s1), C::F32(s2), C::F32(s3)) => inner::<f32>(s1, l1, s2, l2, s3, l3, eps),
             _ => fuel::bail!("unsupported dtype for rmsnorm {:?}", s1.dtype()),
-        }
+        }?;
+        Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
     #[cfg(feature = "cuda")]
@@ -1268,15 +1291,15 @@ impl fuel::CustomOp3 for Sdpa {
         "metal-sdpa"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        _s1: &CpuStorage,
+        _s1: &dyn fuel::dyn_backend::DynBackendStorage,
         _l1: &Layout,
-        _s2: &CpuStorage,
+        _s2: &dyn fuel::dyn_backend::DynBackendStorage,
         _l2: &Layout,
-        _s3: &CpuStorage,
+        _s3: &dyn fuel::dyn_backend::DynBackendStorage,
         _l3: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
         fuel::bail!("SDPA has no cpu impl")
     }
 
