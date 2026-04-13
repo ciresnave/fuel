@@ -1,0 +1,18 @@
+[package]
+    categories.workspace = true
+    description          = "Vulkan GPU executor for the fuel lazy-graph layer. Uses Vulkane for device management and WGSL compute shaders compiled to SPIR-V via naga."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-graph-vulkan"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types        = { workspace = true }
+    fuel-graph             = { workspace = true }
+    fuel-graph-executor    = { workspace = true }
+    fuel-reference-backend = { workspace = true }
+    half                   = { workspace = true }
+    tracing                = { workspace = true }
+    vulkane                = { version = "0.4", features = ["naga"] }
