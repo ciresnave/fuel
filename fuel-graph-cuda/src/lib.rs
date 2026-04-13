@@ -351,23 +351,37 @@ impl CudaGraphExecutor {
         let b = g(inputs, 1, cache);
         let mut dst = self.device.zeros_impl(out_shape, a.storage.dtype())
             .expect("concat alloc");
-        a.storage.copy_strided_src(&mut dst, 0, &a.layout()).expect("concat a");
+
+        let out_dims = out_shape.dims();
         let a_dim = a.shape.dims()[dim];
-        let inner: usize = out_shape.dims()[dim + 1..].iter().product::<usize>().max(1);
-        let offset = a_dim * inner;
-        let outer: usize = out_shape.dims()[..dim].iter().product::<usize>().max(1);
+        let b_dim = b.shape.dims()[dim];
+        let inner: usize = out_dims[dim + 1..].iter().product::<usize>().max(1);
+        let outer: usize = out_dims[..dim].iter().product::<usize>().max(1);
+        let out_row = out_dims[dim] * inner; // stride of one "outer" slice in dst
+
         if outer == 1 {
-            b.storage.copy_strided_src(&mut dst, offset, &b.layout()).expect("concat b");
+            // Simple case: one contiguous block per tensor.
+            a.storage.copy_strided_src(&mut dst, 0, &a.layout()).expect("concat a");
+            b.storage.copy_strided_src(&mut dst, a_dim * inner, &b.layout()).expect("concat b");
         } else {
-            let out_stride: usize = out_shape.dims()[dim..].iter().product();
-            let b_stride: usize = b.shape.dims()[dim..].iter().product();
+            // General case: copy each tensor per-outer-slice into the
+            // wider output rows. Both a and b need per-slice copies
+            // because their row width differs from the output's.
+            let a_slice_size = a_dim * inner;
+            let b_slice_size = b_dim * inner;
             for o in 0..outer {
-                let dst_off = o * out_stride + a_dim * inner;
-                let b_layout = Layout::contiguous_with_offset(
-                    &Shape::from_dims(&[b_stride]),
-                    o * b_stride,
+                let a_layout = Layout::contiguous_with_offset(
+                    &Shape::from_dims(&[a_slice_size]),
+                    o * a_slice_size,
                 );
-                b.storage.copy_strided_src(&mut dst, dst_off, &b_layout)
+                a.storage.copy_strided_src(&mut dst, o * out_row, &a_layout)
+                    .expect("concat a slice");
+
+                let b_layout = Layout::contiguous_with_offset(
+                    &Shape::from_dims(&[b_slice_size]),
+                    o * b_slice_size,
+                );
+                b.storage.copy_strided_src(&mut dst, o * out_row + a_slice_size, &b_layout)
                     .expect("concat b slice");
             }
         }
