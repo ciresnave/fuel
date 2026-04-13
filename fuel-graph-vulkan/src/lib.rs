@@ -1,20 +1,17 @@
 //! Vulkan GPU executor for fuel-graph computation graphs.
 //!
-//! Uses the Vulkane crate for Vulkan device management, buffer
-//! allocation, and compute shader dispatch. WGSL shaders are compiled
-//! to SPIR-V at runtime via naga.
-//!
-//! This is the third backend for fuel's generic `GraphExecutor<B>`,
-//! validating the backend-agnostic architecture alongside CPU and CUDA.
+//! Uses Vulkane for Vulkan device management and dispatches compute
+//! ops through WGSL shaders compiled to SPIR-V via naga. Third
+//! backend for fuel's generic `GraphExecutor<B>`.
 
 pub mod pipelines;
 
 use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
+use pipelines::Pipelines;
 use vulkane::safe::*;
 
-/// Vulkan storage: a device-local buffer + its memory allocation,
-/// plus the element count and dtype (Vulkan buffers are untyped bytes).
+/// Vulkan storage: device-local buffer + metadata.
 pub struct VulkanStorage {
     pub buffer: Buffer,
     pub memory: DeviceMemory,
@@ -28,16 +25,16 @@ impl VulkanStorage {
     }
 }
 
-/// Vulkan backend: device + queue + command pool for compute dispatch.
+/// Vulkan compute backend with pre-compiled shader pipelines.
 pub struct VulkanBackend {
     pub device: Device,
     pub physical: PhysicalDevice,
     pub queue: Queue,
     pub queue_family: u32,
+    pub pipelines: Pipelines,
 }
 
 impl VulkanBackend {
-    /// Initialize a Vulkan compute backend on the first available GPU.
     pub fn new() -> fuel_core_types::Result<Self> {
         let instance = Instance::new(InstanceCreateInfo {
             application_name: Some("fuel"),
@@ -46,28 +43,30 @@ impl VulkanBackend {
             engine_version: ApiVersion::V1_0,
             api_version: ApiVersion::V1_2,
             ..Default::default()
-        }).map_err(|e| fuel_core_types::Error::Msg(format!("Vulkan instance: {e:?}")))?;
+        }).map_err(vk_err)?;
 
-        let physicals = instance.enumerate_physical_devices()
-            .map_err(|e| fuel_core_types::Error::Msg(format!("enumerate devices: {e:?}")))?;
+        let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
         let physical = physicals.into_iter().next()
-            .ok_or_else(|| fuel_core_types::Error::Msg("no Vulkan device found".into()))?;
+            .ok_or_else(|| fuel_core_types::Error::Msg("no Vulkan device".into()))?;
 
         let queue_family = physical
             .find_queue_family(QueueFlags::COMPUTE)
-            .ok_or_else(|| fuel_core_types::Error::Msg("no compute queue family".into()))?;
+            .ok_or_else(|| fuel_core_types::Error::Msg("no compute queue".into()))?;
 
         let device = physical.create_device(DeviceCreateInfo {
             queue_create_infos: &[QueueCreateInfo::single(queue_family)],
             ..Default::default()
-        }).map_err(|e| fuel_core_types::Error::Msg(format!("create device: {e:?}")))?;
+        }).map_err(vk_err)?;
 
         let queue = device.get_queue(queue_family, 0);
 
-        Ok(Self { device, physical, queue, queue_family })
+        let pipelines = Pipelines::new(&device).map_err(vk_err)?;
+
+        Ok(Self { device, physical, queue, queue_family, pipelines })
     }
 
-    /// Upload a typed slice to a device-local storage buffer.
+    // -- helpers --
+
     fn upload_slice<T: Copy + 'static>(
         &self, data: &[T], dtype: DType,
     ) -> fuel_core_types::Result<VulkanStorage> {
@@ -75,57 +74,103 @@ impl VulkanBackend {
             | BufferUsage::TRANSFER_SRC
             | BufferUsage::TRANSFER_DST;
         let (buffer, memory) = self.queue.upload_buffer(
-            &self.device,
-            &self.physical,
-            self.queue_family,
-            data,
-            usage,
-        ).map_err(|e| fuel_core_types::Error::Msg(format!("upload: {e:?}")))?;
-        Ok(VulkanStorage {
-            buffer,
-            memory,
-            elem_count: data.len(),
-            dtype,
-        })
+            &self.device, &self.physical, self.queue_family, data, usage,
+        ).map_err(vk_err)?;
+        Ok(VulkanStorage { buffer, memory, elem_count: data.len(), dtype })
     }
 
-    /// Download a device-local buffer to a host Vec<T>.
     fn download_slice<T: Copy + Default + 'static>(
         &self, storage: &VulkanStorage,
     ) -> fuel_core_types::Result<Vec<T>> {
         let byte_size = storage.byte_size();
-        // Create a host-visible staging buffer.
         let (staging_buf, mut staging_mem) = Buffer::new_bound(
-            &self.device,
-            &self.physical,
-            BufferCreateInfo {
-                size: byte_size,
-                usage: BufferUsage::TRANSFER_DST,
-            },
+            &self.device, &self.physical,
+            BufferCreateInfo { size: byte_size, usage: BufferUsage::TRANSFER_DST },
             MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-        ).map_err(|e| fuel_core_types::Error::Msg(format!("staging alloc: {e:?}")))?;
-
-        // Copy device → staging.
+        ).map_err(vk_err)?;
         self.queue.one_shot(&self.device, self.queue_family, |cmd| {
             cmd.copy_buffer(&storage.buffer, &staging_buf, &[BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: byte_size,
+                src_offset: 0, dst_offset: 0, size: byte_size,
             }]);
             Ok(())
-        }).map_err(|e| fuel_core_types::Error::Msg(format!("copy D2H: {e:?}")))?;
-
-        // Map and read.
-        let mapped = staging_mem.map()
-            .map_err(|e| fuel_core_types::Error::Msg(format!("map: {e:?}")))?;
+        }).map_err(vk_err)?;
+        let mapped = staging_mem.map().map_err(vk_err)?;
         let bytes = mapped.as_slice();
         let n = storage.elem_count;
         let mut out = vec![T::default(); n];
-        let out_bytes = unsafe {
+        let dst = unsafe {
             std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, n * std::mem::size_of::<T>())
         };
-        out_bytes.copy_from_slice(&bytes[..out_bytes.len()]);
+        dst.copy_from_slice(&bytes[..dst.len()]);
         Ok(out)
+    }
+
+    fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_core_types::Result<VulkanStorage> {
+        let (buffer, memory) = Buffer::new_bound(
+            &self.device, &self.physical,
+            BufferCreateInfo {
+                size: byte_size,
+                usage: BufferUsage::STORAGE_BUFFER
+                    | BufferUsage::TRANSFER_SRC
+                    | BufferUsage::TRANSFER_DST,
+            },
+            MemoryPropertyFlags::DEVICE_LOCAL,
+        ).map_err(vk_err)?;
+        Ok(VulkanStorage { buffer, memory, elem_count: n, dtype })
+    }
+
+    /// Dispatch a 2-buffer compute shader (input + output).
+    fn dispatch_2buf(
+        &self,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+        input: &VulkanStorage,
+        output: &VulkanStorage,
+        push_constants: &[u8],
+        groups_x: u32,
+        groups_y: u32,
+        groups_z: u32,
+    ) -> fuel_core_types::Result<()> {
+        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_2buf).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &input.buffer, 0, input.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
+        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
+            cmd.bind_compute_pipeline(pipeline);
+            cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[&desc]);
+            cmd.push_constants(pipe_layout, ShaderStageFlags::COMPUTE, 0, push_constants);
+            cmd.dispatch(groups_x, groups_y, groups_z);
+            Ok(())
+        }).map_err(vk_err)
+    }
+
+    /// Dispatch a 3-buffer compute shader (a + b + output).
+    fn dispatch_3buf(
+        &self,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+        a: &VulkanStorage,
+        b: &VulkanStorage,
+        output: &VulkanStorage,
+        push_constants: &[u8],
+        groups_x: u32,
+        groups_y: u32,
+        groups_z: u32,
+    ) -> fuel_core_types::Result<()> {
+        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_3buf).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &a.buffer, 0, a.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &b.buffer, 0, b.byte_size());
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
+        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
+            cmd.bind_compute_pipeline(pipeline);
+            cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[&desc]);
+            cmd.push_constants(pipe_layout, ShaderStageFlags::COMPUTE, 0, push_constants);
+            cmd.dispatch(groups_x, groups_y, groups_z);
+            Ok(())
+        }).map_err(vk_err)
+    }
+
+    fn workgroups(n: usize) -> u32 {
+        ((n + 255) / 256) as u32
     }
 }
 
@@ -135,182 +180,236 @@ impl GraphBackend for VulkanBackend {
     fn alloc_zeros(&self, shape: &Shape, dtype: DType) -> fuel_core_types::Result<Self::Storage> {
         let n = shape.elem_count();
         let byte_size = (n * dtype_size(dtype)) as u64;
-        let (buffer, memory) = Buffer::new_bound(
-            &self.device,
-            &self.physical,
-            BufferCreateInfo {
-                size: byte_size,
-                usage: BufferUsage::STORAGE_BUFFER
-                    | BufferUsage::TRANSFER_SRC
-                    | BufferUsage::TRANSFER_DST,
-            },
-            MemoryPropertyFlags::DEVICE_LOCAL,
-        ).map_err(|e| fuel_core_types::Error::Msg(format!("alloc: {e:?}")))?;
-
-        // Zero-fill via vkCmdFillBuffer.
+        let storage = self.alloc_device(byte_size, n, dtype)?;
         self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.fill_buffer(&buffer, 0, byte_size, 0);
+            cmd.fill_buffer(&storage.buffer, 0, byte_size, 0);
             Ok(())
-        }).map_err(|e| fuel_core_types::Error::Msg(format!("zero fill: {e:?}")))?;
-
-        Ok(VulkanStorage { buffer, memory, elem_count: n, dtype })
+        }).map_err(vk_err)?;
+        Ok(storage)
     }
 
-    fn upload(
-        &self,
-        buf: &fuel_core_types::HostBuffer,
-        _shape: &Shape,
-    ) -> fuel_core_types::Result<Self::Storage> {
+    fn upload(&self, buf: &fuel_core_types::HostBuffer, _shape: &Shape) -> fuel_core_types::Result<Self::Storage> {
         use fuel_core_types::HostBuffer;
         match buf {
             HostBuffer::F32(v) => self.upload_slice(v, DType::F32),
             HostBuffer::F64(v) => self.upload_slice(v, DType::F64),
             HostBuffer::U32(v) => self.upload_slice(v, DType::U32),
-            _ => fuel_core_types::bail!("VulkanBackend::upload: unsupported dtype"),
+            _ => fuel_core_types::bail!("VulkanBackend: unsupported upload dtype"),
         }
     }
 
-    fn download(
-        &self, storage: &Self::Storage,
-    ) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
+    fn download(&self, storage: &Self::Storage) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
         use fuel_core_types::HostBuffer;
         match storage.dtype {
             DType::F32 => Ok(HostBuffer::F32(self.download_slice::<f32>(storage)?)),
             DType::F64 => Ok(HostBuffer::F64(self.download_slice::<f64>(storage)?)),
             DType::U32 => Ok(HostBuffer::U32(self.download_slice::<u32>(storage)?)),
-            other => fuel_core_types::bail!("VulkanBackend::download: unsupported {other:?}"),
+            other => fuel_core_types::bail!("VulkanBackend: unsupported download {other:?}"),
         }
     }
 
-    fn try_clone(
-        &self, storage: &Self::Storage, layout: &Layout,
-    ) -> fuel_core_types::Result<Self::Storage> {
+    fn try_clone(&self, storage: &Self::Storage, layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
         let n = layout.shape().elem_count();
         let byte_size = (n * dtype_size(storage.dtype)) as u64;
-        let (dst_buf, dst_mem) = Buffer::new_bound(
-            &self.device,
-            &self.physical,
-            BufferCreateInfo {
-                size: byte_size,
-                usage: BufferUsage::STORAGE_BUFFER
-                    | BufferUsage::TRANSFER_SRC
-                    | BufferUsage::TRANSFER_DST,
-            },
-            MemoryPropertyFlags::DEVICE_LOCAL,
-        ).map_err(|e| fuel_core_types::Error::Msg(format!("clone alloc: {e:?}")))?;
-
+        let dst = self.alloc_device(byte_size, n, storage.dtype)?;
         self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(&storage.buffer, &dst_buf, &[BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: byte_size,
+            cmd.copy_buffer(&storage.buffer, &dst.buffer, &[BufferCopy {
+                src_offset: 0, dst_offset: 0, size: byte_size,
             }]);
             Ok(())
-        }).map_err(|e| fuel_core_types::Error::Msg(format!("clone copy: {e:?}")))?;
-
-        Ok(VulkanStorage {
-            buffer: dst_buf,
-            memory: dst_mem,
-            elem_count: n,
-            dtype: storage.dtype,
-        })
+        }).map_err(vk_err)?;
+        Ok(dst)
     }
 
     fn copy_strided_src(
-        &self,
-        _src: &Self::Storage,
-        _dst: &mut Self::Storage,
-        _dst_offset: usize,
-        _src_layout: &Layout,
+        &self, _src: &Self::Storage, _dst: &mut Self::Storage,
+        _dst_offset: usize, _src_layout: &Layout,
     ) -> fuel_core_types::Result<()> {
-        // TODO: implement via compute shader for strided patterns.
-        // For now, this will hit the CPU fallback path for ops that
-        // need strided copies (permute, broadcast, concat, slice).
-        fuel_core_types::bail!("VulkanBackend: copy_strided_src not yet implemented — use CPU fallback")
+        // TODO: strided copy compute shader. Falls back to CPU via
+        // the generic executor's cpu_fallback for permute/broadcast/
+        // concat/slice until this is implemented.
+        fuel_core_types::bail!("VulkanBackend: copy_strided_src not yet native")
     }
 
     fn storage_dtype(&self, storage: &Self::Storage) -> DType {
         storage.dtype
     }
 
-    // -- compute ops: CPU fallback for now --
-    // The generic executor's cpu_fallback() handles these by
-    // downloading inputs, running the reference backend, re-uploading.
-    // As we add WGSL compute shaders, each op moves from fallback to
-    // native Vulkan dispatch.
+    // -- native GPU compute ops -----------------------------------------------
 
     fn matmul(
-        &self, _a: &Self::Storage, _b: &Self::Storage,
-        _bmnk: (usize, usize, usize, usize),
+        &self, a: &Self::Storage, b: &Self::Storage,
+        bmnk: (usize, usize, usize, usize),
         _la: &Layout, _lb: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: matmul not yet implemented")
+        let (batch, m, n, k) = bmnk;
+        let out_n = batch * m * n;
+        let out = self.alloc_device((out_n * 4) as u64, out_n, DType::F32)?;
+
+        #[repr(C)]
+        struct MatmulParams { m: u32, n: u32, k: u32, sa: u32, sb: u32, sc: u32 }
+        let params = MatmulParams {
+            m: m as u32, n: n as u32, k: k as u32,
+            sa: (m * k) as u32, sb: (k * n) as u32, sc: (m * n) as u32,
+        };
+        let pc = unsafe { as_bytes(&params) };
+
+        // Dispatch: each thread computes 4x4 tile, workgroup is 16x16.
+        // Total threads needed: ceil(N/4) x ceil(M/4) x batch.
+        let gx = ((n + 63) / 64) as u32;
+        let gy = ((m + 63) / 64) as u32;
+        let gz = batch as u32;
+        self.dispatch_3buf(
+            &self.pipelines.matmul_pipeline,
+            &self.pipelines.matmul_layout,
+            a, b, &out, pc, gx, gy, gz,
+        )?;
+        Ok(out)
     }
 
-    fn unary(
-        &self, _op: UnaryOp,
-        _a: &Self::Storage, _layout: &Layout,
-    ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: unary not yet implemented")
+    fn unary(&self, op: UnaryOp, a: &Self::Storage, _layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
+        let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
+
+        #[repr(C)]
+        struct Params { n: u32, op_id: u32 }
+        let op_id: u32 = match op {
+            UnaryOp::Neg => 0, UnaryOp::Sqr => 1, UnaryOp::Sqrt => 2,
+            UnaryOp::Exp => 3, UnaryOp::Log => 4, UnaryOp::Sin => 5,
+            UnaryOp::Cos => 6, UnaryOp::Tanh => 7, UnaryOp::Sigmoid => 8,
+            UnaryOp::Silu => 9, UnaryOp::Gelu => 10, UnaryOp::Relu => 11,
+            UnaryOp::Step => 12,
+        };
+        let params = Params { n: a.elem_count as u32, op_id };
+        self.dispatch_2buf(
+            &self.pipelines.unary_pipeline,
+            &self.pipelines.unary_layout,
+            a, &out, unsafe { as_bytes(&params) },
+            Self::workgroups(a.elem_count), 1, 1,
+        )?;
+        Ok(out)
     }
 
     fn binary(
-        &self, _op: BinaryOp,
-        _a: &Self::Storage, _b: &Self::Storage,
+        &self, op: BinaryOp,
+        a: &Self::Storage, b: &Self::Storage,
         _la: &Layout, _lb: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: binary not yet implemented")
+        let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
+
+        #[repr(C)]
+        struct Params { n: u32, op_id: u32 }
+        let op_id: u32 = match op {
+            BinaryOp::Add => 0, BinaryOp::Sub => 1, BinaryOp::Mul => 2,
+            BinaryOp::Div => 3, BinaryOp::Maximum => 4, BinaryOp::Minimum => 5,
+        };
+        let params = Params { n: a.elem_count as u32, op_id };
+        self.dispatch_3buf(
+            &self.pipelines.binary_pipeline,
+            &self.pipelines.binary_layout,
+            a, b, &out, unsafe { as_bytes(&params) },
+            Self::workgroups(a.elem_count), 1, 1,
+        )?;
+        Ok(out)
     }
 
     fn affine(
-        &self, _a: &Self::Storage, _layout: &Layout,
-        _mul: f64, _add: f64,
+        &self, a: &Self::Storage, _layout: &Layout,
+        mul: f64, add: f64,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: affine not yet implemented")
+        let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
+
+        #[repr(C)]
+        struct Params { n: u32, _pad: u32, mul: f32, add: f32 }
+        let params = Params { n: a.elem_count as u32, _pad: 0, mul: mul as f32, add: add as f32 };
+        self.dispatch_2buf(
+            &self.pipelines.affine_pipeline,
+            &self.pipelines.affine_layout,
+            a, &out, unsafe { as_bytes(&params) },
+            Self::workgroups(a.elem_count), 1, 1,
+        )?;
+        Ok(out)
     }
 
     fn powf(
-        &self, _a: &Self::Storage, _layout: &Layout,
-        _exp: f64,
+        &self, _a: &Self::Storage, _layout: &Layout, _exp: f64,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: powf not yet implemented")
+        // powf: x^exp = exp(exp * ln(x)). Can compose from affine + unary
+        // but for now fall back to CPU.
+        fuel_core_types::bail!("VulkanBackend: powf not yet native")
     }
 
     fn cast(
-        &self, _a: &Self::Storage, _layout: &Layout,
-        _dtype: DType,
+        &self, _a: &Self::Storage, _layout: &Layout, _dtype: DType,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: cast not yet implemented")
+        fuel_core_types::bail!("VulkanBackend: cast not yet native")
     }
 
     fn reduce(
-        &self, _op: fuel_core_types::op::ReduceOp,
-        _a: &Self::Storage, _layout: &Layout,
-        _dims: &[usize],
+        &self, op: fuel_core_types::op::ReduceOp,
+        a: &Self::Storage, _layout: &Layout,
+        dims: &[usize],
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: reduce not yet implemented")
+        // Only support full reduction (all dims) for now.
+        if dims.len() < 2 {
+            fuel_core_types::bail!("VulkanBackend: per-dim reduce not yet native");
+        }
+        let out = self.alloc_device(4, 1, DType::F32)?;
+
+        #[repr(C)]
+        struct Params { n: u32, op_id: u32 }
+        let op_id: u32 = match op {
+            fuel_core_types::op::ReduceOp::Sum => 0,
+            fuel_core_types::op::ReduceOp::Max => 1,
+            fuel_core_types::op::ReduceOp::Min => 2,
+            _ => fuel_core_types::bail!("VulkanBackend: unsupported reduce op"),
+        };
+        let params = Params { n: a.elem_count as u32, op_id };
+        self.dispatch_2buf(
+            &self.pipelines.reduce_pipeline,
+            &self.pipelines.reduce_layout,
+            a, &out, unsafe { as_bytes(&params) },
+            1, 1, 1,
+        )?;
+        Ok(out)
     }
 
     fn softmax_last_dim(
-        &self, _a: &Self::Storage, _layout: &Layout,
+        &self, a: &Self::Storage, layout: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: softmax not yet implemented")
+        let shape = layout.shape();
+        let dims = shape.dims();
+        let n_cols = *dims.last().expect("softmax: empty shape");
+        let n_rows = (a.elem_count / n_cols) as u32;
+        let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
+
+        #[repr(C)]
+        struct Params { n_rows: u32, n_cols: u32 }
+        let params = Params { n_rows, n_cols: n_cols as u32 };
+        self.dispatch_2buf(
+            &self.pipelines.softmax_pipeline,
+            &self.pipelines.softmax_layout,
+            a, &out, unsafe { as_bytes(&params) },
+            n_rows, 1, 1,
+        )?;
+        Ok(out)
     }
 
     fn index_select(
         &self, _src: &Self::Storage, _ids: &Self::Storage,
         _src_l: &Layout, _ids_l: &Layout, _dim: usize,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: index_select not yet implemented")
+        fuel_core_types::bail!("VulkanBackend: index_select not yet native")
     }
 
     fn gather(
         &self, _src: &Self::Storage, _ids: &Self::Storage,
         _src_l: &Layout, _ids_l: &Layout, _dim: usize,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: gather not yet implemented")
+        fuel_core_types::bail!("VulkanBackend: gather not yet native")
     }
 }
+
+// -- utilities ----------------------------------------------------------------
 
 fn dtype_size(dtype: DType) -> usize {
     match dtype {
@@ -318,6 +417,15 @@ fn dtype_size(dtype: DType) -> usize {
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 | DType::I16 => 2,
         DType::U8 => 1,
-        _ => 4, // fallback
+        _ => 4,
     }
+}
+
+fn vk_err(e: impl std::fmt::Debug) -> fuel_core_types::Error {
+    fuel_core_types::Error::Msg(format!("Vulkan: {e:?}"))
+}
+
+/// Reinterpret a #[repr(C)] struct as a byte slice for push constants.
+unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] {
+    std::slice::from_raw_parts(p as *const T as *const u8, std::mem::size_of::<T>())
 }
