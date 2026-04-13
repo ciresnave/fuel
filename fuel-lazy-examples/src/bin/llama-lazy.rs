@@ -47,6 +47,21 @@ const DEFAULT_PROMPT: &str = "Once upon a time";
 const DEFAULT_MAX_NEW: usize = 32;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _trace_guard = if std::env::var("FUEL_TRACE").is_ok() {
+        let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+            .file("trace.json")
+            .include_args(true)
+            .build();
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry()
+            .with(chrome_layer)
+            .init();
+        eprintln!("Tracing enabled → trace.json");
+        Some(guard)
+    } else {
+        None
+    };
+
     let args: Vec<String> = std::env::args().collect();
     let model_id = args
         .get(1)

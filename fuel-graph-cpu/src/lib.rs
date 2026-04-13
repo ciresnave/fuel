@@ -43,6 +43,7 @@ use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_reference_backend::{ops, RefTensor};
 use half::{bf16, f16};
 use std::collections::HashMap;
+use tracing::{debug_span, info_span};
 
 mod fast_matmul;
 
@@ -149,8 +150,11 @@ pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
 /// Core realize loop: walk the graph in topological order, caching
 /// each node's output and dispatching `MatMul` to the fast path.
 fn realize_any(tensor: &Tensor) -> AnyTensor {
+    let _span = info_span!("realize_cpu").entered();
     let graph = tensor.graph().borrow();
     let order = topo_order(&graph, tensor.id());
+    let num_nodes = order.len();
+    let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
     let mut cache: HashMap<NodeId, AnyTensor> = HashMap::new();
 
     for id in order {
@@ -158,6 +162,7 @@ fn realize_any(tensor: &Tensor) -> AnyTensor {
         let result = eval_node(&node.op, &node.inputs, &node.shape, &cache);
         cache.insert(id, result);
     }
+    drop(_walk);
 
     cache
         .remove(&tensor.id())

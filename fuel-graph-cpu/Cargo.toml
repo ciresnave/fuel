@@ -15,3 +15,4 @@
     gemm                   = { workspace = true }
     half                   = { workspace = true }
     num-traits             = { workspace = true }
+    tracing                = { workspace = true }

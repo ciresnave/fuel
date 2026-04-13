@@ -14,6 +14,7 @@ use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_reference_backend::exec::AnyRefTensor as AnyRef;
 use fuel_reference_backend::RefTensor;
 use std::collections::HashMap;
+use tracing::{debug_span, info_span};
 
 /// GPU tensor: storage + shape (CudaStorage doesn't track shape).
 struct GpuTensor {
@@ -60,8 +61,11 @@ impl CudaGraphExecutor {
     }
 
     pub fn realize_f32(&mut self, tensor: &Tensor) -> RefTensor<f32> {
+        let _span = info_span!("realize_f32").entered();
         let graph = tensor.graph().borrow();
         let order = topo_order(&graph, tensor.id());
+        let num_nodes = order.len();
+        let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
         let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
         for id in order {
             let node = graph.node(id);
@@ -70,12 +74,15 @@ impl CudaGraphExecutor {
             );
             cache.insert(id, entry);
         }
+        drop(_walk);
+        let _readback = info_span!("d2h_readback").entered();
         let gt = self.take_owned(cache.remove(&tensor.id())
             .expect("realize: missing root"));
         gpu_to_ref_f32(gt)
     }
 
     pub fn realize_many_f32(&mut self, tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
+        let _span = info_span!("realize_many_f32", roots = tensors.len()).entered();
         if tensors.is_empty() {
             return Vec::new();
         }
@@ -83,6 +90,8 @@ impl CudaGraphExecutor {
         let graph = graph_rc.borrow();
         let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
         let order = topo_order_multi(&graph, &roots);
+        let num_nodes = order.len();
+        let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
         let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
         for id in order {
             let node = graph.node(id);
@@ -91,6 +100,8 @@ impl CudaGraphExecutor {
             );
             cache.insert(id, entry);
         }
+        drop(_walk);
+        let _readback = info_span!("d2h_readback", roots = roots.len()).entered();
         roots
             .iter()
             .map(|id| {
@@ -148,6 +159,9 @@ impl CudaGraphExecutor {
         dtype: DType,
         cache: &HashMap<NodeId, CacheEntry>,
     ) -> CacheEntry {
+        let op_name = op_short_name(op);
+        let _span = debug_span!("eval_node", op = op_name, elems = shape.elem_count()).entered();
+
         let result_storage = match op {
             Op::Const(data) => return self.eval_const(data, shape),
 
@@ -355,6 +369,7 @@ impl CudaGraphExecutor {
     fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> CacheEntry {
         let ptr = const_data_arc_ptr(data);
         let refcount = const_data_arc_strong_count(data);
+        let elems = data.elem_count();
 
         // Only cache consts whose Arc has strong_count > 1, meaning
         // the data is shared between the model's weight struct and the
@@ -368,8 +383,10 @@ impl CudaGraphExecutor {
         // would be a stale cache hit with wrong data.
         if refcount > 1 {
             if self.const_pool.contains_key(&ptr) {
+                let _s = debug_span!("const_cache_hit", elems).entered();
                 return CacheEntry::ConstRef(ptr);
             }
+            let _s = debug_span!("const_upload_persistent", elems).entered();
             let cpu_buf = const_data_to_host_buffer(data);
             let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
                 .expect("Const H2D");
@@ -381,6 +398,7 @@ impl CudaGraphExecutor {
         }
 
         // Ephemeral const: upload fresh, owned by the per-realize cache.
+        let _s = debug_span!("const_upload_ephemeral", elems).entered();
         let cpu_buf = const_data_to_host_buffer(data);
         let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
             .expect("Const H2D");
@@ -388,6 +406,7 @@ impl CudaGraphExecutor {
     }
 
     fn do_permute(&self, a: &GpuTensor, axes: &[usize], out_shape: &Shape) -> GpuTensor {
+        let _s = debug_span!("permute", elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
         let mut strides: DimVec = DimVec::from_elem(0, rank);
@@ -411,6 +430,7 @@ impl CudaGraphExecutor {
     }
 
     fn do_broadcast(&self, a: &GpuTensor, target: &Shape) -> GpuTensor {
+        let _s = debug_span!("broadcast", src_elems = a.shape.elem_count(), dst_elems = target.elem_count()).entered();
         let src_dims = a.shape.dims();
         let dst_dims = target.dims();
         if src_dims == dst_dims {
@@ -443,6 +463,7 @@ impl CudaGraphExecutor {
         out_shape: &Shape,
         cache: &HashMap<NodeId, CacheEntry>,
     ) -> GpuTensor {
+        let _s = debug_span!("concat", dim, elems = out_shape.elem_count()).entered();
         let a = self.get_gt(inputs, 0, cache);
         let b = self.get_gt(inputs, 1, cache);
         let mut dst = self.device.zeros_impl(out_shape, a.storage.dtype())
@@ -511,6 +532,7 @@ impl CudaGraphExecutor {
         cache: &HashMap<NodeId, CacheEntry>,
         f: impl FnOnce(&[NodeId], &Shape, &HashMap<NodeId, AnyRef>) -> AnyRef,
     ) -> GpuTensor {
+        let _s = info_span!("cpu_fallback", elems = shape.elem_count()).entered();
         let mut cpu_cache: HashMap<NodeId, AnyRef> = HashMap::new();
         for &id in inputs {
             let gt = self.resolve(cache.get(&id).expect("cpu_fallback: missing input"));
@@ -582,6 +604,36 @@ fn host_buffer_to_any_ref(buf: fuel_core_types::HostBuffer, shape: &Shape) -> An
         fuel_core_types::HostBuffer::F16(v) => AnyRef::F16(RefTensor::from_vec(v, shape.clone())),
         fuel_core_types::HostBuffer::U32(v) => AnyRef::U32(RefTensor::from_vec(v, shape.clone())),
         _ => panic!("host_buffer_to_any_ref: unsupported dtype"),
+    }
+}
+
+fn op_short_name(op: &Op) -> &'static str {
+    match op {
+        Op::Const(_) => "Const",
+        Op::MatMul => "MatMul",
+        Op::Add => "Add", Op::Sub => "Sub", Op::Mul => "Mul", Op::Div => "Div",
+        Op::Neg => "Neg", Op::Sqr => "Sqr", Op::Sqrt => "Sqrt",
+        Op::Exp => "Exp", Op::Log => "Log",
+        Op::Sin => "Sin", Op::Cos => "Cos", Op::Tanh => "Tanh",
+        Op::Sigmoid => "Sigmoid", Op::Silu => "Silu", Op::Gelu => "Gelu",
+        Op::Relu => "Relu", Op::Step => "Step",
+        Op::Maximum => "Maximum", Op::Minimum => "Minimum",
+        Op::AddScalar(_) => "AddScalar", Op::MulScalar(_) => "MulScalar",
+        Op::PowI(_) => "PowI",
+        Op::Cast(_) => "Cast",
+        Op::Reshape(_) => "Reshape",
+        Op::Transpose => "Transpose", Op::Permute(_) => "Permute",
+        Op::BroadcastTo(_) => "BroadcastTo",
+        Op::SumAll => "SumAll", Op::MeanAll => "MeanAll",
+        Op::MaxAll => "MaxAll", Op::MinAll => "MinAll",
+        Op::SumDim(_) => "SumDim", Op::MeanDim(_) => "MeanDim",
+        Op::MaxDim(_) => "MaxDim", Op::MinDim(_) => "MinDim",
+        Op::IndexSelect { .. } => "IndexSelect",
+        Op::Gather { .. } => "Gather",
+        Op::Concat { .. } => "Concat",
+        Op::Slice { .. } => "Slice",
+        Op::SoftmaxLastDim => "SoftmaxLastDim",
+        _ => "Other",
     }
 }
 
