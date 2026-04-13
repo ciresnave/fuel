@@ -696,6 +696,90 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_broadcast_matmul() {
+        // Rank-3 × rank-2 matmul (what the transformer forward does).
+        // The graph auto-broadcasts the rank-2 to rank-3.
+        let x = LazyTensor::from_f32(
+            (0..12).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 4]),
+        );
+        let w = x.const_f32_like(
+            (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
+            Shape::from_dims(&[4, 2]),
+        );
+        let y = x.matmul(&w);
+        let cpu = y.realize_f32();
+        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda = y.realize_f32_cuda(&mut exe);
+        assert_eq!(cpu.len(), cuda.len());
+        for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-3, "bcast_mm[{i}]: cpu={a}, cuda={b}");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_permute() {
+        let x = LazyTensor::from_f32(
+            (0..24).map(|i| i as f32).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 2, 3, 4]),
+        );
+        let y = x.permute(&[0, 2, 1, 3]);
+        let cpu = y.realize_f32();
+        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda = y.realize_f32_cuda(&mut exe);
+        assert_eq!(cpu, cuda, "permute mismatch");
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_softmax() {
+        let x = LazyTensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+        );
+        let y = x.softmax_last_dim();
+        let cpu = y.realize_f32();
+        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda = y.realize_f32_cuda(&mut exe);
+        assert_eq!(cpu.len(), cuda.len());
+        for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-4, "softmax[{i}]: cpu={a}, cuda={b}");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_concat_slice() {
+        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
+        let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
+        let cat = a.concat(&b, 1); // [2, 4]
+        let sliced = cat.slice(1, 1, 2); // [2, 2]
+        let cpu = sliced.realize_f32();
+        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda = sliced.realize_f32_cuda(&mut exe);
+        assert_eq!(cpu, cuda, "concat+slice mismatch");
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_rms_norm() {
+        let x = LazyTensor::from_f32(
+            (0..8).map(|i| i as f32 * 0.5 - 1.5).collect::<Vec<_>>(),
+            Shape::from_dims(&[2, 4]),
+        );
+        let y = x.rms_norm_last_dim(1e-5);
+        let cpu = y.realize_f32();
+        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda = y.realize_f32_cuda(&mut exe);
+        assert_eq!(cpu.len(), cuda.len());
+        for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-3, "rms_norm[{i}]: cpu={a}, cuda={b}");
+        }
+    }
+
+    #[test]
     fn realize_f64_through_bridge() {
         let a = LazyTensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]));
         let b = a.mul(&a);
