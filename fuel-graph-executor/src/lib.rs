@@ -13,6 +13,8 @@
 //! providing only the device-specific pieces: memory allocation,
 //! matmul, unary/binary kernels, reductions, and softmax.
 
+pub mod shaders;
+
 use fuel_core_types::{DType, DimVec, Layout, Shape};
 use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_reference_backend::exec::AnyRefTensor;
