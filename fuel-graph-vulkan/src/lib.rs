@@ -211,31 +211,48 @@ impl VulkanBackend {
         Ok(VulkanStorage { buffer, memory, elem_count: n, dtype })
     }
 
-    /// Dispatch a 2-buffer compute shader (input + output).
+    /// Upload a small params struct as a uniform buffer.
+    fn upload_params<T: Copy + 'static>(&self, params: &T) -> fuel_core_types::Result<(Buffer, DeviceMemory)> {
+        let bytes = unsafe { as_bytes(params) };
+        // Uniform buffers must be at least 16 bytes on some implementations.
+        let size = (bytes.len().max(16)) as u64;
+        let (buf, mut mem) = Buffer::new_bound(
+            &self.device, &self.physical,
+            BufferCreateInfo { size, usage: BufferUsage::UNIFORM_BUFFER },
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+        ).map_err(vk_err)?;
+        let mut mapped = mem.map().map_err(vk_err)?;
+        mapped.as_slice_mut()[..bytes.len()].copy_from_slice(bytes);
+        drop(mapped);
+        Ok((buf, mem))
+    }
+
+    /// Dispatch a 2-storage + 1-uniform compute shader.
     fn dispatch_2buf(
         &self,
         pipeline: &ComputePipeline,
         pipe_layout: &PipelineLayout,
         input: &VulkanStorage,
         output: &VulkanStorage,
-        push_constants: &[u8],
+        params_buf: &Buffer,
+        params_size: u64,
         groups_x: u32,
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_core_types::Result<()> {
-        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_2buf).map_err(vk_err)?;
+        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &input.buffer, 0, input.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, params_buf, 0, params_size);
         self.queue.one_shot(&self.device, self.queue_family, |cmd| {
             cmd.bind_compute_pipeline(pipeline);
             cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[&desc]);
-            cmd.push_constants(pipe_layout, ShaderStageFlags::COMPUTE, 0, push_constants);
             cmd.dispatch(groups_x, groups_y, groups_z);
             Ok(())
         }).map_err(vk_err)
     }
 
-    /// Dispatch a 3-buffer compute shader (a + b + output).
+    /// Dispatch a 3-storage + 1-uniform compute shader.
     fn dispatch_3buf(
         &self,
         pipeline: &ComputePipeline,
@@ -243,19 +260,20 @@ impl VulkanBackend {
         a: &VulkanStorage,
         b: &VulkanStorage,
         output: &VulkanStorage,
-        push_constants: &[u8],
+        params_buf: &Buffer,
+        params_size: u64,
         groups_x: u32,
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_core_types::Result<()> {
-        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_3buf).map_err(vk_err)?;
+        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_3s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &a.buffer, 0, a.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &b.buffer, 0, b.byte_size());
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, params_buf, 0, params_size);
         self.queue.one_shot(&self.device, self.queue_family, |cmd| {
             cmd.bind_compute_pipeline(pipeline);
             cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[&desc]);
-            cmd.push_constants(pipe_layout, ShaderStageFlags::COMPUTE, 0, push_constants);
             cmd.dispatch(groups_x, groups_y, groups_z);
             Ok(())
         }).map_err(vk_err)
@@ -338,23 +356,20 @@ impl GraphBackend for VulkanBackend {
         let out_n = batch * m * n;
         let out = self.alloc_device((out_n * 4) as u64, out_n, DType::F32)?;
 
-        #[repr(C)]
+        #[repr(C)] #[derive(Clone, Copy)]
         struct MatmulParams { m: u32, n: u32, k: u32, sa: u32, sb: u32, sc: u32 }
         let params = MatmulParams {
             m: m as u32, n: n as u32, k: k as u32,
             sa: (m * k) as u32, sb: (k * n) as u32, sc: (m * n) as u32,
         };
-        let pc = unsafe { as_bytes(&params) };
-
-        // Dispatch: each thread computes 4x4 tile, workgroup is 16x16.
-        // Total threads needed: ceil(N/4) x ceil(M/4) x batch.
+        let (pbuf, _pmem) = self.upload_params(&params)?;
         let gx = ((n + 63) / 64) as u32;
         let gy = ((m + 63) / 64) as u32;
         let gz = batch as u32;
         self.dispatch_3buf(
             &self.pipelines.matmul_pipeline,
             &self.pipelines.matmul_layout,
-            a, b, &out, pc, gx, gy, gz,
+            a, b, &out, &pbuf, std::mem::size_of::<MatmulParams>() as u64, gx, gy, gz,
         )?;
         Ok(out)
     }
@@ -362,8 +377,6 @@ impl GraphBackend for VulkanBackend {
     fn unary(&self, op: UnaryOp, a: &Self::Storage, _layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
         let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
 
-        #[repr(C)]
-        struct Params { n: u32, op_id: u32 }
         let op_id: u32 = match op {
             UnaryOp::Neg => 0, UnaryOp::Sqr => 1, UnaryOp::Sqrt => 2,
             UnaryOp::Exp => 3, UnaryOp::Log => 4, UnaryOp::Sin => 5,
@@ -371,12 +384,14 @@ impl GraphBackend for VulkanBackend {
             UnaryOp::Silu => 9, UnaryOp::Gelu => 10, UnaryOp::Relu => 11,
             UnaryOp::Step => 12,
         };
-        let params = Params { n: a.elem_count as u32, op_id };
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct UParams { n: u32, op_id: u32 }
+        let p = UParams { n: a.elem_count as u32, op_id };
+        let (pbuf, _pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
             &self.pipelines.unary_pipeline,
             &self.pipelines.unary_layout,
-            a, &out, unsafe { as_bytes(&params) },
-            Self::workgroups(a.elem_count), 1, 1,
+            a, &out, &pbuf, 8, Self::workgroups(a.elem_count), 1, 1,
         )?;
         Ok(out)
     }
@@ -388,18 +403,18 @@ impl GraphBackend for VulkanBackend {
     ) -> fuel_core_types::Result<Self::Storage> {
         let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
 
-        #[repr(C)]
-        struct Params { n: u32, op_id: u32 }
         let op_id: u32 = match op {
             BinaryOp::Add => 0, BinaryOp::Sub => 1, BinaryOp::Mul => 2,
             BinaryOp::Div => 3, BinaryOp::Maximum => 4, BinaryOp::Minimum => 5,
         };
-        let params = Params { n: a.elem_count as u32, op_id };
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct BParams { n: u32, op_id: u32 }
+        let p = BParams { n: a.elem_count as u32, op_id };
+        let (pbuf, _pmem) = self.upload_params(&p)?;
         self.dispatch_3buf(
             &self.pipelines.binary_pipeline,
             &self.pipelines.binary_layout,
-            a, b, &out, unsafe { as_bytes(&params) },
-            Self::workgroups(a.elem_count), 1, 1,
+            a, b, &out, &pbuf, 8, Self::workgroups(a.elem_count), 1, 1,
         )?;
         Ok(out)
     }
@@ -410,14 +425,14 @@ impl GraphBackend for VulkanBackend {
     ) -> fuel_core_types::Result<Self::Storage> {
         let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
 
-        #[repr(C)]
-        struct Params { n: u32, _pad: u32, mul: f32, add: f32 }
-        let params = Params { n: a.elem_count as u32, _pad: 0, mul: mul as f32, add: add as f32 };
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct AffParams { n: u32, _pad: u32, mul: f32, add: f32 }
+        let p = AffParams { n: a.elem_count as u32, _pad: 0, mul: mul as f32, add: add as f32 };
+        let (pbuf, _pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
             &self.pipelines.affine_pipeline,
             &self.pipelines.affine_layout,
-            a, &out, unsafe { as_bytes(&params) },
-            Self::workgroups(a.elem_count), 1, 1,
+            a, &out, &pbuf, 16, Self::workgroups(a.elem_count), 1, 1,
         )?;
         Ok(out)
     }
@@ -447,20 +462,20 @@ impl GraphBackend for VulkanBackend {
         }
         let out = self.alloc_device(4, 1, DType::F32)?;
 
-        #[repr(C)]
-        struct Params { n: u32, op_id: u32 }
         let op_id: u32 = match op {
             fuel_core_types::op::ReduceOp::Sum => 0,
             fuel_core_types::op::ReduceOp::Max => 1,
             fuel_core_types::op::ReduceOp::Min => 2,
             _ => fuel_core_types::bail!("VulkanBackend: unsupported reduce op"),
         };
-        let params = Params { n: a.elem_count as u32, op_id };
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RParams { n: u32, op_id: u32 }
+        let p = RParams { n: a.elem_count as u32, op_id };
+        let (pbuf, _pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
             &self.pipelines.reduce_pipeline,
             &self.pipelines.reduce_layout,
-            a, &out, unsafe { as_bytes(&params) },
-            1, 1, 1,
+            a, &out, &pbuf, 8, 1, 1, 1,
         )?;
         Ok(out)
     }
@@ -474,14 +489,14 @@ impl GraphBackend for VulkanBackend {
         let n_rows = (a.elem_count / n_cols) as u32;
         let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
 
-        #[repr(C)]
-        struct Params { n_rows: u32, n_cols: u32 }
-        let params = Params { n_rows, n_cols: n_cols as u32 };
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SoftParams { n_rows: u32, n_cols: u32 }
+        let p = SoftParams { n_rows, n_cols: n_cols as u32 };
+        let (pbuf, _pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
             &self.pipelines.softmax_pipeline,
             &self.pipelines.softmax_layout,
-            a, &out, unsafe { as_bytes(&params) },
-            n_rows, 1, 1,
+            a, &out, &pbuf, 8, n_rows, 1, 1,
         )?;
         Ok(out)
     }
