@@ -57,7 +57,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprint!("Initializing CUDA device... ");
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
-    let mut executor = fuel_graph_cuda::CudaGraphExecutor::for_device(0)?;
+    let cuda_device = fuel::CudaDevice::new(0)?;
+    let backend = fuel_graph_cuda::CudaBackend::new(cuda_device);
+    let mut executor = fuel_graph_executor::GraphExecutor::new(backend);
     eprintln!("done in {:.2?}", t0.elapsed());
 
     eprint!("Downloading + loading model weights... ");

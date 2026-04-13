@@ -76,8 +76,10 @@ pub trait GraphBackend {
     /// Allocate a zero-initialized tensor on the device.
     fn alloc_zeros(&self, shape: &Shape, dtype: DType) -> fuel_core_types::Result<Self::Storage>;
 
-    /// Upload host data to the device.
-    fn upload(&self, buf: &fuel_core_types::HostBuffer) -> fuel_core_types::Result<Self::Storage>;
+    /// Upload host data to the device. The `shape` describes the
+    /// logical tensor shape — backends that store shape in their
+    /// storage type (like CPU's RefTensor) should use it.
+    fn upload(&self, buf: &fuel_core_types::HostBuffer, shape: &Shape) -> fuel_core_types::Result<Self::Storage>;
 
     /// Download device data to host.
     fn download(&self, storage: &Self::Storage) -> fuel_core_types::Result<fuel_core_types::HostBuffer>;
@@ -397,7 +399,10 @@ impl<B: GraphBackend> GraphExecutor<B> {
             // -- layout ops (SHARED across all backends) --
             Op::Reshape(_) => {
                 let a = self.get_gt(inputs, 0, cache);
-                let s = self.backend.try_clone(&a.storage, &a.layout()).expect("Reshape");
+                // Pass output shape in the layout so backends that
+                // store shape relabel correctly.
+                let target_layout = Layout::contiguous(shape);
+                let s = self.backend.try_clone(&a.storage, &target_layout).expect("Reshape");
                 return CacheEntry::Owned(TrackedTensor { storage: s, shape: shape.clone() });
             }
             Op::Transpose => {
@@ -542,7 +547,11 @@ impl<B: GraphBackend> GraphExecutor<B> {
             && src_dims.iter().zip(&dst_dims[pad..]).all(|(s, d)| s == d);
         if src_dims == dst_dims || is_pure_pad {
             let _s = debug_span!("broadcast_pure_pad", elems = target.elem_count()).entered();
-            let s = self.backend.try_clone(&a.storage, &a.layout()).expect("broadcast pad");
+            // Pass target shape in the layout so backends that store
+            // shape in their storage (CpuBackend's RefTensor) relabel
+            // correctly.
+            let target_layout = Layout::contiguous(target);
+            let s = self.backend.try_clone(&a.storage, &target_layout).expect("broadcast pad");
             return TrackedTensor { storage: s, shape: target.clone() };
         }
         let _s = debug_span!("broadcast_strided", src = a.shape.elem_count(), dst = target.elem_count()).entered();
@@ -617,13 +626,13 @@ impl<B: GraphBackend> GraphExecutor<B> {
             }
             let _s = debug_span!("const_upload_persistent", elems).entered();
             let buf = const_data_to_host_buffer(data);
-            let storage = self.backend.upload(&buf).expect("const upload");
+            let storage = self.backend.upload(&buf, shape).expect("const upload");
             self.const_pool.insert(ptr, TrackedTensor { storage, shape: shape.clone() });
             return CacheEntry::ConstRef(ptr);
         }
         let _s = debug_span!("const_upload_ephemeral", elems).entered();
         let buf = const_data_to_host_buffer(data);
-        let storage = self.backend.upload(&buf).expect("const upload");
+        let storage = self.backend.upload(&buf, shape).expect("const upload");
         CacheEntry::Owned(TrackedTensor { storage, shape: shape.clone() })
     }
 
@@ -646,7 +655,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         }
         let result = fuel_reference_backend::exec::eval_node_with_op(op, inputs, shape, dtype, &cpu_cache);
         let out_buf = any_ref_to_host_buffer(result);
-        let storage = self.backend.upload(&out_buf).expect("H2D fallback");
+        let storage = self.backend.upload(&out_buf, shape).expect("H2D fallback");
         TrackedTensor { storage, shape: shape.clone() }
     }
 }

@@ -39,6 +39,7 @@
 //! structural design.
 
 use crate::{DType, Shape};
+use fuel_graph_executor::GraphExecutor;
 use std::sync::Arc;
 
 /// A lazy tensor that builds a `fuel_graph::Graph` as its methods are
@@ -439,80 +440,60 @@ impl LazyTensor {
 
     // ---- realization (the bridge to the reference backend) ----
 
-    /// Realize this tensor as an `f32` `Vec` using the **fast** CPU
-    /// executor from `fuel-graph-cpu`. This uses the `gemm` crate for
-    /// matrix multiply (typically 50-200× faster than the reference
-    /// backend's naive matmul) and delegates all other ops to the
-    /// reference implementations.
-    ///
-    /// This is the default entry point for production workloads. For
-    /// the textbook-correct oracle path, use [`realize_f32_reference`]
-    /// instead.
+    /// Realize this tensor as an `f32` `Vec` using the generic
+    /// `GraphExecutor<CpuBackend>`. Uses `gemm` for matmul and the
+    /// reference backend for all other ops.
     pub fn realize_f32(&self) -> Vec<f32> {
-        fuel_graph_cpu::realize_f32(&self.inner).into_vec()
+        let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        exe.realize_f32(&self.inner).into_vec()
     }
 
-    /// Realize as an `f64` `Vec` using the fast CPU executor.
+    /// Realize as an `f64` `Vec`.
     pub fn realize_f64(&self) -> Vec<f64> {
         fuel_graph_cpu::realize_f64(&self.inner).into_vec()
     }
 
-    /// Realize as a `bf16` `Vec`. Note that the fast executor falls
-    /// back to the reference matmul for `bf16` inputs since `gemm`
-    /// does not provide a bf16 path; cast to f32 first for speed.
+    /// Realize as a `bf16` `Vec`.
     pub fn realize_bf16(&self) -> Vec<half::bf16> {
         fuel_graph_cpu::realize_bf16(&self.inner).into_vec()
     }
 
-    /// Realize as an `f16` `Vec`. Same note as `realize_bf16` about
-    /// matmul — cast to f32 for the fast path.
+    /// Realize as an `f16` `Vec`.
     pub fn realize_f16(&self) -> Vec<half::f16> {
         fuel_graph_cpu::realize_f16(&self.inner).into_vec()
     }
 
     /// Realize using the reference backend directly — slow but
-    /// textbook-correct. Used as an oracle when validating new ops,
-    /// comparing backends, or debugging numerical discrepancies.
+    /// textbook-correct oracle.
     pub fn realize_f32_reference(&self) -> Vec<f32> {
         fuel_reference_backend::exec::realize_f32(&self.inner).into_vec()
     }
 
-    /// Realize on a CUDA GPU. The executor uploads const nodes (model
-    /// weights) on first use and caches them, so repeated calls on
-    /// the same executor amortize the H2D transfer.
-    ///
-    /// Requires the `cuda` feature.
+    /// Realize on a CUDA GPU via the generic executor.
     #[cfg(feature = "cuda")]
     pub fn realize_f32_cuda(
         &self,
-        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
     ) -> Vec<f32> {
         executor.realize_f32(&self.inner).into_vec()
     }
 }
 
-/// Realize a batch of `LazyTensor` roots in a single fast-executor
-/// walk. All tensors must belong to the same underlying graph. The
-/// return value has one `Vec<f32>` per input, in matching order.
-///
-/// This is the executor-level primitive behind the KV-cache forward
-/// pass: one graph call produces logits plus every layer's updated
-/// K/V tensors, avoiding n separate walks that would each recompute
-/// the shared prefix.
+/// Realize many tensors in a single CPU topo-walk.
 pub fn realize_many_f32(tensors: &[&LazyTensor]) -> Vec<Vec<f32>> {
     let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
-    fuel_graph_cpu::realize_many_f32(&inner)
+    let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+    exe.realize_many_f32(&inner)
         .into_iter()
         .map(|t| t.into_vec())
         .collect()
 }
 
-/// CUDA variant of [`realize_many_f32`]. Uses the given executor's
-/// device and weight cache.
+/// CUDA variant of realize_many_f32.
 #[cfg(feature = "cuda")]
 pub fn realize_many_f32_cuda(
     tensors: &[&LazyTensor],
-    executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+    executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
 ) -> Vec<Vec<f32>> {
     let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
     executor
@@ -666,7 +647,7 @@ mod tests {
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a);
         let cpu_result = c.realize_f32();
-        let mut executor = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut executor = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda_result = c.realize_f32_cuda(&mut executor);
         assert_eq!(cpu_result, cuda_result);
     }
@@ -684,7 +665,7 @@ mod tests {
         );
         let c = a.matmul(&b);
         let cpu = c.realize_f32();
-        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda = c.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (a, b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -710,7 +691,7 @@ mod tests {
         );
         let y = x.matmul(&w);
         let cpu = y.realize_f32();
-        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -727,7 +708,7 @@ mod tests {
         );
         let y = x.permute(&[0, 2, 1, 3]);
         let cpu = y.realize_f32();
-        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu, cuda, "permute mismatch");
     }
@@ -741,7 +722,7 @@ mod tests {
         );
         let y = x.softmax_last_dim();
         let cpu = y.realize_f32();
-        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -757,7 +738,7 @@ mod tests {
         let cat = a.concat(&b, 1); // [2, 4]
         let sliced = cat.slice(1, 1, 2); // [2, 2]
         let cpu = sliced.realize_f32();
-        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda = sliced.realize_f32_cuda(&mut exe);
         assert_eq!(cpu, cuda, "concat+slice mismatch");
     }
@@ -771,7 +752,7 @@ mod tests {
         );
         let y = x.rms_norm_last_dim(1e-5);
         let cpu = y.realize_f32();
-        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -1628,7 +1609,7 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         cache: &mut LlamaKVCache,
-        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
     ) -> Vec<f32> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -2239,7 +2220,7 @@ impl LlamaModel {
         max_new_tokens: usize,
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
-        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
         mut on_token: impl FnMut(u32),
     ) -> crate::Result<Vec<u32>> {
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
@@ -2274,7 +2255,7 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         cache: &mut GpuKVCache,
-        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
     ) -> Vec<f32> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -2424,12 +2405,12 @@ impl LlamaModel {
                 let new_k = gpu_concat_dim2(
                     old_k, &old_shape, &fresh_k, &fresh_shape,
                     cfg.n_kv_heads, cfg.head_dim, cached_len, seq,
-                    &executor.device,
+                    &executor.backend.device,
                 );
                 let new_v = gpu_concat_dim2(
                     old_v, &old_shape, &fresh_v, &fresh_shape,
                     cfg.n_kv_heads, cfg.head_dim, cached_len, seq,
-                    &executor.device,
+                    &executor.backend.device,
                 );
                 cache.layers[li] = Some((new_k, new_v));
             } else {
