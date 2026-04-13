@@ -311,6 +311,12 @@ impl CudaGraphExecutor {
                 return CacheEntry::Owned(self.eval_slice(*dim, *start, *len, a, shape));
             }
 
+            // Native CUDA softmax — the kernel from reduce.cu.
+            Op::SoftmaxLastDim => {
+                let a = self.get_gt(inputs, 0, cache);
+                a.storage.softmax_last_dim(&a.layout()).expect("SoftmaxLastDim")
+            }
+
             // Everything else: CPU fallback.
             _ => {
                 return CacheEntry::Owned(self.cpu_fallback(inputs, shape, cache, |ni, ns, cc| {
