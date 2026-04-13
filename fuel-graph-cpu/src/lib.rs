@@ -45,6 +45,9 @@ use half::{bf16, f16};
 use std::collections::HashMap;
 use tracing::{debug_span, info_span};
 
+mod backend;
+pub use backend::CpuBackend;
+
 mod fast_matmul;
 
 /// Dtype-erased cached tensor, mirroring

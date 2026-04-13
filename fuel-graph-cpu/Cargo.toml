@@ -11,6 +11,7 @@
 [dependencies]
     fuel-core-types        = { workspace = true }
     fuel-graph             = { workspace = true }
+    fuel-graph-executor    = { workspace = true }
     fuel-reference-backend = { workspace = true }
     gemm                   = { workspace = true }
     half                   = { workspace = true }
