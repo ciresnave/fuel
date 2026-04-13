@@ -169,7 +169,7 @@ fn binary_kernel_name(op: BinaryOp) -> &'static str {
 ///
 /// This replicates the logic from `impl<U: UnaryOpT> Map1 for U` but uses a
 /// runtime kernel name instead of a compile-time `U::KERNEL` constant.
-struct UnaryKernel(&'static str);
+pub(crate) struct UnaryKernel(pub(crate) &'static str);
 
 impl Map1 for UnaryKernel {
     fn f<T: DeviceRepr + fuel_core_types::WithDType + ValidAsZeroBits>(
@@ -200,7 +200,7 @@ impl Map1 for UnaryKernel {
 /// A `Map2` implementation that dispatches a binary CUDA kernel by name.
 ///
 /// Replicates `impl<U: BinaryOpT> Map2 for U` with a runtime kernel name.
-struct BinaryKernel(&'static str);
+pub(crate) struct BinaryKernel(pub(crate) &'static str);
 
 impl Map2 for BinaryKernel {
     fn f<T: DeviceRepr + fuel_core_types::WithDType + ValidAsZeroBits>(

@@ -98,23 +98,30 @@ impl CudaGraphExecutor {
                     .expect("MatMul")
             }
 
-            // Unary and binary ops: CPU fallback for now. The unary/
-            // binary CUDA kernels exist in fuel-cuda but are dispatched
-            // via generic op-type parameters (UnaryOpT/BinaryOpT impls)
-            // defined in fuel-core, which we can't depend on due to the
-            // circular dep. Phase 2 will move the op types to
-            // fuel-core-types to unlock native GPU dispatch.
-            Op::Neg | Op::Sqr | Op::Sqrt | Op::Exp | Op::Log |
-            Op::Sin | Op::Cos | Op::Tanh | Op::Sigmoid | Op::Silu |
-            Op::Gelu | Op::Relu | Op::Step |
-            Op::Add | Op::Sub | Op::Mul | Op::Div |
-            Op::Maximum | Op::Minimum => {
-                return self.cpu_fallback(inputs, shape, cache, |node_inputs, node_shape, cpu_cache| {
-                    fuel_reference_backend::exec::eval_node_with_op(
-                        op, node_inputs, node_shape, dtype, cpu_cache,
-                    )
-                });
-            }
+            // Unary ops: dispatch to CUDA kernels by name via
+            // CudaStorage::unary_by_name. Kernel names follow the
+            // convention "u" + op_name (matching the .cu kernel names).
+            Op::Neg => self.unary_cuda("uneg", inputs, shape, cache),
+            Op::Sqr => self.unary_cuda("usqr", inputs, shape, cache),
+            Op::Sqrt => self.unary_cuda("usqrt", inputs, shape, cache),
+            Op::Exp => self.unary_cuda("uexp", inputs, shape, cache),
+            Op::Log => self.unary_cuda("ulog", inputs, shape, cache),
+            Op::Sin => self.unary_cuda("usin", inputs, shape, cache),
+            Op::Cos => self.unary_cuda("ucos", inputs, shape, cache),
+            Op::Tanh => self.unary_cuda("utanh", inputs, shape, cache),
+            Op::Sigmoid => self.unary_cuda("usigmoid", inputs, shape, cache),
+            Op::Silu => self.unary_cuda("usilu", inputs, shape, cache),
+            Op::Gelu => self.unary_cuda("ugelu", inputs, shape, cache),
+            Op::Relu => self.unary_cuda("urelu", inputs, shape, cache),
+            Op::Step => self.unary_cuda("ustep", inputs, shape, cache),
+
+            // Binary ops: "b" + op_name.
+            Op::Add => self.binary_cuda("badd", inputs, shape, cache),
+            Op::Sub => self.binary_cuda("bsub", inputs, shape, cache),
+            Op::Mul => self.binary_cuda("bmul", inputs, shape, cache),
+            Op::Div => self.binary_cuda("bdiv", inputs, shape, cache),
+            Op::Maximum => self.binary_cuda("bmaximum", inputs, shape, cache),
+            Op::Minimum => self.binary_cuda("bminimum", inputs, shape, cache),
 
             // scalar
             Op::AddScalar(c) => {
@@ -239,6 +246,30 @@ impl CudaGraphExecutor {
         };
 
         GpuTensor { storage: result_storage, shape: shape.clone() }
+    }
+
+    fn unary_cuda(
+        &self,
+        kernel: &'static str,
+        inputs: &[NodeId],
+        shape: &Shape,
+        cache: &HashMap<NodeId, GpuTensor>,
+    ) -> CudaStorage {
+        let a = g(inputs, 0, cache);
+        a.storage.unary_by_name(kernel, &a.layout()).expect(kernel)
+    }
+
+    fn binary_cuda(
+        &self,
+        kernel: &'static str,
+        inputs: &[NodeId],
+        shape: &Shape,
+        cache: &HashMap<NodeId, GpuTensor>,
+    ) -> CudaStorage {
+        let (a, b) = (g(inputs, 0, cache), g(inputs, 1, cache));
+        a.storage
+            .binary_by_name(&b.storage, &a.layout(), &b.layout(), kernel)
+            .expect(kernel)
     }
 
     fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> GpuTensor {
