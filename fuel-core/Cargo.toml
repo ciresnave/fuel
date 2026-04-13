@@ -21,6 +21,7 @@ hf-hub = { workspace = true }
 serde_json = { workspace = true }
 fuel-cuda = { workspace = true, optional = true }
 fuel-cuda-kernels = { workspace = true, optional = true }
+fuel-graph-cuda = { workspace = true, optional = true }
 fuel-metal = { workspace = true, optional = true }
 fuel-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
@@ -61,7 +62,7 @@ default = []
 
 # NVIDIA GPU backend via cuBLAS. Requires the CUDA toolkit (≥ 11).
 # Use: cargo build --features cuda
-cuda = ["dep:fuel-cuda", "cudarc", "dep:fuel-cuda-kernels", "fuel-ug?/cuda"]
+cuda = ["dep:fuel-cuda", "cudarc", "dep:fuel-cuda-kernels", "dep:fuel-graph-cuda", "fuel-ug?/cuda"]
 
 # Enables cuda + cuDNN accelerated convolution and normalization.
 # Requires CUDA toolkit + cuDNN runtime.

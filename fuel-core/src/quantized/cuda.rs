@@ -63,7 +63,7 @@ fn quantize_q8_1(
     let dst_row_size_bytes = num_blocks_per_row * q8_1_type_size;
 
     const CHUNK_SIZE: usize = 65535; // gridDim.y limit
-    let func = dev.get_or_load_func("quantize_q8_1", &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func("quantize_q8_1", &fuel_cuda_kernels::QUANTIZED)?;
 
     let mut rows_processed = 0;
     while rows_processed < total_rows {
@@ -131,7 +131,7 @@ fn dequantize_f32(
         GgmlDType::Q8K => ("dequantize_block_q8_K_f32", true, 32, nb),
         _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f32>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
@@ -191,7 +191,7 @@ fn dequantize_f16(
         GgmlDType::Q8K => ("dequantize_block_q8_K_f16", true, 32, nb),
         _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f16>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
@@ -248,7 +248,7 @@ fn dequantize_mul_mat_vec(
         GgmlDType::Q6K => "dequantize_mul_mat_vec_q6_k",
         _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f32>(nrows)? };
     let block_num_y = ceil_div(nrows, GGML_CUDA_MMV_Y);
     let cfg = cudarc::driver::LaunchConfig {
@@ -306,7 +306,7 @@ fn mul_mat_vec_via_q8_1(
         _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
     let kernel_name = format!("{kernel_name}{b_size}");
-    let func = dev.get_or_load_func(&kernel_name, &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(&kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = dev.alloc_zeros::<f32>(nrows * b_size)?;
     // https://github.com/ggerganov/llama.cpp/blob/facb8b56f8fd3bb10a693bf0943ae9d69d0828ef/ggml-cuda/mmvq.cu#L98
     let (nblocks, nwarps) = match b_size {
@@ -378,7 +378,7 @@ fn mul_mat_via_q8_1(
         GgmlDType::Q6K => ("mul_mat_q6_K", 64, 64),
         _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = dev.alloc_zeros::<f32>(x_rows * y_cols)?;
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (
@@ -453,7 +453,7 @@ fn indexed_moe_forward_fused_q8_1_input(
         GgmlDType::Q8_0 => "indexed_moe_forward_q8_0_q8_1",
         _ => crate::bail!("unsupported dtype for indexed_moe_forward {w_dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &fuel_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let (nblocks, nwarps) = (n as u32, 4);
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (nblocks, batch as u32, topk as u32),
@@ -613,7 +613,7 @@ impl QCudaStorage {
             _ => crate::bail!("only f32 can be quantized"),
         };
         let src_len = src.len();
-        let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));
+        let src = crate::Device::cpu().storage_owned(src)?;
         let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
         qcpu_storage.quantize(&src)?;
         let data = qcpu_storage.data()?;
@@ -641,7 +641,7 @@ impl QCudaStorage {
             _ => crate::bail!("only f32 can be quantized"),
         };
         let src_len = src.len();
-        let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));
+        let src = crate::Device::cpu().storage_owned(src)?;
         let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
         qcpu_storage.quantize_imatrix(&src, imatrix_weights, n_per_row)?;
         let data = qcpu_storage.data()?;

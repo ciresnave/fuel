@@ -476,6 +476,19 @@ impl LazyTensor {
     pub fn realize_f32_reference(&self) -> Vec<f32> {
         fuel_reference_backend::exec::realize_f32(&self.inner).into_vec()
     }
+
+    /// Realize on a CUDA GPU. The executor uploads const nodes (model
+    /// weights) on first use and caches them, so repeated calls on
+    /// the same executor amortize the H2D transfer.
+    ///
+    /// Requires the `cuda` feature.
+    #[cfg(feature = "cuda")]
+    pub fn realize_f32_cuda(
+        &self,
+        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+    ) -> Vec<f32> {
+        executor.realize_f32(&self.inner).into_vec()
+    }
 }
 
 /// Realize a batch of `LazyTensor` roots in a single fast-executor
@@ -489,6 +502,21 @@ impl LazyTensor {
 pub fn realize_many_f32(tensors: &[&LazyTensor]) -> Vec<Vec<f32>> {
     let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
     fuel_graph_cpu::realize_many_f32(&inner)
+        .into_iter()
+        .map(|t| t.into_vec())
+        .collect()
+}
+
+/// CUDA variant of [`realize_many_f32`]. Uses the given executor's
+/// device and weight cache.
+#[cfg(feature = "cuda")]
+pub fn realize_many_f32_cuda(
+    tensors: &[&LazyTensor],
+    executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+) -> Vec<Vec<f32>> {
+    let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
+    executor
+        .realize_many_f32(&inner)
         .into_iter()
         .map(|t| t.into_vec())
         .collect()
@@ -627,6 +655,42 @@ mod tests {
             assert!(
                 diff < 1e-4 || rel < 1e-3,
                 "at index {i}: fast={f}, reference={r}, diff={diff}, rel={rel}",
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_add_mul() {
+        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let c = a.add(&b).mul(&a);
+        let cpu_result = c.realize_f32();
+        let mut executor = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda_result = c.realize_f32_cuda(&mut executor);
+        assert_eq!(cpu_result, cuda_result);
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_matmul() {
+        let a = LazyTensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+        );
+        let b = a.const_f32_like(
+            vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+            Shape::from_dims(&[3, 2]),
+        );
+        let c = a.matmul(&b);
+        let cpu = c.realize_f32();
+        let mut exe = fuel_graph_cuda::CudaGraphExecutor::for_device(0).unwrap();
+        let cuda = c.realize_f32_cuda(&mut exe);
+        assert_eq!(cpu.len(), cuda.len());
+        for (i, (a, b)) in cpu.iter().zip(cuda.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-3,
+                "matmul[{i}]: cpu={a}, cuda={b}",
             );
         }
     }

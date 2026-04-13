@@ -98,25 +98,23 @@ impl CudaGraphExecutor {
                     .expect("MatMul")
             }
 
-            // unary
-            Op::Neg => unary_gpu::<fuel_core_types::op::Neg>(inputs, cache),
-            Op::Sqr => unary_gpu::<fuel_core_types::op::Sqr>(inputs, cache),
-            Op::Sqrt => unary_gpu::<fuel_core_types::op::Sqrt>(inputs, cache),
-            Op::Exp => unary_gpu::<fuel_core_types::op::Exp>(inputs, cache),
-            Op::Log => unary_gpu::<fuel_core_types::op::Log>(inputs, cache),
-            Op::Sin => unary_gpu::<fuel_core_types::op::Sin>(inputs, cache),
-            Op::Cos => unary_gpu::<fuel_core_types::op::Cos>(inputs, cache),
-            Op::Tanh => unary_gpu::<fuel_core_types::op::Tanh>(inputs, cache),
-            Op::Sigmoid => unary_gpu::<fuel_core_types::op::Sigmoid>(inputs, cache),
-            Op::Silu => unary_gpu::<fuel_core_types::op::Silu>(inputs, cache),
-            Op::Gelu => unary_gpu::<fuel_core_types::op::Gelu>(inputs, cache),
-            Op::Relu => unary_gpu::<fuel_core_types::op::Relu>(inputs, cache),
-
-            // binary
-            Op::Add => binary_gpu::<fuel_core_types::op::Add>(inputs, cache),
-            Op::Sub => binary_gpu::<fuel_core_types::op::Sub>(inputs, cache),
-            Op::Mul => binary_gpu::<fuel_core_types::op::Mul>(inputs, cache),
-            Op::Div => binary_gpu::<fuel_core_types::op::Div>(inputs, cache),
+            // Unary and binary ops: CPU fallback for now. The unary/
+            // binary CUDA kernels exist in fuel-cuda but are dispatched
+            // via generic op-type parameters (UnaryOpT/BinaryOpT impls)
+            // defined in fuel-core, which we can't depend on due to the
+            // circular dep. Phase 2 will move the op types to
+            // fuel-core-types to unlock native GPU dispatch.
+            Op::Neg | Op::Sqr | Op::Sqrt | Op::Exp | Op::Log |
+            Op::Sin | Op::Cos | Op::Tanh | Op::Sigmoid | Op::Silu |
+            Op::Gelu | Op::Relu | Op::Step |
+            Op::Add | Op::Sub | Op::Mul | Op::Div |
+            Op::Maximum | Op::Minimum => {
+                return self.cpu_fallback(inputs, shape, cache, |node_inputs, node_shape, cpu_cache| {
+                    fuel_reference_backend::exec::eval_node_with_op(
+                        op, node_inputs, node_shape, dtype, cpu_cache,
+                    )
+                });
+            }
 
             // scalar
             Op::AddScalar(c) => {
@@ -232,22 +230,12 @@ impl CudaGraphExecutor {
                 return self.eval_slice(*dim, *start, *len, a, shape);
             }
 
-            // softmax/norm: CPU fallback for now
-            Op::SoftmaxLastDim => return self.cpu_fallback_unary(inputs, shape, cache, |r| {
-                use fuel_reference_backend::ops;
-                match r {
-                    AnyRef::F32(t) => AnyRef::F32(ops::softmax_last_dim(&t)),
-                    AnyRef::F64(t) => AnyRef::F64(ops::softmax_last_dim(&t)),
-                    AnyRef::BF16(t) => AnyRef::BF16(ops::softmax_last_dim(&t)),
-                    AnyRef::F16(t) => AnyRef::F16(ops::softmax_last_dim(&t)),
-                    _ => panic!("softmax: unsupported dtype"),
-                }
-            }),
-
-            // everything else: CPU fallback
-            _ => return self.cpu_fallback_unary(inputs, shape, cache, |r| {
-                panic!("Op not implemented on CUDA and CPU fallback doesn't know how to run it generically");
-            }),
+            // Everything else: CPU fallback via the reference backend.
+            _ => {
+                return self.cpu_fallback(inputs, shape, cache, |ni, ns, cc| {
+                    fuel_reference_backend::exec::eval_node_with_op(op, ni, ns, dtype, cc)
+                });
+            }
         };
 
         GpuTensor { storage: result_storage, shape: shape.clone() }
@@ -380,17 +368,21 @@ impl CudaGraphExecutor {
         GpuTensor { storage: dst, shape: out_shape.clone() }
     }
 
-    fn cpu_fallback_unary(
+    /// Download inputs to CPU, run a reference-backend op, re-upload.
+    fn cpu_fallback(
         &self,
         inputs: &[NodeId],
         shape: &Shape,
         cache: &HashMap<NodeId, GpuTensor>,
-        f: impl FnOnce(AnyRef) -> AnyRef,
+        f: impl FnOnce(&[NodeId], &Shape, &HashMap<NodeId, AnyRef>) -> AnyRef,
     ) -> GpuTensor {
-        let a = g(inputs, 0, cache);
-        let cpu_buf = a.storage.to_cpu_storage().expect("D2H fallback");
-        let ref_t = host_buffer_to_any_ref(cpu_buf, &a.shape);
-        let result = f(ref_t);
+        let mut cpu_cache: HashMap<NodeId, AnyRef> = HashMap::new();
+        for &id in inputs {
+            let gt = cache.get(&id).expect("cpu_fallback: missing input");
+            let cpu_buf = gt.storage.to_cpu_storage().expect("D2H fallback");
+            cpu_cache.insert(id, host_buffer_to_any_ref(cpu_buf, &gt.shape));
+        }
+        let result = f(inputs, shape, &cpu_cache);
         let out_buf = any_ref_to_host_buffer(result);
         let gpu = self.device.storage_from_cpu_storage(&out_buf)
             .expect("H2D fallback");
@@ -402,23 +394,6 @@ impl CudaGraphExecutor {
 
 fn g<'a>(inputs: &[NodeId], idx: usize, cache: &'a HashMap<NodeId, GpuTensor>) -> &'a GpuTensor {
     cache.get(&inputs[idx]).expect("topo order missing input")
-}
-
-fn unary_gpu<U: fuel_core_types::op::UnaryOpT>(
-    inputs: &[NodeId],
-    cache: &HashMap<NodeId, GpuTensor>,
-) -> CudaStorage {
-    let a = g(inputs, 0, cache);
-    a.storage.unary_impl::<U>(&a.layout()).expect("unary_gpu")
-}
-
-fn binary_gpu<B: fuel_core_types::op::BinaryOpT>(
-    inputs: &[NodeId],
-    cache: &HashMap<NodeId, GpuTensor>,
-) -> CudaStorage {
-    let (a, b) = (g(inputs, 0, cache), g(inputs, 1, cache));
-    a.storage.binary_impl::<B>(&b.storage, &a.layout(), &b.layout())
-        .expect("binary_gpu")
 }
 
 fn gpu_to_ref_f32(gt: GpuTensor) -> RefTensor<f32> {
@@ -439,11 +414,11 @@ fn gpu_to_ref_f32_ref(gt: &GpuTensor) -> RefTensor<f32> {
 
 fn const_data_arc_ptr(data: &ConstData) -> usize {
     match data {
-        ConstData::F32(v) => std::sync::Arc::as_ptr(v) as usize,
-        ConstData::F64(v) => std::sync::Arc::as_ptr(v) as usize,
-        ConstData::BF16(v) => std::sync::Arc::as_ptr(v) as usize,
-        ConstData::F16(v) => std::sync::Arc::as_ptr(v) as usize,
-        ConstData::U32(v) => std::sync::Arc::as_ptr(v) as usize,
+        ConstData::F32(v) => std::sync::Arc::as_ptr(v) as *const f32 as usize,
+        ConstData::F64(v) => std::sync::Arc::as_ptr(v) as *const f64 as usize,
+        ConstData::BF16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
+        ConstData::F16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
+        ConstData::U32(v) => std::sync::Arc::as_ptr(v) as *const u32 as usize,
     }
 }
 

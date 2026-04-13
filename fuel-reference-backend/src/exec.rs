@@ -113,7 +113,7 @@ pub fn realize(tensor: &Tensor) -> AnyRefTensor {
 
     for id in order {
         let node = graph.node(id);
-        let result = eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+        let result = eval_node_with_op(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
         cache.insert(id, result);
     }
 
@@ -169,7 +169,7 @@ pub fn realize_many(tensors: &[&Tensor]) -> Vec<AnyRefTensor> {
 
     for id in order {
         let node = graph.node(id);
-        let result = eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+        let result = eval_node_with_op(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
         cache.insert(id, result);
     }
 
@@ -251,7 +251,10 @@ macro_rules! binary {
     }};
 }
 
-fn eval_node(
+/// Evaluate a single op given its cached inputs. Exposed publicly so
+/// other executors (e.g. fuel-graph-cuda) can fall back to the reference
+/// implementation for ops they don't handle natively.
+pub fn eval_node_with_op(
     op: &Op,
     inputs: &[NodeId],
     shape: &Shape,
