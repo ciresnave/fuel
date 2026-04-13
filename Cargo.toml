@@ -58,6 +58,7 @@ fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
 fuel-graph-cuda = { path = "./fuel-graph-cuda", version = "0.10.2" }
 fuel-graph-executor = { path = "./fuel-graph-executor", version = "0.10.2" }
+fuel-graph-vulkan = { path = "./fuel-graph-vulkan", version = "0.10.2" }
 fuel-cuda = { path = "./fuel-cuda", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
 fuel-flash-attn = { path = "./fuel-flash-attn", version = "0.10.2" }

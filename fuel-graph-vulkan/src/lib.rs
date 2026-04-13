@@ -32,10 +32,28 @@ pub struct VulkanBackend {
     pub queue: Queue,
     pub queue_family: u32,
     pub pipelines: Pipelines,
+    pub device_name: String,
+}
+
+/// How to select a Vulkan physical device.
+pub enum DeviceSelection {
+    /// Pick by index in the enumeration order (0 = first).
+    Index(usize),
+    /// Prefer discrete GPU over integrated. Falls back to first
+    /// available if no discrete GPU exists.
+    PreferDiscrete,
+    /// Match by substring in the device name (case-insensitive).
+    ByName(String),
 }
 
 impl VulkanBackend {
+    /// Initialize with the default device selection: prefer discrete GPU.
     pub fn new() -> fuel_core_types::Result<Self> {
+        Self::with_selection(DeviceSelection::PreferDiscrete)
+    }
+
+    /// Initialize with explicit device selection.
+    pub fn with_selection(selection: DeviceSelection) -> fuel_core_types::Result<Self> {
         let instance = Instance::new(InstanceCreateInfo {
             application_name: Some("fuel"),
             application_version: ApiVersion::V1_0,
@@ -46,8 +64,59 @@ impl VulkanBackend {
         }).map_err(vk_err)?;
 
         let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
-        let physical = physicals.into_iter().next()
-            .ok_or_else(|| fuel_core_types::Error::Msg("no Vulkan device".into()))?;
+        if physicals.is_empty() {
+            return Err(fuel_core_types::Error::Msg("no Vulkan devices found".into()));
+        }
+
+        let physical = match selection {
+            DeviceSelection::Index(idx) => {
+                physicals.into_iter().nth(idx)
+                    .ok_or_else(|| fuel_core_types::Error::Msg(
+                        format!("Vulkan device index {idx} out of range"),
+                    ))?
+            }
+            DeviceSelection::PreferDiscrete => {
+                // Try discrete first, then any GPU, then anything.
+                let mut best = None;
+                for p in &physicals {
+                    let props = p.properties();
+                    let dt = props.device_type();
+                    if dt == PhysicalDeviceType::DISCRETE_GPU {
+                        best = Some(p);
+                        break;
+                    }
+                    if best.is_none()
+                        && dt != PhysicalDeviceType::CPU
+                        && dt != PhysicalDeviceType::OTHER
+                    {
+                        best = Some(p);
+                    }
+                }
+                match best {
+                    Some(p) => p.clone(),
+                    None => physicals.into_iter().next().unwrap(),
+                }
+            }
+            DeviceSelection::ByName(ref needle) => {
+                let needle_lower = needle.to_lowercase();
+                physicals.into_iter()
+                    .find(|p| {
+                        p.properties().device_name().to_lowercase().contains(&needle_lower)
+                    })
+                    .ok_or_else(|| fuel_core_types::Error::Msg(
+                        format!("no Vulkan device matching {needle:?}"),
+                    ))?
+            }
+        };
+
+        let props = physical.properties();
+        let device_name = props.device_name();
+        let device_type = props.device_type();
+        tracing::info!(
+            name = %device_name,
+            r#type = ?device_type,
+            "Selected Vulkan device",
+        );
 
         let queue_family = physical
             .find_queue_family(QueueFlags::COMPUTE)
@@ -62,7 +131,30 @@ impl VulkanBackend {
 
         let pipelines = Pipelines::new(&device).map_err(vk_err)?;
 
-        Ok(Self { device, physical, queue, queue_family, pipelines })
+        Ok(Self { device, physical, queue, queue_family, pipelines, device_name })
+    }
+
+    /// List all available Vulkan physical devices.
+    pub fn list_devices() -> fuel_core_types::Result<Vec<(usize, String, String)>> {
+        let instance = Instance::new(InstanceCreateInfo {
+            application_name: Some("fuel"),
+            application_version: ApiVersion::V1_0,
+            engine_name: Some("fuel-graph-vulkan"),
+            engine_version: ApiVersion::V1_0,
+            api_version: ApiVersion::V1_2,
+            ..Default::default()
+        }).map_err(vk_err)?;
+        let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
+        Ok(physicals.iter().enumerate().map(|(i, p)| {
+            let props = p.properties();
+            let dt = props.device_type();
+            let type_str = if dt == PhysicalDeviceType::DISCRETE_GPU { "discrete" }
+                else if dt == PhysicalDeviceType::INTEGRATED_GPU { "integrated" }
+                else if dt == PhysicalDeviceType::VIRTUAL_GPU { "virtual" }
+                else if dt == PhysicalDeviceType::CPU { "cpu" }
+                else { "other" };
+            (i, props.device_name(), type_str.to_string())
+        }).collect())
     }
 
     // -- helpers --
