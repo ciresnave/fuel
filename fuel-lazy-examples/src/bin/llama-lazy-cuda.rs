@@ -21,6 +21,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
     use std::time::Instant;
 
+    // Tracing: set FUEL_TRACE=1 to write a Chrome-compatible trace file.
+    // Open the resulting trace.json in chrome://tracing or ui.perfetto.dev
+    // to see a flame chart of every op, const upload, and D2H transfer.
+    let _trace_guard = if std::env::var("FUEL_TRACE").is_ok() {
+        let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+            .file("trace.json")
+            .include_args(true)
+            .build();
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry()
+            .with(chrome_layer)
+            .init();
+        eprintln!("Tracing enabled → trace.json");
+        Some(guard)
+    } else {
+        None
+    };
+
     const DEFAULT_MODEL: &str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0";
     const DEFAULT_PROMPT: &str = "Once upon a time";
     const DEFAULT_MAX_NEW: usize = 32;

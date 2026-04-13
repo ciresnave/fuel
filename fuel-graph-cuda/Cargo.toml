@@ -14,3 +14,4 @@
     fuel-cuda              = { workspace = true }
     fuel-reference-backend = { workspace = true }
     half                   = { workspace = true }
+    tracing                = { workspace = true }
