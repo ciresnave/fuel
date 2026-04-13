@@ -1,7 +1,7 @@
 ﻿use fuel_core_types::CpuStorageRef;
 use fuel_core_types::dtype::WithDType;
 use fuel_core_types::{CpuStorage, DType, Layout, Result, Shape};
-use fuel_kernels as kernels;
+use fuel_cuda_kernels as kernels;
 pub use cudarc;
 use cudarc::driver::CudaFunction;
 use float8::F8E4M3;

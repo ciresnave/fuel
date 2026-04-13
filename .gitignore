@@ -35,14 +35,14 @@ flamegraph.svg
 *.swo
 trace-*.json
 
-candle-wasm-examples/*/build
-candle-wasm-examples/*/*.bin
-candle-wasm-examples/*/*.jpeg
-candle-wasm-examples/*/audios/*.wav
-candle-wasm-examples/**/*.safetensors
-candle-wasm-examples/**/*.gguf
-candle-wasm-examples/*/package-lock.json
-candle-wasm-examples/**/config*.json
+fuel-wasm-examples/*/build
+fuel-wasm-examples/*/*.bin
+fuel-wasm-examples/*/*.jpeg
+fuel-wasm-examples/*/audios/*.wav
+fuel-wasm-examples/**/*.safetensors
+fuel-wasm-examples/**/*.gguf
+fuel-wasm-examples/*/package-lock.json
+fuel-wasm-examples/**/config*.json
 .DS_Store
 .idea/*
 __pycache__

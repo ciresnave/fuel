@@ -22,5 +22,5 @@ pub use storage::{CudaStorage, CudaStorageSlice, SlicePtrOrNull, kernel_name};
 pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 
 // Re-export underlying CUDA bindings for downstream use.
-pub use fuel_kernels as kernels;
+pub use fuel_cuda_kernels as kernels;
 pub use cudarc;

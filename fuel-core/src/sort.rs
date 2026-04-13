@@ -109,137 +109,159 @@ impl crate::CustomOp1 for ArgSort {
         "argsort"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        storage: &crate::CpuStorage,
+        storage: &dyn crate::dyn_backend::DynBackendStorage,
         layout: &crate::Layout,
-    ) -> Result<(crate::CpuStorage, crate::Shape)> {
-        let sort_indexes = match storage {
-            crate::CpuStorage::U8(vs) => self.asort(vs, layout),
-            crate::CpuStorage::U32(vs) => self.asort(vs, layout),
-            crate::CpuStorage::I16(vs) => self.asort(vs, layout),
-            crate::CpuStorage::I32(vs) => self.asort(vs, layout),
-            crate::CpuStorage::I64(vs) => self.asort(vs, layout),
-            crate::CpuStorage::BF16(vs) => self.asort(vs, layout),
-            crate::CpuStorage::F16(vs) => self.asort(vs, layout),
-            crate::CpuStorage::F32(vs) => self.asort(vs, layout),
-            crate::CpuStorage::F64(vs) => self.asort(vs, layout),
-            crate::CpuStorage::F8E4M3(vs) => self.asort(vs, layout),
-            // Dummy types don't support sorting
-            crate::CpuStorage::F6E2M3(_) => {
-                return Err(
-                    crate::Error::UnsupportedDTypeForOp(crate::DType::F6E2M3, "argsort").bt(),
-                )
-            }
-            crate::CpuStorage::F6E3M2(_) => {
-                return Err(
-                    crate::Error::UnsupportedDTypeForOp(crate::DType::F6E3M2, "argsort").bt(),
-                )
-            }
-            crate::CpuStorage::F4(_) => {
-                return Err(crate::Error::UnsupportedDTypeForOp(crate::DType::F4, "argsort").bt())
-            }
-            crate::CpuStorage::F8E8M0(_) => {
-                return Err(
-                    crate::Error::UnsupportedDTypeForOp(crate::DType::F8E8M0, "argsort").bt(),
-                )
-            }
-        };
-        let sort_indexes = crate::CpuStorage::U32(sort_indexes);
-        Ok((sort_indexes, layout.shape().into()))
-    }
-
-    #[cfg(feature = "cuda")]
-    fn cuda_fwd(
-        &self,
-        storage: &crate::CudaStorage,
-        layout: &crate::Layout,
-    ) -> Result<(crate::CudaStorage, crate::Shape)> {
-        use crate::backend::BackendStorage;
-        use crate::cuda_backend::Map1Any;
-        let dev = storage.device();
-        let slice = self.map(&storage.slice, dev, layout)?;
-        let dst = crate::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
-        };
-        Ok((dst, layout.shape().clone()))
-    }
-
-    #[cfg(feature = "metal")]
-    fn metal_fwd(
-        &self,
-        storage: &crate::MetalStorage,
-        layout: &crate::Layout,
-    ) -> Result<(crate::MetalStorage, crate::Shape)> {
-        use crate::backend::BackendStorage;
-        use crate::DType;
-
-        let name = {
-            if self.asc {
-                match storage.dtype() {
-                    DType::BF16 => "asort_asc_bf16",
-                    DType::F16 => "asort_asc_f16",
-                    DType::F32 => "asort_asc_f32",
-                    DType::F64 => "asort_asc_f64",
-                    DType::U8 => "asort_asc_u8",
-                    DType::U32 => "asort_asc_u32",
-                    DType::I16 => "asort_asc_i16",
-                    DType::I32 => "asort_asc_i32",
-                    DType::I64 => "asort_asc_i64",
-                    DType::F8E4M3 => crate::bail!("Metal device does not yet support F8E4M3."),
-                    DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
-                        return Err(
-                            crate::Error::UnsupportedDTypeForOp(storage.dtype(), "argsort").bt(),
-                        )
-                    }
+    ) -> Result<(Box<dyn crate::dyn_backend::DynBackendStorage>, crate::Shape)> {
+        if let Some(cpu) = storage
+            .as_any()
+            .downcast_ref::<fuel_cpu_backend::dyn_impl::CpuBackendStorage>()
+        {
+            let sort_indexes = match &cpu.0 {
+                crate::CpuStorage::U8(vs) => self.asort(vs, layout),
+                crate::CpuStorage::U32(vs) => self.asort(vs, layout),
+                crate::CpuStorage::I16(vs) => self.asort(vs, layout),
+                crate::CpuStorage::I32(vs) => self.asort(vs, layout),
+                crate::CpuStorage::I64(vs) => self.asort(vs, layout),
+                crate::CpuStorage::BF16(vs) => self.asort(vs, layout),
+                crate::CpuStorage::F16(vs) => self.asort(vs, layout),
+                crate::CpuStorage::F32(vs) => self.asort(vs, layout),
+                crate::CpuStorage::F64(vs) => self.asort(vs, layout),
+                crate::CpuStorage::F8E4M3(vs) => self.asort(vs, layout),
+                // Dummy types don't support sorting
+                crate::CpuStorage::F6E2M3(_) => {
+                    return Err(
+                        crate::Error::UnsupportedDTypeForOp(crate::DType::F6E2M3, "argsort").bt(),
+                    )
                 }
-            } else {
-                match storage.dtype() {
-                    DType::BF16 => "asort_desc_bf16",
-                    DType::F16 => "asort_desc_f16",
-                    DType::F32 => "asort_desc_f32",
-                    DType::F64 => "asort_desc_f64",
-                    DType::U8 => "asort_desc_u8",
-                    DType::U32 => "asort_desc_u32",
-                    DType::I16 => "asort_desc_i16",
-                    DType::I32 => "asort_desc_i32",
-                    DType::I64 => "asort_desc_i64",
-                    DType::F8E4M3 => crate::bail!("Metal device does not yet support F8E4M3."),
-                    DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
-                        return Err(
-                            crate::Error::UnsupportedDTypeForOp(storage.dtype(), "argsort").bt(),
-                        )
-                    }
+                crate::CpuStorage::F6E3M2(_) => {
+                    return Err(
+                        crate::Error::UnsupportedDTypeForOp(crate::DType::F6E3M2, "argsort").bt(),
+                    )
                 }
-            }
-        };
-        let device = storage.device();
-        let kernels = device.kernels();
-        let command_encoder = device.command_encoder()?;
-        let el = layout.shape().elem_count();
-        let ncols = self.last_dim;
-        let nrows = el / ncols;
-        let src = crate::metal_backend::buffer_o(storage.buffer(), layout, storage.dtype());
-        let dst = device.new_buffer(el, DType::U32, "asort")?;
-        let mut ncols_pad = 1;
-        while ncols_pad < ncols {
-            ncols_pad *= 2;
+                crate::CpuStorage::F4(_) => {
+                    return Err(
+                        crate::Error::UnsupportedDTypeForOp(crate::DType::F4, "argsort").bt(),
+                    )
+                }
+                crate::CpuStorage::F8E8M0(_) => {
+                    return Err(
+                        crate::Error::UnsupportedDTypeForOp(crate::DType::F8E8M0, "argsort").bt(),
+                    )
+                }
+            };
+            let out = crate::CpuStorage::U32(sort_indexes);
+            return Ok((
+                Box::new(fuel_cpu_backend::dyn_impl::CpuBackendStorage(out)),
+                layout.shape().into(),
+            ));
         }
-        fuel_metal_kernels::call_arg_sort(
-            device.metal_device(),
-            &command_encoder,
-            kernels,
-            name,
-            nrows,
-            ncols,
-            ncols_pad,
-            src,
-            &dst,
-        )
-        .map_err(crate::Error::wrap)?;
-        let dst = crate::MetalStorage::new(dst, device.clone(), el, DType::U32);
-        Ok((dst, layout.shape().clone()))
+
+        #[cfg(feature = "cuda")]
+        if let Some(cuda) = storage
+            .as_any()
+            .downcast_ref::<fuel_cuda::CudaBackendStorage>()
+        {
+            use crate::backend::BackendStorage;
+            use crate::cuda_backend::Map1Any;
+            let inner = cuda.inner();
+            let dev = inner.device();
+            let slice = self.map(&inner.slice, dev, layout)?;
+            let dst = crate::cuda_backend::CudaStorage {
+                slice,
+                device: dev.clone(),
+            };
+            return Ok((
+                Box::new(fuel_cuda::CudaBackendStorage::new(dst)),
+                layout.shape().clone(),
+            ));
+        }
+
+        #[cfg(feature = "metal")]
+        if let Some(metal) = storage
+            .as_any()
+            .downcast_ref::<fuel_metal::MetalBackendStorage>()
+        {
+            use crate::backend::BackendStorage;
+            use crate::DType;
+            let inner = metal.inner();
+
+            let name = {
+                if self.asc {
+                    match inner.dtype() {
+                        DType::BF16 => "asort_asc_bf16",
+                        DType::F16 => "asort_asc_f16",
+                        DType::F32 => "asort_asc_f32",
+                        DType::F64 => "asort_asc_f64",
+                        DType::U8 => "asort_asc_u8",
+                        DType::U32 => "asort_asc_u32",
+                        DType::I16 => "asort_asc_i16",
+                        DType::I32 => "asort_asc_i32",
+                        DType::I64 => "asort_asc_i64",
+                        DType::F8E4M3 => crate::bail!("Metal device does not yet support F8E4M3."),
+                        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+                            return Err(crate::Error::UnsupportedDTypeForOp(
+                                inner.dtype(),
+                                "argsort",
+                            )
+                            .bt())
+                        }
+                    }
+                } else {
+                    match inner.dtype() {
+                        DType::BF16 => "asort_desc_bf16",
+                        DType::F16 => "asort_desc_f16",
+                        DType::F32 => "asort_desc_f32",
+                        DType::F64 => "asort_desc_f64",
+                        DType::U8 => "asort_desc_u8",
+                        DType::U32 => "asort_desc_u32",
+                        DType::I16 => "asort_desc_i16",
+                        DType::I32 => "asort_desc_i32",
+                        DType::I64 => "asort_desc_i64",
+                        DType::F8E4M3 => crate::bail!("Metal device does not yet support F8E4M3."),
+                        DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+                            return Err(crate::Error::UnsupportedDTypeForOp(
+                                inner.dtype(),
+                                "argsort",
+                            )
+                            .bt())
+                        }
+                    }
+                }
+            };
+            let device = inner.device();
+            let kernels = device.kernels();
+            let command_encoder = device.command_encoder()?;
+            let el = layout.shape().elem_count();
+            let ncols = self.last_dim;
+            let nrows = el / ncols;
+            let src = crate::metal_backend::buffer_o(inner.buffer(), layout, inner.dtype());
+            let dst = device.new_buffer(el, DType::U32, "asort")?;
+            let mut ncols_pad = 1;
+            while ncols_pad < ncols {
+                ncols_pad *= 2;
+            }
+            fuel_metal_kernels::call_arg_sort(
+                device.metal_device(),
+                &command_encoder,
+                kernels,
+                name,
+                nrows,
+                ncols,
+                ncols_pad,
+                src,
+                &dst,
+            )
+            .map_err(crate::Error::wrap)?;
+            let dst = crate::MetalStorage::new(dst, device.clone(), el, DType::U32);
+            return Ok((
+                Box::new(fuel_metal::MetalBackendStorage::new(dst)),
+                layout.shape().clone(),
+            ));
+        }
+
+        Err(crate::Error::Msg("argsort: unsupported backend".into()).bt())
     }
 }
 

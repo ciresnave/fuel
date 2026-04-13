@@ -1,7 +1,7 @@
 ﻿//! Implementation of Backend Fns for CPU
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{DType, Error, Layout, Result, Shape, WithDType};
+use crate::{DType, Error, Layout, Result, Shape};
 // Import upstream WithDType for method resolution on concrete types (e.g. f32::from_f64).
 use fuel_core_types::dtype::WithDType as _;
 use float8::F8E4M3;
@@ -10,7 +10,6 @@ use fuel_cpu_backend::utils::{
     Map1 as CbMap1, Map1Any as CbMap1Any, Map2 as CbMap2, Map2InPlace as CbMap2IP,
     Map2U8 as CbMap2U8,
 };
-use rayon::prelude::*;
 
 mod utils;
 pub use utils::{
@@ -1493,63 +1492,69 @@ impl BackendDevice for CpuDevice {
     #[allow(clippy::uninit_vec)]
     unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<CpuStorage> {
         let elem_count = shape.elem_count();
-        // The code below is highly unsafe but hopefully not directly unsound as we only consider
-        // types that are Copy, not Drop, and for which all bit patterns are proper values.
-        // It's still pretty risky, see the following for more details:
-        // https://github.com/rust-lang/rust-clippy/issues/4483
-        let storage = match dtype {
-            DType::U8 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::U8(v)
-            }
-            DType::U32 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::U32(v)
-            }
-            DType::I16 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::I16(v)
-            }
-            DType::I32 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::I32(v)
-            }
-            DType::I64 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::I64(v)
-            }
-            DType::BF16 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::BF16(v)
-            }
-            DType::F16 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::F16(v)
-            }
-            DType::F32 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::F32(v)
-            }
-            DType::F64 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::F64(v)
-            }
-            DType::F8E4M3 => {
-                let mut v = Vec::with_capacity(elem_count);
-                v.set_len(elem_count);
-                CpuStorage::F8E4M3(v)
-            }
-            DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
-                return Err(Error::UnsupportedDTypeForOp(dtype, "alloc_uninit").bt())
+        // SAFETY: every `Vec::set_len(elem_count)` below follows a
+        // `Vec::with_capacity(elem_count)` and is immediately moved into a
+        // `CpuStorage` variant whose element type is `Copy`, is not `Drop`,
+        // and for which every bit pattern is a valid value. No element is
+        // read before being written, so the uninitialized contents are never
+        // observed by safe code. Caller contract: this returns uninitialized
+        // storage; the caller must fully overwrite the buffer before any read.
+        // Background: https://github.com/rust-lang/rust-clippy/issues/4483
+        let storage = unsafe {
+            match dtype {
+                DType::U8 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::U8(v)
+                }
+                DType::U32 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::U32(v)
+                }
+                DType::I16 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::I16(v)
+                }
+                DType::I32 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::I32(v)
+                }
+                DType::I64 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::I64(v)
+                }
+                DType::BF16 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::BF16(v)
+                }
+                DType::F16 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::F16(v)
+                }
+                DType::F32 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::F32(v)
+                }
+                DType::F64 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::F64(v)
+                }
+                DType::F8E4M3 => {
+                    let mut v = Vec::with_capacity(elem_count);
+                    v.set_len(elem_count);
+                    CpuStorage::F8E4M3(v)
+                }
+                DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
+                    return Err(Error::UnsupportedDTypeForOp(dtype, "alloc_uninit").bt())
+                }
             }
         };
         Ok(storage)

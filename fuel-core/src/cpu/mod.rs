@@ -125,50 +125,6 @@ pub(crate) unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f
     }
 }
 
-#[cfg(any(
-    target_feature = "neon",
-    target_feature = "avx2",
-    target_feature = "simd128"
-))]
-#[inline(always)]
-pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
-    let np = k & !(CurrentCpu::STEP - 1);
-
-    let mut sum = CurrentCpu::zero_array();
-    let mut x = CurrentCpu::zero_array();
-
-    for i in (0..np).step_by(CurrentCpu::STEP) {
-        for j in 0..CurrentCpu::n() {
-            unsafe {
-                x[j] = CurrentCpu::load(row.add(i + j * CurrentCpu::EPR));
-                sum[j] = CurrentCpu::vec_add(sum[j], x[j]);
-            }
-        }
-    }
-
-    unsafe { CurrentCpu::vec_reduce(sum, b) };
-
-    // leftovers
-    for i in np..k {
-        unsafe { *b += *row.add(i) }
-    }
-}
-
-#[cfg(not(any(
-    target_feature = "neon",
-    target_feature = "avx2",
-    target_feature = "simd128"
-)))]
-#[inline(always)]
-pub(crate) unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
-    unsafe {
-        *b = 0f32;
-        for i in 0..k {
-            *b += *row.add(i)
-        }
-    }
-}
-
 #[cfg(target_feature = "avx2")]
 #[inline(always)]
 pub(crate) unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
