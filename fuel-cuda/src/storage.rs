@@ -1712,6 +1712,80 @@ impl CudaStorage {
         Ok(Self { slice, device })
     }
 
+    /// Softmax along the last dimension. Uses the fused CUDA kernel
+    /// from `reduce.cu` (one thread-block per row).
+    ///
+    /// `layout` must be contiguous. `n_rows` × `n_cols` must equal
+    /// the total element count described by the layout's shape.
+    pub fn softmax_last_dim(&self, layout: &Layout) -> Result<Self> {
+        let shape = layout.shape();
+        let dims = shape.dims();
+        let n_cols = *dims.last().expect("softmax: empty shape");
+        let n_rows = shape.elem_count() / n_cols;
+        let device = self.device().clone();
+
+        macro_rules! launch_softmax {
+            ($slice:expr, $kname:expr, $ty:ty) => {{
+                use cudarc::driver::LaunchConfig;
+                let src = &$slice.slice(layout.start_offset()..);
+                let func = device.get_or_load_func($kname, &kernels::REDUCE)?;
+                let mut out = unsafe { device.alloc::<$ty>(n_rows * n_cols)? };
+                let cfg = LaunchConfig {
+                    grid_dim: (n_rows as u32, 1, 1),
+                    block_dim: (1, 1, 1),
+                    shared_mem_bytes: 0,
+                };
+                let mut builder = func.builder();
+                builder.arg(src);
+                builder.arg(&mut out);
+                crate::builder_arg!(builder, n_cols as i32);
+                unsafe { builder.launch(cfg) }.w()?;
+                CudaStorageSlice::$variant(out)
+            }};
+        }
+
+        let slice = match &self.slice {
+            CudaStorageSlice::F32(s) => {
+                use cudarc::driver::LaunchConfig;
+                let src = &s.slice(layout.start_offset()..);
+                let func = device.get_or_load_func("softmax_f32", &kernels::REDUCE)?;
+                let mut out = unsafe { device.alloc::<f32>(n_rows * n_cols)? };
+                let cfg = LaunchConfig {
+                    grid_dim: (n_rows as u32, 1, 1),
+                    block_dim: (1, 1, 1),
+                    shared_mem_bytes: 0,
+                };
+                let mut builder = func.builder();
+                builder.arg(src);
+                builder.arg(&mut out);
+                crate::builder_arg!(builder, n_cols as i32);
+                unsafe { builder.launch(cfg) }.w()?;
+                CudaStorageSlice::F32(out)
+            }
+            CudaStorageSlice::F64(s) => {
+                use cudarc::driver::LaunchConfig;
+                let src = &s.slice(layout.start_offset()..);
+                let func = device.get_or_load_func("softmax_f64", &kernels::REDUCE)?;
+                let mut out = unsafe { device.alloc::<f64>(n_rows * n_cols)? };
+                let cfg = LaunchConfig {
+                    grid_dim: (n_rows as u32, 1, 1),
+                    block_dim: (1, 1, 1),
+                    shared_mem_bytes: 0,
+                };
+                let mut builder = func.builder();
+                builder.arg(src);
+                builder.arg(&mut out);
+                crate::builder_arg!(builder, n_cols as i32);
+                unsafe { builder.launch(cfg) }.w()?;
+                CudaStorageSlice::F64(out)
+            }
+            _ => {
+                return fuel_core_types::bail!("softmax_last_dim: unsupported dtype {:?}", self.dtype());
+            }
+        };
+        Ok(Self { slice, device })
+    }
+
     pub fn to_cpu_storage(&self) -> Result<CpuStorage> {
         match &self.slice {
             CudaStorageSlice::U8(slice) => {
