@@ -2204,8 +2204,33 @@ impl LlamaModel {
     }
 }
 
-/// CUDA variant of generate_streaming. Identical decode loop but
-/// each forward pass runs through the CUDA graph executor.
+/// GPU-resident KV cache. Keys and values stay on the CUDA device
+/// across decode steps, eliminating the D2H readback + H2D re-upload
+/// round-trip that the CPU `LlamaKVCache` path requires.
+#[cfg(feature = "cuda")]
+pub struct GpuKVCache {
+    /// Per-layer (key_storage, value_storage) on GPU.
+    /// Shape per entry: `[1, n_kv_heads, cached_len, head_dim]`.
+    layers: Vec<Option<(fuel_cuda::CudaStorage, fuel_cuda::CudaStorage)>>,
+    pub cached_len: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+}
+
+#[cfg(feature = "cuda")]
+impl GpuKVCache {
+    pub fn new(config: &LlamaConfig) -> Self {
+        Self {
+            layers: (0..config.n_layers).map(|_| None).collect(),
+            cached_len: 0,
+            n_kv_heads: config.n_kv_heads,
+            head_dim: config.head_dim,
+        }
+    }
+}
+
+/// CUDA variant of generate_streaming. Uses a GPU-resident KV cache
+/// so K/V tensors never leave the device between decode steps.
 #[cfg(feature = "cuda")]
 impl LlamaModel {
     pub fn generate_streaming_cuda(
@@ -2223,9 +2248,9 @@ impl LlamaModel {
             _ => 0,
         };
 
-        let mut cache = LlamaKVCache::new(&self.config);
+        let mut cache = GpuKVCache::new(&self.config);
         let mut last_logits =
-            self.forward_with_cache_cuda(&tokens, &mut cache, executor);
+            self.forward_with_gpu_cache(&tokens, &mut cache, executor);
 
         for _ in 0..max_new_tokens {
             let next = sample_logits(&last_logits, strategy, &mut rng_state);
@@ -2237,10 +2262,227 @@ impl LlamaModel {
                 }
             }
             last_logits =
-                self.forward_with_cache_cuda(&[next], &mut cache, executor);
+                self.forward_with_gpu_cache(&[next], &mut cache, executor);
         }
         Ok(tokens)
     }
+
+    /// Forward pass with GPU-resident KV cache. Cached K/V are injected
+    /// directly as pre-populated nodes (no H2D). Fresh K/V stay on GPU
+    /// after realize (no D2H). Only logits are transferred to host.
+    fn forward_with_gpu_cache(
+        &self,
+        tokens: &[u32],
+        cache: &mut GpuKVCache,
+        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+    ) -> Vec<f32> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let cached_len = cache.cached_len;
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+        );
+        let token_ids =
+            embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids)
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, cached_len, seq, cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        // Track the NodeIds of cached K/V const nodes so we can inject
+        // GPU storage for them before realize.
+        let mut cached_kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> = Vec::new();
+        let mut fresh_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+        let mut fresh_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+
+        for (li, layer) in weights.layers.iter().enumerate() {
+            // Create a proxy CPU cache entry with placeholder data.
+            // apply_layer_with_cache uses it to build Const nodes in the
+            // graph; we'll inject the real GPU data before realize.
+            let layer_cache_proxy: LayerKVCache;
+            if cached_len > 0 {
+                let n = batch * cfg.n_kv_heads * cached_len * cfg.head_dim;
+                layer_cache_proxy = LayerKVCache {
+                    k: vec![0.0; n],
+                    v: vec![0.0; n],
+                };
+            } else {
+                layer_cache_proxy = LayerKVCache::default();
+            }
+
+            let (new_h, fk, fv) = self.apply_layer_with_cache(
+                &h, layer, &layer_cache_proxy, cached_len,
+                &rope_cos, &rope_sin,
+            );
+            h = new_h;
+            fresh_ks.push(fk);
+            fresh_vs.push(fv);
+        }
+
+        // Find the NodeIds of the cached K/V const nodes by scanning
+        // the graph for Const nodes with the right shape. This is a
+        // heuristic: we look for consts with shape [1, n_kv, cached_len, hd]
+        // and element count matching the cached size. We collect pairs
+        // in layer order.
+        if cached_len > 0 {
+            let graph = h.graph_tensor().graph().borrow();
+            let target_elems = batch * cfg.n_kv_heads * cached_len * cfg.head_dim;
+            let mut found: Vec<fuel_graph::NodeId> = Vec::new();
+            for node_id in 0..graph.len() {
+                let nid = fuel_graph::NodeId(node_id);
+                let node = graph.node(nid);
+                if matches!(node.op, fuel_graph::Op::Const(_))
+                    && node.shape.elem_count() == target_elems
+                    && node.dtype == fuel_core_types::DType::F32
+                {
+                    // Check it's specifically the KV cache shape
+                    if node.shape.dims() == &[batch, cfg.n_kv_heads, cached_len, cfg.head_dim] {
+                        found.push(nid);
+                    }
+                }
+            }
+            // Should be exactly 2 * n_layers (K and V per layer)
+            if found.len() == 2 * cfg.n_layers {
+                for li in 0..cfg.n_layers {
+                    cached_kv_nodes.push((found[li * 2], found[li * 2 + 1]));
+                }
+            }
+        }
+
+        let h_norm = apply_affine_rms_norm(
+            &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
+        );
+        let w_out = h_norm.const_f32_like(
+            weights.output.clone(),
+            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
+        );
+        let logits = h_norm.matmul(&w_out);
+
+        let last_pos = seq - 1;
+        let last_logits = logits
+            .slice(1, last_pos, 1)
+            .reshape(Shape::from_dims(&[cfg.vocab_size]));
+
+        // Roots: [logits, fresh_k_0..N, fresh_v_0..N]
+        let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
+        roots.push(&last_logits);
+        for fk in &fresh_ks { roots.push(fk); }
+        for fv in &fresh_vs { roots.push(fv); }
+
+        // Inject cached K/V GPU storage for the placeholder const nodes.
+        for (li, (ck_id, cv_id)) in cached_kv_nodes.iter().enumerate() {
+            if let Some((ref k_gpu, ref v_gpu)) = cache.layers[li] {
+                let cached_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, cached_len, cfg.head_dim]);
+                executor.pre_populate(
+                    *ck_id,
+                    k_gpu.try_clone(&fuel_core_types::Layout::contiguous(&cached_shape))
+                        .expect("inject K clone"),
+                    cached_shape.clone(),
+                );
+                executor.pre_populate(
+                    *cv_id,
+                    v_gpu.try_clone(&fuel_core_types::Layout::contiguous(&cached_shape))
+                        .expect("inject V clone"),
+                    cached_shape,
+                );
+            }
+        }
+
+        // Realize: logits → CPU, fresh K/V → stay on GPU.
+        let inner_roots: Vec<&fuel_graph::Tensor> =
+            roots.iter().map(|lt| &lt.inner).collect();
+        let (cpu_results, gpu_results) = executor.realize_split(&inner_roots, 1);
+        let logits_vec = cpu_results.into_iter().next().unwrap();
+
+        // Update GPU cache: concat fresh K/V onto existing cache per layer.
+        let fresh_kv: Vec<(fuel_cuda::CudaStorage, fuel_cuda::CudaStorage)> = {
+            let mut pairs = Vec::with_capacity(cfg.n_layers);
+            let mut iter = gpu_results.into_iter();
+            let ks: Vec<_> = (0..cfg.n_layers).map(|_| iter.next().unwrap()).collect();
+            let vs: Vec<_> = (0..cfg.n_layers).map(|_| iter.next().unwrap()).collect();
+            for (k, v) in ks.into_iter().zip(vs.into_iter()) {
+                pairs.push((k.0, v.0));
+            }
+            pairs
+        };
+
+        let fresh_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, seq, cfg.head_dim]);
+        for (li, (fresh_k, fresh_v)) in fresh_kv.into_iter().enumerate() {
+            if let Some((ref old_k, ref old_v)) = cache.layers[li] {
+                // Concat old + fresh along dim 2 (seq dim) on GPU.
+                let old_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, cached_len, cfg.head_dim]);
+                let new_k = gpu_concat_dim2(
+                    old_k, &old_shape, &fresh_k, &fresh_shape,
+                    cfg.n_kv_heads, cfg.head_dim, cached_len, seq,
+                    &executor.device,
+                );
+                let new_v = gpu_concat_dim2(
+                    old_v, &old_shape, &fresh_v, &fresh_shape,
+                    cfg.n_kv_heads, cfg.head_dim, cached_len, seq,
+                    &executor.device,
+                );
+                cache.layers[li] = Some((new_k, new_v));
+            } else {
+                // First step: fresh K/V becomes the cache directly.
+                cache.layers[li] = Some((fresh_k, fresh_v));
+            }
+        }
+        cache.cached_len += seq;
+
+        logits_vec
+    }
+}
+
+/// Concat two GPU tensors along the seq dim (dim 2) for shape
+/// `[1, n_kv_heads, old_len, head_dim]` + `[1, n_kv_heads, new_len, head_dim]`.
+/// Produces `[1, n_kv_heads, old_len + new_len, head_dim]`.
+#[cfg(feature = "cuda")]
+fn gpu_concat_dim2(
+    old: &fuel_cuda::CudaStorage,
+    old_shape: &Shape,
+    fresh: &fuel_cuda::CudaStorage,
+    fresh_shape: &Shape,
+    n_kv_heads: usize,
+    head_dim: usize,
+    old_len: usize,
+    new_len: usize,
+    device: &fuel_cuda::CudaDevice,
+) -> fuel_cuda::CudaStorage {
+    let total_len = old_len + new_len;
+    let out_shape = Shape::from_dims(&[1, n_kv_heads, total_len, head_dim]);
+    let mut dst = device.zeros_impl(&out_shape, old.dtype())
+        .expect("gpu_concat alloc");
+    let old_slice = old_len * head_dim;
+    let fresh_slice = new_len * head_dim;
+    let out_row = total_len * head_dim;
+
+    for h in 0..n_kv_heads {
+        // Copy old[h] → dst[h, :old_len, :]
+        let old_layout = fuel_core_types::Layout::contiguous_with_offset(
+            &Shape::from_dims(&[old_slice]),
+            h * old_slice,
+        );
+        old.copy_strided_src(&mut dst, h * out_row, &old_layout)
+            .expect("concat old");
+        // Copy fresh[h] → dst[h, old_len:, :]
+        let fresh_layout = fuel_core_types::Layout::contiguous_with_offset(
+            &Shape::from_dims(&[fresh_slice]),
+            h * fresh_slice,
+        );
+        fresh.copy_strided_src(&mut dst, h * out_row + old_slice, &fresh_layout)
+            .expect("concat fresh");
+    }
+    dst
 }
 
 /// Pick the next token from a logits vector using the configured

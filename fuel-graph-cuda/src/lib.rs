@@ -46,6 +46,10 @@ pub struct CudaGraphExecutor {
     /// `Arc<[T]>` data pointer. Never cleared — lives for the
     /// executor's lifetime.
     const_pool: HashMap<usize, GpuTensor>,
+    /// Pre-populated entries for the NEXT realize call. Drained at
+    /// the start of each realize. Used by the KV cache path to
+    /// inject GPU-resident cached K/V without a host round-trip.
+    injected: HashMap<NodeId, GpuTensor>,
 }
 
 impl CudaGraphExecutor {
@@ -53,6 +57,7 @@ impl CudaGraphExecutor {
         Self {
             device,
             const_pool: HashMap::new(),
+            injected: HashMap::new(),
         }
     }
 
@@ -109,6 +114,84 @@ impl CudaGraphExecutor {
                 gpu_to_ref_f32_ref(gt)
             })
             .collect()
+    }
+
+    /// Pre-populate a graph node with an existing GPU tensor. When the
+    /// topo walk encounters this node, it uses the pre-populated storage
+    /// instead of uploading from host. Used by the KV cache path to
+    /// feed cached K/V that already lives on GPU.
+    ///
+    /// The `node_id` comes from `lazy_tensor.graph_tensor().id()` after
+    /// building the graph but before calling realize.
+    pub fn pre_populate(&mut self, node_id: NodeId, storage: CudaStorage, shape: Shape) {
+        self.injected.insert(node_id, GpuTensor { storage, shape });
+    }
+
+    /// Realize a mixed set of roots: the first `n_d2h` are downloaded
+    /// to CPU as `Vec<f32>`; the rest stay on GPU as `(CudaStorage, Shape)`.
+    ///
+    /// Used by the KV cache path: logits are D2H'd for sampling, but
+    /// fresh K/V stay on GPU for the next decode step.
+    pub fn realize_split(
+        &mut self,
+        tensors: &[&Tensor],
+        n_d2h: usize,
+    ) -> (Vec<Vec<f32>>, Vec<(CudaStorage, Shape)>) {
+        let _span = info_span!("realize_split", roots = tensors.len(), n_d2h).entered();
+        if tensors.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let graph_rc = tensors[0].graph();
+        let graph = graph_rc.borrow();
+        let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
+        let order = topo_order_multi(&graph, &roots);
+        let num_nodes = order.len();
+        let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
+        let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
+
+        // Move injected entries into the cache before the walk.
+        for (id, gt) in self.injected.drain() {
+            cache.insert(id, CacheEntry::Owned(gt));
+        }
+
+        for id in order {
+            if cache.contains_key(&id) {
+                continue; // pre-populated or injected
+            }
+            let node = graph.node(id);
+            let entry = self.eval_node(
+                &node.op, &node.inputs, &node.shape, node.dtype, &cache,
+            );
+            cache.insert(id, entry);
+        }
+        drop(_walk);
+
+        // Split: first n_d2h roots go to CPU, rest stay on GPU.
+        let _readback = info_span!("d2h_readback", n_d2h).entered();
+        let mut cpu_results = Vec::with_capacity(n_d2h);
+        let mut gpu_results = Vec::with_capacity(roots.len() - n_d2h);
+
+        for (i, id) in roots.iter().enumerate() {
+            if i < n_d2h {
+                let gt = self.resolve(cache.get(id).expect("split: missing root"));
+                cpu_results.push(gpu_to_ref_f32_ref(gt).into_vec());
+            } else {
+                // Extract as owned GPU tensor.
+                match cache.remove(id) {
+                    Some(CacheEntry::Owned(gt)) => {
+                        gpu_results.push((gt.storage, gt.shape));
+                    }
+                    Some(CacheEntry::ConstRef(key)) => {
+                        // Rare: root is a const. Clone to avoid holding const_pool ref.
+                        let pooled = self.const_pool.get(&key).expect("dangling");
+                        let s = pooled.storage.try_clone(&pooled.layout()).expect("split clone");
+                        gpu_results.push((s, pooled.shape.clone()));
+                    }
+                    None => panic!("split: missing root"),
+                }
+            }
+        }
+        (cpu_results, gpu_results)
     }
 
     // --- cache resolution ---
@@ -430,16 +513,27 @@ impl CudaGraphExecutor {
     }
 
     fn do_broadcast(&self, a: &GpuTensor, target: &Shape) -> GpuTensor {
-        let _s = debug_span!("broadcast", src_elems = a.shape.elem_count(), dst_elems = target.elem_count()).entered();
         let src_dims = a.shape.dims();
         let dst_dims = target.dims();
-        if src_dims == dst_dims {
+
+        // Pure-pad shortcut: if the broadcast only adds leading 1-dims
+        // and all aligned dims match, the element count is unchanged
+        // and the memory layout is identical. Just relabel the shape
+        // — a simple try_clone (D2D copy) instead of the expensive
+        // strided-copy kernel, and the layout is still correct.
+        let pad = dst_dims.len().saturating_sub(src_dims.len());
+        let is_pure_pad = dst_dims[..pad].iter().all(|&d| d == 1)
+            && src_dims.iter().zip(&dst_dims[pad..]).all(|(s, d)| s == d);
+
+        if src_dims == dst_dims || is_pure_pad {
+            let _s = debug_span!("broadcast_pure_pad", elems = target.elem_count()).entered();
             return GpuTensor {
-                storage: a.storage.try_clone(&a.layout()).expect("broadcast noop"),
+                storage: a.storage.try_clone(&a.layout()).expect("broadcast pad"),
                 shape: target.clone(),
             };
         }
-        let pad = dst_dims.len() - src_dims.len();
+
+        let _s = debug_span!("broadcast_strided", src_elems = a.shape.elem_count(), dst_elems = target.elem_count()).entered();
         let mut strides: DimVec = DimVec::from_elem(0, dst_dims.len());
         let mut s = 1usize;
         for i in (0..src_dims.len()).rev() {
