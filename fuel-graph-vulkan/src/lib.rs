@@ -7,6 +7,8 @@
 //! This is the third backend for fuel's generic `GraphExecutor<B>`,
 //! validating the backend-agnostic architecture alongside CPU and CUDA.
 
+pub mod pipelines;
+
 use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
 use vulkane::safe::*;
