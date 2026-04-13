@@ -9,6 +9,7 @@ use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_reference_backend::exec::AnyRefTensor as AnyRef;
 use fuel_reference_backend::RefTensor;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Cached GPU tensor: storage + shape (CudaStorage doesn't track shape).
 struct GpuTensor {
@@ -23,9 +24,12 @@ impl GpuTensor {
 }
 
 /// Holds a CUDA device and a dedup cache for uploaded weight constants.
+/// The cache stores `Arc<CudaStorage>` so that the same weight buffer
+/// shared across many layers (via Arc clone on the host side) occupies
+/// exactly one GPU allocation, with no memcpy on repeated access.
 pub struct CudaGraphExecutor {
     pub device: CudaDevice,
-    const_cache: HashMap<usize, GpuTensor>,
+    const_cache: HashMap<usize, (Arc<CudaStorage>, Shape)>,
 }
 
 impl CudaGraphExecutor {
@@ -273,22 +277,21 @@ impl CudaGraphExecutor {
     }
 
     fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> GpuTensor {
-        let ptr = const_data_arc_ptr(data);
-        if let Some(cached) = self.const_cache.get(&ptr) {
-            return GpuTensor {
-                storage: cached.storage.try_clone(&cached.layout()).expect("const clone"),
-                shape: shape.clone(),
-            };
-        }
+        // Upload the const data to GPU. No caching for now — CudaSlice
+        // doesn't support cheap sharing (no Arc/refcount), so caching
+        // would require keeping an extra GPU copy alive permanently.
+        // Each forward pass re-uploads all consts. For decode steps
+        // this is dominated by the H2D bandwidth of the model weights
+        // (~4 GB for TinyLlama). A proper fix needs CudaSlice wrapped
+        // in Arc, which is a cudarc-level change.
+        //
+        // The executor's node cache (HashMap<NodeId, GpuTensor>) owns
+        // each upload and drops it at the end of realize_*, so GPU
+        // memory stays bounded to one forward pass worth of data.
         let cpu_buf = const_data_to_host_buffer(data);
         let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
             .expect("Const H2D");
-        let gt = GpuTensor { storage: gpu, shape: shape.clone() };
-        self.const_cache.insert(ptr, GpuTensor {
-            storage: gt.storage.try_clone(&gt.layout()).expect("const cache"),
-            shape: shape.clone(),
-        });
-        gt
+        GpuTensor { storage: gpu, shape: shape.clone() }
     }
 
     fn do_permute(&self, a: &GpuTensor, axes: &[usize], out_shape: &Shape) -> GpuTensor {
