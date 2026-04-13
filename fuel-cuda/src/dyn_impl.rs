@@ -257,7 +257,7 @@ impl DynBackendStorage for CudaBackendStorage {
         Arc::new(self.device_wrapper.clone())
     }
 
-    fn to_cpu_storage_dyn(&self) -> Result<CpuStorage> {
+    fn to_host_buffer_dyn(&self) -> Result<CpuStorage> {
         self.storage.to_cpu_storage()
     }
 
@@ -642,15 +642,15 @@ impl DynBackendDevice for CudaBackendDevice {
         unsafe { self.0.alloc_uninit(shape, dtype) }.map(wrap)
     }
 
-    fn storage_from_cpu_storage_dyn(&self, cpu: &CpuStorage) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.storage_from_cpu_storage(cpu).map(wrap)
+    fn storage_from_host_buffer_dyn(&self, buf: &CpuStorage) -> Result<Box<dyn DynBackendStorage>> {
+        self.0.storage_from_cpu_storage(buf).map(wrap)
     }
 
-    fn storage_from_cpu_storage_owned_dyn(
+    fn storage_from_host_buffer_owned_dyn(
         &self,
-        cpu: CpuStorage,
+        buf: CpuStorage,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.storage_from_cpu_storage_owned(cpu).map(wrap)
+        self.0.storage_from_cpu_storage_owned(buf).map(wrap)
     }
 
     fn rand_uniform_dyn(
