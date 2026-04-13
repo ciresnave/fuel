@@ -8,9 +8,8 @@ use vulkane::safe::*;
 /// All pre-compiled compute pipelines for the Vulkan backend.
 pub struct Pipelines {
     // Descriptor set layout: varies per shader (1, 2, or 3 storage buffers).
-    pub layout_1buf: DescriptorSetLayout,  // unary, affine, reduce
-    pub layout_2buf: DescriptorSetLayout,  // softmax (read + write of same shape)
-    pub layout_3buf: DescriptorSetLayout,  // binary, matmul
+    pub layout_2buf: DescriptorSetLayout,  // unary, affine, reduce, softmax (in + out)
+    pub layout_3buf: DescriptorSetLayout,  // binary, matmul (a + b + out)
 
     pub unary_pipeline: ComputePipeline,
     pub unary_layout: PipelineLayout,
@@ -36,7 +35,7 @@ pub struct Pipelines {
 impl Pipelines {
     pub fn new(device: &Device) -> Result<Self> {
         // Descriptor set layouts.
-        let layout_1buf = DescriptorSetLayout::new(device, &[
+        let layout_2buf = DescriptorSetLayout::new(device, &[
             DescriptorSetLayoutBinding {
                 binding: 0,
                 descriptor_type: DescriptorType::STORAGE_BUFFER,
@@ -114,22 +113,22 @@ impl Pipelines {
         };
 
         let unary_layout = PipelineLayout::with_push_constants(
-            device, &[&layout_1buf], &[pc_8],
+            device, &[&layout_2buf], &[pc_8],
         )?;
         let binary_layout = PipelineLayout::with_push_constants(
             device, &[&layout_3buf], &[pc_8],
         )?;
         let affine_layout = PipelineLayout::with_push_constants(
-            device, &[&layout_1buf], &[pc_16],
+            device, &[&layout_2buf], &[pc_16],
         )?;
         let matmul_layout = PipelineLayout::with_push_constants(
             device, &[&layout_3buf], &[pc_24],
         )?;
         let softmax_layout = PipelineLayout::with_push_constants(
-            device, &[&layout_1buf], &[pc_8],
+            device, &[&layout_2buf], &[pc_8],
         )?;
         let reduce_layout = PipelineLayout::with_push_constants(
-            device, &[&layout_1buf], &[pc_8],
+            device, &[&layout_2buf], &[pc_8],
         )?;
 
         // Pipelines.
@@ -141,8 +140,7 @@ impl Pipelines {
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
 
         Ok(Self {
-            layout_1buf,
-            layout_2buf: layout_1buf.clone(),  // TODO: proper 2-buf layout
+            layout_2buf,
             layout_3buf,
             unary_pipeline, unary_layout,
             binary_pipeline, binary_layout,
@@ -157,6 +155,6 @@ impl Pipelines {
 
 /// Compile WGSL source to SPIR-V words via naga.
 fn compile_wgsl(source: &str) -> Result<Vec<u32>> {
-    use vulkane::safe::naga_compile_wgsl;
-    naga_compile_wgsl(source)
+    vulkane::safe::naga::compile_wgsl(source)
+        .map_err(|e| Error::NagaCompile(format!("{e:?}")))
 }
