@@ -8,6 +8,9 @@
 //! consts and computed intermediates are owned per-realize and freed
 //! at the end of each call.
 
+mod backend;
+pub use backend::CudaBackend;
+
 use fuel_core_types::{DType, DimVec, Layout, Shape};
 use fuel_cuda::{CudaDevice, CudaStorage};
 use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
