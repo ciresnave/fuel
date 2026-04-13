@@ -205,13 +205,25 @@ impl CudaGraphExecutor {
                 a.storage.to_dtype(&a.layout(), *target).expect("Cast")
             }
 
-            // Reshape: same data, new shape. try_clone with contiguous
-            // layout copies the buffer (unavoidable without refcounted
-            // CudaSlice). For small tensors this is fine.
+            // Reshape: if the input is an Owned entry, steal its storage
+            // (avoiding a GPU memcpy). If it's a ConstRef, we must clone
+            // since the const_pool owns the original.
             Op::Reshape(_) => {
-                let a = self.get_gt(inputs, 0, cache);
-                let storage = a.storage.try_clone(&a.layout()).expect("Reshape");
-                return CacheEntry::Owned(GpuTensor { storage, shape: shape.clone() });
+                let entry = cache.get(&inputs[0]).expect("reshape: missing input");
+                match entry {
+                    CacheEntry::ConstRef(_) => {
+                        let a = self.resolve(entry);
+                        let storage = a.storage.try_clone(&a.layout()).expect("Reshape");
+                        return CacheEntry::Owned(GpuTensor { storage, shape: shape.clone() });
+                    }
+                    CacheEntry::Owned(a) => {
+                        // Can't move out of the cache (it's borrowed), so
+                        // still need try_clone. But this is at least bounded
+                        // to computed intermediates, not large weight tensors.
+                        let storage = a.storage.try_clone(&a.layout()).expect("Reshape");
+                        return CacheEntry::Owned(GpuTensor { storage, shape: shape.clone() });
+                    }
+                }
             }
 
             Op::Transpose => {
@@ -336,18 +348,37 @@ impl CudaGraphExecutor {
 
     fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> CacheEntry {
         let ptr = const_data_arc_ptr(data);
-        if self.const_pool.contains_key(&ptr) {
+        let refcount = const_data_arc_strong_count(data);
+
+        // Only cache consts whose Arc has strong_count > 1, meaning
+        // the data is shared between the model's weight struct and the
+        // graph's ConstData — it will outlive this forward pass and
+        // the pointer will remain stable across calls.
+        //
+        // Ephemeral consts (causal masks, RoPE tables, KV cache data,
+        // token IDs) have strong_count == 1. Their Arc is dropped at
+        // the end of realize_*, and the allocator can reuse the same
+        // address for a completely different buffer next call — which
+        // would be a stale cache hit with wrong data.
+        if refcount > 1 {
+            if self.const_pool.contains_key(&ptr) {
+                return CacheEntry::ConstRef(ptr);
+            }
+            let cpu_buf = const_data_to_host_buffer(data);
+            let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
+                .expect("Const H2D");
+            self.const_pool.insert(ptr, GpuTensor {
+                storage: gpu,
+                shape: shape.clone(),
+            });
             return CacheEntry::ConstRef(ptr);
         }
-        // First encounter: upload to GPU and store persistently.
+
+        // Ephemeral const: upload fresh, owned by the per-realize cache.
         let cpu_buf = const_data_to_host_buffer(data);
         let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
             .expect("Const H2D");
-        self.const_pool.insert(ptr, GpuTensor {
-            storage: gpu,
-            shape: shape.clone(),
-        });
-        CacheEntry::ConstRef(ptr)
+        CacheEntry::Owned(GpuTensor { storage: gpu, shape: shape.clone() })
     }
 
     fn do_permute(&self, a: &GpuTensor, axes: &[usize], out_shape: &Shape) -> GpuTensor {
@@ -513,6 +544,16 @@ fn const_data_arc_ptr(data: &ConstData) -> usize {
         ConstData::BF16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
         ConstData::F16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
         ConstData::U32(v) => std::sync::Arc::as_ptr(v) as *const u32 as usize,
+    }
+}
+
+fn const_data_arc_strong_count(data: &ConstData) -> usize {
+    match data {
+        ConstData::F32(v) => std::sync::Arc::strong_count(v),
+        ConstData::F64(v) => std::sync::Arc::strong_count(v),
+        ConstData::BF16(v) => std::sync::Arc::strong_count(v),
+        ConstData::F16(v) => std::sync::Arc::strong_count(v),
+        ConstData::U32(v) => std::sync::Arc::strong_count(v),
     }
 }
 
