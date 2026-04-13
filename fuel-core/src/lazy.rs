@@ -1533,11 +1533,90 @@ impl LlamaModel {
         for fv in &fresh_vs {
             roots.push(fv);
         }
-        let mut realized = realize_many_f32(&roots);
+        let realized = realize_many_f32(&roots);
+        Self::unpack_kv_cache(realized, cache, cfg.n_layers, seq)
+    }
 
+    /// CUDA variant of the cached forward pass. Identical graph, but
+    /// realized on GPU via the `CudaGraphExecutor`.
+    #[cfg(feature = "cuda")]
+    pub fn forward_with_cache_cuda(
+        &self,
+        tokens: &[u32],
+        cache: &mut LlamaKVCache,
+        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+    ) -> Vec<f32> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let cached_len = cache.cached_len;
+
+        assert_eq!(cache.layers.len(), cfg.n_layers);
+        assert!(seq > 0);
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+        );
+        let token_ids =
+            embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids)
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, cached_len, seq, cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        let mut fresh_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+        let mut fresh_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+
+        for (li, layer) in weights.layers.iter().enumerate() {
+            let (new_h, fk, fv) = self.apply_layer_with_cache(
+                &h, layer, &cache.layers[li], cached_len,
+                &rope_cos, &rope_sin,
+            );
+            h = new_h;
+            fresh_ks.push(fk);
+            fresh_vs.push(fv);
+        }
+
+        let h_norm = apply_affine_rms_norm(
+            &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
+        );
+        let w_out = h_norm.const_f32_like(
+            weights.output.clone(),
+            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
+        );
+        let logits = h_norm.matmul(&w_out);
+
+        let last_pos = seq - 1;
+        let last_logits = logits
+            .slice(1, last_pos, 1)
+            .reshape(Shape::from_dims(&[cfg.vocab_size]));
+
+        let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
+        roots.push(&last_logits);
+        for fk in &fresh_ks { roots.push(fk); }
+        for fv in &fresh_vs { roots.push(fv); }
+
+        let realized = realize_many_f32_cuda(&roots, executor);
+        Self::unpack_kv_cache(realized, cache, cfg.n_layers, seq)
+    }
+
+    fn unpack_kv_cache(
+        mut realized: Vec<Vec<f32>>,
+        cache: &mut LlamaKVCache,
+        n_layers: usize,
+        seq: usize,
+    ) -> Vec<f32> {
         let logits_vec = realized.remove(0);
-        let fresh_k_vecs: Vec<Vec<f32>> = realized.drain(..cfg.n_layers).collect();
-        let fresh_v_vecs: Vec<Vec<f32>> = realized.drain(..cfg.n_layers).collect();
+        let fresh_k_vecs: Vec<Vec<f32>> = realized.drain(..n_layers).collect();
+        let fresh_v_vecs: Vec<Vec<f32>> = realized.drain(..n_layers).collect();
 
         for (li, (fk_vec, fv_vec)) in fresh_k_vecs
             .into_iter()
@@ -2036,6 +2115,45 @@ impl LlamaModel {
             // Decode step: feed just the one new token. The cache does
             // the work of making this O(total_seq) instead of O(total_seq²).
             last_logits = self.forward_with_cache(&[next], &mut cache);
+        }
+        Ok(tokens)
+    }
+}
+
+/// CUDA variant of generate_streaming. Identical decode loop but
+/// each forward pass runs through the CUDA graph executor.
+#[cfg(feature = "cuda")]
+impl LlamaModel {
+    pub fn generate_streaming_cuda(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        executor: &mut fuel_graph_cuda::CudaGraphExecutor,
+        mut on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
+        let mut rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+
+        let mut cache = LlamaKVCache::new(&self.config);
+        let mut last_logits =
+            self.forward_with_cache_cuda(&tokens, &mut cache, executor);
+
+        for _ in 0..max_new_tokens {
+            let next = sample_logits(&last_logits, strategy, &mut rng_state);
+            tokens.push(next);
+            on_token(next);
+            if let Some(eos) = eos_id {
+                if next == eos {
+                    break;
+                }
+            }
+            last_logits =
+                self.forward_with_cache_cuda(&[next], &mut cache, executor);
         }
         Ok(tokens)
     }

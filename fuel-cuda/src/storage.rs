@@ -5,7 +5,7 @@ use fuel_core_types::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use fuel_core_types::dtype::WithDType;
 use fuel_core_types::{CpuStorage, DType, Layout, Result};
 use crate::builder_arg as barg;
-use fuel_kernels as kernels;
+use fuel_cuda_kernels as kernels;
 
 use cudarc::cublas::{Gemm, GemmConfig, StridedBatchedConfig};
 use cudarc::driver::{
@@ -1675,6 +1675,17 @@ impl CudaStorage {
         Ok(Self { slice, device })
     }
 
+    /// Run a unary CUDA kernel by name (e.g. `"uneg"`, `"uexp"`,
+    /// `"usilu"`). This bypasses the `UnaryOpT` type-parameter
+    /// dispatch and is the entry point for executors that can't
+    /// depend on the concrete op-type structs in fuel-core.
+    pub fn unary_by_name(&self, kernel: &'static str, layout: &Layout) -> Result<Self> {
+        let device = self.device().clone();
+        let slice = crate::dyn_impl::UnaryKernel(kernel)
+            .map(&self.slice, &device, layout)?;
+        Ok(Self { slice, device })
+    }
+
     pub fn binary_impl<B: BinaryOpT>(
         &self,
         rhs: &Self,
@@ -1683,6 +1694,21 @@ impl CudaStorage {
     ) -> Result<Self> {
         let device = self.device().clone();
         let slice = B::V.map(&self.slice, lhs_l, &rhs.slice, rhs_l, &device)?;
+        Ok(Self { slice, device })
+    }
+
+    /// Run a binary CUDA kernel by name (e.g. `"badd"`, `"bmul"`).
+    /// Same rationale as [`unary_by_name`].
+    pub fn binary_by_name(
+        &self,
+        rhs: &Self,
+        lhs_l: &Layout,
+        rhs_l: &Layout,
+        kernel: &'static str,
+    ) -> Result<Self> {
+        let device = self.device().clone();
+        let slice = crate::dyn_impl::BinaryKernel(kernel)
+            .map(&self.slice, lhs_l, &rhs.slice, rhs_l, &device)?;
         Ok(Self { slice, device })
     }
 
