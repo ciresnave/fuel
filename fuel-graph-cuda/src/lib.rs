@@ -2,16 +2,20 @@
 //!
 //! All intermediates stay in GPU memory; host↔device transfer happens
 //! only at `Const` upload (H2D) and `realize_*` readback (D2H).
+//!
+//! Model weights upload **once** (first forward pass) and persist in
+//! the executor's `const_pool` for the executor's lifetime. KV-cache
+//! consts and computed intermediates are owned per-realize and freed
+//! at the end of each call.
 
 use fuel_core_types::{DType, DimVec, Layout, Shape};
-use fuel_cuda::{CudaDevice, CudaStorage, CudaStorageSlice};
+use fuel_cuda::{CudaDevice, CudaStorage};
 use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_reference_backend::exec::AnyRefTensor as AnyRef;
 use fuel_reference_backend::RefTensor;
 use std::collections::HashMap;
-use std::sync::Arc;
 
-/// Cached GPU tensor: storage + shape (CudaStorage doesn't track shape).
+/// GPU tensor: storage + shape (CudaStorage doesn't track shape).
 struct GpuTensor {
     storage: CudaStorage,
     shape: Shape,
@@ -23,20 +27,31 @@ impl GpuTensor {
     }
 }
 
-/// Holds a CUDA device and a dedup cache for uploaded weight constants.
-/// The cache stores `Arc<CudaStorage>` so that the same weight buffer
-/// shared across many layers (via Arc clone on the host side) occupies
-/// exactly one GPU allocation, with no memcpy on repeated access.
+/// A node-cache entry: either a reference to a persistent const_pool
+/// entry (zero-cost on cache hit) or an owned computed tensor.
+enum CacheEntry {
+    /// Points into `CudaGraphExecutor::const_pool`. The pool outlives
+    /// the per-realize cache, so the GPU memory stays valid.
+    ConstRef(usize),
+    /// An intermediate computed during this realize pass. Freed when
+    /// the cache is dropped at the end of realize_*.
+    Owned(GpuTensor),
+}
+
+/// CUDA graph executor with a persistent weight cache.
 pub struct CudaGraphExecutor {
     pub device: CudaDevice,
-    const_cache: HashMap<usize, (Arc<CudaStorage>, Shape)>,
+    /// Weights uploaded on first encounter, keyed on host-side
+    /// `Arc<[T]>` data pointer. Never cleared — lives for the
+    /// executor's lifetime.
+    const_pool: HashMap<usize, GpuTensor>,
 }
 
 impl CudaGraphExecutor {
     pub fn new(device: CudaDevice) -> Self {
         Self {
             device,
-            const_cache: HashMap::new(),
+            const_pool: HashMap::new(),
         }
     }
 
@@ -47,13 +62,16 @@ impl CudaGraphExecutor {
     pub fn realize_f32(&mut self, tensor: &Tensor) -> RefTensor<f32> {
         let graph = tensor.graph().borrow();
         let order = topo_order(&graph, tensor.id());
-        let mut cache: HashMap<NodeId, GpuTensor> = HashMap::new();
+        let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
         for id in order {
             let node = graph.node(id);
-            let gt = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
-            cache.insert(id, gt);
+            let entry = self.eval_node(
+                &node.op, &node.inputs, &node.shape, node.dtype, &cache,
+            );
+            cache.insert(id, entry);
         }
-        let gt = cache.remove(&tensor.id()).expect("realize: missing root");
+        let gt = self.take_owned(cache.remove(&tensor.id())
+            .expect("realize: missing root"));
         gpu_to_ref_f32(gt)
     }
 
@@ -65,20 +83,62 @@ impl CudaGraphExecutor {
         let graph = graph_rc.borrow();
         let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
         let order = topo_order_multi(&graph, &roots);
-        let mut cache: HashMap<NodeId, GpuTensor> = HashMap::new();
+        let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
         for id in order {
             let node = graph.node(id);
-            let gt = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
-            cache.insert(id, gt);
+            let entry = self.eval_node(
+                &node.op, &node.inputs, &node.shape, node.dtype, &cache,
+            );
+            cache.insert(id, entry);
         }
         roots
             .iter()
             .map(|id| {
-                let gt = cache.get(id).expect("realize_many: missing root");
+                let gt = self.resolve(cache.get(id).expect("realize_many: missing root"));
                 gpu_to_ref_f32_ref(gt)
             })
             .collect()
     }
+
+    // --- cache resolution ---
+
+    /// Resolve a CacheEntry to a &GpuTensor, following ConstRef indirection.
+    fn resolve<'a>(&'a self, entry: &'a CacheEntry) -> &'a GpuTensor {
+        match entry {
+            CacheEntry::ConstRef(key) => self.const_pool.get(key)
+                .expect("dangling ConstRef"),
+            CacheEntry::Owned(gt) => gt,
+        }
+    }
+
+    /// Get the GpuTensor for a node from the cache.
+    fn get_gt<'a>(
+        &'a self,
+        inputs: &[NodeId],
+        idx: usize,
+        cache: &'a HashMap<NodeId, CacheEntry>,
+    ) -> &'a GpuTensor {
+        let entry = cache.get(&inputs[idx]).expect("topo order missing input");
+        self.resolve(entry)
+    }
+
+    /// Extract an owned GpuTensor from a CacheEntry. For ConstRef,
+    /// does a D2H + H2D round-trip (only used for the final realize
+    /// readback when the root happens to be a const — rare in practice).
+    fn take_owned(&self, entry: CacheEntry) -> GpuTensor {
+        match entry {
+            CacheEntry::Owned(gt) => gt,
+            CacheEntry::ConstRef(key) => {
+                let pooled = self.const_pool.get(&key).expect("dangling ConstRef");
+                let cpu = pooled.storage.to_cpu_storage().expect("take_owned D2H");
+                let gpu = self.device.storage_from_cpu_storage(&cpu)
+                    .expect("take_owned H2D");
+                GpuTensor { storage: gpu, shape: pooled.shape.clone() }
+            }
+        }
+    }
+
+    // --- eval_node dispatcher ---
 
     fn eval_node(
         &mut self,
@@ -86,13 +146,13 @@ impl CudaGraphExecutor {
         inputs: &[NodeId],
         shape: &Shape,
         dtype: DType,
-        cache: &HashMap<NodeId, GpuTensor>,
-    ) -> GpuTensor {
+        cache: &HashMap<NodeId, CacheEntry>,
+    ) -> CacheEntry {
         let result_storage = match op {
             Op::Const(data) => return self.eval_const(data, shape),
 
             Op::MatMul => {
-                let (a, b) = (g(inputs, 0, cache), g(inputs, 1, cache));
+                let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
                 let ad = a.shape.dims();
                 let bd = b.shape.dims();
                 let rank = ad.len();
@@ -102,80 +162,78 @@ impl CudaGraphExecutor {
                     .expect("MatMul")
             }
 
-            // Unary ops: dispatch to CUDA kernels by name via
-            // CudaStorage::unary_by_name. Kernel names follow the
-            // convention "u" + op_name (matching the .cu kernel names).
-            Op::Neg => self.unary_cuda("uneg", inputs, shape, cache),
-            Op::Sqr => self.unary_cuda("usqr", inputs, shape, cache),
-            Op::Sqrt => self.unary_cuda("usqrt", inputs, shape, cache),
-            Op::Exp => self.unary_cuda("uexp", inputs, shape, cache),
-            Op::Log => self.unary_cuda("ulog", inputs, shape, cache),
-            Op::Sin => self.unary_cuda("usin", inputs, shape, cache),
-            Op::Cos => self.unary_cuda("ucos", inputs, shape, cache),
-            Op::Tanh => self.unary_cuda("utanh", inputs, shape, cache),
-            Op::Sigmoid => self.unary_cuda("usigmoid", inputs, shape, cache),
-            Op::Silu => self.unary_cuda("usilu", inputs, shape, cache),
-            Op::Gelu => self.unary_cuda("ugelu", inputs, shape, cache),
-            Op::Relu => self.unary_cuda("urelu", inputs, shape, cache),
-            Op::Step => self.unary_cuda("ustep", inputs, shape, cache),
+            // Unary ops via native CUDA kernels.
+            Op::Neg => self.unary_cuda("uneg", inputs, cache),
+            Op::Sqr => self.unary_cuda("usqr", inputs, cache),
+            Op::Sqrt => self.unary_cuda("usqrt", inputs, cache),
+            Op::Exp => self.unary_cuda("uexp", inputs, cache),
+            Op::Log => self.unary_cuda("ulog", inputs, cache),
+            Op::Sin => self.unary_cuda("usin", inputs, cache),
+            Op::Cos => self.unary_cuda("ucos", inputs, cache),
+            Op::Tanh => self.unary_cuda("utanh", inputs, cache),
+            Op::Sigmoid => self.unary_cuda("usigmoid", inputs, cache),
+            Op::Silu => self.unary_cuda("usilu", inputs, cache),
+            Op::Gelu => self.unary_cuda("ugelu", inputs, cache),
+            Op::Relu => self.unary_cuda("urelu", inputs, cache),
+            Op::Step => self.unary_cuda("ustep", inputs, cache),
 
-            // Binary ops: "b" + op_name.
-            Op::Add => self.binary_cuda("badd", inputs, shape, cache),
-            Op::Sub => self.binary_cuda("bsub", inputs, shape, cache),
-            Op::Mul => self.binary_cuda("bmul", inputs, shape, cache),
-            Op::Div => self.binary_cuda("bdiv", inputs, shape, cache),
-            Op::Maximum => self.binary_cuda("bmaximum", inputs, shape, cache),
-            Op::Minimum => self.binary_cuda("bminimum", inputs, shape, cache),
+            // Binary ops via native CUDA kernels.
+            Op::Add => self.binary_cuda("badd", inputs, cache),
+            Op::Sub => self.binary_cuda("bsub", inputs, cache),
+            Op::Mul => self.binary_cuda("bmul", inputs, cache),
+            Op::Div => self.binary_cuda("bdiv", inputs, cache),
+            Op::Maximum => self.binary_cuda("bmaximum", inputs, cache),
+            Op::Minimum => self.binary_cuda("bminimum", inputs, cache),
 
-            // scalar
+            // Scalar affine ops.
             Op::AddScalar(c) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 a.storage.affine(&a.layout(), 1.0, *c).expect("AddScalar")
             }
             Op::MulScalar(c) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 a.storage.affine(&a.layout(), *c, 0.0).expect("MulScalar")
             }
             Op::PowI(n) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 a.storage.powf(&a.layout(), *n as f64).expect("PowI")
             }
 
-            // dtype
+            // Cast.
             Op::Cast(target) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 a.storage.to_dtype(&a.layout(), *target).expect("Cast")
             }
 
-            // shape (reshape is zero-cost metadata change — just clone storage)
+            // Reshape: same data, new shape. try_clone with contiguous
+            // layout copies the buffer (unavoidable without refcounted
+            // CudaSlice). For small tensors this is fine.
             Op::Reshape(_) => {
-                let a = g(inputs, 0, cache);
-                return GpuTensor {
-                    storage: a.storage.try_clone(&a.layout()).expect("Reshape"),
-                    shape: shape.clone(),
-                };
+                let a = self.get_gt(inputs, 0, cache);
+                let storage = a.storage.try_clone(&a.layout()).expect("Reshape");
+                return CacheEntry::Owned(GpuTensor { storage, shape: shape.clone() });
             }
 
             Op::Transpose => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 let rank = a.shape.dims().len();
                 let mut perm: Vec<usize> = (0..rank).collect();
                 perm.swap(rank - 2, rank - 1);
-                return self.do_permute(a, &perm, shape);
+                return CacheEntry::Owned(self.do_permute(a, &perm, shape));
             }
             Op::Permute(axes) => {
-                let a = g(inputs, 0, cache);
-                return self.do_permute(a, axes, shape);
+                let a = self.get_gt(inputs, 0, cache);
+                return CacheEntry::Owned(self.do_permute(a, axes, shape));
             }
 
             Op::BroadcastTo(target) => {
-                let a = g(inputs, 0, cache);
-                return self.do_broadcast(a, target);
+                let a = self.get_gt(inputs, 0, cache);
+                return CacheEntry::Owned(self.do_broadcast(a, target));
             }
 
-            // reductions
+            // Reductions.
             Op::SumAll | Op::MeanAll => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 let mut r = a.storage.reduce_op(
                     fuel_core_types::op::ReduceOp::Sum, &a.layout(), &axes,
@@ -188,19 +246,19 @@ impl CudaGraphExecutor {
                 r
             }
             Op::MaxAll => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 a.storage.reduce_op(fuel_core_types::op::ReduceOp::Max, &a.layout(), &axes)
                     .expect("MaxAll")
             }
             Op::MinAll => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 a.storage.reduce_op(fuel_core_types::op::ReduceOp::Min, &a.layout(), &axes)
                     .expect("MinAll")
             }
             Op::SumDim(d) | Op::MeanDim(d) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 let mut r = a.storage.reduce_op(
                     fuel_core_types::op::ReduceOp::Sum, &a.layout(), &[*d],
                 ).expect("SumDim");
@@ -212,54 +270,55 @@ impl CudaGraphExecutor {
                 r
             }
             Op::MaxDim(d) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 a.storage.reduce_op(fuel_core_types::op::ReduceOp::Max, &a.layout(), &[*d])
                     .expect("MaxDim")
             }
             Op::MinDim(d) => {
-                let a = g(inputs, 0, cache);
+                let a = self.get_gt(inputs, 0, cache);
                 a.storage.reduce_op(fuel_core_types::op::ReduceOp::Min, &a.layout(), &[*d])
                     .expect("MinDim")
             }
 
-            // indexing
+            // Indexing.
             Op::IndexSelect { dim } => {
-                let (src, ids) = (g(inputs, 0, cache), g(inputs, 1, cache));
+                let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
                 src.storage.index_select(&ids.storage, &src.layout(), &ids.layout(), *dim)
                     .expect("IndexSelect")
             }
             Op::Gather { dim } => {
-                let (src, ids) = (g(inputs, 0, cache), g(inputs, 1, cache));
+                let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
                 src.storage.gather(&src.layout(), &ids.storage, &ids.layout(), *dim)
                     .expect("Gather")
             }
 
-            // concat / slice
-            Op::Concat { dim } => return self.eval_concat(*dim, inputs, shape, cache),
+            // Concat / Slice.
+            Op::Concat { dim } => return CacheEntry::Owned(self.eval_concat(*dim, inputs, shape, cache)),
             Op::Slice { dim, start, len } => {
-                let a = g(inputs, 0, cache);
-                return self.eval_slice(*dim, *start, *len, a, shape);
+                let a = self.get_gt(inputs, 0, cache);
+                return CacheEntry::Owned(self.eval_slice(*dim, *start, *len, a, shape));
             }
 
-            // Everything else: CPU fallback via the reference backend.
+            // Everything else: CPU fallback.
             _ => {
-                return self.cpu_fallback(inputs, shape, cache, |ni, ns, cc| {
+                return CacheEntry::Owned(self.cpu_fallback(inputs, shape, cache, |ni, ns, cc| {
                     fuel_reference_backend::exec::eval_node_with_op(op, ni, ns, dtype, cc)
-                });
+                }));
             }
         };
 
-        GpuTensor { storage: result_storage, shape: shape.clone() }
+        CacheEntry::Owned(GpuTensor { storage: result_storage, shape: shape.clone() })
     }
+
+    // --- op helpers ---
 
     fn unary_cuda(
         &self,
         kernel: &'static str,
         inputs: &[NodeId],
-        shape: &Shape,
-        cache: &HashMap<NodeId, GpuTensor>,
+        cache: &HashMap<NodeId, CacheEntry>,
     ) -> CudaStorage {
-        let a = g(inputs, 0, cache);
+        let a = self.get_gt(inputs, 0, cache);
         a.storage.unary_by_name(kernel, &a.layout()).expect(kernel)
     }
 
@@ -267,31 +326,28 @@ impl CudaGraphExecutor {
         &self,
         kernel: &'static str,
         inputs: &[NodeId],
-        shape: &Shape,
-        cache: &HashMap<NodeId, GpuTensor>,
+        cache: &HashMap<NodeId, CacheEntry>,
     ) -> CudaStorage {
-        let (a, b) = (g(inputs, 0, cache), g(inputs, 1, cache));
+        let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
         a.storage
             .binary_by_name(&b.storage, &a.layout(), &b.layout(), kernel)
             .expect(kernel)
     }
 
-    fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> GpuTensor {
-        // Upload the const data to GPU. No caching for now — CudaSlice
-        // doesn't support cheap sharing (no Arc/refcount), so caching
-        // would require keeping an extra GPU copy alive permanently.
-        // Each forward pass re-uploads all consts. For decode steps
-        // this is dominated by the H2D bandwidth of the model weights
-        // (~4 GB for TinyLlama). A proper fix needs CudaSlice wrapped
-        // in Arc, which is a cudarc-level change.
-        //
-        // The executor's node cache (HashMap<NodeId, GpuTensor>) owns
-        // each upload and drops it at the end of realize_*, so GPU
-        // memory stays bounded to one forward pass worth of data.
+    fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> CacheEntry {
+        let ptr = const_data_arc_ptr(data);
+        if self.const_pool.contains_key(&ptr) {
+            return CacheEntry::ConstRef(ptr);
+        }
+        // First encounter: upload to GPU and store persistently.
         let cpu_buf = const_data_to_host_buffer(data);
         let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
             .expect("Const H2D");
-        GpuTensor { storage: gpu, shape: shape.clone() }
+        self.const_pool.insert(ptr, GpuTensor {
+            storage: gpu,
+            shape: shape.clone(),
+        });
+        CacheEntry::ConstRef(ptr)
     }
 
     fn do_permute(&self, a: &GpuTensor, axes: &[usize], out_shape: &Shape) -> GpuTensor {
@@ -348,10 +404,10 @@ impl CudaGraphExecutor {
         dim: usize,
         inputs: &[NodeId],
         out_shape: &Shape,
-        cache: &HashMap<NodeId, GpuTensor>,
+        cache: &HashMap<NodeId, CacheEntry>,
     ) -> GpuTensor {
-        let a = g(inputs, 0, cache);
-        let b = g(inputs, 1, cache);
+        let a = self.get_gt(inputs, 0, cache);
+        let b = self.get_gt(inputs, 1, cache);
         let mut dst = self.device.zeros_impl(out_shape, a.storage.dtype())
             .expect("concat alloc");
 
@@ -360,16 +416,12 @@ impl CudaGraphExecutor {
         let b_dim = b.shape.dims()[dim];
         let inner: usize = out_dims[dim + 1..].iter().product::<usize>().max(1);
         let outer: usize = out_dims[..dim].iter().product::<usize>().max(1);
-        let out_row = out_dims[dim] * inner; // stride of one "outer" slice in dst
+        let out_row = out_dims[dim] * inner;
 
         if outer == 1 {
-            // Simple case: one contiguous block per tensor.
             a.storage.copy_strided_src(&mut dst, 0, &a.layout()).expect("concat a");
             b.storage.copy_strided_src(&mut dst, a_dim * inner, &b.layout()).expect("concat b");
         } else {
-            // General case: copy each tensor per-outer-slice into the
-            // wider output rows. Both a and b need per-slice copies
-            // because their row width differs from the output's.
             let a_slice_size = a_dim * inner;
             let b_slice_size = b_dim * inner;
             for o in 0..outer {
@@ -379,7 +431,6 @@ impl CudaGraphExecutor {
                 );
                 a.storage.copy_strided_src(&mut dst, o * out_row, &a_layout)
                     .expect("concat a slice");
-
                 let b_layout = Layout::contiguous_with_offset(
                     &Shape::from_dims(&[b_slice_size]),
                     o * b_slice_size,
@@ -416,17 +467,16 @@ impl CudaGraphExecutor {
         GpuTensor { storage: dst, shape: out_shape.clone() }
     }
 
-    /// Download inputs to CPU, run a reference-backend op, re-upload.
     fn cpu_fallback(
         &self,
         inputs: &[NodeId],
         shape: &Shape,
-        cache: &HashMap<NodeId, GpuTensor>,
+        cache: &HashMap<NodeId, CacheEntry>,
         f: impl FnOnce(&[NodeId], &Shape, &HashMap<NodeId, AnyRef>) -> AnyRef,
     ) -> GpuTensor {
         let mut cpu_cache: HashMap<NodeId, AnyRef> = HashMap::new();
         for &id in inputs {
-            let gt = cache.get(&id).expect("cpu_fallback: missing input");
+            let gt = self.resolve(cache.get(&id).expect("cpu_fallback: missing input"));
             let cpu_buf = gt.storage.to_cpu_storage().expect("D2H fallback");
             cpu_cache.insert(id, host_buffer_to_any_ref(cpu_buf, &gt.shape));
         }
@@ -439,10 +489,6 @@ impl CudaGraphExecutor {
 }
 
 // --- free-function helpers ---
-
-fn g<'a>(inputs: &[NodeId], idx: usize, cache: &'a HashMap<NodeId, GpuTensor>) -> &'a GpuTensor {
-    cache.get(&inputs[idx]).expect("topo order missing input")
-}
 
 fn gpu_to_ref_f32(gt: GpuTensor) -> RefTensor<f32> {
     let cpu = gt.storage.to_cpu_storage().expect("D2H");
