@@ -10,7 +10,7 @@
 
 [dependencies]
     fuel-core-types = { workspace = true }
-    fuel-kernels    = { workspace = true }
+    fuel-cuda-kernels = { workspace = true }
     cudarc            = { workspace = true }
     float8            = { workspace = true }
     half              = { workspace = true }

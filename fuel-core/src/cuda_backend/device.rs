@@ -1,6 +1,6 @@
 ﻿use crate::backend::{BackendDevice, BackendStorage};
 use crate::{CpuStorage, CpuStorageRef, DType, Layout, Result, Shape};
-pub use fuel_kernels as kernels;
+pub use fuel_cuda_kernels as kernels;
 pub use cudarc;
 use cudarc::driver::CudaFunction;
 use float8::F8E4M3;

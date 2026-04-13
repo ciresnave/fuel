@@ -877,83 +877,97 @@ impl crate::CustomOp1 for QTensor {
         "qmatmul"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        storage: &crate::CpuStorage,
+        storage: &dyn crate::dyn_backend::DynBackendStorage,
         layout: &crate::Layout,
-    ) -> Result<(crate::CpuStorage, Shape)> {
-        if !layout.is_contiguous() {
-            crate::bail!("input tensor is not contiguous {layout:?}")
-        }
-        let src_shape = layout.shape();
-        // self is transposed so n is first then k.
-        let (n, k) = self.shape.dims2()?;
-        if src_shape.rank() < 2 {
-            crate::bail!("input tensor has only one dimension {layout:?}")
-        }
-        let mut dst_shape = src_shape.dims().to_vec();
-        let last_k = dst_shape.pop().unwrap();
-        if last_k != k {
-            crate::bail!("input tensor {layout:?} incompatible with {:?}", self.shape)
-        }
-        dst_shape.push(n);
-        let dst_shape = Shape::from(dst_shape);
-        #[allow(clippy::infallible_destructuring_match)]
-        let self_storage = match &self.storage {
-            QStorage::Cpu(storage) => storage,
-            QStorage::Metal(_) | QStorage::Cuda(_) => crate::bail!("Invalid storage"),
-        };
-        match storage.dtype() {
-            DType::F32 => {
-                let slice = storage.as_slice::<f32>()?;
-                let slice =
-                    &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
-                let mut dst_storage = vec![0f32; dst_shape.elem_count()];
-                self_storage.matmul_t(
-                    (dst_shape.elem_count() / n, k, n),
-                    slice,
-                    &mut dst_storage,
-                )?;
-                Ok((crate::CpuStorage::F32(dst_storage), dst_shape))
+    ) -> Result<(Box<dyn crate::dyn_backend::DynBackendStorage>, Shape)> {
+        if let Some(cpu) = storage
+            .as_any()
+            .downcast_ref::<fuel_cpu_backend::dyn_impl::CpuBackendStorage>()
+        {
+            let storage = &cpu.0;
+            if !layout.is_contiguous() {
+                crate::bail!("input tensor is not contiguous {layout:?}")
             }
-            DType::F16 => {
-                let slice = storage.as_slice::<f16>()?;
-                let slice =
-                    &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
-                let mut dst_storage = vec![f16::ZERO; dst_shape.elem_count()];
-                self_storage.matmul_t_f16(
-                    (dst_shape.elem_count() / n, k, n),
-                    slice,
-                    &mut dst_storage,
-                )?;
-                Ok((crate::CpuStorage::F16(dst_storage), dst_shape))
+            let src_shape = layout.shape();
+            // self is transposed so n is first then k.
+            let (n, k) = self.shape.dims2()?;
+            if src_shape.rank() < 2 {
+                crate::bail!("input tensor has only one dimension {layout:?}")
             }
-            _ => crate::bail!("Expected f32/f16"),
+            let mut dst_shape = src_shape.dims().to_vec();
+            let last_k = dst_shape.pop().unwrap();
+            if last_k != k {
+                crate::bail!("input tensor {layout:?} incompatible with {:?}", self.shape)
+            }
+            dst_shape.push(n);
+            let dst_shape = Shape::from(dst_shape);
+            #[allow(clippy::infallible_destructuring_match)]
+            let self_storage = match &self.storage {
+                QStorage::Cpu(storage) => storage,
+                QStorage::Metal(_) | QStorage::Cuda(_) => crate::bail!("Invalid storage"),
+            };
+            let out = match storage.dtype() {
+                DType::F32 => {
+                    let slice = storage.as_slice::<f32>()?;
+                    let slice = &slice
+                        [layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
+                    let mut dst_storage = vec![0f32; dst_shape.elem_count()];
+                    self_storage.matmul_t(
+                        (dst_shape.elem_count() / n, k, n),
+                        slice,
+                        &mut dst_storage,
+                    )?;
+                    crate::CpuStorage::F32(dst_storage)
+                }
+                DType::F16 => {
+                    let slice = storage.as_slice::<f16>()?;
+                    let slice = &slice
+                        [layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
+                    let mut dst_storage = vec![f16::ZERO; dst_shape.elem_count()];
+                    self_storage.matmul_t_f16(
+                        (dst_shape.elem_count() / n, k, n),
+                        slice,
+                        &mut dst_storage,
+                    )?;
+                    crate::CpuStorage::F16(dst_storage)
+                }
+                _ => crate::bail!("Expected f32/f16"),
+            };
+            return Ok((
+                Box::new(fuel_cpu_backend::dyn_impl::CpuBackendStorage(out)),
+                dst_shape,
+            ));
         }
-    }
 
-    fn metal_fwd(
-        &self,
-        storage: &crate::MetalStorage,
-        layout: &crate::Layout,
-    ) -> Result<(crate::MetalStorage, Shape)> {
-        let self_storage = match &self.storage {
-            QStorage::Metal(metal) => metal,
-            _ => unreachable!("Cannot call metal matmul on non metal QTensor"),
-        };
-        self_storage.fwd(&self.shape, storage, layout)
-    }
+        #[cfg(feature = "metal")]
+        if let Some(metal) = storage
+            .as_any()
+            .downcast_ref::<fuel_metal::MetalBackendStorage>()
+        {
+            let self_storage = match &self.storage {
+                QStorage::Metal(metal) => metal,
+                _ => unreachable!("Cannot call metal matmul on non metal QTensor"),
+            };
+            let (dst, shape) = self_storage.fwd(&self.shape, metal.inner(), layout)?;
+            return Ok((Box::new(fuel_metal::MetalBackendStorage::new(dst)), shape));
+        }
 
-    fn cuda_fwd(
-        &self,
-        storage: &crate::CudaStorage,
-        layout: &crate::Layout,
-    ) -> Result<(crate::CudaStorage, Shape)> {
-        let self_storage = match &self.storage {
-            QStorage::Cuda(cuda) => cuda,
-            _ => unreachable!("Cannot call cuda matmul on non cuda QTensor"),
-        };
-        self_storage.fwd(&self.shape, storage, layout)
+        #[cfg(feature = "cuda")]
+        if let Some(cuda) = storage
+            .as_any()
+            .downcast_ref::<fuel_cuda::CudaBackendStorage>()
+        {
+            let self_storage = match &self.storage {
+                QStorage::Cuda(cuda) => cuda,
+                _ => unreachable!("Cannot call cuda matmul on non cuda QTensor"),
+            };
+            let (dst, shape) = self_storage.fwd(&self.shape, cuda.inner(), layout)?;
+            return Ok((Box::new(fuel_cuda::CudaBackendStorage::new(dst)), shape));
+        }
+
+        crate::bail!("qmatmul: unsupported backend")
     }
 }
 

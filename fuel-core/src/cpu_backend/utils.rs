@@ -1,5 +1,4 @@
 /// Helper functions to write CPU kernels.
-use crate::backend::BackendStorage;
 use crate::{Error, Layout, Result, WithDType};
 
 type C = super::CpuStorage;

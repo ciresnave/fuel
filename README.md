@@ -322,7 +322,7 @@ Cheatsheet:
 - [fuel-core](./fuel-core): Core ops, devices, and `Tensor` struct definition
 - [fuel-nn](./fuel-nn/): Tools to build real models
 - [fuel-examples](./fuel-examples/): Examples of using the library in realistic settings
-- [fuel-kernels](./fuel-kernels/): CUDA custom kernels
+- [fuel-cuda-kernels](./fuel-cuda-kernels/): CUDA custom kernels
 - [fuel-datasets](./fuel-datasets/): Datasets and data loaders.
 - [fuel-transformers](./fuel-transformers): transformers-related utilities.
 - [fuel-flash-attn](./fuel-flash-attn): Flash attention v2 layer.
