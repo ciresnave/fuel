@@ -24,7 +24,7 @@ impl GraphBackend for CudaBackend {
         self.device.zeros_impl(shape, dtype)
     }
 
-    fn upload(&self, buf: &fuel_core_types::HostBuffer) -> fuel_core_types::Result<Self::Storage> {
+    fn upload(&self, buf: &fuel_core_types::HostBuffer, _shape: &Shape) -> fuel_core_types::Result<Self::Storage> {
         self.device.storage_from_cpu_storage(buf)
     }
 

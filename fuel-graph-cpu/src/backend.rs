@@ -25,24 +25,15 @@ impl GraphBackend for CpuBackend {
         })
     }
 
-    fn upload(&self, buf: &fuel_core_types::HostBuffer) -> fuel_core_types::Result<Self::Storage> {
+    fn upload(&self, buf: &fuel_core_types::HostBuffer, shape: &Shape) -> fuel_core_types::Result<Self::Storage> {
         use fuel_core_types::HostBuffer;
-        let n = match buf {
-            HostBuffer::F32(v) => v.len(),
-            HostBuffer::F64(v) => v.len(),
-            HostBuffer::BF16(v) => v.len(),
-            HostBuffer::F16(v) => v.len(),
-            HostBuffer::U32(v) => v.len(),
-            _ => fuel_core_types::bail!("CpuBackend: unsupported dtype"),
-        };
-        let shape = Shape::from_dims(&[n]);
         Ok(match buf {
-            HostBuffer::F32(v) => AnyRefTensor::F32(RefTensor::from_vec(v.clone(), shape)),
-            HostBuffer::F64(v) => AnyRefTensor::F64(RefTensor::from_vec(v.clone(), shape)),
-            HostBuffer::BF16(v) => AnyRefTensor::BF16(RefTensor::from_vec(v.clone(), shape)),
-            HostBuffer::F16(v) => AnyRefTensor::F16(RefTensor::from_vec(v.clone(), shape)),
-            HostBuffer::U32(v) => AnyRefTensor::U32(RefTensor::from_vec(v.clone(), shape)),
-            _ => unreachable!(),
+            HostBuffer::F32(v) => AnyRefTensor::F32(RefTensor::from_vec(v.clone(), shape.clone())),
+            HostBuffer::F64(v) => AnyRefTensor::F64(RefTensor::from_vec(v.clone(), shape.clone())),
+            HostBuffer::BF16(v) => AnyRefTensor::BF16(RefTensor::from_vec(v.clone(), shape.clone())),
+            HostBuffer::F16(v) => AnyRefTensor::F16(RefTensor::from_vec(v.clone(), shape.clone())),
+            HostBuffer::U32(v) => AnyRefTensor::U32(RefTensor::from_vec(v.clone(), shape.clone())),
+            _ => fuel_core_types::bail!("CpuBackend: unsupported dtype"),
         })
     }
 
@@ -57,9 +48,17 @@ impl GraphBackend for CpuBackend {
         })
     }
 
-    fn try_clone(&self, storage: &Self::Storage, _layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
-        // CPU storage is Arc-backed, clone is cheap
-        Ok(storage.clone())
+    fn try_clone(&self, storage: &Self::Storage, layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
+        // CPU storage is Arc-backed. Clone the data but relabel with the
+        // layout's shape so downstream ops see the correct rank.
+        let target_shape = layout.shape().clone();
+        Ok(match storage {
+            AnyRefTensor::F32(t) => AnyRefTensor::F32(RefTensor::from_arc(t.as_arc().clone(), target_shape)),
+            AnyRefTensor::F64(t) => AnyRefTensor::F64(RefTensor::from_arc(t.as_arc().clone(), target_shape)),
+            AnyRefTensor::BF16(t) => AnyRefTensor::BF16(RefTensor::from_arc(t.as_arc().clone(), target_shape)),
+            AnyRefTensor::F16(t) => AnyRefTensor::F16(RefTensor::from_arc(t.as_arc().clone(), target_shape)),
+            AnyRefTensor::U32(t) => AnyRefTensor::U32(RefTensor::from_arc(t.as_arc().clone(), target_shape)),
+        })
     }
 
     fn copy_strided_src(

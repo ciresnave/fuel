@@ -11,6 +11,7 @@
 [dependencies]
     fuel = { workspace = true }
     fuel-graph-cuda = { workspace = true, optional = true }
+    fuel-graph-executor = { workspace = true }
     tracing = { workspace = true }
     tracing-chrome = { workspace = true }
     tracing-subscriber = { workspace = true }
