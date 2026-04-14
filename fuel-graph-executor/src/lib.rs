@@ -389,13 +389,19 @@ impl<B: GraphBackend> GraphExecutor<B> {
             }
             Op::PowI(n) => {
                 let a = self.get_gt(inputs, 0, cache);
-                self.backend.powf(&a.storage, &a.layout(), *n as f64).expect("PowI")
+                match self.backend.powf(&a.storage, &a.layout(), *n as f64) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
 
-            // -- cast --
+            // -- cast (CPU fallback if backend doesn't implement) --
             Op::Cast(target) => {
                 let a = self.get_gt(inputs, 0, cache);
-                self.backend.cast(&a.storage, &a.layout(), *target).expect("Cast")
+                match self.backend.cast(&a.storage, &a.layout(), *target) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
 
             // -- layout ops (SHARED across all backends) --
@@ -458,25 +464,34 @@ impl<B: GraphBackend> GraphExecutor<B> {
             }
             Op::SumDim(d) | Op::MeanDim(d) => {
                 let a = self.get_gt(inputs, 0, cache);
-                let mut r = self.backend.reduce(
+                let r = self.backend.reduce(
                     fuel_core_types::op::ReduceOp::Sum, &a.storage, &a.layout(), &[*d],
-                ).expect("SumDim");
-                if matches!(op, Op::MeanDim(_)) {
-                    let n = a.shape.dims()[*d] as f64;
-                    r = self.backend.affine(&r, &Layout::contiguous(shape), 1.0 / n, 0.0)
-                        .expect("MeanDim scale");
+                );
+                match r {
+                    Ok(mut r) => {
+                        if matches!(op, Op::MeanDim(_)) {
+                            let n = a.shape.dims()[*d] as f64;
+                            r = self.backend.affine(&r, &Layout::contiguous(shape), 1.0 / n, 0.0)
+                                .expect("MeanDim scale");
+                        }
+                        r
+                    }
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
-                r
             }
             Op::MaxDim(d) => {
                 let a = self.get_gt(inputs, 0, cache);
-                self.backend.reduce(fuel_core_types::op::ReduceOp::Max, &a.storage, &a.layout(), &[*d])
-                    .expect("MaxDim")
+                match self.backend.reduce(fuel_core_types::op::ReduceOp::Max, &a.storage, &a.layout(), &[*d]) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
             Op::MinDim(d) => {
                 let a = self.get_gt(inputs, 0, cache);
-                self.backend.reduce(fuel_core_types::op::ReduceOp::Min, &a.storage, &a.layout(), &[*d])
-                    .expect("MinDim")
+                match self.backend.reduce(fuel_core_types::op::ReduceOp::Min, &a.storage, &a.layout(), &[*d]) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
 
             // -- softmax --
@@ -485,16 +500,20 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 self.backend.softmax_last_dim(&a.storage, &a.layout()).expect("SoftmaxLastDim")
             }
 
-            // -- indexing --
+            // -- indexing (CPU fallback if backend doesn't implement) --
             Op::IndexSelect { dim } => {
                 let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
-                self.backend.index_select(&src.storage, &ids.storage, &src.layout(), &ids.layout(), *dim)
-                    .expect("IndexSelect")
+                match self.backend.index_select(&src.storage, &ids.storage, &src.layout(), &ids.layout(), *dim) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
             Op::Gather { dim } => {
                 let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
-                self.backend.gather(&src.storage, &ids.storage, &src.layout(), &ids.layout(), *dim)
-                    .expect("Gather")
+                match self.backend.gather(&src.storage, &ids.storage, &src.layout(), &ids.layout(), *dim) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
 
             // -- fallback for anything else --
