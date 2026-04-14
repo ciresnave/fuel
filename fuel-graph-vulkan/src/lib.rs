@@ -250,7 +250,7 @@ impl VulkanBackend {
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_core_types::Result<()> {
-        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &input.buffer, 0, input.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, params_buf, 0, params_size);
@@ -276,7 +276,7 @@ impl VulkanBackend {
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_core_types::Result<()> {
-        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &a.buffer, 0, a.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &b.buffer, 0, b.byte_size());
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
@@ -369,7 +369,7 @@ impl GraphBackend for VulkanBackend {
         let (pbuf, _pmem) = self.upload_params(&p)?;
 
         // Allocate descriptor set: bindings 0=input, 1=output, 2=shape_strides, 3=params
-        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &src.buffer, 0, src.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &dst.buffer, 0, dst.byte_size());
         let sd_byte_size = (sd.len() * 4) as u64;

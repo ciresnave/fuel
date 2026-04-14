@@ -1,5 +1,6 @@
 //! Compute pipeline management for WGSL shaders.
 
+use std::cell::RefCell;
 use vulkane::safe::*;
 
 /// All pre-compiled compute pipelines.
@@ -25,7 +26,51 @@ pub struct Pipelines {
     pub strided_copy_pipeline: ComputePipeline,
     pub strided_copy_layout: PipelineLayout,
 
-    pub desc_pool: DescriptorPool,
+    /// Descriptor pool wrapped in RefCell so dispatch helpers can
+    /// recreate it on VK_ERROR_OUT_OF_POOL_MEMORY. Each pool holds a
+    /// bounded number of descriptor sets; when it fills, we drop it
+    /// and allocate a fresh one. The GPU work that used the old sets
+    /// has already completed (one_shot synchronizes) so this is safe.
+    pub desc_pool: RefCell<DescriptorPool>,
+    pub device: Device,
+}
+
+impl Pipelines {
+    pub fn allocate_desc(&self, layout: &DescriptorSetLayout) -> Result<DescriptorSet> {
+        // Try allocating from the current pool.
+        {
+            let pool = self.desc_pool.borrow();
+            match pool.allocate(layout) {
+                Ok(d) => return Ok(d),
+                Err(Error::Vk(code)) if is_pool_oom(code) => { /* fall through to recreate */ }
+                Err(e) => return Err(e),
+            }
+        }
+        // Recreate a fresh pool and try again.
+        let fresh = make_desc_pool(&self.device)?;
+        *self.desc_pool.borrow_mut() = fresh;
+        self.desc_pool.borrow().allocate(layout)
+    }
+}
+
+fn is_pool_oom(code: vulkane::raw::bindings::VkResult) -> bool {
+    use vulkane::raw::bindings::VkResult;
+    matches!(code,
+        VkResult::ERROR_OUT_OF_POOL_MEMORY
+        | VkResult::ERROR_FRAGMENTED_POOL)
+}
+
+fn make_desc_pool(device: &Device) -> Result<DescriptorPool> {
+    DescriptorPool::new(device, 4096, &[
+        DescriptorPoolSize {
+            descriptor_type: DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 16384,
+        },
+        DescriptorPoolSize {
+            descriptor_type: DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 4096,
+        },
+    ])
 }
 
 impl Pipelines {
@@ -45,16 +90,7 @@ impl Pipelines {
             uniform_binding(3),
         ])?;
 
-        let desc_pool = DescriptorPool::new(device, 2048, &[
-            DescriptorPoolSize {
-                descriptor_type: DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 8192,
-            },
-            DescriptorPoolSize {
-                descriptor_type: DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 2048,
-            },
-        ])?;
+        let desc_pool = RefCell::new(make_desc_pool(device)?);
 
         use fuel_graph_executor::shaders;
         let unary_spv = compile_wgsl(shaders::UNARY)?;
@@ -100,6 +136,7 @@ impl Pipelines {
             reduce_pipeline, reduce_layout,
             strided_copy_pipeline, strided_copy_layout,
             desc_pool,
+            device: device.clone(),
         })
     }
 }
