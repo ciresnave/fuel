@@ -26,3 +26,6 @@ pub const SOFTMAX: &str = include_str!("shaders/softmax.wgsl");
 
 /// Parallel reduction (sum/max/min of all elements).
 pub const REDUCE: &str = include_str!("shaders/reduce.wgsl");
+
+/// Strided copy: handles permute, broadcast, concat, slice.
+pub const STRIDED_COPY: &str = include_str!("shaders/strided_copy.wgsl");

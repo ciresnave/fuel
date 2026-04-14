@@ -211,6 +211,16 @@ impl VulkanBackend {
         Ok(VulkanStorage { buffer, memory, elem_count: n, dtype })
     }
 
+    /// Upload a typed slice as a device-local storage buffer (no
+    /// VulkanStorage wrapper — used for internal dispatch metadata
+    /// like shape/strides arrays).
+    fn upload_slice_raw<T: Copy + 'static>(&self, data: &[T]) -> fuel_core_types::Result<(Buffer, DeviceMemory)> {
+        self.queue.upload_buffer(
+            &self.device, &self.physical, self.queue_family, data,
+            BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+        ).map_err(vk_err)
+    }
+
     /// Upload a small params struct as a uniform buffer.
     fn upload_params<T: Copy + 'static>(&self, params: &T) -> fuel_core_types::Result<(Buffer, DeviceMemory)> {
         let bytes = unsafe { as_bytes(params) };
@@ -332,13 +342,47 @@ impl GraphBackend for VulkanBackend {
     }
 
     fn copy_strided_src(
-        &self, _src: &Self::Storage, _dst: &mut Self::Storage,
-        _dst_offset: usize, _src_layout: &Layout,
+        &self, src: &Self::Storage, dst: &mut Self::Storage,
+        dst_offset: usize, src_layout: &Layout,
     ) -> fuel_core_types::Result<()> {
-        // TODO: strided copy compute shader. Falls back to CPU via
-        // the generic executor's cpu_fallback for permute/broadcast/
-        // concat/slice until this is implemented.
-        fuel_core_types::bail!("VulkanBackend: copy_strided_src not yet native")
+        let shape = src_layout.shape();
+        let dims = shape.dims();
+        let strides = src_layout.stride();
+        let rank = dims.len();
+        let out_size = shape.elem_count();
+
+        // Pack shape + strides into a single storage buffer.
+        let mut sd: Vec<u32> = Vec::with_capacity(rank * 2);
+        for &d in dims { sd.push(d as u32); }
+        for &s in strides.iter() { sd.push(s as u32); }
+        let (sd_buf, _sd_mem) = self.upload_slice_raw(&sd)?;
+
+        // Params uniform buffer.
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SParams { out_size: u32, rank: u32, src_offset: u32, dst_offset: u32 }
+        let p = SParams {
+            out_size: out_size as u32,
+            rank: rank as u32,
+            src_offset: src_layout.start_offset() as u32,
+            dst_offset: dst_offset as u32,
+        };
+        let (pbuf, _pmem) = self.upload_params(&p)?;
+
+        // Allocate descriptor set: bindings 0=input, 1=output, 2=shape_strides, 3=params
+        let desc = self.pipelines.desc_pool.allocate(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &src.buffer, 0, src.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &dst.buffer, 0, dst.byte_size());
+        let sd_byte_size = (sd.len() * 4) as u64;
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(out_size);
+        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
+            cmd.bind_compute_pipeline(&self.pipelines.strided_copy_pipeline);
+            cmd.bind_compute_descriptor_sets(&self.pipelines.strided_copy_layout, 0, &[&desc]);
+            cmd.dispatch(groups, 1, 1);
+            Ok(())
+        }).map_err(vk_err)
     }
 
     fn storage_dtype(&self, storage: &Self::Storage) -> DType {

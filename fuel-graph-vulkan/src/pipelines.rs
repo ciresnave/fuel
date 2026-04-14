@@ -22,6 +22,9 @@ pub struct Pipelines {
     pub reduce_pipeline: ComputePipeline,
     pub reduce_layout: PipelineLayout,
 
+    pub strided_copy_pipeline: ComputePipeline,
+    pub strided_copy_layout: PipelineLayout,
+
     pub desc_pool: DescriptorPool,
 }
 
@@ -60,6 +63,7 @@ impl Pipelines {
         let matmul_spv = compile_wgsl(shaders::MATMUL)?;
         let softmax_spv = compile_wgsl(shaders::SOFTMAX)?;
         let reduce_spv = compile_wgsl(shaders::REDUCE)?;
+        let strided_copy_spv = compile_wgsl(shaders::STRIDED_COPY)?;
 
         let unary_mod = ShaderModule::from_spirv(device, &unary_spv)?;
         let binary_mod = ShaderModule::from_spirv(device, &binary_spv)?;
@@ -67,6 +71,7 @@ impl Pipelines {
         let matmul_mod = ShaderModule::from_spirv(device, &matmul_spv)?;
         let softmax_mod = ShaderModule::from_spirv(device, &softmax_spv)?;
         let reduce_mod = ShaderModule::from_spirv(device, &reduce_spv)?;
+        let strided_copy_mod = ShaderModule::from_spirv(device, &strided_copy_spv)?;
 
         // No push constants — params go through uniform buffers.
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -75,6 +80,7 @@ impl Pipelines {
         let matmul_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let softmax_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let strided_copy_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
 
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
@@ -82,6 +88,7 @@ impl Pipelines {
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
+        let strided_copy_pipeline = ComputePipeline::new(device, &strided_copy_layout, &strided_copy_mod, "main")?;
 
         Ok(Self {
             layout_2s1u, layout_3s1u,
@@ -91,6 +98,7 @@ impl Pipelines {
             matmul_pipeline, matmul_layout,
             softmax_pipeline, softmax_layout,
             reduce_pipeline, reduce_layout,
+            strided_copy_pipeline, strided_copy_layout,
             desc_pool,
         })
     }
