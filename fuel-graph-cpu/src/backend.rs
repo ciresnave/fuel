@@ -287,6 +287,99 @@ impl GraphBackend for CpuBackend {
         })
     }
 
+    fn rms_norm_last_dim(&self, a: &Self::Storage, _layout: &Layout, eps: f64)
+        -> fuel_core_types::Result<Self::Storage>
+    {
+        Ok(match a {
+            AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::rms_norm_last_dim(t, eps)),
+            AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::rms_norm_last_dim(t, eps)),
+            AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::rms_norm_last_dim(t, eps)),
+            AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::rms_norm_last_dim(t, eps)),
+            _ => fuel_core_types::bail!("rms_norm: unsupported dtype"),
+        })
+    }
+
+    fn rms_norm_last_dim_backward(
+        &self,
+        x: &Self::Storage,
+        upstream: &Self::Storage,
+        _xl: &Layout,
+        _ul: &Layout,
+        eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        Ok(match (x, upstream) {
+            (AnyRefTensor::F32(x), AnyRefTensor::F32(g)) => {
+                AnyRefTensor::F32(ops::rms_norm_last_dim_backward(x, g, eps))
+            }
+            (AnyRefTensor::F64(x), AnyRefTensor::F64(g)) => {
+                AnyRefTensor::F64(ops::rms_norm_last_dim_backward(x, g, eps))
+            }
+            (AnyRefTensor::BF16(x), AnyRefTensor::BF16(g)) => {
+                AnyRefTensor::BF16(ops::rms_norm_last_dim_backward(x, g, eps))
+            }
+            (AnyRefTensor::F16(x), AnyRefTensor::F16(g)) => {
+                AnyRefTensor::F16(ops::rms_norm_last_dim_backward(x, g, eps))
+            }
+            _ => fuel_core_types::bail!("rms_norm_last_dim_backward: dtype mismatch"),
+        })
+    }
+
+    fn rope(
+        &self,
+        x: &Self::Storage,
+        cos: &Self::Storage,
+        sin: &Self::Storage,
+        _xl: &Layout,
+        _cl: &Layout,
+        _sl: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        Ok(match (x, cos, sin) {
+            (AnyRefTensor::F32(x), AnyRefTensor::F32(c), AnyRefTensor::F32(s)) => {
+                AnyRefTensor::F32(ops::rope(x, c, s))
+            }
+            (AnyRefTensor::F64(x), AnyRefTensor::F64(c), AnyRefTensor::F64(s)) => {
+                AnyRefTensor::F64(ops::rope(x, c, s))
+            }
+            (AnyRefTensor::BF16(x), AnyRefTensor::BF16(c), AnyRefTensor::BF16(s)) => {
+                AnyRefTensor::BF16(ops::rope(x, c, s))
+            }
+            (AnyRefTensor::F16(x), AnyRefTensor::F16(c), AnyRefTensor::F16(s)) => {
+                AnyRefTensor::F16(ops::rope(x, c, s))
+            }
+            _ => fuel_core_types::bail!("rope: dtype mismatch"),
+        })
+    }
+
+    fn add_assign_scaled(
+        &self,
+        dst: &mut Self::Storage,
+        src: &Self::Storage,
+        scale: f32,
+    ) -> fuel_core_types::Result<()> {
+        // Rebuild `dst` by zipping with `src`. `RefTensor` is Arc-
+        // backed; there's no real in-place mutation on CPU because
+        // our storage is immutable, but we can still avoid the
+        // graph-building overhead of a full add-sub-mul pipeline.
+        match (&*dst, src) {
+            (AnyRefTensor::F32(dt), AnyRefTensor::F32(st)) => {
+                let s = scale;
+                let new_data: Vec<f32> = dt.as_slice().iter().zip(st.as_slice().iter())
+                    .map(|(d, s_v)| d + s_v * s)
+                    .collect();
+                *dst = AnyRefTensor::F32(RefTensor::from_vec(new_data, dt.shape().clone()));
+            }
+            (AnyRefTensor::F64(dt), AnyRefTensor::F64(st)) => {
+                let s = scale as f64;
+                let new_data: Vec<f64> = dt.as_slice().iter().zip(st.as_slice().iter())
+                    .map(|(d, s_v)| d + s_v * s)
+                    .collect();
+                *dst = AnyRefTensor::F64(RefTensor::from_vec(new_data, dt.shape().clone()));
+            }
+            _ => fuel_core_types::bail!("add_assign_scaled: dtype mismatch or unsupported dtype"),
+        }
+        Ok(())
+    }
+
     fn index_select(
         &self, src: &Self::Storage, ids: &Self::Storage,
         _src_l: &Layout, _ids_l: &Layout, dim: usize,

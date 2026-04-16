@@ -43,7 +43,7 @@ use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_reference_backend::{ops, RefTensor};
 use half::{bf16, f16};
 use std::collections::HashMap;
-use tracing::{debug_span, info_span};
+use tracing::info_span;
 
 mod backend;
 pub use backend::CpuBackend;
@@ -291,6 +291,9 @@ fn eval_node(
         // --- compositions ---
         Op::SoftmaxLastDim => unary!(inputs, cache, ops::softmax_last_dim),
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
+        Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
+        Op::Rope => eval_rope(inputs, cache),
+        Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
         Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),
         Op::LayerNormLastDimBackward { eps } => {
             eval_layer_norm_last_dim_backward(*eps, inputs, cache)
@@ -517,6 +520,72 @@ fn eval_layer_norm_last_dim(
         AnyTensor::BF16(t) => AnyTensor::BF16(ops::layer_norm_last_dim(t, eps)),
         AnyTensor::F16(t) => AnyTensor::F16(ops::layer_norm_last_dim(t, eps)),
         AnyTensor::U32(_) => panic!("layer_norm_last_dim: not supported on U32 tensors"),
+    }
+}
+
+fn eval_rms_norm_last_dim(
+    eps: f64,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let src = cache.get(&inputs[0]).expect("rms_norm missing input");
+    match src {
+        AnyTensor::F32(t) => AnyTensor::F32(ops::rms_norm_last_dim(t, eps)),
+        AnyTensor::F64(t) => AnyTensor::F64(ops::rms_norm_last_dim(t, eps)),
+        AnyTensor::BF16(t) => AnyTensor::BF16(ops::rms_norm_last_dim(t, eps)),
+        AnyTensor::F16(t) => AnyTensor::F16(ops::rms_norm_last_dim(t, eps)),
+        AnyTensor::U32(_) => panic!("rms_norm_last_dim: not supported on U32 tensors"),
+    }
+}
+
+fn eval_rms_norm_last_dim_backward(
+    eps: f64,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let x = cache.get(&inputs[0]).expect("rms_norm_bwd missing x");
+    let g = cache.get(&inputs[1]).expect("rms_norm_bwd missing g");
+    match (x, g) {
+        (AnyTensor::F32(x), AnyTensor::F32(g)) => {
+            AnyTensor::F32(ops::rms_norm_last_dim_backward(x, g, eps))
+        }
+        (AnyTensor::F64(x), AnyTensor::F64(g)) => {
+            AnyTensor::F64(ops::rms_norm_last_dim_backward(x, g, eps))
+        }
+        (AnyTensor::BF16(x), AnyTensor::BF16(g)) => {
+            AnyTensor::BF16(ops::rms_norm_last_dim_backward(x, g, eps))
+        }
+        (AnyTensor::F16(x), AnyTensor::F16(g)) => {
+            AnyTensor::F16(ops::rms_norm_last_dim_backward(x, g, eps))
+        }
+        _ => panic!("rms_norm_last_dim_backward: dtype mismatch"),
+    }
+}
+
+fn eval_rope(
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let x = cache.get(&inputs[0]).expect("rope missing x");
+    let cos = cache.get(&inputs[1]).expect("rope missing cos");
+    let sin = cache.get(&inputs[2]).expect("rope missing sin");
+    match (x, cos, sin) {
+        (AnyTensor::F32(x), AnyTensor::F32(c), AnyTensor::F32(s)) => {
+            AnyTensor::F32(ops::rope(x, c, s))
+        }
+        (AnyTensor::F64(x), AnyTensor::F64(c), AnyTensor::F64(s)) => {
+            AnyTensor::F64(ops::rope(x, c, s))
+        }
+        (AnyTensor::BF16(x), AnyTensor::BF16(c), AnyTensor::BF16(s)) => {
+            AnyTensor::BF16(ops::rope(x, c, s))
+        }
+        (AnyTensor::F16(x), AnyTensor::F16(c), AnyTensor::F16(s)) => {
+            AnyTensor::F16(ops::rope(x, c, s))
+        }
+        (a, b, c) => panic!(
+            "rope: dtype mismatch x={:?} cos={:?} sin={:?}",
+            a.dtype(), b.dtype(), c.dtype()
+        ),
     }
 }
 

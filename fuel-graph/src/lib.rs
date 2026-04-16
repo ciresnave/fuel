@@ -40,6 +40,8 @@
 //!   MVP needs no cross-thread sharing. Moving to `Arc<Mutex<_>>` is a
 //!   one-line change when multi-threaded building becomes relevant.
 
+pub mod opt;
+
 use fuel_core_types::{DType, Shape};
 use half::{bf16, f16};
 use std::cell::RefCell;
@@ -101,7 +103,7 @@ pub fn topo_order_multi(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
 }
 
 /// A node ID in the arena. Stable for the lifetime of the [`Graph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub usize);
 
 /// The closed enum of operations a graph node can represent.
@@ -218,6 +220,31 @@ pub enum Op {
     /// The epsilon is carried on the op and converted to the target dtype
     /// by the executor.
     LayerNormLastDim { eps: f64 },
+    /// Root-mean-square normalization along the last dimension, no
+    /// affine parameters. Formula:
+    ///   y = x / sqrt(mean(x², last) + eps)
+    /// This is the norm RMSNorm-family models (LLaMA, Qwen, Gemma,
+    /// etc.) use on every attention and MLP input. Decomposed in
+    /// fuel-graph proper into sqr → mean_dim → reshape → add_scalar
+    /// → sqrt → broadcast_to → div (9 nodes), this fused op exists
+    /// so backends can dispatch it as a single kernel — the
+    /// difference between 9 kernel launches and 1 at 45+ sites per
+    /// forward pass.
+    RmsNormLastDim { eps: f64 },
+    /// Fused rotary position embedding. Inputs: `(x, cos, sin)`.
+    /// `x` has shape `[..., seq, head_dim]` (head_dim even). `cos` and
+    /// `sin` both have shape `[seq, head_dim]` and broadcast across
+    /// any leading dims. Output shape == x shape.
+    ///
+    /// Formula (rotate_half convention):
+    ///   out[..., s, i]        = x[..., s, i]         * cos[s, i]         - x[..., s, i + h] * sin[s, i]
+    ///   out[..., s, i + h]    = x[..., s, i + h]     * cos[s, i + h]     + x[..., s, i]     * sin[s, i + h]
+    /// where `h = head_dim / 2`.
+    ///
+    /// Replaces the slice+neg+concat+broadcast_mul decomposition in
+    /// `Tensor::rope_with_tables`, which was dispatching 72+ kernels
+    /// per layer (~1760 per TinyLlama token). This fuses it to 1.
+    Rope,
 
     // --- backward helpers ---
     //
@@ -238,6 +265,14 @@ pub enum Op {
     /// expose as an output). Takes `eps` as a parameter so the backward
     /// op recomputes the same statistics the forward used.
     LayerNormLastDimBackward { eps: f64 },
+    /// Fused RMSNorm-last-dim backward. Inputs: (original_x, upstream).
+    /// Output: grad_x = r_rms * (upstream - x * s / (n * (mean_sq + eps))).
+    /// Takes `eps` so the backward op recomputes the same
+    /// normalization constant the forward used. Replaces the
+    /// 12-node primitive synthesis the autograd graph used to emit.
+    /// Backends that don't ship a fused kernel fall back to the
+    /// primitive decomposition.
+    RmsNormLastDimBackward { eps: f64 },
 
     // --- integer-producing reductions ---
     //
@@ -408,8 +443,9 @@ impl Graph {
     }
 
     /// Append a node and return its fresh ID. Internal helper used by the
-    /// `Tensor` builders.
-    fn push(&mut self, node: Node) -> NodeId {
+    /// `Tensor` builders and by `opt` passes that canonicalize or rewrite
+    /// the graph by appending fresh nodes.
+    pub(crate) fn push(&mut self, node: Node) -> NodeId {
         let id = NodeId(self.nodes.len());
         self.nodes.push(node);
         id
@@ -1092,10 +1128,38 @@ impl Tensor {
             "rope_with_tables: sin shape {:?} does not match [seq, d] = [{seq}, {d}]",
             sin_shape.dims(),
         );
+        let _ = rank;
+        // Emit a single fused Op::Rope node. The decomposed version
+        // (slice+neg+concat+broadcast+mul+add) produces ~72 dispatches
+        // on GPU backends because concat-along-last-dim has a per-row
+        // host loop. Fused path dispatches once.
+        let out_shape = in_shape.clone();
+        let dtype = self.dtype();
+        let id = self.graph.borrow_mut().push(Node {
+            op: Op::Rope,
+            inputs: vec![self.id, cos.id, sin.id],
+            shape: out_shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// The pre-fused decomposition of `rope_with_tables`. Retained so
+    /// backends without a native `Op::Rope` kernel can synthesize from
+    /// primitives, and so correctness tests can cross-check the fused
+    /// path against the primitive path.
+    #[doc(hidden)]
+    pub fn rope_with_tables_decomposed(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+        let in_shape = self.shape();
+        let dims_vec: Vec<usize> = in_shape.dims().to_vec();
+        let rank = dims_vec.len();
+        let seq = dims_vec[rank - 2];
+        let d = dims_vec[rank - 1];
         let half = d / 2;
 
-        // Reshape cos/sin to match self's rank, with leading dims of 1
-        // so they broadcast across any batch/head prefix.
         let mut broadcast_shape: Vec<usize> = vec![1_usize; rank];
         broadcast_shape[rank - 2] = seq;
         broadcast_shape[rank - 1] = d;
@@ -1104,13 +1168,11 @@ impl Tensor {
         let cos_bcast = cos_reshaped.broadcast_to(in_shape.clone());
         let sin_bcast = sin_reshaped.broadcast_to(in_shape);
 
-        // rotate_half(x) = concat(-x[half:], x[:half], dim = last).
         let first_half = self.slice(rank - 1, 0, half);
         let second_half = self.slice(rank - 1, half, half);
         let neg_second = second_half.neg();
         let rotated_half = neg_second.concat(&first_half, rank - 1);
 
-        // Final: x * cos + rotate_half(x) * sin
         let left = self.mul(&cos_bcast);
         let right = rotated_half.mul(&sin_bcast);
         left.add(&right)
@@ -1124,28 +1186,40 @@ impl Tensor {
     /// divides by the root-mean-square, which is both cheaper and
     /// empirically just as effective in transformer blocks.
     ///
-    /// Implemented as a composition of existing primitives (sqr →
-    /// mean_dim → reshape-to-keepdim → add_scalar → sqrt → broadcast_to
-    /// → div). All of those have working forward and backward rules, so
-    /// the backward through RmsNorm is fully functional without a
-    /// dedicated op. If profiling ever shows this composition is the
-    /// bottleneck, a dedicated `RmsNormLastDim` op with a fused
-    /// backward can replace the composition.
+    /// Emits a single fused `Op::RmsNormLastDim { eps }` node.
+    /// Backends that have a native implementation dispatch it as one
+    /// kernel; ones that don't get a CPU fallback via the reference
+    /// implementation.
+    ///
+    /// Use [`rms_norm_last_dim_decomposed`](Self::rms_norm_last_dim_decomposed)
+    /// instead if you need to differentiate through this op —
+    /// backward through the fused op is not yet implemented.
     pub fn rms_norm_last_dim(&self, eps: f64) -> Tensor {
-        let x_shape = self.shape();
-        let x_dims_vec: Vec<usize> = x_shape.dims().to_vec();
+        let x_dims_vec: Vec<usize> = self.shape().dims().to_vec();
         assert!(
             !x_dims_vec.is_empty() && *x_dims_vec.last().unwrap() > 0,
             "rms_norm_last_dim: input must have non-zero last dim, got {x_dims_vec:?}",
         );
+        self.unary_op(Op::RmsNormLastDim { eps })
+    }
+
+    /// Decomposed version — emits the (sqr → mean_dim → reshape →
+    /// add_scalar → sqrt → broadcast_to → div) primitive chain. Has
+    /// working backward rules through its primitive subgraph. Use
+    /// this when you need to differentiate through RMSNorm; use
+    /// [`rms_norm_last_dim`](Self::rms_norm_last_dim) for inference.
+    pub fn rms_norm_last_dim_decomposed(&self, eps: f64) -> Tensor {
+        let x_shape = self.shape();
+        let x_dims_vec: Vec<usize> = x_shape.dims().to_vec();
+        assert!(
+            !x_dims_vec.is_empty() && *x_dims_vec.last().unwrap() > 0,
+            "rms_norm_last_dim_decomposed: input must have non-zero last dim, got {x_dims_vec:?}",
+        );
         let last = x_dims_vec.len() - 1;
-        // mean_sq = mean(x², last)
         let mean_sq = self.sqr().mean_dim(last);
-        // Reshape to keepdim so we can broadcast back against x.
         let mut keepdim_dims = x_dims_vec.clone();
         keepdim_dims[last] = 1;
         let mean_sq_kd = mean_sq.reshape(Shape::from_dims(&keepdim_dims));
-        // denom = sqrt(mean_sq + eps), then broadcast to x.shape
         let denom = mean_sq_kd.add_scalar(eps).sqrt();
         let denom_bcast = denom.broadcast_to(x_shape);
         self.div(&denom_bcast)
@@ -2458,6 +2532,43 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
+                Op::RmsNormLastDim { eps } => {
+                    // Emit a single Op::RmsNormLastDimBackward node so
+                    // backends can dispatch a fused kernel. Backends
+                    // without one fall through to the executor's
+                    // cpu_fallback path, which resolves via the
+                    // reference implementation (still one op in the
+                    // graph — the executor does the decomposition
+                    // transparently via the op dispatch).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::RmsNormLastDimBackward { eps },
+                        vec![x, up_id],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Rope => {
+                    // d_x = rope(upstream, cos, -sin). The cos/sin
+                    // tables are treated as constants (no gradient
+                    // flows back through them).
+                    let x = inputs[0];
+                    let cos = inputs[1];
+                    let sin = inputs[2];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let sin_shape = node_shape(&graph_handle, sin);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let neg_sin = push_node(
+                        &graph_handle, Op::Neg, vec![sin], sin_shape, dtype);
+                    let grad_x = push_node(
+                        &graph_handle, Op::Rope,
+                        vec![up_id, cos, neg_sin], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
                 Op::ArgMaxDim(_) | Op::ArgMinDim(_) => {
                     // Argmax/argmin produce integer indices, which are
                     // non-differentiable. Panic rather than silently
@@ -2471,7 +2582,9 @@ impl Tensor {
                          selection."
                     );
                 }
-                Op::SoftmaxLastDimBackward | Op::LayerNormLastDimBackward { .. } => {
+                Op::SoftmaxLastDimBackward
+                | Op::LayerNormLastDimBackward { .. }
+                | Op::RmsNormLastDimBackward { .. } => {
                     // Higher-order gradients through the backward helper
                     // ops are not supported in the MVP — they'd require
                     // either a full symbolic-derivative pass over the

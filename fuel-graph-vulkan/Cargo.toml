@@ -1,6 +1,6 @@
 [package]
     categories.workspace = true
-    description          = "Vulkan GPU executor for the fuel lazy-graph layer. Uses Vulkane for device management and WGSL compute shaders compiled to SPIR-V via naga."
+    description          = "Vulkan GPU executor for the fuel lazy-graph layer. Uses Vulkane for device management and precompiled SPIR-V kernels (sourced from WGSL / GLSL / Slang — see fuel-graph-executor/src/shaders)."
     edition.workspace    = true
     keywords.workspace   = true
     license.workspace    = true
@@ -15,4 +15,13 @@
     fuel-reference-backend = { workspace = true }
     half                   = { workspace = true }
     tracing                = { workspace = true }
-    vulkane                = { version = "0.4", features = ["naga"] }
+    # Shaders are precompiled to SPIR-V ahead of time (see
+    # `fuel-graph-executor/src/shaders/compile.sh`) and loaded via
+    # `vulkane::safe::ShaderRegistry`, so vulkane does NOT need its
+    # naga / shaderc / slang features at build or run time. Fuel
+    # stays toolchain-free for downstream consumers.
+    vulkane                = "0.5"
+
+[dev-dependencies]
+    fuel-graph-cpu = { workspace = true }
+    fuel-core      = { path = "../fuel-core" }

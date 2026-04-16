@@ -84,6 +84,7 @@ pub mod pickle;
 pub mod quantized;
 pub mod safetensors;
 pub mod sampling;
+pub mod train;
 pub mod scalar;
 pub mod shape;
 mod sort;

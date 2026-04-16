@@ -39,16 +39,37 @@ pub enum BinaryOp {
 
 // ---- Tracked tensor ---------------------------------------------------------
 
-/// A storage value paired with its shape. Backends whose storage type
-/// doesn't track shape (e.g. CudaStorage) need this wrapper.
+/// A storage value paired with its shape, backed by `Arc<S>` so that
+/// "pure-pad broadcast" and "reshape" can share the same underlying
+/// backend storage with a new shape label — no GPU memcpy, no
+/// device allocation. On CPU this mirrors the existing `Arc<[T]>`
+/// pattern in `RefTensor`. On GPU this is the difference between
+/// "reshape costs 256 MB of device memcpy" and "reshape is free."
 pub struct TrackedTensor<S> {
-    pub storage: S,
+    pub storage: std::sync::Arc<S>,
     pub shape: Shape,
 }
 
 impl<S> TrackedTensor<S> {
+    pub fn new(storage: S, shape: Shape) -> Self {
+        Self { storage: std::sync::Arc::new(storage), shape }
+    }
+
     pub fn layout(&self) -> Layout {
         Layout::contiguous(&self.shape)
+    }
+
+    /// Cheap: just bumps the Arc and copies the shape.
+    pub fn with_shape(&self, new_shape: Shape) -> Self {
+        Self {
+            storage: std::sync::Arc::clone(&self.storage),
+            shape: new_shape,
+        }
+    }
+
+    /// Borrow the inner storage for read-only backend calls.
+    pub fn inner(&self) -> &S {
+        &self.storage
     }
 }
 
@@ -146,6 +167,104 @@ pub trait GraphBackend {
         &self, a: &Self::Storage, layout: &Layout,
     ) -> fuel_core_types::Result<Self::Storage>;
 
+    /// Fused root-mean-square normalization along the last dimension.
+    /// `y = x / sqrt(mean(x², last) + eps)`.
+    ///
+    /// Default impl returns `Err` — the executor then falls back to
+    /// the CPU reference implementation. Backends that can run this
+    /// natively (single-dispatch fused kernel) override this method
+    /// and save ~8 dispatches per call vs the decomposed form.
+    fn rms_norm_last_dim(
+        &self, a: &Self::Storage, layout: &Layout, eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (a, layout, eps);
+        fuel_core_types::bail!(
+            "GraphBackend: rms_norm_last_dim not implemented natively for this backend"
+        )
+    }
+
+    /// Concatenate `a` and `b` along `dim` in a single dispatch. Both
+    /// inputs must be contiguous. Output has shape `a.shape` with
+    /// `a.shape[dim] + b.shape[dim]` at `dim`.
+    ///
+    /// Default impl returns `Err`; the executor falls back to the
+    /// `outer × 2` strided-copy loop. Backends override this when a
+    /// single-dispatch kernel exists.
+    fn concat_along_dim(
+        &self,
+        a: &Self::Storage,
+        b: &Self::Storage,
+        dim: usize,
+        a_shape: &Shape,
+        b_shape: &Shape,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (a, b, dim, a_shape, b_shape);
+        fuel_core_types::bail!("GraphBackend: concat_along_dim not implemented natively")
+    }
+
+    /// Fused backward for RMSNorm-last-dim. Inputs: (x, upstream).
+    /// Output: grad_x. Formula:
+    ///
+    /// ```text
+    ///   s       = sum(upstream * x, last)
+    ///   mean_sq = mean(x², last)
+    ///   grad_x  = r_rms * (upstream - x * s / (n * (mean_sq + eps)))
+    /// ```
+    ///
+    /// Default impl returns `Err`; executor falls back to CPU.
+    fn rms_norm_last_dim_backward(
+        &self,
+        x: &Self::Storage,
+        upstream: &Self::Storage,
+        x_layout: &Layout,
+        up_layout: &Layout,
+        eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (x, upstream, x_layout, up_layout, eps);
+        fuel_core_types::bail!("GraphBackend: rms_norm_last_dim_backward not implemented natively")
+    }
+
+    /// Fused rotary position embedding. Applies the rotate_half-form
+    /// rotation in a single dispatch. `x` has shape `[..., seq, head_dim]`
+    /// (head_dim even). `cos` and `sin` both have shape `[seq, head_dim]`
+    /// and broadcast across all leading dims of x.
+    ///
+    /// Default impl returns `Err`; executor falls back to CPU. Backends
+    /// that implement this natively avoid the ~72 dispatches the
+    /// slice+concat decomposition produces per call on GPU backends.
+    fn rope(
+        &self,
+        x: &Self::Storage,
+        cos: &Self::Storage,
+        sin: &Self::Storage,
+        x_layout: &Layout,
+        cos_layout: &Layout,
+        sin_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (x, cos, sin, x_layout, cos_layout, sin_layout);
+        fuel_core_types::bail!("GraphBackend: rope not implemented natively")
+    }
+
+    /// In-place scaled accumulate: `dst += src * scale`. All three
+    /// tensors share the same shape and dtype. No new allocation —
+    /// `dst` is mutated in place.
+    ///
+    /// Used primarily by training loops to do SGD's `w ← w − lr·g`
+    /// update without allocating a fresh buffer for the new `w`.
+    /// Default impl returns `Err` so the training code can fall
+    /// back to the alloc-every-step path.
+    fn add_assign_scaled(
+        &self,
+        dst: &mut Self::Storage,
+        src: &Self::Storage,
+        scale: f32,
+    ) -> fuel_core_types::Result<()> {
+        let _ = (dst, src, scale);
+        fuel_core_types::bail!(
+            "GraphBackend: add_assign_scaled not implemented natively for this backend"
+        )
+    }
+
     fn index_select(
         &self, src: &Self::Storage, ids: &Self::Storage,
         src_l: &Layout, ids_l: &Layout, dim: usize,
@@ -177,6 +296,12 @@ pub struct GraphExecutor<B: GraphBackend> {
     const_pool: HashMap<usize, TrackedTensor<B::Storage>>,
     /// Pre-populated entries for the next realize call.
     injected: HashMap<NodeId, TrackedTensor<B::Storage>>,
+    /// If true, realize runs the backend-agnostic `fuel_graph::opt`
+    /// pass (CSE + algebraic simplification) on the graph before
+    /// walking it. Off by default because it mutates the shared graph
+    /// arena (appends canonical nodes), which existing test code may
+    /// not expect; opt-in per-executor via `with_optimization(true)`.
+    optimize: bool,
 }
 
 impl<B: GraphBackend> GraphExecutor<B> {
@@ -185,20 +310,44 @@ impl<B: GraphBackend> GraphExecutor<B> {
             backend,
             const_pool: HashMap::new(),
             injected: HashMap::new(),
+            optimize: false,
         }
+    }
+
+    /// Enable or disable graph-level optimization (CSE, algebraic
+    /// simplification) before each realize. Pre-populated / injected
+    /// nodes are preserved — they're leaves from the optimizer's view
+    /// and can't be eliminated.
+    pub fn with_optimization(mut self, enabled: bool) -> Self {
+        self.optimize = enabled;
+        self
     }
 
     /// Pre-populate a node with an existing device-side tensor.
     pub fn pre_populate(&mut self, node_id: NodeId, storage: B::Storage, shape: Shape) {
-        self.injected.insert(node_id, TrackedTensor { storage, shape });
+        self.injected.insert(node_id, TrackedTensor::new(storage, shape));
+    }
+
+    /// Resolve the (possibly-rewritten) root NodeIds for a slice of
+    /// tensor handles. When optimization is disabled this is a noop
+    /// identity map. When enabled it runs the optimizer pass, which
+    /// may redirect roots to canonicalized nodes.
+    fn resolve_roots(&self, tensors: &[&Tensor]) -> Vec<NodeId> {
+        let original: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
+        if !self.optimize || tensors.is_empty() {
+            return original;
+        }
+        let graph = tensors[0].graph();
+        fuel_graph::opt::optimize(graph, &original)
     }
 
     // -- realize entry points -------------------------------------------------
 
     pub fn realize_f32(&mut self, tensor: &Tensor) -> RefTensor<f32> {
         let _span = info_span!("realize_f32").entered();
+        let root_id = self.resolve_roots(&[tensor])[0];
         let graph = tensor.graph().borrow();
-        let order = topo_order(&graph, tensor.id());
+        let order = topo_order(&graph, root_id);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
         let mut cache = self.drain_injected();
         for id in order {
@@ -209,7 +358,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         }
         drop(_walk);
         let _rb = info_span!("d2h_readback").entered();
-        let gt = self.take_owned(cache.remove(&tensor.id()).expect("realize: missing root"));
+        let gt = self.take_owned(cache.remove(&root_id).expect("realize: missing root"));
         let buf = self.backend.download(&gt.storage).expect("D2H");
         match buf {
             fuel_core_types::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape),
@@ -220,9 +369,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
     pub fn realize_many_f32(&mut self, tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
         let _span = info_span!("realize_many_f32", roots = tensors.len()).entered();
         if tensors.is_empty() { return Vec::new(); }
+        let roots: Vec<NodeId> = self.resolve_roots(tensors);
         let graph_rc = tensors[0].graph();
         let graph = graph_rc.borrow();
-        let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
         let order = topo_order_multi(&graph, &roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
         let mut cache = self.drain_injected();
@@ -252,9 +401,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
     ) -> (Vec<Vec<f32>>, Vec<(B::Storage, Shape)>) {
         let _span = info_span!("realize_split", roots = tensors.len(), n_d2h).entered();
         if tensors.is_empty() { return (Vec::new(), Vec::new()); }
+        let roots: Vec<NodeId> = self.resolve_roots(tensors);
         let graph_rc = tensors[0].graph();
         let graph = graph_rc.borrow();
-        let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
         let order = topo_order_multi(&graph, &roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
         let mut cache = self.drain_injected();
@@ -278,7 +427,13 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             } else {
                 match cache.remove(id) {
-                    Some(CacheEntry::Owned(gt)) => gpu_out.push((gt.storage, gt.shape)),
+                    Some(CacheEntry::Owned(gt)) => {
+                        let shape = gt.shape.clone();
+                        let layout = gt.layout();
+                        let s = std::sync::Arc::try_unwrap(gt.storage)
+                            .unwrap_or_else(|arc| self.backend.try_clone(&arc, &layout).expect("split clone"));
+                        gpu_out.push((s, shape));
+                    }
                     Some(CacheEntry::ConstRef(key)) => {
                         let p = self.const_pool.get(&key).expect("dangling");
                         let s = self.backend.try_clone(&p.storage, &p.layout()).expect("clone");
@@ -323,7 +478,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
             CacheEntry::ConstRef(key) => {
                 let p = self.const_pool.get(&key).expect("dangling");
                 let s = self.backend.try_clone(&p.storage, &p.layout()).expect("take clone");
-                TrackedTensor { storage: s, shape: p.shape.clone() }
+                TrackedTensor::new(s, p.shape.clone())
             }
         }
     }
@@ -411,7 +566,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 // store shape relabel correctly.
                 let target_layout = Layout::contiguous(shape);
                 let s = self.backend.try_clone(&a.storage, &target_layout).expect("Reshape");
-                return CacheEntry::Owned(TrackedTensor { storage: s, shape: shape.clone() });
+                return CacheEntry::Owned(TrackedTensor::new(s, shape.clone()));
             }
             Op::Transpose => {
                 let a = self.get_gt(inputs, 0, cache);
@@ -500,6 +655,41 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 self.backend.softmax_last_dim(&a.storage, &a.layout()).expect("SoftmaxLastDim")
             }
 
+            // -- rms norm (fused) --
+            Op::RmsNormLastDim { eps } => {
+                let a = self.get_gt(inputs, 0, cache);
+                match self.backend.rms_norm_last_dim(&a.storage, &a.layout(), *eps) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
+            // -- rms norm backward (fused) --
+            Op::RmsNormLastDimBackward { eps } => {
+                let x = self.get_gt(inputs, 0, cache);
+                let up = self.get_gt(inputs, 1, cache);
+                match self.backend.rms_norm_last_dim_backward(
+                    &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
+            // -- rope (fused) --
+            Op::Rope => {
+                let x = self.get_gt(inputs, 0, cache);
+                let cos = self.get_gt(inputs, 1, cache);
+                let sin = self.get_gt(inputs, 2, cache);
+                match self.backend.rope(
+                    &x.storage, &cos.storage, &sin.storage,
+                    &x.layout(), &cos.layout(), &sin.layout(),
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
             // -- indexing (CPU fallback if backend doesn't implement) --
             Op::IndexSelect { dim } => {
                 let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
@@ -522,7 +712,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
             }
         };
 
-        CacheEntry::Owned(TrackedTensor { storage: result_storage, shape: shape.clone() })
+        CacheEntry::Owned(TrackedTensor::new(result_storage, shape.clone()))
     }
 
     // -- shared layout ops (same for ALL backends) ----------------------------
@@ -557,7 +747,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let src_layout = Layout::new(Shape::from_dims(&permuted_dims), permuted_strides, 0);
         let mut dst = self.backend.alloc_zeros(out_shape, self.backend.storage_dtype(&a.storage)).expect("permute alloc");
         self.backend.copy_strided_src(&a.storage, &mut dst, 0, &src_layout).expect("permute copy");
-        TrackedTensor { storage: dst, shape: out_shape.clone() }
+        TrackedTensor::new(dst, out_shape.clone())
     }
 
     fn do_broadcast(&self, a: &TrackedTensor<B::Storage>, target: &Shape) -> TrackedTensor<B::Storage> {
@@ -573,7 +763,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
             // correctly.
             let target_layout = Layout::contiguous(target);
             let s = self.backend.try_clone(&a.storage, &target_layout).expect("broadcast pad");
-            return TrackedTensor { storage: s, shape: target.clone() };
+            return TrackedTensor::new(s, target.clone());
         }
         let _s = debug_span!("broadcast_strided", src = a.shape.elem_count(), dst = target.elem_count()).entered();
         let mut strides: DimVec = DimVec::from_elem(0, dst_dims.len());
@@ -585,7 +775,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let src_layout = Layout::new(target.clone(), strides, 0);
         let mut dst = self.backend.alloc_zeros(target, self.backend.storage_dtype(&a.storage)).expect("broadcast alloc");
         self.backend.copy_strided_src(&a.storage, &mut dst, 0, &src_layout).expect("broadcast copy");
-        TrackedTensor { storage: dst, shape: target.clone() }
+        TrackedTensor::new(dst, target.clone())
     }
 
     fn do_concat(
@@ -596,6 +786,12 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let _s = debug_span!("concat", dim, elems = out_shape.elem_count()).entered();
         let a = self.get_gt(inputs, 0, cache);
         let b = self.get_gt(inputs, 1, cache);
+
+        // Fast path: backend provides a single-dispatch concat.
+        if let Ok(s) = self.backend.concat_along_dim(&a.storage, &b.storage, dim, &a.shape, &b.shape) {
+            return TrackedTensor::new(s, out_shape.clone());
+        }
+
         let dtype = self.backend.storage_dtype(&a.storage);
         let mut dst = self.backend.alloc_zeros(out_shape, dtype).expect("concat alloc");
         let out_dims = out_shape.dims();
@@ -617,7 +813,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 self.backend.copy_strided_src(&b.storage, &mut dst, o * out_row + a_ss, &bl).expect("concat b");
             }
         }
-        TrackedTensor { storage: dst, shape: out_shape.clone() }
+        TrackedTensor::new(dst, out_shape.clone())
     }
 
     fn do_slice(&self, dim: usize, start: usize, a: &TrackedTensor<B::Storage>, out_shape: &Shape) -> TrackedTensor<B::Storage> {
@@ -631,7 +827,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let dtype = self.backend.storage_dtype(&a.storage);
         let mut dst = self.backend.alloc_zeros(out_shape, dtype).expect("slice alloc");
         self.backend.copy_strided_src(&a.storage, &mut dst, 0, &src_layout).expect("slice copy");
-        TrackedTensor { storage: dst, shape: out_shape.clone() }
+        TrackedTensor::new(dst, out_shape.clone())
     }
 
     // -- const pool -----------------------------------------------------------
@@ -648,13 +844,13 @@ impl<B: GraphBackend> GraphExecutor<B> {
             let _s = debug_span!("const_upload_persistent", elems).entered();
             let buf = const_data_to_host_buffer(data);
             let storage = self.backend.upload(&buf, shape).expect("const upload");
-            self.const_pool.insert(ptr, TrackedTensor { storage, shape: shape.clone() });
+            self.const_pool.insert(ptr, TrackedTensor::new(storage, shape.clone()));
             return CacheEntry::ConstRef(ptr);
         }
         let _s = debug_span!("const_upload_ephemeral", elems).entered();
         let buf = const_data_to_host_buffer(data);
         let storage = self.backend.upload(&buf, shape).expect("const upload");
-        CacheEntry::Owned(TrackedTensor { storage, shape: shape.clone() })
+        CacheEntry::Owned(TrackedTensor::new(storage, shape.clone()))
     }
 
     // -- CPU fallback ---------------------------------------------------------
@@ -677,7 +873,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let result = fuel_reference_backend::exec::eval_node_with_op(op, inputs, shape, dtype, &cpu_cache);
         let out_buf = any_ref_to_host_buffer(result);
         let storage = self.backend.upload(&out_buf, shape).expect("H2D fallback");
-        TrackedTensor { storage, shape: shape.clone() }
+        TrackedTensor::new(storage, shape.clone())
     }
 }
 
@@ -704,6 +900,9 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::IndexSelect { .. } => "IndexSelect", Op::Gather { .. } => "Gather",
         Op::Concat { .. } => "Concat", Op::Slice { .. } => "Slice",
         Op::SoftmaxLastDim => "SoftmaxLastDim",
+        Op::RmsNormLastDim { .. } => "RmsNormLastDim",
+        Op::RmsNormLastDimBackward { .. } => "RmsNormLastDimBackward",
+        Op::Rope => "Rope",
         _ => "Other",
     }
 }

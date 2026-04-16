@@ -5,21 +5,43 @@
 //! backend for fuel's generic `GraphExecutor<B>`.
 
 pub mod pipelines;
+mod recorder;
 
 use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
 use pipelines::Pipelines;
+use recorder::{OpStats, OpStatEntry, Recorder};
+use std::cell::RefCell;
+use std::time::Instant;
+use tracing::{debug_span, info_span};
 use vulkane::safe::*;
 
-/// Vulkan storage: device-local buffer + metadata.
-pub struct VulkanStorage {
+/// The Arc-shared GPU buffer + its backing allocation. Separating this
+/// from `VulkanStorage` lets us cheaply clone a storage handle (just
+/// bump the Arc refcount) for pure-shape-relabel clones like reshape
+/// and pure-pad broadcast — no GPU memcpy, no device allocation.
+///
+/// `allocation` is a sub-allocation from vulkane's VMA-style allocator.
+/// Dropping the `VulkanBuffer` destroys the `Buffer` (vkDestroyBuffer)
+/// and returns the `Allocation` to its pool. The underlying
+/// `VkDeviceMemory` block is shared with many other buffers, so we
+/// never hit `maxMemoryAllocationCount` (~4096) no matter how many
+/// buffers we create in one forward.
+pub struct VulkanBuffer {
     pub buffer: Buffer,
-    pub memory: DeviceMemory,
+    pub allocation: Allocation,
+}
+
+/// Vulkan storage: Arc-shared device buffer + per-view metadata.
+pub struct VulkanStorage {
+    pub inner: std::sync::Arc<VulkanBuffer>,
     pub elem_count: usize,
     pub dtype: DType,
 }
 
 impl VulkanStorage {
+    pub fn buffer(&self) -> &Buffer { &self.inner.buffer }
+
     fn byte_size(&self) -> u64 {
         (self.elem_count * dtype_size(self.dtype)) as u64
     }
@@ -33,6 +55,36 @@ pub struct VulkanBackend {
     pub queue_family: u32,
     pub pipelines: Pipelines,
     pub device_name: String,
+    /// Shared VMA-style sub-allocator. Every buffer we create goes
+    /// through this so the number of live `VkDeviceMemory` blocks
+    /// stays O(GB-of-memory / 256MB), not O(number-of-buffers).
+    pub allocator: std::sync::Arc<Allocator>,
+    /// Async-submission state: pool of in-flight command buffers and
+    /// their transient resources. `RefCell` because `GraphBackend`
+    /// methods take `&self` — we need interior mutability to push
+    /// pending work. Single-threaded; no contention.
+    recorder: RefCell<Recorder>,
+    /// Per-op-kind host-side timing. Counts and cumulative wall time
+    /// spent inside `record_dispatch` for each op category. Useful
+    /// for diagnosing whether submission overhead is the bottleneck
+    /// and for feeding future backend cost estimates to a scheduler.
+    pub op_stats: OpStats,
+}
+
+impl VulkanBackend {
+    /// Snapshot of per-op-kind timing accumulated since init or since
+    /// the last `reset_op_stats()` call. Sorted by total time
+    /// descending. Host-side only — does not include GPU execution
+    /// time (that would require Vulkan timestamp queries).
+    pub fn op_stats_snapshot(&self) -> Vec<(&'static str, OpStatEntry)> {
+        self.op_stats.snapshot()
+    }
+
+    /// Zero the op-stats counters. Useful between timed phases
+    /// (e.g. skip model-load stats; just measure generation).
+    pub fn reset_op_stats(&self) {
+        self.op_stats.reset();
+    }
 }
 
 /// How to select a Vulkan physical device.
@@ -130,8 +182,20 @@ impl VulkanBackend {
         let queue = device.get_queue(queue_family, 0);
 
         let pipelines = Pipelines::new(&device).map_err(vk_err)?;
+        let recorder = RefCell::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
+        let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
 
-        Ok(Self { device, physical, queue, queue_family, pipelines, device_name })
+        Ok(Self {
+            device,
+            physical,
+            queue,
+            queue_family,
+            pipelines,
+            device_name,
+            allocator,
+            recorder,
+            op_stats: OpStats::default(),
+        })
     }
 
     /// List all available Vulkan physical devices.
@@ -162,131 +226,412 @@ impl VulkanBackend {
     fn upload_slice<T: Copy + 'static>(
         &self, data: &[T], dtype: DType,
     ) -> fuel_core_types::Result<VulkanStorage> {
-        let usage = BufferUsage::STORAGE_BUFFER
-            | BufferUsage::TRANSFER_SRC
-            | BufferUsage::TRANSFER_DST;
-        let (buffer, memory) = self.queue.upload_buffer(
-            &self.device, &self.physical, self.queue_family, data, usage,
-        ).map_err(vk_err)?;
-        Ok(VulkanStorage { buffer, memory, elem_count: data.len(), dtype })
+        let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        let _span = debug_span!("vk_upload_slice", bytes = byte_size).entered();
+        // Staging: host-visible + mapped. Sub-allocated from the
+        // host-visible pool.
+        let (staging_buf, staging_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: byte_size.max(1),
+                    usage: BufferUsage::TRANSFER_SRC,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        // Write the bytes into the staging buffer via its mapped pointer.
+        let mapped = staging_alloc
+            .mapped_ptr()
+            .ok_or_else(|| fuel_core_types::Error::Msg(
+                "upload_slice: staging alloc not mapped".into()))?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                mapped as *mut u8,
+                byte_size as usize,
+            );
+        }
+        // Device-local target.
+        let (gpu_buf, gpu_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: byte_size.max(1),
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC
+                        | BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        // One-shot copy staging -> device. This syncs on its own
+        // fence, so when it returns the GPU has fully processed
+        // the copy.
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    &staging_buf,
+                    &gpu_buf,
+                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        // staging_buf + staging_alloc drop here, returning their
+        // sub-allocation to the pool. gpu_buf + gpu_alloc live on
+        // inside the returned VulkanStorage.
+        drop(staging_buf);
+        drop(staging_alloc);
+        Ok(VulkanStorage {
+            inner: std::sync::Arc::new(VulkanBuffer {
+                buffer: gpu_buf,
+                allocation: gpu_alloc,
+            }),
+            elem_count: data.len(),
+            dtype,
+        })
     }
 
     fn download_slice<T: Copy + Default + 'static>(
         &self, storage: &VulkanStorage,
     ) -> fuel_core_types::Result<Vec<T>> {
         let byte_size = storage.byte_size();
-        let (staging_buf, mut staging_mem) = Buffer::new_bound(
-            &self.device, &self.physical,
-            BufferCreateInfo { size: byte_size, usage: BufferUsage::TRANSFER_DST },
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-        ).map_err(vk_err)?;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(&storage.buffer, &staging_buf, &[BufferCopy {
-                src_offset: 0, dst_offset: 0, size: byte_size,
-            }]);
-            Ok(())
-        }).map_err(vk_err)?;
-        let mapped = staging_mem.map().map_err(vk_err)?;
-        let bytes = mapped.as_slice();
         let n = storage.elem_count;
-        let mut out = vec![T::default(); n];
-        let dst = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, n * std::mem::size_of::<T>())
+        let pending = self.recorder.borrow().pending.len();
+        let _span = info_span!("vk_download", bytes = byte_size, pending).entered();
+        // First make sure every previously-submitted async op has
+        // finished on the GPU. flush_pending host-waits on our
+        // timeline semaphore and drops in-flight resources.
+        self.flush_pending()?;
+        // Staging via the allocator (host-visible + mapped).
+        let (staging_buf, staging_alloc) = {
+            let _s = debug_span!("vk_download_alloc_staging").entered();
+            self.allocator.create_buffer(
+                BufferCreateInfo { size: byte_size.max(1), usage: BufferUsage::TRANSFER_DST },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            ).map_err(vk_err)?
         };
-        dst.copy_from_slice(&bytes[..dst.len()]);
+        {
+            let _s = info_span!("vk_download_copy").entered();
+            self.queue.one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(storage.buffer(), &staging_buf, &[BufferCopy {
+                    src_offset: 0, dst_offset: 0, size: byte_size,
+                }]);
+                Ok(())
+            }).map_err(vk_err)?;
+        }
+        let _s = debug_span!("vk_download_memcpy").entered();
+        let mapped = staging_alloc
+            .mapped_ptr()
+            .ok_or_else(|| fuel_core_types::Error::Msg(
+                "download_slice: staging alloc not mapped".into()))?;
+        let mut out = vec![T::default(); n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                mapped as *const u8,
+                out.as_mut_ptr() as *mut u8,
+                n * std::mem::size_of::<T>(),
+            );
+        }
+        drop(staging_buf);
+        drop(staging_alloc);
         Ok(out)
     }
 
     fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_core_types::Result<VulkanStorage> {
-        let (buffer, memory) = Buffer::new_bound(
-            &self.device, &self.physical,
+        let (buffer, allocation) = self.allocator.create_buffer(
             BufferCreateInfo {
-                size: byte_size,
+                size: byte_size.max(1),
                 usage: BufferUsage::STORAGE_BUFFER
                     | BufferUsage::TRANSFER_SRC
                     | BufferUsage::TRANSFER_DST,
             },
-            MemoryPropertyFlags::DEVICE_LOCAL,
+            AllocationCreateInfo {
+                usage: AllocationUsage::DeviceLocal,
+                ..Default::default()
+            },
         ).map_err(vk_err)?;
-        Ok(VulkanStorage { buffer, memory, elem_count: n, dtype })
+        Ok(VulkanStorage {
+            inner: std::sync::Arc::new(VulkanBuffer { buffer, allocation }),
+            elem_count: n,
+            dtype,
+        })
     }
 
-    /// Upload a typed slice as a device-local storage buffer (no
-    /// VulkanStorage wrapper — used for internal dispatch metadata
-    /// like shape/strides arrays).
-    fn upload_slice_raw<T: Copy + 'static>(&self, data: &[T]) -> fuel_core_types::Result<(Buffer, DeviceMemory)> {
-        self.queue.upload_buffer(
-            &self.device, &self.physical, self.queue_family, data,
-            BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-        ).map_err(vk_err)
+    /// Upload a typed slice as a host-visible storage buffer. Used
+    /// for small per-dispatch metadata (shape/strides arrays, index
+    /// tables). Sub-allocates from the shared allocator's host-visible
+    /// pool so we don't hit `maxMemoryAllocationCount` even when
+    /// issuing thousands of these per forward.
+    fn upload_slice_raw<T: Copy + 'static>(&self, data: &[T]) -> fuel_core_types::Result<(Buffer, Allocation)> {
+        let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        let _span = debug_span!("vk_upload_slice_raw", bytes = byte_size).entered();
+        let size = byte_size.max(16);
+        let (buf, alloc) = self.allocator.create_buffer(
+            BufferCreateInfo { size, usage: BufferUsage::STORAGE_BUFFER },
+            AllocationCreateInfo {
+                usage: AllocationUsage::HostVisible,
+                mapped: true,
+                ..Default::default()
+            },
+        ).map_err(vk_err)?;
+        let mapped = alloc.mapped_ptr()
+            .ok_or_else(|| fuel_core_types::Error::Msg(
+                "upload_slice_raw: alloc not mapped".into()))?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                mapped as *mut u8,
+                byte_size as usize,
+            );
+        }
+        Ok((buf, alloc))
     }
 
-    /// Upload a small params struct as a uniform buffer.
-    fn upload_params<T: Copy + 'static>(&self, params: &T) -> fuel_core_types::Result<(Buffer, DeviceMemory)> {
+    /// Upload a small params struct as a uniform buffer. Sub-allocated
+    /// from the shared allocator's host-visible pool.
+    fn upload_params<T: Copy + 'static>(&self, params: &T) -> fuel_core_types::Result<(Buffer, Allocation)> {
+        let _span = debug_span!("vk_upload_params", bytes = std::mem::size_of::<T>()).entered();
         let bytes = unsafe { as_bytes(params) };
-        // Uniform buffers must be at least 16 bytes on some implementations.
         let size = (bytes.len().max(16)) as u64;
-        let (buf, mut mem) = Buffer::new_bound(
-            &self.device, &self.physical,
+        let (buf, alloc) = self.allocator.create_buffer(
             BufferCreateInfo { size, usage: BufferUsage::UNIFORM_BUFFER },
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+            AllocationCreateInfo {
+                usage: AllocationUsage::HostVisible,
+                mapped: true,
+                ..Default::default()
+            },
         ).map_err(vk_err)?;
-        let mut mapped = mem.map().map_err(vk_err)?;
-        mapped.as_slice_mut()[..bytes.len()].copy_from_slice(bytes);
-        drop(mapped);
-        Ok((buf, mem))
+        let mapped = alloc.mapped_ptr()
+            .ok_or_else(|| fuel_core_types::Error::Msg(
+                "upload_params: alloc not mapped".into()))?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                mapped as *mut u8,
+                bytes.len(),
+            );
+        }
+        Ok((buf, alloc))
+    }
+
+    /// Record one op into a fresh command buffer, attach a leading
+    /// compute→compute WRITE→READ memory barrier so prior work is
+    /// visible, submit to the queue without waiting, and stash the CB
+    /// + transient resources on the pending list. The CPU returns as
+    /// soon as the driver accepts the submit — the GPU runs the op in
+    /// the background. Matches CUDA's async stream-launch semantics.
+    ///
+    /// `desc` is passed by value but a reference is handed to
+    /// `record_fn` so the closure can bind it; the descriptor moves
+    /// into the pending list afterward to keep it alive until the GPU
+    /// consumes this CB.
+    /// Max in-flight submits before we auto-flush. Windows WDDM's
+    /// TDR kills GPU contexts whose "current run" of work exceeds
+    /// ~2 seconds without a yield point. With the async refactor +
+    /// native kernels, we eliminated the implicit sync points that
+    /// cpu_fallback downloads were providing — so the queue can
+    /// grow until the final download, and a multi-thousand-op run
+    /// easily blows past 2s. Bounding queue depth keeps each GPU
+    /// run short enough that the driver stays happy. 128 is a
+    /// compromise: deep enough to keep the GPU busy, shallow enough
+    /// that each flush completes well under the TDR window.
+    const AUTO_FLUSH_THRESHOLD: usize = 128;
+
+    fn record_dispatch<F>(
+        &self,
+        op_name: &'static str,
+        transient_buffers: Vec<(Buffer, Allocation)>,
+        desc: Option<DescriptorSet>,
+        record_fn: F,
+    ) -> fuel_core_types::Result<()>
+    where
+        F: FnOnce(&mut CommandBufferRecording<'_>, Option<&DescriptorSet>) -> Result<()>,
+    {
+        let _span = debug_span!("vk_record_dispatch", op = op_name).entered();
+        let t0 = Instant::now();
+
+        // Auto-flush: bound the pending queue to keep each GPU
+        // "chunk" small enough for WDDM TDR and small enough that
+        // intermediate results can make progress for downstream ops.
+        if self.recorder.borrow().pending.len() >= Self::AUTO_FLUSH_THRESHOLD {
+            self.flush_pending()?;
+        }
+        let mut rec = self.recorder.borrow_mut();
+        let pending_before = rec.pending.len();
+        let mut cmd = {
+            let _a = debug_span!("vk_alloc_cb").entered();
+            rec.pool.allocate_primary().map_err(vk_err)?
+        };
+        {
+            let _r = debug_span!("vk_record_cb").entered();
+            let mut recording = cmd.begin().map_err(vk_err)?;
+            record_fn(&mut recording, desc.as_ref()).map_err(vk_err)?;
+            recording.end().map_err(vk_err)?;
+        }
+        // Cross-submit synchronization: chain this submit onto the
+        // prior one via a timeline semaphore. Each submit waits for
+        // the previous counter value before starting and signals
+        // (counter+1) on completion. On NVIDIA, relying on an
+        // in-CB `vkCmdPipelineBarrier` alone was not reliable — we
+        // crashed with `ERROR_DEVICE_LOST` at any queue depth ≥ 2.
+        // Timeline semaphores are the spec-canonical primitive for
+        // this and drivers handle them reliably. The chain serializes
+        // GPU execution (same behavior as having one big command
+        // buffer) while keeping the CPU free to queue more work.
+        let wait_value = rec.counter;
+        let signal_value = wait_value + 1;
+        rec.counter = signal_value;
+        {
+            let _s = debug_span!("vk_queue_submit", pending = pending_before).entered();
+            let waits: Vec<WaitSemaphore<'_>> = if wait_value == 0 {
+                Vec::new()
+            } else {
+                vec![WaitSemaphore::timeline(
+                    &rec.timeline,
+                    wait_value,
+                    PipelineStage::ALL_COMMANDS,
+                )]
+            };
+            let signals = [SignalSemaphore::timeline(&rec.timeline, signal_value)];
+            self.queue
+                .submit_with_sync(&[&cmd], &waits, &signals, None)
+                .map_err(vk_err)?;
+        }
+        rec.pending.push(recorder::PendingSubmit {
+            cmd,
+            transient_buffers,
+            transient_desc: desc,
+        });
+        drop(rec);
+        self.op_stats.record(op_name, t0.elapsed());
+        Ok(())
+    }
+
+    /// Called after a synchronous sync point (D2H copy's one_shot).
+    /// Drops every in-flight CB + its transient resources, recycles
+    /// the command pool, and also destroys any descriptor pools that
+    /// were retired during the forward pass. The retired pools held
+    /// descriptors that were potentially in-flight on the GPU; now
+    /// that the fence has signaled, the GPU is confirmed idle and
+    /// their backing `vkDestroyDescriptorPool` is safe to call.
+    fn drain_recorder(&self) -> fuel_core_types::Result<()> {
+        let pending = self.recorder.borrow().pending.len();
+        let _span = info_span!("vk_drain_recorder", pending).entered();
+        self.recorder
+            .borrow_mut()
+            .drain(&self.device, self.queue_family)
+            .map_err(vk_err)?;
+        // Pending CBs (which held the descriptor sets) are now
+        // dropped. Safe to destroy any retired descriptor pools.
+        self.pipelines.retire_pools_post_drain();
+        Ok(())
+    }
+
+    /// Force the GPU to catch up. Host-waits on the recorder's
+    /// timeline semaphore for the most recently signaled value,
+    /// which guarantees every previously-submitted CB has completed
+    /// on the GPU. Then drops all in-flight resources and recycles
+    /// the pool. Called periodically to bound queue depth so
+    /// Windows WDDM doesn't kill us with a TDR, and from
+    /// `download_slice` before the D2H copy.
+    fn flush_pending(&self) -> fuel_core_types::Result<()> {
+        let (pending, target_value) = {
+            let rec = self.recorder.borrow();
+            (rec.pending.len(), rec.counter)
+        };
+        let _span = info_span!("vk_flush_pending", pending, target_value).entered();
+        if target_value > 0 {
+            self.recorder
+                .borrow()
+                .timeline
+                .wait_value(target_value, u64::MAX)
+                .map_err(vk_err)?;
+        }
+        // GPU is now idle (up through target_value). Drop everything pending.
+        self.drain_recorder()
     }
 
     /// Dispatch a 2-storage + 1-uniform compute shader.
+    /// `params_buf` + `params_mem` transfer ownership; they're kept
+    /// alive by the recorder until the GPU consumes this CB.
     fn dispatch_2buf(
         &self,
+        op_name: &'static str,
         pipeline: &ComputePipeline,
         pipe_layout: &PipelineLayout,
         input: &VulkanStorage,
         output: &VulkanStorage,
-        params_buf: &Buffer,
+        params_buf: Buffer,
+        params_alloc: Allocation,
         params_size: u64,
         groups_x: u32,
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_core_types::Result<()> {
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &input.buffer, 0, input.byte_size());
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, params_buf, 0, params_size);
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.bind_compute_pipeline(pipeline);
-            cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[&desc]);
-            cmd.dispatch(groups_x, groups_y, groups_z);
-            Ok(())
-        }).map_err(vk_err)
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, input.buffer(), 0, input.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
+        self.record_dispatch(
+            op_name,
+            vec![(params_buf, params_alloc)],
+            Some(desc),
+            |cmd, desc| {
+                let desc = desc.expect("dispatch_2buf: descriptor set missing");
+                cmd.bind_compute_pipeline(pipeline);
+                cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[desc]);
+                cmd.dispatch(groups_x, groups_y, groups_z);
+                Ok(())
+            },
+        )
     }
 
     /// Dispatch a 3-storage + 1-uniform compute shader.
     fn dispatch_3buf(
         &self,
+        op_name: &'static str,
         pipeline: &ComputePipeline,
         pipe_layout: &PipelineLayout,
         a: &VulkanStorage,
         b: &VulkanStorage,
         output: &VulkanStorage,
-        params_buf: &Buffer,
+        params_buf: Buffer,
+        params_alloc: Allocation,
         params_size: u64,
         groups_x: u32,
         groups_y: u32,
         groups_z: u32,
     ) -> fuel_core_types::Result<()> {
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &a.buffer, 0, a.byte_size());
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &b.buffer, 0, b.byte_size());
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &output.buffer, 0, output.byte_size());
-        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, params_buf, 0, params_size);
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.bind_compute_pipeline(pipeline);
-            cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[&desc]);
-            cmd.dispatch(groups_x, groups_y, groups_z);
-            Ok(())
-        }).map_err(vk_err)
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a.buffer(), 0, a.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b.buffer(), 0, b.byte_size());
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
+        self.record_dispatch(
+            op_name,
+            vec![(params_buf, params_alloc)],
+            Some(desc),
+            |cmd, desc| {
+                let desc = desc.expect("dispatch_3buf: descriptor set missing");
+                cmd.bind_compute_pipeline(pipeline);
+                cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[desc]);
+                cmd.dispatch(groups_x, groups_y, groups_z);
+                Ok(())
+            },
+        )
     }
 
     fn workgroups(n: usize) -> u32 {
@@ -301,14 +646,24 @@ impl GraphBackend for VulkanBackend {
         let n = shape.elem_count();
         let byte_size = (n * dtype_size(dtype)) as u64;
         let storage = self.alloc_device(byte_size, n, dtype)?;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.fill_buffer(&storage.buffer, 0, byte_size, 0);
+        let buf_for_cmd = storage.inner.clone();
+        self.record_dispatch("alloc_zeros.fill", Vec::new(), None, move |cmd, _| {
+            cmd.fill_buffer(&buf_for_cmd.buffer, 0, byte_size, 0);
             Ok(())
-        }).map_err(vk_err)?;
+        })?;
         Ok(storage)
     }
 
     fn upload(&self, buf: &fuel_core_types::HostBuffer, _shape: &Shape) -> fuel_core_types::Result<Self::Storage> {
+        // Uploads are synchronous (queue.upload_buffer submits its own
+        // CB + fence and waits) but the fence only covers the upload
+        // itself — not our async submit chain. On Windows/NVIDIA we
+        // empirically see DEVICE_LOST when upload CBs race with
+        // concurrently-executing compute CBs from our async queue.
+        // Flushing our pending chain before each upload keeps the
+        // queue quiet while the upload runs, and is cheap (idempotent
+        // if nothing is pending).
+        self.flush_pending()?;
         use fuel_core_types::HostBuffer;
         match buf {
             HostBuffer::F32(v) => self.upload_slice(v, DType::F32),
@@ -330,14 +685,28 @@ impl GraphBackend for VulkanBackend {
 
     fn try_clone(&self, storage: &Self::Storage, layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
         let n = layout.shape().elem_count();
+        // Zero-copy fast path: if the target element count matches the
+        // source, this clone is a pure shape relabel (reshape, pure-pad
+        // broadcast). Share the Arc'd buffer instead of memcpying. On
+        // an 8GB GPU with ~4GB of weights, this is the difference
+        // between fitting and OOMing.
+        if n == storage.elem_count {
+            return Ok(VulkanStorage {
+                inner: std::sync::Arc::clone(&storage.inner),
+                elem_count: n,
+                dtype: storage.dtype,
+            });
+        }
         let byte_size = (n * dtype_size(storage.dtype)) as u64;
         let dst = self.alloc_device(byte_size, n, storage.dtype)?;
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.copy_buffer(&storage.buffer, &dst.buffer, &[BufferCopy {
+        let src_arc = storage.inner.clone();
+        let dst_arc = dst.inner.clone();
+        self.record_dispatch("try_clone.memcpy", Vec::new(), None, move |cmd, _| {
+            cmd.copy_buffer(&src_arc.buffer, &dst_arc.buffer, &[BufferCopy {
                 src_offset: 0, dst_offset: 0, size: byte_size,
             }]);
             Ok(())
-        }).map_err(vk_err)?;
+        })?;
         Ok(dst)
     }
 
@@ -355,7 +724,7 @@ impl GraphBackend for VulkanBackend {
         let mut sd: Vec<u32> = Vec::with_capacity(rank * 2);
         for &d in dims { sd.push(d as u32); }
         for &s in strides.iter() { sd.push(s as u32); }
-        let (sd_buf, _sd_mem) = self.upload_slice_raw(&sd)?;
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
 
         // Params uniform buffer.
         #[repr(C)] #[derive(Clone, Copy)]
@@ -366,23 +735,31 @@ impl GraphBackend for VulkanBackend {
             src_offset: src_layout.start_offset() as u32,
             dst_offset: dst_offset as u32,
         };
-        let (pbuf, _pmem) = self.upload_params(&p)?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
 
         // Allocate descriptor set: bindings 0=input, 1=output, 2=shape_strides, 3=params
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, &src.buffer, 0, src.byte_size());
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, &dst.buffer, 0, dst.byte_size());
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src.buffer(), 0, src.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst.buffer(), 0, dst.byte_size());
         let sd_byte_size = (sd.len() * 4) as u64;
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(out_size);
-        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-            cmd.bind_compute_pipeline(&self.pipelines.strided_copy_pipeline);
-            cmd.bind_compute_descriptor_sets(&self.pipelines.strided_copy_layout, 0, &[&desc]);
-            cmd.dispatch(groups, 1, 1);
-            Ok(())
-        }).map_err(vk_err)
+        let pipeline = &self.pipelines.strided_copy_pipeline;
+        let layout = &self.pipelines.strided_copy_layout;
+        self.record_dispatch(
+            "strided_copy",
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            Some(desc),
+            |cmd, desc| {
+                let desc = desc.expect("copy_strided_src: descriptor missing");
+                cmd.bind_compute_pipeline(pipeline);
+                cmd.bind_compute_descriptor_sets(layout, 0, &[desc]);
+                cmd.dispatch(groups, 1, 1);
+                Ok(())
+            },
+        )
     }
 
     fn storage_dtype(&self, storage: &Self::Storage) -> DType {
@@ -406,15 +783,42 @@ impl GraphBackend for VulkanBackend {
             m: m as u32, n: n as u32, k: k as u32,
             sa: (m * k) as u32, sb: (k * n) as u32, sc: (m * n) as u32,
         };
-        let (pbuf, _pmem) = self.upload_params(&params)?;
-        let gx = ((n + 63) / 64) as u32;
-        let gy = ((m + 63) / 64) as u32;
+        let (pbuf, pmem) = self.upload_params(&params)?;
         let gz = batch as u32;
-        self.dispatch_3buf(
-            &self.pipelines.matmul_pipeline,
-            &self.pipelines.matmul_layout,
-            a, b, &out, &pbuf, std::mem::size_of::<MatmulParams>() as u64, gx, gy, gz,
-        )?;
+        let params_size = std::mem::size_of::<MatmulParams>() as u64;
+
+        // Shape-based pipeline selection:
+        //   M == 1 -> gemv (subgroup-reduced dot, one wg per column)
+        //   M small -> WGSL register-tile (no shared-mem barriers)
+        //   M large -> GLSL shared-memory tiled matmul
+        if m == 1 {
+            let gx = n as u32;
+            let gy = 1u32;
+            self.dispatch_3buf(
+                "matvec",
+                &self.pipelines.matvec_pipeline,
+                &self.pipelines.matvec_layout,
+                a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
+            )?;
+        } else if m < 32 {
+            let gx = ((n + 63) / 64) as u32;
+            let gy = ((m + 63) / 64) as u32;
+            self.dispatch_3buf(
+                "matmul",
+                &self.pipelines.matmul_pipeline,
+                &self.pipelines.matmul_layout,
+                a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
+            )?;
+        } else {
+            let gx = ((n + 63) / 64) as u32;
+            let gy = ((m + 63) / 64) as u32;
+            self.dispatch_3buf(
+                "matmul_tiled",
+                &self.pipelines.matmul_tiled_pipeline,
+                &self.pipelines.matmul_tiled_layout,
+                a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
+            )?;
+        }
         Ok(out)
     }
 
@@ -431,11 +835,12 @@ impl GraphBackend for VulkanBackend {
         #[repr(C)] #[derive(Clone, Copy)]
         struct UParams { n: u32, op_id: u32 }
         let p = UParams { n: a.elem_count as u32, op_id };
-        let (pbuf, _pmem) = self.upload_params(&p)?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
+            "unary",
             &self.pipelines.unary_pipeline,
             &self.pipelines.unary_layout,
-            a, &out, &pbuf, 8, Self::workgroups(a.elem_count), 1, 1,
+            a, &out, pbuf, pmem, 8, Self::workgroups(a.elem_count), 1, 1,
         )?;
         Ok(out)
     }
@@ -454,11 +859,12 @@ impl GraphBackend for VulkanBackend {
         #[repr(C)] #[derive(Clone, Copy)]
         struct BParams { n: u32, op_id: u32 }
         let p = BParams { n: a.elem_count as u32, op_id };
-        let (pbuf, _pmem) = self.upload_params(&p)?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_3buf(
+            "binary",
             &self.pipelines.binary_pipeline,
             &self.pipelines.binary_layout,
-            a, b, &out, &pbuf, 8, Self::workgroups(a.elem_count), 1, 1,
+            a, b, &out, pbuf, pmem, 8, Self::workgroups(a.elem_count), 1, 1,
         )?;
         Ok(out)
     }
@@ -472,11 +878,12 @@ impl GraphBackend for VulkanBackend {
         #[repr(C)] #[derive(Clone, Copy)]
         struct AffParams { n: u32, _pad: u32, mul: f32, add: f32 }
         let p = AffParams { n: a.elem_count as u32, _pad: 0, mul: mul as f32, add: add as f32 };
-        let (pbuf, _pmem) = self.upload_params(&p)?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
+            "affine",
             &self.pipelines.affine_pipeline,
             &self.pipelines.affine_layout,
-            a, &out, &pbuf, 16, Self::workgroups(a.elem_count), 1, 1,
+            a, &out, pbuf, pmem, 16, Self::workgroups(a.elem_count), 1, 1,
         )?;
         Ok(out)
     }
@@ -497,31 +904,103 @@ impl GraphBackend for VulkanBackend {
 
     fn reduce(
         &self, op: fuel_core_types::op::ReduceOp,
-        a: &Self::Storage, _layout: &Layout,
+        a: &Self::Storage, layout: &Layout,
         dims: &[usize],
     ) -> fuel_core_types::Result<Self::Storage> {
-        // Only support full reduction (all dims) for now.
-        if dims.len() < 2 {
-            fuel_core_types::bail!("VulkanBackend: per-dim reduce not yet native");
-        }
-        let out = self.alloc_device(4, 1, DType::F32)?;
-
         let op_id: u32 = match op {
             fuel_core_types::op::ReduceOp::Sum => 0,
             fuel_core_types::op::ReduceOp::Max => 1,
             fuel_core_types::op::ReduceOp::Min => 2,
             _ => fuel_core_types::bail!("VulkanBackend: unsupported reduce op"),
         };
-        #[repr(C)] #[derive(Clone, Copy)]
-        struct RParams { n: u32, op_id: u32 }
-        let p = RParams { n: a.elem_count as u32, op_id };
-        let (pbuf, _pmem) = self.upload_params(&p)?;
-        self.dispatch_2buf(
-            &self.pipelines.reduce_pipeline,
-            &self.pipelines.reduce_layout,
-            a, &out, &pbuf, 8, 1, 1, 1,
-        )?;
-        Ok(out)
+
+        // Fast path 1: full reduction — every dim collapses to a scalar.
+        let shape = layout.shape();
+        let rank = shape.dims().len();
+        if dims.len() == rank || dims.is_empty() {
+            let out = self.alloc_device(4, 1, DType::F32)?;
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct RParams { n: u32, op_id: u32 }
+            let p = RParams { n: a.elem_count as u32, op_id };
+            let (pbuf, pmem) = self.upload_params(&p)?;
+            self.dispatch_2buf(
+                "reduce",
+                &self.pipelines.reduce_pipeline,
+                &self.pipelines.reduce_layout,
+                a, &out, pbuf, pmem, 8, 1, 1, 1,
+            )?;
+            return Ok(out);
+        }
+
+        // Fast path 2: single-dim reduction along the LAST dim. Covers
+        // RMSNorm / LayerNorm / softmax prep — the hot path that was
+        // hitting CPU fallback ~44× per Llama forward before this
+        // kernel existed.
+        if dims.len() == 1 && dims[0] == rank - 1 {
+            let dims_slice = shape.dims();
+            let n_cols = dims_slice[rank - 1];
+            let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+
+            // Validate that the input storage is actually shaped the
+            // way we're telling the shader to read it. A mismatch
+            // here (e.g. storage.elem_count != n_rows*n_cols) would
+            // cause the shader to read past the buffer → GPU hang or
+            // DEVICE_LOST. Fail loudly in Rust instead.
+            let expected_elems = n_rows
+                .checked_mul(n_cols)
+                .ok_or_else(|| fuel_core_types::Error::Msg(
+                    "reduce_last_dim: n_rows * n_cols overflow".into()))?;
+            if a.elem_count != expected_elems {
+                fuel_core_types::bail!(
+                    "reduce_last_dim: storage.elem_count ({}) != n_rows*n_cols ({}*{}={}); shape={:?}",
+                    a.elem_count, n_rows, n_cols, expected_elems, dims_slice
+                );
+            }
+            if a.dtype != DType::F32 {
+                fuel_core_types::bail!(
+                    "reduce_last_dim: input must be f32, got {:?}", a.dtype
+                );
+            }
+            if n_rows == 0 || n_cols == 0 {
+                fuel_core_types::bail!(
+                    "reduce_last_dim: degenerate shape (n_rows={n_rows}, n_cols={n_cols})"
+                );
+            }
+
+            let out_elems = n_rows;
+            let out = self.alloc_device((out_elems * 4) as u64, out_elems, DType::F32)?;
+
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+            let p = RLParams {
+                n_rows: n_rows as u32,
+                n_cols: n_cols as u32,
+                op_id,
+                _pad: 0,
+            };
+            let (pbuf, pmem) = self.upload_params(&p)?;
+
+            tracing::debug!(
+                target: "vk_reduce_last_dim",
+                n_rows, n_cols, op_id,
+                input_bytes = a.byte_size(),
+                output_bytes = out.byte_size(),
+                "reduce_last_dim dispatch",
+            );
+
+            self.dispatch_2buf(
+                "reduce_last_dim",
+                &self.pipelines.reduce_last_dim_pipeline,
+                &self.pipelines.reduce_last_dim_layout,
+                a, &out, pbuf, pmem, 16, n_rows as u32, 1, 1,
+            )?;
+            return Ok(out);
+        }
+
+        // Any other dim combo: fall back to CPU. Rare; reducing along
+        // middle / leading dims needs a strided kernel we haven't
+        // written yet.
+        fuel_core_types::bail!("VulkanBackend: reduce along non-last dim(s) {:?} not yet native", dims)
     }
 
     fn softmax_last_dim(
@@ -536,20 +1015,316 @@ impl GraphBackend for VulkanBackend {
         #[repr(C)] #[derive(Clone, Copy)]
         struct SoftParams { n_rows: u32, n_cols: u32 }
         let p = SoftParams { n_rows, n_cols: n_cols as u32 };
-        let (pbuf, _pmem) = self.upload_params(&p)?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
+            "softmax",
             &self.pipelines.softmax_pipeline,
             &self.pipelines.softmax_layout,
-            a, &out, &pbuf, 8, n_rows, 1, 1,
+            a, &out, pbuf, pmem, 8, n_rows, 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    fn add_assign_scaled(
+        &self,
+        dst: &mut Self::Storage,
+        src: &Self::Storage,
+        scale: f32,
+    ) -> fuel_core_types::Result<()> {
+        if dst.dtype != DType::F32 || src.dtype != DType::F32 {
+            fuel_core_types::bail!(
+                "VulkanBackend: add_assign_scaled requires f32, got dst={:?} src={:?}",
+                dst.dtype, src.dtype,
+            );
+        }
+        if dst.elem_count != src.elem_count {
+            fuel_core_types::bail!(
+                "VulkanBackend: add_assign_scaled shape mismatch: dst={} src={}",
+                dst.elem_count, src.elem_count,
+            );
+        }
+        let n = dst.elem_count;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct AasParams { n: u32, scale: f32 }
+        let p = AasParams { n: n as u32, scale };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        // 2s1u layout: binding 0 = dst (read_write), 1 = src (read),
+        // 2 = params (uniform).
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, dst.buffer(), 0, dst.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src.buffer(), 0, src.byte_size());
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+
+        let pipeline = &self.pipelines.add_assign_scaled_pipeline;
+        let layout = &self.pipelines.add_assign_scaled_layout;
+        let groups = Self::workgroups(n);
+        self.record_dispatch(
+            "add_assign_scaled",
+            vec![(pbuf, pmem)],
+            Some(desc),
+            |cmd, desc| {
+                let desc = desc.expect("add_assign_scaled: descriptor missing");
+                cmd.bind_compute_pipeline(pipeline);
+                cmd.bind_compute_descriptor_sets(layout, 0, &[desc]);
+                cmd.dispatch(groups, 1, 1);
+                Ok(())
+            },
+        )
+    }
+
+    fn rms_norm_last_dim(
+        &self, a: &Self::Storage, layout: &Layout, eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if a.dtype != DType::F32 {
+            fuel_core_types::bail!(
+                "VulkanBackend: rms_norm_last_dim requires f32 input, got {:?}", a.dtype
+            );
+        }
+        let shape = layout.shape();
+        let dims = shape.dims();
+        let n_cols = *dims.last().expect("rms_norm: empty shape");
+        let n_rows = (a.elem_count / n_cols) as u32;
+        let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        let p = RmsParams {
+            n_rows,
+            n_cols: n_cols as u32,
+            eps: eps as f32,
+            _pad: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        self.dispatch_2buf(
+            "rms_norm_last_dim",
+            &self.pipelines.rms_norm_last_dim_pipeline,
+            &self.pipelines.rms_norm_last_dim_layout,
+            a, &out, pbuf, pmem, 16, n_rows, 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    fn rms_norm_last_dim_backward(
+        &self,
+        x: &Self::Storage,
+        upstream: &Self::Storage,
+        x_layout: &Layout,
+        _up_layout: &Layout,
+        eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if x.dtype != DType::F32 || upstream.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: rms_norm_last_dim_backward requires f32");
+        }
+        let shape = x_layout.shape();
+        let dims = shape.dims();
+        if dims.is_empty() {
+            fuel_core_types::bail!("rms_norm_last_dim_backward: rank >= 1 required");
+        }
+        let n_cols = *dims.last().unwrap();
+        let n_rows = (x.elem_count / n_cols) as u32;
+        let out = self.alloc_device(x.byte_size(), x.elem_count, x.dtype)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RmsBwdParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        let p = RmsBwdParams {
+            n_rows,
+            n_cols: n_cols as u32,
+            eps: eps as f32,
+            _pad: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        self.dispatch_3buf(
+            "rms_norm_last_dim_backward",
+            &self.pipelines.rms_norm_last_dim_backward_pipeline,
+            &self.pipelines.rms_norm_last_dim_backward_layout,
+            x, upstream, &out, pbuf, pmem,
+            std::mem::size_of::<RmsBwdParams>() as u64,
+            n_rows, 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    fn concat_along_dim(
+        &self,
+        a: &Self::Storage,
+        b: &Self::Storage,
+        dim: usize,
+        a_shape: &Shape,
+        b_shape: &Shape,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if a.dtype != DType::F32 || b.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: concat_along_dim requires f32");
+        }
+        let a_dims = a_shape.dims();
+        let b_dims = b_shape.dims();
+        if a_dims.len() != b_dims.len() || dim >= a_dims.len() {
+            fuel_core_types::bail!("concat_along_dim: rank/dim mismatch");
+        }
+        for (i, (&da, &db)) in a_dims.iter().zip(b_dims.iter()).enumerate() {
+            if i != dim && da != db {
+                fuel_core_types::bail!("concat_along_dim: non-concat dims disagree");
+            }
+        }
+        let a_dim = a_dims[dim];
+        let b_dim = b_dims[dim];
+        let outer: usize = a_dims[..dim].iter().product::<usize>().max(1);
+        let inner: usize = a_dims[dim + 1..].iter().product::<usize>().max(1);
+        let out_elems = outer * (a_dim + b_dim) * inner;
+        let out = self.alloc_device((out_elems * 4) as u64, out_elems, DType::F32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct CParams { outer: u32, a_dim: u32, b_dim: u32, inner: u32, total: u32, _p0: u32, _p1: u32, _p2: u32 }
+        let p = CParams {
+            outer: outer as u32,
+            a_dim: a_dim as u32,
+            b_dim: b_dim as u32,
+            inner: inner as u32,
+            total: out_elems as u32,
+            _p0: 0, _p1: 0, _p2: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let groups = ((out_elems as u32 + 63) / 64).max(1);
+        self.dispatch_3buf(
+            "concat_along_dim",
+            &self.pipelines.concat_along_dim_pipeline,
+            &self.pipelines.concat_along_dim_layout,
+            a, b, &out, pbuf, pmem, std::mem::size_of::<CParams>() as u64, groups, 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    fn rope(
+        &self,
+        x: &Self::Storage,
+        cos: &Self::Storage,
+        sin: &Self::Storage,
+        x_layout: &Layout,
+        _cos_layout: &Layout,
+        _sin_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if x.dtype != DType::F32 || cos.dtype != DType::F32 || sin.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: rope requires f32 inputs");
+        }
+        let dims = x_layout.shape().dims();
+        let rank = dims.len();
+        if rank < 2 {
+            fuel_core_types::bail!("VulkanBackend: rope requires rank >= 2, got {dims:?}");
+        }
+        let seq = dims[rank - 2] as u32;
+        let head_dim = dims[rank - 1] as u32;
+        if head_dim % 2 != 0 {
+            fuel_core_types::bail!("VulkanBackend: rope head_dim must be even, got {head_dim}");
+        }
+        let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
+        let half = head_dim / 2;
+        let total = outer * seq * half;
+
+        let out = self.alloc_device(x.byte_size(), x.elem_count, x.dtype)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RopeParams { outer: u32, seq: u32, head_dim: u32, total: u32 }
+        let p = RopeParams { outer, seq, head_dim, total };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x.buffer(), 0, x.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos.buffer(), 0, cos.byte_size());
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin.buffer(), 0, sin.byte_size());
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out.buffer(), 0, out.byte_size());
+        desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<RopeParams>() as u64);
+
+        let pipeline = &self.pipelines.rope_pipeline;
+        let pipe_layout = &self.pipelines.rope_layout;
+        let groups = ((total + 63) / 64).max(1);
+        self.record_dispatch(
+            "rope",
+            vec![(pbuf, pmem)],
+            Some(desc),
+            |cmd, desc| {
+                let desc = desc.expect("rope: descriptor set missing");
+                cmd.bind_compute_pipeline(pipeline);
+                cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[desc]);
+                cmd.dispatch(groups, 1, 1);
+                Ok(())
+            },
         )?;
         Ok(out)
     }
 
     fn index_select(
-        &self, _src: &Self::Storage, _ids: &Self::Storage,
-        _src_l: &Layout, _ids_l: &Layout, _dim: usize,
+        &self, src: &Self::Storage, ids: &Self::Storage,
+        src_l: &Layout, ids_l: &Layout, dim: usize,
     ) -> fuel_core_types::Result<Self::Storage> {
-        fuel_core_types::bail!("VulkanBackend: index_select not yet native")
+        if src.dtype != DType::F32 {
+            fuel_core_types::bail!(
+                "VulkanBackend: index_select requires f32 source, got {:?}", src.dtype
+            );
+        }
+        if ids.dtype != DType::U32 {
+            fuel_core_types::bail!(
+                "VulkanBackend: index_select requires u32 ids, got {:?}", ids.dtype
+            );
+        }
+        let src_dims = src_l.shape().dims();
+        let rank = src_dims.len();
+        if dim >= rank {
+            fuel_core_types::bail!(
+                "VulkanBackend: index_select dim {dim} out of range for rank {rank}"
+            );
+        }
+
+        let outer: usize = src_dims[..dim].iter().product::<usize>().max(1);
+        let axis_in = src_dims[dim];
+        let inner: usize = src_dims[dim + 1..].iter().product::<usize>().max(1);
+        let axis_out = ids_l.shape().elem_count();
+        let out_size = outer * axis_out * inner;
+        let out = self.alloc_device((out_size * 4) as u64, out_size, DType::F32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct IParams {
+            out_size: u32,
+            outer: u32,
+            axis_out: u32,
+            inner: u32,
+            axis_in: u32,
+            _pad0: u32, _pad1: u32, _pad2: u32,
+        }
+        let p = IParams {
+            out_size: out_size as u32,
+            outer: outer as u32,
+            axis_out: axis_out as u32,
+            inner: inner as u32,
+            axis_in: axis_in as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        // Bind src, ids, out, params. Layout is 3s1u, same as matmul.
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src.buffer(), 0, src.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, ids.buffer(), 0, ids.byte_size());
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out.buffer(), 0, out.byte_size());
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
+
+        let pipeline = &self.pipelines.index_select_pipeline;
+        let layout = &self.pipelines.index_select_layout;
+        let groups = Self::workgroups(out_size);
+        self.record_dispatch(
+            "index_select",
+            vec![(pbuf, pmem)],
+            Some(desc),
+            |cmd, desc| {
+                let desc = desc.expect("index_select: descriptor missing");
+                cmd.bind_compute_pipeline(pipeline);
+                cmd.bind_compute_descriptor_sets(layout, 0, &[desc]);
+                cmd.dispatch(groups, 1, 1);
+                Ok(())
+            },
+        )?;
+        Ok(out)
     }
 
     fn gather(
@@ -577,6 +1352,6 @@ fn vk_err(e: impl std::fmt::Debug) -> fuel_core_types::Error {
 }
 
 /// Reinterpret a #[repr(C)] struct as a byte slice for push constants.
-unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] {
+unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] { unsafe {
     std::slice::from_raw_parts(p as *const T as *const u8, std::mem::size_of::<T>())
-}
+}}

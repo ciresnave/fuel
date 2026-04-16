@@ -113,43 +113,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Prompt tokens: {}", prompt_tokens.len());
     eprintln!();
 
-    eprintln!("Generating on Vulkan...");
+    eprintln!("Generating on Vulkan (device-resident KV cache)...");
     eprintln!("---");
-    // Manual decode loop using the generic executor.
+    // Stream through the backend-agnostic generate_streaming_gpu_on.
+    // `KVCache<VulkanBackend>` keeps K/V on the GPU between decode
+    // steps — no D2H/H2D round-trip per token.
     print!("{prompt}");
     std::io::stdout().flush().ok();
-    let mut all_tokens = prompt_tokens.clone();
-    let mut printed_text = tokenizer.decode(&all_tokens, true)?;
-    let mut rng_state: u64 = 42;
+    let mut streamed = prompt_tokens.clone();
+    let mut printed_text = tokenizer.decode(&streamed, true)?;
     let t0 = Instant::now();
-    for _ in 0..max_new {
-        let logits_tensor = model.forward(&all_tokens, 0);
-        let last_pos = all_tokens.len() - 1;
-        let last_logits = logits_tensor
-            .slice(1, last_pos, 1)
-            .reshape(fuel::Shape::from_dims(&[model.config.vocab_size]));
-        let logits_vec = executor.realize_f32(&last_logits.into_graph_tensor()).into_vec();
-        let next = fuel::lazy::sample_logits(
-            &logits_vec,
-            SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
-            &mut rng_state,
-        );
-        all_tokens.push(next);
-        if let Ok(full) = tokenizer.decode(&all_tokens, true) {
-            if let Some(delta) = full.strip_prefix(&printed_text) {
-                print!("{delta}");
-                std::io::stdout().flush().ok();
+    let output_tokens = model.generate_streaming_gpu_on(
+        &prompt_tokens,
+        max_new,
+        SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+        tokenizer.eos_id(),
+        &mut executor,
+        |tok| {
+            streamed.push(tok);
+            if let Ok(full) = tokenizer.decode(&streamed, true) {
+                if let Some(delta) = full.strip_prefix(&printed_text) {
+                    print!("{delta}");
+                    std::io::stdout().flush().ok();
+                }
+                printed_text = full;
             }
-            printed_text = full;
-        }
-        if let Some(eos) = tokenizer.eos_id() {
-            if next == eos { break; }
-        }
-    }
+        },
+    )?;
     let elapsed = t0.elapsed();
     println!();
 
-    let new_tokens = all_tokens.len().saturating_sub(prompt_tokens.len());
+    let new_tokens = output_tokens.len().saturating_sub(prompt_tokens.len());
     eprintln!();
     eprintln!("---");
     eprintln!(
@@ -157,6 +151,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed,
         elapsed.as_secs_f64() / new_tokens.max(1) as f64,
     );
+
+    eprintln!();
+    eprintln!("Vulkan op stats (host-side submit time):");
+    for (name, s) in executor.backend.op_stats_snapshot() {
+        let avg_us = if s.count == 0 { 0 } else { (s.total_ns / s.count as u128) / 1000 };
+        eprintln!(
+            "  {name:20} count={:>7} total={:>7}ms avg={avg_us}us",
+            s.count,
+            s.total_ns / 1_000_000
+        );
+    }
 
     Ok(())
 }

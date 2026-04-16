@@ -1,0 +1,934 @@
+//! Training utilities: parameters, optimizers, and the training-step
+//! driver. All generic over `GraphBackend` — SGD and AdamW work on
+//! CPU, CUDA, Vulkan, and any future backend with zero code changes.
+//!
+//! ## Design
+//!
+//! Parameters live on-device as `B::Storage` between steps, exactly
+//! like the KV cache does for inference. Each training step:
+//!
+//! 1. User callback builds a fresh forward graph, referring to each
+//!    parameter by name.
+//! 2. `TrainState` injects each parameter's current device storage
+//!    via `executor.pre_populate` (same mechanism the KV cache uses).
+//! 3. The step driver calls `loss.backward()` to extend the graph
+//!    with backward nodes, fetches `grad` per parameter via the
+//!    returned `GradMap`, and appends update ops (`w_new = w - lr·g`
+//!    for SGD; AdamW stacks moment-update and bias-correction ops
+//!    on top).
+//! 4. `realize_split` keeps the new parameter storage on-device;
+//!    only the loss scalar is downloaded to host.
+//! 5. `TrainState` stores the new storage, ready for the next step.
+//!
+//! No D2H/H2D per parameter per step. No new backend trait methods
+//! — everything is expressed as existing primitives the backend
+//! already supports.
+//!
+//! ## Not yet covered
+//!
+//! - In-place update primitive: today each step allocates a fresh
+//!   buffer for each updated parameter. For TinyLlama-scale that's
+//!   fine; for 70B-class training it's wasteful. Addressed later by
+//!   a trait-level `add_in_place` method.
+//! - Gradient accumulation across micro-batches.
+//! - Mixed-precision (bf16 forward / fp32 master weights).
+//! - Gradient clipping.
+//! - LR schedulers.
+//!
+//! Each of those is a small addition once the base loop works.
+
+use crate::lazy::LazyTensor;
+use fuel_core_types::{DType, HostBuffer, Result, Shape};
+use fuel_graph::{NodeId, SharedGraph, Tensor as GraphTensor};
+use fuel_graph_executor::{GraphBackend, GraphExecutor};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// A single trainable parameter. Owns its shape and initial values;
+/// actual device storage lives in `TrainState` after the first step.
+#[derive(Clone)]
+pub struct Parameter {
+    pub name: String,
+    pub shape: Shape,
+    pub dtype: DType,
+    /// Initial values, uploaded on `TrainState::new`. After that,
+    /// parameter values live exclusively on-device in `TrainState`.
+    pub initial_data: Arc<[f32]>,
+}
+
+impl Parameter {
+    pub fn new_f32(name: impl Into<String>, shape: impl Into<Shape>, data: impl Into<Arc<[f32]>>) -> Self {
+        let shape = shape.into();
+        let data = data.into();
+        assert_eq!(
+            data.len(),
+            shape.elem_count(),
+            "Parameter::new_f32: data length must match shape elem_count",
+        );
+        Self {
+            name: name.into(),
+            shape,
+            dtype: DType::F32,
+            initial_data: data,
+        }
+    }
+}
+
+/// Optimizer configuration. Add new variants here, then match them
+/// in `TrainState::append_update_ops`.
+#[derive(Debug, Clone, Copy)]
+pub enum OptimizerConfig {
+    /// Plain stochastic gradient descent: `w ← w − lr·g`.
+    Sgd { lr: f32 },
+    /// AdamW: `m ← β₁·m + (1−β₁)·g`, `v ← β₂·v + (1−β₂)·g²`,
+    /// `m̂ = m/(1−β₁ᵗ)`, `v̂ = v/(1−β₂ᵗ)`,
+    /// `w ← w − lr·(m̂/(√v̂ + ε) + weight_decay·w)`.
+    AdamW {
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    },
+}
+
+impl OptimizerConfig {
+    pub fn sgd(lr: f32) -> Self { Self::Sgd { lr } }
+
+    pub fn adam_w(lr: f32) -> Self {
+        Self::AdamW {
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.01,
+        }
+    }
+
+    /// Return the learning rate stored in this config.
+    pub fn lr(&self) -> f32 {
+        match *self {
+            Self::Sgd { lr } => lr,
+            Self::AdamW { lr, .. } => lr,
+        }
+    }
+
+    /// Return a copy of `self` with `lr` replaced.
+    pub fn with_lr(&self, new_lr: f32) -> Self {
+        match *self {
+            Self::Sgd { .. } => Self::Sgd { lr: new_lr },
+            Self::AdamW { beta1, beta2, eps, weight_decay, .. } => Self::AdamW {
+                lr: new_lr, beta1, beta2, eps, weight_decay,
+            },
+        }
+    }
+}
+
+/// Learning-rate schedule. Any closure-like thing can be one, but
+/// the provided impls cover the common cases: constant, linear
+/// warmup then cosine decay, and linear warmup then linear decay.
+pub trait LrSchedule {
+    /// LR to use for the step index `step` (0-indexed).
+    fn lr_at(&self, step: u64) -> f32;
+}
+
+/// Constant LR — the default. Identical to passing a fixed LR to
+/// the optimizer config.
+pub struct ConstLr(pub f32);
+impl LrSchedule for ConstLr {
+    fn lr_at(&self, _step: u64) -> f32 { self.0 }
+}
+
+/// Linear warmup for `warmup` steps (LR ramps 0 → `peak`), then
+/// cosine decay from `peak` to `final_lr` over the remaining
+/// `total - warmup` steps.
+pub struct WarmupCosine {
+    pub warmup: u64,
+    pub total: u64,
+    pub peak: f32,
+    pub final_lr: f32,
+}
+impl LrSchedule for WarmupCosine {
+    fn lr_at(&self, step: u64) -> f32 {
+        if step < self.warmup {
+            // Linear ramp 0 → peak across warmup steps.
+            if self.warmup == 0 { return self.peak; }
+            self.peak * (step as f32 / self.warmup as f32)
+        } else if step >= self.total {
+            self.final_lr
+        } else {
+            let progress = (step - self.warmup) as f32
+                / (self.total - self.warmup).max(1) as f32;
+            // Cosine from peak to final_lr.
+            let cos_scale = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
+            self.final_lr + (self.peak - self.final_lr) * cos_scale
+        }
+    }
+}
+
+/// Linear warmup then linear decay. Simpler than cosine but often
+/// close in practice; and cheaper to eyeball in a log.
+pub struct WarmupLinear {
+    pub warmup: u64,
+    pub total: u64,
+    pub peak: f32,
+    pub final_lr: f32,
+}
+impl LrSchedule for WarmupLinear {
+    fn lr_at(&self, step: u64) -> f32 {
+        if step < self.warmup {
+            if self.warmup == 0 { return self.peak; }
+            self.peak * (step as f32 / self.warmup as f32)
+        } else if step >= self.total {
+            self.final_lr
+        } else {
+            let progress = (step - self.warmup) as f32
+                / (self.total - self.warmup).max(1) as f32;
+            self.peak + (self.final_lr - self.peak) * progress
+        }
+    }
+}
+
+/// Per-parameter optimizer state that lives on-device between steps.
+/// SGD needs nothing; AdamW needs first and second moments.
+pub(crate) enum OptState<B: GraphBackend> {
+    Sgd,
+    AdamW {
+        m: B::Storage,
+        v: B::Storage,
+    },
+}
+
+/// Gradient clipping strategy applied per step before the optimizer
+/// update runs. Currently a single knob: `GlobalNorm(max_norm)`
+/// — the canonical LLM-training clip. More strategies (per-param
+/// norm, by-value clipping) can land here later.
+#[derive(Debug, Clone, Copy)]
+pub enum GradClip {
+    /// Clip the concatenated-all-gradients L2 norm to at most `max_norm`.
+    /// If `‖grad‖₂ ≤ max_norm`, gradients are untouched; otherwise
+    /// every gradient is scaled by `max_norm / ‖grad‖₂`.
+    GlobalNorm(f32),
+}
+
+/// Training state: all parameters and optimizer state that must
+/// persist across steps. Generic over backend.
+pub struct TrainState<B: GraphBackend> {
+    params: HashMap<String, (B::Storage, Shape)>,
+    opt_state: HashMap<String, OptState<B>>,
+    param_order: Vec<String>,
+    config: OptimizerConfig,
+    step_count: u64,
+    grad_clip: Option<GradClip>,
+}
+
+impl<B: GraphBackend> TrainState<B> {
+    /// Upload all parameters to the device and initialize optimizer
+    /// state. Call once at the start of training.
+    pub fn new(
+        parameters: &[Parameter],
+        executor: &mut GraphExecutor<B>,
+        config: OptimizerConfig,
+    ) -> Result<Self> {
+        let mut params = HashMap::new();
+        let mut opt_state = HashMap::new();
+        let mut param_order = Vec::with_capacity(parameters.len());
+
+        for p in parameters {
+            let buf = HostBuffer::F32(p.initial_data.to_vec());
+            let storage = executor.backend.upload(&buf, &p.shape)?;
+            params.insert(p.name.clone(), (storage, p.shape.clone()));
+            param_order.push(p.name.clone());
+
+            let st = match config {
+                OptimizerConfig::Sgd { .. } => OptState::Sgd,
+                OptimizerConfig::AdamW { .. } => {
+                    // m and v start at zero, same shape and dtype as the param.
+                    let m = executor.backend.alloc_zeros(&p.shape, p.dtype)?;
+                    let v = executor.backend.alloc_zeros(&p.shape, p.dtype)?;
+                    OptState::AdamW { m, v }
+                }
+            };
+            opt_state.insert(p.name.clone(), st);
+        }
+
+        Ok(Self {
+            params,
+            opt_state,
+            param_order,
+            config,
+            step_count: 0,
+            grad_clip: None,
+        })
+    }
+
+    /// Enable gradient clipping. Applied per step before the
+    /// optimizer update. Pass `None` to disable.
+    pub fn with_grad_clip(mut self, clip: Option<GradClip>) -> Self {
+        self.grad_clip = clip;
+        self
+    }
+
+    pub fn set_grad_clip(&mut self, clip: Option<GradClip>) {
+        self.grad_clip = clip;
+    }
+
+    pub fn step_count(&self) -> u64 { self.step_count }
+
+    /// Replace the current learning rate on the optimizer config.
+    /// Takes effect on the next `step`. Useful for manual LR control
+    /// or when driving via an external scheduler callback.
+    pub fn set_lr(&mut self, lr: f32) {
+        self.config = self.config.with_lr(lr);
+    }
+
+    /// Convenience: pull the next LR from `schedule` using the
+    /// current step counter, set it, and invoke `step`. Equivalent
+    /// to `state.set_lr(schedule.lr_at(state.step_count())); state.step(...)`.
+    pub fn step_with_schedule<S, F>(
+        &mut self,
+        schedule: &S,
+        executor: &mut GraphExecutor<B>,
+        build_loss: F,
+    ) -> Result<f32>
+    where
+        S: LrSchedule,
+        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> LazyTensor,
+    {
+        self.set_lr(schedule.lr_at(self.step_count));
+        self.step(executor, build_loss)
+    }
+
+    /// Read-only snapshot of the current optimizer config.
+    pub fn optimizer_config(&self) -> OptimizerConfig { self.config }
+
+    /// Download a parameter's current value to host. For checkpoint /
+    /// inspection; not a hot-path operation.
+    pub fn param_to_host(&self, name: &str, executor: &GraphExecutor<B>) -> Result<Vec<f32>> {
+        let (storage, _shape) = self.params.get(name)
+            .ok_or_else(|| fuel_core_types::Error::Msg(
+                format!("unknown parameter '{name}'")))?;
+        let buf = executor.backend.download(storage)?;
+        match buf {
+            HostBuffer::F32(v) => Ok(v),
+            other => Err(fuel_core_types::Error::Msg(
+                format!("param_to_host: expected F32, got {:?}", other.dtype()))),
+        }
+    }
+
+    /// Run one training step.
+    ///
+    /// `build_loss` receives a graph handle and a map of parameter
+    /// LazyTensor leaves (one per parameter, placeholder Const nodes
+    /// that the step driver injects real device storage for). It
+    /// must return a scalar loss tensor.
+    ///
+    /// Returns the loss value (a single f32).
+    pub fn step<F>(
+        &mut self,
+        executor: &mut GraphExecutor<B>,
+        build_loss: F,
+    ) -> Result<f32>
+    where
+        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> LazyTensor,
+    {
+        // 1. Build parameter placeholder tensors in a fresh graph.
+        //    Use a "seed" LazyTensor to get a fresh SharedGraph.
+        let seed = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]));
+        let graph = seed.graph_tensor().graph().clone();
+
+        let mut param_tensors: HashMap<String, LazyTensor> = HashMap::new();
+        let mut param_node_ids: HashMap<String, NodeId> = HashMap::new();
+        for name in &self.param_order {
+            let (_storage, shape) = &self.params[name];
+            // Zero-filled placeholder Const; pre_populate overrides at realize.
+            let zeros: Arc<[f32]> = vec![0.0_f32; shape.elem_count()].into();
+            let t = seed.const_f32_like(zeros, shape.clone());
+            param_node_ids.insert(name.clone(), t.graph_tensor().id());
+            param_tensors.insert(name.clone(), t);
+        }
+
+        // 2. User builds the loss graph referring to parameters by name.
+        let loss = build_loss(&graph, &param_tensors);
+
+        // 3. Backward to get gradient nodes per parameter.
+        let grad_map = loss.graph_tensor().backward();
+
+        // 3a. Collect raw gradients.
+        let mut raw_grads: HashMap<String, LazyTensor> = HashMap::new();
+        for name in &self.param_order {
+            let param = &param_tensors[name];
+            let grad = grad_map.get(param.graph_tensor())
+                .ok_or_else(|| fuel_core_types::Error::Msg(
+                    format!("parameter '{name}' did not appear in loss graph")))?;
+            raw_grads.insert(name.clone(), LazyTensor::from_graph_tensor(grad));
+        }
+
+        // 3b. If clipping is enabled, compute the global-norm scale
+        //     factor as a scalar graph node and use it to scale every
+        //     gradient before the update.
+        //
+        //   scale = clamp(max_norm / norm, 0, 1)
+        //
+        // Scaling is a no-op when norm ≤ max_norm (scale=1) and
+        // active otherwise; no branch in the graph, just one scalar
+        // `clamp` — which works identically on every backend.
+        let clip_scale: Option<LazyTensor> = match self.grad_clip {
+            None => None,
+            Some(GradClip::GlobalNorm(max_norm)) => {
+                let mut total_sq: Option<LazyTensor> = None;
+                for name in &self.param_order {
+                    let g = &raw_grads[name];
+                    let g_sq_sum = g.sqr().sum_all();
+                    total_sq = Some(match total_sq {
+                        None => g_sq_sum,
+                        Some(acc) => acc.add(&g_sq_sum),
+                    });
+                }
+                let total_sq = total_sq.expect("clip: no gradients");
+                let norm = total_sq.sqrt();
+                // `max_norm / norm` is a rank-0 scalar. Protect
+                // against norm=0 by adding a tiny epsilon.
+                let norm_safe = norm.add_scalar(1e-12);
+                let ratio = norm_safe.mul_scalar(1.0 / max_norm as f64);
+                // ratio = norm/max_norm. We want scale = min(1, 1/ratio).
+                // Equivalently: scale = clamp(1/ratio, 0, 1).
+                let inv_ratio = ratio.const_f32_like(vec![1.0f32], Shape::from_dims(&[]))
+                    .div(&ratio);
+                let scale = inv_ratio.clamp(0.0, 1.0);
+                Some(scale)
+            }
+        };
+
+        // 4. Build update ops per parameter.
+        //    Returns the new_param LazyTensor plus any new opt-state
+        //    LazyTensors (Adam's new m and v).
+        let mut new_param_tensors: Vec<LazyTensor> = Vec::with_capacity(self.param_order.len());
+        let mut new_opt_tensors: Vec<(String, LazyTensor, LazyTensor)> = Vec::new();
+
+        for name in &self.param_order {
+            let param = &param_tensors[name];
+            let raw_grad = &raw_grads[name];
+            let grad_lt = match &clip_scale {
+                None => raw_grad.clone(),
+                Some(scale) => {
+                    // Broadcast the rank-0 scalar to grad's shape and multiply.
+                    let grad_shape = raw_grad.graph_tensor().shape();
+                    let scale_bcast = scale.broadcast_to(grad_shape);
+                    raw_grad.mul(&scale_bcast)
+                }
+            };
+
+            match self.config {
+                OptimizerConfig::Sgd { lr } => {
+                    // new = param - lr * grad
+                    let scaled = grad_lt.mul_scalar(lr as f64);
+                    let new_param = param.sub(&scaled);
+                    new_param_tensors.push(new_param);
+                }
+                OptimizerConfig::AdamW { lr, beta1, beta2, eps, weight_decay } => {
+                    // Build placeholders for m and v (injected via pre_populate).
+                    let zeros: Arc<[f32]> = vec![0.0_f32; param.graph_tensor().shape().elem_count()].into();
+                    let m_placeholder = seed.const_f32_like(zeros.clone(), param.graph_tensor().shape());
+                    let v_placeholder = seed.const_f32_like(zeros, param.graph_tensor().shape());
+                    // new_m = β1·m + (1-β1)·g
+                    let m_decayed = m_placeholder.mul_scalar(beta1 as f64);
+                    let g_part = grad_lt.mul_scalar((1.0 - beta1) as f64);
+                    let new_m = m_decayed.add(&g_part);
+                    // new_v = β2·v + (1-β2)·g²
+                    let v_decayed = v_placeholder.mul_scalar(beta2 as f64);
+                    let g_sq = grad_lt.sqr();
+                    let g_sq_part = g_sq.mul_scalar((1.0 - beta2) as f64);
+                    let new_v = v_decayed.add(&g_sq_part);
+                    // Bias correction using step+1 (this is the step we're ABOUT to complete).
+                    let t = (self.step_count + 1) as f64;
+                    let bc1 = 1.0 - (beta1 as f64).powf(t);
+                    let bc2 = 1.0 - (beta2 as f64).powf(t);
+                    let m_hat = new_m.mul_scalar(1.0 / bc1);
+                    let v_hat = new_v.mul_scalar(1.0 / bc2);
+                    // update = m_hat / (sqrt(v_hat) + eps)
+                    let denom = v_hat.sqrt().add_scalar(eps as f64);
+                    let update = m_hat.div(&denom);
+                    // Apply weight decay and lr.
+                    let wd_term = param.mul_scalar(weight_decay as f64);
+                    let step_total = update.add(&wd_term).mul_scalar(lr as f64);
+                    let new_param = param.sub(&step_total);
+                    new_param_tensors.push(new_param);
+                    new_opt_tensors.push((name.clone(), new_m, new_v));
+
+                    // Also record the m/v placeholder NodeIds for pre_populate.
+                    param_node_ids.insert(format!("{name}::m"), m_placeholder.graph_tensor().id());
+                    param_node_ids.insert(format!("{name}::v"), v_placeholder.graph_tensor().id());
+                }
+            }
+        }
+
+        // 5. Inject current parameter and opt-state storage for placeholder nodes.
+        for name in &self.param_order {
+            let (storage, shape) = &self.params[name];
+            let layout = fuel_core_types::Layout::contiguous(shape);
+            let cloned = executor.backend.try_clone(storage, &layout)?;
+            executor.pre_populate(param_node_ids[name], cloned, shape.clone());
+
+            if let OptState::AdamW { m, v } = &self.opt_state[name] {
+                let m_clone = executor.backend.try_clone(m, &layout)?;
+                let v_clone = executor.backend.try_clone(v, &layout)?;
+                executor.pre_populate(param_node_ids[&format!("{name}::m")], m_clone, shape.clone());
+                executor.pre_populate(param_node_ids[&format!("{name}::v")], v_clone, shape.clone());
+            }
+        }
+
+        // 6. Build realize root list: [loss, new_params..., (new_m, new_v)...]
+        let mut roots: Vec<&LazyTensor> = Vec::new();
+        roots.push(&loss);
+        for np in &new_param_tensors { roots.push(np); }
+        for (_, nm, nv) in &new_opt_tensors {
+            roots.push(nm);
+            roots.push(nv);
+        }
+
+        // 7. Realize: loss → CPU, everything else stays on device.
+        let inner: Vec<&GraphTensor> = roots.iter().map(|lt| lt.graph_tensor()).collect();
+        let (cpu_results, gpu_results) = executor.realize_split(&inner, 1);
+        let loss_vec = cpu_results.into_iter().next().unwrap();
+        let loss_scalar = if loss_vec.len() == 1 {
+            loss_vec[0]
+        } else {
+            // loss wasn't rank-0; sum it as a scalar for returning.
+            // (Users usually build a scalar loss anyway.)
+            loss_vec.iter().sum()
+        };
+
+        // 8. Move new storage back into TrainState.
+        let mut iter = gpu_results.into_iter();
+        for name in &self.param_order {
+            let (new_storage, new_shape) = iter.next().unwrap();
+            self.params.insert(name.clone(), (new_storage, new_shape));
+        }
+        for (name, _, _) in &new_opt_tensors {
+            let (new_m, _) = iter.next().unwrap();
+            let (new_v, _) = iter.next().unwrap();
+            self.opt_state.insert(name.clone(), OptState::AdamW { m: new_m, v: new_v });
+        }
+
+        self.step_count += 1;
+        Ok(loss_scalar)
+    }
+}
+
+/// Reusable loss functions. All pure LazyTensor graph constructors —
+/// every backend runs them via the primitives it already supports.
+pub mod loss {
+    use crate::lazy::LazyTensor;
+    use fuel_core_types::Shape;
+
+    /// Mean-squared-error loss: `mean((pred - target)²)`. Returns a
+    /// scalar tensor. Works on any numeric shape — the mean is
+    /// over all elements.
+    pub fn mse(pred: &LazyTensor, target: &LazyTensor) -> LazyTensor {
+        let n = pred.graph_tensor().shape().elem_count();
+        let diff = pred.sub(target);
+        let sq = diff.sqr();
+        sq.sum_all().mul_scalar(1.0 / n as f64)
+    }
+
+    /// Cross-entropy loss with integer class targets and raw logits.
+    ///
+    /// `logits` shape: `[..., C]` where C is the number of classes.
+    /// `targets` is currently built into the graph as a one-hot tensor
+    /// the caller supplies via `target_one_hot` — integer-target
+    /// gather-based cross-entropy requires `index_select` and backward
+    /// through it, which is supported but rebuilds the softmax output
+    /// in backward (slow). The one-hot variant is the common LLM
+    /// training pattern: targets are pre-encoded to [..., C] floats
+    /// with 1.0 at the correct class and 0.0 elsewhere.
+    ///
+    /// Formula: `-mean(sum(target · log_softmax(logits), last))` where
+    /// `log_softmax(x)_i = x_i - logsumexp(x)`.
+    ///
+    /// Stable computation: `logsumexp(x) = max + log(sum(exp(x-max)))`.
+    /// This avoids `exp(x)` overflow for large logits.
+    pub fn cross_entropy_with_logits(
+        logits: &LazyTensor,
+        target_one_hot: &LazyTensor,
+    ) -> LazyTensor {
+        let dims = logits.graph_tensor().shape().dims().to_vec();
+        let rank = dims.len();
+        assert!(rank >= 1, "cross_entropy_with_logits: logits must have rank >= 1");
+        let n_outer: usize = dims[..rank - 1].iter().product::<usize>().max(1);
+
+        // Stable log-softmax along last dim:
+        //   max_r = max(logits, last)             shape [..., 1]
+        //   shifted = logits - max_r              shape [..., C]
+        //   log_sum = log(sum_dim(exp(shifted), last))  shape [..., 1]
+        //   log_softmax = shifted - log_sum       shape [..., C]
+        let max_r = logits.max_dim(rank - 1);
+        let mut keepdim = dims.clone();
+        keepdim[rank - 1] = 1;
+        let max_kd = max_r.reshape(Shape::from_dims(&keepdim));
+        let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims));
+        let shifted = logits.sub(&max_bcast);
+        let expd = shifted.exp();
+        let sum_exp = expd.sum_dim(rank - 1);
+        let log_sum = sum_exp.log();
+        let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim));
+        let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims));
+        let log_softmax = shifted.sub(&log_sum_bcast);
+
+        // -sum(target * log_softmax, last-dim) summed over batch, then mean.
+        let per_elem = target_one_hot.mul(&log_softmax);
+        // Loss per-sample = -sum over class dim. Then mean over the
+        // outer (batch) dims for a scalar loss.
+        let neg_per_sample = per_elem.sum_dim(rank - 1).mul_scalar(-1.0);
+        let total = neg_per_sample.sum_all();
+        total.mul_scalar(1.0 / n_outer as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fuel_graph_cpu::CpuBackend;
+
+    /// Linear regression: fit y = 2x + 3 given noisy samples.
+    /// Trains a single-layer `y_hat = w·x + b` with SGD and checks
+    /// w, b converge to ~2, ~3.
+    #[test]
+    fn sgd_fits_linear_regression() {
+        // Training data: y = 2x + 3 at x = 0..10.
+        let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
+
+        let mut exe = GraphExecutor::new(CpuBackend);
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
+        ];
+        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.01)).unwrap();
+
+        let n_steps = 2000;
+        let x_arc: Arc<[f32]> = xs.clone().into();
+        let y_arc: Arc<[f32]> = ys.clone().into();
+        for step in 0..n_steps {
+            let x_arc_step = x_arc.clone();
+            let y_arc_step = y_arc.clone();
+            let len = xs.len();
+            let loss = state.step(&mut exe, move |_graph, params| {
+                let w = &params["w"];
+                let b = &params["b"];
+                // Build inputs on the SAME graph the parameters live in
+                // by using `const_f32_like` off an existing param.
+                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len]));
+                let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                let y_hat = x.mul(&w_b).add(&b_b);
+                let diff = y_hat.sub(&y);
+                let sq = diff.sqr();
+                sq.sum_all().mul_scalar(1.0 / len as f64)
+            }).unwrap();
+            if step % 500 == 0 {
+                eprintln!("step {step}: loss = {loss}");
+            }
+        }
+        let w_final = state.param_to_host("w", &exe).unwrap()[0];
+        let b_final = state.param_to_host("b", &exe).unwrap()[0];
+        eprintln!("final: w = {w_final}, b = {b_final}");
+        assert!((w_final - 2.0).abs() < 0.05, "w converged to {w_final}, expected ~2.0");
+        assert!((b_final - 3.0).abs() < 0.3, "b converged to {b_final}, expected ~3.0");
+    }
+
+    /// AdamW fits the same regression. AdamW has per-param state
+    /// (first / second moments) that live on-device between steps
+    /// via the same `pre_populate` mechanism, so this test proves
+    /// the multi-tensor state round-trip works.
+    #[test]
+    fn adamw_fits_linear_regression() {
+        let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
+        let mut exe = GraphExecutor::new(CpuBackend);
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
+        ];
+        // Weight decay 0 for this tiny problem so it converges cleanly.
+        let cfg = OptimizerConfig::AdamW {
+            lr: 0.1, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0,
+        };
+        let mut state = TrainState::new(&params, &mut exe, cfg).unwrap();
+        let x_arc: Arc<[f32]> = xs.clone().into();
+        let y_arc: Arc<[f32]> = ys.clone().into();
+        let mut final_loss = 0.0;
+        for step in 0..500 {
+            let x_arc_step = x_arc.clone();
+            let y_arc_step = y_arc.clone();
+            let len = xs.len();
+            let loss = state.step(&mut exe, move |_graph, params| {
+                let w = &params["w"];
+                let b = &params["b"];
+                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len]));
+                let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                let y_hat = x.mul(&w_b).add(&b_b);
+                let diff = y_hat.sub(&y);
+                diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
+            }).unwrap();
+            final_loss = loss;
+            if step % 100 == 0 {
+                eprintln!("adamw step {step}: loss = {loss}");
+            }
+        }
+        let w_final = state.param_to_host("w", &exe).unwrap()[0];
+        let b_final = state.param_to_host("b", &exe).unwrap()[0];
+        eprintln!("adamw final: w = {w_final}, b = {b_final}, loss = {final_loss}");
+        // AdamW converges faster than SGD for this problem — after 500
+        // steps we expect both params well within 5% of target.
+        assert!((w_final - 2.0).abs() < 0.1);
+        assert!((b_final - 3.0).abs() < 0.5);
+        assert!(final_loss < 0.1);
+    }
+
+    /// Train a 2-class classifier with cross-entropy loss. Fit a
+    /// linear layer `logits = x @ W + b` to separate two Gaussians.
+    /// Exercises the full CE-with-logits path including backward.
+    #[test]
+    fn sgd_fits_2class_classifier_cross_entropy() {
+        // Synthetic data: 20 samples, 2 features, 2 classes.
+        // Class 0: samples near (-1, -1). Class 1: samples near (+1, +1).
+        let n = 20;
+        let n_feat = 2;
+        let n_class = 2;
+        let mut xs: Vec<f32> = Vec::with_capacity(n * n_feat);
+        let mut ys_onehot: Vec<f32> = vec![0.0; n * n_class];
+        for i in 0..n {
+            let cls = i % 2;
+            // Deterministic "noise" with a small sinusoid.
+            let jitter = ((i as f32) * 0.37).sin() * 0.1;
+            let sign = if cls == 0 { -1.0 } else { 1.0 };
+            xs.push(sign + jitter);
+            xs.push(sign - jitter);
+            ys_onehot[i * n_class + cls] = 1.0;
+        }
+
+        let mut exe = GraphExecutor::new(CpuBackend);
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[n_feat, n_class]),
+                vec![0.01f32, -0.01, 0.02, -0.02]),
+            Parameter::new_f32("b", Shape::from_dims(&[n_class]),
+                vec![0.0f32, 0.0]),
+        ];
+        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.1)).unwrap();
+
+        let x_arc: Arc<[f32]> = xs.into();
+        let y_arc: Arc<[f32]> = ys_onehot.into();
+        let mut final_loss = 0.0;
+        for step in 0..500 {
+            let x_arc_step = x_arc.clone();
+            let y_arc_step = y_arc.clone();
+            let loss = state.step(&mut exe, move |_graph, params| {
+                let w = &params["w"];
+                let b = &params["b"];
+                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, n_feat]));
+                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, n_class]));
+                // logits = x @ W + b_broadcast
+                let logits_raw = x.matmul(w);
+                let b_b = b.reshape(Shape::from_dims(&[1, n_class]))
+                    .broadcast_to(Shape::from_dims(&[n, n_class]));
+                let logits = logits_raw.add(&b_b);
+                super::loss::cross_entropy_with_logits(&logits, &y)
+            }).unwrap();
+            final_loss = loss;
+            if step % 100 == 0 {
+                eprintln!("ce step {step}: loss = {loss}");
+            }
+        }
+        eprintln!("ce final loss = {final_loss}");
+        // For this well-separated 2-class problem, cross-entropy should
+        // drop well below ln(2) ≈ 0.693 (random baseline) to near zero.
+        assert!(final_loss < 0.1, "CE didn't converge: final loss = {final_loss}");
+    }
+
+    /// Sanity-check that the RmsNormLastDim backward path (synthesized
+    /// via primitives) produces useful gradients. Train a tiny model
+    /// that pipes x through RMSNorm then a linear layer, and check
+    /// that loss decreases. If the backward were broken we'd get
+    /// NaNs or stagnant loss.
+    #[test]
+    fn sgd_trains_through_rms_norm() {
+        let n = 16;
+        let d = 4;
+        let xs: Vec<f32> = (0..n * d).map(|i| ((i as f32) * 0.37).sin()).collect();
+        // Regress to y = sum(x) — something RMSNorm can't encode directly
+        // (because it normalizes away magnitude), so the linear layer
+        // has to learn a bias. Verifies gradients propagate through
+        // the fused op.
+        let ys: Vec<f32> = (0..n)
+            .map(|row| {
+                let s: f32 = (0..d).map(|c| xs[row * d + c]).sum();
+                s
+            })
+            .collect();
+
+        let mut exe = GraphExecutor::new(CpuBackend);
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[d, 1]), vec![0.1f32; d]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.0f32]),
+        ];
+        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.05)).unwrap();
+        let x_arc: Arc<[f32]> = xs.into();
+        let y_arc: Arc<[f32]> = ys.into();
+        let mut initial_loss = 0.0;
+        let mut final_loss = 0.0;
+        for step in 0..300 {
+            let x_arc_step = x_arc.clone();
+            let y_arc_step = y_arc.clone();
+            let loss = state.step(&mut exe, move |_graph, params| {
+                let w = &params["w"];
+                let b = &params["b"];
+                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, d]));
+                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, 1]));
+                let x_norm = x.rms_norm_last_dim(1e-6);
+                let logits = x_norm.matmul(w);
+                let b_b = b.reshape(Shape::from_dims(&[1, 1]))
+                    .broadcast_to(Shape::from_dims(&[n, 1]));
+                let pred = logits.add(&b_b);
+                super::loss::mse(&pred, &y)
+            }).unwrap();
+            if step == 0 { initial_loss = loss; }
+            final_loss = loss;
+        }
+        eprintln!("rms_norm training: initial={initial_loss} final={final_loss}");
+        assert!(final_loss < initial_loss * 0.5,
+            "loss didn't decrease enough: {initial_loss} -> {final_loss}");
+        assert!(final_loss.is_finite(), "got non-finite loss: {final_loss}");
+    }
+
+    #[test]
+    fn warmup_cosine_schedule_curve() {
+        let sch = super::WarmupCosine { warmup: 10, total: 100, peak: 1.0, final_lr: 0.1 };
+        assert_eq!(sch.lr_at(0), 0.0);                      // start of warmup
+        assert!((sch.lr_at(5) - 0.5).abs() < 1e-6);         // mid warmup
+        assert!((sch.lr_at(10) - 1.0).abs() < 1e-6);        // peak
+        assert!((sch.lr_at(100) - 0.1).abs() < 1e-6);       // end
+        // Monotonic decay after warmup.
+        let a = sch.lr_at(20);
+        let b = sch.lr_at(40);
+        let c = sch.lr_at(60);
+        assert!(a > b && b > c, "cosine decay not monotonic: {a} -> {b} -> {c}");
+    }
+
+    #[test]
+    fn warmup_linear_schedule_curve() {
+        let sch = super::WarmupLinear { warmup: 10, total: 30, peak: 1.0, final_lr: 0.2 };
+        assert_eq!(sch.lr_at(0), 0.0);
+        assert!((sch.lr_at(10) - 1.0).abs() < 1e-6);
+        // Halfway through decay: (10+30)/2 = 20 → lr = 0.5*(1.0+0.2) = 0.6
+        assert!((sch.lr_at(20) - 0.6).abs() < 1e-6);
+        assert_eq!(sch.lr_at(30), 0.2);
+    }
+
+    /// With an absurdly high learning rate on a high-magnitude loss
+    /// landscape, an unclipped SGD run diverges (produces non-finite
+    /// parameters). Clipping the global gradient norm to 1.0 keeps
+    /// the step bounded and training remains finite. This also
+    /// verifies the clip scale graph is structurally correct — if
+    /// the scalar division or broadcasting were broken we'd diverge
+    /// or get wrong values.
+    #[test]
+    fn grad_clip_prevents_divergence() {
+        let xs: Vec<f32> = (0..10).map(|i| i as f32 * 100.0).collect();  // huge inputs
+        let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
+        ];
+        let x_arc: Arc<[f32]> = xs.clone().into();
+        let y_arc: Arc<[f32]> = ys.clone().into();
+        let len = xs.len();
+
+        // Unclipped: this LR is wild given the input magnitude →
+        // expect divergence (non-finite weights).
+        {
+            let mut exe = GraphExecutor::new(CpuBackend);
+            let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.1)).unwrap();
+            for _ in 0..10 {
+                let x_arc_step = x_arc.clone();
+                let y_arc_step = y_arc.clone();
+                let _ = state.step(&mut exe, move |_g, p| {
+                    let w = &p["w"]; let b = &p["b"];
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len]));
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                    let y_hat = x.mul(&w_b).add(&b_b);
+                    y_hat.sub(&y).sqr().sum_all().mul_scalar(1.0 / len as f64)
+                }).unwrap();
+            }
+            let w = state.param_to_host("w", &exe).unwrap()[0];
+            assert!(!w.is_finite(), "expected divergence without clipping, got w={w}");
+        }
+
+        // Clipped: global-norm clip at 1.0 keeps every step bounded.
+        {
+            let mut exe = GraphExecutor::new(CpuBackend);
+            let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.1))
+                .unwrap()
+                .with_grad_clip(Some(GradClip::GlobalNorm(1.0)));
+            for _ in 0..200 {
+                let x_arc_step = x_arc.clone();
+                let y_arc_step = y_arc.clone();
+                let _ = state.step(&mut exe, move |_g, p| {
+                    let w = &p["w"]; let b = &p["b"];
+                    let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                    let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len]));
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                    let y_hat = x.mul(&w_b).add(&b_b);
+                    y_hat.sub(&y).sqr().sum_all().mul_scalar(1.0 / len as f64)
+                }).unwrap();
+            }
+            let w = state.param_to_host("w", &exe).unwrap()[0];
+            let b = state.param_to_host("b", &exe).unwrap()[0];
+            assert!(w.is_finite() && b.is_finite(),
+                "clipped training should stay finite, got w={w} b={b}");
+        }
+    }
+
+    #[test]
+    fn sgd_with_warmup_cosine_converges() {
+        let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
+        let mut exe = GraphExecutor::new(CpuBackend);
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
+        ];
+        // Start at 0 LR (pure warmup) and use the schedule to ramp up.
+        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.0)).unwrap();
+        let sch = super::WarmupCosine { warmup: 100, total: 2000, peak: 0.01, final_lr: 0.001 };
+
+        let x_arc: Arc<[f32]> = xs.clone().into();
+        let y_arc: Arc<[f32]> = ys.clone().into();
+        for _ in 0..2000 {
+            let x_arc_step = x_arc.clone();
+            let y_arc_step = y_arc.clone();
+            let len = xs.len();
+            state.step_with_schedule(&sch, &mut exe, move |_graph, params| {
+                let w = &params["w"];
+                let b = &params["b"];
+                let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+                let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len]));
+                let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                let y_hat = x.mul(&w_b).add(&b_b);
+                let diff = y_hat.sub(&y);
+                diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
+            }).unwrap();
+        }
+        let w_final = state.param_to_host("w", &exe).unwrap()[0];
+        let b_final = state.param_to_host("b", &exe).unwrap()[0];
+        assert!((w_final - 2.0).abs() < 0.05);
+        assert!((b_final - 3.0).abs() < 0.3);
+    }
+}

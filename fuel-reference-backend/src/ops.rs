@@ -2073,6 +2073,157 @@ pub fn layer_norm_last_dim<T: Float>(x: &RefTensor<T>, eps: f64) -> RefTensor<T>
     RefTensor::from_vec(out, x.shape().clone())
 }
 
+/// Root-mean-square normalization along the last dimension, no affine
+/// parameters. Formula:
+///   y = x / sqrt(mean(x², last) + eps)
+/// See [`Op::RmsNormLastDim`](../../fuel_graph/enum.Op.html) for
+/// rationale. Textbook reference — a loop per row, no SIMD.
+pub fn rms_norm_last_dim<T: Float>(x: &RefTensor<T>, eps: f64) -> RefTensor<T> {
+    let dims = x.shape().dims();
+    assert!(
+        !dims.is_empty(),
+        "rms_norm_last_dim: input must be rank >= 1",
+    );
+    let last = dims[dims.len() - 1];
+    assert!(
+        last > 0,
+        "rms_norm_last_dim: last dim must be non-zero",
+    );
+    let row_count: usize = if dims.len() == 1 {
+        1
+    } else {
+        dims[..dims.len() - 1].iter().product()
+    };
+    let n: T = cst(last as f64);
+    let eps_t: T = cst(eps);
+    let one = T::one();
+
+    let src = x.as_slice();
+    let mut out = vec![T::zero(); src.len()];
+
+    for r in 0..row_count {
+        let start = r * last;
+        // mean(x²)
+        let mut mean_sq = T::zero();
+        for i in 0..last {
+            let v = src[start + i];
+            mean_sq = mean_sq + v * v;
+        }
+        mean_sq = mean_sq / n;
+        // 1/sqrt(mean_sq + eps)
+        let rrms = one / (mean_sq + eps_t).sqrt();
+        for i in 0..last {
+            out[start + i] = src[start + i] * rrms;
+        }
+    }
+
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
+/// Fused backward for [`rms_norm_last_dim`]. Closed-form gradient:
+///
+/// ```text
+///   let s       = sum_i(g_y_i * x_i)
+///   let mean_sq = mean(x²)
+///   grad_x_j    = r_rms * (g_y_j - x_j * s / (n * (mean_sq + eps)))
+///                         where r_rms = 1 / sqrt(mean_sq + eps)
+/// ```
+pub fn rms_norm_last_dim_backward<T: Float>(
+    x: &RefTensor<T>,
+    g_y: &RefTensor<T>,
+    eps: f64,
+) -> RefTensor<T> {
+    let dims = x.shape().dims();
+    assert!(
+        !dims.is_empty(),
+        "rms_norm_last_dim_backward: input must be rank >= 1",
+    );
+    assert_eq!(dims, g_y.shape().dims(), "rms_norm_last_dim_backward: shape mismatch");
+    let last = dims[dims.len() - 1];
+    let row_count: usize = if dims.len() == 1 {
+        1
+    } else {
+        dims[..dims.len() - 1].iter().product()
+    };
+    let n: T = cst(last as f64);
+    let eps_t: T = cst(eps);
+    let one = T::one();
+
+    let xs = x.as_slice();
+    let gs = g_y.as_slice();
+    let mut out = vec![T::zero(); xs.len()];
+
+    for r in 0..row_count {
+        let off = r * last;
+        let mut sum_sq = T::zero();
+        let mut sum_gx = T::zero();
+        for i in 0..last {
+            let xi = xs[off + i];
+            let gi = gs[off + i];
+            sum_sq = sum_sq + xi * xi;
+            sum_gx = sum_gx + gi * xi;
+        }
+        let mean_sq = sum_sq / n;
+        let denom_sq = mean_sq + eps_t;
+        let r_rms = one / denom_sq.sqrt();
+        let coeff = sum_gx / (n * denom_sq);
+        for i in 0..last {
+            let xi = xs[off + i];
+            let gi = gs[off + i];
+            out[off + i] = r_rms * (gi - xi * coeff);
+        }
+    }
+
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
+/// Fused rotary position embedding. `x` has shape `[..., seq, head_dim]`;
+/// `cos`/`sin` have shape `[seq, head_dim]` and broadcast across leading
+/// dims. head_dim must be even. See the `Op::Rope` docs for the formula.
+pub fn rope<T: Float>(
+    x: &RefTensor<T>,
+    cos: &RefTensor<T>,
+    sin: &RefTensor<T>,
+) -> RefTensor<T> {
+    let x_dims = x.shape().dims();
+    let rank = x_dims.len();
+    assert!(rank >= 2, "rope: input rank must be >= 2, got {x_dims:?}");
+    let seq = x_dims[rank - 2];
+    let head_dim = x_dims[rank - 1];
+    assert!(head_dim % 2 == 0, "rope: head_dim must be even, got {head_dim}");
+    let cos_dims = cos.shape().dims();
+    let sin_dims = sin.shape().dims();
+    assert_eq!(cos_dims, &[seq, head_dim], "rope: cos shape mismatch");
+    assert_eq!(sin_dims, &[seq, head_dim], "rope: sin shape mismatch");
+
+    let half = head_dim / 2;
+    let outer: usize = x_dims[..rank - 2].iter().product();
+
+    let xs = x.as_slice();
+    let cs = cos.as_slice();
+    let ss = sin.as_slice();
+    let mut out = vec![T::zero(); xs.len()];
+
+    for o in 0..outer {
+        for s in 0..seq {
+            let row_off = (o * seq + s) * head_dim;
+            let table_off = s * head_dim;
+            for i in 0..half {
+                let x0 = xs[row_off + i];
+                let x1 = xs[row_off + i + half];
+                let c0 = cs[table_off + i];
+                let s0 = ss[table_off + i];
+                let c1 = cs[table_off + i + half];
+                let s1 = ss[table_off + i + half];
+                out[row_off + i] = x0 * c0 - x1 * s0;
+                out[row_off + i + half] = x1 * c1 + x0 * s1;
+            }
+        }
+    }
+
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
 // ---------- tests -----------------------------------------------------------
 
 #[cfg(test)]
