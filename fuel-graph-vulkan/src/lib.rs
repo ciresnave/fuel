@@ -665,20 +665,37 @@ impl GraphBackend for VulkanBackend {
         // if nothing is pending).
         self.flush_pending()?;
         use fuel_core_types::HostBuffer;
+        use half::{bf16, f16};
         match buf {
             HostBuffer::F32(v) => self.upload_slice(v, DType::F32),
             HostBuffer::F64(v) => self.upload_slice(v, DType::F64),
             HostBuffer::U32(v) => self.upload_slice(v, DType::U32),
+            // Half-precision storage. The upload path is generic over
+            // `Copy + 'static` so the bytes land on device in their
+            // native 2-byte layout — shaders that want to read them
+            // natively will need the 16-bit-storage extension, or
+            // they can unpack u32-packed pairs manually.
+            HostBuffer::BF16(v) => {
+                let _: &[bf16] = v; // type witness
+                self.upload_slice(v, DType::BF16)
+            }
+            HostBuffer::F16(v) => {
+                let _: &[f16] = v;
+                self.upload_slice(v, DType::F16)
+            }
             _ => fuel_core_types::bail!("VulkanBackend: unsupported upload dtype"),
         }
     }
 
     fn download(&self, storage: &Self::Storage) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
         use fuel_core_types::HostBuffer;
+        use half::{bf16, f16};
         match storage.dtype {
             DType::F32 => Ok(HostBuffer::F32(self.download_slice::<f32>(storage)?)),
             DType::F64 => Ok(HostBuffer::F64(self.download_slice::<f64>(storage)?)),
             DType::U32 => Ok(HostBuffer::U32(self.download_slice::<u32>(storage)?)),
+            DType::BF16 => Ok(HostBuffer::BF16(self.download_slice::<bf16>(storage)?)),
+            DType::F16 => Ok(HostBuffer::F16(self.download_slice::<f16>(storage)?)),
             other => fuel_core_types::bail!("VulkanBackend: unsupported download {other:?}"),
         }
     }

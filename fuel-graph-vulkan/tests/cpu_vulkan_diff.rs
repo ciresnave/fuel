@@ -559,3 +559,48 @@ fn cpu_and_vulkan_agree_on_gemv_decode_shape() {
             .unwrap_or_else(|e| panic!("gemv k={k} n={n}: {e}"));
     }
 }
+
+/// Roundtrip a bf16 buffer through the Vulkan backend: upload it,
+/// download it, verify every element matches. Exercises the narrow
+/// piece of M1 of the bf16 project — the host ↔ device plumbing —
+/// without needing any bf16-aware shader.
+#[test]
+#[ignore]
+fn vulkan_roundtrips_bf16_host_buffer() {
+    use fuel_core_types::HostBuffer;
+    use fuel_graph_executor::GraphBackend;
+    use half::bf16;
+
+    let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("no Vulkan device; skipping: {e:?}");
+            return;
+        }
+    };
+
+    // Cover a handful of representative bf16 patterns: ordinary
+    // magnitudes, near-zero, large, and exactly-representable integers
+    // (bf16 has the same exponent range as f32 but only 8 mantissa
+    // bits — these values round-trip exactly).
+    let src_f32: Vec<f32> = vec![
+        0.0, -0.0, 1.0, -1.0, 2.0, -2.0, 256.0, -256.0,
+        0.5, 0.25, 1.5, 3.0, 128.0, 1024.0, 65536.0, -65536.0,
+        0.1, -0.1, 3.14159, -3.14159, 1e-3, -1e-3, 1e3, -1e3,
+    ];
+    let src_bf16: Vec<bf16> = src_f32.iter().map(|&v| bf16::from_f32(v)).collect();
+    let shape = Shape::from_dims(&[src_bf16.len()]);
+
+    let storage = vk_backend
+        .upload(&HostBuffer::BF16(src_bf16.clone()), &shape)
+        .expect("bf16 upload");
+    let round = vk_backend.download(&storage).expect("bf16 download");
+
+    let HostBuffer::BF16(round_bf16) = round else {
+        panic!("download returned wrong dtype: {:?}", round.dtype());
+    };
+    assert_eq!(
+        src_bf16, round_bf16,
+        "bf16 roundtrip mismatch: src={:?}, got={:?}", src_bf16, round_bf16
+    );
+}
