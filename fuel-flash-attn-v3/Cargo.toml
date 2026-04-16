@@ -12,16 +12,16 @@ readme = "README.md"
 exclude = ["cutlass/docs/**", "cutlass/test/**", "cutlass/examples/**", "cutlass/tools/**", "cutlass/media/**"]
 
 [dependencies]
-fuel = { path = "../fuel-core", features = ["cuda"], package = "fuel-core", version = "0.10.2" }
-half = { version = "2.3.1", features = ["num-traits"] }
+fuel = { workspace = true, features = ["cuda"] }
+half = { workspace = true }
 
 [build-dependencies]
-anyhow = { version = "1", features = ["backtrace"] }
-num_cpus = "1.15.0"
-rayon = "1.7.0"
-cudaforge = "0.1"
+anyhow    = { workspace = true }
+num_cpus  = { workspace = true }
+rayon     = { workspace = true }
+cudaforge = { workspace = true }
 
 [dev-dependencies]
-anyhow = { version = "1", features = ["backtrace"] }
-fuel-nn = { path = "../fuel-nn", features = ["cuda"] }
-rstest = "0.23"
+anyhow  = { workspace = true }
+fuel-nn = { workspace = true, features = ["cuda"] }
+rstest  = { workspace = true }

@@ -11,16 +11,16 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-fuel = { path = "../fuel-core", features = ["cuda"], package = "fuel-core", version = "0.10.2" }
-half = { version = "2.3.1", features = ["num-traits"] }
+fuel = { workspace = true, features = ["cuda"] }
+half = { workspace = true }
 
 [build-dependencies]
-cudaforge = "0.1.2"
-anyhow = { version = "1", features = ["backtrace"] }
+cudaforge = { workspace = true }
+anyhow    = { workspace = true }
 
 [dev-dependencies]
-anyhow = { version = "1", features = ["backtrace"] }
-fuel-nn = { path = "../fuel-nn", features = ["cuda"] }
+anyhow  = { workspace = true }
+fuel-nn = { workspace = true, features = ["cuda"] }
 
 [features]
 default = []
