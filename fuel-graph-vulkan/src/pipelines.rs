@@ -65,6 +65,11 @@ pub struct Pipelines {
     /// Decode-phase path for bf16-on-device weights.
     pub matvec_bf16_b_pipeline: ComputePipeline,
     pub matvec_bf16_b_layout: PipelineLayout,
+
+    /// Mixed-precision tiled matmul: f32 × bf16 → f32 for M > 1.
+    /// Prefill / training path for bf16-on-device weights.
+    pub matmul_tiled_bf16_b_pipeline: ComputePipeline,
+    pub matmul_tiled_bf16_b_layout: PipelineLayout,
     pub softmax_pipeline: ComputePipeline,
     pub softmax_layout: PipelineLayout,
     pub reduce_pipeline: ComputePipeline,
@@ -215,6 +220,7 @@ impl Pipelines {
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
         let matvec_bf16_b_mod = registry.load_module(device, shaders::MATVEC_BF16_B_GLSL)?;
+        let matmul_tiled_bf16_b_mod = registry.load_module(device, shaders::MATMUL_TILED_BF16_B_GLSL)?;
         let softmax_mod = registry.load_module(device, shaders::SOFTMAX)?;
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
@@ -234,6 +240,7 @@ impl Pipelines {
         let matmul_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let matmul_tiled_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let softmax_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -253,6 +260,7 @@ impl Pipelines {
         let matmul_tiled_pipeline = ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
         let matvec_bf16_b_pipeline = ComputePipeline::new(device, &matvec_bf16_b_layout, &matvec_bf16_b_mod, "main")?;
+        let matmul_tiled_bf16_b_pipeline = ComputePipeline::new(device, &matmul_tiled_bf16_b_layout, &matmul_tiled_bf16_b_mod, "main")?;
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
@@ -273,6 +281,7 @@ impl Pipelines {
             matmul_tiled_pipeline, matmul_tiled_layout,
             matvec_pipeline, matvec_layout,
             matvec_bf16_b_pipeline, matvec_bf16_b_layout,
+            matmul_tiled_bf16_b_pipeline, matmul_tiled_bf16_b_layout,
             softmax_pipeline, softmax_layout,
             reduce_pipeline, reduce_layout,
             reduce_last_dim_pipeline, reduce_last_dim_layout,

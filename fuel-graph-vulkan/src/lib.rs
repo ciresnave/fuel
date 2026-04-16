@@ -840,10 +840,17 @@ impl GraphBackend for VulkanBackend {
                 a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
             )?;
         } else if mixed_bf16 {
-            // bf16 reg-tile and tiled variants not written yet.
-            fuel_core_types::bail!(
-                "VulkanBackend::matmul: bf16-B matmul only supports M==1 (gemv) in this build; got M={m}"
-            );
+            // Mixed-precision tiled matmul: all M > 1 cases route here.
+            // Same 64×64 workgroup tile as the f32 tiled path; only
+            // the B-load unpacks bf16 → f32 on the way to shared mem.
+            let gx = ((n + 63) / 64) as u32;
+            let gy = ((m + 63) / 64) as u32;
+            self.dispatch_3buf(
+                "matmul_tiled_bf16_b",
+                &self.pipelines.matmul_tiled_bf16_b_pipeline,
+                &self.pipelines.matmul_tiled_bf16_b_layout,
+                a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
+            )?;
         } else if m < 32 {
             let gx = ((n + 63) / 64) as u32;
             let gy = ((m + 63) / 64) as u32;
