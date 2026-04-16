@@ -10,8 +10,6 @@
     version     = "0.10.2"
 
 [dependencies]
-    fuel = { path = "../fuel-core", package = "fuel-core", version = "0.10.2", features = [
-        "cuda",
-    ] }
-    cudarc = { version = "0.19.4", features = ["cublaslt", "f16"] }
-    half = { version = "2.3.1", features = ["num-traits"] }
+    fuel    = { workspace = true, features = ["cuda"] }
+    cudarc  = { workspace = true }
+    half    = { workspace = true }

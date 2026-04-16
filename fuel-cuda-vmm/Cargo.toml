@@ -10,6 +10,6 @@ categories = ["science"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-fuel = { path = "../fuel-core", package = "fuel-core", version = "0.10.2", features = ["cuda"] }
-cudarc = { version = "0.19.4" }
-thiserror = "2"
+fuel      = { workspace = true, features = ["cuda"] }
+cudarc    = { workspace = true }
+thiserror = { workspace = true }
