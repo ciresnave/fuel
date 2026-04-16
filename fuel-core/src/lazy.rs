@@ -366,6 +366,25 @@ impl LazyTensor {
         }
     }
 
+    /// Max along a single dimension (dim removed from output).
+    pub fn max_dim(&self, dim: usize) -> Self {
+        Self {
+            inner: self.inner.max_dim(dim),
+        }
+    }
+
+    /// Min along a single dimension (dim removed from output).
+    pub fn min_dim(&self, dim: usize) -> Self {
+        Self {
+            inner: self.inner.min_dim(dim),
+        }
+    }
+
+    /// Element-wise clamp to `[min, max]`.
+    pub fn clamp(&self, min: f64, max: f64) -> Self {
+        Self { inner: self.inner.clamp(min, max) }
+    }
+
     /// Mean along a single dimension.
     pub fn mean_dim(&self, dim: usize) -> Self {
         Self {
@@ -1057,6 +1076,24 @@ impl LlamaConfig {
 /// [`LlamaModel::forward`] clones the `Arc` (a refcount bump) when it
 /// builds fresh const nodes for this layer.
 ///
+/// Output of [`LlamaModel::apply_layer_with_cache`]: hidden state plus
+/// both variants of the layer's key/value tensors. Different callers
+/// want different pieces — see the method docs.
+pub(crate) struct LayerOutput {
+    pub h: LazyTensor,
+    /// Just this-step's K/V, pre-GQA, pre-concat with cache. Shape
+    /// `[batch, n_kv_heads, seq, head_dim]`. Used by the host-resident
+    /// cache path so append only pays for the new step's bytes.
+    pub fresh_k: LazyTensor,
+    pub fresh_v: LazyTensor,
+    /// Cached ++ this-step's K/V, pre-GQA. Shape `[batch, n_kv_heads,
+    /// cached_len + seq, head_dim]`. Used by the device-resident
+    /// cache path so the graph's concat is the only concat — no
+    /// post-realize concat step is needed.
+    pub full_k: LazyTensor,
+    pub full_v: LazyTensor,
+}
+
 /// LLaMA proper has no biases anywhere in the attention block, so the
 /// `*_bias` fields are `None` for LLaMA family models. Qwen2 and a few
 /// related architectures do add biases on Q/K/V (but not on the output
@@ -1340,9 +1377,16 @@ impl LlamaModel {
     /// prepends cached keys/values in front of the fresh ones before
     /// the attention matmul.
     ///
-    /// Returns `(output, fresh_k_post_rope, fresh_v)` where the two
-    /// fresh tensors have shape `[batch, n_kv_heads, seq, head_dim]`
-    /// — the layout [`LlamaKVCache::append_layer`] expects.
+    /// Returns a [`LayerOutput`] containing the layer's new hidden
+    /// state plus both the fresh K/V tensors (shape `[batch,
+    /// n_kv_heads, seq, head_dim]` — the layout
+    /// [`LlamaKVCache::append_layer`] expects) AND the already-
+    /// concatenated full K/V (shape `[batch, n_kv_heads, cached_len +
+    /// seq, head_dim]`). The host-resident cache path uses `fresh_*`
+    /// so it only downloads this step's new data; the
+    /// device-resident cache path uses `full_*` so the graph's
+    /// concat op is the only concat and there's no post-realize
+    /// concat pass.
     fn apply_layer_with_cache(
         &self,
         x: &LazyTensor,
@@ -1351,7 +1395,7 @@ impl LlamaModel {
         cached_len: usize,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
-    ) -> (LazyTensor, LazyTensor, LazyTensor) {
+    ) -> LayerOutput {
         let cfg = &self.config;
         let dims = x.dims();
         let batch = dims[0];
@@ -1405,6 +1449,13 @@ impl LlamaModel {
         } else {
             (fresh_k.clone(), fresh_v.clone())
         };
+
+        // Save references to the pre-GQA-expansion full K/V — these
+        // have shape `[batch, n_kv_heads, cached_len+seq, head_dim]`
+        // and are exactly what the device-resident cache wants to
+        // store as "the new cache" for the next forward.
+        let cache_full_k = full_k.clone();
+        let cache_full_v = full_v.clone();
 
         // GQA: after prepending cached K/V, expand to `n_heads` before
         // the attention matmul.
@@ -1494,7 +1545,13 @@ impl LlamaModel {
         let swiglu = gate.silu().mul(&up);
         let ffn_out = swiglu.matmul(&w_down);
 
-        (h1.add(&ffn_out), fresh_k, fresh_v)
+        LayerOutput {
+            h: h1.add(&ffn_out),
+            fresh_k,
+            fresh_v,
+            full_k: cache_full_k,
+            full_v: cache_full_v,
+        }
     }
 
     /// Run a forward pass that consumes a growing KV cache. The model
@@ -1508,10 +1565,23 @@ impl LlamaModel {
     /// single slice, and realizing the full `[1, seq, vocab]` logits
     /// tensor would be the single largest allocation of the decode
     /// step for large vocabs.
-    pub fn forward_with_cache(
+    /// Backend-agnostic cached forward pass. Realizes the graph on
+    /// whichever `GraphBackend` the caller's `executor` is using, and
+    /// stores the fresh K/V tensors for every layer on the host side
+    /// so the next call's cache lookup is cheap.
+    ///
+    /// The K/V cache itself is host-resident (`LlamaKVCache`) — it
+    /// holds `Vec<f32>`, which is the same data regardless of which
+    /// backend produced it. That keeps the cache type backend-agnostic;
+    /// only the realize call differs. Backends that want GPU-resident
+    /// KV cache to skip the D2H/H2D round-trip should use
+    /// [`forward_with_gpu_cache`](Self::forward_with_gpu_cache) (still
+    /// CUDA-only as of this writing; a generic version is pending).
+    pub fn forward_with_cache_on<B: fuel_graph_executor::GraphBackend>(
         &self,
         tokens: &[u32],
         cache: &mut LlamaKVCache,
+        executor: &mut GraphExecutor<B>,
     ) -> Vec<f32> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -1522,11 +1592,11 @@ impl LlamaModel {
         assert_eq!(
             cache.layers.len(),
             cfg.n_layers,
-            "forward_with_cache: cache layer count {} does not match model n_layers {}",
+            "forward_with_cache_on: cache layer count {} does not match model n_layers {}",
             cache.layers.len(),
             cfg.n_layers,
         );
-        assert!(seq > 0, "forward_with_cache: cannot forward zero tokens");
+        assert!(seq > 0, "forward_with_cache_on: cannot forward zero tokens");
 
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
@@ -1538,11 +1608,7 @@ impl LlamaModel {
             .index_select(0, &token_ids)
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
 
-        // Build RoPE cos/sin tables once and share them across every
-        // decoder layer. Every layer applies RoPE with the same
-        // `(rope_base, cached_len, seq, head_dim)`, so doing this at
-        // layer scope wastes ~n_layers × O(seq·head_dim) const nodes
-        // plus their downstream reshape/broadcast chains.
+        // RoPE cos/sin tables — shared across layers.
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_base,
             cached_len,
@@ -1557,7 +1623,7 @@ impl LlamaModel {
         let mut fresh_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
 
         for (li, layer) in weights.layers.iter().enumerate() {
-            let (new_h, fk, fv) = self.apply_layer_with_cache(
+            let out = self.apply_layer_with_cache(
                 &h,
                 layer,
                 &cache.layers[li],
@@ -1565,9 +1631,12 @@ impl LlamaModel {
                 &rope_cos,
                 &rope_sin,
             );
-            h = new_h;
-            fresh_ks.push(fk);
-            fresh_vs.push(fv);
+            h = out.h;
+            // Host-resident cache wants fresh-only — appending to the
+            // growing Vec<f32> is O(fresh); downloading full would be
+            // O(cached + fresh) per step.
+            fresh_ks.push(out.fresh_k);
+            fresh_vs.push(out.fresh_v);
         }
 
         let h_norm = apply_affine_rms_norm(
@@ -1582,14 +1651,11 @@ impl LlamaModel {
         );
         let logits = h_norm.matmul(&w_out);
 
-        // Slice out logits for the last sequence position only.
         let last_pos = seq - 1;
         let last_logits = logits
             .slice(1, last_pos, 1)
             .reshape(Shape::from_dims(&[cfg.vocab_size]));
 
-        // Build root list: [last_logits, k_0..k_N, v_0..v_N] and realize
-        // all of them in a single executor walk.
         let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
         roots.push(&last_logits);
         for fk in &fresh_ks {
@@ -1598,12 +1664,30 @@ impl LlamaModel {
         for fv in &fresh_vs {
             roots.push(fv);
         }
-        let realized = realize_many_f32(&roots);
+
+        let inner: Vec<&fuel_graph::Tensor> = roots.iter().map(|lt| &lt.inner).collect();
+        let realized: Vec<Vec<f32>> = executor
+            .realize_many_f32(&inner)
+            .into_iter()
+            .map(|t| t.into_vec())
+            .collect();
         Self::unpack_kv_cache(realized, cache, cfg.n_layers, seq)
     }
 
-    /// CUDA variant of the cached forward pass. Identical graph, but
-    /// realized on GPU via the `CudaGraphExecutor`.
+    /// Cached forward pass on CPU. Thin wrapper over
+    /// [`forward_with_cache_on`](Self::forward_with_cache_on) with a
+    /// fresh `CpuBackend` executor.
+    pub fn forward_with_cache(
+        &self,
+        tokens: &[u32],
+        cache: &mut LlamaKVCache,
+    ) -> Vec<f32> {
+        let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        self.forward_with_cache_on(tokens, cache, &mut exe)
+    }
+
+    /// Cached forward pass on CUDA. Thin wrapper over
+    /// [`forward_with_cache_on`](Self::forward_with_cache_on).
     #[cfg(feature = "cuda")]
     pub fn forward_with_cache_cuda(
         &self,
@@ -1611,66 +1695,7 @@ impl LlamaModel {
         cache: &mut LlamaKVCache,
         executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
     ) -> Vec<f32> {
-        let cfg = &self.config;
-        let weights = &self.weights;
-        let seq = tokens.len();
-        let batch = 1;
-        let cached_len = cache.cached_len;
-
-        assert_eq!(cache.layers.len(), cfg.n_layers);
-        assert!(seq > 0);
-
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-        );
-        let token_ids =
-            embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
-
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base, cached_len, seq, cfg.head_dim,
-        );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
-
-        let mut fresh_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
-        let mut fresh_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
-
-        for (li, layer) in weights.layers.iter().enumerate() {
-            let (new_h, fk, fv) = self.apply_layer_with_cache(
-                &h, layer, &cache.layers[li], cached_len,
-                &rope_cos, &rope_sin,
-            );
-            h = new_h;
-            fresh_ks.push(fk);
-            fresh_vs.push(fv);
-        }
-
-        let h_norm = apply_affine_rms_norm(
-            &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
-        );
-        let w_out = h_norm.const_f32_like(
-            weights.output.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
-        );
-        let logits = h_norm.matmul(&w_out);
-
-        let last_pos = seq - 1;
-        let last_logits = logits
-            .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]));
-
-        let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
-        roots.push(&last_logits);
-        for fk in &fresh_ks { roots.push(fk); }
-        for fv in &fresh_vs { roots.push(fv); }
-
-        let realized = realize_many_f32_cuda(&roots, executor);
-        Self::unpack_kv_cache(realized, cache, cfg.n_layers, seq)
+        self.forward_with_cache_on(tokens, cache, executor)
     }
 
     fn unpack_kv_cache(
@@ -2148,12 +2173,23 @@ impl LlamaModel {
     /// the CLI runner to print tokens as they're produced instead of
     /// waiting for the full sequence. Returns the full token sequence
     /// including the prompt once generation finishes or EOS is hit.
-    pub fn generate_streaming(
+    /// Backend-agnostic streaming decode. KV cache lives on the host
+    /// (`LlamaKVCache`) so it's the same type regardless of the
+    /// backend; each forward round-trips the fresh K/V through host
+    /// memory. The advantage is that this works with any backend for
+    /// free — the Vulkan demo gets KV cache by calling this with a
+    /// `GraphExecutor<VulkanBackend>`.
+    ///
+    /// For GPU-resident KV cache (keeps K/V on the device across
+    /// decode steps), use [`generate_streaming_cuda`](Self::generate_streaming_cuda)
+    /// — still CUDA-only as of this writing.
+    pub fn generate_streaming_on<B: fuel_graph_executor::GraphBackend>(
         &self,
         prompt_tokens: &[u32],
         max_new_tokens: usize,
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
+        executor: &mut GraphExecutor<B>,
         mut on_token: impl FnMut(u32),
     ) -> crate::Result<Vec<u32>> {
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
@@ -2166,7 +2202,7 @@ impl LlamaModel {
         // the KV cache for every layer. This is the only O(prompt²)
         // matmul in the whole generation.
         let mut cache = LlamaKVCache::new(&self.config);
-        let mut last_logits = self.forward_with_cache(&tokens, &mut cache);
+        let mut last_logits = self.forward_with_cache_on(&tokens, &mut cache, executor);
 
         for _ in 0..max_new_tokens {
             let next = sample_logits(&last_logits, strategy, &mut rng_state);
@@ -2179,27 +2215,58 @@ impl LlamaModel {
             }
             // Decode step: feed just the one new token. The cache does
             // the work of making this O(total_seq) instead of O(total_seq²).
-            last_logits = self.forward_with_cache(&[next], &mut cache);
+            last_logits = self.forward_with_cache_on(&[next], &mut cache, executor);
         }
         Ok(tokens)
     }
+
+    /// Streaming decode on CPU. Thin wrapper over
+    /// [`generate_streaming_on`](Self::generate_streaming_on).
+    pub fn generate_streaming(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        self.generate_streaming_on(
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            &mut exe,
+            on_token,
+        )
+    }
 }
 
-/// GPU-resident KV cache. Keys and values stay on the CUDA device
-/// across decode steps, eliminating the D2H readback + H2D re-upload
-/// round-trip that the CPU `LlamaKVCache` path requires.
-#[cfg(feature = "cuda")]
-pub struct GpuKVCache {
-    /// Per-layer (key_storage, value_storage) on GPU.
+/// Device-resident KV cache, generic over `GraphBackend`. Keys and
+/// values stay on the device that owns `B::Storage` across decode
+/// steps, eliminating the D2H readback + H2D re-upload round-trip
+/// that the host-resident `LlamaKVCache` path requires.
+///
+/// For `B = CpuBackend`, `B::Storage = AnyRefTensor` which is already
+/// host-resident, so this type collapses gracefully to a host cache
+/// for CPU users. For `B = CudaBackend` / `VulkanBackend` / future
+/// GPU backends, storage lives on the device and concat / update
+/// happens via the backend's native ops.
+pub struct KVCache<B: fuel_graph_executor::GraphBackend> {
+    /// Per-layer `(key_storage, value_storage)`. `None` until the
+    /// layer's first forward populates it.
     /// Shape per entry: `[1, n_kv_heads, cached_len, head_dim]`.
-    layers: Vec<Option<(fuel_cuda::CudaStorage, fuel_cuda::CudaStorage)>>,
+    pub(crate) layers: Vec<Option<(B::Storage, B::Storage)>>,
     pub cached_len: usize,
-    n_kv_heads: usize,
-    head_dim: usize,
+    // Shape metadata held for future save/restore and cross-device
+    // migration methods. Not currently read on the decode hot path.
+    #[allow(dead_code)]
+    pub(crate) n_kv_heads: usize,
+    #[allow(dead_code)]
+    pub(crate) head_dim: usize,
 }
 
-#[cfg(feature = "cuda")]
-impl GpuKVCache {
+impl<B: fuel_graph_executor::GraphBackend> KVCache<B> {
     pub fn new(config: &LlamaConfig) -> Self {
         Self {
             layers: (0..config.n_layers).map(|_| None).collect(),
@@ -2208,19 +2275,35 @@ impl GpuKVCache {
             head_dim: config.head_dim,
         }
     }
+
+    pub fn n_layers(&self) -> usize {
+        self.layers.len()
+    }
 }
 
-/// CUDA variant of generate_streaming. Uses a GPU-resident KV cache
-/// so K/V tensors never leave the device between decode steps.
+/// CUDA-only alias kept for backward compatibility with existing
+/// callers. Prefer `KVCache<CudaBackend>` directly in new code.
 #[cfg(feature = "cuda")]
+pub type GpuKVCache = KVCache<fuel_graph_cuda::CudaBackend>;
+
+
 impl LlamaModel {
-    pub fn generate_streaming_cuda(
+    /// Backend-agnostic streaming decode with device-resident KV cache.
+    /// K/V stays on the device between steps (no D2H / H2D round-trip)
+    /// and fresh K/V are concat'd onto the cache via the backend's
+    /// own `alloc_zeros` + `copy_strided_src` primitives.
+    ///
+    /// For `B = CpuBackend` this collapses to a host-resident cache
+    /// because `B::Storage = AnyRefTensor` already lives on the host.
+    /// For GPU backends (CUDA, Vulkan, future Metal) the K/V bytes
+    /// never leave the device.
+    pub fn generate_streaming_gpu_on<B: fuel_graph_executor::GraphBackend>(
         &self,
         prompt_tokens: &[u32],
         max_new_tokens: usize,
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
-        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+        executor: &mut GraphExecutor<B>,
         mut on_token: impl FnMut(u32),
     ) -> crate::Result<Vec<u32>> {
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
@@ -2229,9 +2312,9 @@ impl LlamaModel {
             _ => 0,
         };
 
-        let mut cache = GpuKVCache::new(&self.config);
+        let mut cache: KVCache<B> = KVCache::new(&self.config);
         let mut last_logits =
-            self.forward_with_gpu_cache(&tokens, &mut cache, executor);
+            self.forward_with_cache_gpu_on(&tokens, &mut cache, executor);
 
         for _ in 0..max_new_tokens {
             let next = sample_logits(&last_logits, strategy, &mut rng_state);
@@ -2243,19 +2326,39 @@ impl LlamaModel {
                 }
             }
             last_logits =
-                self.forward_with_gpu_cache(&[next], &mut cache, executor);
+                self.forward_with_cache_gpu_on(&[next], &mut cache, executor);
         }
         Ok(tokens)
     }
 
-    /// Forward pass with GPU-resident KV cache. Cached K/V are injected
-    /// directly as pre-populated nodes (no H2D). Fresh K/V stay on GPU
-    /// after realize (no D2H). Only logits are transferred to host.
-    fn forward_with_gpu_cache(
+    /// CUDA-specific thin wrapper preserved for call-site compatibility.
+    /// Prefer `generate_streaming_gpu_on` in new code.
+    #[cfg(feature = "cuda")]
+    pub fn generate_streaming_cuda(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+        on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        self.generate_streaming_gpu_on(
+            prompt_tokens, max_new_tokens, strategy, eos_id, executor, on_token,
+        )
+    }
+
+    /// Forward pass with device-resident KV cache, generic over
+    /// `GraphBackend`. Cached K/V are injected directly as
+    /// pre-populated graph nodes (no H2D). Fresh K/V stay on the
+    /// device after realize (no D2H). Only logits are transferred
+    /// to host. The cache is updated on-device via the backend's
+    /// own primitives after the realize.
+    pub fn forward_with_cache_gpu_on<B: fuel_graph_executor::GraphBackend>(
         &self,
         tokens: &[u32],
-        cache: &mut GpuKVCache,
-        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+        cache: &mut KVCache<B>,
+        executor: &mut GraphExecutor<B>,
     ) -> Vec<f32> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -2280,41 +2383,41 @@ impl LlamaModel {
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
-        // Track the NodeIds of cached K/V const nodes so we can inject
-        // GPU storage for them before realize.
+        // Track the NodeIds of the placeholder K/V const nodes so we
+        // can pre_populate them with real device storage before realize.
         let mut cached_kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> = Vec::new();
-        let mut fresh_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
-        let mut fresh_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+        // Device-resident path: roots are the full (cached ++ fresh)
+        // K/V tensors, NOT just fresh. The graph's concat inside
+        // apply_layer_with_cache is therefore the only concat — we
+        // skip the post-realize concat entirely and just keep the
+        // realized full tensors as the new cache.
+        let mut full_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+        let mut full_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
 
-        for (li, layer) in weights.layers.iter().enumerate() {
-            // Create a proxy CPU cache entry with placeholder data.
-            // apply_layer_with_cache uses it to build Const nodes in the
-            // graph; we'll inject the real GPU data before realize.
-            let layer_cache_proxy: LayerKVCache;
-            if cached_len > 0 {
+        for (_li, layer) in weights.layers.iter().enumerate() {
+            // Zero-filled host placeholder so apply_layer_with_cache
+            // can build Const nodes in the graph with the right shape.
+            // pre_populate will overwrite them with real device
+            // storage before realize, so the placeholder data is
+            // never actually read.
+            let layer_cache_proxy: LayerKVCache = if cached_len > 0 {
                 let n = batch * cfg.n_kv_heads * cached_len * cfg.head_dim;
-                layer_cache_proxy = LayerKVCache {
-                    k: vec![0.0; n],
-                    v: vec![0.0; n],
-                };
+                LayerKVCache { k: vec![0.0; n], v: vec![0.0; n] }
             } else {
-                layer_cache_proxy = LayerKVCache::default();
-            }
+                LayerKVCache::default()
+            };
 
-            let (new_h, fk, fv) = self.apply_layer_with_cache(
+            let out = self.apply_layer_with_cache(
                 &h, layer, &layer_cache_proxy, cached_len,
                 &rope_cos, &rope_sin,
             );
-            h = new_h;
-            fresh_ks.push(fk);
-            fresh_vs.push(fv);
+            h = out.h;
+            full_ks.push(out.full_k);
+            full_vs.push(out.full_v);
         }
 
-        // Find the NodeIds of the cached K/V const nodes by scanning
-        // the graph for Const nodes with the right shape. This is a
-        // heuristic: we look for consts with shape [1, n_kv, cached_len, hd]
-        // and element count matching the cached size. We collect pairs
-        // in layer order.
+        // Find the NodeIds of the placeholder Const nodes by scanning
+        // the graph for Consts with the right shape.
         if cached_len > 0 {
             let graph = h.graph_tensor().graph().borrow();
             let target_elems = batch * cfg.n_kv_heads * cached_len * cfg.head_dim;
@@ -2325,14 +2428,12 @@ impl LlamaModel {
                 if matches!(node.op, fuel_graph::Op::Const(_))
                     && node.shape.elem_count() == target_elems
                     && node.dtype == fuel_core_types::DType::F32
+                    && node.shape.dims() == [batch, cfg.n_kv_heads, cached_len, cfg.head_dim]
                 {
-                    // Check it's specifically the KV cache shape
-                    if node.shape.dims() == &[batch, cfg.n_kv_heads, cached_len, cfg.head_dim] {
-                        found.push(nid);
-                    }
+                    found.push(nid);
                 }
             }
-            // Should be exactly 2 * n_layers (K and V per layer)
+            // Should be exactly 2 * n_layers (K and V per layer).
             if found.len() == 2 * cfg.n_layers {
                 for li in 0..cfg.n_layers {
                     cached_kv_nodes.push((found[li * 2], found[li * 2 + 1]));
@@ -2354,116 +2455,52 @@ impl LlamaModel {
             .slice(1, last_pos, 1)
             .reshape(Shape::from_dims(&[cfg.vocab_size]));
 
-        // Roots: [logits, fresh_k_0..N, fresh_v_0..N]
+        // Roots: [logits, full_k_0..N, full_v_0..N]
         let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
         roots.push(&last_logits);
-        for fk in &fresh_ks { roots.push(fk); }
-        for fv in &fresh_vs { roots.push(fv); }
+        for fk in &full_ks { roots.push(fk); }
+        for fv in &full_vs { roots.push(fv); }
 
-        // Inject cached K/V GPU storage for the placeholder const nodes.
+        // Inject cached K/V device storage for the placeholder const
+        // nodes. Uses the backend trait's `try_clone` — shared across
+        // every backend.
         for (li, (ck_id, cv_id)) in cached_kv_nodes.iter().enumerate() {
-            if let Some((ref k_gpu, ref v_gpu)) = cache.layers[li] {
+            if let Some((ref k_dev, ref v_dev)) = cache.layers[li] {
                 let cached_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, cached_len, cfg.head_dim]);
-                executor.pre_populate(
-                    *ck_id,
-                    k_gpu.try_clone(&fuel_core_types::Layout::contiguous(&cached_shape))
-                        .expect("inject K clone"),
-                    cached_shape.clone(),
-                );
-                executor.pre_populate(
-                    *cv_id,
-                    v_gpu.try_clone(&fuel_core_types::Layout::contiguous(&cached_shape))
-                        .expect("inject V clone"),
-                    cached_shape,
-                );
+                let layout = fuel_core_types::Layout::contiguous(&cached_shape);
+                let k_clone = executor.backend.try_clone(k_dev, &layout)
+                    .expect("inject K clone");
+                let v_clone = executor.backend.try_clone(v_dev, &layout)
+                    .expect("inject V clone");
+                executor.pre_populate(*ck_id, k_clone, cached_shape.clone());
+                executor.pre_populate(*cv_id, v_clone, cached_shape);
             }
         }
 
-        // Realize: logits → CPU, fresh K/V → stay on GPU.
+        // Realize: logits → CPU, full K/V → stay on device.
         let inner_roots: Vec<&fuel_graph::Tensor> =
             roots.iter().map(|lt| &lt.inner).collect();
         let (cpu_results, gpu_results) = executor.realize_split(&inner_roots, 1);
         let logits_vec = cpu_results.into_iter().next().unwrap();
 
-        // Update GPU cache: concat fresh K/V onto existing cache per layer.
-        let fresh_kv: Vec<(fuel_cuda::CudaStorage, fuel_cuda::CudaStorage)> = {
-            let mut pairs = Vec::with_capacity(cfg.n_layers);
-            let mut iter = gpu_results.into_iter();
-            let ks: Vec<_> = (0..cfg.n_layers).map(|_| iter.next().unwrap()).collect();
-            let vs: Vec<_> = (0..cfg.n_layers).map(|_| iter.next().unwrap()).collect();
-            for (k, v) in ks.into_iter().zip(vs.into_iter()) {
-                pairs.push((k.0, v.0));
-            }
-            pairs
-        };
+        // Update cache: the realized full K/V tensors ARE the new
+        // cache — no post-realize concat needed because the graph
+        // already did it inside apply_layer_with_cache.
+        let mut iter = gpu_results.into_iter();
+        let new_ks: Vec<(B::Storage, Shape)> = (0..cfg.n_layers)
+            .map(|_| iter.next().unwrap()).collect();
+        let new_vs: Vec<(B::Storage, Shape)> = (0..cfg.n_layers)
+            .map(|_| iter.next().unwrap()).collect();
 
-        let fresh_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, seq, cfg.head_dim]);
-        for (li, (fresh_k, fresh_v)) in fresh_kv.into_iter().enumerate() {
-            if let Some((ref old_k, ref old_v)) = cache.layers[li] {
-                // Concat old + fresh along dim 2 (seq dim) on GPU.
-                let old_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, cached_len, cfg.head_dim]);
-                let new_k = gpu_concat_dim2(
-                    old_k, &old_shape, &fresh_k, &fresh_shape,
-                    cfg.n_kv_heads, cfg.head_dim, cached_len, seq,
-                    &executor.backend.device,
-                );
-                let new_v = gpu_concat_dim2(
-                    old_v, &old_shape, &fresh_v, &fresh_shape,
-                    cfg.n_kv_heads, cfg.head_dim, cached_len, seq,
-                    &executor.backend.device,
-                );
-                cache.layers[li] = Some((new_k, new_v));
-            } else {
-                // First step: fresh K/V becomes the cache directly.
-                cache.layers[li] = Some((fresh_k, fresh_v));
-            }
+        for (li, ((new_k, _), (new_v, _))) in
+            new_ks.into_iter().zip(new_vs.into_iter()).enumerate()
+        {
+            cache.layers[li] = Some((new_k, new_v));
         }
         cache.cached_len += seq;
 
         logits_vec
     }
-}
-
-/// Concat two GPU tensors along the seq dim (dim 2) for shape
-/// `[1, n_kv_heads, old_len, head_dim]` + `[1, n_kv_heads, new_len, head_dim]`.
-/// Produces `[1, n_kv_heads, old_len + new_len, head_dim]`.
-#[cfg(feature = "cuda")]
-fn gpu_concat_dim2(
-    old: &fuel_cuda::CudaStorage,
-    old_shape: &Shape,
-    fresh: &fuel_cuda::CudaStorage,
-    fresh_shape: &Shape,
-    n_kv_heads: usize,
-    head_dim: usize,
-    old_len: usize,
-    new_len: usize,
-    device: &fuel_cuda::CudaDevice,
-) -> fuel_cuda::CudaStorage {
-    let total_len = old_len + new_len;
-    let out_shape = Shape::from_dims(&[1, n_kv_heads, total_len, head_dim]);
-    let mut dst = device.zeros_impl(&out_shape, old.dtype())
-        .expect("gpu_concat alloc");
-    let old_slice = old_len * head_dim;
-    let fresh_slice = new_len * head_dim;
-    let out_row = total_len * head_dim;
-
-    for h in 0..n_kv_heads {
-        // Copy old[h] → dst[h, :old_len, :]
-        let old_layout = fuel_core_types::Layout::contiguous_with_offset(
-            &Shape::from_dims(&[old_slice]),
-            h * old_slice,
-        );
-        old.copy_strided_src(&mut dst, h * out_row, &old_layout)
-            .expect("concat old");
-        // Copy fresh[h] → dst[h, old_len:, :]
-        let fresh_layout = fuel_core_types::Layout::contiguous_with_offset(
-            &Shape::from_dims(&[fresh_slice]),
-            h * fresh_slice,
-        );
-        fresh.copy_strided_src(&mut dst, h * out_row + old_slice, &fresh_layout)
-            .expect("concat fresh");
-    }
-    dst
 }
 
 /// Pick the next token from a logits vector using the configured
