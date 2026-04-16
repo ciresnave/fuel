@@ -34,6 +34,10 @@ flamegraph.svg
 *.swp
 *.swo
 trace-*.json
+# FUEL_TRACE=1 in llama-lazy-vulkan writes trace.json
+trace.json
+# Vulkan submit log dumps from ad-hoc debugging runs
+submits*.log
 
 fuel-wasm-examples/*/build
 fuel-wasm-examples/*/*.bin
