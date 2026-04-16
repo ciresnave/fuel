@@ -349,6 +349,15 @@ fn eval_matmul(inputs: &[NodeId], cache: &HashMap<NodeId, AnyTensor>) -> AnyTens
         // but correct. For speed, cast to f32 first via `Op::Cast`.
         (AnyTensor::BF16(a), AnyTensor::BF16(b)) => AnyTensor::BF16(ops::matmul(a, b)),
         (AnyTensor::F16(a), AnyTensor::F16(b)) => AnyTensor::F16(ops::matmul(a, b)),
+        // Mixed-precision: activations f32 × weights bf16 → f32. Upcast
+        // B to f32 and run the fast f32 matmul. The result matches what
+        // the Vulkan bf16-unpack kernels compute (both read B as bf16,
+        // extend to f32 exactly before FMA).
+        (AnyTensor::F32(a), AnyTensor::BF16(b)) => {
+            let b_data: Vec<f32> = b.as_slice().iter().map(|x| x.to_f32()).collect();
+            let b_f32 = fuel_reference_backend::RefTensor::from_vec(b_data, b.shape().clone());
+            AnyTensor::F32(fast_matmul::matmul_f32(a, &b_f32))
+        }
         (a, b) => panic!(
             "matmul: unsupported operand dtypes (lhs={:?}, rhs={:?})",
             a.dtype(),

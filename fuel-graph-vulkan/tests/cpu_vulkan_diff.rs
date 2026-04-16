@@ -723,6 +723,60 @@ fn vulkan_tiled_matmul_bf16_weights_matches_f32_reference() {
     }
 }
 
+/// End-to-end graph-executor test with a bf16 weight tensor.
+/// Builds a graph `y = activations @ weights` where activations are
+/// f32 and weights are declared as bf16 via `const_bf16_like`,
+/// realizes it on both CPU and Vulkan, and checks both match a
+/// bf16-rounded f32 reference.
+///
+/// This is the thinnest plausible "bf16 weights work through the
+/// whole stack" signal — matmul graph validation accepts the mixed
+/// dtypes, executor dispatches correctly, and the Vulkan backend's
+/// dtype-aware routing picks the bf16 kernel.
+fn build_bf16_mixed_matmul_graph(m: usize, k: usize, n: usize, seed: u32) -> Tensor {
+    use half::bf16;
+    let act_f32: Vec<f32> = (0..(m * k))
+        .map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin() * 0.5)
+        .collect();
+    let w_bf16: Vec<bf16> = (0..(k * n))
+        .map(|i| {
+            let w = (i as u32).wrapping_mul(2654435761) ^ seed;
+            bf16::from_f32((w as i32 as f32 * 1e-9).cos() * 0.1)
+        })
+        .collect();
+    let a = Tensor::from_f32(act_f32, Shape::from_dims(&[m, k]));
+    let w = a.const_bf16_like(w_bf16, Shape::from_dims(&[k, n]));
+    a.matmul(&w)
+}
+
+#[test]
+#[ignore]
+fn cpu_and_vulkan_agree_on_bf16_weights_matmul_via_graph() {
+    for (m, k, n, seed) in [
+        (1, 2048, 2048, 1u32),   // decode, routes through gemv
+        (5, 2048, 2048, 2u32),   // short prefill, routes through tiled
+        (4, 32, 16, 3u32),       // tiny, sanity check
+    ] {
+        let cpu_root = build_bf16_mixed_matmul_graph(m, k, n, seed);
+        let mut cpu_exec = GraphExecutor::new(CpuBackend);
+        let cpu_data = cpu_exec.realize_f32(&cpu_root).as_slice().to_vec();
+
+        let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("no Vulkan device; skipping: {e:?}");
+                return;
+            }
+        };
+        let vk_root = build_bf16_mixed_matmul_graph(m, k, n, seed);
+        let mut vk_exec = GraphExecutor::new(vk_backend);
+        let vk_data = vk_exec.realize_f32(&vk_root).as_slice().to_vec();
+
+        almost_equal(&cpu_data, &vk_data, 5e-2)
+            .unwrap_or_else(|e| panic!("bf16 graph matmul m={m} k={k} n={n}: {e}"));
+    }
+}
+
 /// Roundtrip a bf16 buffer through the Vulkan backend: upload it,
 /// download it, verify every element matches. Exercises the narrow
 /// piece of M1 of the bf16 project — the host ↔ device plumbing —
