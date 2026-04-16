@@ -560,6 +560,94 @@ fn cpu_and_vulkan_agree_on_gemv_decode_shape() {
     }
 }
 
+/// Mixed-precision gemv (M==1, A:f32, B:bf16, C:f32). The reference
+/// is the same matmul with B upcast to f32 on the host — the two
+/// must agree within a bf16-appropriate tolerance. This exercises
+/// the bf16 storage path AND the bf16-aware dispatch in
+/// `VulkanBackend::matmul` end-to-end.
+///
+/// Shapes mirror the TinyLlama decode projections: K=2048 hidden,
+/// N ∈ {2048, 5632}. Plus a few smaller shapes to flush out edge
+/// cases in the u32-packed indexing.
+#[test]
+#[ignore]
+fn vulkan_gemv_bf16_weights_matches_f32_reference() {
+    use fuel_core_types::HostBuffer;
+    use fuel_graph_executor::GraphBackend;
+    use half::bf16;
+
+    let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("no Vulkan device; skipping: {e:?}");
+            return;
+        }
+    };
+
+    for (k, n, seed) in [
+        (2048, 2048, 1u32),    // TinyLlama hidden->hidden
+        (2048, 5632, 2u32),    // TinyLlama up/gate
+        (5632, 2048, 3u32),    // TinyLlama down
+        (32, 16, 4u32),        // tiny — N even
+        (32, 17, 5u32),        // tiny — N odd (u32-packing edge)
+        (2050, 1027, 6u32),    // non-power-of-2 shapes
+    ] {
+        let a_f32: Vec<f32> = (0..k)
+            .map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin() * 0.5)
+            .collect();
+        let b_f32: Vec<f32> = (0..(k * n))
+            .map(|i| {
+                let w = (i as u32).wrapping_mul(2654435761) ^ seed;
+                (w as i32 as f32 * 1e-9).cos() * 0.1
+            })
+            .collect();
+        let b_bf16: Vec<bf16> = b_f32.iter().map(|&v| bf16::from_f32(v)).collect();
+        // Round b_f32 through bf16 for the reference so we're measuring
+        // "our bf16 kernel vs bf16-quantized reference," not "our bf16
+        // kernel vs infinite-precision reference." Without this the
+        // tolerance would have to absorb bf16 quantization error too.
+        let b_f32_round: Vec<f32> = b_bf16.iter().map(|&x| x.to_f32()).collect();
+
+        let a_shape = Shape::from_dims(&[1, k]);
+        let b_shape = Shape::from_dims(&[k, n]);
+
+        // Reference: f32 × f32_round → f32 on the CPU.
+        let mut reference = vec![0.0f32; n];
+        for col in 0..n {
+            let mut acc: f32 = 0.0;
+            for kk in 0..k {
+                acc += a_f32[kk] * b_f32_round[kk * n + col];
+            }
+            reference[col] = acc;
+        }
+
+        // Vulkan: f32 × bf16 → f32 via the new pipeline.
+        let a_dev = vk_backend
+            .upload(&HostBuffer::F32(a_f32.clone()), &a_shape)
+            .expect("a upload");
+        let b_dev = vk_backend
+            .upload(&HostBuffer::BF16(b_bf16.clone()), &b_shape)
+            .expect("b upload");
+        let a_layout = fuel_core_types::Layout::contiguous(&a_shape);
+        let b_layout = fuel_core_types::Layout::contiguous(&b_shape);
+        let out = vk_backend
+            .matmul(&a_dev, &b_dev, (1, 1, n, k), &a_layout, &b_layout)
+            .expect("bf16 matmul");
+        let out_host = vk_backend.download(&out).expect("out download");
+        let HostBuffer::F32(got) = out_host else {
+            panic!("bf16 matmul produced wrong dtype: {:?}", out_host.dtype());
+        };
+
+        // Tolerance accommodates accumulation error across K values.
+        // For dot products of length K with values ~0.05 each, absolute
+        // error per-output is roughly K * bf16-rounding-unit * magnitude
+        // ≈ K * 2^-7 * 0.05. For K=5632 that's ~2.2, so we scale the
+        // relative tolerance by K and keep the absolute floor loose.
+        almost_equal(&reference, &got, 5e-2)
+            .unwrap_or_else(|e| panic!("bf16 gemv k={k} n={n}: {e}"));
+    }
+}
+
 /// Roundtrip a bf16 buffer through the Vulkan backend: upload it,
 /// download it, verify every element matches. Exercises the narrow
 /// piece of M1 of the bf16 project — the host ↔ device plumbing —
