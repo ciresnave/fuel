@@ -43,6 +43,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matmul",                    include_bytes!("shaders_spirv/matmul.spv")),
     ("matmul_tiled",              include_bytes!("shaders_spirv/matmul_tiled.spv")),
     ("matvec",                    include_bytes!("shaders_spirv/matvec.spv")),
+    ("matvec_bf16_b",             include_bytes!("shaders_spirv/matvec_bf16_b.spv")),
     ("reduce",                    include_bytes!("shaders_spirv/reduce.spv")),
     ("reduce_last_dim",           include_bytes!("shaders_spirv/reduce_last_dim.spv")),
     ("rms_norm_last_dim",         include_bytes!("shaders_spirv/rms_norm_last_dim.spv")),
@@ -74,8 +75,12 @@ pub const AFFINE: &str = "affine";
 pub const MATMUL: &str = "matmul";
 /// GLSL matmul with shared-memory blocking.
 pub const MATMUL_TILED_GLSL: &str = "matmul_tiled";
-/// GLSL gemv (M == 1 matmul specialization).
+/// GLSL gemv (M == 1 matmul specialization), all-f32.
 pub const MATVEC_GLSL: &str = "matvec";
+/// GLSL gemv (M == 1) with bf16 weight matrix (B), f32 activations
+/// (A) and f32 output (C). Decode-phase path for bf16-quantized LLM
+/// weights on GPU.
+pub const MATVEC_BF16_B_GLSL: &str = "matvec_bf16_b";
 /// Fused softmax along the last dimension.
 pub const SOFTMAX: &str = "softmax";
 /// Parallel reduction over all elements.

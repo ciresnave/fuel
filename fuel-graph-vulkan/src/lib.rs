@@ -804,19 +804,46 @@ impl GraphBackend for VulkanBackend {
         let gz = batch as u32;
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
-        // Shape-based pipeline selection:
+        // Shape- and dtype-based pipeline selection:
+        //   A:f32, B:f32  — existing all-f32 paths
+        //   A:f32, B:bf16 — mixed-precision path (decode w/ bf16 weights)
+        //                   Only the M==1 gemv variant exists today;
+        //                   reg-tile/tiled bf16 variants are a follow-up.
         //   M == 1 -> gemv (subgroup-reduced dot, one wg per column)
         //   M small -> WGSL register-tile (no shared-mem barriers)
         //   M large -> GLSL shared-memory tiled matmul
+        let mixed_bf16 = a.dtype == DType::F32 && b.dtype == DType::BF16;
+        if !(a.dtype == DType::F32 && b.dtype == DType::F32) && !mixed_bf16 {
+            fuel_core_types::bail!(
+                "VulkanBackend::matmul: unsupported dtypes A={:?} B={:?}",
+                a.dtype, b.dtype
+            );
+        }
         if m == 1 {
             let gx = n as u32;
             let gy = 1u32;
+            let (pipeline, pipe_layout, op_name) = if mixed_bf16 {
+                (
+                    &self.pipelines.matvec_bf16_b_pipeline,
+                    &self.pipelines.matvec_bf16_b_layout,
+                    "matvec_bf16_b",
+                )
+            } else {
+                (
+                    &self.pipelines.matvec_pipeline,
+                    &self.pipelines.matvec_layout,
+                    "matvec",
+                )
+            };
             self.dispatch_3buf(
-                "matvec",
-                &self.pipelines.matvec_pipeline,
-                &self.pipelines.matvec_layout,
+                op_name, pipeline, pipe_layout,
                 a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
             )?;
+        } else if mixed_bf16 {
+            // bf16 reg-tile and tiled variants not written yet.
+            fuel_core_types::bail!(
+                "VulkanBackend::matmul: bf16-B matmul only supports M==1 (gemv) in this build; got M={m}"
+            );
         } else if m < 32 {
             let gx = ((n + 63) / 64) as u32;
             let gy = ((m + 63) / 64) as u32;
