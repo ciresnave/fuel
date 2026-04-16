@@ -127,6 +127,16 @@ impl GraphBackend for CpuBackend {
                 AnyRefTensor::BF16(ops::matmul(a, b)),
             (AnyRefTensor::F16(a), AnyRefTensor::F16(b)) =>
                 AnyRefTensor::F16(ops::matmul(a, b)),
+            // Mixed-precision: activations stay f32 while weights live
+            // as bf16 on device. For the CPU reference we upcast B to
+            // f32 and run the f32 path — the accuracy of this matches
+            // what the Vulkan backend's bf16-unpack-to-f32 kernels
+            // produce, so parity tests across backends line up.
+            (AnyRefTensor::F32(a), AnyRefTensor::BF16(b)) => {
+                let b_data: Vec<f32> = b.as_slice().iter().map(|x| x.to_f32()).collect();
+                let b_f32 = fuel_reference_backend::RefTensor::from_vec(b_data, b.shape().clone());
+                AnyRefTensor::F32(fast_matmul::matmul_f32(a, &b_f32))
+            }
             (a, b) => fuel_core_types::bail!("matmul: dtype mismatch {:?} vs {:?}", a.dtype(), b.dtype()),
         })
     }

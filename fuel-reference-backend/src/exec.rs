@@ -286,7 +286,7 @@ pub fn eval_node_with_op(
         Op::Step => unary!(inputs, cache, ops::step),
 
         // --- linear algebra ---
-        Op::MatMul => binary!(inputs, cache, ops::matmul),
+        Op::MatMul => eval_matmul(inputs, cache),
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),
         Op::Permute(axes) => eval_permute(axes, inputs, cache),
 
@@ -613,6 +613,33 @@ fn eval_rms_norm_last_dim_backward(
             "rms_norm_last_dim_backward: dtype mismatch {:?} vs {:?}",
             a.dtype(),
             b.dtype(),
+        ),
+    }
+}
+
+fn eval_matmul(
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let a = cache.get(&inputs[0]).expect("matmul missing lhs");
+    let b = cache.get(&inputs[1]).expect("matmul missing rhs");
+    match (a, b) {
+        (AnyRefTensor::F32(a), AnyRefTensor::F32(b)) => AnyRefTensor::F32(ops::matmul(a, b)),
+        (AnyRefTensor::F64(a), AnyRefTensor::F64(b)) => AnyRefTensor::F64(ops::matmul(a, b)),
+        (AnyRefTensor::BF16(a), AnyRefTensor::BF16(b)) => AnyRefTensor::BF16(ops::matmul(a, b)),
+        (AnyRefTensor::F16(a), AnyRefTensor::F16(b)) => AnyRefTensor::F16(ops::matmul(a, b)),
+        // Mixed-precision: activations f32 × weights bf16 → f32.
+        // Upcast B to f32 (bf16→f32 is exact) and run the f32 matmul.
+        (AnyRefTensor::F32(a), AnyRefTensor::BF16(b)) => {
+            let b_f32 = RefTensor::from_vec(
+                b.as_slice().iter().map(|x| x.to_f32()).collect(),
+                b.shape().clone(),
+            );
+            AnyRefTensor::F32(ops::matmul(a, &b_f32))
+        }
+        (a, b) => panic!(
+            "matmul: unsupported operand dtypes (lhs={:?}, rhs={:?})",
+            a.dtype(), b.dtype()
         ),
     }
 }
