@@ -648,6 +648,81 @@ fn vulkan_gemv_bf16_weights_matches_f32_reference() {
     }
 }
 
+/// Mixed-precision tiled matmul (M > 1, A:f32, B:bf16, C:f32).
+/// Covers the prefill and training paths for bf16-on-device weights.
+/// Same tolerance scheme as the M==1 gemv test: reference is
+/// f32 × bf16-round-tripped-to-f32.
+#[test]
+#[ignore]
+fn vulkan_tiled_matmul_bf16_weights_matches_f32_reference() {
+    use fuel_core_types::HostBuffer;
+    use fuel_graph_executor::GraphBackend;
+    use half::bf16;
+
+    let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("no Vulkan device; skipping: {e:?}");
+            return;
+        }
+    };
+
+    for (m, k, n, seed) in [
+        (5, 2048, 2048, 1u32),     // Short prefill through a hidden proj
+        (5, 2048, 5632, 2u32),     // Short prefill through up/gate
+        (32, 256, 512, 3u32),      // 32 is the reg-tile/tiled boundary
+        (64, 64, 64, 4u32),        // Exact workgroup-tile multiple
+        (7, 11, 13, 5u32),         // Tiny + all odd (boundary handling)
+        (17, 33, 17, 6u32),        // Non-aligned everywhere
+    ] {
+        let a_f32: Vec<f32> = (0..(m * k))
+            .map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin() * 0.5)
+            .collect();
+        let b_f32: Vec<f32> = (0..(k * n))
+            .map(|i| {
+                let w = (i as u32).wrapping_mul(2654435761) ^ seed;
+                (w as i32 as f32 * 1e-9).cos() * 0.1
+            })
+            .collect();
+        let b_bf16: Vec<bf16> = b_f32.iter().map(|&v| bf16::from_f32(v)).collect();
+        let b_f32_round: Vec<f32> = b_bf16.iter().map(|&x| x.to_f32()).collect();
+
+        let a_shape = Shape::from_dims(&[m, k]);
+        let b_shape = Shape::from_dims(&[k, n]);
+
+        // CPU reference with bf16-rounded B.
+        let mut reference = vec![0.0f32; m * n];
+        for row in 0..m {
+            for col in 0..n {
+                let mut acc: f32 = 0.0;
+                for kk in 0..k {
+                    acc += a_f32[row * k + kk] * b_f32_round[kk * n + col];
+                }
+                reference[row * n + col] = acc;
+            }
+        }
+
+        let a_dev = vk_backend
+            .upload(&HostBuffer::F32(a_f32.clone()), &a_shape)
+            .expect("a upload");
+        let b_dev = vk_backend
+            .upload(&HostBuffer::BF16(b_bf16.clone()), &b_shape)
+            .expect("b upload");
+        let a_layout = fuel_core_types::Layout::contiguous(&a_shape);
+        let b_layout = fuel_core_types::Layout::contiguous(&b_shape);
+        let out = vk_backend
+            .matmul(&a_dev, &b_dev, (1, m, n, k), &a_layout, &b_layout)
+            .expect("bf16 tiled matmul");
+        let out_host = vk_backend.download(&out).expect("out download");
+        let HostBuffer::F32(got) = out_host else {
+            panic!("wrong dtype: {:?}", out_host.dtype());
+        };
+
+        almost_equal(&reference, &got, 5e-2)
+            .unwrap_or_else(|e| panic!("bf16 tiled m={m} k={k} n={n}: {e}"));
+    }
+}
+
 /// Roundtrip a bf16 buffer through the Vulkan backend: upload it,
 /// download it, verify every element matches. Exercises the narrow
 /// piece of M1 of the bf16 project — the host ↔ device plumbing —
