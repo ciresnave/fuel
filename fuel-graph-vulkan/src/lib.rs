@@ -688,16 +688,39 @@ impl GraphBackend for VulkanBackend {
     }
 
     fn download(&self, storage: &Self::Storage) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
+        // Optional allocator-stats tracing. Set FUEL_VK_ALLOC_LOG=1 to
+        // print snapshots before and after the download-time flush.
+        // The pre/post delta localizes whether alloc accumulation is
+        // inside a single realize() (freed by flush) or across them
+        // (persists past flush — KVCache retention, const pool, etc).
+        let alloc_log = std::env::var("FUEL_VK_ALLOC_LOG").is_ok();
+        if alloc_log {
+            let s = self.allocator.statistics();
+            eprintln!(
+                "[vk-alloc pre ] allocs={} bytes={} blocks={} block_bytes={} free_regions={}",
+                s.allocation_count, s.allocation_bytes, s.block_count,
+                s.block_bytes, s.free_region_count,
+            );
+        }
         use fuel_core_types::HostBuffer;
         use half::{bf16, f16};
-        match storage.dtype {
+        let result = match storage.dtype {
             DType::F32 => Ok(HostBuffer::F32(self.download_slice::<f32>(storage)?)),
             DType::F64 => Ok(HostBuffer::F64(self.download_slice::<f64>(storage)?)),
             DType::U32 => Ok(HostBuffer::U32(self.download_slice::<u32>(storage)?)),
             DType::BF16 => Ok(HostBuffer::BF16(self.download_slice::<bf16>(storage)?)),
             DType::F16 => Ok(HostBuffer::F16(self.download_slice::<f16>(storage)?)),
             other => fuel_core_types::bail!("VulkanBackend: unsupported download {other:?}"),
+        };
+        if alloc_log {
+            let s = self.allocator.statistics();
+            eprintln!(
+                "[vk-alloc post] allocs={} bytes={} blocks={} block_bytes={} free_regions={}",
+                s.allocation_count, s.allocation_bytes, s.block_count,
+                s.block_bytes, s.free_region_count,
+            );
         }
+        result
     }
 
     fn try_clone(&self, storage: &Self::Storage, layout: &Layout) -> fuel_core_types::Result<Self::Storage> {

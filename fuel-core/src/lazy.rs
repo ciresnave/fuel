@@ -108,6 +108,19 @@ impl LazyTensor {
         }
     }
 
+    /// Build a const bf16 tensor on the same graph as `self`. Used for
+    /// bf16-on-device weights in the mixed-precision matmul path —
+    /// activations stay f32, weight matrices live as bf16.
+    pub fn const_bf16_like(
+        &self,
+        data: impl Into<Arc<[half::bf16]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        Self {
+            inner: self.inner.const_bf16_like(data, shape),
+        }
+    }
+
     /// Unwrap the underlying `fuel_graph::Tensor`. Used by callers that
     /// need to drop down to the graph layer for operations the bridge
     /// does not yet expose.
@@ -1099,29 +1112,94 @@ pub(crate) struct LayerOutput {
 /// related architectures do add biases on Q/K/V (but not on the output
 /// projection), so the loader stores them here when the safetensors
 /// file contains them.
+/// Weight tensor storage that preserves source precision.
+///
+/// Projection weights (Q/K/V/O for attention, gate/up/down for FFN,
+/// and the output `lm_head` matrix) stay in whatever dtype the
+/// source checkpoint used — f32 when that's how it was saved, bf16
+/// for modern HF checkpoints that ship bf16 to halve weight memory.
+/// Activations in the forward pass always stay f32 regardless; the
+/// matmul kernel handles the mixed precision via
+/// `VulkanBackend::matmul`'s `(A:F32, B:BF16) → F32` routing.
+///
+/// Norm gains and biases are NOT covered by this enum — they're
+/// small and precision-sensitive, so they stay `Arc<[f32]>`.
+///
+/// Cloning is cheap (Arc bump) for both variants. Use
+/// [`WeightStorage::const_like`] to emit a [`LazyTensor`] `Const`
+/// node with the right dtype.
+#[derive(Debug, Clone)]
+pub enum WeightStorage {
+    F32(Arc<[f32]>),
+    BF16(Arc<[half::bf16]>),
+}
+
+impl WeightStorage {
+    pub fn elem_count(&self) -> usize {
+        match self {
+            Self::F32(a) => a.len(),
+            Self::BF16(a) => a.len(),
+        }
+    }
+
+    pub fn dtype(&self) -> fuel_core_types::DType {
+        match self {
+            Self::F32(_) => fuel_core_types::DType::F32,
+            Self::BF16(_) => fuel_core_types::DType::BF16,
+        }
+    }
+
+    /// Emit a `Const` node on `anchor`'s graph matching this
+    /// storage's dtype. Used everywhere the forward pass wraps a
+    /// weight into a `LazyTensor`.
+    pub fn const_like(&self, anchor: &LazyTensor, shape: Shape) -> LazyTensor {
+        match self {
+            Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
+            Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
+        }
+    }
+}
+
+// Auto-conversions so code that was storing `Arc<[f32]>` keeps
+// compiling through the refactor — the LayerWeights field type
+// widened to WeightStorage but ergonomics don't regress.
+impl From<Arc<[f32]>> for WeightStorage {
+    fn from(a: Arc<[f32]>) -> Self { Self::F32(a) }
+}
+impl From<Vec<f32>> for WeightStorage {
+    fn from(v: Vec<f32>) -> Self { Self::F32(Arc::from(v)) }
+}
+impl From<Arc<[half::bf16]>> for WeightStorage {
+    fn from(a: Arc<[half::bf16]>) -> Self { Self::BF16(a) }
+}
+impl From<Vec<half::bf16>> for WeightStorage {
+    fn from(v: Vec<half::bf16>) -> Self { Self::BF16(Arc::from(v)) }
+}
+
 #[derive(Debug, Clone)]
 pub struct LayerWeights {
-    /// `[dim, dim]` query projection.
-    pub attn_q: Arc<[f32]>,
+    /// `[dim, dim]` query projection. Supports bf16 or f32.
+    pub attn_q: WeightStorage,
     /// `[dim]` query projection bias (Qwen2-style; LLaMA has none).
     pub attn_q_bias: Option<Arc<[f32]>>,
     /// `[dim, dim]` key projection.
-    pub attn_k: Arc<[f32]>,
+    pub attn_k: WeightStorage,
     /// `[kv_dim]` key projection bias.
     pub attn_k_bias: Option<Arc<[f32]>>,
     /// `[dim, dim]` value projection.
-    pub attn_v: Arc<[f32]>,
+    pub attn_v: WeightStorage,
     /// `[kv_dim]` value projection bias.
     pub attn_v_bias: Option<Arc<[f32]>>,
     /// `[dim, dim]` output projection.
-    pub attn_o: Arc<[f32]>,
+    pub attn_o: WeightStorage,
     /// `[dim, ffn_dim]` gate projection for SwiGLU.
-    pub ffn_gate: Arc<[f32]>,
+    pub ffn_gate: WeightStorage,
     /// `[dim, ffn_dim]` up projection for SwiGLU.
-    pub ffn_up: Arc<[f32]>,
+    pub ffn_up: WeightStorage,
     /// `[ffn_dim, dim]` down projection for SwiGLU.
-    pub ffn_down: Arc<[f32]>,
-    /// `[dim]` RmsNorm gain for the pre-attention norm.
+    pub ffn_down: WeightStorage,
+    /// `[dim]` RmsNorm gain for the pre-attention norm. Stays f32
+    /// — norm gains are small and precision-sensitive.
     pub attn_norm_gain: Arc<[f32]>,
     /// `[dim]` RmsNorm gain for the pre-FFN norm.
     pub ffn_norm_gain: Arc<[f32]>,
@@ -1132,14 +1210,18 @@ pub struct LayerWeights {
 /// or a separate matrix).
 #[derive(Debug, Clone)]
 pub struct LlamaWeights {
-    /// `[vocab_size, dim]` token embedding table.
+    /// `[vocab_size, dim]` token embedding table. Stays f32 — the
+    /// downstream `index_select` + graph traversal requires activation
+    /// dtype to be f32, and the table is used directly as activations.
     pub token_embedding: Arc<[f32]>,
     /// Per-layer weights.
     pub layers: Vec<LayerWeights>,
     /// `[dim]` RmsNorm gain for the final norm before the output head.
     pub final_norm_gain: Arc<[f32]>,
     /// `[dim, vocab_size]` output projection (a.k.a. `lm_head`).
-    pub output: Arc<[f32]>,
+    /// Supports bf16 or f32 on-device — this is the largest single
+    /// matrix after the embedding, worth ~262 MB at f32.
+    pub output: WeightStorage,
 }
 
 /// A LLaMA-style transformer model assembled via `LazyTensor`. Holds
@@ -1215,10 +1297,8 @@ impl LlamaModel {
             cfg.norm_eps,
         );
         // Output projection to vocab logits.
-        let w_out = h_norm.const_f32_like(
-            weights.output.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
-        );
+        let w_out = weights.output.const_like(
+            &h_norm, Shape::from_dims(&[cfg.dim, cfg.vocab_size]));
         h_norm.matmul(&w_out)
     }
 
@@ -1241,10 +1321,10 @@ impl LlamaModel {
         // Project to Q, K, V using auto-broadcasting matmul.
         // Under GQA, W_k and W_v have fewer output features (kv_dim
         // instead of dim) because there are fewer key/value heads.
-        let w_q = x.const_f32_like(layer.attn_q.clone(), Shape::from_dims(&[cfg.dim, cfg.dim]));
-        let w_k = x.const_f32_like(layer.attn_k.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_v = x.const_f32_like(layer.attn_v.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_o = x.const_f32_like(layer.attn_o.clone(), Shape::from_dims(&[cfg.dim, cfg.dim]));
+        let w_q = layer.attn_q.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
+        let w_k = layer.attn_k.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
+        let w_v = layer.attn_v.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
+        let w_o = layer.attn_o.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
         let q = apply_optional_bias(x_norm.matmul(&w_q), layer.attn_q_bias.as_ref(), cfg.dim);
         let k = apply_optional_bias(x_norm.matmul(&w_k), layer.attn_k_bias.as_ref(), kv_dim);
         let v = apply_optional_bias(x_norm.matmul(&w_v), layer.attn_v_bias.as_ref(), kv_dim);
@@ -1351,18 +1431,12 @@ impl LlamaModel {
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
         // SwiGLU FFN.
-        let w_gate = x.const_f32_like(
-            layer.ffn_gate.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.ffn_dim]),
-        );
-        let w_up = x.const_f32_like(
-            layer.ffn_up.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.ffn_dim]),
-        );
-        let w_down = x.const_f32_like(
-            layer.ffn_down.clone(),
-            Shape::from_dims(&[cfg.ffn_dim, cfg.dim]),
-        );
+        let w_gate = layer.ffn_gate.const_like(
+            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
+        let w_up = layer.ffn_up.const_like(
+            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
+        let w_down = layer.ffn_down.const_like(
+            x, Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
         let gate = h1_norm.matmul(&w_gate);
         let up = h1_norm.matmul(&w_up);
         let swiglu = gate.silu().mul(&up);
@@ -1405,10 +1479,10 @@ impl LlamaModel {
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
-        let w_q = x.const_f32_like(layer.attn_q.clone(), Shape::from_dims(&[cfg.dim, cfg.dim]));
-        let w_k = x.const_f32_like(layer.attn_k.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_v = x.const_f32_like(layer.attn_v.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_o = x.const_f32_like(layer.attn_o.clone(), Shape::from_dims(&[cfg.dim, cfg.dim]));
+        let w_q = layer.attn_q.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
+        let w_k = layer.attn_k.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
+        let w_v = layer.attn_v.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
+        let w_o = layer.attn_o.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
         let q = apply_optional_bias(x_norm.matmul(&w_q), layer.attn_q_bias.as_ref(), cfg.dim);
         let k = apply_optional_bias(x_norm.matmul(&w_k), layer.attn_k_bias.as_ref(), kv_dim);
         let v = apply_optional_bias(x_norm.matmul(&w_v), layer.attn_v_bias.as_ref(), kv_dim);
@@ -1528,18 +1602,12 @@ impl LlamaModel {
         let h1 = x.add(&attn_out);
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
-        let w_gate = x.const_f32_like(
-            layer.ffn_gate.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.ffn_dim]),
-        );
-        let w_up = x.const_f32_like(
-            layer.ffn_up.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.ffn_dim]),
-        );
-        let w_down = x.const_f32_like(
-            layer.ffn_down.clone(),
-            Shape::from_dims(&[cfg.ffn_dim, cfg.dim]),
-        );
+        let w_gate = layer.ffn_gate.const_like(
+            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
+        let w_up = layer.ffn_up.const_like(
+            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
+        let w_down = layer.ffn_down.const_like(
+            x, Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
         let gate = h1_norm.matmul(&w_gate);
         let up = h1_norm.matmul(&w_up);
         let swiglu = gate.silu().mul(&up);
@@ -1645,10 +1713,8 @@ impl LlamaModel {
             cfg.dim,
             cfg.norm_eps,
         );
-        let w_out = h_norm.const_f32_like(
-            weights.output.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
-        );
+        let w_out = weights.output.const_like(
+            &h_norm, Shape::from_dims(&[cfg.dim, cfg.vocab_size]));
         let logits = h_norm.matmul(&w_out);
 
         let last_pos = seq - 1;
@@ -1911,6 +1977,57 @@ fn load_transposed_matrix(
     Ok(out)
 }
 
+/// Transposed-matrix loader that preserves source dtype. For
+/// safetensors files saved with bf16 weights, returns
+/// `WeightStorage::BF16` and never materializes an f32 copy — the
+/// 2× memory saving vs `load_transposed_matrix` comes from here.
+/// f32 and other source dtypes still go through the f32 upcast path
+/// for safety; extending this to preserve f16 is a one-line change
+/// when a consumer wants it.
+///
+/// The transpose itself is done in whatever dtype we're keeping:
+/// read bf16 elements from the file, place them in the transposed
+/// target buffer, no conversion.
+fn load_transposed_matrix_preserve_dtype(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    out_features: usize,
+    in_features: usize,
+) -> crate::Result<WeightStorage> {
+    use safetensors::Dtype;
+    let view = st.get(name)?;
+    let bytes = view.data();
+    let expected = out_features * in_features;
+    match view.dtype() {
+        Dtype::BF16 => {
+            if bytes.len() != expected * 2 {
+                crate::bail!(
+                    "load_transposed_matrix_preserve_dtype: bf16 tensor {name:?} has {} bytes, expected {}",
+                    bytes.len(), expected * 2,
+                );
+            }
+            // Reinterpret input as [out_features, in_features] of
+            // bf16; write transposed layout.
+            let mut out = vec![half::bf16::ZERO; expected];
+            for i in 0..out_features {
+                for j in 0..in_features {
+                    let src_off = (i * in_features + j) * 2;
+                    let bits = u16::from_le_bytes([bytes[src_off], bytes[src_off + 1]]);
+                    out[j * out_features + i] = half::bf16::from_bits(bits);
+                }
+            }
+            Ok(WeightStorage::BF16(Arc::from(out)))
+        }
+        _ => {
+            // F32, F64, F16 all fall through to the f32 upcast path.
+            // Non-f32 source types still benefit from being readable;
+            // they just lose the "weights stay compact" win.
+            let flat = load_transposed_matrix(st, name, out_features, in_features)?;
+            Ok(WeightStorage::F32(Arc::from(flat)))
+        }
+    }
+}
+
 impl LlamaWeights {
     /// Load all LLaMA weights from one or more memory-mapped safetensors
     /// files using the HuggingFace naming convention (the same names
@@ -1948,43 +2065,46 @@ impl LlamaWeights {
 
         let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.n_layers);
         for i in 0..cfg.n_layers {
-            let attn_q = load_transposed_matrix(
+            // Projections use the dtype-preserving loader — bf16
+            // source files stay bf16 on-device (halving weight memory
+            // on this layer).
+            let attn_q = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.self_attn.q_proj.weight"),
                 cfg.dim,
                 cfg.dim,
             )?;
-            let attn_k = load_transposed_matrix(
+            let attn_k = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.self_attn.k_proj.weight"),
                 kv_dim,
                 cfg.dim,
             )?;
-            let attn_v = load_transposed_matrix(
+            let attn_v = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.self_attn.v_proj.weight"),
                 kv_dim,
                 cfg.dim,
             )?;
-            let attn_o = load_transposed_matrix(
+            let attn_o = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.self_attn.o_proj.weight"),
                 cfg.dim,
                 cfg.dim,
             )?;
-            let ffn_gate = load_transposed_matrix(
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.mlp.gate_proj.weight"),
                 cfg.ffn_dim,
                 cfg.dim,
             )?;
-            let ffn_up = load_transposed_matrix(
+            let ffn_up = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.mlp.up_proj.weight"),
                 cfg.ffn_dim,
                 cfg.dim,
             )?;
-            let ffn_down = load_transposed_matrix(
+            let ffn_down = load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("model.layers.{i}.mlp.down_proj.weight"),
                 cfg.dim,
@@ -2021,16 +2141,16 @@ impl LlamaWeights {
             .ok()
             .map(Arc::from);
             layers.push(LayerWeights {
-                attn_q:         Arc::from(attn_q),
+                attn_q,
                 attn_q_bias,
-                attn_k:         Arc::from(attn_k),
+                attn_k,
                 attn_k_bias,
-                attn_v:         Arc::from(attn_v),
+                attn_v,
                 attn_v_bias,
-                attn_o:         Arc::from(attn_o),
-                ffn_gate:       Arc::from(ffn_gate),
-                ffn_up:         Arc::from(ffn_up),
-                ffn_down:       Arc::from(ffn_down),
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
                 attn_norm_gain: Arc::from(attn_norm_gain),
                 ffn_norm_gain:  Arc::from(ffn_norm_gain),
             });
@@ -2041,27 +2161,30 @@ impl LlamaWeights {
         // `[dim, vocab_size]` for `h @ W_out`. Fall back to tied
         // embeddings (`lm_head.weight` absent → reuse embed_tokens) for
         // models that tie input/output weights.
-        let output: Vec<f32> =
-            match load_transposed_matrix(st, "lm_head.weight", cfg.vocab_size, cfg.dim) {
-                Ok(w) => w,
-                Err(_) => {
-                    // Tied weights: transpose embed_tokens.
-                    let mut transposed = vec![0.0_f32; cfg.dim * cfg.vocab_size];
-                    for i in 0..cfg.vocab_size {
-                        for j in 0..cfg.dim {
-                            transposed[j * cfg.vocab_size + i] =
-                                token_embedding[i * cfg.dim + j];
-                        }
+        let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
+            st, "lm_head.weight", cfg.vocab_size, cfg.dim,
+        ) {
+            Ok(w) => w,
+            Err(_) => {
+                // Tied weights: transpose embed_tokens. Embedding is
+                // always f32, so the tied output is f32 regardless
+                // of how the projection weights loaded.
+                let mut transposed = vec![0.0_f32; cfg.dim * cfg.vocab_size];
+                for i in 0..cfg.vocab_size {
+                    for j in 0..cfg.dim {
+                        transposed[j * cfg.vocab_size + i] =
+                            token_embedding[i * cfg.dim + j];
                     }
-                    transposed
                 }
-            };
+                WeightStorage::F32(Arc::from(transposed))
+            }
+        };
 
         Ok(LlamaWeights {
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain: Arc::from(final_norm_gain),
-            output:          Arc::from(output),
+            output,
         })
     }
 }
@@ -2444,10 +2567,8 @@ impl LlamaModel {
         let h_norm = apply_affine_rms_norm(
             &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
         );
-        let w_out = h_norm.const_f32_like(
-            weights.output.clone(),
-            Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
-        );
+        let w_out = weights.output.const_like(
+            &h_norm, Shape::from_dims(&[cfg.dim, cfg.vocab_size]));
         let logits = h_norm.matmul(&w_out);
 
         let last_pos = seq - 1;
@@ -3213,22 +3334,22 @@ mod generate_tests {
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
-                    attn_q:         vec_of(cfg.dim * cfg.dim),
+                    attn_q:         vec_of(cfg.dim * cfg.dim).into(),
                     attn_q_bias:    None,
-                    attn_k:         vec_of(cfg.dim * kv_dim),
+                    attn_k:         vec_of(cfg.dim * kv_dim).into(),
                     attn_k_bias:    None,
-                    attn_v:         vec_of(cfg.dim * kv_dim),
+                    attn_v:         vec_of(cfg.dim * kv_dim).into(),
                     attn_v_bias:    None,
-                    attn_o:         vec_of(cfg.dim * cfg.dim),
-                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim),
-                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim),
-                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim),
+                    attn_o:         vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
                     attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
                     ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
                 })
                 .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output:          vec_of(cfg.dim * cfg.vocab_size),
+            output:          vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
 
@@ -3630,22 +3751,22 @@ mod gqa_tests {
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
-                    attn_q:         vec_of(cfg.dim * cfg.dim),
+                    attn_q:         vec_of(cfg.dim * cfg.dim).into(),
                     attn_q_bias:    None,
-                    attn_k:         vec_of(cfg.dim * kv_dim),
+                    attn_k:         vec_of(cfg.dim * kv_dim).into(),
                     attn_k_bias:    None,
-                    attn_v:         vec_of(cfg.dim * kv_dim),
+                    attn_v:         vec_of(cfg.dim * kv_dim).into(),
                     attn_v_bias:    None,
-                    attn_o:         vec_of(cfg.dim * cfg.dim),
-                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim),
-                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim),
-                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim),
+                    attn_o:         vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
                     attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
                     ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
                 })
                 .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output:          vec_of(cfg.dim * cfg.vocab_size),
+            output:          vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
 
@@ -3726,22 +3847,22 @@ mod llama_tests {
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
-                    attn_q:         vec_of(cfg.dim * cfg.dim),
+                    attn_q:         vec_of(cfg.dim * cfg.dim).into(),
                     attn_q_bias:    None,
-                    attn_k:         vec_of(cfg.dim * kv_dim),
+                    attn_k:         vec_of(cfg.dim * kv_dim).into(),
                     attn_k_bias:    None,
-                    attn_v:         vec_of(cfg.dim * kv_dim),
+                    attn_v:         vec_of(cfg.dim * kv_dim).into(),
                     attn_v_bias:    None,
-                    attn_o:         vec_of(cfg.dim * cfg.dim),
-                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim),
-                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim),
-                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim),
+                    attn_o:         vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
                     attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
                     ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
                 })
                 .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output:          vec_of(cfg.dim * cfg.vocab_size),
+            output:          vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
 
