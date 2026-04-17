@@ -1,41 +1,28 @@
-//! Asynchronous command buffer recorder + op timing for VulkanBackend.
+//! Batched command buffer recorder for VulkanBackend.
 //!
-//! Replaces the synchronous-per-op `queue.one_shot` pattern with:
+//! Records ALL dispatches for a realize() pass into a SINGLE command
+//! buffer with pipeline barriers between ops. Submitted once at
+//! download time. Replaces the old per-op submit pattern that incurred
+//! ~30µs of host overhead per dispatch × ~9K dispatches per 32-token
+//! run = ~270ms of pure submit overhead.
 //!
-//! 1. Allocate a small command buffer per op.
-//! 2. Record the op with a leading compute→compute memory barrier so
-//!    any prior compute writes are visible to this op's reads.
-//! 3. Submit with no fence — `vkQueueSubmit` is asynchronous by
-//!    default; the CPU returns as soon as the driver accepts the work.
-//! 4. Push the CB plus any transient per-op resources (uniform
-//!    buffers, shape/strides buffers, descriptor sets) onto a pending
-//!    list so they outlive the in-flight GPU work.
-//!
-//! A single compute queue executes submissions in order, so there is
-//! no need for semaphores between ops. The CPU's wait is deferred
-//! until something actually needs the results — today that's always
-//! `download()`, which issues its D2H copy via `queue.one_shot`. Since
-//! that copy submit follows all our async submits on the same queue,
-//! `one_shot`'s wait-on-fence drains every prior submit too. At that
-//! point it is safe to drop the pending list and recycle the pool.
-//!
-//! The recorder owns one `CommandPool` at a time. When we drain, we
-//! drop the pool entirely (which frees any memory it had allocated for
-//! CB backing storage) and make a fresh one. This keeps the per-op
-//! steady-state footprint bounded by what's in flight between syncs.
+//! The batch recording uses raw Vulkan calls to keep the command
+//! buffer in recording state across multiple `record_batch_dispatch`
+//! calls — vulkane's RAII `CommandBufferRecording` wrapper calls
+//! `vkEndCommandBuffer` on drop, which would close the recording
+//! after each dispatch. The raw calls are safe because:
+//! - All handles come from vulkane's safe RAII types (`.raw()`)
+//! - The CB is in recording state for the entire batch
+//! - Transient resources (descs, params buffers) are kept alive
+//!   until the fence signals
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 use vulkane::safe::*;
+use vulkane::raw::bindings::*;
 
-/// Host-side op timing. Measures the CPU cost of each dispatch
-/// (descriptor alloc + record + submit) — NOT actual GPU execution
-/// time, which would require Vulkan timestamp queries. Host cost is
-/// what matters when the bottleneck is submission overhead; GPU cost
-/// matters when the GPU is actually the critical path. We start with
-/// the host-side numbers because they're free and they answer
-/// "is submission overhead dominating our forward pass?" directly.
+/// Host-side op timing.
 #[derive(Default)]
 pub struct OpStats {
     inner: RefCell<HashMap<&'static str, OpStatEntry>>,
@@ -55,8 +42,6 @@ impl OpStats {
         e.total_ns += elapsed.as_nanos();
     }
 
-    /// Snapshot the current counts sorted by total time descending,
-    /// suitable for printing a "where did the CPU go?" report.
     pub fn snapshot(&self) -> Vec<(&'static str, OpStatEntry)> {
         let map = self.inner.borrow();
         let mut v: Vec<_> = map.iter().map(|(k, v)| (*k, *v)).collect();
@@ -69,56 +54,181 @@ impl OpStats {
     }
 }
 
-/// Keeps transient resources alive for the lifetime of their in-flight
-/// command buffer. The fields are never read — they exist so Drop
-/// fires at the right moment (after the next sync point).
-#[allow(dead_code)]
-pub(crate) struct PendingSubmit {
-    pub cmd: CommandBuffer,
-    // Uniform / shape-strides buffers used by this CB's descriptors.
-    // Each tuple is a Buffer + its sub-allocation from the shared
-    // allocator. Dropping returns the sub-allocation to its pool.
-    pub transient_buffers: Vec<(Buffer, Allocation)>,
-    // The descriptor set itself — must survive until the GPU consumes it.
-    pub transient_desc: Option<DescriptorSet>,
-}
-
 pub(crate) struct Recorder {
     pub pool: CommandPool,
-    pub pending: Vec<PendingSubmit>,
-    /// Monotonic timeline semaphore used to order GPU work across
-    /// submissions. On NVIDIA, relying on a `vkCmdPipelineBarrier` at
-    /// the start of each submitted CB to synchronize with writes from
-    /// previously-submitted CBs is not reliable — we empirically
-    /// reproduced `ERROR_DEVICE_LOST` at any queue depth ≥ 2. A
-    /// timeline semaphore chain (each submit waits for the prior
-    /// counter value and signals the next) is the spec-canonical way
-    /// to synchronize cross-submission compute work.
-    pub timeline: Semaphore,
-    /// The counter value the most recent submit was configured to
-    /// signal. Next submit waits for this and signals `counter + 1`.
-    pub counter: u64,
+    /// The single CB being recorded into for the current batch.
+    /// `None` when no batch is active.
+    batch_cb: Option<CommandBuffer>,
+    /// Transient resources (params uniform buffers, shape/strides
+    /// buffers) from all dispatches in the current batch. Dropped
+    /// after the fence signals.
+    batch_transients: Vec<(Buffer, Allocation)>,
+    /// Descriptor sets from all dispatches. Must survive until GPU
+    /// consumes the CB.
+    batch_descs: Vec<DescriptorSet>,
+    /// Number of dispatches recorded in the current batch.
+    pub(crate) batch_count: usize,
 }
+
+/// Max dispatches per batch CB. Keeps each GPU submission well
+/// under the WDDM TDR timeout (~2s). At ~0.5ms GPU time per
+/// dispatch, 500 dispatches ≈ 0.25s — safe margin.
+const BATCH_LIMIT: usize = 500;
 
 impl Recorder {
     pub fn new(device: &Device, queue_family: u32) -> Result<Self> {
         Ok(Self {
             pool: CommandPool::new(device, queue_family)?,
-            pending: Vec::new(),
-            timeline: Semaphore::timeline(device, 0)?,
-            counter: 0,
+            batch_cb: None,
+            batch_transients: Vec::new(),
+            batch_descs: Vec::new(),
+            batch_count: 0,
         })
     }
 
-    /// Called by the backend's `download` path after the one_shot D2H
-    /// copy has completed. Every prior async submit on this queue is
-    /// now done on the GPU, so we can safely drop every CB + its
-    /// transient resources, and replace the pool to release any
-    /// accumulated backing memory. We also reset the timeline
-    /// semaphore's counter tracking — the semaphore object itself
-    /// stays alive; its internal counter continues monotonically.
+    /// Record a compute dispatch into the current batch CB.
+    /// If no batch CB exists, allocates one and begins recording.
+    /// Inserts a compute→compute memory barrier before each dispatch.
+    pub fn record_batch_dispatch(
+        &mut self,
+        device: &Device,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+        desc: DescriptorSet,
+        groups: (u32, u32, u32),
+        transient_buffers: Vec<(Buffer, Allocation)>,
+    ) -> Result<()> {
+        if self.batch_cb.is_none() {
+            let cmd = self.pool.allocate_primary()?;
+            let dt = device.dispatch();
+            unsafe {
+                let begin = dt.vkBeginCommandBuffer
+                    .ok_or(Error::MissingFunction("vkBeginCommandBuffer"))?;
+                let info = VkCommandBufferBeginInfo {
+                    sType: VkStructureType::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    ..Default::default()
+                };
+                let r = begin(cmd.raw(), &info);
+                if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+            }
+            self.batch_cb = Some(cmd);
+        }
+        let cmd_handle = self.batch_cb.as_ref().unwrap().raw();
+        let dt = device.dispatch();
+
+        unsafe {
+            // Pipeline barrier: ensure prior compute writes are visible.
+            if let Some(barrier_fn) = dt.vkCmdPipelineBarrier {
+                let mem_barrier = VkMemoryBarrier {
+                    sType: VkStructureType::STRUCTURE_TYPE_MEMORY_BARRIER,
+                    pNext: std::ptr::null(),
+                    srcAccessMask: 0x40, // VK_ACCESS_SHADER_WRITE_BIT
+                    dstAccessMask: 0x20 | 0x40, // SHADER_READ | SHADER_WRITE
+                };
+                barrier_fn(
+                    cmd_handle,
+                    0x800, // VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                    0x800,
+                    0,
+                    1, &mem_barrier,
+                    0, std::ptr::null(),
+                    0, std::ptr::null(),
+                );
+            }
+
+            // Bind pipeline.
+            if let Some(bind_fn) = dt.vkCmdBindPipeline {
+                bind_fn(
+                    cmd_handle,
+                    VkPipelineBindPoint::PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.raw(),
+                );
+            }
+
+            // Bind descriptor set.
+            let desc_handle = desc.raw();
+            if let Some(bind_ds) = dt.vkCmdBindDescriptorSets {
+                bind_ds(
+                    cmd_handle,
+                    VkPipelineBindPoint::PIPELINE_BIND_POINT_COMPUTE,
+                    pipe_layout.raw(),
+                    0, 1, &desc_handle,
+                    0, std::ptr::null(),
+                );
+            }
+
+            // Dispatch.
+            if let Some(dispatch_fn) = dt.vkCmdDispatch {
+                dispatch_fn(cmd_handle, groups.0, groups.1, groups.2);
+            }
+        }
+
+        self.batch_transients.extend(transient_buffers);
+        self.batch_descs.push(desc);
+        self.batch_count += 1;
+        Ok(())
+    }
+
+    /// True if the batch should be flushed (hit the per-batch limit).
+    pub fn should_flush(&self) -> bool {
+        self.batch_count >= BATCH_LIMIT
+    }
+
+    /// End the current batch CB recording, submit it, and wait for
+    /// the GPU to finish. Drops all transient resources afterward.
+    pub fn flush_batch(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        queue_family: u32,
+    ) -> Result<()> {
+        let Some(cmd) = self.batch_cb.take() else {
+            return Ok(());
+        };
+        let dt = device.dispatch();
+
+        // End recording.
+        unsafe {
+            let end = dt.vkEndCommandBuffer
+                .ok_or(Error::MissingFunction("vkEndCommandBuffer"))?;
+            let r = end(cmd.raw());
+            if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+        }
+
+        // Submit with a fence and wait.
+        let fence = Fence::new(device)?;
+        queue.submit(&[&cmd], Some(&fence))?;
+        fence.wait(u64::MAX)?;
+
+        // Drop transient resources now that the GPU is done.
+        self.batch_transients.clear();
+        self.batch_descs.clear();
+        self.batch_count = 0;
+
+        // Recycle the command pool to release CB backing memory.
+        drop(cmd);
+        self.pool = CommandPool::new(device, queue_family)?;
+        Ok(())
+    }
+
+    /// Drain without submitting (for cleanup).
     pub fn drain(&mut self, device: &Device, queue_family: u32) -> Result<()> {
-        self.pending.clear();
+        if self.batch_cb.is_some() {
+            // There's an active batch — need to end + discard it.
+            // End the recording so the CB transitions out of recording
+            // state before we drop it.
+            let cmd = self.batch_cb.take().unwrap();
+            let dt = device.dispatch();
+            unsafe {
+                if let Some(end) = dt.vkEndCommandBuffer {
+                    end(cmd.raw());
+                }
+            }
+            drop(cmd);
+        }
+        self.batch_transients.clear();
+        self.batch_descs.clear();
+        self.batch_count = 0;
         self.pool = CommandPool::new(device, queue_family)?;
         Ok(())
     }
