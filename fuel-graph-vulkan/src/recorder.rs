@@ -68,6 +68,10 @@ pub(crate) struct Recorder {
     batch_descs: Vec<DescriptorSet>,
     /// Number of dispatches recorded in the current batch.
     pub(crate) batch_count: usize,
+    /// VkBuffer handles written by dispatches since the last barrier.
+    /// Used for dependency-aware barrier placement: a barrier is only
+    /// inserted when a dispatch READS a buffer in this set.
+    dirty_buffers: std::collections::HashSet<u64>,
 }
 
 /// Max dispatches per batch CB. Keeps each GPU submission well
@@ -83,12 +87,15 @@ impl Recorder {
             batch_transients: Vec::new(),
             batch_descs: Vec::new(),
             batch_count: 0,
+            dirty_buffers: std::collections::HashSet::new(),
         })
     }
 
     /// Record a compute dispatch into the current batch CB.
     /// If no batch CB exists, allocates one and begins recording.
-    /// Inserts a compute→compute memory barrier before each dispatch.
+    /// Only inserts a pipeline barrier when a READ buffer overlaps
+    /// with a previously-written (dirty) buffer — independent ops
+    /// can overlap on the GPU without barriers.
     pub fn record_batch_dispatch(
         &mut self,
         device: &Device,
@@ -97,6 +104,8 @@ impl Recorder {
         desc: DescriptorSet,
         groups: (u32, u32, u32),
         transient_buffers: Vec<(Buffer, Allocation)>,
+        read_bufs: &[u64],
+        write_bufs: &[u64],
     ) -> Result<()> {
         if self.batch_cb.is_none() {
             let cmd = self.pool.allocate_primary()?;
@@ -117,23 +126,30 @@ impl Recorder {
         let dt = device.dispatch();
 
         unsafe {
-            // Pipeline barrier: ensure prior compute writes are visible.
-            if let Some(barrier_fn) = dt.vkCmdPipelineBarrier {
-                let mem_barrier = VkMemoryBarrier {
-                    sType: VkStructureType::STRUCTURE_TYPE_MEMORY_BARRIER,
-                    pNext: std::ptr::null(),
-                    srcAccessMask: 0x40, // VK_ACCESS_SHADER_WRITE_BIT
-                    dstAccessMask: 0x20 | 0x40, // SHADER_READ | SHADER_WRITE
-                };
-                barrier_fn(
-                    cmd_handle,
-                    0x800, // VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                    0x800,
-                    0,
-                    1, &mem_barrier,
-                    0, std::ptr::null(),
-                    0, std::ptr::null(),
-                );
+            // Dependency-aware barrier: only insert when this dispatch
+            // reads a buffer that was written by a prior dispatch
+            // without an intervening barrier. Independent ops skip
+            // the barrier and can overlap on the GPU.
+            let needs_barrier = read_bufs.iter().any(|b| self.dirty_buffers.contains(b));
+            if needs_barrier {
+                if let Some(barrier_fn) = dt.vkCmdPipelineBarrier {
+                    let mem_barrier = VkMemoryBarrier {
+                        sType: VkStructureType::STRUCTURE_TYPE_MEMORY_BARRIER,
+                        pNext: std::ptr::null(),
+                        srcAccessMask: 0x40, // VK_ACCESS_SHADER_WRITE_BIT
+                        dstAccessMask: 0x20 | 0x40, // SHADER_READ | SHADER_WRITE
+                    };
+                    barrier_fn(
+                        cmd_handle,
+                        0x800, // VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                        0x800,
+                        0,
+                        1, &mem_barrier,
+                        0, std::ptr::null(),
+                        0, std::ptr::null(),
+                    );
+                }
+                self.dirty_buffers.clear();
             }
 
             // Bind pipeline.
@@ -166,6 +182,10 @@ impl Recorder {
         self.batch_transients.extend(transient_buffers);
         self.batch_descs.push(desc);
         self.batch_count += 1;
+        // Mark write buffers as dirty for dependency tracking.
+        for &wb in write_bufs {
+            self.dirty_buffers.insert(wb);
+        }
         Ok(())
     }
 
@@ -204,6 +224,7 @@ impl Recorder {
         self.batch_transients.clear();
         self.batch_descs.clear();
         self.batch_count = 0;
+        self.dirty_buffers.clear();
 
         // Recycle the command pool to release CB backing memory.
         drop(cmd);
@@ -229,6 +250,7 @@ impl Recorder {
         self.batch_transients.clear();
         self.batch_descs.clear();
         self.batch_count = 0;
+        self.dirty_buffers.clear();
         self.pool = CommandPool::new(device, queue_family)?;
         Ok(())
     }
