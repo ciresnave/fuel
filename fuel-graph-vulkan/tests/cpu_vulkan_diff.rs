@@ -821,3 +821,72 @@ fn vulkan_roundtrips_bf16_host_buffer() {
         "bf16 roundtrip mismatch: src={:?}, got={:?}", src_bf16, round_bf16
     );
 }
+
+/// Direct backend-level test: strided matmul for Q@K^T with lazy
+/// transpose strides. Compares against materialized (contiguous)
+/// K^T to isolate whether the stride-aware kernel is correct.
+#[test]
+#[ignore]
+fn vulkan_strided_matmul_matches_contiguous_reference() {
+    use fuel_core_types::{HostBuffer, Layout};
+    use fuel_graph_executor::GraphBackend;
+
+    let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("skip: {e:?}"); return; }
+    };
+
+    let seq = 3usize;
+    let hd = 64usize;
+    let n_kv = 4usize;
+
+    // full_k: [1, 4, 3, 64] contiguous
+    let k_data: Vec<f32> = (0..(n_kv * seq * hd))
+        .map(|i| (i as f32 * 0.001).sin())
+        .collect();
+    let k_shape = Shape::from_dims(&[1, n_kv, seq, hd]);
+    let k_dev = vk.upload(&HostBuffer::F32(k_data.clone()), &k_shape).unwrap();
+
+    // Q: [1, 32, 1, 64] contiguous
+    let q_data: Vec<f32> = (0..32 * hd)
+        .map(|i| (i as f32 * 0.002).cos())
+        .collect();
+    let q_shape = Shape::from_dims(&[1, 32, 1, hd]);
+    let q_dev = vk.upload(&HostBuffer::F32(q_data.clone()), &q_shape).unwrap();
+    let q_layout = Layout::contiguous(&q_shape);
+
+    // Contiguous K^T: manually transpose full_k → [1, 4, 64, 3]
+    let mut kt_data = vec![0.0f32; n_kv * seq * hd];
+    for h in 0..n_kv {
+        for s in 0..seq {
+            for f in 0..hd {
+                // k_data[h*seq*hd + s*hd + f] → kt_data[h*hd*seq + f*seq + s]
+                kt_data[h * hd * seq + f * seq + s] = k_data[h * seq * hd + s * hd + f];
+            }
+        }
+    }
+    let kt_shape = Shape::from_dims(&[1, n_kv, hd, seq]);
+    let kt_dev = vk.upload(&HostBuffer::F32(kt_data), &kt_shape).unwrap();
+    let kt_layout_contig = Layout::contiguous(&kt_shape);
+
+    // Strided K^T: same buffer as full_k, transposed strides
+    let stride_per_head = seq * hd;
+    let kt_strides = vec![n_kv * stride_per_head, stride_per_head, 1usize, hd];
+    let kt_layout_strided = Layout::new(kt_shape.clone(), kt_strides.into(), 0);
+
+    let bmnk = (32usize, 1usize, seq, hd);
+
+    // Reference: Q @ contiguous K^T
+    let ref_out = vk.matmul(&q_dev, &kt_dev, bmnk, &q_layout, &kt_layout_contig).unwrap();
+    let HostBuffer::F32(ref_data) = vk.download(&ref_out).unwrap() else { panic!("wrong dtype"); };
+
+    // Test: Q @ strided K^T (same full_k buffer, transposed strides)
+    let test_out = vk.matmul(&q_dev, &k_dev, bmnk, &q_layout, &kt_layout_strided).unwrap();
+    let HostBuffer::F32(test_data) = vk.download(&test_out).unwrap() else { panic!("wrong dtype"); };
+
+    eprintln!("ref[0..5]  = {:?}", &ref_data[..5]);
+    eprintln!("test[0..5] = {:?}", &test_data[..5]);
+
+    almost_equal(&ref_data, &test_data, 1e-4)
+        .unwrap_or_else(|e| panic!("strided matmul mismatch: {e}"));
+}

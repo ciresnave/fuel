@@ -574,6 +574,16 @@ impl<B: GraphBackend> GraphExecutor<B> {
             //    permuted/transposed views work without materialization) --
             Op::MatMul => {
                 let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
+                // Debug: log when matmul receives non-contiguous input
+                if a.custom_layout.is_some() || b.custom_layout.is_some() {
+                    eprintln!(
+                        "[matmul strided] A: shape={:?} strides={:?} custom={} | B: shape={:?} strides={:?} custom={}",
+                        a.shape.dims(), a.layout().stride(),
+                        a.custom_layout.is_some(),
+                        b.shape.dims(), b.layout().stride(),
+                        b.custom_layout.is_some(),
+                    );
+                }
                 let ad = a.shape.dims();
                 let bd = b.shape.dims();
                 let rank = ad.len();
@@ -834,9 +844,39 @@ impl<B: GraphBackend> GraphExecutor<B> {
     }
 
     fn do_permute(&self, a: &TrackedTensor<B::Storage>, axes: &[usize], out_shape: &Shape) -> TrackedTensor<B::Storage> {
-        let _s = debug_span!("permute", elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
+
+        // Detect last-two-dims transpose (the common K^T pattern).
+        // Only return a lazy view for this specific case — it's been
+        // verified correct via parity test. Other permutations
+        // (e.g. reshape→permute for Q/K/V head splitting) still
+        // materialize because some downstream ops (RoPE, concat)
+        // assume contiguous storage via get_gt_c.
+        let is_last2_swap = rank >= 2
+            && axes.len() == rank
+            && axes[..rank - 2].iter().enumerate().all(|(i, &a)| a == i)
+            && axes[rank - 2] == rank - 1
+            && axes[rank - 1] == rank - 2
+            && a.custom_layout.is_none();  // only if input is contiguous
+
+        if is_last2_swap {
+            let _s = debug_span!("permute_view_transpose", elems = out_shape.elem_count()).entered();
+            let mut strides = vec![0usize; rank];
+            let mut s = 1usize;
+            for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i]; }
+            // Swap last two strides.
+            strides.swap(rank - 2, rank - 1);
+            let layout = Layout::new(out_shape.clone(), strides.into(), 0);
+            return TrackedTensor {
+                storage: std::sync::Arc::clone(&a.storage),
+                shape: out_shape.clone(),
+                custom_layout: Some(layout),
+            };
+        }
+
+        // General case: materialize.
+        let _s = debug_span!("permute", elems = out_shape.elem_count()).entered();
         let mut strides: DimVec = DimVec::from_elem(0, rank);
         let mut s = 1usize;
         for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i]; }

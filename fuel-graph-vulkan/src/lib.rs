@@ -906,10 +906,12 @@ impl GraphBackend for VulkanBackend {
         let sb_row = b_strides[b_rank - 2];
         let sb_col = b_strides[b_rank - 1];
 
-        // GQA-aware: infer n_rep from the A/B batch stride ratio.
-        // For [1,32,...] × [1,4,...]: the B batch stride covers fewer
-        // heads; the kernel reads B[batch/n_rep].
-        let b_batch_count = if sb_batch > 0 { b.elem_count / (sb_batch as usize).max(1) } else { batch };
+        // GQA-aware: infer n_rep from the SHAPES, not strides.
+        // For non-contiguous B, stride-based elem_count/stride is wrong.
+        // Use the actual batch-head count from B's shape.
+        let b_dims = _lb.shape().dims();
+        let b_batch_count: usize = b_dims[..b_rank.saturating_sub(2)]
+            .iter().product::<usize>().max(1);
         let n_rep = if batch > b_batch_count && b_batch_count > 0 && batch % b_batch_count == 0 {
             batch / b_batch_count
         } else {
@@ -923,6 +925,13 @@ impl GraphBackend for VulkanBackend {
             sc_batch: (m * n) as u32,
             n_rep: n_rep as u32, _pad: 0,
         };
+        // Debug: dump params for first few non-contiguous calls
+        if std::env::var("FUEL_MATMUL_DEBUG").is_ok() && (sa_row != k || sa_col != 1 || sb_row != n || sb_col != 1) {
+            eprintln!(
+                "[matmul params] batch={batch} m={m} n={n} k={k} sa=({sa_batch},{sa_row},{sa_col}) sb=({sb_batch},{sb_row},{sb_col}) n_rep={n_rep} a.elems={} b.elems={}",
+                a.elem_count, b.elem_count,
+            );
+        }
         let (pbuf, pmem) = self.upload_params(&params)?;
         let gz = batch as u32;
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
