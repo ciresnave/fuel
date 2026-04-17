@@ -925,13 +925,6 @@ impl GraphBackend for VulkanBackend {
             sc_batch: (m * n) as u32,
             n_rep: n_rep as u32, _pad: 0,
         };
-        // Debug: dump params for first few non-contiguous calls
-        if std::env::var("FUEL_MATMUL_DEBUG").is_ok() && (sa_row != k || sa_col != 1 || sb_row != n || sb_col != 1) {
-            eprintln!(
-                "[matmul params] batch={batch} m={m} n={n} k={k} sa=({sa_batch},{sa_row},{sa_col}) sb=({sb_batch},{sb_row},{sb_col}) n_rep={n_rep} a.elems={} b.elems={}",
-                a.elem_count, b.elem_count,
-            );
-        }
         let (pbuf, pmem) = self.upload_params(&params)?;
         let gz = batch as u32;
         let params_size = std::mem::size_of::<MatmulParams>() as u64;

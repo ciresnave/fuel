@@ -574,16 +574,6 @@ impl<B: GraphBackend> GraphExecutor<B> {
             //    permuted/transposed views work without materialization) --
             Op::MatMul => {
                 let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
-                // Debug: log when matmul receives non-contiguous input
-                if a.custom_layout.is_some() || b.custom_layout.is_some() {
-                    eprintln!(
-                        "[matmul strided] A: shape={:?} strides={:?} custom={} | B: shape={:?} strides={:?} custom={}",
-                        a.shape.dims(), a.layout().stride(),
-                        a.custom_layout.is_some(),
-                        b.shape.dims(), b.layout().stride(),
-                        b.custom_layout.is_some(),
-                    );
-                }
                 let ad = a.shape.dims();
                 let bd = b.shape.dims();
                 let rank = ad.len();
