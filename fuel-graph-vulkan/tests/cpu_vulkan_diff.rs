@@ -822,6 +822,85 @@ fn vulkan_roundtrips_bf16_host_buffer() {
     );
 }
 
+/// Trains a mini-model with RMSNorm + softmax + matmul through
+/// the Vulkan backend. Exercises the fused backward kernels for
+/// rms_norm and softmax in a real training loop. If loss doesn't
+/// decrease, one of the backward kernels is producing wrong
+/// gradients.
+#[test]
+#[ignore]
+fn vulkan_trains_mini_model_with_rms_norm_and_softmax() {
+    use fuel_core::train::{OptimizerConfig, Parameter, TrainState};
+    use fuel_core::lazy::LazyTensor;
+    use std::sync::Arc;
+
+    let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("no Vulkan device; skipping: {e:?}"); return; }
+    };
+
+    let dim = 32usize;
+    let vocab = 16usize;
+    let seq = 4usize;
+
+    // Random but deterministic seed data.
+    let mut rng: u32 = 42;
+    let mut rf = || -> f32 {
+        rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
+        ((rng >> 16) as i16 as f32) / 32768.0 * 0.1
+    };
+
+    let params = vec![
+        Parameter::new_f32("w1", Shape::from_dims(&[dim, dim]),
+            (0..dim*dim).map(|_| rf()).collect::<Vec<_>>()),
+        Parameter::new_f32("w2", Shape::from_dims(&[dim, vocab]),
+            (0..dim*vocab).map(|_| rf()).collect::<Vec<_>>()),
+    ];
+
+    let mut exe = GraphExecutor::new(vk_backend);
+    let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::adam_w(0.01)).unwrap();
+
+    // Input: random [seq, dim] activations. Target: class 0 for each position.
+    let input_data: Arc<[f32]> = (0..seq*dim).map(|_| rf()).collect::<Vec<_>>().into();
+    let target_data: Arc<[f32]> = {
+        // One-hot target: class 0 for every position → [seq, vocab]
+        let mut t = vec![0.0f32; seq * vocab];
+        for s in 0..seq { t[s * vocab] = 1.0; }
+        t.into()
+    };
+
+    let mut losses = Vec::new();
+    for _step in 0..30 {
+        let inp = input_data.clone();
+        let tgt = target_data.clone();
+        let loss = state.step(&mut exe, move |_graph, params| {
+            let w1 = &params["w1"];
+            let w2 = &params["w2"];
+            let x = w1.const_f32_like(inp, Shape::from_dims(&[seq, dim]));
+            let target = w1.const_f32_like(tgt, Shape::from_dims(&[seq, vocab]));
+
+            // Forward: RMSNorm → matmul → softmax → matmul → loss
+            let h = x.rms_norm_last_dim(1e-5);
+            let h = h.matmul(w1);
+            let h = h.softmax_last_dim();
+            let logits = h.matmul(w2);
+
+            // MSE loss against target (simpler than cross-entropy for
+            // this validation — just need loss to decrease)
+            let diff = logits.sub(&target);
+            diff.sqr().mean_all()
+        }).unwrap();
+        losses.push(loss);
+    }
+
+    eprintln!("losses: first={:.4} last={:.4}", losses[0], losses.last().unwrap());
+    assert!(
+        losses.last().unwrap() < &(losses[0] * 0.8),
+        "loss didn't decrease enough: first={} last={}",
+        losses[0], losses.last().unwrap(),
+    );
+}
+
 /// Direct backend-level test: strided matmul for Q@K^T with lazy
 /// transpose strides. Compares against materialized (contiguous)
 /// K^T to isolate whether the stride-aware kernel is correct.
