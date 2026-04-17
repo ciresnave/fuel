@@ -876,26 +876,51 @@ impl GraphBackend for VulkanBackend {
         let out = self.alloc_device((out_n * 4) as u64, out_n, DType::F32)?;
 
         #[repr(C)] #[derive(Clone, Copy)]
-        struct MatmulParams { m: u32, n: u32, k: u32, sa: u32, sb: u32, sc: u32, n_rep: u32, _pad: u32 }
+        struct MatmulParams {
+            m: u32, n: u32, k: u32,
+            // A strides: per-batch-head, per-row, per-col
+            sa_batch: u32, sa_row: u32, sa_col: u32,
+            // B strides: per-batch-head, per-row, per-col
+            sb_batch: u32, sb_row: u32, sb_col: u32,
+            // C batch stride (output always contiguous: row=N, col=1)
+            sc_batch: u32,
+            n_rep: u32,
+            _pad: u32,
+        }
 
-        // GQA-aware: if B has fewer batch elements than A, infer n_rep.
-        // Q [1,32,1,64] × K^T [1,4,64,S] → n_rep=8; each set of 8
-        // output heads reads from the same KV head.
-        let b_batch = b.elem_count / (k * n);
-        let n_rep = if batch > b_batch && b_batch > 0 && batch % b_batch == 0 {
-            batch / b_batch
+        // Extract per-dim strides from Layout. The last two dims are
+        // (rows, cols); everything before is batched.
+        let a_strides = _la.stride();
+        let b_strides = _lb.stride();
+        let a_rank = a_strides.len();
+        let b_rank = b_strides.len();
+
+        // Batch stride = stride of the first "batch" dim if rank >= 3.
+        // For rank-2 (no batch), batch_stride = m*k / k*n — doesn't
+        // matter since batch==1 and we never index past 0.
+        let sa_batch = if a_rank >= 3 { a_strides[a_rank - 3] } else { m * k };
+        let sa_row = a_strides[a_rank - 2];
+        let sa_col = a_strides[a_rank - 1];
+
+        let sb_batch = if b_rank >= 3 { b_strides[b_rank - 3] } else { k * n };
+        let sb_row = b_strides[b_rank - 2];
+        let sb_col = b_strides[b_rank - 1];
+
+        // GQA-aware: infer n_rep from the A/B batch stride ratio.
+        // For [1,32,...] × [1,4,...]: the B batch stride covers fewer
+        // heads; the kernel reads B[batch/n_rep].
+        let b_batch_count = if sb_batch > 0 { b.elem_count / (sb_batch as usize).max(1) } else { batch };
+        let n_rep = if batch > b_batch_count && b_batch_count > 0 && batch % b_batch_count == 0 {
+            batch / b_batch_count
         } else {
             1
         };
-        let sb_val = if n_rep > 1 {
-            // B's stride is per-KV-head, not per-Q-head.
-            (k * n) as u32
-        } else {
-            (k * n) as u32
-        };
+
         let params = MatmulParams {
             m: m as u32, n: n as u32, k: k as u32,
-            sa: (m * k) as u32, sb: sb_val, sc: (m * n) as u32,
+            sa_batch: sa_batch as u32, sa_row: sa_row as u32, sa_col: sa_col as u32,
+            sb_batch: sb_batch as u32, sb_row: sb_row as u32, sb_col: sb_col as u32,
+            sc_batch: (m * n) as u32,
             n_rep: n_rep as u32, _pad: 0,
         };
         let (pbuf, pmem) = self.upload_params(&params)?;
