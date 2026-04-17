@@ -1531,37 +1531,17 @@ impl LlamaModel {
         let cache_full_k = full_k.clone();
         let cache_full_v = full_v.clone();
 
-        // GQA: after prepending cached K/V, expand to `n_heads` before
-        // the attention matmul.
-        let (full_k, full_v) = if cfg.n_kv_heads == cfg.n_heads {
-            (full_k, full_v)
-        } else {
-            assert_eq!(cfg.n_heads % cfg.n_kv_heads, 0);
-            let n_rep = cfg.n_heads / cfg.n_kv_heads;
-            let expand = |t: LazyTensor| -> LazyTensor {
-                t.reshape(Shape::from_dims(&[
-                    batch,
-                    cfg.n_kv_heads,
-                    1,
-                    total_seq,
-                    cfg.head_dim,
-                ]))
-                .broadcast_to(Shape::from_dims(&[
-                    batch,
-                    cfg.n_kv_heads,
-                    n_rep,
-                    total_seq,
-                    cfg.head_dim,
-                ]))
-                .reshape(Shape::from_dims(&[
-                    batch,
-                    cfg.n_heads,
-                    total_seq,
-                    cfg.head_dim,
-                ]))
-            };
-            (expand(full_k), expand(full_v))
-        };
+        // GQA: skip the old broadcast_to + reshape expansion.
+        // Instead, pass unexpanded K/V [batch, n_kv_heads, total_seq,
+        // head_dim] directly to the attention matmuls. The backend
+        // infers n_rep = n_heads / n_kv_heads from the batch-dim
+        // mismatch and indexes B with (head / n_rep) * batch_stride_b.
+        // This eliminates 2 broadcast strided_copies per layer
+        // (~44 dispatches/token for TinyLlama).
+        //
+        // When n_kv_heads == n_heads (no GQA), full_k/v are already
+        // [batch, n_heads, ...] so the matmul batch dims match exactly
+        // and n_rep stays 1.
 
         let k_t = full_k.transpose();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
