@@ -48,15 +48,28 @@ pub enum BinaryOp {
 pub struct TrackedTensor<S> {
     pub storage: std::sync::Arc<S>,
     pub shape: Shape,
+    /// Non-contiguous layout for views (broadcast with stride 0,
+    /// sliced offsets, etc.). `None` means contiguous row-major.
+    /// When set, `layout()` returns this instead of computing
+    /// contiguous strides — downstream ops like `copy_strided_src`
+    /// then read from the correct physical locations.
+    custom_layout: Option<Layout>,
 }
 
 impl<S> TrackedTensor<S> {
     pub fn new(storage: S, shape: Shape) -> Self {
-        Self { storage: std::sync::Arc::new(storage), shape }
+        Self { storage: std::sync::Arc::new(storage), shape, custom_layout: None }
+    }
+
+    pub fn with_custom_layout(storage: S, shape: Shape, layout: Layout) -> Self {
+        Self { storage: std::sync::Arc::new(storage), shape, custom_layout: Some(layout) }
     }
 
     pub fn layout(&self) -> Layout {
-        Layout::contiguous(&self.shape)
+        match &self.custom_layout {
+            Some(l) => l.clone(),
+            None => Layout::contiguous(&self.shape),
+        }
     }
 
     /// Cheap: just bumps the Arc and copies the shape.
@@ -64,6 +77,7 @@ impl<S> TrackedTensor<S> {
         Self {
             storage: std::sync::Arc::clone(&self.storage),
             shape: new_shape,
+            custom_layout: None,
         }
     }
 
