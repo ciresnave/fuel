@@ -70,6 +70,11 @@ pub struct Pipelines {
     /// Prefill / training path for bf16-on-device weights.
     pub matmul_tiled_bf16_b_pipeline: ComputePipeline,
     pub matmul_tiled_bf16_b_layout: PipelineLayout,
+
+    /// Cooperative-matrix (tensor-core) matmul: f32 × bf16 → f32.
+    /// `None` when VK_KHR_cooperative_matrix is not available.
+    pub matmul_coop_pipeline: Option<ComputePipeline>,
+    pub matmul_coop_layout: Option<PipelineLayout>,
     pub softmax_pipeline: ComputePipeline,
     pub softmax_layout: PipelineLayout,
     pub reduce_pipeline: ComputePipeline,
@@ -186,7 +191,7 @@ fn make_desc_pool(device: &Device) -> Result<DescriptorPool> {
 }
 
 impl Pipelines {
-    pub fn new(device: &Device) -> Result<Self> {
+    pub fn new(device: &Device, has_coop_matrix: bool) -> Result<Self> {
         // Layout: 2 storage buffers (binding 0,1) + 1 uniform (binding 2).
         let layout_2s1u = DescriptorSetLayout::new(device, &[
             storage_binding(0),
@@ -227,6 +232,11 @@ impl Pipelines {
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
         let matvec_bf16_b_mod = registry.load_module(device, shaders::MATVEC_BF16_B_GLSL)?;
         let matmul_tiled_bf16_b_mod = registry.load_module(device, shaders::MATMUL_TILED_BF16_B_GLSL)?;
+        let matmul_coop_mod = if has_coop_matrix {
+            Some(registry.load_module(device, shaders::MATMUL_COOP)?)
+        } else {
+            None
+        };
         let softmax_mod = registry.load_module(device, shaders::SOFTMAX)?;
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
@@ -249,6 +259,9 @@ impl Pipelines {
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let matmul_coop_layout = if has_coop_matrix {
+            Some(PipelineLayout::new(device, &[&layout_3s1u])?)
+        } else { None };
         let softmax_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -271,6 +284,10 @@ impl Pipelines {
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
         let matvec_bf16_b_pipeline = ComputePipeline::new(device, &matvec_bf16_b_layout, &matvec_bf16_b_mod, "main")?;
         let matmul_tiled_bf16_b_pipeline = ComputePipeline::new(device, &matmul_tiled_bf16_b_layout, &matmul_tiled_bf16_b_mod, "main")?;
+        let matmul_coop_pipeline = match (&matmul_coop_mod, &matmul_coop_layout) {
+            (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
+            _ => None,
+        };
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
@@ -294,6 +311,8 @@ impl Pipelines {
             matvec_pipeline, matvec_layout,
             matvec_bf16_b_pipeline, matvec_bf16_b_layout,
             matmul_tiled_bf16_b_pipeline, matmul_tiled_bf16_b_layout,
+            matmul_coop_pipeline,
+            matmul_coop_layout,
             softmax_pipeline, softmax_layout,
             reduce_pipeline, reduce_layout,
             reduce_last_dim_pipeline, reduce_last_dim_layout,
