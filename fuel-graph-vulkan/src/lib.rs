@@ -519,6 +519,8 @@ impl VulkanBackend {
         desc: DescriptorSet,
         groups: (u32, u32, u32),
         transient_buffers: Vec<(Buffer, Allocation)>,
+        read_bufs: &[u64],
+        write_bufs: &[u64],
     ) -> fuel_core_types::Result<()> {
         let t0 = Instant::now();
 
@@ -536,6 +538,8 @@ impl VulkanBackend {
                 desc,
                 groups,
                 transient_buffers,
+                read_bufs,
+                write_bufs,
             )
             .map_err(vk_err)?;
 
@@ -579,10 +583,13 @@ impl VulkanBackend {
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, input.buffer(), 0, input.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
+        let rb = [input.buffer().raw() as u64];
+        let wb = [output.buffer().raw() as u64];
         self.record_dispatch_batched(
             op_name, pipeline, pipe_layout, desc,
             (groups_x, groups_y, groups_z),
             vec![(params_buf, params_alloc)],
+            &rb, &wb,
         )
     }
 
@@ -607,10 +614,13 @@ impl VulkanBackend {
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b.buffer(), 0, b.byte_size());
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
+        let rb = [a.buffer().raw() as u64, b.buffer().raw() as u64];
+        let wb = [output.buffer().raw() as u64];
         self.record_dispatch_batched(
             op_name, pipeline, pipe_layout, desc,
             (groups_x, groups_y, groups_z),
             vec![(params_buf, params_alloc)],
+            &rb, &wb,
         )
     }
 
@@ -770,6 +780,8 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(out_size);
+        let rb = [src.buffer().raw() as u64];
+        let wb = [dst.buffer().raw() as u64];
         self.record_dispatch_batched(
             "strided_copy",
             &self.pipelines.strided_copy_pipeline,
@@ -777,6 +789,7 @@ impl GraphBackend for VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
         )
     }
 
@@ -1190,6 +1203,8 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
 
         let groups = Self::workgroups(n);
+        let rb = [src.buffer().raw() as u64, dst.buffer().raw() as u64];
+        let wb = [dst.buffer().raw() as u64];
         self.record_dispatch_batched(
             "add_assign_scaled",
             &self.pipelines.add_assign_scaled_pipeline,
@@ -1197,6 +1212,7 @@ impl GraphBackend for VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
+            &rb, &wb,
         )
     }
 
@@ -1435,6 +1451,8 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<RopeParams>() as u64);
 
         let groups = ((total + 63) / 64).max(1);
+        let rb = [x.buffer().raw() as u64, cos.buffer().raw() as u64, sin.buffer().raw() as u64];
+        let wb = [out.buffer().raw() as u64];
         self.record_dispatch_batched(
             "rope",
             &self.pipelines.rope_pipeline,
@@ -1442,6 +1460,7 @@ impl GraphBackend for VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
+            &rb, &wb,
         )?;
         Ok(out)
     }
@@ -1502,6 +1521,8 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
 
         let groups = Self::workgroups(out_size);
+        let rb = [src.buffer().raw() as u64, ids.buffer().raw() as u64];
+        let wb = [out.buffer().raw() as u64];
         self.record_dispatch_batched(
             "index_select",
             &self.pipelines.index_select_pipeline,
@@ -1509,6 +1530,7 @@ impl GraphBackend for VulkanBackend {
             desc,
             (groups, 1, 1),
             vec![(pbuf, pmem)],
+            &rb, &wb,
         )?;
         Ok(out)
     }
