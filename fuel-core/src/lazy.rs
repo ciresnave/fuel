@@ -1302,6 +1302,60 @@ impl LlamaModel {
         h_norm.matmul(&w_out)
     }
 
+    /// Like [`forward`] but returns the hidden state AFTER the final
+    /// RMSNorm, BEFORE the output projection. Shape: `[batch, seq, dim]`.
+    ///
+    /// The `anchor` tensor provides the graph to build on — use a
+    /// parameter or any existing tensor from the training graph. All
+    /// frozen weights are emitted as Const nodes on that graph.
+    ///
+    /// Use this for fine-tuning: freeze all layer weights (const nodes)
+    /// and apply a trainable output head manually:
+    ///
+    /// ```ignore
+    /// // Inside TrainState::step's build_loss callback:
+    /// let lm_head = &params["lm_head"];  // ← anchor tensor
+    /// let hidden = model.forward_hidden(&tokens, 0, lm_head);
+    /// let logits = hidden.matmul(lm_head);
+    /// let loss = cross_entropy_with_logits(&logits, &targets);
+    /// ```
+    pub fn forward_hidden(
+        &self,
+        tokens: &[u32],
+        start_pos: usize,
+        anchor: &LazyTensor,
+    ) -> LazyTensor {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1usize;
+
+        let embed = anchor.const_f32_like(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+        );
+        let token_ids = anchor.const_u32_like(
+            tokens.iter().copied().collect::<Vec<u32>>(),
+            Shape::from_dims(&[seq]),
+        );
+        let mut h = embed
+            .index_select(0, &token_ids)
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, start_pos, seq, cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        for layer in &weights.layers {
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin);
+        }
+
+        apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
