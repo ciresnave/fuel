@@ -224,6 +224,19 @@ pub trait GraphBackend {
         fuel_core_types::bail!("GraphBackend: rms_norm_last_dim_backward not implemented natively")
     }
 
+    /// Fused softmax backward: `dx = y * (g - dot(y, g))`.
+    /// Inputs: (softmax_output, upstream). Default returns Err.
+    fn softmax_last_dim_backward(
+        &self,
+        y: &Self::Storage,
+        upstream: &Self::Storage,
+        y_layout: &Layout,
+        up_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (y, upstream, y_layout, up_layout);
+        fuel_core_types::bail!("GraphBackend: softmax_last_dim_backward not implemented natively")
+    }
+
     /// Fused rotary position embedding. Applies the rotate_half-form
     /// rotation in a single dispatch. `x` has shape `[..., seq, head_dim]`
     /// (head_dim even). `cos` and `sin` both have shape `[seq, head_dim]`
@@ -664,6 +677,18 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
+            // -- softmax backward (fused) --
+            Op::SoftmaxLastDimBackward => {
+                let y = self.get_gt(inputs, 0, cache);
+                let up = self.get_gt(inputs, 1, cache);
+                match self.backend.softmax_last_dim_backward(
+                    &y.storage, &up.storage, &y.layout(), &up.layout(),
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
             // -- rms norm backward (fused) --
             Op::RmsNormLastDimBackward { eps } => {
                 let x = self.get_gt(inputs, 0, cache);
@@ -902,6 +927,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::SoftmaxLastDim => "SoftmaxLastDim",
         Op::RmsNormLastDim { .. } => "RmsNormLastDim",
         Op::RmsNormLastDimBackward { .. } => "RmsNormLastDimBackward",
+        Op::SoftmaxLastDimBackward => "SoftmaxLastDimBackward",
         Op::Rope => "Rope",
         _ => "Other",
     }

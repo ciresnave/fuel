@@ -1180,6 +1180,39 @@ impl GraphBackend for VulkanBackend {
         Ok(out)
     }
 
+    fn softmax_last_dim_backward(
+        &self,
+        y: &Self::Storage,
+        upstream: &Self::Storage,
+        y_layout: &Layout,
+        _up_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if y.dtype != DType::F32 || upstream.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: softmax_last_dim_backward requires f32");
+        }
+        let dims = y_layout.shape().dims();
+        if dims.is_empty() {
+            fuel_core_types::bail!("softmax_last_dim_backward: rank >= 1 required");
+        }
+        let n_cols = *dims.last().unwrap();
+        let n_rows = (y.elem_count / n_cols) as u32;
+        let out = self.alloc_device(y.byte_size(), y.elem_count, y.dtype)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SoftBwdParams { n_rows: u32, n_cols: u32 }
+        let p = SoftBwdParams { n_rows, n_cols: n_cols as u32 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        self.dispatch_3buf(
+            "softmax_last_dim_backward",
+            &self.pipelines.softmax_last_dim_backward_pipeline,
+            &self.pipelines.softmax_last_dim_backward_layout,
+            y, upstream, &out, pbuf, pmem,
+            std::mem::size_of::<SoftBwdParams>() as u64,
+            n_rows, 1, 1,
+        )?;
+        Ok(out)
+    }
+
     fn rms_norm_last_dim_backward(
         &self,
         x: &Self::Storage,
