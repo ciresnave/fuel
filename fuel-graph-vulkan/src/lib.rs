@@ -64,6 +64,11 @@ pub struct VulkanBackend {
     /// methods take `&self` — we need interior mutability to push
     /// pending work. Single-threaded; no contention.
     recorder: RefCell<Recorder>,
+    /// Supported cooperative-matrix tile shapes, queried at init from
+    /// `VK_KHR_cooperative_matrix`. Empty if the extension is not
+    /// available. Used by the matmul dispatch to decide whether to
+    /// route large-M × bf16-B matmuls through a tensor-core kernel.
+    coop_matrix_shapes: Vec<CooperativeMatrixProperties>,
     /// Per-op-kind host-side timing. Counts and cumulative wall time
     /// spent inside `record_dispatch` for each op category. Useful
     /// for diagnosing whether submission overhead is the bottleneck
@@ -174,14 +179,65 @@ impl VulkanBackend {
             .find_queue_family(QueueFlags::COMPUTE)
             .ok_or_else(|| fuel_core_types::Error::Msg("no compute queue".into()))?;
 
+        // Probe for optional extensions. Cooperative matrix gives us
+        // tensor-core-class matmul on hardware that supports it
+        // (NVIDIA Volta+, AMD RDNA 3+).
+        let ext_props = physical.enumerate_extension_properties().map_err(vk_err)?;
+        let has_coop_matrix = ext_props.iter()
+            .any(|e| e.name() == "VK_KHR_cooperative_matrix");
+
+        let features = if has_coop_matrix {
+            Some(DeviceFeatures::new().with_cooperative_matrix())
+        } else {
+            None
+        };
+        let extensions = if has_coop_matrix {
+            Some(DeviceExtensions::new().khr_cooperative_matrix())
+        } else {
+            None
+        };
+
         let device = physical.create_device(DeviceCreateInfo {
             queue_create_infos: &[QueueCreateInfo::single(queue_family)],
+            enabled_features: features.as_ref(),
+            enabled_extensions: extensions.as_ref(),
             ..Default::default()
         }).map_err(vk_err)?;
 
+        // Query supported cooperative-matrix tile shapes. If the
+        // extension isn't enabled, the query returns empty.
+        let coop_matrix_shapes: Vec<CooperativeMatrixProperties> = if has_coop_matrix {
+            unsafe { physical.cooperative_matrix_properties() }
+        } else {
+            Vec::new()
+        };
+        if !coop_matrix_shapes.is_empty() {
+            tracing::info!(
+                n_shapes = coop_matrix_shapes.len(),
+                "VK_KHR_cooperative_matrix supported — queried tile shapes",
+            );
+            for (i, s) in coop_matrix_shapes.iter().enumerate() {
+                tracing::debug!(
+                    shape = i,
+                    m = s.m_size(), n = s.n_size(), k = s.k_size(),
+                    a_type = ?s.a_type(), b_type = ?s.b_type(),
+                    c_type = ?s.c_type(), result_type = ?s.result_type(),
+                    "coop matrix shape",
+                );
+                eprintln!(
+                    "  coop[{i}] M={} N={} K={} A={:?} B={:?} C={:?} R={:?} sat={}",
+                    s.m_size(), s.n_size(), s.k_size(),
+                    s.a_type(), s.b_type(), s.c_type(), s.result_type(),
+                    s.saturating_accumulation(),
+                );
+            }
+        } else {
+            eprintln!("  [coop-matrix] not available (has_coop_matrix={has_coop_matrix})");
+        }
+
         let queue = device.get_queue(queue_family, 0);
 
-        let pipelines = Pipelines::new(&device).map_err(vk_err)?;
+        let pipelines = Pipelines::new(&device, has_coop_matrix).map_err(vk_err)?;
         let recorder = RefCell::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
         let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
 
@@ -195,6 +251,7 @@ impl VulkanBackend {
             allocator,
             recorder,
             op_stats: OpStats::default(),
+            coop_matrix_shapes,
         })
     }
 
@@ -863,17 +920,53 @@ impl GraphBackend for VulkanBackend {
                 a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
             )?;
         } else if mixed_bf16 {
-            // Mixed-precision tiled matmul: all M > 1 cases route here.
-            // Same 64×64 workgroup tile as the f32 tiled path; only
-            // the B-load unpacks bf16 → f32 on the way to shared mem.
-            let gx = ((n + 63) / 64) as u32;
-            let gy = ((m + 63) / 64) as u32;
-            self.dispatch_3buf(
-                "matmul_tiled_bf16_b",
-                &self.pipelines.matmul_tiled_bf16_b_pipeline,
-                &self.pipelines.matmul_tiled_bf16_b_layout,
-                a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
-            )?;
+            // Mixed-precision: try cooperative-matrix (tensor-core)
+            // path first for large tiles; fall back to the tiled path.
+            // Cooperative matrix requires tile-aligned N (coopMatStore
+            // writes full 16-col blocks, no per-element bounds check).
+            // M and K only need to be ≥ 16; out-of-bounds M-rows get
+            // safe extra padding in the output buffer.
+            if m >= 16 && n >= 16 && k >= 16
+                && n % 16 == 0
+                && self.pipelines.matmul_coop_pipeline.is_some()
+            {
+                // Pad M to next multiple of 16 so the coop kernel's
+                // coopMatStore doesn't write past the output buffer.
+                // The extra rows are wasted but harmless.
+                let padded_m = ((m + 15) / 16) * 16;
+                let padded_out_n = batch * padded_m * n;
+                let padded_out = self.alloc_device(
+                    (padded_out_n * 4) as u64, padded_out_n, DType::F32,
+                )?;
+
+                let gx = ((n + 63) / 64) as u32;
+                let gy = ((padded_m + 15) / 16) as u32;
+                self.dispatch_3buf(
+                    "matmul_coop",
+                    self.pipelines.matmul_coop_pipeline.as_ref().unwrap(),
+                    self.pipelines.matmul_coop_layout.as_ref().unwrap(),
+                    a, b, &padded_out, pbuf, pmem, params_size, gx, gy, gz,
+                )?;
+
+                // Return the padded buffer but with the original
+                // logical element count. Downstream code only reads
+                // m*n elements so the padded rows are invisible.
+                return Ok(VulkanStorage {
+                    inner: padded_out.inner,
+                    elem_count: out_n,
+                    dtype: DType::F32,
+                });
+            } else {
+                // Fallback: software tiled matmul (no tensor cores).
+                let gx = ((n + 63) / 64) as u32;
+                let gy = ((m + 63) / 64) as u32;
+                self.dispatch_3buf(
+                    "matmul_tiled_bf16_b",
+                    &self.pipelines.matmul_tiled_bf16_b_pipeline,
+                    &self.pipelines.matmul_tiled_bf16_b_layout,
+                    a, b, &out, pbuf, pmem, params_size, gx, gy, gz,
+                )?;
+            }
         } else if m < 32 {
             let gx = ((n + 63) / 64) as u32;
             let gy = ((m + 63) / 64) as u32;

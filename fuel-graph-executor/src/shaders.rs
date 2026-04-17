@@ -43,6 +43,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matmul",                    include_bytes!("shaders_spirv/matmul.spv")),
     ("matmul_tiled",              include_bytes!("shaders_spirv/matmul_tiled.spv")),
     ("matmul_tiled_bf16_b",       include_bytes!("shaders_spirv/matmul_tiled_bf16_b.spv")),
+    ("matmul_coop",               include_bytes!("shaders_spirv/matmul_coop.spv")),
     ("matvec",                    include_bytes!("shaders_spirv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("shaders_spirv/matvec_bf16_b.spv")),
     ("reduce",                    include_bytes!("shaders_spirv/reduce.spv")),
@@ -81,6 +82,10 @@ pub const MATMUL_TILED_GLSL: &str = "matmul_tiled";
 /// GLSL tiled matmul with bf16 weights: f32 A × bf16 B → f32 C.
 /// Same tiling as MATMUL_TILED_GLSL; bf16 unpack on the B load.
 pub const MATMUL_TILED_BF16_B_GLSL: &str = "matmul_tiled_bf16_b";
+/// Cooperative-matrix (tensor-core) matmul: f32 A × bf16 B → f32 C.
+/// Uses VK_KHR_cooperative_matrix with f16 inputs + f32 accumulation.
+/// Only dispatched when the extension is available at runtime.
+pub const MATMUL_COOP: &str = "matmul_coop";
 /// GLSL gemv (M == 1 matmul specialization), all-f32.
 pub const MATVEC_GLSL: &str = "matvec";
 /// GLSL gemv (M == 1) with bf16 weight matrix (B), f32 activations
