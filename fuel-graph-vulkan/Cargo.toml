@@ -20,7 +20,7 @@
     # `vulkane::safe::ShaderRegistry`, so vulkane does NOT need its
     # naga / shaderc / slang features at build or run time. Fuel
     # stays toolchain-free for downstream consumers.
-    vulkane                = "0.5"
+    vulkane                = "0.6"
 
 [dev-dependencies]
     fuel-graph-cpu = { workspace = true }
