@@ -686,10 +686,15 @@ impl Tensor {
         let rank = l.len();
         let batch_rank = rank - 2;
         for i in 0..batch_rank {
-            assert_eq!(
-                l[i], r[i],
-                "matmul: batch dim mismatch at axis {i}: {} vs {}",
-                l[i], r[i],
+            // GQA-style matmul: A may have more batch heads than B
+            // (e.g. Q[1,32,1,64] @ K^T[1,4,64,S]). The n_rep factor
+            // is inferred by the backend at dispatch time; at the
+            // graph level we just validate divisibility.
+            let (la, ra) = (l[i], r[i]);
+            let ok = la == ra || (la > ra && ra > 0 && la % ra == 0);
+            assert!(
+                ok,
+                "matmul: batch dim mismatch at axis {i}: {la} vs {ra} (not equal and not a GQA-divisible pair)",
             );
         }
         let m = l[rank - 2];

@@ -876,10 +876,27 @@ impl GraphBackend for VulkanBackend {
         let out = self.alloc_device((out_n * 4) as u64, out_n, DType::F32)?;
 
         #[repr(C)] #[derive(Clone, Copy)]
-        struct MatmulParams { m: u32, n: u32, k: u32, sa: u32, sb: u32, sc: u32 }
+        struct MatmulParams { m: u32, n: u32, k: u32, sa: u32, sb: u32, sc: u32, n_rep: u32, _pad: u32 }
+
+        // GQA-aware: if B has fewer batch elements than A, infer n_rep.
+        // Q [1,32,1,64] × K^T [1,4,64,S] → n_rep=8; each set of 8
+        // output heads reads from the same KV head.
+        let b_batch = b.elem_count / (k * n);
+        let n_rep = if batch > b_batch && b_batch > 0 && batch % b_batch == 0 {
+            batch / b_batch
+        } else {
+            1
+        };
+        let sb_val = if n_rep > 1 {
+            // B's stride is per-KV-head, not per-Q-head.
+            (k * n) as u32
+        } else {
+            (k * n) as u32
+        };
         let params = MatmulParams {
             m: m as u32, n: n as u32, k: k as u32,
-            sa: (m * k) as u32, sb: (k * n) as u32, sc: (m * n) as u32,
+            sa: (m * k) as u32, sb: sb_val, sc: (m * n) as u32,
+            n_rep: n_rep as u32, _pad: 0,
         };
         let (pbuf, pmem) = self.upload_params(&params)?;
         let gz = batch as u32;
