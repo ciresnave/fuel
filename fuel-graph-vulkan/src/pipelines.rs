@@ -87,6 +87,9 @@ pub struct Pipelines {
     pub softmax_last_dim_backward_pipeline: ComputePipeline,
     pub softmax_last_dim_backward_layout: PipelineLayout,
 
+    pub layer_norm_last_dim_backward_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_backward_layout: PipelineLayout,
+
     pub strided_copy_pipeline: ComputePipeline,
     pub strided_copy_layout: PipelineLayout,
 
@@ -230,6 +233,7 @@ impl Pipelines {
         let rms_norm_last_dim_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM)?;
         let rms_norm_last_dim_backward_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BACKWARD)?;
         let softmax_last_dim_backward_mod = registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD)?;
+        let layer_norm_last_dim_backward_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD)?;
         let strided_copy_mod = registry.load_module(device, shaders::STRIDED_COPY)?;
         let index_select_mod = registry.load_module(device, shaders::INDEX_SELECT)?;
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
@@ -252,6 +256,7 @@ impl Pipelines {
         // backward takes 3 storage buffers (x, upstream, grad_x) + params
         let rms_norm_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let softmax_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let layer_norm_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let strided_copy_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let index_select_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let add_assign_scaled_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -272,6 +277,7 @@ impl Pipelines {
         let rms_norm_last_dim_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_layout, &rms_norm_last_dim_mod, "main")?;
         let rms_norm_last_dim_backward_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_backward_layout, &rms_norm_last_dim_backward_mod, "main")?;
         let softmax_last_dim_backward_pipeline = ComputePipeline::new(device, &softmax_last_dim_backward_layout, &softmax_last_dim_backward_mod, "main")?;
+        let layer_norm_last_dim_backward_pipeline = ComputePipeline::new(device, &layer_norm_last_dim_backward_layout, &layer_norm_last_dim_backward_mod, "main")?;
         let strided_copy_pipeline = ComputePipeline::new(device, &strided_copy_layout, &strided_copy_mod, "main")?;
         let index_select_pipeline = ComputePipeline::new(device, &index_select_layout, &index_select_mod, "main")?;
         let add_assign_scaled_pipeline = ComputePipeline::new(device, &add_assign_scaled_layout, &add_assign_scaled_mod, "main")?;
@@ -294,6 +300,7 @@ impl Pipelines {
             rms_norm_last_dim_pipeline, rms_norm_last_dim_layout,
             rms_norm_last_dim_backward_pipeline, rms_norm_last_dim_backward_layout,
             softmax_last_dim_backward_pipeline, softmax_last_dim_backward_layout,
+            layer_norm_last_dim_backward_pipeline, layer_norm_last_dim_backward_layout,
             strided_copy_pipeline, strided_copy_layout,
             index_select_pipeline, index_select_layout,
             add_assign_scaled_pipeline, add_assign_scaled_layout,

@@ -1180,6 +1180,45 @@ impl GraphBackend for VulkanBackend {
         Ok(out)
     }
 
+    fn layer_norm_last_dim_backward(
+        &self,
+        x: &Self::Storage,
+        upstream: &Self::Storage,
+        x_layout: &Layout,
+        _up_layout: &Layout,
+        eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if x.dtype != DType::F32 || upstream.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: layer_norm_last_dim_backward requires f32");
+        }
+        let dims = x_layout.shape().dims();
+        if dims.is_empty() {
+            fuel_core_types::bail!("layer_norm_last_dim_backward: rank >= 1 required");
+        }
+        let n_cols = *dims.last().unwrap();
+        let n_rows = (x.elem_count / n_cols) as u32;
+        let out = self.alloc_device(x.byte_size(), x.elem_count, x.dtype)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct LnBwdParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        let p = LnBwdParams {
+            n_rows,
+            n_cols: n_cols as u32,
+            eps: eps as f32,
+            _pad: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        self.dispatch_3buf(
+            "layer_norm_last_dim_backward",
+            &self.pipelines.layer_norm_last_dim_backward_pipeline,
+            &self.pipelines.layer_norm_last_dim_backward_layout,
+            x, upstream, &out, pbuf, pmem,
+            std::mem::size_of::<LnBwdParams>() as u64,
+            n_rows, 1, 1,
+        )?;
+        Ok(out)
+    }
+
     fn softmax_last_dim_backward(
         &self,
         y: &Self::Storage,
