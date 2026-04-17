@@ -28,8 +28,38 @@ use vulkane::safe::*;
 /// never hit `maxMemoryAllocationCount` (~4096) no matter how many
 /// buffers we create in one forward.
 pub struct VulkanBuffer {
-    pub buffer: Buffer,
-    pub allocation: Allocation,
+    buffer: Option<Buffer>,
+    allocation: Option<Allocation>,
+    byte_size: u64,
+    /// If set, the buffer is returned to this pool on Drop instead
+    /// of being freed. This is how the buffer recycler works: every
+    /// buffer created via `alloc_device` gets a back-reference to
+    /// the pool. When the Arc drops to 0 → VulkanBuffer::drop fires
+    /// → buffer goes back to the pool for reuse.
+    recycle_pool: Option<std::sync::Arc<std::sync::Mutex<Vec<(Buffer, Allocation, u64)>>>>,
+}
+
+impl VulkanBuffer {
+    pub fn buffer(&self) -> &Buffer { self.buffer.as_ref().unwrap() }
+}
+
+impl Drop for VulkanBuffer {
+    fn drop(&mut self) {
+        let buf = self.buffer.take();
+        let alloc = self.allocation.take();
+        if let (Some(b), Some(a)) = (buf, alloc) {
+            if let Some(pool) = &self.recycle_pool {
+                // Return to pool for reuse.
+                if let Ok(mut p) = pool.lock() {
+                    p.push((b, a, self.byte_size));
+                    return;
+                }
+            }
+            // No pool or lock failed — normal drop.
+            drop(a);
+            drop(b);
+        }
+    }
 }
 
 /// Vulkan storage: Arc-shared device buffer + per-view metadata.
@@ -40,7 +70,7 @@ pub struct VulkanStorage {
 }
 
 impl VulkanStorage {
-    pub fn buffer(&self) -> &Buffer { &self.inner.buffer }
+    pub fn buffer(&self) -> &Buffer { self.inner.buffer() }
 
     fn byte_size(&self) -> u64 {
         (self.elem_count * dtype_size(self.dtype)) as u64
@@ -64,6 +94,10 @@ pub struct VulkanBackend {
     /// methods take `&self` — we need interior mutability to push
     /// pending work. Single-threaded; no contention.
     recorder: RefCell<Recorder>,
+    /// Recycled buffer pool. Buffers returned here via VulkanBuffer::Drop
+    /// are reused by alloc_device before allocating fresh from VMA.
+    /// Keyed by byte_size. Each entry is (Buffer, Allocation, byte_size).
+    buffer_pool: std::sync::Arc<std::sync::Mutex<Vec<(Buffer, Allocation, u64)>>>,
     /// Supported cooperative-matrix tile shapes, queried at init from
     /// `VK_KHR_cooperative_matrix`. Empty if the extension is not
     /// available. Used by the matmul dispatch to decide whether to
@@ -241,6 +275,7 @@ impl VulkanBackend {
         let recorder = RefCell::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
         let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
 
+        let buffer_pool = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         Ok(Self {
             device,
             physical,
@@ -252,6 +287,7 @@ impl VulkanBackend {
             recorder,
             op_stats: OpStats::default(),
             coop_matrix_shapes,
+            buffer_pool,
         })
     }
 
@@ -349,8 +385,10 @@ impl VulkanBackend {
         drop(staging_alloc);
         Ok(VulkanStorage {
             inner: std::sync::Arc::new(VulkanBuffer {
-                buffer: gpu_buf,
-                allocation: gpu_alloc,
+                buffer: Some(gpu_buf),
+                allocation: Some(gpu_alloc),
+                byte_size: byte_size.max(1),
+                recycle_pool: Some(self.buffer_pool.clone()),
             }),
             elem_count: data.len(),
             dtype,
@@ -408,20 +446,39 @@ impl VulkanBackend {
     }
 
     fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_core_types::Result<VulkanStorage> {
-        let (buffer, allocation) = self.allocator.create_buffer(
-            BufferCreateInfo {
-                size: byte_size.max(1),
-                usage: BufferUsage::STORAGE_BUFFER
-                    | BufferUsage::TRANSFER_SRC
-                    | BufferUsage::TRANSFER_DST,
-            },
-            AllocationCreateInfo {
-                usage: AllocationUsage::DeviceLocal,
-                ..Default::default()
-            },
-        ).map_err(vk_err)?;
+        let size = byte_size.max(1);
+        // Check recycle pool for a buffer of matching size.
+        let recycled = {
+            let mut pool = self.buffer_pool.lock().unwrap();
+            if let Some(idx) = pool.iter().position(|&(_, _, sz)| sz == size) {
+                Some(pool.swap_remove(idx))
+            } else {
+                None
+            }
+        };
+        let (buffer, allocation) = if let Some((b, a, _)) = recycled {
+            (b, a)
+        } else {
+            self.allocator.create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC
+                        | BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            ).map_err(vk_err)?
+        };
         Ok(VulkanStorage {
-            inner: std::sync::Arc::new(VulkanBuffer { buffer, allocation }),
+            inner: std::sync::Arc::new(VulkanBuffer {
+                buffer: Some(buffer),
+                allocation: Some(allocation),
+                byte_size: size,
+                recycle_pool: Some(self.buffer_pool.clone()),
+            }),
             elem_count: n,
             dtype,
         })
