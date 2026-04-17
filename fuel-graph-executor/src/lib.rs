@@ -512,6 +512,38 @@ impl<B: GraphBackend> GraphExecutor<B> {
         self.resolve(cache.get(&inputs[idx]).expect("topo: missing input"))
     }
 
+    /// Like `get_gt` but materializes non-contiguous views into fresh
+    /// contiguous buffers. Used by ops that assume contiguous storage
+    /// (everything except matmul).
+    fn get_gt_c(
+        &self,
+        inputs: &[NodeId],
+        idx: usize,
+        cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
+    ) -> TrackedTensor<B::Storage> {
+        self.materialize_if_needed(self.get_gt(inputs, idx, cache))
+    }
+
+    /// If the tensor has a non-contiguous custom_layout (e.g. from a
+    /// metadata-only permute), materialize it into a fresh contiguous
+    /// buffer. Otherwise return a cheap Arc-clone of the original.
+    /// Used as a gate before ops that assume contiguous storage.
+    fn materialize_if_needed(&self, gt: &TrackedTensor<B::Storage>) -> TrackedTensor<B::Storage> {
+        if gt.custom_layout.is_none() {
+            TrackedTensor {
+                storage: std::sync::Arc::clone(&gt.storage),
+                shape: gt.shape.clone(),
+                custom_layout: None,
+            }
+        } else {
+            let layout = gt.layout();
+            let dtype = self.backend.storage_dtype(&gt.storage);
+            let mut dst = self.backend.alloc_zeros(&gt.shape, dtype).expect("materialize");
+            self.backend.copy_strided_src(&gt.storage, &mut dst, 0, &layout).expect("materialize copy");
+            TrackedTensor::new(dst, gt.shape.clone())
+        }
+    }
+
     fn take_owned(&self, entry: CacheEntry<B::Storage>) -> TrackedTensor<B::Storage> {
         match entry {
             CacheEntry::Owned(gt) => gt,
@@ -538,7 +570,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let result_storage = match op {
             Op::Const(data) => return self.eval_const(data, shape),
 
-            // -- matmul --
+            // -- matmul (stride-aware — reads A/B via per-dim strides,
+            //    permuted/transposed views work without materialization) --
             Op::MatMul => {
                 let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
                 let ad = a.shape.dims();
@@ -575,15 +608,15 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- scalar --
             Op::AddScalar(c) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 self.backend.affine(&a.storage, &a.layout(), 1.0, *c).expect("AddScalar")
             }
             Op::MulScalar(c) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 self.backend.affine(&a.storage, &a.layout(), *c, 0.0).expect("MulScalar")
             }
             Op::PowI(n) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 match self.backend.powf(&a.storage, &a.layout(), *n as f64) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
@@ -592,7 +625,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- cast (CPU fallback if backend doesn't implement) --
             Op::Cast(target) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 match self.backend.cast(&a.storage, &a.layout(), *target) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
@@ -601,7 +634,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- layout ops (SHARED across all backends) --
             Op::Reshape(_) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 // Pass output shape in the layout so backends that
                 // store shape relabel correctly.
                 let target_layout = Layout::contiguous(shape);
@@ -609,31 +642,31 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 return CacheEntry::Owned(TrackedTensor::new(s, shape.clone()));
             }
             Op::Transpose => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 let rank = a.shape.dims().len();
                 let mut perm: Vec<usize> = (0..rank).collect();
                 perm.swap(rank - 2, rank - 1);
-                return CacheEntry::Owned(self.do_permute(a, &perm, shape));
+                return CacheEntry::Owned(self.do_permute(&a, &perm, shape));
             }
             Op::Permute(axes) => {
-                let a = self.get_gt(inputs, 0, cache);
-                return CacheEntry::Owned(self.do_permute(a, axes, shape));
+                let a = self.get_gt_c(inputs, 0, cache);
+                return CacheEntry::Owned(self.do_permute(&a, axes, shape));
             }
             Op::BroadcastTo(target) => {
-                let a = self.get_gt(inputs, 0, cache);
-                return CacheEntry::Owned(self.do_broadcast(a, target));
+                let a = self.get_gt_c(inputs, 0, cache);
+                return CacheEntry::Owned(self.do_broadcast(&a, target));
             }
             Op::Concat { dim } => {
                 return CacheEntry::Owned(self.do_concat(*dim, inputs, shape, cache));
             }
             Op::Slice { dim, start, len: _ } => {
-                let a = self.get_gt(inputs, 0, cache);
-                return CacheEntry::Owned(self.do_slice(*dim, *start, a, shape));
+                let a = self.get_gt_c(inputs, 0, cache);
+                return CacheEntry::Owned(self.do_slice(*dim, *start, &a, shape));
             }
 
             // -- reductions --
             Op::SumAll | Op::MeanAll => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 let mut r = self.backend.reduce(
                     fuel_core_types::op::ReduceOp::Sum, &a.storage, &a.layout(), &axes,
@@ -646,19 +679,19 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 r
             }
             Op::MaxAll => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 self.backend.reduce(fuel_core_types::op::ReduceOp::Max, &a.storage, &a.layout(), &axes)
                     .expect("MaxAll")
             }
             Op::MinAll => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 self.backend.reduce(fuel_core_types::op::ReduceOp::Min, &a.storage, &a.layout(), &axes)
                     .expect("MinAll")
             }
             Op::SumDim(d) | Op::MeanDim(d) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 let r = self.backend.reduce(
                     fuel_core_types::op::ReduceOp::Sum, &a.storage, &a.layout(), &[*d],
                 );
@@ -675,14 +708,14 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
             Op::MaxDim(d) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 match self.backend.reduce(fuel_core_types::op::ReduceOp::Max, &a.storage, &a.layout(), &[*d]) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
             Op::MinDim(d) => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 match self.backend.reduce(fuel_core_types::op::ReduceOp::Min, &a.storage, &a.layout(), &[*d]) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
@@ -691,13 +724,13 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- softmax --
             Op::SoftmaxLastDim => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 self.backend.softmax_last_dim(&a.storage, &a.layout()).expect("SoftmaxLastDim")
             }
 
             // -- rms norm (fused) --
             Op::RmsNormLastDim { eps } => {
-                let a = self.get_gt(inputs, 0, cache);
+                let a = self.get_gt_c(inputs, 0, cache);
                 match self.backend.rms_norm_last_dim(&a.storage, &a.layout(), *eps) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
@@ -706,8 +739,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- layer norm backward (fused) --
             Op::LayerNormLastDimBackward { eps } => {
-                let x = self.get_gt(inputs, 0, cache);
-                let up = self.get_gt(inputs, 1, cache);
+                let x = self.get_gt_c(inputs, 0, cache);
+                let up = self.get_gt_c(inputs, 1, cache);
                 match self.backend.layer_norm_last_dim_backward(
                     &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
                 ) {
@@ -718,8 +751,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- softmax backward (fused) --
             Op::SoftmaxLastDimBackward => {
-                let y = self.get_gt(inputs, 0, cache);
-                let up = self.get_gt(inputs, 1, cache);
+                let y = self.get_gt_c(inputs, 0, cache);
+                let up = self.get_gt_c(inputs, 1, cache);
                 match self.backend.softmax_last_dim_backward(
                     &y.storage, &up.storage, &y.layout(), &up.layout(),
                 ) {
@@ -730,8 +763,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- rms norm backward (fused) --
             Op::RmsNormLastDimBackward { eps } => {
-                let x = self.get_gt(inputs, 0, cache);
-                let up = self.get_gt(inputs, 1, cache);
+                let x = self.get_gt_c(inputs, 0, cache);
+                let up = self.get_gt_c(inputs, 1, cache);
                 match self.backend.rms_norm_last_dim_backward(
                     &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
                 ) {
@@ -742,9 +775,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- rope (fused) --
             Op::Rope => {
-                let x = self.get_gt(inputs, 0, cache);
-                let cos = self.get_gt(inputs, 1, cache);
-                let sin = self.get_gt(inputs, 2, cache);
+                let x = self.get_gt_c(inputs, 0, cache);
+                let cos = self.get_gt_c(inputs, 1, cache);
+                let sin = self.get_gt_c(inputs, 2, cache);
                 match self.backend.rope(
                     &x.storage, &cos.storage, &sin.storage,
                     &x.layout(), &cos.layout(), &sin.layout(),
@@ -756,14 +789,14 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
             // -- indexing (CPU fallback if backend doesn't implement) --
             Op::IndexSelect { dim } => {
-                let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
+                let (src, ids) = (self.get_gt_c(inputs, 0, cache), self.get_gt_c(inputs, 1, cache));
                 match self.backend.index_select(&src.storage, &ids.storage, &src.layout(), &ids.layout(), *dim) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
             Op::Gather { dim } => {
-                let (src, ids) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
+                let (src, ids) = (self.get_gt_c(inputs, 0, cache), self.get_gt_c(inputs, 1, cache));
                 match self.backend.gather(&src.storage, &ids.storage, &src.layout(), &ids.layout(), *dim) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
@@ -786,7 +819,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         inputs: &[NodeId],
         cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
     ) -> B::Storage {
-        let a = self.get_gt(inputs, 0, cache);
+        let a = self.get_gt_c(inputs, 0, cache);
         self.backend.unary(op, &a.storage, &a.layout()).expect("unary")
     }
 
@@ -795,7 +828,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
         inputs: &[NodeId],
         cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
     ) -> B::Storage {
-        let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));
+        let a = self.get_gt_c(inputs, 0, cache);
+        let b = self.get_gt_c(inputs, 1, cache);
         self.backend.binary(op, &a.storage, &b.storage, &a.layout(), &b.layout()).expect("binary")
     }
 
@@ -848,8 +882,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
         cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
     ) -> TrackedTensor<B::Storage> {
         let _s = debug_span!("concat", dim, elems = out_shape.elem_count()).entered();
-        let a = self.get_gt(inputs, 0, cache);
-        let b = self.get_gt(inputs, 1, cache);
+        let a = self.get_gt_c(inputs, 0, cache);
+        let b = self.get_gt_c(inputs, 1, cache);
 
         // Fast path: backend provides a single-dispatch concat.
         if let Ok(s) = self.backend.concat_along_dim(&a.storage, &b.storage, dim, &a.shape, &b.shape) {
