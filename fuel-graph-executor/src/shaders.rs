@@ -52,6 +52,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("rope",                      include_bytes!("shaders_spirv/rope.spv")),
     ("softmax",                   include_bytes!("shaders_spirv/softmax.spv")),
     ("softmax_last_dim_backward", include_bytes!("shaders_spirv/softmax_last_dim_backward.spv")),
+    ("layer_norm_last_dim_backward", include_bytes!("shaders_spirv/layer_norm_last_dim_backward.spv")),
     ("strided_copy",              include_bytes!("shaders_spirv/strided_copy.spv")),
     ("unary",                     include_bytes!("shaders_spirv/unary.spv")),
 ];
@@ -90,6 +91,8 @@ pub const MATVEC_BF16_B_GLSL: &str = "matvec_bf16_b";
 pub const SOFTMAX: &str = "softmax";
 /// Fused softmax backward: dx = y * (g - dot(y, g)).
 pub const SOFTMAX_LAST_DIM_BACKWARD: &str = "softmax_last_dim_backward";
+/// Fused layer-norm backward (4 reductions: sum_x, sum_x², sum_g, sum_gx).
+pub const LAYER_NORM_LAST_DIM_BACKWARD: &str = "layer_norm_last_dim_backward";
 /// Parallel reduction over all elements.
 pub const REDUCE: &str = "reduce";
 /// Per-row reduction along the last dimension.

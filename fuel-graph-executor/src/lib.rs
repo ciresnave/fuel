@@ -224,6 +224,19 @@ pub trait GraphBackend {
         fuel_core_types::bail!("GraphBackend: rms_norm_last_dim_backward not implemented natively")
     }
 
+    /// Fused layer-norm backward. Inputs: (x, upstream). Takes eps.
+    fn layer_norm_last_dim_backward(
+        &self,
+        x: &Self::Storage,
+        upstream: &Self::Storage,
+        x_layout: &Layout,
+        up_layout: &Layout,
+        eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (x, upstream, x_layout, up_layout, eps);
+        fuel_core_types::bail!("GraphBackend: layer_norm_last_dim_backward not implemented natively")
+    }
+
     /// Fused softmax backward: `dx = y * (g - dot(y, g))`.
     /// Inputs: (softmax_output, upstream). Default returns Err.
     fn softmax_last_dim_backward(
@@ -677,6 +690,18 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
+            // -- layer norm backward (fused) --
+            Op::LayerNormLastDimBackward { eps } => {
+                let x = self.get_gt(inputs, 0, cache);
+                let up = self.get_gt(inputs, 1, cache);
+                match self.backend.layer_norm_last_dim_backward(
+                    &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
             // -- softmax backward (fused) --
             Op::SoftmaxLastDimBackward => {
                 let y = self.get_gt(inputs, 0, cache);
@@ -928,6 +953,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::RmsNormLastDim { .. } => "RmsNormLastDim",
         Op::RmsNormLastDimBackward { .. } => "RmsNormLastDimBackward",
         Op::SoftmaxLastDimBackward => "SoftmaxLastDimBackward",
+        Op::LayerNormLastDimBackward { .. } => "LayerNormLastDimBackward",
         Op::Rope => "Rope",
         _ => "Other",
     }
