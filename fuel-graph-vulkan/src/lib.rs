@@ -362,7 +362,7 @@ impl VulkanBackend {
     ) -> fuel_core_types::Result<Vec<T>> {
         let byte_size = storage.byte_size();
         let n = storage.elem_count;
-        let pending = self.recorder.borrow().pending.len();
+        let pending = self.recorder.borrow().batch_count;
         let _span = info_span!("vk_download", bytes = byte_size, pending).entered();
         // First make sure every previously-submitted async op has
         // finished on the GPU. flush_pending host-waits on our
@@ -505,120 +505,57 @@ impl VulkanBackend {
     /// run short enough that the driver stays happy. 128 is a
     /// compromise: deep enough to keep the GPU busy, shallow enough
     /// that each flush completes well under the TDR window.
-    const AUTO_FLUSH_THRESHOLD: usize = 128;
-
-    fn record_dispatch<F>(
+    /// Record a compute dispatch into the current batch command
+    /// buffer. Pipeline barrier + bind + dispatch are recorded via
+    /// raw Vulkan calls (bypassing vulkane's RAII CommandBufferRecording
+    /// so the CB stays in recording state across calls). The batch is
+    /// submitted in one shot at flush time, eliminating the per-op
+    /// vkQueueSubmit overhead that was the dominant host-side cost.
+    fn record_dispatch_batched(
         &self,
         op_name: &'static str,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+        desc: DescriptorSet,
+        groups: (u32, u32, u32),
         transient_buffers: Vec<(Buffer, Allocation)>,
-        desc: Option<DescriptorSet>,
-        record_fn: F,
-    ) -> fuel_core_types::Result<()>
-    where
-        F: FnOnce(&mut CommandBufferRecording<'_>, Option<&DescriptorSet>) -> Result<()>,
-    {
-        let _span = debug_span!("vk_record_dispatch", op = op_name).entered();
+    ) -> fuel_core_types::Result<()> {
         let t0 = Instant::now();
 
-        // Auto-flush: bound the pending queue to keep each GPU
-        // "chunk" small enough for WDDM TDR and small enough that
-        // intermediate results can make progress for downstream ops.
-        if self.recorder.borrow().pending.len() >= Self::AUTO_FLUSH_THRESHOLD {
+        // Auto-flush if the batch is getting large (TDR safety).
+        if self.recorder.borrow().should_flush() {
             self.flush_pending()?;
         }
-        let mut rec = self.recorder.borrow_mut();
-        let pending_before = rec.pending.len();
-        let mut cmd = {
-            let _a = debug_span!("vk_alloc_cb").entered();
-            rec.pool.allocate_primary().map_err(vk_err)?
-        };
-        {
-            let _r = debug_span!("vk_record_cb").entered();
-            let mut recording = cmd.begin().map_err(vk_err)?;
-            record_fn(&mut recording, desc.as_ref()).map_err(vk_err)?;
-            recording.end().map_err(vk_err)?;
-        }
-        // Cross-submit synchronization: chain this submit onto the
-        // prior one via a timeline semaphore. Each submit waits for
-        // the previous counter value before starting and signals
-        // (counter+1) on completion. On NVIDIA, relying on an
-        // in-CB `vkCmdPipelineBarrier` alone was not reliable — we
-        // crashed with `ERROR_DEVICE_LOST` at any queue depth ≥ 2.
-        // Timeline semaphores are the spec-canonical primitive for
-        // this and drivers handle them reliably. The chain serializes
-        // GPU execution (same behavior as having one big command
-        // buffer) while keeping the CPU free to queue more work.
-        let wait_value = rec.counter;
-        let signal_value = wait_value + 1;
-        rec.counter = signal_value;
-        {
-            let _s = debug_span!("vk_queue_submit", pending = pending_before).entered();
-            let waits: Vec<WaitSemaphore<'_>> = if wait_value == 0 {
-                Vec::new()
-            } else {
-                vec![WaitSemaphore::timeline(
-                    &rec.timeline,
-                    wait_value,
-                    PipelineStage::ALL_COMMANDS,
-                )]
-            };
-            let signals = [SignalSemaphore::timeline(&rec.timeline, signal_value)];
-            self.queue
-                .submit_with_sync(&[&cmd], &waits, &signals, None)
-                .map_err(vk_err)?;
-        }
-        rec.pending.push(recorder::PendingSubmit {
-            cmd,
-            transient_buffers,
-            transient_desc: desc,
-        });
-        drop(rec);
+
+        self.recorder
+            .borrow_mut()
+            .record_batch_dispatch(
+                &self.device,
+                pipeline,
+                pipe_layout,
+                desc,
+                groups,
+                transient_buffers,
+            )
+            .map_err(vk_err)?;
+
         self.op_stats.record(op_name, t0.elapsed());
         Ok(())
     }
 
-    /// Called after a synchronous sync point (D2H copy's one_shot).
-    /// Drops every in-flight CB + its transient resources, recycles
-    /// the command pool, and also destroys any descriptor pools that
-    /// were retired during the forward pass. The retired pools held
-    /// descriptors that were potentially in-flight on the GPU; now
-    /// that the fence has signaled, the GPU is confirmed idle and
-    /// their backing `vkDestroyDescriptorPool` is safe to call.
-    fn drain_recorder(&self) -> fuel_core_types::Result<()> {
-        let pending = self.recorder.borrow().pending.len();
-        let _span = info_span!("vk_drain_recorder", pending).entered();
+    /// Flush the current batch: end recording, submit the single CB,
+    /// wait for the GPU, drop transient resources, retire descriptor
+    /// pools.
+    fn flush_pending(&self) -> fuel_core_types::Result<()> {
+        let batch_count = self.recorder.borrow().batch_count;
+        if batch_count == 0 { return Ok(()); }
+        let _span = info_span!("vk_flush_batch", batch_count).entered();
         self.recorder
             .borrow_mut()
-            .drain(&self.device, self.queue_family)
+            .flush_batch(&self.device, &self.queue, self.queue_family)
             .map_err(vk_err)?;
-        // Pending CBs (which held the descriptor sets) are now
-        // dropped. Safe to destroy any retired descriptor pools.
         self.pipelines.retire_pools_post_drain();
         Ok(())
-    }
-
-    /// Force the GPU to catch up. Host-waits on the recorder's
-    /// timeline semaphore for the most recently signaled value,
-    /// which guarantees every previously-submitted CB has completed
-    /// on the GPU. Then drops all in-flight resources and recycles
-    /// the pool. Called periodically to bound queue depth so
-    /// Windows WDDM doesn't kill us with a TDR, and from
-    /// `download_slice` before the D2H copy.
-    fn flush_pending(&self) -> fuel_core_types::Result<()> {
-        let (pending, target_value) = {
-            let rec = self.recorder.borrow();
-            (rec.pending.len(), rec.counter)
-        };
-        let _span = info_span!("vk_flush_pending", pending, target_value).entered();
-        if target_value > 0 {
-            self.recorder
-                .borrow()
-                .timeline
-                .wait_value(target_value, u64::MAX)
-                .map_err(vk_err)?;
-        }
-        // GPU is now idle (up through target_value). Drop everything pending.
-        self.drain_recorder()
     }
 
     /// Dispatch a 2-storage + 1-uniform compute shader.
@@ -642,17 +579,10 @@ impl VulkanBackend {
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, input.buffer(), 0, input.byte_size());
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
-        self.record_dispatch(
-            op_name,
+        self.record_dispatch_batched(
+            op_name, pipeline, pipe_layout, desc,
+            (groups_x, groups_y, groups_z),
             vec![(params_buf, params_alloc)],
-            Some(desc),
-            |cmd, desc| {
-                let desc = desc.expect("dispatch_2buf: descriptor set missing");
-                cmd.bind_compute_pipeline(pipeline);
-                cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[desc]);
-                cmd.dispatch(groups_x, groups_y, groups_z);
-                Ok(())
-            },
         )
     }
 
@@ -677,17 +607,10 @@ impl VulkanBackend {
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b.buffer(), 0, b.byte_size());
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, output.buffer(), 0, output.byte_size());
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &params_buf, 0, params_size);
-        self.record_dispatch(
-            op_name,
+        self.record_dispatch_batched(
+            op_name, pipeline, pipe_layout, desc,
+            (groups_x, groups_y, groups_z),
             vec![(params_buf, params_alloc)],
-            Some(desc),
-            |cmd, desc| {
-                let desc = desc.expect("dispatch_3buf: descriptor set missing");
-                cmd.bind_compute_pipeline(pipeline);
-                cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[desc]);
-                cmd.dispatch(groups_x, groups_y, groups_z);
-                Ok(())
-            },
         )
     }
 
@@ -797,14 +720,17 @@ impl GraphBackend for VulkanBackend {
         }
         let byte_size = (n * dtype_size(storage.dtype)) as u64;
         let dst = self.alloc_device(byte_size, n, storage.dtype)?;
-        let src_arc = storage.inner.clone();
-        let dst_arc = dst.inner.clone();
-        self.record_dispatch("try_clone.memcpy", Vec::new(), None, move |cmd, _| {
-            cmd.copy_buffer(&src_arc.buffer, &dst_arc.buffer, &[BufferCopy {
-                src_offset: 0, dst_offset: 0, size: byte_size,
-            }]);
-            Ok(())
-        })?;
+        // Memcpy is a transfer op — flush the compute batch first,
+        // then run the copy synchronously via one_shot.
+        self.flush_pending()?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(storage.buffer(), dst.buffer(), &[BufferCopy {
+                    src_offset: 0, dst_offset: 0, size: byte_size,
+                }]);
+                Ok(())
+            })
+            .map_err(vk_err)?;
         Ok(dst)
     }
 
@@ -844,19 +770,13 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(out_size);
-        let pipeline = &self.pipelines.strided_copy_pipeline;
-        let layout = &self.pipelines.strided_copy_layout;
-        self.record_dispatch(
+        self.record_dispatch_batched(
             "strided_copy",
+            &self.pipelines.strided_copy_pipeline,
+            &self.pipelines.strided_copy_layout,
+            desc,
+            (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
-            Some(desc),
-            |cmd, desc| {
-                let desc = desc.expect("copy_strided_src: descriptor missing");
-                cmd.bind_compute_pipeline(pipeline);
-                cmd.bind_compute_descriptor_sets(layout, 0, &[desc]);
-                cmd.dispatch(groups, 1, 1);
-                Ok(())
-            },
         )
     }
 
@@ -1269,20 +1189,14 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src.buffer(), 0, src.byte_size());
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
 
-        let pipeline = &self.pipelines.add_assign_scaled_pipeline;
-        let layout = &self.pipelines.add_assign_scaled_layout;
         let groups = Self::workgroups(n);
-        self.record_dispatch(
+        self.record_dispatch_batched(
             "add_assign_scaled",
+            &self.pipelines.add_assign_scaled_pipeline,
+            &self.pipelines.add_assign_scaled_layout,
+            desc,
+            (groups, 1, 1),
             vec![(pbuf, pmem)],
-            Some(desc),
-            |cmd, desc| {
-                let desc = desc.expect("add_assign_scaled: descriptor missing");
-                cmd.bind_compute_pipeline(pipeline);
-                cmd.bind_compute_descriptor_sets(layout, 0, &[desc]);
-                cmd.dispatch(groups, 1, 1);
-                Ok(())
-            },
         )
     }
 
@@ -1520,20 +1434,14 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out.buffer(), 0, out.byte_size());
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<RopeParams>() as u64);
 
-        let pipeline = &self.pipelines.rope_pipeline;
-        let pipe_layout = &self.pipelines.rope_layout;
         let groups = ((total + 63) / 64).max(1);
-        self.record_dispatch(
+        self.record_dispatch_batched(
             "rope",
+            &self.pipelines.rope_pipeline,
+            &self.pipelines.rope_layout,
+            desc,
+            (groups, 1, 1),
             vec![(pbuf, pmem)],
-            Some(desc),
-            |cmd, desc| {
-                let desc = desc.expect("rope: descriptor set missing");
-                cmd.bind_compute_pipeline(pipeline);
-                cmd.bind_compute_descriptor_sets(pipe_layout, 0, &[desc]);
-                cmd.dispatch(groups, 1, 1);
-                Ok(())
-            },
         )?;
         Ok(out)
     }
@@ -1593,20 +1501,14 @@ impl GraphBackend for VulkanBackend {
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out.buffer(), 0, out.byte_size());
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
 
-        let pipeline = &self.pipelines.index_select_pipeline;
-        let layout = &self.pipelines.index_select_layout;
         let groups = Self::workgroups(out_size);
-        self.record_dispatch(
+        self.record_dispatch_batched(
             "index_select",
+            &self.pipelines.index_select_pipeline,
+            &self.pipelines.index_select_layout,
+            desc,
+            (groups, 1, 1),
             vec![(pbuf, pmem)],
-            Some(desc),
-            |cmd, desc| {
-                let desc = desc.expect("index_select: descriptor missing");
-                cmd.bind_compute_pipeline(pipeline);
-                cmd.bind_compute_descriptor_sets(layout, 0, &[desc]);
-                cmd.dispatch(groups, 1, 1);
-                Ok(())
-            },
         )?;
         Ok(out)
     }
