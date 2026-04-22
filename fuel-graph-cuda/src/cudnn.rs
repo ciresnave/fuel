@@ -1,7 +1,7 @@
 ﻿use fuel_core_types::dtype::WithDType;
-use cudarc;
-use cudarc::cudnn::safe::{ConvForward, Cudnn};
-use cudarc::driver::{CudaSlice, CudaView, DeviceRepr, ValidAsZeroBits};
+use baracuda_cudnn::{ConvolutionDescriptor as ConvForward, Handle as Cudnn};
+use baracuda_driver::{DeviceBuffer as CudaSlice, DeviceSlice as CudaView};
+use baracuda_types::{DeviceRepr, ValidAsZeroBits};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,8 +17,8 @@ thread_local! {
 }
 
 pub(crate) fn launch_conv2d<
-    T: DeviceRepr + WithDType + ValidAsZeroBits + cudarc::cudnn::CudnnDataType,
-    Y: cudarc::cudnn::CudnnDataType,
+    T: DeviceRepr + WithDType + ValidAsZeroBits + baracuda_cudnn::CudnnDataType,
+    Y: baracuda_cudnn::CudnnDataType,
 >(
     src: &CudaView<T>,
     src_l: &fuel_core_types::Layout,
@@ -28,7 +28,7 @@ pub(crate) fn launch_conv2d<
     dev: &crate::CudaDevice,
 ) -> fuel_core_types::Result<()> {
     use fuel_core_types::conv::CudnnFwdAlgo as FuelAlgo;
-    use cudarc::cudnn::sys::cudnnConvolutionFwdAlgo_t as A;
+    use baracuda_cudnn_sys::types::cudnnConvolutionFwdAlgo_t as A;
 
     let device_id = dev.id();
     let cudnn = CUDNN.with(|cudnn| {
@@ -45,7 +45,7 @@ pub(crate) fn launch_conv2d<
         /* pad */ [params.padding as i32, params.padding as i32],
         /* stride */ [params.stride as i32, params.stride as i32],
         /* dilation */ [params.dilation as i32, params.dilation as i32],
-        cudarc::cudnn::sys::cudnnConvolutionMode_t::CUDNN_CROSS_CORRELATION,
+        baracuda_cudnn_sys::types::cudnnConvolutionMode_t::CUDNN_CROSS_CORRELATION,
     )?;
     let x_shape = [
         params.b_size as i32,
@@ -56,7 +56,7 @@ pub(crate) fn launch_conv2d<
     // Note that `src` already starts at the proper offset.
     let x = if src_l.is_contiguous() {
         cudnn.create_4d_tensor::<T>(
-            cudarc::cudnn::sys::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+            baracuda_cudnn_sys::types::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
             x_shape,
         )?
     } else {
@@ -67,7 +67,7 @@ pub(crate) fn launch_conv2d<
         )?
     };
     let w = cudnn.create_4d_filter::<T>(
-        cudarc::cudnn::sys::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+        baracuda_cudnn_sys::types::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
         [
             params.c_out as i32,
             params.c_in as i32,
@@ -77,7 +77,7 @@ pub(crate) fn launch_conv2d<
     )?;
     let (w_out, h_out) = (params.out_w() as i32, params.out_h() as i32);
     let y = cudnn.create_4d_tensor::<T>(
-        cudarc::cudnn::sys::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+        baracuda_cudnn_sys::types::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
         [params.b_size as i32, params.c_out as i32, h_out, w_out],
     )?;
     let conv2d = ConvForward {
@@ -116,8 +116,8 @@ pub(crate) fn launch_conv2d<
 }
 
 pub(crate) fn launch_conv1d<
-    T: DeviceRepr + WithDType + ValidAsZeroBits + cudarc::cudnn::CudnnDataType,
-    Y: cudarc::cudnn::CudnnDataType,
+    T: DeviceRepr + WithDType + ValidAsZeroBits + baracuda_cudnn::CudnnDataType,
+    Y: baracuda_cudnn::CudnnDataType,
 >(
     src: &CudaView<T>,
     src_l: &fuel_core_types::Layout,
@@ -127,7 +127,7 @@ pub(crate) fn launch_conv1d<
     dev: &crate::CudaDevice,
 ) -> fuel_core_types::Result<()> {
     use fuel_core_types::conv::CudnnFwdAlgo as FuelAlgo;
-    use cudarc::cudnn::sys::cudnnConvolutionFwdAlgo_t as A;
+    use baracuda_cudnn_sys::types::cudnnConvolutionFwdAlgo_t as A;
 
     let device_id = dev.id();
     let cudnn = CUDNN.with(|cudnn| {
@@ -144,7 +144,7 @@ pub(crate) fn launch_conv1d<
         /* pad */ [params.padding as i32, 0],
         /* stride */ [params.stride as i32, 1],
         /* dilation */ [params.dilation as i32, 1],
-        cudarc::cudnn::sys::cudnnConvolutionMode_t::CUDNN_CROSS_CORRELATION,
+        baracuda_cudnn_sys::types::cudnnConvolutionMode_t::CUDNN_CROSS_CORRELATION,
     )?;
     // https://docs.nvidia.com/deeplearning/cudnn/backend/latest/api/cudnn-ops-library.html#cudnnsettensornddescriptor
     // > Tensors are restricted to having at least 4 dimensions, and at most CUDNN_DIM_MAX
@@ -160,7 +160,7 @@ pub(crate) fn launch_conv1d<
     // Note that `src` already starts at the proper offset.
     let x = if src_l.is_contiguous() {
         cudnn.create_4d_tensor::<T>(
-            cudarc::cudnn::sys::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+            baracuda_cudnn_sys::types::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
             x_shape,
         )?
     } else {
@@ -168,7 +168,7 @@ pub(crate) fn launch_conv1d<
         cudnn.create_4d_tensor_ex::<T>(x_shape, [s[0] as i32, s[1] as i32, s[2] as i32, 1i32])?
     };
     let w = cudnn.create_4d_filter::<T>(
-        cudarc::cudnn::sys::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+        baracuda_cudnn_sys::types::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
         [
             params.c_out as i32,
             params.c_in as i32,
@@ -178,7 +178,7 @@ pub(crate) fn launch_conv1d<
     )?;
     let l_out = params.l_out() as i32;
     let y = cudnn.create_4d_tensor::<T>(
-        cudarc::cudnn::sys::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+        baracuda_cudnn_sys::types::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
         [params.b_size as i32, params.c_out as i32, l_out, 1],
     )?;
     let conv1d = ConvForward {

@@ -17,7 +17,8 @@ use fuel_core_types::conv::{
 use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use fuel_core_types::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use fuel_core_types::{CpuStorage, DType, DeviceLocation, Error, Layout, Result, Scalar, Shape};
-use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
+use baracuda_driver::{DeviceBuffer as CudaSlice, LaunchBuilder as LaunchConfig};
+use baracuda_types::{DeviceRepr, KernelArg as PushKernelArg, ValidAsZeroBits};
 use std::any::Any;
 use std::sync::Arc;
 

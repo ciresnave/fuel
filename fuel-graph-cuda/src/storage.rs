@@ -1171,8 +1171,8 @@ fn slice_src_and_dst<'a, T>(
     dst: &'a mut CudaSlice<T>,
     dst_offset: usize,
 ) -> (
-    cudarc::driver::CudaView<'a, T>,
-    cudarc::driver::CudaViewMut<'a, T>,
+    baracuda_driver::DeviceSlice<'a, T>,
+    baracuda_driver::DeviceSliceMut<'a, T>,
 ) {
     let src_offset = src_l.start_offset();
     let to_copy = dst
@@ -1344,7 +1344,7 @@ fn gemm_config<T>(
     rhs_l: &Layout,
 ) -> Result<StridedBatchedConfig<T>> {
     // https://docs.nvidia.com/cuda/cublas/index.html#cublas-t-gemm
-    use cudarc::cublas::sys::cublasOperation_t;
+    use baracuda_cublas_sys::types::cublasOperation_t;
 
     let lhs_stride = lhs_l.stride();
     let rhs_stride = rhs_l.stride();
@@ -1784,6 +1784,306 @@ impl CudaStorage {
             }
         };
         Ok(Self { slice, device })
+    }
+
+    /// Q4_0 matmul: `out = a @ dequant_q4_0(w_q_bytes)`.
+    /// - `a`: F32 activations, shape `[..., m, k]`, contiguous.
+    /// - `w_q_bytes`: Q4_0-packed weights stored as U32 chunks. Logical
+    ///    weight shape is `[n, k]`; blob size is `n * (k/32) * 18` bytes.
+    /// - Output: F32, shape `[..., m, n]`.
+    ///
+    /// **First-cut limitation:** only `m = 1` (the decode path) is
+    /// supported on CUDA today. Prefill (m > 1) bails; the caller
+    /// should route to a different backend (e.g. Vulkan has a tiled
+    /// M>1 kernel). Lifting this is mechanical — either loop the gemv
+    /// kernel N rows or port the tiled dequant+matmul path — but
+    /// blocked on time for this sprint.
+    pub fn matmul_q4_0(
+        &self,
+        w_q_bytes: &Self,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> Result<Self> {
+        use cudarc::driver::LaunchConfig;
+        if self.dtype() != DType::F32 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: A must be F32, got {:?}", self.dtype());
+        }
+        if !a_layout.is_contiguous() {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: requires contiguous A");
+        }
+        let a_dims = a_layout.shape().dims();
+        let rank = a_dims.len();
+        if rank < 2 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: A must be rank >= 2");
+        }
+        let m = a_dims[rank - 2];
+        let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
+        let total_rows = batch * m;
+        if total_rows != 1 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: only M=1 supported on CUDA today; \
+                 got total_rows={total_rows}. Route prefill to Vulkan.");
+        }
+        if k % 32 != 0 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: k must be multiple of 32 (Q4_0 block size), got {k}");
+        }
+        let device = self.device().clone();
+
+        let a_src = match &self.slice {
+            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..),
+            _ => return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: A must be F32"),
+        };
+        let w_src = match &w_q_bytes.slice {
+            CudaStorageSlice::U32(s) => s.slice(..),
+            _ => return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_0: weight blob must be U32 storage"),
+        };
+        let mut out = unsafe { device.alloc::<f32>(n)? };
+
+        // ggml-style launch: WARP_SIZE=32 threads per row for the warp
+        // reduce; MMV_Y rows per block (pick 2 as the ggml default).
+        const WARP_SIZE: u32 = 32;
+        const MMV_Y: u32 = 2;
+        let grid_x = ((n as u32) + MMV_Y - 1) / MMV_Y;
+        let cfg = LaunchConfig {
+            grid_dim: (grid_x, 1, 1),
+            block_dim: (WARP_SIZE, MMV_Y, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = device.get_or_load_func(
+            "dequantize_mul_mat_vec_q4_0_cuda", &kernels::QUANTIZED)?;
+        let mut builder = func.builder();
+        builder.arg(&w_src);      // vx = weight blob
+        builder.arg(&a_src);      // y = activation vector
+        builder.arg(&mut out);    // dst = output
+        crate::builder_arg!(builder, k as i32);
+        crate::builder_arg!(builder, n as i32);
+        unsafe { builder.launch(cfg) }.w()?;
+
+        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+    }
+
+    /// Q4_K_M matmul: `out = a @ dequant_q4_km(w_q_bytes)`.
+    /// - `a`: F32 activations, shape `[..., m, k]`, contiguous.
+    /// - `w_q_bytes`: Q4_K-packed weights stored as U32. Each
+    ///    256-element super-block is 144 bytes.
+    /// - Output: F32, shape `[..., m, n]`.
+    ///
+    /// First-cut limitation: M=1 only (decode). `k` must be a
+    /// multiple of 256 (Q4_K super-block size).
+    pub fn matmul_q4_km(
+        &self,
+        w_q_bytes: &Self,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> Result<Self> {
+        use cudarc::driver::LaunchConfig;
+        if self.dtype() != DType::F32 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: A must be F32, got {:?}", self.dtype());
+        }
+        if !a_layout.is_contiguous() {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: requires contiguous A");
+        }
+        let a_dims = a_layout.shape().dims();
+        let rank = a_dims.len();
+        if rank < 2 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: A must be rank >= 2");
+        }
+        let m = a_dims[rank - 2];
+        let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
+        let total_rows = batch * m;
+        if total_rows != 1 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: only M=1 supported on CUDA today; \
+                 got total_rows={total_rows}. Route prefill to Vulkan.");
+        }
+        if k % 256 != 0 {
+            return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: k must be multiple of 256 (Q4_K super-block), got {k}");
+        }
+        let device = self.device().clone();
+
+        let a_src = match &self.slice {
+            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..),
+            _ => return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: A must be F32"),
+        };
+        let w_src = match &w_q_bytes.slice {
+            CudaStorageSlice::U32(s) => s.slice(..),
+            _ => return fuel_core_types::bail!(
+                "CudaStorage::matmul_q4_km: weight blob must be U32 storage"),
+        };
+        let mut out = unsafe { device.alloc::<f32>(n)? };
+
+        // ggml launch for Q4_K: 1 warp (32 threads) per row, 1 row per
+        // block. With K_QUANTS_PER_ITERATION=2, ny = 2/2 = 1.
+        let cfg = LaunchConfig {
+            grid_dim: (n as u32, 1, 1),
+            block_dim: (32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let func = device.get_or_load_func(
+            "dequantize_mul_mat_vec_q4_k", &kernels::QUANTIZED)?;
+        let mut builder = func.builder();
+        builder.arg(&w_src);      // vx
+        builder.arg(&a_src);      // yy
+        builder.arg(&mut out);    // dst
+        crate::builder_arg!(builder, k as i32);
+        crate::builder_arg!(builder, n as i32);
+        unsafe { builder.launch(cfg) }.w()?;
+
+        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+    }
+
+    /// Fused RMS normalization along the last dim:
+    /// `out[r, c] = x[r, c] / sqrt(mean(x[r, :]^2) + eps)`.
+    /// Mirrors VulkanBackend::rms_norm_last_dim semantics (no gain
+    /// vector — the caller multiplies by gain in a separate op).
+    /// F32 only today.
+    pub fn rms_norm_last_dim(&self, layout: &Layout, eps: f64) -> Result<Self> {
+        use cudarc::driver::LaunchConfig;
+        if self.dtype() != DType::F32 {
+            return fuel_core_types::bail!(
+                "CudaStorage: rms_norm_last_dim requires f32 input, got {:?}",
+                self.dtype()
+            );
+        }
+        let dims = layout.shape().dims();
+        let n_cols = *dims.last().expect("rms_norm: empty shape");
+        let n_rows = layout.shape().elem_count() / n_cols;
+        let device = self.device().clone();
+
+        let src = match &self.slice {
+            CudaStorageSlice::F32(s) => s.slice(layout.start_offset()..),
+            _ => return fuel_core_types::bail!(
+                "CudaStorage::rms_norm_last_dim: expected F32"),
+        };
+        let mut out = unsafe { device.alloc::<f32>(n_rows * n_cols)? };
+
+        // Block size: match the kernel's expectation (one block per row,
+        // block_size threads cooperate on the reduction). Keep small
+        // enough that the warp-reduce path is exercised.
+        let block_size = 256i32;
+        let func = device.get_or_load_func("rmsnorm_f32_noalpha", &kernels::REDUCE)?;
+        let cfg = LaunchConfig {
+            grid_dim: (n_rows as u32, 1, 1),
+            block_dim: (block_size as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let mut builder = func.builder();
+        builder.arg(&src);
+        builder.arg(&mut out);
+        crate::builder_arg!(builder, n_cols as i32);
+        crate::builder_arg!(builder, block_size);
+        crate::builder_arg!(builder, eps as f32);
+        unsafe { builder.launch(cfg) }.w()?;
+
+        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+    }
+
+    /// Apply RoPE rotation to the input, using the fused CUDA kernel
+    /// from `reduce.cu`. Mirrors VulkanBackend::rope's semantics:
+    /// pairs `(i, i + head_dim/2)` within the last dim, rotates via
+    /// the precomputed `cos`/`sin` tables.
+    ///
+    /// Layout: input of rank ≥ 2 with last two dims `[seq, head_dim]`;
+    /// `cos` and `sin` shape `[seq, head_dim/2]`. The input must be
+    /// contiguous (first-cut limitation; stride-aware path can come
+    /// later — the underlying kernel supports a single `stride_b`
+    /// for per-batch strided inputs).
+    ///
+    /// F32 only today (mirrors Vulkan's constraint).
+    pub fn rope(
+        &self,
+        cos: &Self,
+        sin: &Self,
+        x_layout: &Layout,
+    ) -> Result<Self> {
+        use cudarc::driver::LaunchConfig;
+        if self.dtype() != DType::F32 || cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
+            return fuel_core_types::bail!("CudaStorage: rope requires f32 inputs");
+        }
+        let dims = x_layout.shape().dims();
+        let rank = dims.len();
+        if rank < 2 {
+            return fuel_core_types::bail!("CudaStorage: rope requires rank >= 2, got {dims:?}");
+        }
+        if !x_layout.is_contiguous() {
+            return fuel_core_types::bail!(
+                "CudaStorage: rope first-cut requires contiguous x_layout"
+            );
+        }
+        let seq = dims[rank - 2];
+        let head_dim = dims[rank - 1];
+        if head_dim % 2 != 0 {
+            return fuel_core_types::bail!(
+                "CudaStorage: rope head_dim must be even, got {head_dim}"
+            );
+        }
+        let outer: usize = dims[..rank - 2].iter().product::<usize>().max(1);
+
+        // Map to the kernel's (bh, td, d) terms:
+        //   bh = outer (batch * heads)
+        //   td = seq * head_dim (contiguous per-batch element count)
+        //   d  = head_dim (pair (i, i+d/2) within each head_dim block)
+        // Total threads = bh * td / 2 = outer * seq * head_dim / 2.
+        let bh = outer as u32;
+        let td = (seq * head_dim) as u32;
+        let d = head_dim as u32;
+        let stride_b: u32 = 0; // contiguous → single shared cos/sin table
+
+        let total_threads = (bh as u64) * (td as u64) / 2;
+        let device = self.device().clone();
+
+        let (x_src, out) = match &self.slice {
+            CudaStorageSlice::F32(s) => {
+                let src = s.slice(x_layout.start_offset()..);
+                let out = unsafe { device.alloc::<f32>(outer * seq * head_dim)? };
+                (src, out)
+            }
+            _ => return fuel_core_types::bail!(
+                "CudaStorage::rope: expected F32, got {:?}", self.dtype()),
+        };
+        let cos_src = match &cos.slice {
+            CudaStorageSlice::F32(s) => s.slice(..),
+            _ => return fuel_core_types::bail!("CudaStorage::rope: cos must be F32"),
+        };
+        let sin_src = match &sin.slice {
+            CudaStorageSlice::F32(s) => s.slice(..),
+            _ => return fuel_core_types::bail!("CudaStorage::rope: sin must be F32"),
+        };
+        let mut out = out;
+
+        let func = device.get_or_load_func("rope_f32", &kernels::REDUCE)?;
+        let block_size = 256u32;
+        let grid = ((total_threads + block_size as u64 - 1) / block_size as u64) as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (grid.max(1), 1, 1),
+            block_dim: (block_size, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let mut builder = func.builder();
+        builder.arg(&x_src);
+        builder.arg(&cos_src);
+        builder.arg(&sin_src);
+        builder.arg(&mut out);
+        crate::builder_arg!(builder, bh);
+        crate::builder_arg!(builder, td);
+        crate::builder_arg!(builder, d);
+        crate::builder_arg!(builder, stride_b);
+        unsafe { builder.launch(cfg) }.w()?;
+
+        Ok(Self { slice: CudaStorageSlice::F32(out), device })
     }
 
     pub fn to_cpu_storage(&self) -> Result<CpuStorage> {
@@ -2608,14 +2908,14 @@ pub fn set_gemm_reduced_precision_bf16(b: bool) {
 }
 
 unsafe fn gemm_strided_batched_f32(
-    cublas: &cudarc::cublas::CudaBlas,
+    cublas: &baracuda_cublas::Handle,
     cfg: StridedBatchedConfig<f32>,
-    a: &cudarc::driver::CudaView<f32>,
-    b: &cudarc::driver::CudaView<f32>,
+    a: &baracuda_driver::DeviceSlice<f32>,
+    b: &baracuda_driver::DeviceSlice<f32>,
     c: &mut CudaSlice<f32>,
-) -> std::result::Result<(), cudarc::cublas::result::CublasError> {
-    use cudarc::cublas::sys;
-    use cudarc::driver::DevicePtrMut;
+) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas_sys::types;
+    use baracuda_driver::DevicePtrMut;
 
     let compute_type = if gemm_reduced_precision_f32() {
         sys::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32
@@ -2660,14 +2960,14 @@ unsafe fn gemm_strided_batched_f32(
 }
 
 unsafe fn gemm_strided_batched_f16(
-    cublas: &cudarc::cublas::CudaBlas,
+    cublas: &baracuda_cublas::Handle,
     cfg: StridedBatchedConfig<f16>,
-    a: &cudarc::driver::CudaView<f16>,
-    b: &cudarc::driver::CudaView<f16>,
+    a: &baracuda_driver::DeviceSlice<f16>,
+    b: &baracuda_driver::DeviceSlice<f16>,
     c: &mut CudaSlice<f16>,
-) -> std::result::Result<(), cudarc::cublas::result::CublasError> {
-    use cudarc::cublas::sys;
-    use cudarc::driver::DevicePtrMut;
+) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas_sys::types;
+    use baracuda_driver::DevicePtrMut;
 
     let alpha = cfg.gemm.alpha;
     let beta = cfg.gemm.beta;
@@ -2721,14 +3021,14 @@ unsafe fn gemm_strided_batched_f16(
 }
 
 unsafe fn gemm_strided_batched_bf16(
-    cublas: &cudarc::cublas::CudaBlas,
+    cublas: &baracuda_cublas::Handle,
     cfg: StridedBatchedConfig<bf16>,
-    a: &cudarc::driver::CudaView<bf16>,
-    b: &cudarc::driver::CudaView<bf16>,
+    a: &baracuda_driver::DeviceSlice<bf16>,
+    b: &baracuda_driver::DeviceSlice<bf16>,
     c: &mut CudaSlice<bf16>,
-) -> std::result::Result<(), cudarc::cublas::result::CublasError> {
-    use cudarc::cublas::sys;
-    use cudarc::driver::DevicePtrMut;
+) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas_sys::types;
+    use baracuda_driver::DevicePtrMut;
 
     let alpha_f32: f32 = cfg.gemm.alpha.to_f32();
     let beta_f32: f32 = cfg.gemm.beta.to_f32();

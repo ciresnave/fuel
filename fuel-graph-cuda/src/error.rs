@@ -1,19 +1,21 @@
 ﻿use fuel_core_types::{DType, Layout};
 
-/// cudarc related errors
+/// Errors from the CUDA backend — driver, NVRTC, cuBLAS, and curand
+/// failures, plus Fuel-local variants for missing kernels / dtype
+/// mismatches / non-contiguous matmul.
 #[derive(thiserror::Error, Debug)]
 pub enum CudaError {
     #[error(transparent)]
-    Cuda(#[from] cudarc::driver::DriverError),
+    Cuda(#[from] baracuda_driver::Error),
 
     #[error(transparent)]
-    Compiler(#[from] cudarc::nvrtc::CompileError),
+    Compiler(#[from] baracuda_nvrtc::Error),
 
     #[error(transparent)]
-    Cublas(#[from] cudarc::cublas::result::CublasError),
+    Cublas(#[from] baracuda_cublas::Error),
 
     #[error(transparent)]
-    Curand(#[from] cudarc::curand::result::CurandError),
+    Curand(#[from] baracuda_curand::Error),
 
     #[error("missing kernel '{module_name}'")]
     MissingKernel { module_name: String },
@@ -42,7 +44,7 @@ pub enum CudaError {
 
     #[error("{cuda} when loading {module_name}")]
     Load {
-        cuda: cudarc::driver::DriverError,
+        cuda: baracuda_driver::Error,
         module_name: String,
     },
 }

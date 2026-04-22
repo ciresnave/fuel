@@ -3,7 +3,7 @@ use fuel_core_types::dtype::WithDType;
 use fuel_core_types::{CpuStorage, DType, Layout, Result, Shape};
 use fuel_cuda_kernels as kernels;
 pub use cudarc;
-use cudarc::driver::CudaFunction;
+use baracuda_driver::Function;
 use float8::F8E4M3;
 use half::{bf16, f16};
 use std::collections::HashMap;
@@ -24,21 +24,21 @@ impl DeviceId {
     }
 }
 
-struct CudaRng(cudarc::curand::CudaRng);
+struct CudaRng(baracuda_curand::Generator);
 unsafe impl Send for CudaRng {}
 
 pub struct ModuleStore {
-    mdls: [Option<Arc<cudarc::driver::CudaModule>>; kernels::ALL_IDS.len()],
+    mdls: [Option<Arc<baracuda_driver::Module>>; kernels::ALL_IDS.len()],
 }
 
 #[derive(Clone)]
 pub struct CudaDevice {
     id: DeviceId,
-    context: Arc<cudarc::driver::CudaContext>,
+    context: Arc<baracuda_driver::Context>,
     modules: Arc<std::sync::RwLock<ModuleStore>>,
-    custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<cudarc::driver::CudaModule>>>>,
-    stream: Arc<cudarc::driver::CudaStream>,
-    pub(crate) blas: Arc<cudarc::cublas::CudaBlas>,
+    custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<baracuda_driver::Module>>>>,
+    stream: Arc<baracuda_driver::Stream>,
+    pub(crate) blas: Arc<baracuda_cublas::Handle>,
     curand: Arc<Mutex<CudaRng>>,
     seed_value: Arc<RwLock<u64>>,
 }
@@ -51,24 +51,24 @@ impl std::fmt::Debug for CudaDevice {
 
 impl CudaDevice {
     #[allow(clippy::missing_safety_doc)]
-    pub unsafe fn alloc<T: cudarc::driver::DeviceRepr>(
+    pub unsafe fn alloc<T: baracuda_types::DeviceRepr>(
         &self,
         len: usize,
-    ) -> Result<cudarc::driver::CudaSlice<T>> {
+    ) -> Result<baracuda_driver::DeviceBuffer<T>> {
         unsafe { self.stream.alloc::<T>(len) }.w()
     }
 
-    pub fn alloc_zeros<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits>(
+    pub fn alloc_zeros<T: baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits>(
         &self,
         len: usize,
-    ) -> Result<cudarc::driver::CudaSlice<T>> {
+    ) -> Result<baracuda_driver::DeviceBuffer<T>> {
         self.stream.alloc_zeros::<T>(len).w()
     }
 
     pub fn memcpy_htod<
-        T: cudarc::driver::DeviceRepr,
-        Src: cudarc::driver::HostSlice<T> + ?Sized,
-        Dst: cudarc::driver::DevicePtrMut<T>,
+        T: baracuda_types::DeviceRepr,
+        Src: baracuda_types::HostSlice<T> + ?Sized,
+        Dst: baracuda_driver::DevicePtrMut<T>,
     >(
         &self,
         src: &Src,
@@ -77,7 +77,7 @@ impl CudaDevice {
         self.stream.memcpy_htod(src, dst).w()
     }
 
-    pub fn clone_dtoh<T: cudarc::driver::DeviceRepr, Src: cudarc::driver::DevicePtr<T>>(
+    pub fn clone_dtoh<T: baracuda_types::DeviceRepr, Src: baracuda_driver::DevicePtr<T>>(
         &self,
         src: &Src,
     ) -> Result<Vec<T>> {
@@ -86,8 +86,8 @@ impl CudaDevice {
 
     pub fn memcpy_dtod<
         T,
-        Src: cudarc::driver::DevicePtr<T>,
-        Dst: cudarc::driver::DevicePtrMut<T>,
+        Src: baracuda_driver::DevicePtr<T>,
+        Dst: baracuda_driver::DevicePtrMut<T>,
     >(
         &self,
         src: &Src,
@@ -97,9 +97,9 @@ impl CudaDevice {
     }
 
     pub fn memcpy_dtoh<
-        T: cudarc::driver::DeviceRepr,
-        Src: cudarc::driver::DevicePtr<T>,
-        Dst: cudarc::driver::HostSlice<T>,
+        T: baracuda_types::DeviceRepr,
+        Src: baracuda_driver::DevicePtr<T>,
+        Dst: baracuda_types::HostSlice<T>,
     >(
         &self,
         src: &Src,
@@ -108,17 +108,17 @@ impl CudaDevice {
         self.stream.memcpy_dtoh(src, dst).w()
     }
 
-    pub fn clone_htod<T: cudarc::driver::DeviceRepr, Src: cudarc::driver::HostSlice<T> + ?Sized>(
+    pub fn clone_htod<T: baracuda_types::DeviceRepr, Src: baracuda_types::HostSlice<T> + ?Sized>(
         &self,
         src: &Src,
-    ) -> Result<cudarc::driver::CudaSlice<T>> {
+    ) -> Result<baracuda_driver::DeviceBuffer<T>> {
         self.stream.clone_htod(src).w()
     }
 }
 
 pub struct CudaFunc {
     func: CudaFunction,
-    stream: Arc<cudarc::driver::CudaStream>,
+    stream: Arc<baracuda_driver::Stream>,
 }
 
 impl std::ops::Deref for CudaFunc {
@@ -152,7 +152,7 @@ impl CudaFunc {
 }
 
 impl CudaDevice {
-    pub fn cuda_stream(&self) -> Arc<cudarc::driver::CudaStream> {
+    pub fn cuda_stream(&self) -> Arc<baracuda_driver::Stream> {
         self.stream.clone()
     }
 
@@ -183,7 +183,7 @@ impl CudaDevice {
         let mut buf = vec![];
         fuel_ug::cuda::code_gen::r#gen(&mut buf, func_name, &kernel)?;
         let cuda_code = String::from_utf8(buf)?;
-        let opts = cudarc::nvrtc::CompileOptions {
+        let opts = baracuda_nvrtc::CompileOptions {
             use_fast_math: Some(true),
             ..Default::default()
         };
@@ -245,17 +245,17 @@ impl CudaDevice {
         })
     }
 
-    pub fn cublas_handle(&self) -> Arc<cudarc::cublas::CudaBlas> {
+    pub fn cublas_handle(&self) -> Arc<baracuda_cublas::Handle> {
         self.blas.clone()
     }
 }
 
 impl CudaDevice {
     pub fn new_with_stream(ordinal: usize) -> Result<Self> {
-        let context = cudarc::driver::CudaContext::new(ordinal).w()?;
+        let context = baracuda_driver::Context::new(ordinal).w()?;
         let stream = context.new_stream().w()?;
-        let blas = cudarc::cublas::CudaBlas::new(stream.clone()).w()?;
-        let curand = cudarc::curand::CudaRng::new(299792458, stream.clone()).w()?;
+        let blas = baracuda_cublas::Handle::new(stream.clone()).w()?;
+        let curand = baracuda_curand::Generator::new(299792458, stream.clone()).w()?;
         let module_store = ModuleStore {
             mdls: [const { None }; kernels::ALL_IDS.len()],
         };
@@ -274,10 +274,10 @@ impl CudaDevice {
 
 impl CudaDevice {
     pub fn new(ordinal: usize) -> Result<Self> {
-        let context = cudarc::driver::CudaContext::new(ordinal).w()?;
+        let context = baracuda_driver::Context::new(ordinal).w()?;
         let stream = context.default_stream();
-        let blas = cudarc::cublas::CudaBlas::new(stream.clone()).w()?;
-        let curand = cudarc::curand::CudaRng::new(299792458, stream.clone()).w()?;
+        let blas = baracuda_cublas::Handle::new(stream.clone()).w()?;
+        let curand = baracuda_curand::Generator::new(299792458, stream.clone()).w()?;
         let module_store = ModuleStore {
             mdls: [const { None }; kernels::ALL_IDS.len()],
         };
@@ -297,7 +297,7 @@ impl CudaDevice {
         // We do not call set_seed but instead create a new curand object. This ensures that the
         // state will be identical and the same random numbers will be generated.
         let mut curand = self.curand.lock().unwrap();
-        curand.0 = cudarc::curand::CudaRng::new(seed, self.stream.clone()).w()?;
+        curand.0 = baracuda_curand::Generator::new(seed, self.stream.clone()).w()?;
         *self.seed_value.write().unwrap() = seed;
         Ok(())
     }
