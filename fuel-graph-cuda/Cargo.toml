@@ -1,6 +1,6 @@
 [package]
     categories.workspace = true
-    description          = "CUDA GPU executor for the fuel lazy-graph layer. Dispatches ops through fuel-cuda's cublas/kernel infrastructure."
+    description          = "CUDA GPU backend for the fuel ML framework: dtype-tagged storage, kernel dispatch (matmul/conv/softmax/rope/rms_norm/quantized), and lazy-graph executor integration. Built on the baracuda-* FFI crate family — parallel structure to fuel-graph-vulkan on vulkane."
     edition.workspace    = true
     keywords.workspace   = true
     license.workspace    = true
@@ -12,7 +12,30 @@
     fuel-core-types        = { workspace = true }
     fuel-graph             = { workspace = true }
     fuel-graph-executor    = { workspace = true }
-    fuel-cuda              = { workspace = true }
+    fuel-cuda-kernels      = { workspace = true }
     fuel-reference-backend = { workspace = true }
-    half                   = { workspace = true }
-    tracing                = { workspace = true }
+    # baracuda CUDA FFI: split into sub-crates for a precise feature graph.
+    baracuda-types  = { workspace = true }
+    baracuda-core   = { workspace = true }
+    baracuda-driver = { workspace = true }
+    baracuda-cublas = { workspace = true }
+    baracuda-curand = { workspace = true }
+    baracuda-nvrtc  = { workspace = true }
+    baracuda-cudnn  = { workspace = true, optional = true }
+    baracuda-nccl   = { workspace = true, optional = true }
+    # Numeric + tracing
+    float8     = { workspace = true }
+    half       = { workspace = true }
+    num-traits = { workspace = true }
+    smallvec   = { workspace = true }
+    thiserror  = { workspace = true }
+    tracing    = { workspace = true }
+
+[features]
+    cudnn   = ["dep:baracuda-cudnn"]
+    default = []
+    nccl    = ["dep:baracuda-nccl"]
+    ug      = ["dep:fuel-ug"]
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
+    fuel-ug = { workspace = true, optional = true }

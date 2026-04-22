@@ -1,4 +1,27 @@
-//! CUDA GPU executor for `fuel-graph` computation graphs.
+//! CUDA GPU executor for `fuel-graph` computation graphs + low-level
+//! CUDA primitives (storage, device, kernel dispatch, cuBLAS / cuDNN
+//! wrappers). The parallel Vulkan stack (`vulkane` → `fuel-graph-vulkan`)
+//! uses the same shape: the external FFI crate family (`baracuda-*` here,
+//! `vulkane` there) provides raw bindings; this crate layers the
+//! ML-specific dtype-tagged storage, kernel dispatch, and graph
+//! integration on top.
+//!
+//! ## Modules
+//!
+//! - [`device`] — `CudaDevice` wrapping `baracuda-driver`'s Context + Stream
+//!   + module cache + cuBLAS handle + curand generator.
+//! - [`storage`] — `CudaStorage` (dtype-tagged tensor) + all tensor-op
+//!   dispatch (matmul, conv, softmax, rope, rms_norm, quantized matmul,
+//!   gather/scatter, pooling, upsample).
+//! - [`utils`] — `Map1` / `Map2` / `Map3` / `Map*Any` dtype-dispatch traits.
+//! - [`dyn_impl`] — object-safe `BackendDevice` / `BackendStorage` impls.
+//! - [`error`] — `CudaError` + `WrapErr` trait for baracuda error conversion.
+//! - [`cudnn`] — optional convolution wrapper (feature: `cudnn`).
+//! - [`backend`] — `CudaBackend` implementing `GraphBackend` (this crate's
+//!   primary public surface — the bridge from the fuel-graph executor
+//!   into the CUDA primitives above).
+//!
+//! ## Execution model
 //!
 //! All intermediates stay in GPU memory; host↔device transfer happens
 //! only at `Const` upload (H2D) and `realize_*` readback (D2H).
@@ -8,12 +31,33 @@
 //! consts and computed intermediates are owned per-realize and freed
 //! at the end of each call.
 
+// --- fuel-cuda primitives (formerly a separate crate) -----------------------
+pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
+
+#[cfg(feature = "cudnn")]
+pub mod cudnn;
+pub mod device;
+pub mod dyn_impl;
+pub mod error;
+pub mod storage;
+pub mod utils;
+
+pub use device::{CudaDevice, DeviceId};
+pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
+pub use error::{CudaError, WrapErr};
+pub use storage::{CudaStorage, CudaStorageSlice, SlicePtrOrNull, kernel_name};
+pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
+
+// Re-export the kernel PTX bundle so downstream code (e.g. fuel-nn's
+// launch-site helpers) can reach it via this crate.
+pub use fuel_cuda_kernels as kernels;
+
+// --- graph executor integration --------------------------------------------
 mod backend;
 pub use backend::CudaBackend;
 
-use fuel_core_types::{DType, DimVec, Layout, Shape};
-use fuel_cuda::{CudaDevice, CudaStorage};
 use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_core_types::DimVec;
 use fuel_reference_backend::exec::AnyRefTensor as AnyRef;
 use fuel_reference_backend::RefTensor;
 use std::collections::HashMap;

@@ -76,6 +76,7 @@ pub mod lazy;
 pub mod layout;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
+pub mod model_progress;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod npy;
@@ -121,7 +122,7 @@ pub use variable::Var;
 pub use cuda_backend as cuda;
 
 #[cfg(feature = "cuda")]
-pub use fuel_cuda::builder_arg;
+pub use fuel_graph_cuda::builder_arg;
 
 #[cfg(not(feature = "cuda"))]
 pub use dummy_cuda_backend as cuda;

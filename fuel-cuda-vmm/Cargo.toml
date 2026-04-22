@@ -10,6 +10,7 @@ categories = ["science"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-fuel      = { workspace = true, features = ["cuda"] }
-cudarc    = { workspace = true }
-thiserror = { workspace = true }
+fuel              = { workspace = true, features = ["cuda"] }
+baracuda-cuda-sys = { workspace = true }
+baracuda-driver   = { workspace = true }
+thiserror         = { workspace = true }

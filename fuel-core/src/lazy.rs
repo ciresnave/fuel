@@ -289,6 +289,22 @@ impl LazyTensor {
         }
     }
 
+    /// Quantized matmul: `C = self @ dequant(W_Q)`. See
+    /// [`fuel_graph::Tensor::qmatmul`] for details. The weight bytes
+    /// tensor must be a flat U32 const holding the raw Q-block byte
+    /// stream (length = n_bytes / 4).
+    pub fn qmatmul(
+        &self,
+        weight_bytes: &Self,
+        quant_type: fuel_graph::QuantType,
+        k: usize,
+        n: usize,
+    ) -> Self {
+        Self {
+            inner: self.inner.qmatmul(&weight_bytes.inner, quant_type, k, n),
+        }
+    }
+
     /// Transpose the last two dims (any rank ≥ 2).
     pub fn transpose(&self) -> Self {
         Self {
@@ -679,7 +695,7 @@ mod tests {
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a);
         let cpu_result = c.realize_f32();
-        let mut executor = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut executor = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda_result = c.realize_f32_cuda(&mut executor);
         assert_eq!(cpu_result, cuda_result);
     }
@@ -697,7 +713,7 @@ mod tests {
         );
         let c = a.matmul(&b);
         let cpu = c.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda = c.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (a, b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -723,7 +739,7 @@ mod tests {
         );
         let y = x.matmul(&w);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -740,7 +756,7 @@ mod tests {
         );
         let y = x.permute(&[0, 2, 1, 3]);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu, cuda, "permute mismatch");
     }
@@ -754,7 +770,7 @@ mod tests {
         );
         let y = x.softmax_last_dim();
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -770,7 +786,7 @@ mod tests {
         let cat = a.concat(&b, 1); // [2, 4]
         let sliced = cat.slice(1, 1, 2); // [2, 2]
         let cpu = sliced.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda = sliced.realize_f32_cuda(&mut exe);
         assert_eq!(cpu, cuda, "concat+slice mismatch");
     }
@@ -784,7 +800,7 @@ mod tests {
         );
         let y = x.rms_norm_last_dim(1e-5);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -1132,6 +1148,43 @@ pub(crate) struct LayerOutput {
 pub enum WeightStorage {
     F32(Arc<[f32]>),
     BF16(Arc<[half::bf16]>),
+    /// GGML Q4_0 blocks (raw byte stream), laid out as `[out_features,
+    /// in_features / 32]` blocks (18 bytes each, llama.cpp convention).
+    /// Stored as `Arc<[u32]>` — the byte stream reinterpreted as u32
+    /// words so subsequent forward passes just Arc-clone (cheap) rather
+    /// than recopying the bytes. The graph sees this directly as a U32
+    /// tensor; matmul dispatch goes through `Op::QMatMul`.
+    ///
+    /// `bytes_len` is the original byte count (u32_len * 4) so the
+    /// const_like shape computation doesn't accidentally round up.
+    Q4_0 {
+        words: Arc<[u32]>,
+        bytes_len: usize,
+        in_features: usize,
+        out_features: usize,
+    },
+    /// Base weight wrapped with a trainable LoRA (Low-Rank Adaptation)
+    /// update: effective weight `W_eff = base + (alpha / rank) · A · B`
+    /// where `A` has shape `[in_features, rank]` and `B` has shape
+    /// `[rank, out_features]` (both stored in the same layout
+    /// convention as F32 weights — `[in, out]`).
+    ///
+    /// Used for PEFT-style inference with frozen base weights (which
+    /// can be F32, BF16, or Q4_0) plus small trainable adapter matrices.
+    /// The adapter is cheap to apply — for a 2560×2560 projection at
+    /// rank 8 the LoRA path is ~0.5% of the base matmul cost.
+    WithLoRA {
+        base:          Box<WeightStorage>,
+        /// `[in_features, rank]` adapter A (HF's `lora_A` transposed).
+        lora_a:        Arc<[f32]>,
+        /// `[rank, out_features]` adapter B (HF's `lora_B` transposed).
+        lora_b:        Arc<[f32]>,
+        rank:          usize,
+        /// LoRA scaling factor; effective scale is `alpha / rank`.
+        alpha:         f32,
+        in_features:   usize,
+        out_features:  usize,
+    },
 }
 
 impl WeightStorage {
@@ -1139,6 +1192,9 @@ impl WeightStorage {
         match self {
             Self::F32(a) => a.len(),
             Self::BF16(a) => a.len(),
+            // Logical element count for a Q4_0 weight matrix is n*k.
+            Self::Q4_0 { in_features, out_features, .. } => *in_features * *out_features,
+            Self::WithLoRA { in_features, out_features, .. } => *in_features * *out_features,
         }
     }
 
@@ -1146,16 +1202,129 @@ impl WeightStorage {
         match self {
             Self::F32(_) => fuel_core_types::DType::F32,
             Self::BF16(_) => fuel_core_types::DType::BF16,
+            // Q4_0 surfaces as U32 at the graph level (raw bytes
+            // reinterpreted). Callers that care about the "actual"
+            // quantization type should match on the variant directly.
+            Self::Q4_0 { .. } => fuel_core_types::DType::U32,
+            // WithLoRA exposes the base's dtype (the LoRA adapter is
+            // always F32 but activations are typed by the base weight).
+            Self::WithLoRA { base, .. } => base.dtype(),
         }
     }
 
     /// Emit a `Const` node on `anchor`'s graph matching this
     /// storage's dtype. Used everywhere the forward pass wraps a
     /// weight into a `LazyTensor`.
+    ///
+    /// For `Q4_0`, the emitted tensor is a 1-D `U32` const of length
+    /// `bytes.len() / 4` holding the raw block byte stream. Callers
+    /// must pair this with `Tensor::qmatmul` rather than `matmul`.
     pub fn const_like(&self, anchor: &LazyTensor, shape: Shape) -> LazyTensor {
         match self {
             Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
             Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
+            Self::Q4_0 { words, .. } => {
+                let _ = shape; // shape arg unused — Q4_0 const is 1-D U32
+                // Arc-clone the precomputed u32 view; no byte copy.
+                anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()]))
+            }
+            Self::WithLoRA { .. } => {
+                panic!(
+                    "WeightStorage::WithLoRA::const_like is not supported \
+                     — the base + LoRA update must be applied via \
+                     apply_linear to produce the right graph structure."
+                );
+            }
+        }
+    }
+
+    /// Produce `X @ W` (with optional bias) for this weight storage.
+    /// Dispatches to `matmul` for F32/BF16 weights and to `qmatmul`
+    /// for Q4_0. The activations `x` must be F32.
+    pub fn apply_linear(
+        &self,
+        x: &LazyTensor,
+        in_features: usize,
+        out_features: usize,
+    ) -> LazyTensor {
+        match self {
+            Self::F32(_) | Self::BF16(_) => {
+                let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]));
+                x.matmul(&w)
+            }
+            Self::Q4_0 { in_features: expected_in, out_features: expected_out, .. } => {
+                assert_eq!(
+                    *expected_in, in_features,
+                    "WeightStorage::Q4_0 in_features mismatch: stored {}, requested {in_features}",
+                    expected_in,
+                );
+                assert_eq!(
+                    *expected_out, out_features,
+                    "WeightStorage::Q4_0 out_features mismatch: stored {}, requested {out_features}",
+                    expected_out,
+                );
+                // const_like for Q4_0 emits a flat U32 tensor.
+                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]));
+                x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features)
+            }
+            Self::WithLoRA {
+                base, lora_a, lora_b, rank, alpha,
+                in_features: expected_in, out_features: expected_out,
+            } => {
+                assert_eq!(*expected_in, in_features, "WithLoRA in_features mismatch");
+                assert_eq!(*expected_out, out_features, "WithLoRA out_features mismatch");
+                // Base forward (F32, BF16, or Q4_0).
+                let base_out = base.apply_linear(x, in_features, out_features);
+                // Low-rank update: y += (alpha/rank) · x @ A @ B.
+                let a_t = x.const_f32_like(
+                    Arc::clone(lora_a),
+                    Shape::from_dims(&[in_features, *rank]),
+                );
+                let b_t = x.const_f32_like(
+                    Arc::clone(lora_b),
+                    Shape::from_dims(&[*rank, out_features]),
+                );
+                let scale = *alpha as f64 / *rank as f64;
+                // x: [*, in] → @A [*, rank] → @B [*, out] → scale → add base.
+                let lora_path = LazyTensor {
+                    inner: x.matmul(&a_t).matmul(&b_t).inner.mul_scalar(scale),
+                };
+                base_out.add(&lora_path)
+            }
+        }
+    }
+
+    /// Wrap this weight storage with a LoRA adapter. Asserts that the
+    /// adapter shapes match `in_features`/`out_features`. Panics if the
+    /// base is already a `WithLoRA` (nested adapters aren't supported;
+    /// merge them explicitly if needed).
+    pub fn with_lora(
+        self,
+        lora_a: Arc<[f32]>,
+        lora_b: Arc<[f32]>,
+        rank: usize,
+        alpha: f32,
+        in_features: usize,
+        out_features: usize,
+    ) -> Self {
+        assert_eq!(
+            lora_a.len(), in_features * rank,
+            "lora_a length {} does not match in_features ({in_features}) × rank ({rank}) = {}",
+            lora_a.len(), in_features * rank,
+        );
+        assert_eq!(
+            lora_b.len(), rank * out_features,
+            "lora_b length {} does not match rank ({rank}) × out_features ({out_features}) = {}",
+            lora_b.len(), rank * out_features,
+        );
+        assert!(
+            !matches!(self, Self::WithLoRA { .. }),
+            "with_lora: base is already WithLoRA (nested adapters unsupported)",
+        );
+        Self::WithLoRA {
+            base: Box::new(self),
+            lora_a, lora_b, rank, alpha,
+            in_features, out_features,
         }
     }
 }
@@ -1296,10 +1465,8 @@ impl LlamaModel {
             cfg.dim,
             cfg.norm_eps,
         );
-        // Output projection to vocab logits.
-        let w_out = weights.output.const_like(
-            &h_norm, Shape::from_dims(&[cfg.dim, cfg.vocab_size]));
-        h_norm.matmul(&w_out)
+        // Output projection to vocab logits (routes through qmatmul for Q4_0).
+        weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 
     /// Like [`forward`] but returns the hidden state AFTER the final
@@ -1372,16 +1539,19 @@ impl LlamaModel {
         // Pre-attention RmsNorm with affine gain.
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
-        // Project to Q, K, V using auto-broadcasting matmul.
-        // Under GQA, W_k and W_v have fewer output features (kv_dim
-        // instead of dim) because there are fewer key/value heads.
-        let w_q = layer.attn_q.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
-        let w_k = layer.attn_k.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_v = layer.attn_v.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_o = layer.attn_o.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
-        let q = apply_optional_bias(x_norm.matmul(&w_q), layer.attn_q_bias.as_ref(), cfg.dim);
-        let k = apply_optional_bias(x_norm.matmul(&w_k), layer.attn_k_bias.as_ref(), kv_dim);
-        let v = apply_optional_bias(x_norm.matmul(&w_v), layer.attn_v_bias.as_ref(), kv_dim);
+        // Project to Q, K, V using WeightStorage::apply_linear — this
+        // routes F32/BF16 through standard matmul and Q4_0 through
+        // fused qmatmul. Under GQA, W_k and W_v have fewer output
+        // features (kv_dim instead of dim).
+        let q = apply_optional_bias(
+            layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim),
+            layer.attn_q_bias.as_ref(), cfg.dim);
+        let k = apply_optional_bias(
+            layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim),
+            layer.attn_k_bias.as_ref(), kv_dim);
+        let v = apply_optional_bias(
+            layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim),
+            layer.attn_v_bias.as_ref(), kv_dim);
 
         // Split heads.
         // Q: [batch, seq, dim] → [batch, seq, n_heads, head_dim] → [batch, n_heads, seq, head_dim]
@@ -1476,7 +1646,7 @@ impl LlamaModel {
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
-        let attn_out = merged.matmul(&w_o);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         // First residual connection.
         let h1 = x.add(&attn_out);
@@ -1484,17 +1654,11 @@ impl LlamaModel {
         // Pre-FFN RmsNorm with affine gain.
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
-        // SwiGLU FFN.
-        let w_gate = layer.ffn_gate.const_like(
-            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
-        let w_up = layer.ffn_up.const_like(
-            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
-        let w_down = layer.ffn_down.const_like(
-            x, Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
-        let gate = h1_norm.matmul(&w_gate);
-        let up = h1_norm.matmul(&w_up);
+        // SwiGLU FFN (routes through apply_linear → qmatmul for Q4_0).
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
+        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let swiglu = gate.silu().mul(&up);
-        let ffn_out = swiglu.matmul(&w_down);
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
 
         // Second residual connection.
         h1.add(&ffn_out)
@@ -1533,13 +1697,17 @@ impl LlamaModel {
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
-        let w_q = layer.attn_q.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
-        let w_k = layer.attn_k.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_v = layer.attn_v.const_like(x, Shape::from_dims(&[cfg.dim, kv_dim]));
-        let w_o = layer.attn_o.const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim]));
-        let q = apply_optional_bias(x_norm.matmul(&w_q), layer.attn_q_bias.as_ref(), cfg.dim);
-        let k = apply_optional_bias(x_norm.matmul(&w_k), layer.attn_k_bias.as_ref(), kv_dim);
-        let v = apply_optional_bias(x_norm.matmul(&w_v), layer.attn_v_bias.as_ref(), kv_dim);
+        // Q/K/V projections via WeightStorage::apply_linear (handles F32,
+        // BF16, Q4_0 variants uniformly). Optional Qwen2-style biases.
+        let q = apply_optional_bias(
+            layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim),
+            layer.attn_q_bias.as_ref(), cfg.dim);
+        let k = apply_optional_bias(
+            layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim),
+            layer.attn_k_bias.as_ref(), kv_dim);
+        let v = apply_optional_bias(
+            layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim),
+            layer.attn_v_bias.as_ref(), kv_dim);
 
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
@@ -1631,21 +1799,15 @@ impl LlamaModel {
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
-        let attn_out = merged.matmul(&w_o);
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         let h1 = x.add(&attn_out);
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
-        let w_gate = layer.ffn_gate.const_like(
-            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
-        let w_up = layer.ffn_up.const_like(
-            x, Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
-        let w_down = layer.ffn_down.const_like(
-            x, Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
-        let gate = h1_norm.matmul(&w_gate);
-        let up = h1_norm.matmul(&w_up);
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
+        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let swiglu = gate.silu().mul(&up);
-        let ffn_out = swiglu.matmul(&w_down);
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
 
         LayerOutput {
             h: h1.add(&ffn_out),
@@ -1747,9 +1909,7 @@ impl LlamaModel {
             cfg.dim,
             cfg.norm_eps,
         );
-        let w_out = weights.output.const_like(
-            &h_norm, Shape::from_dims(&[cfg.dim, cfg.vocab_size]));
-        let logits = h_norm.matmul(&w_out);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
 
         let last_pos = seq - 1;
         let last_logits = logits
@@ -2409,11 +2569,22 @@ impl LlamaModel {
 /// for CPU users. For `B = CudaBackend` / `VulkanBackend` / future
 /// GPU backends, storage lives on the device and concat / update
 /// happens via the backend's native ops.
+/// Per-layer KV storage. `F32` is the default (full precision, 4 bytes
+/// per element). `Q8` stores the GGML Q8_0 block stream (34 bytes per
+/// 32 elements = 1.0625 bytes/elem — roughly 4× the cache capacity at
+/// ~1% quality loss). The Q8 variant is opt-in via
+/// `KVCache::enable_q8_cache()`.
+pub enum KVCacheEntry<S> {
+    F32 { k: S, v: S },
+    /// `k_blocks` / `v_blocks` are U32-typed storages holding the raw
+    /// Q8_0 block byte stream (via `GraphBackend::quantize_q8_0`).
+    Q8 { k_blocks: S, v_blocks: S },
+}
+
 pub struct KVCache<B: fuel_graph_executor::GraphBackend> {
-    /// Per-layer `(key_storage, value_storage)`. `None` until the
-    /// layer's first forward populates it.
-    /// Shape per entry: `[1, n_kv_heads, cached_len, head_dim]`.
-    pub(crate) layers: Vec<Option<(B::Storage, B::Storage)>>,
+    /// Per-layer cache entry. `None` until the layer's first forward
+    /// populates it. Logical shape: `[1, n_kv_heads, cached_len, head_dim]`.
+    pub(crate) layers: Vec<Option<KVCacheEntry<B::Storage>>>,
     pub cached_len: usize,
     // Shape metadata held for future save/restore and cross-device
     // migration methods. Not currently read on the decode hot path.
@@ -2421,27 +2592,240 @@ pub struct KVCache<B: fuel_graph_executor::GraphBackend> {
     pub(crate) n_kv_heads: usize,
     #[allow(dead_code)]
     pub(crate) head_dim: usize,
+    /// When true, fresh K/V are quantized to Q8_0 after each forward
+    /// and dequantized on the next read. Requires the backend to
+    /// implement `GraphBackend::{quantize,dequantize}_q8_0`.
+    pub q8_enabled: bool,
+    /// When true, the cache's layers have been spilled to host via a
+    /// backend-specific `park` method. Ops against a parked cache
+    /// must `unpark` first; the cache's `forward_with_cache_*` entry
+    /// points would see host-backed storages and panic cleanly.
+    pub parked: bool,
 }
 
 impl<B: fuel_graph_executor::GraphBackend> KVCache<B> {
     pub fn new(config: &LlamaConfig) -> Self {
+        Self::with_dims(config.n_layers, config.n_kv_heads, config.head_dim)
+    }
+
+    /// Constructor for models that don't use `LlamaConfig` (e.g. PhiModel).
+    pub fn with_dims(n_layers: usize, n_kv_heads: usize, head_dim: usize) -> Self {
         Self {
-            layers: (0..config.n_layers).map(|_| None).collect(),
+            layers: (0..n_layers).map(|_| None).collect(),
             cached_len: 0,
-            n_kv_heads: config.n_kv_heads,
-            head_dim: config.head_dim,
+            n_kv_heads,
+            head_dim,
+            q8_enabled: false,
+            parked: false,
         }
     }
 
     pub fn n_layers(&self) -> usize {
         self.layers.len()
     }
+
+    /// Read access to a layer's entry. Returns `None` if the layer
+    /// hasn't been populated yet (fresh cache) or has been cleared.
+    /// Used by tiered-residency paths and tests.
+    pub fn layer(&self, li: usize) -> Option<&KVCacheEntry<B::Storage>> {
+        self.layers.get(li).and_then(|o| o.as_ref())
+    }
+
+    /// Mutable access. Rarely needed from outside; mainly for
+    /// residency management code that needs to swap entries in place.
+    pub fn layer_mut(&mut self, li: usize) -> Option<&mut KVCacheEntry<B::Storage>> {
+        self.layers.get_mut(li).and_then(|o| o.as_mut())
+    }
+
+    /// Install a layer's entry directly. Used by tests and by the
+    /// tiered-residency park/unpark paths when they need to swap
+    /// in a rebuilt entry.
+    pub fn set_layer(&mut self, li: usize, entry: KVCacheEntry<B::Storage>) {
+        self.layers[li] = Some(entry);
+    }
+
+    /// Enable Q8_0 quantization of the KV cache. Fresh K/V will be
+    /// quantized after each forward pass and dequantized on the next
+    /// read. Cuts KV-cache memory ~4× at ~1% quality loss.
+    pub fn enable_q8_cache(&mut self) {
+        self.q8_enabled = true;
+    }
+
+    /// Shrink the cache back to the first `new_len` positions along the
+    /// seq dim. Used by speculative decoding's reject path to roll back
+    /// after drafted tokens are rejected by the target model.
+    ///
+    /// No-op if `new_len >= cached_len`. For `new_len == 0` all layer
+    /// entries are cleared (same state as a fresh cache).
+    ///
+    /// Q8-cached entries are not yet supported — bails with an error.
+    /// Q8 blocks are 32-element aligned and an arbitrary `new_len`
+    /// would require re-quantizing the trailing partial block; needs
+    /// a separate kernel. Tracked as follow-up.
+    pub fn truncate_to(&mut self, new_len: usize, backend: &B) -> crate::Result<()> {
+        if new_len >= self.cached_len {
+            return Ok(());
+        }
+        if self.q8_enabled {
+            fuel_core_types::bail!(
+                "KVCache::truncate_to: Q8 cache truncation not yet implemented"
+            );
+        }
+
+        let batch = 1;
+        let n_kv = self.n_kv_heads;
+        let hd = self.head_dim;
+        let old_seq = self.cached_len;
+
+        for layer in &mut self.layers {
+            let entry = match layer.take() {
+                Some(e) => e,
+                None => continue,
+            };
+            let (k, v) = match entry {
+                KVCacheEntry::F32 { k, v } => (k, v),
+                KVCacheEntry::Q8 { .. } => unreachable!("guarded above"),
+            };
+            // Early-return cleanly: if new_len == 0, drop the storage.
+            if new_len == 0 {
+                continue;
+            }
+            let new_k = truncate_kv_seq(backend, &k, batch, n_kv, old_seq, new_len, hd)?;
+            let new_v = truncate_kv_seq(backend, &v, batch, n_kv, old_seq, new_len, hd)?;
+            *layer = Some(KVCacheEntry::F32 { k: new_k, v: new_v });
+        }
+        self.cached_len = new_len;
+        Ok(())
+    }
+}
+
+/// Shrink an F32 K/V storage of shape `[batch, n_kv, old_seq, head_dim]`
+/// (row-major contiguous) to `[batch, n_kv, new_seq, head_dim]`. Uses
+/// `copy_strided_src` — one dispatch per tensor, all on-device.
+fn truncate_kv_seq<B: fuel_graph_executor::GraphBackend>(
+    backend: &B,
+    src: &B::Storage,
+    batch: usize,
+    n_kv: usize,
+    old_seq: usize,
+    new_seq: usize,
+    head_dim: usize,
+) -> crate::Result<B::Storage> {
+    // Source is contiguous with the OLD seq length; we want to read
+    // only the first new_seq rows along dim 2. That's a strided read
+    // where dim-2 stride stays head_dim but the gap between heads
+    // skips the trailing old_seq-new_seq rows' worth of data.
+    let src_shape = Shape::from_dims(&[batch, n_kv, new_seq, head_dim]);
+    let src_strides: fuel_core_types::DimVec = smallvec::smallvec![
+        n_kv * old_seq * head_dim,
+        old_seq * head_dim,
+        head_dim,
+        1,
+    ];
+    let src_layout = fuel_core_types::Layout::new(src_shape.clone(), src_strides, 0);
+
+    let dtype = backend.storage_dtype(src);
+    let dst_shape = Shape::from_dims(&[batch, n_kv, new_seq, head_dim]);
+    let mut dst = backend.alloc_zeros(&dst_shape, dtype)?;
+    backend.copy_strided_src(src, &mut dst, 0, &src_layout)?;
+    Ok(dst)
 }
 
 /// CUDA-only alias kept for backward compatibility with existing
 /// callers. Prefer `KVCache<CudaBackend>` directly in new code.
 #[cfg(feature = "cuda")]
 pub type GpuKVCache = KVCache<fuel_graph_cuda::CudaBackend>;
+
+// ---- Tiered residency: KVCache park / unpark (Vulkan-only) ------------
+//
+// An idle `KVCache<VulkanBackend>` can be spilled to a host-side
+// `ResidencyFile` via `park`, reclaiming its VRAM. When the caller
+// needs the cache again (e.g., the next turn of a paused
+// conversation), `unpark` faults each layer back to VRAM.
+//
+// First consumer of the P5 tiered-residency API. Other consumers
+// (weight-layer offloading, long-context KV windowing) will come
+// later; they reuse the same `ResidencyFile` + evict/fault_back
+// primitives.
+
+#[cfg(feature = "vulkan")]
+impl KVCache<fuel_graph_vulkan::VulkanBackend> {
+    /// Evict all layer K/V storage to the given residency file,
+    /// freeing VRAM. `cached_len`, `parked` flag, and layer metadata
+    /// are preserved so `unpark` can bring it back faithfully.
+    ///
+    /// Fails cleanly if:
+    /// - the cache is already parked (guard against double-park),
+    /// - any layer uses the Q8 variant (Q8 park is a follow-up —
+    ///   the bytes-to-host path for Q8-backed layers needs its
+    ///   own kernel path to preserve block structure).
+    pub fn park(
+        &mut self,
+        backend: &fuel_graph_vulkan::VulkanBackend,
+        file: &std::sync::Arc<fuel_graph_vulkan::residency::ResidencyFile>,
+    ) -> crate::Result<()> {
+        if self.parked {
+            fuel_core_types::bail!("KVCache::park: cache is already parked");
+        }
+        if self.q8_enabled {
+            fuel_core_types::bail!(
+                "KVCache::park: Q8-enabled caches are not yet supported"
+            );
+        }
+        // Evict each layer's K and V. Replace the entries in-place
+        // so callers holding `&mut cache` see the updated tiers.
+        for li in 0..self.layers.len() {
+            let entry = match self.layers[li].take() {
+                Some(e) => e,
+                None => continue, // layer hasn't been populated yet
+            };
+            let (k, v) = match entry {
+                KVCacheEntry::F32 { k, v } => (k, v),
+                KVCacheEntry::Q8 { .. } => unreachable!("guarded above"),
+            };
+            let k_host = backend.evict(&k, file)?;
+            let v_host = backend.evict(&v, file)?;
+            // Drop the old device-backed handles so the Arc<VulkanBuffer>
+            // refcount drops to zero and the VRAM sub-allocation is
+            // returned to the buffer pool.
+            drop(k);
+            drop(v);
+            self.layers[li] = Some(KVCacheEntry::F32 { k: k_host, v: v_host });
+        }
+        self.parked = true;
+        Ok(())
+    }
+
+    /// Bring a parked cache's layers back into VRAM. Reverses
+    /// [`Self::park`]. Fails if the cache isn't parked.
+    pub fn unpark(
+        &mut self,
+        backend: &fuel_graph_vulkan::VulkanBackend,
+    ) -> crate::Result<()> {
+        if !self.parked {
+            fuel_core_types::bail!("KVCache::unpark: cache is not parked");
+        }
+        for li in 0..self.layers.len() {
+            let entry = match self.layers[li].take() {
+                Some(e) => e,
+                None => continue,
+            };
+            let (k, v) = match entry {
+                KVCacheEntry::F32 { k, v } => (k, v),
+                KVCacheEntry::Q8 { .. } => unreachable!(
+                    "park bailed on Q8; we shouldn't see it on unpark"
+                ),
+            };
+            let k_dev = backend.fault_back(&k)?;
+            let v_dev = backend.fault_back(&v)?;
+            drop(k);
+            drop(v);
+            self.layers[li] = Some(KVCacheEntry::F32 { k: k_dev, v: v_dev });
+        }
+        self.parked = false;
+        Ok(())
+    }
+}
 
 
 impl LlamaModel {
@@ -2470,6 +2854,9 @@ impl LlamaModel {
         };
 
         let mut cache: KVCache<B> = KVCache::new(&self.config);
+        if std::env::var("FUEL_Q8_KV").ok().as_deref() == Some("1") {
+            cache.enable_q8_cache();
+        }
         let mut last_logits =
             self.forward_with_cache_gpu_on(&tokens, &mut cache, executor);
 
@@ -2484,6 +2871,276 @@ impl LlamaModel {
             }
             last_logits =
                 self.forward_with_cache_gpu_on(&[next], &mut cache, executor);
+        }
+        Ok(tokens)
+    }
+
+    /// Speculative decoding.
+    ///
+    /// Uses a `draft` model to predict `k` tokens autoregressively,
+    /// then has `self` (the target) verify all `k` positions in a
+    /// single forward. Accepts a prefix of the drafts per `strategy`:
+    ///
+    /// - `Greedy`: longest prefix where target's argmax matches draft's token.
+    ///   On mismatch, emit target's argmax as the bonus.
+    /// - `Temperature`: Leviathan-style probability-ratio accept.
+    ///   Sample draft tokens from draft's temperature-scaled distribution;
+    ///   accept each with probability `min(1, p_target(d) / p_draft(d))`.
+    ///   On reject, sample replacement from `(p_target - p_draft)_+ / Z`.
+    ///   Distribution of outputs is provably identical to plain sampled
+    ///   generation from the target.
+    ///
+    /// Rejected drafts are truncated from both caches via
+    /// [`KVCache::truncate_to`]; one bonus token is always emitted per
+    /// iteration.
+    ///
+    /// Expected speedup 1.5-3× at good acceptance rates (same-family
+    /// drafts only — cross-family drafts or different tokenizers will
+    /// have <20% acceptance and net-negative speedup).
+    ///
+    /// Preconditions:
+    /// - `draft.config.vocab_size == self.config.vocab_size` (so
+    ///   target's distribution over draft's vocab is well-defined).
+    /// - Both models share the same tokenizer (caller's responsibility).
+    pub fn generate_streaming_spec<B: fuel_graph_executor::GraphBackend>(
+        &self,
+        draft: &LlamaModel,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        k: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        target_executor: &mut GraphExecutor<B>,
+        draft_executor: &mut GraphExecutor<B>,
+        mut on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        if draft.config.vocab_size != self.config.vocab_size {
+            fuel_core_types::bail!(
+                "spec-decode: draft vocab {} != target vocab {}",
+                draft.config.vocab_size, self.config.vocab_size,
+            );
+        }
+        if k == 0 {
+            fuel_core_types::bail!("spec-decode: k must be >= 1");
+        }
+
+        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
+        let vocab = self.config.vocab_size;
+
+        // Greedy argmax helper.
+        fn argmax(logits: &[f32]) -> u32 {
+            let mut best = 0;
+            let mut best_v = logits[0];
+            for (i, &v) in logits.iter().enumerate().skip(1) {
+                if v > best_v { best_v = v; best = i; }
+            }
+            best as u32
+        }
+
+        // Temperature-scaled softmax. Returns normalized probabilities.
+        fn softmax_temp(logits: &[f32], temp: f32) -> Vec<f32> {
+            let inv_t = if temp == 0.0 { 1.0 } else { 1.0 / temp };
+            let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp: Vec<f32> = logits.iter().map(|&x| ((x - max) * inv_t).exp()).collect();
+            let sum: f32 = exp.iter().sum();
+            exp.iter().map(|&x| x / sum).collect()
+        }
+
+        // Advance a deterministic LCG and return a u01 uniform.
+        fn next_u01(state: &mut u64) -> f32 {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (*state >> 32) as f32 / u32::MAX as f32
+        }
+
+        // Sample a category from a distribution summing to ~1.
+        fn sample_cat(probs: &[f32], state: &mut u64) -> u32 {
+            let u = next_u01(state);
+            let mut cum = 0.0_f32;
+            for (i, &p) in probs.iter().enumerate() {
+                cum += p;
+                if u <= cum { return i as u32; }
+            }
+            (probs.len() - 1) as u32
+        }
+
+        // RNG state threading. Only used in Temperature mode.
+        let mut rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+        let temp = match strategy {
+            SamplingStrategy::Temperature { temp, .. } => temp,
+            SamplingStrategy::Greedy => 1.0, // unused in greedy
+        };
+
+        // Prefill both caches with the prompt.
+        let mut target_cache: KVCache<B> = KVCache::new(&self.config);
+        let mut draft_cache: KVCache<B> = KVCache::new(&draft.config);
+        let mut target_last_logits = self.forward_with_cache_gpu_on(&tokens, &mut target_cache, target_executor);
+        let mut draft_last_logits = draft.forward_with_cache_gpu_on(&tokens, &mut draft_cache, draft_executor);
+
+        let mut emitted = 0usize;
+
+        while emitted < max_new_tokens {
+            // --- Draft phase: K tokens. In Greedy mode, argmax; in
+            // Temperature mode, sample from draft's temp-scaled dist.
+            // We ALSO stash each draft's probability (draft-dist at the
+            // chosen token) for the Temperature accept rule.
+            let mut drafts: Vec<u32> = Vec::with_capacity(k);
+            let mut draft_probs_stash: Vec<Vec<f32>> = Vec::with_capacity(k);
+            for _ in 0..k {
+                let d = match strategy {
+                    SamplingStrategy::Greedy => {
+                        let d = argmax(&draft_last_logits);
+                        // We don't need draft_probs in greedy, but the
+                        // field has to exist to keep indexing uniform.
+                        draft_probs_stash.push(Vec::new());
+                        d
+                    }
+                    SamplingStrategy::Temperature { .. } => {
+                        let probs = softmax_temp(&draft_last_logits, temp);
+                        let d = sample_cat(&probs, &mut rng_state);
+                        draft_probs_stash.push(probs);
+                        d
+                    }
+                };
+                drafts.push(d);
+                draft_last_logits = draft.forward_with_cache_gpu_on(
+                    &[d], &mut draft_cache, draft_executor,
+                );
+            }
+
+            // --- Verify phase: target runs forward on the K drafts.
+            let verify_logits = self.forward_with_cache_gpu_on_all_positions(
+                &drafts, &mut target_cache, target_executor,
+            );
+            debug_assert_eq!(verify_logits.len(), drafts.len() * vocab);
+
+            // --- Accept phase: strategy-specific. ---
+            let mut accepted = 0usize;
+            let mut bonus_token: u32;
+            match strategy {
+                SamplingStrategy::Greedy => {
+                    let mut mismatched: Option<u32> = None;
+                    for i in 0..drafts.len() {
+                        let prev_row = if i == 0 {
+                            &target_last_logits[..]
+                        } else {
+                            &verify_logits[(i - 1) * vocab .. i * vocab]
+                        };
+                        let target_pick = argmax(prev_row);
+                        if target_pick == drafts[i] {
+                            accepted += 1;
+                        } else {
+                            mismatched = Some(target_pick);
+                            break;
+                        }
+                    }
+                    bonus_token = match mismatched {
+                        Some(t) => t,
+                        None => argmax(
+                            &verify_logits[(drafts.len() - 1) * vocab .. drafts.len() * vocab]
+                        ),
+                    };
+                }
+                SamplingStrategy::Temperature { .. } => {
+                    // Leviathan accept rule. For each i:
+                    //   q_i = draft's prob of drafts[i]
+                    //   p_i = target's prob of drafts[i] (from prev[i])
+                    //   accept with prob min(1, p_i / q_i)
+                    // On reject: sample replacement from (p - q)_+ / sum.
+                    let mut rejected_replacement: Option<u32> = None;
+                    for i in 0..drafts.len() {
+                        let prev_row = if i == 0 {
+                            &target_last_logits[..]
+                        } else {
+                            &verify_logits[(i - 1) * vocab .. i * vocab]
+                        };
+                        let target_probs = softmax_temp(prev_row, temp);
+                        let draft_probs = &draft_probs_stash[i];
+                        let d_tok = drafts[i] as usize;
+                        let p = target_probs[d_tok];
+                        let q = draft_probs[d_tok];
+                        let ratio = if q > 0.0 { (p / q).min(1.0) } else { 0.0 };
+                        let u = next_u01(&mut rng_state);
+                        if u < ratio {
+                            accepted += 1;
+                        } else {
+                            // Replacement from (p - q)_+ / sum.
+                            let mut residual: Vec<f32> = target_probs.iter().zip(draft_probs.iter())
+                                .map(|(&pt, &qt)| (pt - qt).max(0.0))
+                                .collect();
+                            let sum: f32 = residual.iter().sum();
+                            if sum > 0.0 {
+                                for r in residual.iter_mut() { *r /= sum; }
+                                rejected_replacement = Some(sample_cat(&residual, &mut rng_state));
+                            } else {
+                                // Degenerate case (should only happen if
+                                // distributions match exactly — then any
+                                // sample from target_probs is equally valid).
+                                rejected_replacement = Some(sample_cat(&target_probs, &mut rng_state));
+                            }
+                            break;
+                        }
+                    }
+                    bonus_token = match rejected_replacement {
+                        Some(t) => t,
+                        None => {
+                            // All K accepted — sample bonus from target's
+                            // last-position distribution.
+                            let last_row = &verify_logits[(drafts.len() - 1) * vocab .. drafts.len() * vocab];
+                            let probs = softmax_temp(last_row, temp);
+                            sample_cat(&probs, &mut rng_state)
+                        }
+                    };
+                }
+            }
+
+            // --- Rollback caches ---
+            // Target cache advanced by K but we committed (accepted + 1) tokens
+            // (accepted drafts + bonus). Excess = K - (accepted + 1) to drop,
+            // but only when accepted + 1 < K (i.e., at least one draft rejected).
+            let target_excess = k.saturating_sub(accepted + 1);
+            if target_excess > 0 {
+                let new_len = target_cache.cached_len - target_excess;
+                target_cache.truncate_to(new_len, &target_executor.backend)?;
+            }
+            // Draft cache: advanced by K; we commit (accepted) of those drafts
+            // + 1 bonus the draft didn't see. Truncate draft by (K - accepted)
+            // to drop the rejected drafts. Then feed bonus to draft to advance
+            // one position and get fresh draft_last_logits for the next round.
+            let draft_excess = k - accepted;
+            if draft_excess > 0 {
+                let new_len = draft_cache.cached_len - draft_excess;
+                draft_cache.truncate_to(new_len, &draft_executor.backend)?;
+            }
+
+            // --- Emit accepted drafts + bonus ---
+            for i in 0..accepted {
+                tokens.push(drafts[i]);
+                on_token(drafts[i]);
+                emitted += 1;
+                if emitted >= max_new_tokens { return Ok(tokens); }
+                if eos_id == Some(drafts[i]) { return Ok(tokens); }
+            }
+            tokens.push(bonus_token);
+            on_token(bonus_token);
+            emitted += 1;
+            if eos_id == Some(bonus_token) { return Ok(tokens); }
+
+            // --- Advance both caches + both "last_logits" by the bonus token. ---
+            // Draft needs to see bonus (which it didn't produce), then return
+            // fresh logits for the next iteration's first draft. Target cache
+            // already has committed positions; advance it by the bonus so
+            // target_last_logits is fresh for the next accept-check on draft[0].
+            target_last_logits = self.forward_with_cache_gpu_on(
+                &[bonus_token], &mut target_cache, target_executor,
+            );
+            draft_last_logits = draft.forward_with_cache_gpu_on(
+                &[bonus_token], &mut draft_cache, draft_executor,
+            );
         }
         Ok(tokens)
     }
@@ -2516,6 +3173,32 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KVCache<B>,
         executor: &mut GraphExecutor<B>,
+    ) -> Vec<f32> {
+        self.forward_with_cache_gpu_on_impl(tokens, cache, executor, false)
+    }
+
+    /// All-positions variant: returns `seq * vocab_size` logits (flat,
+    /// row-major over position). Used by speculative decoding's
+    /// verification step — target runs forward on K+1 tokens at once
+    /// and needs per-position logits to accept/reject drafts.
+    ///
+    /// Cache semantics identical to `forward_with_cache_gpu_on`; on
+    /// reject, caller invokes [`KVCache::truncate_to`] to roll back.
+    pub fn forward_with_cache_gpu_on_all_positions<B: fuel_graph_executor::GraphBackend>(
+        &self,
+        tokens: &[u32],
+        cache: &mut KVCache<B>,
+        executor: &mut GraphExecutor<B>,
+    ) -> Vec<f32> {
+        self.forward_with_cache_gpu_on_impl(tokens, cache, executor, true)
+    }
+
+    fn forward_with_cache_gpu_on_impl<B: fuel_graph_executor::GraphBackend>(
+        &self,
+        tokens: &[u32],
+        cache: &mut KVCache<B>,
+        executor: &mut GraphExecutor<B>,
+        return_all_positions: bool,
     ) -> Vec<f32> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -2601,34 +3284,51 @@ impl LlamaModel {
         let h_norm = apply_affine_rms_norm(
             &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
         );
-        let w_out = weights.output.const_like(
-            &h_norm, Shape::from_dims(&[cfg.dim, cfg.vocab_size]));
-        let logits = h_norm.matmul(&w_out);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
 
+        // For spec-decode verification we need per-position logits;
+        // otherwise slice to the last position for decode/prefill.
         let last_pos = seq - 1;
         let last_logits = logits
             .slice(1, last_pos, 1)
             .reshape(Shape::from_dims(&[cfg.vocab_size]));
+        let all_logits = logits.reshape(Shape::from_dims(&[seq * cfg.vocab_size]));
+        let logits_root = if return_all_positions { &all_logits } else { &last_logits };
 
         // Roots: [logits, full_k_0..N, full_v_0..N]
         let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
-        roots.push(&last_logits);
+        roots.push(logits_root);
         for fk in &full_ks { roots.push(fk); }
         for fv in &full_vs { roots.push(fv); }
 
         // Inject cached K/V device storage for the placeholder const
-        // nodes. Uses the backend trait's `try_clone` — shared across
-        // every backend.
+        // nodes. For Q8 cache entries we dequantize back to F32 on
+        // device first — the graph's apply_layer_with_cache still
+        // consumes plain F32 K/V as Const inputs.
+        let cached_elems = batch * cfg.n_kv_heads * cached_len * cfg.head_dim;
         for (li, (ck_id, cv_id)) in cached_kv_nodes.iter().enumerate() {
-            if let Some((ref k_dev, ref v_dev)) = cache.layers[li] {
+            if let Some(entry) = &cache.layers[li] {
                 let cached_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, cached_len, cfg.head_dim]);
                 let layout = fuel_core_types::Layout::contiguous(&cached_shape);
-                let k_clone = executor.backend.try_clone(k_dev, &layout)
-                    .expect("inject K clone");
-                let v_clone = executor.backend.try_clone(v_dev, &layout)
-                    .expect("inject V clone");
-                executor.pre_populate(*ck_id, k_clone, cached_shape.clone());
-                executor.pre_populate(*cv_id, v_clone, cached_shape);
+                let (k_f32, v_f32) = match entry {
+                    KVCacheEntry::F32 { k, v } => {
+                        let k = executor.backend.try_clone(k, &layout)
+                            .expect("inject K clone");
+                        let v = executor.backend.try_clone(v, &layout)
+                            .expect("inject V clone");
+                        (k, v)
+                    }
+                    KVCacheEntry::Q8 { k_blocks, v_blocks } => {
+                        let n_blocks = cached_elems / 32;
+                        let k = executor.backend.dequantize_q8_0(k_blocks, n_blocks)
+                            .expect("dequantize K from Q8 cache");
+                        let v = executor.backend.dequantize_q8_0(v_blocks, n_blocks)
+                            .expect("dequantize V from Q8 cache");
+                        (k, v)
+                    }
+                };
+                executor.pre_populate(*ck_id, k_f32, cached_shape.clone());
+                executor.pre_populate(*cv_id, v_f32, cached_shape);
             }
         }
 
@@ -2640,17 +3340,29 @@ impl LlamaModel {
 
         // Update cache: the realized full K/V tensors ARE the new
         // cache — no post-realize concat needed because the graph
-        // already did it inside apply_layer_with_cache.
+        // already did it inside apply_layer_with_cache. If q8_enabled,
+        // quantize the F32 K/V to Q8_0 blocks before storing.
         let mut iter = gpu_results.into_iter();
         let new_ks: Vec<(B::Storage, Shape)> = (0..cfg.n_layers)
             .map(|_| iter.next().unwrap()).collect();
         let new_vs: Vec<(B::Storage, Shape)> = (0..cfg.n_layers)
             .map(|_| iter.next().unwrap()).collect();
 
+        let new_len = cached_len + seq;
+        let new_elems = batch * cfg.n_kv_heads * new_len * cfg.head_dim;
         for (li, ((new_k, _), (new_v, _))) in
             new_ks.into_iter().zip(new_vs.into_iter()).enumerate()
         {
-            cache.layers[li] = Some((new_k, new_v));
+            let entry = if cache.q8_enabled && new_elems % 32 == 0 {
+                let k_blocks = executor.backend.quantize_q8_0(&new_k, new_elems)
+                    .expect("quantize K to Q8 cache");
+                let v_blocks = executor.backend.quantize_q8_0(&new_v, new_elems)
+                    .expect("quantize V to Q8 cache");
+                KVCacheEntry::Q8 { k_blocks, v_blocks }
+            } else {
+                KVCacheEntry::F32 { k: new_k, v: new_v }
+            };
+            cache.layers[li] = Some(entry);
         }
         cache.cached_len += seq;
 
@@ -3285,6 +3997,1032 @@ impl Gemma2Model {
     }
 }
 
+// ---- Phi-2 model assembly ---------------------------------------------------
+//
+// Phi-2 (microsoft/phi-2, 2.7B params) differs from LLaMA in four
+// meaningful ways, each of which exercises a different code path:
+//
+//   1. Norm: LayerNorm with gain + bias (not RMSNorm with gain only)
+//   2. MLP: standard fc1 → GELU → fc2 (not SwiGLU's gate ⊗ up → down)
+//   3. Residual structure: parallel attention + MLP — both branches
+//      consume the same pre-block-norm input and are summed with x:
+//        h' = x + attn(LN(x)) + mlp(LN(x))
+//      compared to LLaMA's sequential:
+//        h1 = x + attn(LN1(x))
+//        h2 = h1 + mlp(LN2(h1))
+//   4. Partial RoPE: only the first `rotary_dim` entries of each head
+//      get rotated (rotary_dim=32 for head_dim=80 in Phi-2). The rest
+//      pass through unchanged. We slice → rope → concat.
+//
+// Phi-2 also has biases on Q/K/V/dense and on fc1/fc2, plus a bias on
+// the LayerNorm. Every one of those is a real `broadcast_add` in the
+// graph, which exercises the lazy broadcast path we built for the
+// stride-aware binary work.
+
+/// Phi-2 model hyperparameters. Field semantics match the LLaMA config
+/// where they overlap; the `layer_norm_eps`, `partial_rotary_factor`,
+/// and `rotary_dim` fields are Phi-specific.
+#[derive(Debug, Clone)]
+pub struct PhiConfig {
+    pub vocab_size:            usize,
+    pub dim:                   usize,  // hidden_size
+    pub n_layers:              usize,
+    pub n_heads:               usize,
+    pub head_dim:              usize,
+    pub ffn_dim:               usize,  // intermediate_size
+    pub layer_norm_eps:        f64,
+    pub rope_base:             f64,
+    pub partial_rotary_factor: f64,
+    /// Number of dims at the start of head_dim that get rotated.
+    /// `rotary_dim = (partial_rotary_factor * head_dim).round() as usize`.
+    /// Must be even for the half-split RoPE layout.
+    pub rotary_dim:            usize,
+    pub tie_word_embeddings:   bool,
+}
+
+impl PhiConfig {
+    pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))?;
+
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| crate::Error::Msg(format!("config.json: missing/invalid field {key:?}")))
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let dim = get_usize("hidden_size")?;
+        let n_layers = get_usize("num_hidden_layers")?;
+        let n_heads = get_usize("num_attention_heads")?;
+        let ffn_dim = get_usize("intermediate_size")?;
+        let head_dim = v.get("head_dim").and_then(|x| x.as_u64())
+            .map(|x| x as usize).unwrap_or(dim / n_heads);
+        let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
+        let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
+        let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
+        let rotary_dim = (partial_rotary_factor * head_dim as f64).round() as usize;
+        if rotary_dim % 2 != 0 {
+            crate::bail!(
+                "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={partial_rotary_factor}, head_dim={head_dim})"
+            );
+        }
+        let tie_word_embeddings = v.get("tie_word_embeddings")
+            .and_then(|x| x.as_bool()).unwrap_or(false);
+
+        Ok(PhiConfig {
+            vocab_size, dim, n_layers, n_heads, head_dim, ffn_dim,
+            layer_norm_eps, rope_base, partial_rotary_factor, rotary_dim,
+            tie_word_embeddings,
+        })
+    }
+}
+
+/// How Q/K/V projections are stored for a Phi layer.
+///
+/// - `Split`: separate Q, K, V weights + biases (matches HF safetensors
+///   layout — `q_proj.weight`, `k_proj.weight`, `v_proj.weight`).
+/// - `Packed`: single `[3*dim, dim]` weight + `[3*dim]` bias (matches
+///   llama.cpp GGUF layout — `attn_qkv.weight`). The forward pass does
+///   one big matmul producing `[*, 3*dim]`, then slices that output
+///   into Q, K, V. Critically, the slice happens on the OUTPUT side
+///   rather than up-front on the weights — this matches Candle's
+///   `qkv.reshape(3, n_head, head_dim).i((.., .., 0..3))` exactly and
+///   avoids any potential byte-split-order hazards on the weight side.
+#[derive(Debug, Clone)]
+pub enum PhiQkv {
+    Split {
+        q: WeightStorage,
+        q_bias: Arc<[f32]>,
+        k: WeightStorage,
+        k_bias: Arc<[f32]>,
+        v: WeightStorage,
+        v_bias: Arc<[f32]>,
+    },
+    Packed {
+        /// `[3*dim, dim]` weight (GGUF layout).
+        qkv: WeightStorage,
+        /// `[3*dim]` bias, Q first then K then V (standard Candle convention).
+        qkv_bias: Arc<[f32]>,
+    },
+}
+
+/// Per-layer Phi-2 weights. Every projection has a bias (unlike LLaMA).
+#[derive(Debug, Clone)]
+pub struct PhiLayerWeights {
+    pub attn_qkv: PhiQkv,
+    /// Output projection (called "dense" in Phi-2, not "o_proj").
+    pub attn_dense:      WeightStorage,
+    pub attn_dense_bias: Arc<[f32]>,
+    pub mlp_fc1:         WeightStorage,  // [dim, ffn_dim]
+    pub mlp_fc1_bias:    Arc<[f32]>,
+    pub mlp_fc2:         WeightStorage,  // [ffn_dim, dim]
+    pub mlp_fc2_bias:    Arc<[f32]>,
+    /// Pre-block LayerNorm (single norm for Phi-2's parallel attn+MLP).
+    pub norm_gain:      Arc<[f32]>,
+    pub norm_bias:      Arc<[f32]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PhiWeights {
+    pub token_embedding: Arc<[f32]>,   // [vocab_size, dim]
+    pub layers:          Vec<PhiLayerWeights>,
+    pub final_norm_gain: Arc<[f32]>,
+    pub final_norm_bias: Arc<[f32]>,
+    pub output:          WeightStorage,  // [dim, vocab_size]
+    pub output_bias:     Option<Arc<[f32]>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PhiModel {
+    pub config:  PhiConfig,
+    pub weights: PhiWeights,
+}
+
+/// Apply LayerNorm with affine gain + bias along the last dim.
+/// `y = (x - mean) / sqrt(var + eps) * gain + bias`, where gain and
+/// bias are per-channel vectors of length `dim`.
+fn apply_affine_layer_norm(
+    x: &LazyTensor,
+    gain: &Arc<[f32]>,
+    bias: &Arc<[f32]>,
+    dim: usize,
+    eps: f64,
+) -> LazyTensor {
+    assert_eq!(gain.len(), dim, "apply_affine_layer_norm: gain length must equal dim");
+    assert_eq!(bias.len(), dim, "apply_affine_layer_norm: bias length must equal dim");
+    let normalized = x.layer_norm_last_dim(eps);
+    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
+    let bias_t = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[dim]));
+    normalized.broadcast_mul(&gain_t).broadcast_add(&bias_t)
+}
+
+/// Apply `x @ W + b` where `W` is a `WeightStorage` projection and
+/// `b` is a `[out_features]` bias vector. Dispatches to qmatmul for
+/// Q4_0 weights.
+fn apply_linear_with_bias(
+    x: &LazyTensor,
+    w: &WeightStorage,
+    b: &Arc<[f32]>,
+    in_features: usize,
+    out_features: usize,
+) -> LazyTensor {
+    let y = w.apply_linear(x, in_features, out_features);
+    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[out_features]));
+    y.broadcast_add(&b_t)
+}
+
+impl PhiModel {
+    /// Apply one Phi-2 transformer block to `x` (parallel attention + MLP).
+    ///
+    /// Phi-2's structure is:
+    ///   x_norm = LayerNorm(x, gain, bias, eps)
+    ///   attn_out = attention(x_norm)  // with partial RoPE on Q/K
+    ///   mlp_out  = fc2(gelu(fc1(x_norm)))
+    ///   h = x + attn_out + mlp_out
+    ///
+    /// Returns (h, fresh_k, fresh_v, full_k, full_v) for cache update.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_with_cache(
+        &self,
+        x: &LazyTensor,
+        layer: &PhiLayerWeights,
+        layer_cache: &LayerKVCache,
+        cached_len: usize,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+    ) -> LayerOutput {
+        let cfg = &self.config;
+        let dims = x.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.n_heads * cfg.head_dim;  // no GQA in Phi-2
+        let total_seq = cached_len + seq;
+
+        // Shared pre-block LayerNorm.
+        let x_norm = apply_affine_layer_norm(
+            x, &layer.norm_gain, &layer.norm_bias, cfg.dim, cfg.layer_norm_eps);
+
+        // Q/K/V projections with bias.
+        let (q, k, v) = match &layer.attn_qkv {
+            PhiQkv::Split { q, q_bias, k, k_bias, v, v_bias } => {
+                let q_out = apply_linear_with_bias(&x_norm, q, q_bias, cfg.dim, cfg.dim);
+                let k_out = apply_linear_with_bias(&x_norm, k, k_bias, cfg.dim, kv_dim);
+                let v_out = apply_linear_with_bias(&x_norm, v, v_bias, cfg.dim, kv_dim);
+                (q_out, k_out, v_out)
+            }
+            PhiQkv::Packed { qkv, qkv_bias } => {
+                // Single big matmul producing [*, 3*dim] output, then slice
+                // into [0..dim)=Q, [dim..2*dim)=K, [2*dim..3*dim)=V.
+                // Matches Candle's
+                //   .reshape(b, s, 3, n_head, head_dim).i((.., .., 0/1/2))
+                // layout exactly (Q is first on the output side).
+                let combined = apply_linear_with_bias(
+                    &x_norm, qkv, qkv_bias, cfg.dim, 3 * cfg.dim);
+                let last = combined.rank() - 1;
+                let q_out = combined.slice(last, 0, cfg.dim);
+                let k_out = combined.slice(last, cfg.dim, cfg.dim);
+                let v_out = combined.slice(last, 2 * cfg.dim, cfg.dim);
+                (q_out, k_out, v_out)
+            }
+        };
+
+        // Split heads: [batch, seq, dim] → [batch, seq, n_heads, head_dim]
+        //   → permute → [batch, n_heads, seq, head_dim]
+        let q_h = q
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+        let k_h = k
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+
+        // Partial RoPE on Q and K: rotate the first `rotary_dim` entries
+        // of head_dim, leave the rest unchanged.
+        let q_r = partial_rope(&q_h, rope_cos, rope_sin, cfg.rotary_dim, cfg.head_dim);
+        let k_r = partial_rope(&k_h, rope_cos, rope_sin, cfg.rotary_dim, cfg.head_dim);
+
+        // Fresh K/V for the cache. V is not rotated.
+        let fresh_k = k_r.clone();
+        let fresh_v = v_h.clone();
+
+        // Prepend cached K/V along the seq dim (dim 2).
+        let (full_k, full_v) = if cached_len > 0 {
+            let cached_shape = Shape::from_dims(&[batch, cfg.n_heads, cached_len, cfg.head_dim]);
+            let cached_k = x.const_f32_like(layer_cache.k.clone(), cached_shape.clone());
+            let cached_v = x.const_f32_like(layer_cache.v.clone(), cached_shape);
+            (cached_k.concat(&fresh_k, 2), cached_v.concat(&fresh_v, 2))
+        } else {
+            (fresh_k.clone(), fresh_v.clone())
+        };
+        let cache_full_k = full_k.clone();
+        let cache_full_v = full_v.clone();
+
+        // Attention: Q @ K^T, scale, mask, softmax, @ V.
+        let k_t = full_k.transpose();
+        let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
+        let scores = q_r.matmul(&k_t);
+        // Causal mask.
+        let mut mask_data = vec![0.0_f32; seq * total_seq];
+        for q in 0..seq {
+            let abs_q = cached_len + q;
+            for k in (abs_q + 1)..total_seq {
+                mask_data[q * total_seq + k] = f32::NEG_INFINITY;
+            }
+        }
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, total_seq]));
+        let scores_scaled = LazyTensor { inner: scores.inner.mul_scalar(scale) };
+        let scores_masked = scores_scaled.broadcast_add(&mask);
+        let attn = scores_masked.softmax_last_dim();
+        let attn_v = attn.matmul(&full_v);
+
+        // Merge heads: [batch, n_heads, seq, head_dim] → [batch, seq, dim].
+        let merged = attn_v
+            .permute(&[0, 2, 1, 3])
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+        let attn_out = apply_linear_with_bias(
+            &merged, &layer.attn_dense, &layer.attn_dense_bias, cfg.dim, cfg.dim);
+
+        // MLP branch (shares x_norm with attention branch).
+        let fc1_out = apply_linear_with_bias(
+            &x_norm, &layer.mlp_fc1, &layer.mlp_fc1_bias, cfg.dim, cfg.ffn_dim);
+        let gelu_out = fc1_out.gelu();
+        let mlp_out = apply_linear_with_bias(
+            &gelu_out, &layer.mlp_fc2, &layer.mlp_fc2_bias, cfg.ffn_dim, cfg.dim);
+
+        // Parallel residual: x + attn_out + mlp_out.
+        let h = x.add(&attn_out).add(&mlp_out);
+
+        LayerOutput {
+            h,
+            fresh_k,
+            fresh_v,
+            full_k: cache_full_k,
+            full_v: cache_full_v,
+        }
+    }
+
+    /// Forward pass with KV cache; returns last-position logits.
+    pub fn forward_with_cache_gpu_on<B: fuel_graph_executor::GraphBackend>(
+        &self,
+        tokens: &[u32],
+        cache: &mut KVCache<B>,
+        executor: &mut GraphExecutor<B>,
+    ) -> Vec<f32> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let cached_len = cache.cached_len;
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids)
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+
+        // RoPE tables are sized for `rotary_dim`, not the full head_dim —
+        // partial RoPE rotates only the first `rotary_dim` entries.
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, cached_len, seq, cfg.rotary_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.rotary_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        let mut cached_kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> = Vec::new();
+        let mut full_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+        let mut full_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
+
+        for layer in weights.layers.iter() {
+            let layer_cache_proxy: LayerKVCache = if cached_len > 0 {
+                let n = batch * cfg.n_heads * cached_len * cfg.head_dim;
+                LayerKVCache { k: vec![0.0; n], v: vec![0.0; n] }
+            } else {
+                LayerKVCache::default()
+            };
+            let out = self.apply_layer_with_cache(
+                &h, layer, &layer_cache_proxy, cached_len, &rope_cos, &rope_sin);
+            h = out.h;
+            full_ks.push(out.full_k);
+            full_vs.push(out.full_v);
+        }
+
+        // Wire up cache placeholders.
+        if cached_len > 0 {
+            let graph = h.graph_tensor().graph().borrow();
+            let target_elems = batch * cfg.n_heads * cached_len * cfg.head_dim;
+            let mut found: Vec<fuel_graph::NodeId> = Vec::new();
+            for node_id in 0..graph.len() {
+                let nid = fuel_graph::NodeId(node_id);
+                let node = graph.node(nid);
+                if matches!(node.op, fuel_graph::Op::Const(_))
+                    && node.shape.elem_count() == target_elems
+                    && node.dtype == fuel_core_types::DType::F32
+                    && node.shape.dims() == [batch, cfg.n_heads, cached_len, cfg.head_dim]
+                {
+                    found.push(nid);
+                }
+            }
+            if found.len() == 2 * cfg.n_layers {
+                for li in 0..cfg.n_layers {
+                    cached_kv_nodes.push((found[li * 2], found[li * 2 + 1]));
+                }
+            }
+        }
+
+        // Final LayerNorm, output projection (+ optional bias).
+        let h_norm = apply_affine_layer_norm(
+            &h, &weights.final_norm_gain, &weights.final_norm_bias,
+            cfg.dim, cfg.layer_norm_eps,
+        );
+        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = match &weights.output_bias {
+            Some(b) => {
+                let b_t = h_norm.const_f32_like(
+                    Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
+                logits_no_bias.broadcast_add(&b_t)
+            }
+            None => logits_no_bias,
+        };
+
+        let last_pos = seq - 1;
+        let last_logits = logits
+            .slice(1, last_pos, 1)
+            .reshape(Shape::from_dims(&[cfg.vocab_size]));
+
+        let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
+        roots.push(&last_logits);
+        for fk in &full_ks { roots.push(fk); }
+        for fv in &full_vs { roots.push(fv); }
+
+        let cached_elems = batch * cfg.n_heads * cached_len * cfg.head_dim;
+        for (li, (ck_id, cv_id)) in cached_kv_nodes.iter().enumerate() {
+            if let Some(entry) = &cache.layers[li] {
+                let cached_shape = Shape::from_dims(&[batch, cfg.n_heads, cached_len, cfg.head_dim]);
+                let layout = fuel_core_types::Layout::contiguous(&cached_shape);
+                let (k_f32, v_f32) = match entry {
+                    KVCacheEntry::F32 { k, v } => {
+                        let k = executor.backend.try_clone(k, &layout).expect("inject K clone");
+                        let v = executor.backend.try_clone(v, &layout).expect("inject V clone");
+                        (k, v)
+                    }
+                    KVCacheEntry::Q8 { k_blocks, v_blocks } => {
+                        let n_blocks = cached_elems / 32;
+                        let k = executor.backend.dequantize_q8_0(k_blocks, n_blocks)
+                            .expect("dequantize K from Q8 cache");
+                        let v = executor.backend.dequantize_q8_0(v_blocks, n_blocks)
+                            .expect("dequantize V from Q8 cache");
+                        (k, v)
+                    }
+                };
+                executor.pre_populate(*ck_id, k_f32, cached_shape.clone());
+                executor.pre_populate(*cv_id, v_f32, cached_shape);
+            }
+        }
+
+        let inner_roots: Vec<&fuel_graph::Tensor> =
+            roots.iter().map(|lt| &lt.inner).collect();
+        let (cpu_results, gpu_results) = executor.realize_split(&inner_roots, 1);
+        let logits_vec = cpu_results.into_iter().next().unwrap();
+
+        let mut iter = gpu_results.into_iter();
+        let new_ks: Vec<(B::Storage, Shape)> = (0..cfg.n_layers).map(|_| iter.next().unwrap()).collect();
+        let new_vs: Vec<(B::Storage, Shape)> = (0..cfg.n_layers).map(|_| iter.next().unwrap()).collect();
+        let new_len = cached_len + seq;
+        let new_elems = batch * cfg.n_heads * new_len * cfg.head_dim;
+        for (li, ((new_k, _), (new_v, _))) in new_ks.into_iter().zip(new_vs.into_iter()).enumerate() {
+            let entry = if cache.q8_enabled && new_elems % 32 == 0 {
+                let k_blocks = executor.backend.quantize_q8_0(&new_k, new_elems)
+                    .expect("quantize K to Q8 cache");
+                let v_blocks = executor.backend.quantize_q8_0(&new_v, new_elems)
+                    .expect("quantize V to Q8 cache");
+                KVCacheEntry::Q8 { k_blocks, v_blocks }
+            } else {
+                KVCacheEntry::F32 { k: new_k, v: new_v }
+            };
+            cache.layers[li] = Some(entry);
+        }
+        cache.cached_len += seq;
+        logits_vec
+    }
+
+    /// Streaming generation with device-resident KV cache.
+    pub fn generate_streaming_gpu_on<B: fuel_graph_executor::GraphBackend>(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        executor: &mut GraphExecutor<B>,
+        mut on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
+        let mut rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+        let mut cache: KVCache<B> = KVCache::with_dims(
+            self.config.n_layers, self.config.n_heads, self.config.head_dim);
+        if std::env::var("FUEL_Q8_KV").ok().as_deref() == Some("1") {
+            cache.enable_q8_cache();
+        }
+        let mut last_logits = self.forward_with_cache_gpu_on(&tokens, &mut cache, executor);
+        for _ in 0..max_new_tokens {
+            let next = sample_logits(&last_logits, strategy, &mut rng_state);
+            tokens.push(next);
+            on_token(next);
+            if let Some(eos) = eos_id { if next == eos { break; } }
+            last_logits = self.forward_with_cache_gpu_on(&[next], &mut cache, executor);
+        }
+        Ok(tokens)
+    }
+
+    /// Load weights from a HuggingFace Hub repo (e.g. "microsoft/phi-2").
+    pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+
+        let config_path = repo.get("config.json")
+            .map_err(|e| crate::Error::Msg(format!("hf-hub config.json: {e}")))?;
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let config = PhiConfig::from_hf_json_str(&config_str)?;
+
+        let weight_paths: Vec<std::path::PathBuf> = match repo.get("model.safetensors.index.json") {
+            Ok(index_path) => {
+                let index_str = std::fs::read_to_string(&index_path)?;
+                let index: serde_json::Value = serde_json::from_str(&index_str)
+                    .map_err(|e| crate::Error::Msg(format!("parsing index: {e}")))?;
+                let weight_map = index.get("weight_map").and_then(|x| x.as_object())
+                    .ok_or_else(|| crate::Error::Msg("index.json: missing weight_map".into()))?;
+                let mut unique = std::collections::HashSet::new();
+                for v in weight_map.values() {
+                    if let Some(s) = v.as_str() { unique.insert(s.to_string()); }
+                }
+                let mut paths: Vec<std::path::PathBuf> = Vec::new();
+                for shard_name in unique {
+                    let p = repo.get(&shard_name)
+                        .map_err(|e| crate::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
+                    paths.push(p);
+                }
+                paths
+            }
+            Err(_) => {
+                let p = repo.get("model.safetensors")
+                    .map_err(|e| crate::Error::Msg(format!("hf-hub model.safetensors: {e}")))?;
+                vec![p]
+            }
+        };
+
+        let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let weights = PhiWeights::load_from_mmapped(&st, &config)?;
+        Ok(PhiModel { config, weights })
+    }
+
+    /// Load a Phi-2 model from a GGUF file (e.g. one of TheBloke's
+    /// quantized Phi-2 releases). Q4_0 tensors stay quantized on-device;
+    /// other dtypes dequantize to F32 at load time. Config is derived
+    /// from the GGUF metadata.
+    pub fn from_gguf<P: AsRef<std::path::Path>>(path: P) -> crate::Result<Self> {
+        use crate::quantized::gguf_mmap::MmapedContent;
+        let mc = MmapedContent::from_path(&path)?;
+        let meta = mc.metadata();
+        let get_u32 = |k: &str| -> crate::Result<u32> {
+            meta.get(k)
+                .ok_or_else(|| crate::Error::Msg(format!("gguf metadata: missing {k:?}")))?
+                .to_u32()
+                .map_err(|e| crate::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
+        };
+        let get_f32 = |k: &str| -> crate::Result<f32> {
+            meta.get(k)
+                .ok_or_else(|| crate::Error::Msg(format!("gguf metadata: missing {k:?}")))?
+                .to_f32()
+                .map_err(|e| crate::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
+        };
+        // Phi-2 metadata keys (llama.cpp convention).
+        let dim        = get_u32("phi2.embedding_length")? as usize;
+        let n_layers   = get_u32("phi2.block_count")? as usize;
+        let n_heads    = get_u32("phi2.attention.head_count")? as usize;
+        let ffn_dim    = get_u32("phi2.feed_forward_length")? as usize;
+        let head_dim   = dim / n_heads;
+        let layer_norm_eps = get_f32("phi2.attention.layer_norm_epsilon").unwrap_or(1e-5) as f64;
+        let rope_base  = get_f32("phi2.rope.freq_base").unwrap_or(10_000.0) as f64;
+        let rotary_dim = get_u32("phi2.rope.dimension_count").unwrap_or(32) as usize;
+        let partial_rotary_factor = rotary_dim as f64 / head_dim as f64;
+
+        // Derive vocab_size from the token_embd shape (no explicit
+        // metadata key for it in GGUF; llama.cpp infers from the
+        // tokenizer array which needs a dedicated API). token_embd has
+        // shape [vocab, dim].
+        let vocab_size = mc.content()
+            .tensor_infos.get("token_embd.weight")
+            .ok_or_else(|| crate::Error::Msg("gguf: missing token_embd.weight".into()))?
+            .shape.dims()[0];
+
+        let config = PhiConfig {
+            vocab_size, dim, n_layers, n_heads, head_dim, ffn_dim,
+            layer_norm_eps, rope_base, partial_rotary_factor, rotary_dim,
+            tie_word_embeddings: false,
+        };
+
+        // MmapedContent drops here; the load_from_gguf path re-opens.
+        // In practice this is two mmaps in flight, both pointing at the
+        // same file — cheap on modern OSes. If this becomes a hotspot,
+        // refactor to hand the Arc<Mmap> through.
+        drop(mc);
+        let weights = PhiWeights::load_from_gguf(&path, &config)?;
+        Ok(PhiModel { config, weights })
+    }
+}
+
+impl PhiWeights {
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PhiConfig,
+    ) -> crate::Result<Self> {
+        let kv_dim = cfg.n_heads * cfg.head_dim;
+        let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
+        if token_embedding.len() != cfg.vocab_size * cfg.dim {
+            crate::bail!(
+                "embed_tokens: {} elements, expected {}",
+                token_embedding.len(), cfg.vocab_size * cfg.dim,
+            );
+        }
+
+        let mut layers: Vec<PhiLayerWeights> = Vec::with_capacity(cfg.n_layers);
+        for i in 0..cfg.n_layers {
+            // Phi-2 uses `dense` for the output projection (not `o_proj`)
+            // and `fc1`/`fc2` for the MLP (not `gate_proj`/`up_proj`/`down_proj`).
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("model.layers.{i}.self_attn.q_proj.weight"), cfg.dim, cfg.dim)?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("model.layers.{i}.self_attn.k_proj.weight"), kv_dim, cfg.dim)?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("model.layers.{i}.self_attn.v_proj.weight"), kv_dim, cfg.dim)?;
+            let attn_dense = load_transposed_matrix_preserve_dtype(
+                st, &format!("model.layers.{i}.self_attn.dense.weight"), cfg.dim, cfg.dim)?;
+            let mlp_fc1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("model.layers.{i}.mlp.fc1.weight"), cfg.ffn_dim, cfg.dim)?;
+            let mlp_fc2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("model.layers.{i}.mlp.fc2.weight"), cfg.dim, cfg.ffn_dim)?;
+
+            let attn_q_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.self_attn.q_proj.bias"))?);
+            let attn_k_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.self_attn.k_proj.bias"))?);
+            let attn_v_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.self_attn.v_proj.bias"))?);
+            let attn_dense_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.self_attn.dense.bias"))?);
+            let mlp_fc1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.mlp.fc1.bias"))?);
+            let mlp_fc2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.mlp.fc2.bias"))?);
+
+            // Phi-2's pre-block LayerNorm is `input_layernorm.{weight,bias}`.
+            let norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.input_layernorm.weight"))?);
+            let norm_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("model.layers.{i}.input_layernorm.bias"))?);
+
+            layers.push(PhiLayerWeights {
+                attn_qkv: PhiQkv::Split {
+                    q: attn_q, q_bias: attn_q_bias,
+                    k: attn_k, k_bias: attn_k_bias,
+                    v: attn_v, v_bias: attn_v_bias,
+                },
+                attn_dense, attn_dense_bias,
+                mlp_fc1, mlp_fc1_bias, mlp_fc2, mlp_fc2_bias,
+                norm_gain, norm_bias,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.final_layernorm.weight")?);
+        let final_norm_bias = Arc::from(load_tensor_as_f32(st, "model.final_layernorm.bias")?);
+
+        let output: WeightStorage = if cfg.tie_word_embeddings {
+            // Tied: transpose embed_tokens.
+            let mut transposed = vec![0.0_f32; cfg.dim * cfg.vocab_size];
+            for i in 0..cfg.vocab_size {
+                for j in 0..cfg.dim {
+                    transposed[j * cfg.vocab_size + i] = token_embedding[i * cfg.dim + j];
+                }
+            }
+            WeightStorage::F32(Arc::from(transposed))
+        } else {
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, cfg.dim)?
+        };
+        let output_bias = load_tensor_as_f32(st, "lm_head.bias").ok().map(Arc::from);
+
+        Ok(PhiWeights {
+            token_embedding: Arc::from(token_embedding),
+            layers, final_norm_gain, final_norm_bias, output, output_bias,
+        })
+    }
+
+    /// Load Phi-2 weights from a GGUF file. Q4_0 tensors stay quantized
+    /// (go into `WeightStorage::Q4_0`); other GGML dtypes are dequantized
+    /// to F32 at load time and stored as `WeightStorage::F32` (or
+    /// `Arc<[f32]>` for biases, norms, embedding).
+    ///
+    /// GGUF key layout for Phi-2:
+    ///   token_embd.weight / output.weight / output_norm.{weight,bias}
+    ///   blk.{i}.attn_qkv.{weight,bias}           (packed 3*dim × dim)
+    ///   blk.{i}.attn_output.{weight,bias}
+    ///   blk.{i}.ffn_up.{weight,bias}
+    ///   blk.{i}.ffn_down.{weight,bias}
+    ///   blk.{i}.attn_norm.{weight,bias}
+    pub fn load_from_gguf<P: AsRef<std::path::Path>>(
+        path: P,
+        cfg: &PhiConfig,
+    ) -> crate::Result<Self> {
+        use crate::quantized::gguf_mmap::MmapedContent;
+        let mc = MmapedContent::from_path(path)?;
+        let content = mc.content();
+        let (mmap_arc, _) = (mc.mmap(), ());
+        let mmap_bytes: &[u8] = &mmap_arc[..];
+        let data_off = content.tensor_data_offset as usize;
+
+        // Extract a raw byte slice for a tensor.
+        let get_tensor_bytes = |name: &str| -> crate::Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
+            let info = content.tensor_infos.get(name)
+                .ok_or_else(|| crate::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
+            let elems = info.shape.elem_count();
+            let block_size = info.ggml_dtype.block_size();
+            let bytes_len = elems / block_size * info.ggml_dtype.type_size();
+            let start = data_off + info.offset as usize;
+            Ok((&mmap_bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
+        };
+
+        // Load an F32 vector (for biases, norms, embedding). Dequantizes
+        // if necessary.
+        let load_f32 = |name: &str| -> crate::Result<Vec<f32>> {
+            let (bytes, dt, _dims) = get_tensor_bytes(name)?;
+            dequant_gguf_bytes_to_f32(bytes, dt, name)
+        };
+
+        // Load a weight matrix as WeightStorage. For Q4_0 bytes, keep
+        // them quantized; for other dtypes, dequantize to F32.
+        // `out_features × in_features` is the GGUF/llama.cpp convention.
+        let load_weight = |name: &str, out_features: usize, in_features: usize| -> crate::Result<WeightStorage> {
+            let (bytes, dt, dims) = get_tensor_bytes(name)?;
+            // GGUF stores weights as [out, in] — matches our Q4_0 block layout.
+            let expected_elems = out_features * in_features;
+            let actual_elems: usize = dims.iter().product();
+            if actual_elems != expected_elems {
+                crate::bail!(
+                    "gguf: tensor {name:?} has {actual_elems} elements, expected {expected_elems} for [{out_features}, {in_features}]",
+                );
+            }
+            // Debug fallback: FUEL_FORCE_F32=1 dequantizes every weight
+            // at load time to isolate Q4_0-path bugs from model-structure
+            // bugs. Useful for validating the PhiModel/loader against a
+            // known-good computation path.
+            let force_f32 = std::env::var("FUEL_FORCE_F32").is_ok();
+            match dt {
+                crate::quantized::GgmlDType::Q4_0 if !force_f32 => {
+                    Ok(WeightStorage::Q4_0 {
+                        words: bytes_to_u32_arc(bytes),
+                        bytes_len: bytes.len(),
+                        in_features,
+                        out_features,
+                    })
+                }
+                _ => {
+                    // Dequantized data is in GGUF's native [out, in]
+                    // row-major layout. Our standard F32/BF16 matmul
+                    // expects [in, out], so transpose before storing.
+                    // (Q4_0 keeps its native layout because qmatmul
+                    // reads blocks as [N, K/32] directly.)
+                    let f32_out_in = dequant_gguf_bytes_to_f32(bytes, dt, name)?;
+                    let mut f32_in_out = vec![0.0_f32; out_features * in_features];
+                    for o in 0..out_features {
+                        for i in 0..in_features {
+                            f32_in_out[i * out_features + o] = f32_out_in[o * in_features + i];
+                        }
+                    }
+                    Ok(WeightStorage::F32(Arc::from(f32_in_out)))
+                }
+            }
+        };
+
+        let token_embedding = load_f32("token_embd.weight")?;
+        if token_embedding.len() != cfg.vocab_size * cfg.dim {
+            crate::bail!(
+                "gguf token_embd: {} elems, expected {}×{}",
+                token_embedding.len(), cfg.vocab_size, cfg.dim,
+            );
+        }
+
+        let mut layers: Vec<PhiLayerWeights> = Vec::with_capacity(cfg.n_layers);
+        let kv_dim = cfg.n_heads * cfg.head_dim;
+
+        for i in 0..cfg.n_layers {
+            let prefix = format!("blk.{i}");
+
+            // Phi-2 GGUF packs Q/K/V into a single attn_qkv tensor of
+            // shape [3*dim, dim]. We keep it PACKED as a single
+            // WeightStorage and let the forward pass do one big matmul
+            // + slice after (matching Candle's eager approach). This
+            // avoids any hazards around byte-level Q/K/V splits on the
+            // weight side.
+            let attn_qkv_weight = load_weight(
+                &format!("{prefix}.attn_qkv.weight"),
+                3 * cfg.dim, cfg.dim,
+            )?;
+            let qkv_bias_vec = load_f32(&format!("{prefix}.attn_qkv.bias"))?;
+            if qkv_bias_vec.len() != 3 * cfg.dim {
+                crate::bail!("gguf attn_qkv.bias: {} elems, expected {}", qkv_bias_vec.len(), 3*cfg.dim);
+            }
+            let qkv_bias: Arc<[f32]> = Arc::from(qkv_bias_vec);
+            let _ = kv_dim; // Phi-2 has no GQA; kv_dim == dim
+
+            let attn_dense = load_weight(&format!("{prefix}.attn_output.weight"), cfg.dim, cfg.dim)?;
+            let attn_dense_bias = Arc::from(load_f32(&format!("{prefix}.attn_output.bias"))?);
+
+            let mlp_fc1 = load_weight(&format!("{prefix}.ffn_up.weight"), cfg.ffn_dim, cfg.dim)?;
+            let mlp_fc1_bias = Arc::from(load_f32(&format!("{prefix}.ffn_up.bias"))?);
+            let mlp_fc2 = load_weight(&format!("{prefix}.ffn_down.weight"), cfg.dim, cfg.ffn_dim)?;
+            let mlp_fc2_bias = Arc::from(load_f32(&format!("{prefix}.ffn_down.bias"))?);
+
+            let norm_gain = Arc::from(load_f32(&format!("{prefix}.attn_norm.weight"))?);
+            let norm_bias = Arc::from(load_f32(&format!("{prefix}.attn_norm.bias"))?);
+
+            layers.push(PhiLayerWeights {
+                attn_qkv: PhiQkv::Packed { qkv: attn_qkv_weight, qkv_bias },
+                attn_dense, attn_dense_bias,
+                mlp_fc1, mlp_fc1_bias,
+                mlp_fc2, mlp_fc2_bias,
+                norm_gain, norm_bias,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_f32("output_norm.weight")?);
+        let final_norm_bias = Arc::from(load_f32("output_norm.bias")?);
+
+        // Output projection. In GGUF: `output.weight` has shape [vocab, dim].
+        let output = load_weight("output.weight", cfg.vocab_size, cfg.dim)?;
+        let output_bias = load_f32("output.bias").ok().map(Arc::from);
+
+        Ok(PhiWeights {
+            token_embedding: Arc::from(token_embedding),
+            layers, final_norm_gain, final_norm_bias, output, output_bias,
+        })
+    }
+}
+
+/// Dequantize a raw byte slice from GGUF (of the given GGML dtype) into
+/// a flat `Vec<f32>`. Used by the lazy GGUF loader for non-Q4_0 tensors
+/// (biases, norms, embeddings, and weight matrices of any dtype that
+/// lacks a fused on-device dequant path).
+fn dequant_gguf_bytes_to_f32(
+    bytes: &[u8],
+    dt: crate::quantized::GgmlDType,
+    name: &str,
+) -> crate::Result<Vec<f32>> {
+    use crate::quantized::GgmlDType;
+    use half::{bf16, f16};
+    match dt {
+        GgmlDType::F32 => {
+            if bytes.len() % 4 != 0 {
+                crate::bail!("gguf {name}: F32 byte count {} not multiple of 4", bytes.len());
+            }
+            Ok(bytes.chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+        }
+        GgmlDType::F16 => {
+            if bytes.len() % 2 != 0 {
+                crate::bail!("gguf {name}: F16 byte count {} not multiple of 2", bytes.len());
+            }
+            Ok(bytes.chunks_exact(2)
+                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+        }
+        GgmlDType::BF16 => {
+            if bytes.len() % 2 != 0 {
+                crate::bail!("gguf {name}: BF16 byte count {} not multiple of 2", bytes.len());
+            }
+            Ok(bytes.chunks_exact(2)
+                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+        }
+        GgmlDType::Q4_0 => {
+            // Should rarely be requested this way (prefer keeping Q4_0
+            // quantized), but support it for biases or other oddities.
+            Ok(cpu_dequant_q4_0_bytes(bytes))
+        }
+        GgmlDType::Q8_0 => Ok(cpu_dequant_q8_0_bytes(bytes)),
+        // k-quants: dequant via the reference-CPU GgmlType trait impls.
+        GgmlDType::Q6K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ6K>(bytes)),
+        GgmlDType::Q5K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ5K>(bytes)),
+        GgmlDType::Q4K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ4K>(bytes)),
+        GgmlDType::Q3K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ3K>(bytes)),
+        GgmlDType::Q2K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ2K>(bytes)),
+        other => crate::bail!("gguf {name}: dequant-to-f32 for dtype {other:?} not implemented in lazy loader"),
+    }
+}
+
+/// Dequantize an arbitrary k-quant block stream to F32 via the
+/// reference `GgmlType::to_float` trait. Callers give the concrete
+/// block type `T` (e.g. `BlockQ6K`); the function reinterprets the
+/// byte slice as `&[T]` and calls the impl. Used for dtypes that
+/// don't have a fused on-device dequant kernel (yet).
+fn cpu_dequant_via_trait<T: crate::quantized::k_quants::GgmlType>(bytes: &[u8]) -> Vec<f32> {
+    let block_bytes = std::mem::size_of::<T>();
+    assert!(bytes.len() % block_bytes == 0,
+        "cpu_dequant_via_trait: bytes {} not multiple of block_bytes {}",
+        bytes.len(), block_bytes);
+    let n_blocks = bytes.len() / block_bytes;
+    // SAFETY: T is #[repr(C)]; GGUF bytes are laid out as a dense array
+    // of T structs. The source mmap is 8-byte aligned per memmap2, which
+    // satisfies every block struct's alignment (≤ 4 in practice).
+    let blocks: &[T] = unsafe {
+        std::slice::from_raw_parts(bytes.as_ptr() as *const T, n_blocks)
+    };
+    let mut out = vec![0.0_f32; n_blocks * T::BLCK_SIZE];
+    T::to_float(blocks, &mut out);
+    out
+}
+
+/// Reinterpret a byte slice as a u32 `Arc` by reading little-endian
+/// u32 words. Input length must be a multiple of 4. This performs one
+/// copy at load time — all subsequent uses are cheap Arc clones.
+fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
+    assert_eq!(bytes.len() % 4, 0, "bytes_to_u32_arc: len must be multiple of 4");
+    let words: Vec<u32> = bytes.chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Arc::from(words)
+}
+
+fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
+    use half::f16;
+    let bpb = 18usize;
+    let epb = 32usize;
+    let n_blocks = bytes.len() / bpb;
+    let mut out = vec![0.0_f32; n_blocks * epb];
+    for b in 0..n_blocks {
+        let off = b * bpb;
+        let d = f16::from_le_bytes([bytes[off], bytes[off + 1]]).to_f32();
+        let base = b * epb;
+        for kk in 0..16 {
+            let packed = bytes[off + 2 + kk];
+            let lo = (packed & 0x0F) as i32 - 8;
+            let hi = ((packed >> 4) & 0x0F) as i32 - 8;
+            out[base + kk]      = lo as f32 * d;
+            out[base + 16 + kk] = hi as f32 * d;
+        }
+    }
+    out
+}
+
+fn cpu_dequant_q8_0_bytes(bytes: &[u8]) -> Vec<f32> {
+    use half::f16;
+    let bpb = 34usize;
+    let epb = 32usize;
+    let n_blocks = bytes.len() / bpb;
+    let mut out = vec![0.0_f32; n_blocks * epb];
+    for b in 0..n_blocks {
+        let off = b * bpb;
+        let d = f16::from_le_bytes([bytes[off], bytes[off + 1]]).to_f32();
+        let base = b * epb;
+        for kk in 0..32 {
+            let q = bytes[off + 2 + kk] as i8 as i32;
+            out[base + kk] = q as f32 * d;
+        }
+    }
+    out
+}
+
+/// Split a packed Phi-2 attn_qkv tensor into separate Q, K, V weight
+/// storages. The GGUF layout is `[3*dim, dim]` with Q occupying rows
+/// `[0..dim)`, K `[dim..2*dim)`, V `[2*dim..3*dim)`. For Q4_0 we can
+/// split byte ranges directly since each "row" of `dim` elements is
+/// exactly `dim/32 * 18` bytes.
+fn split_qkv(
+    bytes: &[u8],
+    dt: crate::quantized::GgmlDType,
+    dim: usize,
+    kv_dim: usize,
+) -> crate::Result<(WeightStorage, WeightStorage, WeightStorage)> {
+    // Phi-2 has n_kv_heads == n_heads, so kv_dim == dim. Accept that invariant.
+    if kv_dim != dim {
+        crate::bail!("split_qkv: only supports Phi-2's symmetric attention (dim={dim}, kv_dim={kv_dim})");
+    }
+    use crate::quantized::GgmlDType;
+    let force_f32 = std::env::var("FUEL_FORCE_F32").is_ok();
+    match dt {
+        GgmlDType::Q4_0 if !force_f32 => {
+            let bpb = 18usize;
+            let epb = 32usize;
+            let blocks_per_row = dim / epb;
+            let bytes_per_section = dim * blocks_per_row * bpb;
+            if bytes.len() != 3 * bytes_per_section {
+                crate::bail!(
+                    "split_qkv Q4_0: byte count {} ≠ 3 × {} = {}",
+                    bytes.len(), bytes_per_section, 3 * bytes_per_section,
+                );
+            }
+            let q_words = bytes_to_u32_arc(&bytes[0..bytes_per_section]);
+            let k_words = bytes_to_u32_arc(&bytes[bytes_per_section..2*bytes_per_section]);
+            let v_words = bytes_to_u32_arc(&bytes[2*bytes_per_section..3*bytes_per_section]);
+            Ok((
+                WeightStorage::Q4_0 { words: q_words, bytes_len: bytes_per_section, in_features: dim, out_features: dim },
+                WeightStorage::Q4_0 { words: k_words, bytes_len: bytes_per_section, in_features: dim, out_features: dim },
+                WeightStorage::Q4_0 { words: v_words, bytes_len: bytes_per_section, in_features: dim, out_features: dim },
+            ))
+        }
+        _ => {
+            // Non-Q4_0: dequantize the whole blob to F32, then split by rows.
+            let all_f32 = dequant_gguf_bytes_to_f32(bytes, dt, "attn_qkv")?;
+            let per_section = dim * dim;
+            if all_f32.len() != 3 * per_section {
+                crate::bail!(
+                    "split_qkv F-dtype: {} elems ≠ 3 × {}", all_f32.len(), per_section,
+                );
+            }
+            let q: Vec<f32> = all_f32[0..per_section].to_vec();
+            let k: Vec<f32> = all_f32[per_section..2*per_section].to_vec();
+            let v: Vec<f32> = all_f32[2*per_section..3*per_section].to_vec();
+            Ok((
+                WeightStorage::F32(Arc::from(q)),
+                WeightStorage::F32(Arc::from(k)),
+                WeightStorage::F32(Arc::from(v)),
+            ))
+        }
+    }
+}
+
+/// Apply rotary embeddings to only the first `rotary_dim` entries of
+/// the last dimension; pass the remaining `head_dim - rotary_dim` entries
+/// through unchanged. Used by Phi-2 and Phi-3 which rotate only a
+/// fraction of each head's feature dim.
+///
+/// Input shape: `[..., head_dim]`. Output shape: same.
+fn partial_rope(
+    x: &LazyTensor,
+    cos: &LazyTensor,
+    sin: &LazyTensor,
+    rotary_dim: usize,
+    head_dim: usize,
+) -> LazyTensor {
+    if rotary_dim == head_dim {
+        return x.rope_with_tables(cos, sin);
+    }
+    let rank = x.dims().len();
+    let last = rank - 1;
+    let x_rot = x.slice(last, 0, rotary_dim);
+    let x_pass = x.slice(last, rotary_dim, head_dim - rotary_dim);
+    let x_rot_rotated = x_rot.rope_with_tables(cos, sin);
+    x_rot_rotated.concat(&x_pass, last)
+}
+
 #[cfg(test)]
 mod hub_tests {
     use super::*;
@@ -3763,6 +5501,242 @@ mod generate_tests {
         }
         assert!(counts[0] > 900, "expected ≥900 samples on index 0, got {}", counts[0]);
     }
+
+    #[test]
+    fn kvcache_truncate_to_shrinks_layers_and_preserves_prefix() {
+        use fuel_graph_executor::GraphBackend;
+        let backend = fuel_graph_cpu::CpuBackend;
+        let n_layers = 2;
+        let n_kv_heads = 2;
+        let head_dim = 4;
+        let old_seq = 6;
+        let new_seq = 4;
+
+        let mut cache: KVCache<fuel_graph_cpu::CpuBackend> =
+            KVCache::with_dims(n_layers, n_kv_heads, head_dim);
+        cache.cached_len = old_seq;
+
+        // Populate each layer with a known pattern. Shape
+        // [1, n_kv, old_seq, head_dim]; value[b, h, s, d] = h*1000 + s*10 + d
+        // so we can verify the prefix survives truncation.
+        for li in 0..n_layers {
+            let n = 1 * n_kv_heads * old_seq * head_dim;
+            let data: Vec<f32> = (0..n).map(|i| {
+                let d = i % head_dim;
+                let s = (i / head_dim) % old_seq;
+                let h = (i / (head_dim * old_seq)) % n_kv_heads;
+                (h * 1000 + s * 10 + d) as f32
+            }).collect();
+            let shape = Shape::from_dims(&[1, n_kv_heads, old_seq, head_dim]);
+            let k = backend.upload(&fuel_core_types::HostBuffer::F32(data.clone()), &shape).unwrap();
+            let v = backend.upload(&fuel_core_types::HostBuffer::F32(data), &shape).unwrap();
+            cache.layers[li] = Some(KVCacheEntry::F32 { k, v });
+        }
+
+        cache.truncate_to(new_seq, &backend).expect("truncate_to");
+        assert_eq!(cache.cached_len, new_seq);
+
+        // Verify layer 0 K has the right prefix for head 0, seq 0..new_seq.
+        let entry = cache.layers[0].as_ref().expect("layer 0 still present");
+        let k = match entry { KVCacheEntry::F32 { k, .. } => k, _ => panic!("unexpected Q8") };
+        let host = backend.download(k).expect("download k");
+        let buf = match host { fuel_core_types::HostBuffer::F32(v) => v, _ => panic!("expected f32") };
+        assert_eq!(buf.len(), 1 * n_kv_heads * new_seq * head_dim);
+        // head 0, seq 0, dim 0: expected 0*1000 + 0*10 + 0 = 0
+        assert_eq!(buf[0], 0.0);
+        // head 0, seq new_seq-1=3, dim 3: expected 0*1000 + 3*10 + 3 = 33
+        let head0_last = (new_seq - 1) * head_dim + (head_dim - 1);
+        assert_eq!(buf[head0_last], 33.0);
+        // head 1, seq 0, dim 0: expected 1*1000 + 0*10 + 0 = 1000
+        let head1_start = n_kv_heads.saturating_sub(1) * new_seq * head_dim;
+        assert_eq!(buf[head1_start], 1000.0);
+        // head 1, seq new_seq-1=3, dim 3: expected 1*1000 + 3*10 + 3 = 1033
+        assert_eq!(buf[head1_start + head0_last], 1033.0);
+    }
+
+    #[test]
+    fn kvcache_truncate_to_noop_when_new_len_ge_current() {
+        let backend = fuel_graph_cpu::CpuBackend;
+        let mut cache: KVCache<fuel_graph_cpu::CpuBackend> =
+            KVCache::with_dims(1, 2, 4);
+        cache.cached_len = 4;
+        cache.truncate_to(4, &backend).unwrap();
+        assert_eq!(cache.cached_len, 4);
+        cache.truncate_to(100, &backend).unwrap();
+        assert_eq!(cache.cached_len, 4);
+    }
+
+    #[test]
+    fn forward_with_cache_all_positions_last_slice_matches_forward_with_cache() {
+        // The all-positions variant's last slice must equal what the
+        // regular (last-only) variant produces. Same graph, same
+        // cache, same tokens — only the output shape differs.
+        use fuel_graph_executor::GraphExecutor;
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+
+        let tokens = [1_u32, 2, 3, 4, 5];
+
+        // Path A: regular last-only forward.
+        let mut exec_a = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        let mut cache_a: KVCache<fuel_graph_cpu::CpuBackend> = KVCache::new(&cfg);
+        let last_only = model.forward_with_cache_gpu_on(&tokens, &mut cache_a, &mut exec_a);
+        assert_eq!(last_only.len(), cfg.vocab_size);
+
+        // Path B: all-positions forward.
+        let mut exec_b = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        let mut cache_b: KVCache<fuel_graph_cpu::CpuBackend> = KVCache::new(&cfg);
+        let all = model.forward_with_cache_gpu_on_all_positions(&tokens, &mut cache_b, &mut exec_b);
+        assert_eq!(all.len(), tokens.len() * cfg.vocab_size);
+
+        // Last row of `all` (positions [seq-1]) must match last_only.
+        let last_pos = tokens.len() - 1;
+        let all_last = &all[last_pos * cfg.vocab_size .. (last_pos + 1) * cfg.vocab_size];
+        for (i, (a, b)) in all_last.iter().zip(last_only.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "vocab idx {i}: all_positions={a} vs last_only={b}"
+            );
+        }
+
+        // Both caches should have advanced by the same amount.
+        assert_eq!(cache_a.cached_len, cache_b.cached_len);
+    }
+
+    #[test]
+    fn spec_decode_with_self_as_draft_matches_greedy_baseline() {
+        // Use the target model as its own draft. Every draft token is
+        // then trivially argmax-matched by the target, so acceptance
+        // rate is 100% and the generated sequence must be identical to
+        // a plain greedy run. This is the strongest equivalence check
+        // for the spec-decode plumbing.
+        use fuel_graph_executor::GraphExecutor;
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+
+        let prompt = [3_u32, 7, 1];
+        let max_new = 8;
+
+        // Baseline: plain greedy generation.
+        let mut exec_a = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        let baseline = model.generate_streaming_gpu_on(
+            &prompt, max_new,
+            SamplingStrategy::Greedy, None,
+            &mut exec_a, |_| {},
+        ).expect("baseline generate");
+
+        // Spec-decode with model as its own draft. Try K=2 and K=4.
+        for k in [2_usize, 4] {
+            let mut exec_target = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+            let mut exec_draft = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+            let spec_out = model.generate_streaming_spec(
+                &model, &prompt, max_new, k,
+                SamplingStrategy::Greedy, None,
+                &mut exec_target, &mut exec_draft, |_| {},
+            ).expect("spec generate");
+            assert_eq!(
+                spec_out, baseline,
+                "K={k}: spec-decode must match baseline when draft == target"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_decode_sampled_with_self_as_draft_produces_valid_tokens() {
+        // In Temperature mode with draft == target, the accept coin's
+        // ratio = min(1, p_target/p_draft) = 1.0 (since p_target == p_draft
+        // element-wise), so acceptance is 100%. We can't bit-match
+        // against a plain sampled baseline because the RNG sequences
+        // diverge (spec-decode draws more randoms per output token
+        // than plain gen), but we can assert: (a) output has expected
+        // length, (b) all tokens are in vocab, (c) prompt prefix is
+        // preserved.
+        use fuel_graph_executor::GraphExecutor;
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let prompt = [3_u32, 7, 1];
+        let max_new = 6;
+
+        for k in [2_usize, 4] {
+            let mut exec_target = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+            let mut exec_draft = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+            let out = model.generate_streaming_spec(
+                &model, &prompt, max_new, k,
+                SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+                None,
+                &mut exec_target, &mut exec_draft, |_| {},
+            ).expect("spec sampled generate");
+
+            // Emitted tokens should be prompt + max_new (at minimum; could
+            // be more if the bonus gets combined with accepted drafts in
+            // the final iteration, but never fewer than max_new new).
+            assert!(out.len() >= prompt.len() + max_new,
+                "K={k}: expected at least {} tokens, got {}",
+                prompt.len() + max_new, out.len());
+            // Prefix matches prompt.
+            assert_eq!(&out[..prompt.len()], &prompt);
+            // All tokens in vocab.
+            for &t in &out {
+                assert!((t as usize) < cfg.vocab_size, "K={k}: token {t} out of vocab");
+            }
+        }
+    }
+
+    #[test]
+    fn kvcache_truncate_to_zero_clears_layers() {
+        use fuel_graph_executor::GraphBackend;
+        let backend = fuel_graph_cpu::CpuBackend;
+        let mut cache: KVCache<fuel_graph_cpu::CpuBackend> =
+            KVCache::with_dims(1, 2, 4);
+        cache.cached_len = 3;
+        let shape = Shape::from_dims(&[1, 2, 3, 4]);
+        let data = vec![0.0_f32; 1 * 2 * 3 * 4];
+        let k = backend.upload(&fuel_core_types::HostBuffer::F32(data.clone()), &shape).unwrap();
+        let v = backend.upload(&fuel_core_types::HostBuffer::F32(data), &shape).unwrap();
+        cache.layers[0] = Some(KVCacheEntry::F32 { k, v });
+        cache.truncate_to(0, &backend).unwrap();
+        assert_eq!(cache.cached_len, 0);
+        assert!(cache.layers[0].is_none());
+    }
 }
 
 #[cfg(test)]
@@ -3855,6 +5829,82 @@ mod gqa_tests {
         for &v in &logits {
             assert!(v.is_finite());
         }
+    }
+}
+
+#[cfg(test)]
+mod lora_tests {
+    use super::*;
+
+    #[test]
+    fn with_lora_matches_manual_base_plus_lora() {
+        // Anchor graph.
+        let in_f = 4;
+        let out_f = 3;
+        let rank = 2;
+        let alpha = 8.0_f32;
+
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32; 1],
+            Shape::from_dims(&[1]),
+        );
+        // Base weight [in, out].
+        let base_vec: Vec<f32> = (0..in_f * out_f).map(|i| (i as f32) * 0.1).collect();
+        let lora_a_vec: Vec<f32> = (0..in_f * rank).map(|i| (i as f32) * 0.05).collect();
+        let lora_b_vec: Vec<f32> = (0..rank * out_f).map(|i| (i as f32) * 0.02).collect();
+
+        let ws = WeightStorage::F32(Arc::from(base_vec.clone()))
+            .with_lora(
+                Arc::from(lora_a_vec.clone()),
+                Arc::from(lora_b_vec.clone()),
+                rank, alpha, in_f, out_f,
+            );
+
+        // Activations x [2, in_f].
+        let batch = 2;
+        let x_data: Vec<f32> = (0..batch * in_f).map(|i| (i as f32) * 0.1 + 0.5).collect();
+        let x = anchor.const_f32_like(x_data.clone(), Shape::from_dims(&[batch, in_f]));
+        let y = ws.apply_linear(&x, in_f, out_f);
+        let got = y.realize_f32().to_vec();
+
+        // Reference: base + (alpha/rank) * x @ A @ B, all f32, on CPU.
+        let mut expected = vec![0.0_f32; batch * out_f];
+        for b in 0..batch {
+            for j in 0..out_f {
+                let mut acc = 0.0_f32;
+                // Base path: sum_k x[b,k] * W[k,j].
+                for k in 0..in_f {
+                    acc += x_data[b * in_f + k] * base_vec[k * out_f + j];
+                }
+                // LoRA path: sum_r (sum_k x[b,k] * A[k,r]) * B[r,j] * (alpha/rank).
+                let scale = alpha as f64 / rank as f64;
+                for r in 0..rank {
+                    let mut xar = 0.0_f32;
+                    for k in 0..in_f {
+                        xar += x_data[b * in_f + k] * lora_a_vec[k * rank + r];
+                    }
+                    acc += (xar * lora_b_vec[r * out_f + j]) * scale as f32;
+                }
+                expected[b * out_f + j] = acc;
+            }
+        }
+
+        for (i, (&e, &g)) in expected.iter().zip(got.iter()).enumerate() {
+            let diff = (e - g).abs();
+            assert!(
+                diff <= 1e-4,
+                "LoRA mismatch at {i}: expected {e}, got {g} (diff {diff})",
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "lora_a length")]
+    fn with_lora_rejects_mismatched_a_shape() {
+        let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12]));  // 4 x 3
+        let bad_a = Arc::from(vec![0.0_f32; 3]);                     // wrong
+        let b = Arc::from(vec![0.0_f32; 6]);                         // 2 x 3
+        let _ = ws.with_lora(bad_a, b, 2, 8.0, 4, 3);
     }
 }
 
