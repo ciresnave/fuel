@@ -1,7 +1,7 @@
 //! `GraphBackend` implementation for CUDA GPUs.
 
 use fuel_core_types::{DType, Layout, Shape};
-use fuel_cuda::{CudaDevice, CudaStorage};
+use crate::{CudaDevice, CudaStorage};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
 
 /// CUDA backend: matmul via cublas, unary/binary via CUDA kernels,
@@ -130,5 +130,45 @@ impl GraphBackend for CudaBackend {
         src_l: &Layout, ids_l: &Layout, dim: usize,
     ) -> fuel_core_types::Result<Self::Storage> {
         src.gather(src_l, ids, ids_l, dim)
+    }
+
+    fn rope(
+        &self,
+        x: &Self::Storage,
+        cos: &Self::Storage,
+        sin: &Self::Storage,
+        x_layout: &Layout,
+        _cos_layout: &Layout,
+        _sin_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        x.rope(cos, sin, x_layout)
+    }
+
+    fn rms_norm_last_dim(
+        &self, a: &Self::Storage, layout: &Layout, eps: f64,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        a.rms_norm_last_dim(layout, eps)
+    }
+
+    fn matmul_q4_0(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        a.matmul_q4_0(w_q_bytes, k, n, a_layout)
+    }
+
+    fn matmul_q4_km(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        a.matmul_q4_km(w_q_bytes, k, n, a_layout)
     }
 }

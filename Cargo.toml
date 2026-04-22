@@ -10,7 +10,6 @@ members = [
     "fuel-core-types",
     "fuel-cpu-backend",
     "fuel-cublaslt",
-    "fuel-cuda",
     "fuel-cuda-kernels",
     "fuel-cuda-vmm",
     "fuel-datasets",
@@ -21,8 +20,11 @@ members = [
     "fuel-graph-cpu",
     "fuel-graph-cuda",
     "fuel-graph-executor",
+    "fuel-graph-router",
     "fuel-graph-vulkan",
     "fuel-inference",
+    "fuel-kernels-source",
+    "fuel-vulkan-kernels",
     "fuel-lazy-examples",
     "fuel-metal",
     "fuel-metal-kernels",
@@ -51,10 +53,12 @@ default-members = [
     "fuel-graph-cpu",
     "fuel-graph-cuda",
     "fuel-graph-executor",
+    "fuel-graph-router",
     "fuel-graph-vulkan",
+    "fuel-kernels-source",
+    "fuel-vulkan-kernels",
     "fuel-lazy-examples",
     "fuel-reference-backend",
-    "fuel-cuda",
     "fuel-metal",
     "fuel-datasets",
     "fuel-examples",
@@ -92,8 +96,10 @@ fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
 fuel-graph-cuda = { path = "./fuel-graph-cuda", version = "0.10.2" }
 fuel-graph-executor = { path = "./fuel-graph-executor", version = "0.10.2" }
+fuel-graph-router = { path = "./fuel-graph-router", version = "0.10.2" }
 fuel-graph-vulkan = { path = "./fuel-graph-vulkan", version = "0.10.2" }
-fuel-cuda = { path = "./fuel-cuda", version = "0.10.2" }
+fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.10.2" }
+fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
 fuel-flash-attn = { path = "./fuel-flash-attn", version = "0.10.2" }
 fuel-flash-attn-v3 = { path = "./fuel-flash-attn-v3", version = "0.10.2" }
@@ -110,18 +116,28 @@ fuel-transformers = { path = "./fuel-transformers", version = "0.10.2" }
 fuel-ug = { path = "./fuel-ug", version = "0.10.2" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
-cudarc = { version = "0.19.4", features = [
-    "std",
-    "cublas",
-    "cublaslt",
-    "curand",
-    "driver",
-    "nvrtc",
-    "f16",
-    "f8",
-    "cuda-version-from-build-system",
-    "dynamic-linking",
-], default-features = false }
+# --- CUDA FFI layer: baracuda -----------------------------------------------
+# Path deps to the local baracuda workspace during the migration from cudarc.
+# Once baracuda 0.0.1-alpha.2 is fully published on crates.io (all 42 crates),
+# swap `path = ...` for `version = "0.0.1-alpha.2"` and remove the path key.
+# The `baracuda` umbrella crate re-exports sub-crates behind feature flags;
+# Fuel depends on the sub-crates directly so features stay explicit and
+# transitive weight is minimal per consuming crate.
+baracuda-types      = { path = "../baracuda/crates/baracuda-types" }
+baracuda-core       = { path = "../baracuda/crates/baracuda-core" }
+baracuda-cuda-sys   = { path = "../baracuda/crates/baracuda-cuda-sys" }
+baracuda-driver     = { path = "../baracuda/crates/baracuda-driver" }
+baracuda-runtime    = { path = "../baracuda/crates/baracuda-runtime" }
+baracuda-cublas-sys = { path = "../baracuda/crates/baracuda-cublas-sys" }
+baracuda-cublas     = { path = "../baracuda/crates/baracuda-cublas" }
+baracuda-cudnn-sys  = { path = "../baracuda/crates/baracuda-cudnn-sys" }
+baracuda-cudnn      = { path = "../baracuda/crates/baracuda-cudnn" }
+baracuda-curand-sys = { path = "../baracuda/crates/baracuda-curand-sys" }
+baracuda-curand     = { path = "../baracuda/crates/baracuda-curand" }
+baracuda-nvrtc-sys  = { path = "../baracuda/crates/baracuda-nvrtc-sys" }
+baracuda-nvrtc      = { path = "../baracuda/crates/baracuda-nvrtc" }
+baracuda-nccl-sys   = { path = "../baracuda/crates/baracuda-nccl-sys" }
+baracuda-nccl       = { path = "../baracuda/crates/baracuda-nccl" }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 hf-hub = "0.5.0"

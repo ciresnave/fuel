@@ -1,7 +1,8 @@
 ﻿/// Helper functions to plug cuda kernels in fuel.
 use fuel_core_types::dtype::WithDType;
 use fuel_core_types::{Layout, Result};
-use cudarc::driver::{CudaSlice, DeviceRepr, ValidAsZeroBits};
+use baracuda_driver::DeviceBuffer;
+use baracuda_types::{DeviceRepr, ValidAsZeroBits};
 
 use crate::{CudaDevice, CudaError, WrapErr};
 
@@ -10,10 +11,10 @@ pub type S = crate::CudaStorageSlice;
 pub trait Map1 {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
-        src: &CudaSlice<T>,
+        src: &DeviceBuffer<T>,
         dev: &CudaDevice,
         layout: &Layout,
-    ) -> Result<CudaSlice<T>>;
+    ) -> Result<DeviceBuffer<T>>;
 
     fn map(&self, s: &S, d: &CudaDevice, l: &Layout) -> Result<S> {
         let out = match s {
@@ -38,12 +39,12 @@ pub trait Map1 {
 pub trait Map2 {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
-        src1: &CudaSlice<T>,
+        src1: &DeviceBuffer<T>,
         layout1: &Layout,
-        src2: &CudaSlice<T>,
+        src2: &DeviceBuffer<T>,
         layout2: &Layout,
         dev: &CudaDevice,
-    ) -> Result<CudaSlice<T>>;
+    ) -> Result<DeviceBuffer<T>>;
 
     fn map(&self, s1: &S, l1: &Layout, s2: &S, l2: &Layout, d: &CudaDevice) -> Result<S> {
         let out = match (s1, s2) {
@@ -67,14 +68,14 @@ pub trait Map3 {
     #[allow(clippy::too_many_arguments)]
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
-        src1: &CudaSlice<T>,
+        src1: &DeviceBuffer<T>,
         layout1: &Layout,
-        src2: &CudaSlice<T>,
+        src2: &DeviceBuffer<T>,
         layout2: &Layout,
-        src3: &CudaSlice<T>,
+        src3: &DeviceBuffer<T>,
         layout3: &Layout,
         dev: &CudaDevice,
-    ) -> Result<CudaSlice<T>>;
+    ) -> Result<DeviceBuffer<T>>;
 
     #[allow(clippy::too_many_arguments)]
     fn map(
@@ -107,9 +108,9 @@ pub trait Map3 {
 pub trait Map2InPlace {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
-        dst: &mut CudaSlice<T>,
+        dst: &mut DeviceBuffer<T>,
         dst_l: &Layout,
-        src: &CudaSlice<T>,
+        src: &DeviceBuffer<T>,
         src_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<()>;
@@ -139,9 +140,9 @@ pub trait Map2InPlace {
 }
 
 pub trait Map1Any {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits, W: Fn(CudaSlice<T>) -> S>(
+    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits, W: Fn(DeviceBuffer<T>) -> S>(
         &self,
-        src: &CudaSlice<T>,
+        src: &DeviceBuffer<T>,
         dev: &CudaDevice,
         layout: &Layout,
         wrap: W,
@@ -170,9 +171,9 @@ pub trait Map1Any {
 pub trait Map2Any {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
-        src1: &CudaSlice<T>,
+        src1: &DeviceBuffer<T>,
         layout1: &Layout,
-        src2: &CudaSlice<T>,
+        src2: &DeviceBuffer<T>,
         layout2: &Layout,
         dev: &CudaDevice,
     ) -> Result<S>;

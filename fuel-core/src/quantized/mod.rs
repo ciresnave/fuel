@@ -6,8 +6,11 @@ use std::borrow::Cow;
 pub mod avx;
 mod dummy_cuda;
 mod dummy_metal;
+pub mod arch;
 pub mod ggml_file;
 pub mod gguf_file;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gguf_mmap;
 pub mod imatrix_file;
 pub mod k_quants;
 #[cfg(feature = "metal")]
@@ -957,14 +960,14 @@ impl crate::CustomOp1 for QTensor {
         #[cfg(feature = "cuda")]
         if let Some(cuda) = storage
             .as_any()
-            .downcast_ref::<fuel_cuda::CudaBackendStorage>()
+            .downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
         {
             let self_storage = match &self.storage {
                 QStorage::Cuda(cuda) => cuda,
                 _ => unreachable!("Cannot call cuda matmul on non cuda QTensor"),
             };
             let (dst, shape) = self_storage.fwd(&self.shape, cuda.inner(), layout)?;
-            return Ok((Box::new(fuel_cuda::CudaBackendStorage::new(dst)), shape));
+            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(dst)), shape));
         }
 
         crate::bail!("qmatmul: unsupported backend")

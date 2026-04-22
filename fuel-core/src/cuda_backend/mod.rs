@@ -1,13 +1,15 @@
-﻿//! Thin delegation layer to the `fuel-cuda` crate.
+﻿//! Thin delegation layer to the `fuel-graph-cuda` crate.
 //!
 //! All CUDA types, kernel implementations, and device management live in
-//! `fuel_cuda`. This module re-exports them and provides the
-//! [`BackendStorage`] and [`BackendDevice`] trait implementations that
-//! fuel-core requires.
+//! `fuel_graph_cuda` (formerly split across `fuel_cuda` + `fuel_graph_cuda`
+//! before the 2026-04 restructure that merged them, paralleling the
+//! vulkane → fuel-graph-vulkan shape). This module re-exports that crate's
+//! primitives and provides the [`BackendStorage`] and [`BackendDevice`]
+//! trait implementations that fuel-core requires.
 
-// Re-export everything from fuel-cuda so that existing code using
+// Re-export everything from fuel-graph-cuda so that existing code using
 // `crate::cuda_backend::CudaDevice`, `CudaStorage`, etc. continues to work.
-pub use fuel_cuda::*;
+pub use fuel_graph_cuda::*;
 
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};

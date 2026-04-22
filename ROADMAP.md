@@ -1314,6 +1314,219 @@ are required in the frontend.
 
 ---
 
+### CUDA stack restructure (2026-04, in progress)
+
+*Not a numbered phase — backends/kernels-layer cleanup that
+happened alongside the baracuda migration.*
+
+Historical state: CUDA was split across `fuel-cuda` (cudarc wrapper
+plus ML-layer dispatch code inherited from candle-cuda) and
+`fuel-graph-cuda` (lazy-graph integration on top of it). Vulkan
+parallel already looked different — `vulkane` (external FFI) feeding
+`fuel-graph-vulkan` (ML-layer + graph) directly with no intermediate
+wrapper crate.
+
+With the cudarc → baracuda migration in flight, the two sides were
+unified. `fuel-cuda`'s ML-layer content (`CudaStorage` /
+`CudaStorageSlice`, `Map1`/`Map2`/`Map3` dispatch traits, kernel
+launch scaffolding, cuBLAS / cuDNN / curand wiring, module cache for
+`fuel-cuda-kernels`) moved into `fuel-graph-cuda` as internal
+modules. `fuel-cuda` was deleted. Final stack:
+
+```text
+baracuda-*           (external, CUDA FFI)
+   │
+fuel-graph-cuda      (ML-layer + graph integration)
+fuel-cuda-kernels    (PTX bundle)
+   │
+fuel-core cuda_backend (thin delegation to fuel-graph-cuda)
+```
+
+Parallel to:
+
+```text
+vulkane              (external, Vulkan FFI)
+   │
+fuel-graph-vulkan    (ML-layer + graph integration)
+fuel-vulkan-kernels  (SPIR-V bundle)
+   │
+fuel-core vulkan_backend (future — same delegation shape)
+```
+
+Narrow-purpose crates kept separate (match the kernels crate
+precedent): `fuel-cuda-vmm`, `fuel-cublaslt`, `fuel-flash-attn`,
+`fuel-flash-attn-v3`.
+
+#### Opportunities baracuda now unblocks (future work items)
+
+These aren't blocking anything; they're capabilities baracuda exposes
+that cudarc didn't, pitched for later roadmap consideration.
+
+- [ ] **CUDA Graph capture + replay** for Phase 6's `realize()` hot
+      path ([`baracuda-driver/src/graph.rs`]). Decode-heavy LLM
+      inference runs the same attention + MLP sequence per token —
+      prime territory for `cuGraphCapture`. Expected payoff: cuts
+      per-token kernel launch overhead. Non-trivial to integrate
+      because it changes the executor hot path; needs its own
+      design pass.
+- [ ] **Stream-ordered mempool allocation**
+      ([`baracuda-driver/src/mempool.rs`]). Fuel today allocates
+      a fresh `DeviceBuffer` per op output. A `CUmemoryPool` with
+      trim / release policies would recycle within a stream. Needs
+      buffer-lifetime analysis vs stream semantics — not a
+      mechanical swap.
+- [ ] **CUDA ↔ Vulkan P2P zero-copy** via
+      `ExternalMemory::import` (baracuda) + `DeviceMemory::get_win32_handle`
+      (vulkane). Was estimated ~2-3 days before baracuda existed;
+      now closer to ~1-2 days since both sides expose the primitives.
+      Gates on someone running a real multi-device model and finding
+      the PCIe round-trip is the bottleneck.
+- [ ] **Launch attributes** — cluster dims, programmatic stream
+      serialization, priority ([`baracuda-driver/src/launch_attr.rs`]).
+      Opportunistic tuning for specific kernels; measure before
+      applying.
+- [ ] **nvJitLink** for runtime kernel specialization. Matters when
+      Fuel starts doing LoRA fusion, per-shape attention kernels,
+      or other "generate a kernel for this exact problem" flows.
+      Speculative.
+
+#### Post-Phase-6 dead-op audit
+
+- [ ] **Audit candle-heritage ops for unused code paths** once the
+      Phase 6 anchor suite (Llama 3, Whisper, ConvNeXt, SD 1.5,
+      YOLOv8, BERT, Qwen2-MoE) runs against the CUDA backend. Ops
+      that no anchor exercises (suspected: `upsample_nearest1d`,
+      `index_add`, `elu`, `const_set`) can be removed. Not done
+      pre-emptively — too easy to delete something a model actually
+      needs.
+
+---
+
+### Phase 8 — FlashAttention tiered implementation
+
+*Affects only the Backends/Kernels layer. Gated on two external
+prerequisites landing first: the new Vulkane release (adds
+external-memory / handle-export primitives among other things) and
+Baracuda (Fuel-owned CUDA FFI crate replacing cudarc, exposing
+functionality cudarc omits). Neither is ready as of this entry;
+do not start Phase 8 work until both are integrated into Fuel.*
+
+#### Why Phase 8 exists
+
+FlashAttention reduces attention from O(N²) HBM traffic to O(N·d)
+via tile-based online softmax. The math is backend-agnostic; the
+kernel implementation is decidedly not. v3 and v4 in particular lean
+hard on vendor-specific hardware (Hopper TMA + WGMMA, Blackwell
+cooperative TMA + 5th-gen tensor cores). A direct port of the
+upstream Dao-AILab kernels would be CUDA-only and leave Vulkan users
+stuck on naive attention. The right shape is a tiered implementation
+that shares the algorithm across backends and specializes only where
+the perf justifies it.
+
+A further question worth investigating within this phase: v4's
+published speedups are partly algorithmic (warp specialization,
+deeper pipeline depth, block-scaled low-precision) and partly raw
+matrix-unit throughput. The algorithmic concepts extract cleanly and
+can be re-expressed for non-Blackwell architectures; the throughput
+component is hardware-gated. Tier 4 below is the place to ask "which
+v4 ideas buy us something on Ampere / RDNA3 / Apple M / Intel Arc
+and which don't."
+
+#### Tier 0 — Audit existing FlashAttention crates
+
+Fuel's workspace already contains `fuel-flash-attn` and
+`fuel-flash-attn-v3` crates (see the Backends/Kernels layer box
+above). Before writing anything new, determine what they contain,
+which backends they target, and whether they can be refactored into
+the tiered structure below.
+
+- [ ] Survey `fuel-flash-attn` — list the op surface, target
+      backend(s), and parity-test coverage.
+- [ ] Survey `fuel-flash-attn-v3` — same.
+- [ ] Decide whether Tier 2/3/4 below refactor these crates in place
+      or supersede them. Document the decision.
+
+#### Tier 1 — CPU reference implementation
+
+- [ ] Pure-Rust FlashAttention forward in `fuel-flash-attn` (or
+      wherever the audit in Tier 0 lands it). ~100 LOC. Slow by
+      design; its job is to be the correctness oracle for every
+      other tier.
+- [ ] Backward pass via recomputation — same approach as the
+      upstream reference, matches the tier-2/3 kernels' expectations.
+- [ ] Parity tests against a naive-attention reference on small
+      shapes (seq ≤ 256, head_dim ≤ 128, batch × heads ≤ 8). Tight
+      tolerance (1e-5 in f32) — this tier has no excuse for drift.
+
+#### Tier 2 — Portable GPU implementation in Slang
+
+- [ ] Single Slang source for FlashAttention v2 (tile-based,
+      workgroup-parallel, online softmax, no warp specialization).
+      Compile to SPIR-V for Vulkan; Slang's experimental CUDA PTX
+      backend is a free bonus if it works, not a requirement.
+- [ ] Targets VK_KHR_cooperative_matrix when the device advertises
+      it; falls back to plain workgroup-shared-memory tiling on
+      devices that don't. Skip the matrix-unit path entirely for the
+      first cut if the fallback alone hits "significantly faster
+      than naive attention" — that's the bar for this tier.
+- [ ] Parity tests against Tier 1 across a matrix of
+      (batch, heads, seq, head_dim, dtype) shapes. Start narrow
+      (f32, contiguous, seq ≤ 1024) and widen once green.
+- [ ] Performance notes: record ms/token on a handful of anchor
+      shapes on the dev rig's Vulkan iGPU and on an RTX 4070. This
+      tier's ceiling is roughly FA v2 perf on Hopper+ — v3/v4
+      pipelining depth needs primitives Slang can't abstract.
+
+#### Tier 3 — Hand-tuned backend kernels (opt-in per arch)
+
+Only write these when Tier 2 benchmarks show meaningful perf left on
+the table for a specific architecture.
+
+- [ ] **CUDA / Hopper+**: FA v2 or v3-equivalent using CUTLASS or
+      hand-written PTX. Requires Baracuda exposing
+      `CUtensorMap`/`CUwgmma`/`cuTensorMemAcc` primitives.
+- [ ] **AMD / RDNA3+**: WMMA + LDS prefetch, wavefront-specialized
+      pipeline. Blocked on whatever Rust FFI we settle on for ROCm.
+- [ ] **Apple Silicon**: simdgroup_matrix + AMX via Metal. Likely
+      lives in `fuel-metal-kernels`.
+- [ ] **Intel Arc / Xe-HPG+**: XMX via SYCL or a direct Level Zero
+      binding. Lowest priority; revisit if an anchor model
+      materially benefits.
+
+Each arch lands independently. The Router + Tier 2 fallback means
+users on untuned hardware still get FlashAttention, just not the
+peak form.
+
+#### Tier 4 — Extract v4 concepts for non-Blackwell architectures
+
+This tier is research-flavoured and should be sized AFTER Tiers 1-3
+are stable. Per-arch experiments to validate which v4 ideas
+transfer:
+
+- [ ] Deeper pipeline depth (3-4 stages vs v2's 2) on Ampere using
+      `cp.async` + `__syncwarp()` — measure vs Tier 3 CUDA baseline.
+- [ ] Warp specialization (producer / consumer split) on RDNA3 LDS
+      prefetch — measure vs Tier 3 AMD baseline.
+- [ ] Block-scaled low-precision path (MXFP4/MXFP6) — format is
+      generic, so this lands as a Tier 2 Slang extension once the
+      dtype plumbing exists in Fuel.
+
+Honest caveat: on hardware with weaker matrix units the algorithmic
+gains will not close the wall-clock gap with Blackwell; v4's
+headline numbers are partly algorithm and partly hardware.
+
+#### Success criteria for Phase 8
+
+- Every backend Fuel targets runs FlashAttention (at minimum
+  Tier 2-quality) on every model in the Phase 6 anchor suite.
+- Parity with the CPU reference is verified per backend and included
+  in the regression gate.
+- The tiered structure is documented well enough that a contributor
+  with a new backend (SYCL, WebGPU, whatever) can plug in at Tier 2
+  without having to touch Tiers 1, 3, or 4.
+
+---
+
 ## Anti-goals by layer
 
 These are explicit rules. When a proposed addition fits one of these descriptions,

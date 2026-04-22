@@ -479,7 +479,7 @@ impl InplaceOp1 for UgIOp1 {
         #[cfg(feature = "cuda")]
         if let Some(sto) = storage
             .as_any_mut()
-            .downcast_mut::<fuel_cuda::CudaBackendStorage>()
+            .downcast_mut::<fuel_graph_cuda::CudaBackendStorage>()
         {
             let sto = &mut sto.storage;
             use crate::cuda_backend::WrapErr;

@@ -298,7 +298,7 @@ impl Device {
         {
             let dev = crate::CudaDevice::new(ordinal)?;
             Ok(Device {
-                inner: Arc::new(fuel_cuda::CudaBackendDevice(dev)),
+                inner: Arc::new(fuel_graph_cuda::CudaBackendDevice(dev)),
             })
         }
         #[cfg(not(feature = "cuda"))]
@@ -314,7 +314,7 @@ impl Device {
         {
             self.inner
                 .as_any()
-                .downcast_ref::<fuel_cuda::CudaBackendDevice>()
+                .downcast_ref::<fuel_graph_cuda::CudaBackendDevice>()
                 .map(|d| &d.0)
                 .ok_or_else(|| Error::Msg("expected a cuda device".into()).bt())
         }
@@ -346,7 +346,7 @@ impl Device {
         {
             let dev = crate::CudaDevice::new_with_stream(ordinal)?;
             Ok(Device {
-                inner: Arc::new(fuel_cuda::CudaBackendDevice(dev)),
+                inner: Arc::new(fuel_graph_cuda::CudaBackendDevice(dev)),
             })
         }
         #[cfg(not(feature = "cuda"))]
@@ -384,7 +384,7 @@ impl Device {
     #[cfg(feature = "cuda")]
     pub(crate) fn from_cuda_device(dev: crate::CudaDevice) -> Self {
         Device {
-            inner: Arc::new(fuel_cuda::CudaBackendDevice(dev)),
+            inner: Arc::new(fuel_graph_cuda::CudaBackendDevice(dev)),
         }
     }
 

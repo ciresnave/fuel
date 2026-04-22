@@ -1,0 +1,28 @@
+[package]
+categories.workspace   = true
+description            = "Multi-backend executor for the fuel lazy-graph layer. Routes ops across CPU/Vulkan/CUDA devices per the graph's placement hints. Phase 2 of the unified scheduler work."
+edition.workspace      = true
+keywords.workspace     = true
+license.workspace      = true
+name                   = "fuel-graph-router"
+repository.workspace   = true
+version.workspace      = true
+
+[dependencies]
+fuel-core-types        = { workspace = true }
+fuel-graph             = { workspace = true }
+fuel-graph-executor    = { workspace = true }
+fuel-graph-cpu         = { workspace = true }
+fuel-reference-backend = { workspace = true }
+fuel-graph-vulkan      = { workspace = true, optional = true }
+fuel-graph-cuda        = { workspace = true, optional = true }
+half                   = { workspace = true }
+
+[features]
+default = []
+vulkan  = ["dep:fuel-graph-vulkan"]
+cuda    = ["dep:fuel-graph-cuda"]
+
+[dev-dependencies]
+# Tests reuse Q4_K block layout + dequant reference from fuel-core.
+fuel-core = { path = "../fuel-core" }

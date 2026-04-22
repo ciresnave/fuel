@@ -161,7 +161,7 @@ impl crate::CustomOp1 for ArgSort {
         #[cfg(feature = "cuda")]
         if let Some(cuda) = storage
             .as_any()
-            .downcast_ref::<fuel_cuda::CudaBackendStorage>()
+            .downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
         {
             use crate::backend::BackendStorage;
             use crate::cuda_backend::Map1Any;
@@ -173,7 +173,7 @@ impl crate::CustomOp1 for ArgSort {
                 device: dev.clone(),
             };
             return Ok((
-                Box::new(fuel_cuda::CudaBackendStorage::new(dst)),
+                Box::new(fuel_graph_cuda::CudaBackendStorage::new(dst)),
                 layout.shape().clone(),
             ));
         }

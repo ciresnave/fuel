@@ -19,7 +19,7 @@ impl Storage {
     /// Construct storage wrapping a CUDA buffer.
     #[cfg(feature = "cuda")]
     pub fn from_cuda(s: crate::CudaStorage) -> Self {
-        Storage(Box::new(fuel_cuda::CudaBackendStorage::new(s)))
+        Storage(Box::new(fuel_graph_cuda::CudaBackendStorage::new(s)))
     }
 
     /// Construct storage wrapping a Metal buffer.
@@ -135,7 +135,7 @@ impl Storage {
     pub fn as_cuda_storage(&self) -> Option<&crate::CudaStorage> {
         self.0
             .as_any()
-            .downcast_ref::<fuel_cuda::CudaBackendStorage>()
+            .downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
             .map(|s| s.inner())
     }
 

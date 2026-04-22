@@ -20,14 +20,21 @@ fuel-graph-executor = { workspace = true }
 fuel-reference-backend = { workspace = true }
 hf-hub = { workspace = true }
 serde_json = { workspace = true }
-fuel-cuda = { workspace = true, optional = true }
 fuel-cuda-kernels = { workspace = true, optional = true }
 fuel-graph-cuda = { workspace = true, optional = true }
+fuel-graph-vulkan = { workspace = true, optional = true }
 fuel-metal = { workspace = true, optional = true }
 fuel-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
-cudarc = { workspace = true, optional = true }
+# baracuda replaces cudarc. fuel-core needs the traits + driver + cudnn +
+# nccl optionally; the sub-crates are pulled individually for an explicit
+# feature graph.
+baracuda-types  = { workspace = true, optional = true }
+baracuda-core   = { workspace = true, optional = true }
+baracuda-driver = { workspace = true, optional = true }
+baracuda-cudnn  = { workspace = true, optional = true }
+baracuda-nccl   = { workspace = true, optional = true }
 gemm = { workspace = true }
 half = { workspace = true }
 float8 = { workspace = true }
@@ -61,16 +68,23 @@ criterion = { workspace = true }
 # CPU-only binary with zero GPU code compiled in.
 default = []
 
-# NVIDIA GPU backend via cuBLAS. Requires the CUDA toolkit (≥ 11).
+# NVIDIA GPU backend via baracuda (cuBLAS + driver). Dynamic-loaded at
+# runtime; cargo build does not require the CUDA toolkit installed.
 # Use: cargo build --features cuda
-cuda = ["dep:fuel-cuda", "cudarc", "dep:fuel-cuda-kernels", "dep:fuel-graph-cuda", "fuel-ug?/cuda"]
+cuda = [
+    "dep:fuel-cuda-kernels",
+    "dep:fuel-graph-cuda",
+    "dep:baracuda-types",
+    "dep:baracuda-core",
+    "dep:baracuda-driver",
+    "fuel-ug?/cuda",
+]
 
 # Enables cuda + cuDNN accelerated convolution and normalization.
-# Requires CUDA toolkit + cuDNN runtime.
-cudnn = ["cuda", "cudarc/cudnn", "fuel-cuda?/cudnn"]
+cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-graph-cuda?/cudnn"]
 
-# Multi-GPU communication via NVIDIA NCCL. Requires CUDA + NCCL runtime.
-nccl = ["cuda", "cudarc/nccl"]
+# Multi-GPU communication via NVIDIA NCCL.
+nccl = ["cuda", "dep:baracuda-nccl", "fuel-graph-cuda?/nccl"]
 
 # Intel MKL BLAS for CPU (Linux/Windows). Faster matmul on Intel hardware.
 mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl"]
@@ -87,6 +101,11 @@ metal = [
     "dep:fuel-metal-kernels",
     "fuel-ug?/metal",
 ]
+
+# Cross-vendor GPU backend via Vulkan (vulkane + precompiled SPIR-V).
+# Use: cargo build --features vulkan. No toolchain required at build
+# time — shaders are precompiled and committed.
+vulkan = ["dep:fuel-graph-vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
 ug = ["dep:fuel-ug", "fuel-core-types/ug"]

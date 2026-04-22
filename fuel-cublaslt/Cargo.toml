@@ -10,6 +10,7 @@
     version     = "0.10.2"
 
 [dependencies]
-    fuel    = { workspace = true, features = ["cuda"] }
-    cudarc  = { workspace = true }
-    half    = { workspace = true }
+    fuel            = { workspace = true, features = ["cuda"] }
+    baracuda-driver = { workspace = true }
+    baracuda-cublas = { workspace = true }
+    half            = { workspace = true }
