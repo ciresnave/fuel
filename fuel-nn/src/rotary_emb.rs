@@ -451,7 +451,10 @@ impl fuel::CustomOp3 for RotaryEmb {
         fuel::bail!("{}: unsupported backend", self.name())
     }
 
-    #[cfg(feature = "cuda")]
+}
+
+#[cfg(feature = "cuda")]
+impl RotaryEmb {
     fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
@@ -778,7 +781,10 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         fuel::bail!("{}: unsupported backend", self.name())
     }
 
-    #[cfg(feature = "cuda")]
+}
+
+#[cfg(feature = "cuda")]
+impl RotaryEmbThd {
     fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,

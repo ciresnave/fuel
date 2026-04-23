@@ -76,8 +76,8 @@ pub enum VmmError {
 }
 
 impl VmmError {
-    /// Create a CUDA error from a cudarc result.
-    pub fn from_cuda_result(result: cudarc::driver::result::DriverError) -> Self {
+    /// Create a CUDA error from a baracuda driver error.
+    pub fn from_cuda_result(result: baracuda_driver::Error) -> Self {
         VmmError::CudaError(format!("{:?}", result))
     }
 

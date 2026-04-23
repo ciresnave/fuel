@@ -26,12 +26,12 @@ pub fn moe_gemm(
     topk: usize,
     is_prefill: bool,
 ) -> Result<Tensor> {
-    use fuel::cuda_backend::cudarc::driver::DevicePtr;
+    
     use fuel::DType;
     use half::{bf16, f16};
 
     fn cuda_inner<
-        T: fuel::cuda_backend::CudaDType + fuel::cuda_backend::cudarc::driver::DeviceRepr,
+        T: fuel_graph_cuda::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
     >(
         input: &Tensor,
         weights: &Tensor,
@@ -62,36 +62,21 @@ pub fn moe_gemm(
         };
 
         let (input, _) = input.storage_and_layout();
-        let input = match &*input {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<T>()?,
-            _ => fuel::bail!("input must be a cuda tensor"),
-        };
+        let input = input.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<T>()?;
 
         let (weights, _) = weights.storage_and_layout();
-        let weights = match &*weights {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<T>()?,
-            _ => fuel::bail!("weight must be a cuda tensor"),
-        };
+        let weights = weights.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("weight must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<T>()?;
 
         let (sorted_token_ids, _) = sorted_token_ids.storage_and_layout();
-        let sorted_token_ids = match &*sorted_token_ids {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
-            _ => fuel::bail!("sorted_token_ids must be a cuda tensor"),
-        };
+        let sorted_token_ids = sorted_token_ids.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("sorted_token_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
         let (experts_ids, _) = experts_ids.storage_and_layout();
-        let experts_ids = match &*experts_ids {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
-            _ => fuel::bail!("experts_ids must be a cuda tensor"),
-        };
+        let experts_ids = experts_ids.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
         let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
             let (topk_weights, _) = topk_weights.storage_and_layout();
-            let topk_weights = match &*topk_weights {
-                fuel::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
-                _ => fuel::bail!("topk_weights must be a cuda tensor"),
-            };
-            let weights_ptr = topk_weights.device_ptr(topk_weights.stream()).0 as *const f32;
+        let topk_weights = topk_weights.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+            let weights_ptr = topk_weights.as_raw().0 as *const f32;
             weights_ptr
         } else {
             std::ptr::null()
@@ -101,19 +86,19 @@ pub fn moe_gemm(
         let expert_counts = unsafe { dev.alloc::<u32>(num_experts) }?;
         let expert_offsets = unsafe { dev.alloc::<u32>(num_experts + 1) }?;
 
-        let stream = dev.cuda_stream().cu_stream() as i64;
+        let stream = dev.cuda_stream().as_raw() as i64;
         use core::ffi::c_void;
 
         unsafe {
             ffi::moe_gemm_wmma(
-                input.device_ptr(input.stream()).0 as *const c_void, // [size_m, size_k]
-                weights.device_ptr(weights.stream()).0 as *const c_void, // [num_experts, size_n, size_k]
-                sorted_token_ids.device_ptr(sorted_token_ids.stream()).0 as *const i32,
-                experts_ids.device_ptr(experts_ids.stream()).0 as *const i32,
+                input.as_raw().0 as *const c_void, // [size_m, size_k]
+                weights.as_raw().0 as *const c_void, // [num_experts, size_n, size_k]
+                sorted_token_ids.as_raw().0 as *const i32,
+                experts_ids.as_raw().0 as *const i32,
                 topk_weights_ptr,
-                output.device_ptr(output.stream()).0 as *mut c_void, // [size_m, size_n]
-                expert_counts.device_ptr(expert_counts.stream()).0 as *mut i32, // pre-allocated buffer [num_experts]
-                expert_offsets.device_ptr(expert_offsets.stream()).0 as *mut i32, // pre-allocated buffer [num_experts + 1]
+                output.as_raw().0 as *mut c_void, // [size_m, size_n]
+                expert_counts.as_raw().0 as *mut i32, // pre-allocated buffer [num_experts]
+                expert_offsets.as_raw().0 as *mut i32, // pre-allocated buffer [num_experts + 1]
                 num_experts as i32,
                 topk as i32,
                 size_m as i32,
@@ -128,7 +113,7 @@ pub fn moe_gemm(
         use fuel::op::BackpropOp;
         let output = fuel::CudaStorage::wrap_cuda_slice(output, dev.clone());
         let output = Tensor::from_storage(
-            fuel::Storage::Cuda(output),
+            fuel::Storage::from_cuda(output),
             (size_m, size_n),
             BackpropOp::none(),
             false,
@@ -138,7 +123,7 @@ pub fn moe_gemm(
     }
 
     match input.dtype() {
-        DType::F16 => cuda_fwd::<f16>(
+        DType::F16 => cuda_inner::<f16>(
             input,
             weights,
             topk_weights,
@@ -147,7 +132,7 @@ pub fn moe_gemm(
             topk,
             is_prefill,
         ),
-        DType::BF16 => cuda_fwd::<bf16>(
+        DType::BF16 => cuda_inner::<bf16>(
             input,
             weights,
             topk_weights,
@@ -209,7 +194,7 @@ pub fn moe_gemm_gguf(
     is_prefill: bool,
     dtype: fuel::DType,
 ) -> Result<Tensor> {
-    use fuel::cuda_backend::cudarc::driver::DevicePtr;
+    
     use fuel::quantized::GgmlDType;
     use fuel::DType;
     use half::{bf16, f16};
@@ -257,29 +242,20 @@ pub fn moe_gemm_gguf(
 
         let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
             let (topk_weights, _) = topk_weights.storage_and_layout();
-            let topk_weights = match &*topk_weights {
-                fuel::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
-                _ => fuel::bail!("topk_weights must be a cuda tensor"),
-            };
-            let w_ptr = topk_weights.device_ptr(topk_weights.stream()).0 as *const f32;
+        let topk_weights = topk_weights.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+            let w_ptr = topk_weights.as_raw().0 as *const f32;
             w_ptr
         } else {
             std::ptr::null()
         };
 
         let (sorted_token_ids, _) = sorted_token_ids.storage_and_layout();
-        let sorted_token_ids = match &*sorted_token_ids {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
-            _ => fuel::bail!("sorted_token_ids must be a cuda tensor"),
-        };
+        let sorted_token_ids = sorted_token_ids.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("sorted_token_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
         let (experts_ids, _) = experts_ids.storage_and_layout();
-        let experts_ids = match &*experts_ids {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
-            _ => fuel::bail!("experts_ids must be a cuda tensor"),
-        };
+        let experts_ids = experts_ids.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
         let output = unsafe { dev.alloc::<f32>(size_m * size_n) }?;
-        let stream = dev.cuda_stream().cu_stream() as i64;
+        let stream = dev.cuda_stream().as_raw() as i64;
         use fuel::op::BackpropOp;
         use core::ffi::c_void;
 
@@ -288,25 +264,23 @@ pub fn moe_gemm_gguf(
             if is_prefill {
                 let input = input.to_dtype(dtype)?;
                 let (input, _) = input.storage_and_layout();
-                let (input_ptr, input_dtype) = match &*input {
-                    fuel::Storage::Cuda(c) => {
-                        if dtype == DType::F16 {
-                            let c = c.as_cuda_slice::<f16>()?;
-                            (c.device_ptr(c.stream()).0 as *const c_void, 0)
-                        } else {
-                            let c = c.as_cuda_slice::<bf16>()?;
-                            (c.device_ptr(c.stream()).0 as *const c_void, 1)
-                        }
-                    }
-                    _ => fuel::bail!("input must be a cuda tensor"),
+                let input_cuda = input
+                    .as_cuda_storage()
+                    .ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".into()).bt())?;
+                let (input_ptr, input_dtype) = if dtype == DType::F16 {
+                    let c = input_cuda.as_cuda_slice::<f16>()?;
+                    (c.as_raw().0 as *const c_void, 0)
+                } else {
+                    let c = input_cuda.as_cuda_slice::<bf16>()?;
+                    (c.as_raw().0 as *const c_void, 1)
                 };
                 ffi::moe_gemm_gguf_prefill(
                     input_ptr,  // [size_m or size_m/topk, size_k]
                     weight_ptr, // [num_experts, size_n, size_k]
-                    sorted_token_ids.device_ptr(sorted_token_ids.stream()).0 as *const i32,
-                    experts_ids.device_ptr(experts_ids.stream()).0 as *const i32,
+                    sorted_token_ids.as_raw().0 as *const i32,
+                    experts_ids.as_raw().0 as *const i32,
                     topk_weights_ptr,
-                    output.device_ptr(output.stream()).0 as *mut c_void, // [size_m, size_n]
+                    output.as_raw().0 as *mut c_void, // [size_m, size_n]
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -318,18 +292,15 @@ pub fn moe_gemm_gguf(
                 );
             } else {
                 let (input, _) = input.storage_and_layout();
-                let input = match &*input {
-                    fuel::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
-                    _ => fuel::bail!("input must be a cuda tensor"),
-                };
+        let input = input.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
                 ffi::moe_gemm_gguf(
-                    input.device_ptr(input.stream()).0 as *const f32, // [size_m or size_m/topk, size_k]
+                    input.as_raw().0 as *const f32, // [size_m or size_m/topk, size_k]
                     weight_ptr as *const c_void, // [num_experts, size_n, size_k]
-                    sorted_token_ids.device_ptr(sorted_token_ids.stream()).0 as *const i32,
-                    experts_ids.device_ptr(experts_ids.stream()).0 as *const i32,
+                    sorted_token_ids.as_raw().0 as *const i32,
+                    experts_ids.as_raw().0 as *const i32,
                     topk_weights_ptr,
-                    output.device_ptr(output.stream()).0 as *mut c_void, // [size_m, size_n]
+                    output.as_raw().0 as *mut c_void, // [size_m, size_n]
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -343,7 +314,7 @@ pub fn moe_gemm_gguf(
 
         let output = fuel::CudaStorage::wrap_cuda_slice(output, dev.clone());
         let output = Tensor::from_storage(
-            fuel::Storage::Cuda(output),
+            fuel::Storage::from_cuda(output),
             (size_m, size_n),
             BackpropOp::none(),
             false,
@@ -353,7 +324,7 @@ pub fn moe_gemm_gguf(
     }
 
     match input.dtype() {
-        DType::F32 => cuda_fwd(
+        DType::F32 => cuda_inner(
             input,
             weights,
             topk_weights,

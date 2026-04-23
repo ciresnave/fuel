@@ -14,7 +14,11 @@ mod cuda_kernels {
 
 use clap::Parser;
 
-use fuel::{CpuStorage, CustomOp1, Layout, Result, Shape, Tensor};
+use fuel::{CustomOp1, Layout, Result, Shape, Tensor};
+use fuel::dyn_backend::DynBackendStorage;
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
+#[cfg(feature = "cuda")]
+use fuel_graph_cuda::CudaBackendStorage;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -33,59 +37,73 @@ impl CustomOp1 for LayerNorm {
         "layer-norm"
     }
 
-    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
-        let (dim1, dim2) = layout.shape().dims2()?;
-        let slice = storage.as_slice::<f32>()?;
-        let src = match layout.contiguous_offsets() {
-            None => fuel::bail!("input has to be contiguous"),
-            Some((o1, o2)) => &slice[o1..o2],
-        };
-        let mut dst = Vec::with_capacity(dim1 * dim2);
-        for idx1 in 0..dim1 {
-            let src = &src[idx1 * dim2..(idx1 + 1) * dim2];
-            let variance = src.iter().map(|x| x * x).sum::<f32>();
-            let s_variance = 1f32 / (variance / dim2 as f32 + self.eps).sqrt();
-            dst.extend(src.iter().map(|x| x * s_variance))
-        }
-        let storage = fuel::CpuStorage::F32(dst);
-        Ok((storage, layout.shape().clone()))
-    }
-
-    #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn fwd(
         &self,
-        storage: &fuel::CudaStorage,
+        storage: &dyn DynBackendStorage,
         layout: &Layout,
-    ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::backend::BackendStorage;
-        use fuel::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use fuel::cuda_backend::WrapErr;
-        let (d1, d2) = layout.shape().dims2()?;
-        let d1 = d1 as u32;
-        let d2 = d2 as u32;
-        let dev = storage.device().clone();
-        let slice = storage.as_cuda_slice::<f32>()?;
-        let slice = match layout.contiguous_offsets() {
-            None => fuel::bail!("input has to be contiguous"),
-            Some((o1, o2)) => slice.slice(o1..o2),
-        };
-        let elem_count = layout.shape().elem_count();
-        let dst = unsafe { dev.alloc::<f32>(elem_count) }?;
-        let func =
-            dev.get_or_load_custom_func("rms_f32", "mymodule", cuda_kernels::LAYERNORM_KERNELS)?;
-        let cfg = LaunchConfig {
-            grid_dim: (d1, 1, 1),
-            block_dim: (d2, 1, 1),
-            shared_mem_bytes: 0,
-        };
-        let mut builder = func.builder();
-        builder.arg(&dst);
-        builder.arg(&slice);
-        fuel::builder_arg!(builder, self.eps, d1, d2);
-        unsafe { builder.launch(cfg) }.w()?;
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        if let Some(cpu) = storage.as_any().downcast_ref::<CpuBackendStorage>() {
+            let storage = cpu.inner();
+            let (dim1, dim2) = layout.shape().dims2()?;
+            let slice = storage.as_slice::<f32>()?;
+            let src = match layout.contiguous_offsets() {
+                None => fuel::bail!("input has to be contiguous"),
+                Some((o1, o2)) => &slice[o1..o2],
+            };
+            let mut dst = Vec::with_capacity(dim1 * dim2);
+            for idx1 in 0..dim1 {
+                let src = &src[idx1 * dim2..(idx1 + 1) * dim2];
+                let variance = src.iter().map(|x| x * x).sum::<f32>();
+                let s_variance = 1f32 / (variance / dim2 as f32 + self.eps).sqrt();
+                dst.extend(src.iter().map(|x| x * s_variance))
+            }
+            let out = fuel::CpuStorage::F32(dst);
+            return Ok((
+                Box::new(CpuBackendStorage::from(out)),
+                layout.shape().clone(),
+            ));
+        }
 
-        let dst = fuel::CudaStorage::wrap_cuda_slice(dst, dev);
-        Ok((dst, layout.shape().clone()))
+        #[cfg(feature = "cuda")]
+        if let Some(cuda) = storage.as_any().downcast_ref::<CudaBackendStorage>() {
+            use fuel::backend::BackendStorage;
+            use fuel::cuda_backend::{LaunchConfig, WrapErr};
+            let storage = cuda.inner();
+            let (d1, d2) = layout.shape().dims2()?;
+            let d1 = d1 as u32;
+            let d2 = d2 as u32;
+            let dev = storage.device().clone();
+            let slice = storage.as_cuda_slice::<f32>()?;
+            let slice = match layout.contiguous_offsets() {
+                None => fuel::bail!("input has to be contiguous"),
+                Some((o1, o2)) => slice.slice(o1..o2),
+            };
+            let elem_count = layout.shape().elem_count();
+            let dst = unsafe { dev.alloc::<f32>(elem_count) }?;
+            let func = dev.get_or_load_custom_func(
+                "rms_f32",
+                "mymodule",
+                cuda_kernels::LAYERNORM_KERNELS,
+            )?;
+            let cfg = LaunchConfig {
+                grid_dim: (d1, 1, 1),
+                block_dim: (d2, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            let mut builder = func.builder();
+            builder.arg(&dst);
+            builder.arg(&slice);
+            fuel::builder_arg!(builder, self.eps, d1, d2);
+            unsafe { builder.launch(cfg) }.w()?;
+
+            let out = fuel::CudaStorage::wrap_cuda_slice(dst, dev);
+            return Ok((
+                Box::new(CudaBackendStorage::new(out)),
+                layout.shape().clone(),
+            ));
+        }
+
+        fuel::bail!("layer-norm: unsupported backend")
     }
 }
 
