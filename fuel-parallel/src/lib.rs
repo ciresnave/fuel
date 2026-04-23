@@ -28,7 +28,7 @@
 //!
 //! ## What is NOT here
 //!
-//! - **NCCL bindings** — use `cudarc::nccl` directly and wrap with the
+//! - **NCCL bindings** — use `baracuda_nccl` directly and wrap with the
 //!   `Communicator` trait.
 //! - **Model definitions** — those stay in `fuel-transformers`.
 //! - **Inference orchestration** — that's `fuel-inference`.

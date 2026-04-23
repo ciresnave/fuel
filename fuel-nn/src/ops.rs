@@ -152,11 +152,10 @@ impl fuel::CustomOp1 for Sigmoid {
         use baracuda_driver::DeviceBuffer as CudaSlice;
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
-        #[allow(unused_imports)]
-        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+        
                 use fuel::cuda_backend::SlicePtrOrNull;
         use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
         struct S;
         impl Map1 for S {
@@ -494,10 +493,9 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
         use baracuda_driver::DeviceBuffer as CudaSlice;
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
-        #[allow(unused_imports)]
-        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+        
                 use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
         struct S;
         impl Map1 for S {
@@ -701,10 +699,9 @@ impl fuel::CustomOp2 for RmsNorm {
         use baracuda_driver::DeviceBuffer as CudaSlice;
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
-        #[allow(unused_imports)]
-        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+        
                 use fuel::cuda_backend::{kernel_name, kernels, Map2, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
         struct S {
             eps: f32,
@@ -976,10 +973,9 @@ impl fuel::CustomOp3 for LayerNorm {
         use baracuda_driver::DeviceBuffer as CudaSlice;
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
-        #[allow(unused_imports)]
-        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+        
                 use fuel::cuda_backend::{kernel_name, kernels, Map3, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
         struct S {
             eps: f32,

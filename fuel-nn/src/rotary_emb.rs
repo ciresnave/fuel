@@ -106,8 +106,10 @@ impl fuel::CustomOp3 for RotaryEmbI {
 
         fuel::bail!("{}: unsupported backend", self.name())
     }
+}
 
-    #[cfg(feature = "cuda")]
+#[cfg(feature = "cuda")]
+impl RotaryEmbI {
     fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
@@ -121,9 +123,9 @@ impl fuel::CustomOp3 for RotaryEmbI {
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
         use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
-        fn inner<T: DeviceRepr + WithDType>(
+        fn inner<T: DeviceRepr + WithDType + ValidAsZeroBits>(
             src: &CudaSlice<T>,
             l_src: &Layout,
             cos: &CudaSlice<T>,
@@ -463,7 +465,7 @@ impl fuel::CustomOp3 for RotaryEmb {
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
         use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
         fn inner<T: DeviceRepr + WithDType>(
             src: &CudaSlice<T>,
@@ -790,7 +792,7 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
         use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
-        use fuel::{CudaDevice, WithDType};
+        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
 
         fn inner<T: DeviceRepr + WithDType>(
             src: &CudaSlice<T>,
