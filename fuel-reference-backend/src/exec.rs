@@ -317,6 +317,7 @@ pub fn eval_node_with_op(
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),
+        Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
         Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
         Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),
         Op::LayerNormLastDimBackward { eps } => {
@@ -376,6 +377,24 @@ pub fn eval_node_with_op(
         }
         Op::Maximum => binary!(inputs, cache, ops::maximum),
         Op::Minimum => binary!(inputs, cache, ops::minimum),
+        Op::Copy { .. } | Op::Move { .. } => {
+            // Reference backend has no notion of device — everything
+            // lives in host memory. Copy/Move is a pass-through; the
+            // target field is validated by the caller (only CPU-
+            // resident transfers should reach here). Move's destructive
+            // semantics are enforced by the executor cache layer.
+            let x = cache.get(&inputs[0]).expect("topo order missing copy/move input");
+            x.clone()
+        }
+        Op::Release => {
+            // Reference backend: Release is a no-op — produces a
+            // zero-element F32 marker. The input's memory is freed
+            // when the cache entry is dropped.
+            AnyRefTensor::F32(RefTensor::from_arc(
+                std::sync::Arc::<[f32]>::from(Vec::<f32>::new()),
+                Shape::from_dims(&[0]),
+            ))
+        }
     }
 }
 
@@ -668,6 +687,135 @@ fn eval_rope(
             "rope: dtype mismatch x={:?} cos={:?} sin={:?}",
             a.dtype(), b.dtype(), c.dtype()
         ),
+    }
+}
+
+fn eval_qmatmul(
+    quant_type: fuel_graph::QuantType,
+    k: usize,
+    n: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let a = cache.get(&inputs[0]).expect("qmatmul missing activations");
+    let w = cache.get(&inputs[1]).expect("qmatmul missing weight bytes");
+    let a_f32 = match a {
+        AnyRefTensor::F32(t) => t,
+        _ => panic!("qmatmul: activations must be F32, got {:?}", a.dtype()),
+    };
+    let w_u32 = match w {
+        AnyRefTensor::U32(t) => t,
+        _ => panic!("qmatmul: weight bytes must be U32, got {:?}", w.dtype()),
+    };
+    // Reinterpret U32 as raw bytes for block decoding.
+    let w_u32_slice = w_u32.as_slice();
+    let w_bytes: Vec<u8> = w_u32_slice.iter().flat_map(|&u| u.to_le_bytes()).collect();
+
+    // Dequantize W: [N, K] F32 row-major (same as Vulkan's dequant_q4_0 output).
+    let w_deq = dequantize_blocks(&w_bytes, quant_type, n, k);
+    let w_ref = crate::RefTensor::from_vec(w_deq, crate::Shape::from_dims(&[n, k]));
+
+    // HF weight convention is [N, K] (out × in); our matmul wants [K, N].
+    // Transpose W_ref to [K, N].
+    let w_t = ops::transpose_last_two(&w_ref);
+
+    // Matmul: A @ W^T → [..., M, N].
+    AnyRefTensor::F32(ops::matmul(a_f32, &w_t))
+}
+
+/// Reference CPU dequantization of Q-type blocks to F32 row-major
+/// weight matrix of shape `[n_rows, k_cols]`. This must bit-match the
+/// GPU `dequant_q4_0` / `dequant_q8_0` kernels' output.
+fn dequantize_blocks(
+    bytes: &[u8],
+    quant_type: fuel_graph::QuantType,
+    n_rows: usize,
+    k_cols: usize,
+) -> Vec<f32> {
+    use half::f16;
+    let bpb = quant_type.bytes_per_block();
+    let epb = quant_type.elements_per_block();
+    assert_eq!(k_cols % epb, 0, "dequantize_blocks: k_cols must be multiple of {epb}");
+    let blocks_per_row = k_cols / epb;
+    let expected_bytes = n_rows * blocks_per_row * bpb;
+    assert_eq!(bytes.len(), expected_bytes, "dequantize_blocks: byte count mismatch");
+    let mut out = vec![0.0_f32; n_rows * k_cols];
+    for row in 0..n_rows {
+        for bi in 0..blocks_per_row {
+            let block_off = (row * blocks_per_row + bi) * bpb;
+            let out_base = row * k_cols + bi * epb;
+            match quant_type {
+                fuel_graph::QuantType::Q4_0 => {
+                    // Single f16 scale at bytes[0..2]; 16 packed u4
+                    // pairs: low nibble → element k, high → k+16.
+                    let scale = f16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]).to_f32();
+                    for kk in 0..16 {
+                        let packed = bytes[block_off + 2 + kk];
+                        let lo = (packed & 0x0F) as i32 - 8;
+                        let hi = ((packed >> 4) & 0x0F) as i32 - 8;
+                        out[out_base + kk]       = lo as f32 * scale;
+                        out[out_base + 16 + kk]  = hi as f32 * scale;
+                    }
+                }
+                fuel_graph::QuantType::Q8_0 => {
+                    let scale = f16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]).to_f32();
+                    for kk in 0..32 {
+                        let q = bytes[block_off + 2 + kk] as i8 as i32;
+                        out[out_base + kk] = q as f32 * scale;
+                    }
+                }
+                fuel_graph::QuantType::Q4_K_M => {
+                    dequantize_q4_km_block(&bytes[block_off..block_off + 144], &mut out[out_base..out_base + 256]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Dequantize one 144-byte Q4_K_M super-block to 256 f32 elements.
+/// Mirrors llama.cpp k_quants.c reference and must bit-match the
+/// Vulkan `dequant_q4_km` kernel.
+fn dequantize_q4_km_block(bytes: &[u8], out: &mut [f32]) {
+    use half::f16;
+    debug_assert_eq!(bytes.len(), 144);
+    debug_assert_eq!(out.len(), 256);
+    let d    = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
+    let dmin = f16::from_le_bytes([bytes[2], bytes[3]]).to_f32();
+    let scales: [u8; 12] = bytes[4..16].try_into().unwrap();
+    let qs = &bytes[16..144];
+
+    // llama.cpp `get_scale_min_k4` packing: 6-bit scale + 6-bit min
+    // per sub-block, 8 sub-blocks total.
+    let get_scale_min_k4 = |j: usize| -> (u8, u8) {
+        if j < 4 {
+            (scales[j] & 63, scales[j + 4] & 63)
+        } else {
+            let sc = (scales[j + 4] & 0xF) | ((scales[j - 4] >> 6) << 4);
+            let m  = (scales[j + 4] >> 4)  | ((scales[j] >> 6) << 4);
+            (sc, m)
+        }
+    };
+
+    let mut is = 0;
+    let mut ys_idx = 0;
+    for j in (0..256).step_by(64) {
+        let qsub = &qs[j / 2 .. j / 2 + 32];
+        let (sc, m) = get_scale_min_k4(is);
+        let d1 = d * sc as f32;
+        let m1 = dmin * m as f32;
+        let (sc, m) = get_scale_min_k4(is + 1);
+        let d2 = d * sc as f32;
+        let m2 = dmin * m as f32;
+        for &q in qsub {
+            out[ys_idx] = d1 * (q & 0xF) as f32 - m1;
+            ys_idx += 1;
+        }
+        for &q in qsub {
+            out[ys_idx] = d2 * (q >> 4) as f32 - m2;
+            ys_idx += 1;
+        }
+        is += 2;
     }
 }
 

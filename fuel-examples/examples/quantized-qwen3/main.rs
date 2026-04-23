@@ -8,7 +8,7 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::quantized::gguf_file;
+use fuel::quantized::gguf_mmap::MmapedContent;
 use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
@@ -185,27 +185,41 @@ fn main() -> anyhow::Result<()> {
     );
 
     let model_path = args.model()?;
-    let mut file = std::fs::File::open(&model_path)?;
     let start = std::time::Instant::now();
     let device = fuel_examples::device(args.cpu)?;
 
+    // Zero-syscall load: mmap the file once, parse the header off the
+    // mapping, then wrap the mmap slice in a Cursor so the existing
+    // Read+Seek-based loader reads tensors by pointer arithmetic
+    // instead of per-tensor seek + read_exact.
+    let mmaped = MmapedContent::from_path(&model_path).map_err(|e| e.with_path(&model_path))?;
+    let metadata_done = start.elapsed();
+    let (mmap, content) = mmaped.into_parts();
+    let mut total_size_in_bytes = 0;
+    for (_, tensor) in content.tensor_infos.iter() {
+        let elem_count = tensor.shape.elem_count();
+        total_size_in_bytes +=
+            elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
+    }
+    println!(
+        "mmapped {:?} tensors ({}); header in {:.2}s",
+        content.tensor_infos.len(),
+        &format_size(total_size_in_bytes),
+        metadata_done.as_secs_f32(),
+    );
     let mut model = {
-        let model = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
-        let mut total_size_in_bytes = 0;
-        for (_, tensor) in model.tensor_infos.iter() {
-            let elem_count = tensor.shape.elem_count();
-            total_size_in_bytes +=
-                elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
-        }
-        println!(
-            "loaded {:?} tensors ({}) in {:.2}s",
-            model.tensor_infos.len(),
-            &format_size(total_size_in_bytes),
-            start.elapsed().as_secs_f32(),
-        );
-        Qwen3::from_gguf(model, &mut file, &device)?
+        let mut cursor = std::io::Cursor::new(&mmap[..]);
+        Qwen3::from_gguf(content, &mut cursor, &device)?
     };
-    println!("model built");
+    // `mmap` stays in scope until the end of main, so any tensor data
+    // that was memcpy'd out during from_gguf is independent of it and
+    // any lazily-held slice references (none today) would still be
+    // valid.
+    drop(mmap);
+    println!(
+        "model built in {:.2}s total",
+        start.elapsed().as_secs_f32()
+    );
 
     let tokenizer = args.tokenizer()?;
     let mut tos = TokenOutputStream::new(tokenizer);

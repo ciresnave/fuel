@@ -8,7 +8,6 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::quantized::gguf_file;
 use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
@@ -200,36 +199,40 @@ fn main() -> anyhow::Result<()> {
     );
 
     let model_path = args.model()?;
-    let mut file = std::fs::File::open(&model_path)?;
     let start = std::time::Instant::now();
     let device = fuel_examples::device(args.cpu)?;
 
+    let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
+        .map_err(|e| e.with_path(&model_path))?;
+    let header_done = start.elapsed();
+    let (mmap, model_content) = mmaped.into_parts();
+    let mut total_size_in_bytes = 0;
+    for (_, tensor) in model_content.tensor_infos.iter() {
+        let elem_count = tensor.shape.elem_count();
+        total_size_in_bytes +=
+            elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
+    }
+    println!(
+        "mmapped {:?} tensors ({}); header in {:.2}s",
+        model_content.tensor_infos.len(),
+        &format_size(total_size_in_bytes),
+        header_done.as_secs_f32(),
+    );
     let mut model = {
-        let model = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
-        let mut total_size_in_bytes = 0;
-        for (_, tensor) in model.tensor_infos.iter() {
-            let elem_count = tensor.shape.elem_count();
-            total_size_in_bytes +=
-                elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
-        }
-        println!(
-            "loaded {:?} tensors ({}) in {:.2}s",
-            model.tensor_infos.len(),
-            &format_size(total_size_in_bytes),
-            start.elapsed().as_secs_f32(),
-        );
+        let mut cursor = std::io::Cursor::new(&mmap[..]);
         match args.which {
-            Which::Phi2 => Model::Phi2(Phi2::from_gguf(model, &mut file, &device)?),
+            Which::Phi2 => Model::Phi2(Phi2::from_gguf(model_content, &mut cursor, &device)?),
             Which::Phi3 | Which::Phi4 => Model::Phi3(Phi3::from_gguf(
                 args.use_flash_attn,
-                model,
-                &mut file,
+                model_content,
+                &mut cursor,
                 &device,
             )?),
-            Which::Phi3b => Model::Phi3b(Phi3b::from_gguf(model, &mut file, &device)?),
+            Which::Phi3b => Model::Phi3b(Phi3b::from_gguf(model_content, &mut cursor, &device)?),
         }
     };
-    println!("model built");
+    drop(mmap);
+    println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer()?;
     let mut tos = TokenOutputStream::new(tokenizer);

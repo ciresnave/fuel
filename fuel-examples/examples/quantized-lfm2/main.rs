@@ -10,7 +10,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
-use fuel::quantized::gguf_file;
 use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
@@ -201,11 +200,13 @@ fn main() -> Result<()> {
     );
 
     let model_path = args.model_path()?;
-    let mut file = std::fs::File::open(&model_path)?;
     let start = std::time::Instant::now();
     let device = fuel_examples::device(args.cpu)?;
 
-    let gguf = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path.clone()))?;
+    let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
+        .map_err(|e| e.with_path(&model_path))?;
+    let header_done = start.elapsed();
+    let (mmap, gguf) = mmaped.into_parts();
     let mut total_size_in_bytes = 0;
     for (_, tensor) in gguf.tensor_infos.iter() {
         let elem_count = tensor.shape.elem_count();
@@ -219,14 +220,18 @@ fn main() -> Result<()> {
         .and_then(|v| v.to_u32().ok().map(|v| v as usize));
 
     println!(
-        "loaded {:?} tensors ({}) in {:.2}s",
+        "mmapped {:?} tensors ({}); header in {:.2}s",
         gguf.tensor_infos.len(),
         format_size(total_size_in_bytes),
-        start.elapsed().as_secs_f32()
+        header_done.as_secs_f32()
     );
 
-    let mut model = ModelWeights::from_gguf(gguf, &mut file, &device)?;
-    println!("model ready");
+    let mut model = {
+        let mut cursor = std::io::Cursor::new(&mmap[..]);
+        ModelWeights::from_gguf(gguf, &mut cursor, &device)?
+    };
+    drop(mmap);
+    println!("model ready in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer(&model_path)?;
     let mut tos = TokenOutputStream::new(tokenizer);

@@ -8,12 +8,12 @@ use vulkane::safe::*;
 /// Shader-registry contents, lazily materialized as `&'static
 /// [ShaderSource]` so it satisfies `ShaderRegistry::with_embedded`'s
 /// `'static` bound. Built once on first access from
-/// `fuel_graph_executor::shaders::EMBEDDED`.
+/// `fuel_vulkan_kernels::EMBEDDED`.
 fn embedded_shader_sources() -> &'static [ShaderSource] {
     static SOURCES: OnceLock<Vec<ShaderSource>> = OnceLock::new();
     SOURCES
         .get_or_init(|| {
-            fuel_graph_executor::shaders::EMBEDDED
+            fuel_vulkan_kernels::EMBEDDED
                 .iter()
                 .map(|(name, spv)| ShaderSource { name, spv })
                 .collect()
@@ -27,7 +27,7 @@ fn embedded_shader_sources() -> &'static [ShaderSource] {
 fn shader_registry() -> ShaderRegistry {
     ShaderRegistry::new()
         .with_embedded(embedded_shader_sources())
-        .with_env_override(fuel_graph_executor::shaders::OVERRIDE_ENV)
+        .with_env_override(fuel_vulkan_kernels::OVERRIDE_ENV)
 }
 
 /// All pre-compiled compute pipelines.
@@ -109,6 +109,24 @@ pub struct Pipelines {
 
     pub concat_along_dim_pipeline: ComputePipeline,
     pub concat_along_dim_layout: PipelineLayout,
+
+    pub dequant_q4_0_pipeline: ComputePipeline,
+    pub dequant_q4_0_layout: PipelineLayout,
+
+    pub dequant_q8_0_pipeline: ComputePipeline,
+    pub dequant_q8_0_layout: PipelineLayout,
+
+    pub dequant_q4_km_pipeline: ComputePipeline,
+    pub dequant_q4_km_layout: PipelineLayout,
+
+    pub qmatvec_q4_0_pipeline: ComputePipeline,
+    pub qmatvec_q4_0_layout: PipelineLayout,
+
+    pub matmul_q4_0_tiled_pipeline: ComputePipeline,
+    pub matmul_q4_0_tiled_layout: PipelineLayout,
+
+    pub quantize_q8_0_pipeline: ComputePipeline,
+    pub quantize_q8_0_layout: PipelineLayout,
 
     /// Active descriptor pool — the one new allocations come from.
     pub desc_pool: RefCell<DescriptorPool>,
@@ -222,7 +240,7 @@ impl Pipelines {
         // Build the registry once and resolve every shader through it
         // — disk-override → embedded fallback, then straight to a
         // ShaderModule. No intermediate SPIR-V word vectors needed.
-        use fuel_graph_executor::shaders;
+        use fuel_vulkan_kernels as shaders;
         let registry = shader_registry();
         let unary_mod = registry.load_module(device, shaders::UNARY)?;
         let binary_mod = registry.load_module(device, shaders::BINARY)?;
@@ -249,6 +267,12 @@ impl Pipelines {
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
+        let dequant_q4_0_mod = registry.load_module(device, shaders::DEQUANT_Q4_0)?;
+        let dequant_q4_km_mod = registry.load_module(device, shaders::DEQUANT_Q4_KM)?;
+        let dequant_q8_0_mod = registry.load_module(device, shaders::DEQUANT_Q8_0)?;
+        let qmatvec_q4_0_mod = registry.load_module(device, shaders::QMATVEC_Q4_0)?;
+        let matmul_q4_0_tiled_mod = registry.load_module(device, shaders::MATMUL_Q4_0_TILED)?;
+        let quantize_q8_0_mod = registry.load_module(device, shaders::QUANTIZE_Q8_0)?;
 
         // No push constants — params go through uniform buffers.
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -275,6 +299,12 @@ impl Pipelines {
         let add_assign_scaled_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let rope_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let concat_along_dim_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let dequant_q4_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let dequant_q4_km_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let dequant_q8_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let qmatvec_q4_0_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let matmul_q4_0_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let quantize_q8_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
 
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
@@ -300,6 +330,12 @@ impl Pipelines {
         let add_assign_scaled_pipeline = ComputePipeline::new(device, &add_assign_scaled_layout, &add_assign_scaled_mod, "main")?;
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
         let concat_along_dim_pipeline = ComputePipeline::new(device, &concat_along_dim_layout, &concat_along_dim_mod, "main")?;
+        let dequant_q4_0_pipeline = ComputePipeline::new(device, &dequant_q4_0_layout, &dequant_q4_0_mod, "main")?;
+        let dequant_q4_km_pipeline = ComputePipeline::new(device, &dequant_q4_km_layout, &dequant_q4_km_mod, "main")?;
+        let dequant_q8_0_pipeline = ComputePipeline::new(device, &dequant_q8_0_layout, &dequant_q8_0_mod, "main")?;
+        let qmatvec_q4_0_pipeline = ComputePipeline::new(device, &qmatvec_q4_0_layout, &qmatvec_q4_0_mod, "main")?;
+        let matmul_q4_0_tiled_pipeline = ComputePipeline::new(device, &matmul_q4_0_tiled_layout, &matmul_q4_0_tiled_mod, "main")?;
+        let quantize_q8_0_pipeline = ComputePipeline::new(device, &quantize_q8_0_layout, &quantize_q8_0_mod, "main")?;
 
         Ok(Self {
             layout_2s1u, layout_3s1u, layout_4s1u,
@@ -325,6 +361,12 @@ impl Pipelines {
             add_assign_scaled_pipeline, add_assign_scaled_layout,
             rope_pipeline, rope_layout,
             concat_along_dim_pipeline, concat_along_dim_layout,
+            dequant_q4_0_pipeline, dequant_q4_0_layout,
+            dequant_q4_km_pipeline, dequant_q4_km_layout,
+            dequant_q8_0_pipeline, dequant_q8_0_layout,
+            qmatvec_q4_0_pipeline, qmatvec_q4_0_layout,
+            matmul_q4_0_tiled_pipeline, matmul_q4_0_tiled_layout,
+            quantize_q8_0_pipeline, quantize_q8_0_layout,
             desc_pool,
             retired_desc_pools: RefCell::new(Vec::new()),
             device: device.clone(),

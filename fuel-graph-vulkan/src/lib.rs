@@ -6,6 +6,7 @@
 
 pub mod pipelines;
 mod recorder;
+pub mod residency;
 
 use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
@@ -36,7 +37,11 @@ pub struct VulkanBuffer {
     /// buffer created via `alloc_device` gets a back-reference to
     /// the pool. When the Arc drops to 0 → VulkanBuffer::drop fires
     /// → buffer goes back to the pool for reuse.
-    recycle_pool: Option<std::sync::Arc<std::sync::Mutex<Vec<(Buffer, Allocation, u64)>>>>,
+    ///
+    /// Keyed by byte_size → stack of buffers of that exact size. The
+    /// BTreeMap enables O(log n) best-fit lookup (smallest size ≥
+    /// requested) without a linear scan.
+    recycle_pool: Option<std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>>>,
 }
 
 impl VulkanBuffer {
@@ -51,7 +56,7 @@ impl Drop for VulkanBuffer {
             if let Some(pool) = &self.recycle_pool {
                 // Return to pool for reuse.
                 if let Ok(mut p) = pool.lock() {
-                    p.push((b, a, self.byte_size));
+                    p.entry(self.byte_size).or_default().push((b, a));
                     return;
                 }
             }
@@ -62,15 +67,86 @@ impl Drop for VulkanBuffer {
     }
 }
 
-/// Vulkan storage: Arc-shared device buffer + per-view metadata.
+/// Residency tier for a Vulkan-allocated tensor. Today every buffer
+/// is [`Tier::OnDevice`]; P5 (tiered residency) will introduce
+/// [`Tier::OnHost`] for tensors spilled to a mmap-backed host file
+/// when VRAM is exhausted.
+///
+/// The field is a tag only — no eviction or fault-back logic lives
+/// in the allocator yet. When those land the allocator will consult
+/// this tag to decide whether a read/write needs to stage through a
+/// host-visible path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tier {
+    /// Buffer is live in VRAM on the Vulkan device.
+    #[default]
+    OnDevice,
+    /// Buffer has been evicted; backing is a mmap'd host file that
+    /// the OS pages between RAM and disk. Reads require fault-back
+    /// to VRAM before any compute op. Not yet emitted by the
+    /// allocator — the variant exists so downstream code can pattern
+    /// match on it now.
+    OnHost,
+}
+
+/// Backing for a [`VulkanStorage`] — either live VRAM, or evicted
+/// bytes in the host-side [`residency::ResidencyFile`] when VRAM is
+/// tight. An evicted storage can only be read via `fault_back`; ops
+/// that require a device buffer will panic cleanly if handed one.
+pub enum StorageBacking {
+    Device(std::sync::Arc<VulkanBuffer>),
+    Host {
+        file: std::sync::Arc<residency::ResidencyFile>,
+        slot: residency::Slot,
+    },
+}
+
+/// Vulkan storage: backing (device or host-evicted) + per-view metadata.
 pub struct VulkanStorage {
-    pub inner: std::sync::Arc<VulkanBuffer>,
+    backing: StorageBacking,
     pub elem_count: usize,
     pub dtype: DType,
+    /// Current residency. Tracks the [`StorageBacking`] variant and
+    /// stays consistent with it. Set automatically by allocator /
+    /// eviction paths.
+    pub tier: Tier,
 }
 
 impl VulkanStorage {
-    pub fn buffer(&self) -> &Buffer { self.inner.buffer() }
+    /// Device buffer. Panics if the storage has been evicted to host —
+    /// callers that can handle both tiers should use [`Self::buffer_opt`].
+    pub fn buffer(&self) -> &Buffer {
+        match &self.backing {
+            StorageBacking::Device(b) => b.buffer(),
+            StorageBacking::Host { .. } => panic!(
+                "VulkanStorage::buffer called on host-backed storage; \
+                 fault it back to VRAM first via VulkanBackend::fault_back"
+            ),
+        }
+    }
+
+    /// Device buffer if on-device, None if evicted to host.
+    pub fn buffer_opt(&self) -> Option<&Buffer> {
+        match &self.backing {
+            StorageBacking::Device(b) => Some(b.buffer()),
+            StorageBacking::Host { .. } => None,
+        }
+    }
+
+    /// Access the backing for code that needs to distinguish tiers
+    /// (the eviction path, future LRU tracker). External callers
+    /// generally should use [`Self::tier`] + [`Self::buffer_opt`].
+    pub fn backing(&self) -> &StorageBacking { &self.backing }
+
+    /// Arc clone of the device buffer, for refcount-sharing zero-copy
+    /// views. Returns None for host-backed storages (zero-copy doesn't
+    /// apply — they'd need a fault-back first).
+    pub fn device_buffer_arc(&self) -> Option<std::sync::Arc<VulkanBuffer>> {
+        match &self.backing {
+            StorageBacking::Device(b) => Some(std::sync::Arc::clone(b)),
+            StorageBacking::Host { .. } => None,
+        }
+    }
 
     fn byte_size(&self) -> u64 {
         (self.elem_count * dtype_size(self.dtype)) as u64
@@ -96,8 +172,9 @@ pub struct VulkanBackend {
     recorder: RefCell<Recorder>,
     /// Recycled buffer pool. Buffers returned here via VulkanBuffer::Drop
     /// are reused by alloc_device before allocating fresh from VMA.
-    /// Keyed by byte_size. Each entry is (Buffer, Allocation, byte_size).
-    buffer_pool: std::sync::Arc<std::sync::Mutex<Vec<(Buffer, Allocation, u64)>>>,
+    /// BTreeMap<byte_size, stack-of-free-buffers-of-that-size>. Enables
+    /// O(log n) best-fit lookup via `range(size..).next()`.
+    buffer_pool: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>>,
     /// Supported cooperative-matrix tile shapes, queried at init from
     /// `VK_KHR_cooperative_matrix`. Empty if the extension is not
     /// available. Used by the matmul dispatch to decide whether to
@@ -275,7 +352,7 @@ impl VulkanBackend {
         let recorder = RefCell::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
         let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
 
-        let buffer_pool = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let buffer_pool = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         Ok(Self {
             device,
             physical,
@@ -316,7 +393,7 @@ impl VulkanBackend {
 
     // -- helpers --
 
-    fn upload_slice<T: Copy + 'static>(
+    pub fn upload_slice<T: Copy + 'static>(
         &self, data: &[T], dtype: DType,
     ) -> fuel_core_types::Result<VulkanStorage> {
         let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
@@ -384,14 +461,15 @@ impl VulkanBackend {
         drop(staging_buf);
         drop(staging_alloc);
         Ok(VulkanStorage {
-            inner: std::sync::Arc::new(VulkanBuffer {
+            backing: StorageBacking::Device(std::sync::Arc::new(VulkanBuffer {
                 buffer: Some(gpu_buf),
                 allocation: Some(gpu_alloc),
                 byte_size: byte_size.max(1),
                 recycle_pool: Some(self.buffer_pool.clone()),
-            }),
+            })),
             elem_count: data.len(),
             dtype,
+            tier: Tier::OnDevice,
         })
     }
 
@@ -447,16 +525,62 @@ impl VulkanBackend {
 
     fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_core_types::Result<VulkanStorage> {
         let size = byte_size.max(1);
-        // Check recycle pool for a buffer of matching size.
+        // Best-fit recycle via BTreeMap: smallest pooled size ≥ requested,
+        // capped at 2× to avoid wasting VRAM on oversized leftovers.
+        // Three eviction levers keep the pool bounded on long generations:
+        //   1. `MAX_BUCKETS`: cap distinct size buckets (evict smallest)
+        //   2. `MAX_PER_BUCKET`: cap duplicate buffers in a single bucket
+        //      (matters for KV-cache where N layers × 2 (K+V) buffers
+        //      all arrive at the same size each step)
+        //   3. `MAX_POOL_BYTES`: total-bytes cap as a backstop (evict
+        //      smallest sizes until under), so the pool can never hoard
+        //      more VRAM than needed
+        const MAX_BUCKETS: usize = 64;
+        const MAX_PER_BUCKET: usize = 4;
+        const MAX_POOL_BYTES: u64 = 512 * 1024 * 1024; // 512 MB cap
         let recycled = {
             let mut pool = self.buffer_pool.lock().unwrap();
-            if let Some(idx) = pool.iter().position(|&(_, _, sz)| sz == size) {
-                Some(pool.swap_remove(idx))
-            } else {
-                None
+            // O(log n) best-fit: first bucket in [size, size*2].
+            let found_size = pool
+                .range(size..=size.saturating_mul(2))
+                .next()
+                .map(|(&k, _)| k);
+            let picked = found_size.and_then(|k| {
+                let vec = pool.get_mut(&k).unwrap();
+                let item = vec.pop();
+                if vec.is_empty() { pool.remove(&k); }
+                item
+            });
+            // 1. Bucket-count cap: drop smallest sizes until ≤ MAX_BUCKETS.
+            while pool.len() > MAX_BUCKETS {
+                let smallest = *pool.keys().next().unwrap();
+                pool.remove(&smallest);
             }
+            // 2. Per-bucket depth cap: for each bucket, keep at most
+            //    MAX_PER_BUCKET buffers. Extras are dropped (VMA frees).
+            //    Kept is the END of the Vec (most recent pushes, in case
+            //    sizes drift over time).
+            for (_, vec) in pool.iter_mut() {
+                if vec.len() > MAX_PER_BUCKET {
+                    let drop_count = vec.len() - MAX_PER_BUCKET;
+                    vec.drain(0..drop_count);
+                }
+            }
+            // 3. Total-bytes backstop: if pool > MAX_POOL_BYTES, evict
+            //    smallest-size buckets first (they're typically stale).
+            let mut total_bytes: u64 = pool.iter()
+                .map(|(&sz, v)| sz * v.len() as u64).sum();
+            while total_bytes > MAX_POOL_BYTES {
+                let smallest = match pool.keys().next() {
+                    Some(&k) => k,
+                    None => break,
+                };
+                let vec = pool.remove(&smallest).unwrap();
+                total_bytes = total_bytes.saturating_sub(smallest * vec.len() as u64);
+            }
+            picked
         };
-        let (buffer, allocation) = if let Some((b, a, _)) = recycled {
+        let (buffer, allocation) = if let Some((b, a)) = recycled {
             (b, a)
         } else {
             self.allocator.create_buffer(
@@ -473,14 +597,15 @@ impl VulkanBackend {
             ).map_err(vk_err)?
         };
         Ok(VulkanStorage {
-            inner: std::sync::Arc::new(VulkanBuffer {
+            backing: StorageBacking::Device(std::sync::Arc::new(VulkanBuffer {
                 buffer: Some(buffer),
                 allocation: Some(allocation),
                 byte_size: size,
                 recycle_pool: Some(self.buffer_pool.clone()),
-            }),
+            })),
             elem_count: n,
             dtype,
+            tier: Tier::OnDevice,
         })
     }
 
@@ -684,6 +809,681 @@ impl VulkanBackend {
     fn workgroups(n: usize) -> u32 {
         ((n + 255) / 256) as u32
     }
+
+    // -- quantized weight dequantization ---------------------------------------
+
+    /// Dequantize a raw Q4_0 blob (18-byte blocks, 32 elements per block)
+    /// directly on the GPU to an f32 storage buffer. The input is the
+    /// unmodified block byte stream as stored in GGUF files; this
+    /// function uploads it once to a temporary device buffer and
+    /// dispatches the dequant kernel. Caller controls `n_blocks` and
+    /// the resulting `n_elements = n_blocks * 32`.
+    pub fn dequantize_q4_0(
+        &self,
+        blocks: &[u8],
+        n_blocks: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        const BYTES_PER_BLOCK: usize = 18;
+        const BLCK_SIZE: usize = 32;
+        if blocks.len() != n_blocks * BYTES_PER_BLOCK {
+            fuel_core_types::bail!(
+                "dequantize_q4_0: expected {} bytes for {n_blocks} blocks, got {}",
+                n_blocks * BYTES_PER_BLOCK, blocks.len(),
+            );
+        }
+        let n_elements = n_blocks * BLCK_SIZE;
+        let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
+        // Upload Q4_0 bytes as-is to a device storage buffer.
+        let input = self.upload_slice(blocks, DType::U32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Q4Params { n_blocks: u32, out_elements: u32, _pad0: u32, _pad1: u32 }
+        let p = Q4Params {
+            n_blocks: n_blocks as u32,
+            out_elements: n_elements as u32,
+            _pad0: 0, _pad1: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let total_pairs = n_blocks * (BLCK_SIZE / 2);
+        self.dispatch_2buf(
+            "dequant_q4_0",
+            &self.pipelines.dequant_q4_0_pipeline,
+            &self.pipelines.dequant_q4_0_layout,
+            &input, &out, pbuf, pmem,
+            std::mem::size_of::<Q4Params>() as u64,
+            Self::workgroups(total_pairs), 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    /// Dequantize a raw Q8_0 blob (34-byte blocks, 32 elements per block)
+    /// directly on the GPU to an f32 storage buffer.
+    pub fn dequantize_q8_0(
+        &self,
+        blocks: &[u8],
+        n_blocks: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        const BYTES_PER_BLOCK: usize = 34;
+        if blocks.len() != n_blocks * BYTES_PER_BLOCK {
+            fuel_core_types::bail!(
+                "dequantize_q8_0: expected {} bytes for {n_blocks} blocks, got {}",
+                n_blocks * BYTES_PER_BLOCK, blocks.len(),
+            );
+        }
+        let input = self.upload_slice(blocks, DType::U32)?;
+        self.dequantize_q8_0_from_storage(&input, n_blocks)
+    }
+
+    /// Same as `dequantize_q8_0` but takes an already-on-device U32-typed
+    /// block stream. Used by the KV-cache read path where blocks are
+    /// produced by `quantize_q8_0` and never leave the GPU.
+    /// Total VRAM budget across device-local heaps, in bytes. Returns
+    /// `0` if `VK_EXT_memory_budget` isn't supported on this device
+    /// (old drivers, unusual configurations). Use
+    /// [`Self::has_memory_budget_support`] to distinguish "no budget"
+    /// from "no query support."
+    ///
+    /// Paired with [`Self::vram_used`] for the scheduler's
+    /// budget-aware residency planning:
+    ///
+    /// ```ignore
+    /// let frac = backend.vram_used() as f64 / backend.vram_budget() as f64;
+    /// if frac > 0.85 {
+    ///     scheduler.evict_cold_tensors();
+    /// }
+    /// ```
+    pub fn vram_budget(&self) -> u64 {
+        self.allocator.vram_budget()
+    }
+
+    /// Total VRAM currently in use across device-local heaps. Driver
+    /// estimate includes this process, other processes, and driver
+    /// internals. Returns `0` if unsupported.
+    pub fn vram_used(&self) -> u64 {
+        self.allocator.vram_used()
+    }
+
+    /// True iff the `VK_EXT_memory_budget` extension is loaded and
+    /// functional. When false, [`Self::vram_budget`] /
+    /// [`Self::vram_used`] both return `0` and schedulers should
+    /// fall back to conservative sizing heuristics.
+    pub fn has_memory_budget_support(&self) -> bool {
+        self.allocator.has_memory_budget_support()
+    }
+
+    /// Projected fit-check for an allocation of `size` bytes against
+    /// a specific memory type. Predictive: fires the allocator's
+    /// pressure callbacks with any thresholds the projection would
+    /// cross, *before* an actual allocation is attempted.
+    ///
+    /// Use from the residency planner to decide whether the next
+    /// scheduled op needs an explicit evict beforehand.
+    pub fn would_fit(&self, size: u64, memory_type_index: u32) -> vulkane::safe::FitStatus {
+        self.allocator.would_fit(size, memory_type_index)
+    }
+
+    /// Register a VRAM-pressure callback. Fires when usage crosses
+    /// `threshold` on any device-local heap, or when predicted usage
+    /// (via [`Self::would_fit`]) would cross. `hysteresis` is the
+    /// relief gap below which [`PressureKind::Relieved`] fires —
+    /// prevents rapid re-fire as usage oscillates. Typical values:
+    /// `threshold=0.85, hysteresis=0.05` (fire at 85 %, relieve at 80 %).
+    ///
+    /// The callback runs on whatever thread freed memory or called
+    /// `would_fit`. Vulkane releases its internal locks before firing,
+    /// so the callback may freely call back into the allocator (e.g.,
+    /// to trigger scheduler-driven eviction).
+    ///
+    /// Returns an id used to unregister via
+    /// [`Self::unregister_vram_pressure_callback`].
+    pub fn register_vram_pressure_callback<F>(
+        &self,
+        threshold: f64,
+        hysteresis: f64,
+        callback: F,
+    ) -> vulkane::safe::PressureCallbackId
+    where
+        F: Fn(vulkane::safe::PressureEvent) + Send + Sync + 'static,
+    {
+        self.allocator.register_pressure_callback(threshold, hysteresis, callback)
+    }
+
+    /// Unregister a previously-registered pressure callback. Returns
+    /// `true` if found and removed.
+    pub fn unregister_vram_pressure_callback(&self, id: vulkane::safe::PressureCallbackId) -> bool {
+        self.allocator.unregister_pressure_callback(id)
+    }
+
+    /// Probe the device-local memory-type index this backend's allocator
+    /// uses for regular device allocations. Does a tiny throwaway alloc
+    /// to learn which memory type `AllocationUsage::DeviceLocal` resolves
+    /// to on this physical device. Callers (defrag pool, pressure-callback
+    /// setup) generally invoke this once at init time and cache the index.
+    pub fn device_local_memory_type_index(&self) -> fuel_core_types::Result<u32> {
+        let (buf, alloc) = self.allocator.create_buffer(
+            BufferCreateInfo { size: 1, usage: BufferUsage::STORAGE_BUFFER },
+            AllocationCreateInfo { usage: AllocationUsage::DeviceLocal, ..Default::default() },
+        ).map_err(vk_err)?;
+        let idx = alloc.memory_type_index();
+        drop(buf);
+        drop(alloc);
+        Ok(idx)
+    }
+
+    /// Create a dedicated [`FreeList`][vulkane::safe::AllocationStrategy::FreeList]
+    /// custom pool on the device-local memory type, suitable for holding
+    /// long-lived weight tensors that need defragmentation support.
+    ///
+    /// Returns a [`PoolHandle`][vulkane::safe::PoolHandle] that can later be
+    /// passed to [`Self::build_defrag_plan`] / [`Self::apply_defrag_plan`]
+    /// or to [`Self::destroy_weight_pool`].
+    ///
+    /// `block_size` is the per-block size in bytes (0 = allocator default,
+    /// typically 256 MiB on ≥ 4 GiB heaps). `max_blocks` caps pool growth
+    /// (0 = unlimited).
+    ///
+    /// ## NOT YET integrated with weight allocation
+    ///
+    /// Today's [`alloc_device`][Self::alloc_device] path routes through
+    /// the default (per-memory-type) pool, not any custom pool. Wiring
+    /// weights through this custom pool — so defrag actually moves them
+    /// — is a follow-up. This method exposes the primitive so that
+    /// follow-up has a stable handle to work with; calling it today
+    /// allocates zero bytes until `alloc_device_weight` (TODO) hands
+    /// allocations to this pool.
+    pub fn create_weight_pool(
+        &self,
+        block_size: u64,
+        max_blocks: u32,
+    ) -> fuel_core_types::Result<vulkane::safe::PoolHandle> {
+        let mt = self.device_local_memory_type_index()?;
+        self.allocator.create_pool(vulkane::safe::PoolCreateInfo {
+            memory_type_index: mt,
+            strategy: vulkane::safe::AllocationStrategy::FreeList,
+            block_size,
+            max_block_count: max_blocks,
+        }).map_err(vk_err)
+    }
+
+    /// Destroy a pool previously created with [`Self::create_weight_pool`].
+    /// The caller must ensure no live allocations from this pool are in use.
+    pub fn destroy_weight_pool(&self, handle: vulkane::safe::PoolHandle) {
+        self.allocator.destroy_pool(handle);
+    }
+
+    /// Statistics for a previously-created pool. Returns `None` if the
+    /// pool handle is unknown.
+    pub fn weight_pool_statistics(
+        &self,
+        handle: vulkane::safe::PoolHandle,
+    ) -> Option<vulkane::safe::AllocationStatistics> {
+        self.allocator.pool_statistics(handle)
+    }
+
+    /// Build a defragmentation plan for the given pool. The returned
+    /// plan enumerates GPU-side copies the caller must execute before
+    /// passing the plan to [`Self::apply_defrag_plan`]. An empty plan
+    /// (no moves) indicates the pool is already compact.
+    ///
+    /// See [`vulkane::safe::Allocator::build_defragmentation_plan`] for
+    /// the full contract.
+    pub fn build_defrag_plan(
+        &self,
+        pool: vulkane::safe::PoolHandle,
+    ) -> vulkane::safe::DefragmentationPlan {
+        self.allocator.build_defragmentation_plan(pool)
+    }
+
+    /// Apply a defragmentation plan.
+    ///
+    /// **Preconditions** (caller must guarantee):
+    /// - For every move in `plan.moves`, the caller has issued a GPU
+    ///   `vkCmdCopyBuffer` from `(src_memory, src_offset)` to
+    ///   `(dst_memory, dst_offset)`, destroyed the old `VkBuffer`
+    ///   bound to the source, and created / rebound a new one to the
+    ///   destination.
+    /// - The caller has waited for that GPU work to complete.
+    /// - No other thread is racing on the affected allocations.
+    ///
+    /// After this call returns, every live `Allocation` in the pool
+    /// reports its new `(memory, offset)` via `memory()` / `offset()`.
+    ///
+    /// ## Fuel-side status
+    ///
+    /// VulkanBackend does not yet own the machinery to issue the GPU
+    /// copies and rebind buffers — that requires weight-pool allocation
+    /// (TODO) plus a rebinding path through VulkanBuffer. Until those
+    /// land, callers should treat this method as a pass-through to the
+    /// underlying Vulkane primitive and supply the copy/rebind
+    /// themselves. See `vulkane/docs/DEFRAG_FOR_ML.md`.
+    pub fn apply_defrag_plan(&self, plan: vulkane::safe::DefragmentationPlan) {
+        self.allocator.apply_defragmentation_plan(plan)
+    }
+
+    /// Evict a device-resident storage to a [`residency::ResidencyFile`]
+    /// slot. Returns a new `VulkanStorage` with [`StorageBacking::Host`]
+    /// pointing at the allocated slot. The caller should replace their
+    /// reference to the old storage with the returned one — once the
+    /// old storage's Arc<VulkanBuffer> refcount drops to zero, its VRAM
+    /// is reclaimed by the buffer pool.
+    ///
+    /// Byte-level copy: downloads the raw buffer, allocates a slot,
+    /// writes. Preserves `elem_count` + `dtype` on the new storage so
+    /// a subsequent `fault_back` can reconstruct equivalently.
+    ///
+    /// This is a manual / explicit eviction. P5 step 2c integrates it
+    /// with an OOM-triggered LRU policy inside `alloc_device`.
+    pub fn evict(
+        &self,
+        storage: &VulkanStorage,
+        file: &std::sync::Arc<residency::ResidencyFile>,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        if !matches!(storage.backing, StorageBacking::Device(_)) {
+            fuel_core_types::bail!(
+                "VulkanBackend::evict: storage is already Host-backed"
+            );
+        }
+        let bytes = self.download_raw_bytes(storage)?;
+        let slot = file.alloc(bytes.len() as u64).ok_or_else(|| {
+            fuel_core_types::Error::Msg(format!(
+                "evict: ResidencyFile has no contiguous slot for {} bytes \
+                 (file capacity={}, free={})",
+                bytes.len(), file.capacity(), file.bytes_free()
+            ))
+        })?;
+        file.write(slot, &bytes);
+        Ok(VulkanStorage {
+            backing: StorageBacking::Host { file: std::sync::Arc::clone(file), slot },
+            elem_count: storage.elem_count,
+            dtype: storage.dtype,
+            tier: Tier::OnHost,
+        })
+    }
+
+    /// Bring a host-evicted storage back to VRAM. Allocates a fresh
+    /// device buffer, copies the saved bytes from the file slot into
+    /// it, returns the new on-device storage. Frees the file slot
+    /// since we no longer need the host copy.
+    ///
+    /// Caller substitutes the returned storage for the old one; the
+    /// old one's Arc<ResidencyFile> refcount drops and the slot is
+    /// returned to the freelist via `file.free(slot)` inside this
+    /// method.
+    pub fn fault_back(
+        &self,
+        storage: &VulkanStorage,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        let (file, slot) = match &storage.backing {
+            StorageBacking::Host { file, slot } => (file.clone(), *slot),
+            StorageBacking::Device(_) => {
+                fuel_core_types::bail!(
+                    "VulkanBackend::fault_back: storage is already Device-backed"
+                );
+            }
+        };
+        let bytes = file.read(slot);
+        // Reupload as the stored dtype. upload_slice handles the
+        // byte-alignment via its generic over T: Copy + 'static.
+        let new_storage = self.upload_slice(&bytes, DType::U8)?;
+        // upload_slice returned storage has dtype=U8, elem_count=bytes.len().
+        // Restore the original dtype + elem_count so downstream ops see
+        // the same logical tensor they evicted.
+        let fixed = VulkanStorage {
+            backing: new_storage.backing,
+            elem_count: storage.elem_count,
+            dtype: storage.dtype,
+            tier: Tier::OnDevice,
+        };
+        file.free(slot);
+        Ok(fixed)
+    }
+
+    /// Evict storages from a caller-supplied list until at least
+    /// `target_bytes` of VRAM have been freed, or the list is
+    /// exhausted. The caller passes candidates in LRU order (oldest
+    /// first); the backend walks them and evicts each until the target
+    /// is met.
+    ///
+    /// Returns a parallel `Vec<Option<VulkanStorage>>` — `Some(new)`
+    /// for each evicted storage (caller substitutes their ref),
+    /// `None` for storages left untouched.
+    ///
+    /// ## Why caller-provided candidates?
+    ///
+    /// Full automated eviction — backend decides on OOM which storage
+    /// to evict — needs interior mutability on `VulkanStorage.backing`
+    /// so the backend can swap a live caller's storage from Device to
+    /// Host behind their back. That refactor cascades through every
+    /// `.buffer()` call site in the op methods. Deferred to step 2d.
+    ///
+    /// For now, the caller (typically a KV-cache manager) knows its
+    /// working set and can enumerate cold entries. It invokes this
+    /// method when it wants to free VRAM and substitutes the evicted
+    /// refs in its own data structure.
+    ///
+    /// ## Reporting
+    ///
+    /// Bytes freed = sum of `byte_size()` over evicted candidates. This
+    /// is the bytes reclaimed from the device allocator only when
+    /// caller drops their old references to the evicted storages.
+    pub fn evict_from_candidates(
+        &self,
+        candidates: &[&VulkanStorage],
+        target_bytes: u64,
+        file: &std::sync::Arc<residency::ResidencyFile>,
+    ) -> fuel_core_types::Result<Vec<Option<VulkanStorage>>> {
+        let mut freed: u64 = 0;
+        let mut out: Vec<Option<VulkanStorage>> = Vec::with_capacity(candidates.len());
+        for cand in candidates {
+            if freed >= target_bytes {
+                out.push(None);
+                continue;
+            }
+            // Skip any candidate that's already host-backed — re-evicting
+            // is a no-op (and would fail the Device-only guard in evict).
+            if !matches!(cand.backing, StorageBacking::Device(_)) {
+                out.push(None);
+                continue;
+            }
+            let bytes = cand.byte_size();
+            let evicted = self.evict(cand, file)?;
+            freed += bytes;
+            out.push(Some(evicted));
+        }
+        Ok(out)
+    }
+
+    /// Download the raw bytes of a device-resident storage. Used by
+    /// [`Self::evict`]. Not a trait method because byte-level
+    /// download is a tier-management concern, not part of the op API.
+    fn download_raw_bytes(&self, storage: &VulkanStorage) -> fuel_core_types::Result<Vec<u8>> {
+        match storage.backing {
+            StorageBacking::Device(_) => {}
+            StorageBacking::Host { .. } => {
+                fuel_core_types::bail!(
+                    "download_raw_bytes: storage is on host, not device"
+                );
+            }
+        }
+        // Piggyback on the typed download path; convert back to bytes.
+        use fuel_core_types::HostBuffer;
+        let hb = <Self as GraphBackend>::download(self, storage)?;
+        Ok(match hb {
+            HostBuffer::F32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            HostBuffer::F64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            HostBuffer::BF16(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            HostBuffer::F16(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            HostBuffer::U32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            HostBuffer::U8(v) => v,
+            _ => fuel_core_types::bail!("download_raw_bytes: unsupported dtype"),
+        })
+    }
+
+    pub fn dequantize_q8_0_from_storage(
+        &self,
+        input: &VulkanStorage,
+        n_blocks: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        const BLCK_SIZE: usize = 32;
+        let n_elements = n_blocks * BLCK_SIZE;
+        let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Q8Params { n_blocks: u32, out_elements: u32, _pad0: u32, _pad1: u32 }
+        let p = Q8Params {
+            n_blocks: n_blocks as u32,
+            out_elements: n_elements as u32,
+            _pad0: 0, _pad1: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        self.dispatch_2buf(
+            "dequant_q8_0",
+            &self.pipelines.dequant_q8_0_pipeline,
+            &self.pipelines.dequant_q8_0_layout,
+            input, &out, pbuf, pmem,
+            std::mem::size_of::<Q8Params>() as u64,
+            Self::workgroups(n_elements), 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    /// Fused Q4_0 × F32 gemv: computes `C = A @ W` where A is an f32
+    /// vector of length K and W is a Q4_0-quantized matrix of logical
+    /// shape `[N, K]` stored as `N × K/32` Q4_0 blocks (18 bytes each).
+    ///
+    /// This is the decode hot path for quantized inference — Q4_0 blocks
+    /// stay resident in device memory at ~4× compression vs F32 (2× vs
+    /// BF16). Dequant happens inline inside the shader, per element.
+    ///
+    /// `w_q4_0_storage` is expected to hold the raw block byte stream
+    /// uploaded via `upload_slice(&blocks, DType::U32)` (the same
+    /// representation `dequantize_q4_0` takes).
+    pub fn qmatvec_q4_0(
+        &self,
+        a_f32: &VulkanStorage,
+        w_q4_0_storage: &VulkanStorage,
+        k: usize,
+        n: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        if a_f32.dtype != DType::F32 {
+            fuel_core_types::bail!("qmatvec_q4_0: A must be F32, got {:?}", a_f32.dtype);
+        }
+        if k % 32 != 0 {
+            fuel_core_types::bail!("qmatvec_q4_0: K must be multiple of 32, got {k}");
+        }
+        let out = self.alloc_device((n * 4) as u64, n, DType::F32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct QmvParams { n: u32, k: u32, blocks_per_row: u32, _pad: u32 }
+        let p = QmvParams {
+            n: n as u32,
+            k: k as u32,
+            blocks_per_row: (k / 32) as u32,
+            _pad: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        self.dispatch_3buf(
+            "qmatvec_q4_0",
+            &self.pipelines.qmatvec_q4_0_pipeline,
+            &self.pipelines.qmatvec_q4_0_layout,
+            a_f32, w_q4_0_storage, &out, pbuf, pmem,
+            std::mem::size_of::<QmvParams>() as u64,
+            n as u32, 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    /// Dispatch qmatvec for a single row of A. `a_f32` is the full
+    /// activations buffer [..., M, K]; `row_a_offset_elems` is the
+    /// element offset to the start of this row. `out` is the full
+    /// output buffer [..., M, N]; `row_out_offset_elems` is the
+    /// element offset for this row's output slice.
+    fn qmatvec_q4_0_slice(
+        &self,
+        a_f32: &VulkanStorage,
+        row_a_offset_elems: u64,
+        w_q4_0_storage: &VulkanStorage,
+        out: &VulkanStorage,
+        row_out_offset_elems: u64,
+        k: usize,
+        n: usize,
+    ) -> fuel_core_types::Result<()> {
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct QmvParams { n: u32, k: u32, blocks_per_row: u32, _pad: u32 }
+        let p = QmvParams {
+            n: n as u32,
+            k: k as u32,
+            blocks_per_row: (k / 32) as u32,
+            _pad: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let a_byte_off = row_a_offset_elems * 4;
+        let a_byte_len = (k * 4) as u64;
+        let out_byte_off = row_out_offset_elems * 4;
+        let out_byte_len = (n * 4) as u64;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_f32.buffer(), a_byte_off, a_byte_len);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_q4_0_storage.buffer(), 0, w_q4_0_storage.byte_size());
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out.buffer(), out_byte_off, out_byte_len);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<QmvParams>() as u64);
+
+        let rb = [a_f32.buffer().raw() as u64, w_q4_0_storage.buffer().raw() as u64];
+        let wb = [out.buffer().raw() as u64];
+        self.record_dispatch_batched(
+            "qmatvec_q4_0",
+            &self.pipelines.qmatvec_q4_0_pipeline,
+            &self.pipelines.qmatvec_q4_0_layout,
+            desc,
+            (n as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        Ok(())
+    }
+
+    /// Dequantize a raw Q4_K_M blob (144-byte super-blocks, 256
+    /// elements per super-block) directly on the GPU to an f32
+    /// storage buffer.
+    ///
+    /// Takes the block byte stream as an already-on-device U32-typed
+    /// VulkanStorage (produced by `upload_slice(&blocks, DType::U32)`).
+    /// Mirrors `dequantize_q8_0_from_storage` for the Q4_K_M format.
+    ///
+    /// Matmul integration (dispatching `Op::QMatMul { quant_type: Q4KM }`
+    /// through to a fused gemv kernel) is a follow-up; today this method
+    /// covers dequant-then-matmul and future KV-cache-style flows.
+    pub fn dequantize_q4_km(
+        &self,
+        blocks: &VulkanStorage,
+        n_blocks: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        const QK_K: usize = 256;
+        let n_elements = n_blocks * QK_K;
+        let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Q4KMParams { n_blocks: u32, out_elements: u32, _p0: u32, _p1: u32 }
+        let p = Q4KMParams {
+            n_blocks: n_blocks as u32,
+            out_elements: n_elements as u32,
+            _p0: 0, _p1: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        // 64 threads per workgroup, one workgroup per super-block.
+        self.dispatch_2buf(
+            "dequant_q4_km",
+            &self.pipelines.dequant_q4_km_pipeline,
+            &self.pipelines.dequant_q4_km_layout,
+            blocks, &out, pbuf, pmem,
+            std::mem::size_of::<Q4KMParams>() as u64,
+            n_blocks as u32, 1, 1,
+        )?;
+        Ok(out)
+    }
+
+    /// Fused Q4_0 × F32 tiled matmul for M > 1 (prefill path).
+    /// One workgroup per (m_tile, n_col). TM = 8 M-rows per tile.
+    /// Activation `a_f32` is [M, K] contiguous F32; `w_q4_0_storage`
+    /// is the Q4_0 block byte stream in [N, K/32] layout. Returns
+    /// [M, N] F32 output.
+    ///
+    /// Decode (M=1) should go through `qmatvec_q4_0` instead — that
+    /// kernel is tuned for the single-row case and avoids the
+    /// register pressure of TM=8 accumulators.
+    pub fn matmul_q4_0_tiled(
+        &self,
+        a_f32: &VulkanStorage,
+        w_q4_0_storage: &VulkanStorage,
+        m: usize, k: usize, n: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        if a_f32.dtype != DType::F32 {
+            fuel_core_types::bail!("matmul_q4_0_tiled: A must be F32, got {:?}", a_f32.dtype);
+        }
+        if k % 32 != 0 {
+            fuel_core_types::bail!("matmul_q4_0_tiled: K must be multiple of 32, got {k}");
+        }
+        const TM: usize = 8;
+        let out_elems = m * n;
+        let out = self.alloc_device((out_elems * 4) as u64, out_elems, DType::F32)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct TiledParams { m: u32, n: u32, k: u32, blocks_per_row: u32 }
+        let p = TiledParams {
+            m: m as u32, n: n as u32, k: k as u32,
+            blocks_per_row: (k / 32) as u32,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        // Grid: one workgroup per (n, m_tile).
+        let n_tiles_m = ((m + TM - 1) / TM) as u32;
+        self.dispatch_3buf(
+            "matmul_q4_0_tiled",
+            &self.pipelines.matmul_q4_0_tiled_pipeline,
+            &self.pipelines.matmul_q4_0_tiled_layout,
+            a_f32, w_q4_0_storage, &out, pbuf, pmem,
+            std::mem::size_of::<TiledParams>() as u64,
+            n as u32, n_tiles_m, 1,
+        )?;
+        Ok(out)
+    }
+
+    /// Quantize an F32 tensor to GGML Q8_0 blocks (34 bytes / 32
+    /// elements). Used for KV-cache quantization: between decode
+    /// steps, the cached K/V are stored as Q8_0 (1 byte/element vs F32's
+    /// 4) to double-or-more the effective context at the same VRAM.
+    ///
+    /// Returns a U32-typed VulkanStorage holding the raw block byte
+    /// stream (paired with `dequantize_q8_0` for readback).
+    pub fn quantize_q8_0(
+        &self,
+        src_f32: &VulkanStorage,
+        n_elements: usize,
+    ) -> fuel_core_types::Result<VulkanStorage> {
+        if src_f32.dtype != DType::F32 {
+            fuel_core_types::bail!(
+                "VulkanBackend::quantize_q8_0: src must be F32, got {:?}",
+                src_f32.dtype
+            );
+        }
+        const BLCK_SIZE: usize = 32;
+        const BYTES_PER_BLOCK: usize = 34;
+        if n_elements % BLCK_SIZE != 0 {
+            fuel_core_types::bail!(
+                "quantize_q8_0: n_elements {n_elements} must be multiple of {BLCK_SIZE}"
+            );
+        }
+        let n_blocks = n_elements / BLCK_SIZE;
+        let out_bytes = n_blocks * BYTES_PER_BLOCK;
+        // Round up to u32 multiple (4 bytes per u32).
+        let out_u32_len = (out_bytes + 3) / 4;
+        let out = self.alloc_device(
+            (out_u32_len * 4) as u64, out_u32_len, DType::U32
+        )?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct QQParams { n_elements: u32, n_blocks: u32, _p0: u32, _p1: u32 }
+        let p = QQParams {
+            n_elements: n_elements as u32,
+            n_blocks: n_blocks as u32,
+            _p0: 0, _p1: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        // 64 threads per workgroup, one thread per block.
+        let groups = ((n_blocks + 63) / 64) as u32;
+        self.dispatch_2buf(
+            "quantize_q8_0",
+            &self.pipelines.quantize_q8_0_pipeline,
+            &self.pipelines.quantize_q8_0_layout,
+            src_f32, &out, pbuf, pmem,
+            std::mem::size_of::<QQParams>() as u64,
+            groups, 1, 1,
+        )?;
+        Ok(out)
+    }
 }
 
 impl GraphBackend for VulkanBackend {
@@ -779,10 +1579,19 @@ impl GraphBackend for VulkanBackend {
         // an 8GB GPU with ~4GB of weights, this is the difference
         // between fitting and OOMing.
         if n == storage.elem_count {
+            // Zero-copy share only makes sense for device-backed storages.
+            // A host-backed storage can't be Arc-shared into a device ref
+            // without fault-back first; bail for clarity.
+            let shared = storage.device_buffer_arc().ok_or_else(|| {
+                fuel_core_types::Error::Msg(
+                    "try_clone: host-backed storage needs fault-back first".into()
+                )
+            })?;
             return Ok(VulkanStorage {
-                inner: std::sync::Arc::clone(&storage.inner),
+                backing: StorageBacking::Device(shared),
                 elem_count: n,
                 dtype: storage.dtype,
+                tier: storage.tier,
             });
         }
         let byte_size = (n * dtype_size(storage.dtype)) as u64;
@@ -986,10 +1795,14 @@ impl GraphBackend for VulkanBackend {
                 // Return the padded buffer but with the original
                 // logical element count. Downstream code only reads
                 // m*n elements so the padded rows are invisible.
+                // Reuse padded_out's backing (it was freshly alloc_device'd,
+                // so this Arc has refcount 1 — move rather than clone).
+                let padded_backing = padded_out.backing;
                 return Ok(VulkanStorage {
-                    inner: padded_out.inner,
+                    backing: padded_backing,
                     elem_count: out_n,
                     dtype: DType::F32,
+                    tier: Tier::OnDevice,
                 });
             } else {
                 // Fallback: software tiled matmul (no tensor cores).
@@ -1024,6 +1837,114 @@ impl GraphBackend for VulkanBackend {
         Ok(out)
     }
 
+    fn matmul_q4_0(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if a.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: matmul_q4_0 A must be F32, got {:?}", a.dtype);
+        }
+        if !a_layout.is_contiguous() {
+            // Fallback for strided A: executor handles via materialize_if_needed
+            // upstream in most cases, but bail here for safety — contiguous A
+            // is what our gemv kernel expects.
+            fuel_core_types::bail!("VulkanBackend: matmul_q4_0 requires contiguous A");
+        }
+        let a_dims = a_layout.shape().dims();
+        let rank = a_dims.len();
+        if rank < 2 {
+            fuel_core_types::bail!("VulkanBackend: matmul_q4_0 A must be rank ≥ 2");
+        }
+        let m = a_dims[rank - 2];
+        let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
+        let total_rows = batch * m;
+
+        // For M=1 (decode hot path), use the tuned qmatvec. For M>1
+        // (prefill), use the tiled kernel that reuses each weight
+        // load across TM=8 A rows — one dispatch vs total_rows.
+        if total_rows == 1 {
+            let out = self.alloc_device((n * 4) as u64, n, DType::F32)?;
+            self.qmatvec_q4_0_slice(a, 0, w_q_bytes, &out, 0, k, n)?;
+            Ok(out)
+        } else {
+            VulkanBackend::matmul_q4_0_tiled(self, a, w_q_bytes, total_rows, k, n)
+        }
+    }
+
+    fn matmul_q4_km(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        if a.dtype != DType::F32 {
+            fuel_core_types::bail!("VulkanBackend: matmul_q4_km A must be F32, got {:?}", a.dtype);
+        }
+        if !a_layout.is_contiguous() {
+            fuel_core_types::bail!("VulkanBackend: matmul_q4_km requires contiguous A");
+        }
+        let a_dims = a_layout.shape().dims();
+        let rank = a_dims.len();
+        if rank < 2 {
+            fuel_core_types::bail!("VulkanBackend: matmul_q4_km A must be rank ≥ 2");
+        }
+        let m = a_dims[rank - 2];
+        let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
+        let total_rows = batch * m;
+
+        // First-pass implementation: dequantize W to F32 on-device, then
+        // use the standard matmul. Keeps the weight bytes compressed on
+        // disk/RAM; only the dequantized view is materialized for this
+        // forward. Fused qmatvec/matmul variants for Q4_K_M are a perf
+        // follow-up (matches where Q4_0 was two sessions ago).
+        const QK_K: usize = 256;
+        if k % QK_K != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend: matmul_q4_km K ({k}) must be multiple of {QK_K}"
+            );
+        }
+        let n_blocks = n * (k / QK_K);
+        let w_f32 = self.dequantize_q4_km(w_q_bytes, n_blocks)?;
+        // Dequantized weight is [n*k] linear; treat as [n, k] row-major.
+        // Our matmul expects [K, N] for the right operand, so we need
+        // a transpose view. Build the layout explicitly.
+        let w_shape = Shape::from_dims(&[n, k]);
+        let w_layout_nk = Layout::contiguous(&w_shape);
+        // Transpose to [K, N]: permute (0,1) → (1,0). Resulting layout
+        // has shape [K, N] and strided access pattern.
+        let w_layout_kn = w_layout_nk.transpose(rank - 2, rank - 1)
+            .map_err(|e| fuel_core_types::Error::Msg(
+                format!("matmul_q4_km: transpose layout error: {e}")))?;
+        // Build A's [batch, m, k] layout and dispatch matmul.
+        self.matmul(
+            a, &w_f32,
+            (batch, m, n, k),
+            a_layout, &w_layout_kn,
+        )
+    }
+
+    fn quantize_q8_0(
+        &self,
+        src_f32: &Self::Storage,
+        n_elements: usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        VulkanBackend::quantize_q8_0(self, src_f32, n_elements)
+    }
+
+    fn dequantize_q8_0(
+        &self,
+        blocks: &Self::Storage,
+        n_blocks: usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        self.dequantize_q8_0_from_storage(blocks, n_blocks)
+    }
+
     fn unary(&self, op: UnaryOp, a: &Self::Storage, _layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
         let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
 
@@ -1050,23 +1971,76 @@ impl GraphBackend for VulkanBackend {
     fn binary(
         &self, op: BinaryOp,
         a: &Self::Storage, b: &Self::Storage,
-        _la: &Layout, _lb: &Layout,
+        la: &Layout, lb: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
-        let out = self.alloc_device(a.byte_size(), a.elem_count, a.dtype)?;
+        // Output shape = la.shape() (they must match for a non-broadcasting
+        // binary op; for broadcast-binary the caller passes operands already
+        // broadcast to the output shape, but with stride=0 on broadcast dims).
+        let out_dims = la.shape().dims();
+        let out_elem = la.shape().elem_count();
+        if out_elem != lb.shape().elem_count() {
+            fuel_core_types::bail!(
+                "VulkanBackend: binary shape mismatch a={:?} b={:?}",
+                la.shape(), lb.shape()
+            );
+        }
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!(
+                "VulkanBackend: binary supports rank ≤ 4, got {rank}"
+            );
+        }
+        let out = self.alloc_device(
+            (out_elem * dtype_size(a.dtype)) as u64, out_elem, a.dtype)?;
 
         let op_id: u32 = match op {
             BinaryOp::Add => 0, BinaryOp::Sub => 1, BinaryOp::Mul => 2,
             BinaryOp::Div => 3, BinaryOp::Maximum => 4, BinaryOp::Minimum => 5,
         };
+
+        // Pad shape and strides to rank 4 (leading dims = 1, strides = 0).
+        let mut shape = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            a_s[pad + i] = la.stride()[i] as u32;
+            b_s[pad + i] = lb.stride()[i] as u32;
+        }
+
+        // Fast-path flag: contiguous AND matches output shape exactly
+        // (i.e. no broadcast, no permute). stride=0 on any dim rules
+        // out the fast path.
+        let a_contig = la.is_contiguous()
+            && la.shape().dims() == out_dims
+            && la.stride().iter().all(|&s| s != 0);
+        let b_contig = lb.is_contiguous()
+            && lb.shape().dims() == out_dims
+            && lb.stride().iter().all(|&s| s != 0);
+        let flags = (a_contig as u32) | ((b_contig as u32) << 1);
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct BParams { n: u32, op_id: u32 }
-        let p = BParams { n: a.elem_count as u32, op_id };
+        struct BParams {
+            out_size: u32, op_id: u32, rank: u32, flags: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
+        let p = BParams {
+            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_3buf(
             "binary",
             &self.pipelines.binary_pipeline,
             &self.pipelines.binary_layout,
-            a, b, &out, pbuf, pmem, 8, Self::workgroups(a.elem_count), 1, 1,
+            a, b, &out, pbuf, pmem,
+            std::mem::size_of::<BParams>() as u64,
+            Self::workgroups(out_elem), 1, 1,
         )?;
         Ok(out)
     }
@@ -1422,14 +2396,14 @@ impl GraphBackend for VulkanBackend {
         a: &Self::Storage,
         b: &Self::Storage,
         dim: usize,
-        a_shape: &Shape,
-        b_shape: &Shape,
+        a_layout: &Layout,
+        b_layout: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
         if a.dtype != DType::F32 || b.dtype != DType::F32 {
             fuel_core_types::bail!("VulkanBackend: concat_along_dim requires f32");
         }
-        let a_dims = a_shape.dims();
-        let b_dims = b_shape.dims();
+        let a_dims = a_layout.shape().dims();
+        let b_dims = b_layout.shape().dims();
         if a_dims.len() != b_dims.len() || dim >= a_dims.len() {
             fuel_core_types::bail!("concat_along_dim: rank/dim mismatch");
         }
@@ -1438,22 +2412,46 @@ impl GraphBackend for VulkanBackend {
                 fuel_core_types::bail!("concat_along_dim: non-concat dims disagree");
             }
         }
+        let rank = a_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("VulkanBackend: concat supports rank ≤ 4, got {rank}");
+        }
         let a_dim = a_dims[dim];
         let b_dim = b_dims[dim];
-        let outer: usize = a_dims[..dim].iter().product::<usize>().max(1);
-        let inner: usize = a_dims[dim + 1..].iter().product::<usize>().max(1);
-        let out_elems = outer * (a_dim + b_dim) * inner;
+        // Output shape = a_dims with dim replaced by a_dim + b_dim.
+        let mut out_dims_vec: Vec<usize> = a_dims.to_vec();
+        out_dims_vec[dim] = a_dim + b_dim;
+        let out_elems: usize = out_dims_vec.iter().product();
         let out = self.alloc_device((out_elems * 4) as u64, out_elems, DType::F32)?;
 
+        // Pad shape + strides to rank 4 (leading dims = 1, strides = 0
+        // for padded positions). `concat_dim` shifts accordingly.
+        let pad = 4 - rank;
+        let mut out_d = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        for i in 0..rank {
+            out_d[pad + i] = out_dims_vec[i] as u32;
+            a_s[pad + i] = a_layout.stride()[i] as u32;
+            b_s[pad + i] = b_layout.stride()[i] as u32;
+        }
+        let concat_dim_padded = (pad + dim) as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct CParams { outer: u32, a_dim: u32, b_dim: u32, inner: u32, total: u32, _p0: u32, _p1: u32, _p2: u32 }
+        struct CParams {
+            out_d0: u32, out_d1: u32, out_d2: u32, out_d3: u32,
+            concat_dim: u32, a_dim: u32, b_dim: u32, total: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
         let p = CParams {
-            outer: outer as u32,
+            out_d0: out_d[0], out_d1: out_d[1], out_d2: out_d[2], out_d3: out_d[3],
+            concat_dim: concat_dim_padded,
             a_dim: a_dim as u32,
             b_dim: b_dim as u32,
-            inner: inner as u32,
             total: out_elems as u32,
-            _p0: 0, _p1: 0, _p2: 0,
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
         };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
@@ -1493,11 +2491,55 @@ impl GraphBackend for VulkanBackend {
         let half = head_dim / 2;
         let total = outer * seq * half;
 
+        // Compute x stride params. Support up to 2 outer dims (rank ≤ 4).
+        let x_strides = x_layout.stride();
+        let contiguous = x_layout.is_contiguous();
+        let (x_s0, x_s1, x_s_seq, x_s_hd, x_outer1) = if contiguous {
+            // Fast path values (unused by shader when x_contiguous == 1).
+            (0u32, 0u32, 0u32, 0u32, 1u32)
+        } else {
+            match rank {
+                2 => (
+                    // [seq, head_dim]
+                    (x_strides[0] * dims[0]) as u32, // unused (outer=1)
+                    (x_strides[0] * dims[0]) as u32, // unused
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    1u32,
+                ),
+                3 => (
+                    x_strides[0] as u32,
+                    x_strides[0] as u32, // unused (outer1=1)
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    1u32,
+                ),
+                4 => (
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    x_strides[3] as u32,
+                    dims[1] as u32,
+                ),
+                _ => fuel_core_types::bail!(
+                    "VulkanBackend: rope stride-aware path supports rank 2-4, got {rank}"
+                ),
+            }
+        };
+
         let out = self.alloc_device(x.byte_size(), x.elem_count, x.dtype)?;
 
         #[repr(C)] #[derive(Clone, Copy)]
-        struct RopeParams { outer: u32, seq: u32, head_dim: u32, total: u32 }
-        let p = RopeParams { outer, seq, head_dim, total };
+        struct RopeParams {
+            outer: u32, seq: u32, head_dim: u32, total: u32,
+            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
+            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+        }
+        let p = RopeParams {
+            outer, seq, head_dim, total,
+            x_s0, x_s1, x_s_seq, x_s_hd,
+            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+        };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;

@@ -121,6 +121,21 @@ pub struct ModuleStore {
     mdls: [Option<Arc<baracuda_driver::Module>>; kernels::ALL_IDS.len()],
 }
 
+/// cuBLAS handle wrapper that is `Sync` via an unsafe promise that the caller
+/// serialises concurrent use (per NVIDIA's per-thread handle contract).
+/// Fuel's graph executor serialises GPU work onto a single dispatch thread,
+/// so this holds at the Fuel layer; the wrapper exists because baracuda's
+/// own `Handle` is `Send` but intentionally `!Sync`.
+pub struct CublasHandle(pub baracuda_cublas::Handle);
+unsafe impl Send for CublasHandle {}
+unsafe impl Sync for CublasHandle {}
+impl std::ops::Deref for CublasHandle {
+    type Target = baracuda_cublas::Handle;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 pub struct CudaDevice {
     id: DeviceId,
@@ -128,7 +143,7 @@ pub struct CudaDevice {
     modules: Arc<std::sync::RwLock<ModuleStore>>,
     custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<baracuda_driver::Module>>>>,
     stream: Arc<baracuda_driver::Stream>,
-    pub(crate) blas: Arc<baracuda_cublas::Handle>,
+    pub(crate) blas: Arc<CublasHandle>,
     curand: Arc<Mutex<CudaRng>>,
     seed_value: Arc<RwLock<u64>>,
 }
@@ -178,12 +193,36 @@ impl CudaDevice {
     }
 
     /// Device → device copy, async on this device's default stream.
+    /// Accepts any pair of baracuda device slices (buffer, slice, slice_mut).
     pub fn memcpy_dtod<T: baracuda_types::DeviceRepr>(
         &self,
-        src: &DeviceBuffer<T>,
-        dst: &DeviceBuffer<T>,
+        src: &baracuda_driver::DeviceSlice<T>,
+        dst: &mut baracuda_driver::DeviceSliceMut<T>,
     ) -> Result<()> {
-        src.copy_to_device_async(dst, &self.stream).w()
+        use baracuda_cuda_sys::{driver, CUresult};
+        assert_eq!(src.len(), dst.len());
+        let bytes = src.len() * std::mem::size_of::<T>();
+        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let cu = d
+            .cu_memcpy_dtod_async()
+            .map_err(|_| CudaError::InternalError("cuMemcpyDtoDAsync not available"))
+            .w()?;
+        let r = unsafe { cu(dst.as_raw(), src.as_raw(), bytes, self.stream.as_raw()) };
+        if r == CUresult::SUCCESS {
+            Ok(())
+        } else {
+            Err(CudaError::InternalError("cuMemcpyDtoDAsync failed").into())
+        }
+    }
+
+    /// Device → device copy into a freshly allocated buffer on this device.
+    pub fn clone_dtod<T: baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits>(
+        &self,
+        src: &DeviceBuffer<T>,
+    ) -> Result<DeviceBuffer<T>> {
+        let dst = DeviceBuffer::<T>::zeros(&self.context, src.len()).w()?;
+        src.copy_to_device_async(&dst, &self.stream).w()?;
+        Ok(dst)
     }
 
     /// Device → host blocking copy (dst must have `len >= src.len()`).
@@ -340,7 +379,7 @@ impl CudaDevice {
         })
     }
 
-    pub fn cublas_handle(&self) -> Arc<baracuda_cublas::Handle> {
+    pub fn cublas_handle(&self) -> Arc<CublasHandle> {
         self.blas.clone()
     }
 }
@@ -366,7 +405,7 @@ impl CudaDevice {
         context: baracuda_driver::Context,
         stream: baracuda_driver::Stream,
     ) -> Result<Self> {
-        let mut blas = baracuda_cublas::Handle::new().w()?;
+        let blas = baracuda_cublas::Handle::new().w()?;
         blas.set_stream(&stream).w()?;
         let mut curand = baracuda_curand::Generator::new(RngKind::Default).w()?;
         curand.seed(299792458).w()?;
@@ -377,7 +416,7 @@ impl CudaDevice {
             id: DeviceId::new(),
             context: Arc::new(context),
             stream: Arc::new(stream),
-            blas: Arc::new(blas),
+            blas: Arc::new(CublasHandle(blas)),
             curand: Arc::new(Mutex::new(CudaRng(curand))),
             modules: Arc::new(std::sync::RwLock::new(module_store)),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -487,7 +526,7 @@ impl CudaDevice {
             }
             DType::F64 => {
                 let mut data = unsafe { self.alloc::<f64>(elem_count)? };
-                curand.0.uniform(&mut data).w()?;
+                curand.0.uniform_f64(&mut data).w()?;
                 CudaStorageSlice::F64(data)
             }
             DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
@@ -545,7 +584,7 @@ impl CudaDevice {
             }
             DType::F64 => {
                 let mut data = unsafe { self.alloc::<f64>(elem_count_round)? };
-                curand.0.normal(&mut data, mean, std).w()?;
+                curand.0.normal_f64(&mut data, mean, std).w()?;
                 CudaStorageSlice::F64(data)
             }
             DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {

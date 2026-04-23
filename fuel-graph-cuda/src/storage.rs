@@ -31,8 +31,8 @@ pub(crate) struct GemmConfig<T> {
     pub lda: i32,
     pub ldb: i32,
     pub ldc: i32,
-    pub transa: baracuda_cublas_sys::types::cublasOperation_t,
-    pub transb: baracuda_cublas_sys::types::cublasOperation_t,
+    pub transa: baracuda_cublas::Op,
+    pub transb: baracuda_cublas::Op,
 }
 
 #[allow(dead_code)]
@@ -44,7 +44,7 @@ pub(crate) struct StridedBatchedConfig<T> {
     pub batch_size: i32,
 }
 
-pub enum SlicePtrOrNull<T> {
+pub enum SlicePtrOrNull<T: DeviceRepr> {
     Ptr(CudaSlice<T>),
     Null,
 }
@@ -106,13 +106,13 @@ pub enum CudaStorageSlice {
 
 struct Clone;
 impl Map1 for Clone {
-    fn f<T: DeviceRepr>(
+    fn f<T: DeviceRepr + WithDType + baracuda_types::ValidAsZeroBits>(
         &self,
         s: &CudaSlice<T>,
-        _: &CudaDevice,
+        dev: &CudaDevice,
         _: &Layout,
     ) -> Result<CudaSlice<T>> {
-        s.try_clone().w()
+        dev.clone_dtod(s)
     }
 }
 
@@ -134,7 +134,7 @@ impl Map1 for Affine {
         let el = shape.elem_count();
         let cfg = LaunchConfig::for_num_elems(el as u32);
         let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("affine"), &kernels::AFFINE)?;
         // SAFETY: Set later by running the kernel.
         let out = unsafe { dev.alloc::<T>(el)? };
@@ -165,7 +165,7 @@ impl Map1 for Elu {
         let el = shape.elem_count();
         let cfg = LaunchConfig::for_num_elems(el as u32);
         let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("uelu"), &kernels::UNARY)?;
         // SAFETY: Set later by running the kernel.
         let out = unsafe { dev.alloc::<T>(el)? };
@@ -210,7 +210,7 @@ impl Map1 for Im2Col1D {
         let threads = dims[0] * l_out * dims[1];
         let cfg = LaunchConfig::for_num_elems(threads as u32);
         let ds = dev.clone_htod(&[dims, layout.stride()].concat())?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("im2col1d"), &kernels::CONV)?;
         // SAFETY: Set later by running the kernel.
         let dst = unsafe { dev.alloc::<T>(threads * self.l_k)? };
@@ -261,7 +261,7 @@ impl Map1 for Im2Col {
         let dst_el = dims[0] * h_out * w_out * dims[1] * self.h_k * self.w_k;
         let cfg = LaunchConfig::for_num_elems(dst_el as u32);
         let ds = dev.clone_htod(&[dims, layout.stride()].concat())?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("im2col"), &kernels::CONV)?;
         // SAFETY: Set later by running the kernel.
         let dst = unsafe { dev.alloc::<T>(dst_el)? };
@@ -296,7 +296,7 @@ impl Map1 for Powf {
         let el = shape.elem_count();
         let cfg = LaunchConfig::for_num_elems(el as u32);
         let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("upowf"), &kernels::UNARY)?;
         // SAFETY: Set later by running the kernel.
         let out = unsafe { dev.alloc::<T>(el)? };
@@ -353,7 +353,7 @@ impl Map1Any for FastReduce<'_> {
             shared_mem_bytes: 0,
         };
         let ds = dev.clone_htod(&[dims.as_slice(), stride.as_slice()].concat())?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let (name, check_empty, return_index) = match self.1 {
             ReduceOp::Sum => ("fast_sum", false, false),
             ReduceOp::Min => ("fast_min", true, false),
@@ -407,7 +407,7 @@ impl<U: UnaryOpT> Map1 for U {
         let el_count = shape.elem_count();
         let cfg = LaunchConfig::for_num_elems(el_count as u32);
         let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>(U::KERNEL), &kernels::UNARY)?;
         // SAFETY: Set later by running the kernel.
         let mut out = unsafe { dev.alloc::<T>(el_count)? };
@@ -715,8 +715,8 @@ impl Map2 for Conv1D<'_> {
         // Kernel shape: (c_out, c_in_k, k_size)
         // Input shape: (b_size, c_in, l_in) or (c_in, l_in)
         let p = &self.0;
-        let inp = &inp.slice(inp_l.start_offset()..);
-        let k = &k.slice(k_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
+        let k = &k.slice(k_l.start_offset()..k.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let el = shape.elem_count();
@@ -761,8 +761,8 @@ impl Map2 for Conv2D<'_> {
         let p = &self.0;
         let (out_w, out_h) = (p.out_w(), p.out_h());
         let dst_el = p.c_out * out_w * out_h * p.b_size;
-        let inp = &inp.slice(inp_l.start_offset()..);
-        let k = &k.slice(k_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
+        let k = &k.slice(k_l.start_offset()..k.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let el = shape.elem_count();
@@ -832,8 +832,8 @@ impl Map2 for ConvTranspose1D<'_> {
         let p = &self.0;
         let l_out = p.l_out();
         let dst_el = p.c_out * l_out * p.b_size;
-        let inp = &inp.slice(inp_l.start_offset()..);
-        let k = &k.slice(k_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
+        let k = &k.slice(k_l.start_offset()..k.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let el = shape.elem_count();
@@ -880,8 +880,8 @@ impl Map2 for ConvTranspose2D<'_> {
         let p = &self.0;
         let (out_w, out_h) = (p.out_w(), p.out_h());
         let dst_el = p.c_out * out_w * out_h * p.b_size;
-        let inp = &inp.slice(inp_l.start_offset()..);
-        let k = &k.slice(k_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
+        let k = &k.slice(k_l.start_offset()..k.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let el = shape.elem_count();
@@ -935,7 +935,7 @@ impl Map1 for Pool2D {
         inp_l: &Layout,
     ) -> Result<CudaSlice<T>> {
         // Input shape: (b_size, c, h, w)
-        let inp = &inp.slice(inp_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let ds = if dims.len() == 4 {
@@ -980,7 +980,7 @@ impl Map1 for UpsampleNearest2D {
         inp_l: &Layout,
     ) -> Result<CudaSlice<T>> {
         // Input shape: (b_size, c, h, w)
-        let inp = &inp.slice(inp_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let ds = if dims.len() == 4 {
@@ -1026,7 +1026,7 @@ impl Map1 for UpsampleBilinear2D {
         dev: &CudaDevice,
         inp_l: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let inp = &inp.slice(inp_l.start_offset()..);
+        let inp = &inp.slice(inp_l.start_offset()..inp.len());
         let shape = inp_l.shape();
         let dims = shape.dims();
         let ds = if dims.len() == 4 {
@@ -1100,8 +1100,8 @@ impl Map2 for WhereCond<'_> {
         let cfg = LaunchConfig::for_num_elems(el as u32);
         let ds =
             dev.clone_htod(&[dims, ids_l.stride(), layout_t.stride(), layout_f.stride()].concat())?;
-        let t = &t.slice(layout_t.start_offset()..);
-        let f = &f.slice(layout_f.start_offset()..);
+        let t = &t.slice(layout_t.start_offset()..t.len());
+        let f = &f.slice(layout_f.start_offset()..f.len());
         let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::TERNARY)?;
         // SAFETY: Set later by running the kernel.
         let out = unsafe { dev.alloc::<T>(el)? };
@@ -1137,8 +1137,8 @@ impl<U: fuel_core_types::op::BinaryOpT> Map2 for U {
         } else {
             SlicePtrOrNull::Ptr(dev.clone_htod(&[dims, lhs_l.stride(), rhs_l.stride()].concat())?)
         };
-        let lhs = &lhs.slice(lhs_l.start_offset()..);
-        let rhs = &rhs.slice(rhs_l.start_offset()..);
+        let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+        let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
         let func = dev.get_or_load_func(&kernel_name::<T>(U::KERNEL), &kernels::BINARY)?;
         // SAFETY: Set later by running the kernel.
         let out = unsafe { dev.alloc::<T>(elem_count)? };
@@ -1174,8 +1174,8 @@ impl Map2Any for Cmp {
         } else {
             SlicePtrOrNull::Ptr(dev.clone_htod(&[dims, lhs_l.stride(), rhs_l.stride()].concat())?)
         };
-        let lhs = &lhs.slice(lhs_l.start_offset()..);
-        let rhs = &rhs.slice(rhs_l.start_offset()..);
+        let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+        let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
         let name = match self.0 {
             CmpOp::Eq => "eq",
             CmpOp::Ne => "ne",
@@ -1200,7 +1200,7 @@ impl Map2Any for Cmp {
     }
 }
 
-fn slice_src_and_dst<'a, T>(
+fn slice_src_and_dst<'a, T: DeviceRepr>(
     src: &'a CudaSlice<T>,
     src_l: &Layout,
     dst: &'a mut CudaSlice<T>,
@@ -1225,7 +1225,7 @@ pub struct CudaStorage {
     pub device: CudaDevice,
 }
 
-pub trait CudaDType: Sized {
+pub trait CudaDType: Sized + DeviceRepr {
     fn as_cuda_slice(s: &CudaStorage) -> Result<&CudaSlice<Self>>;
     fn as_cuda_slice_mut(s: &mut CudaStorage) -> Result<&mut CudaSlice<Self>>;
     fn wrap_cuda_slice(s: CudaSlice<Self>, dev: CudaDevice) -> CudaStorage;
@@ -1290,76 +1290,75 @@ impl CudaStorage {
     }
 
     pub fn transfer_to_device(&self, dst: &CudaDevice) -> Result<Self> {
-        let dst_stream = dst.cuda_stream();
         let storage_slice = match self.dtype() {
             DType::U8 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::U8(result)
             }
             DType::U32 => {
                 let cuda_slice = self.as_cuda_slice::<u32>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::U32(result)
             }
             DType::I16 => {
                 let cuda_slice = self.as_cuda_slice::<i16>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::I16(result)
             }
             DType::I32 => {
                 let cuda_slice = self.as_cuda_slice::<i32>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::I32(result)
             }
             DType::I64 => {
                 let cuda_slice = self.as_cuda_slice::<i64>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::I64(result)
             }
             DType::BF16 => {
                 let cuda_slice = self.as_cuda_slice::<bf16>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::BF16(result)
             }
             DType::F16 => {
                 let cuda_slice = self.as_cuda_slice::<f16>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F16(result)
             }
             DType::F32 => {
                 let cuda_slice = self.as_cuda_slice::<f32>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F32(result)
             }
             DType::F64 => {
                 let cuda_slice = self.as_cuda_slice::<f64>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F64(result)
             }
             DType::F8E4M3 => {
                 let cuda_slice = self.as_cuda_slice::<float8::F8E4M3>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F8E4M3(result)
             }
             DType::F6E2M3 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F6E2M3(result)
             }
             DType::F6E3M2 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F6E3M2(result)
             }
             DType::F4 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F4(result)
             }
             DType::F8E8M0 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
-                let result = dst_stream.clone_dtod(cuda_slice).w()?;
+                let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::F8E8M0(result)
             }
         };
@@ -1379,7 +1378,7 @@ fn gemm_config<T>(
     rhs_l: &Layout,
 ) -> Result<StridedBatchedConfig<T>> {
     // https://docs.nvidia.com/cuda/cublas/index.html#cublas-t-gemm
-    use baracuda_cublas_sys::types::cublasOperation_t;
+    use baracuda_cublas::Op;
 
     let lhs_stride = lhs_l.stride();
     let rhs_stride = rhs_l.stride();
@@ -1391,9 +1390,9 @@ fn gemm_config<T>(
     // We also allow for the case where the stride on the minor dimension is not as expected but
     // there is a single element.
     let (lda, transa) = if (rhs_m1 == 1 || n == 1) && (rhs_m2 == n || k == 1) {
-        (n as i32, cublasOperation_t::CUBLAS_OP_N)
+        (n as i32, Op::N)
     } else if (rhs_m1 == k || n == 1) && (rhs_m2 == 1 || k == 1) {
-        (k as i32, cublasOperation_t::CUBLAS_OP_T)
+        (k as i32, Op::T)
     } else {
         Err(CudaError::MatMulNonContiguous {
             lhs_stride: lhs_l.clone(),
@@ -1405,9 +1404,9 @@ fn gemm_config<T>(
     // We also allow for the case where the stride on the minor dimension is not as expected but
     // there is a single element.
     let (ldb, transb) = if (lhs_m1 == 1 || k == 1) && (lhs_m2 == k || m == 1) {
-        (k as i32, cublasOperation_t::CUBLAS_OP_N)
+        (k as i32, Op::N)
     } else if (lhs_m1 == m || k == 1) && (lhs_m2 == 1 || m == 1) {
-        (m as i32, cublasOperation_t::CUBLAS_OP_T)
+        (m as i32, Op::T)
     } else {
         Err(CudaError::MatMulNonContiguous {
             lhs_stride: lhs_l.clone(),
@@ -1762,7 +1761,7 @@ impl CudaStorage {
         macro_rules! launch_softmax {
             ($slice:expr, $kname:expr, $ty:ty) => {{
                 use crate::device::LaunchConfig;
-                let src = &$slice.slice(layout.start_offset()..);
+                let src = &$slice.slice(layout.start_offset()..slice.len());
                 let func = device.get_or_load_func($kname, &kernels::REDUCE)?;
                 let mut out = unsafe { device.alloc::<$ty>(n_rows * n_cols)? };
                 let cfg = LaunchConfig {
@@ -1782,7 +1781,7 @@ impl CudaStorage {
         let slice = match &self.slice {
             CudaStorageSlice::F32(s) => {
                 use crate::device::LaunchConfig;
-                let src = &s.slice(layout.start_offset()..);
+                let src = &s.slice(layout.start_offset()..s.len());
                 let func = device.get_or_load_func("softmax_f32", &kernels::REDUCE)?;
                 let mut out = unsafe { device.alloc::<f32>(n_rows * n_cols)? };
                 let cfg = LaunchConfig {
@@ -1799,7 +1798,7 @@ impl CudaStorage {
             }
             CudaStorageSlice::F64(s) => {
                 use crate::device::LaunchConfig;
-                let src = &s.slice(layout.start_offset()..);
+                let src = &s.slice(layout.start_offset()..s.len());
                 let func = device.get_or_load_func("softmax_f64", &kernels::REDUCE)?;
                 let mut out = unsafe { device.alloc::<f64>(n_rows * n_cols)? };
                 let cfg = LaunchConfig {
@@ -1870,12 +1869,12 @@ impl CudaStorage {
         let device = self.device().clone();
 
         let a_src = match &self.slice {
-            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..),
+            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..s.len()),
             _ => return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_0: A must be F32"),
         };
         let w_src = match &w_q_bytes.slice {
-            CudaStorageSlice::U32(s) => s.slice(..),
+            CudaStorageSlice::U32(s) => s.slice(0..s.len()),
             _ => return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_0: weight blob must be U32 storage"),
         };
@@ -1949,12 +1948,12 @@ impl CudaStorage {
         let device = self.device().clone();
 
         let a_src = match &self.slice {
-            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..),
+            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..s.len()),
             _ => return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_km: A must be F32"),
         };
         let w_src = match &w_q_bytes.slice {
-            CudaStorageSlice::U32(s) => s.slice(..),
+            CudaStorageSlice::U32(s) => s.slice(0..s.len()),
             _ => return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_km: weight blob must be U32 storage"),
         };
@@ -1999,7 +1998,7 @@ impl CudaStorage {
         let device = self.device().clone();
 
         let src = match &self.slice {
-            CudaStorageSlice::F32(s) => s.slice(layout.start_offset()..),
+            CudaStorageSlice::F32(s) => s.slice(layout.start_offset()..s.len()),
             _ => return fuel_core_types::bail!(
                 "CudaStorage::rms_norm_last_dim: expected F32"),
         };
@@ -2082,7 +2081,7 @@ impl CudaStorage {
 
         let (x_src, out) = match &self.slice {
             CudaStorageSlice::F32(s) => {
-                let src = s.slice(x_layout.start_offset()..);
+                let src = s.slice(x_layout.start_offset()..s.len());
                 let out = unsafe { device.alloc::<f32>(outer * seq * head_dim)? };
                 (src, out)
             }
@@ -2090,11 +2089,11 @@ impl CudaStorage {
                 "CudaStorage::rope: expected F32, got {:?}", self.dtype()),
         };
         let cos_src = match &cos.slice {
-            CudaStorageSlice::F32(s) => s.slice(..),
+            CudaStorageSlice::F32(s) => s.slice(0..s.len()),
             _ => return fuel_core_types::bail!("CudaStorage::rope: cos must be F32"),
         };
         let sin_src = match &sin.slice {
-            CudaStorageSlice::F32(s) => s.slice(..),
+            CudaStorageSlice::F32(s) => s.slice(0..s.len()),
             _ => return fuel_core_types::bail!("CudaStorage::rope: sin must be F32"),
         };
         let mut out = out;
@@ -2122,45 +2121,46 @@ impl CudaStorage {
     }
 
     pub fn to_cpu_storage(&self) -> Result<CpuStorage> {
+        let device = &self.device;
         match &self.slice {
             CudaStorageSlice::U8(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::U8(cpu_storage))
             }
             CudaStorageSlice::U32(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::U32(cpu_storage))
             }
             CudaStorageSlice::I16(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::I16(cpu_storage))
             }
             CudaStorageSlice::I32(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::I32(cpu_storage))
             }
             CudaStorageSlice::I64(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::I64(cpu_storage))
             }
             CudaStorageSlice::BF16(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::BF16(cpu_storage))
             }
             CudaStorageSlice::F16(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::F16(cpu_storage))
             }
             CudaStorageSlice::F32(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::F32(cpu_storage))
             }
             CudaStorageSlice::F64(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::F64(cpu_storage))
             }
             CudaStorageSlice::F8E4M3(slice) => {
-                let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
+                let cpu_storage = device.clone_dtoh(slice)?;
                 Ok(CpuStorage::F8E4M3(cpu_storage))
             }
             CudaStorageSlice::F4(_)
@@ -2255,16 +2255,16 @@ impl CudaStorage {
         let dst_el = params.c_out * l_out * params.b_size;
         let slice = match (&self.slice, &kernel.slice) {
             (S::U8(inp), S::U8(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<u8>(dst_el)? };
                 crate::cudnn::launch_conv1d::<u8, u8>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
                 S::U8(out)
             }
             (S::BF16(inp), S::BF16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<bf16>(dst_el)? };
                 // Only PSEUDO_BFLOAT16_CONFIG is supported in cudnn, there is no "true bfloat16"
                 // version.
@@ -2274,24 +2274,24 @@ impl CudaStorage {
                 S::BF16(out)
             }
             (S::F16(inp), S::F16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<f16>(dst_el)? };
                 crate::cudnn::launch_conv1d::<f16, f16>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
                 S::F16(out)
             }
             (S::F32(inp), S::F32(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<f32>(dst_el)? };
                 crate::cudnn::launch_conv1d::<f32, f32>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
                 S::F32(out)
             }
             (S::F64(inp), S::F64(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<f64>(dst_el)? };
                 crate::cudnn::launch_conv1d::<f64, f64>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
@@ -2440,16 +2440,16 @@ impl CudaStorage {
         let dst_el = params.c_out * out_w * out_h * params.b_size;
         let slice = match (&self.slice, &kernel.slice) {
             (S::U8(inp), S::U8(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<u8>(dst_el)? };
                 crate::cudnn::launch_conv2d::<u8, u8>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
                 S::U8(out)
             }
             (S::BF16(inp), S::BF16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<bf16>(dst_el)? };
                 // Only PSEUDO_BFLOAT16_CONFIG is supported in cudnn, there is no "true bfloat16"
                 // version.
@@ -2459,24 +2459,24 @@ impl CudaStorage {
                 S::BF16(out)
             }
             (S::F16(inp), S::F16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<f16>(dst_el)? };
                 crate::cudnn::launch_conv2d::<f16, f16>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
                 S::F16(out)
             }
             (S::F32(inp), S::F32(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<f32>(dst_el)? };
                 crate::cudnn::launch_conv2d::<f32, f32>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
                 S::F32(out)
             }
             (S::F64(inp), S::F64(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..);
-                let k = &k.slice(kernel_l.start_offset()..);
+                let inp = &inp.slice(inp_l.start_offset()..inp.len());
+                let k = &k.slice(kernel_l.start_offset()..k.len());
                 let mut out = unsafe { device.alloc::<f64>(dst_el)? };
                 crate::cudnn::launch_conv2d::<f64, f64>(inp, inp_l, k, &mut out, params, &device)
                     .map_err(crate::Error::wrap)?;
@@ -2625,43 +2625,39 @@ impl CudaStorage {
         let dev = &self.device;
         let slice = match (&self.slice, &rhs.slice) {
             (CudaStorageSlice::BF16(lhs), CudaStorageSlice::BF16(rhs)) => {
-                let lhs = &lhs.slice(lhs_l.start_offset()..);
-                let rhs = &rhs.slice(rhs_l.start_offset()..);
+                let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+                let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
                 let cfg = gemm_config(bf16::ONE, bf16::ZERO, (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<bf16>(elem_count)? };
-                unsafe { gemm_strided_batched_bf16(&self.device.blas, cfg, rhs, lhs, &mut out) }
+                unsafe { gemm_strided_batched_bf16(&self.device.blas.0, cfg, rhs, lhs, &mut out) }
                     .w()?;
                 CudaStorageSlice::BF16(out)
             }
             (CudaStorageSlice::F16(lhs), CudaStorageSlice::F16(rhs)) => {
-                let lhs = &lhs.slice(lhs_l.start_offset()..);
-                let rhs = &rhs.slice(rhs_l.start_offset()..);
+                let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+                let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
                 let cfg = gemm_config(f16::ONE, f16::ZERO, (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<f16>(elem_count)? };
-                unsafe { gemm_strided_batched_f16(&self.device.blas, cfg, rhs, lhs, &mut out) }
+                unsafe { gemm_strided_batched_f16(&self.device.blas.0, cfg, rhs, lhs, &mut out) }
                     .w()?;
                 CudaStorageSlice::F16(out)
             }
             (CudaStorageSlice::F32(lhs), CudaStorageSlice::F32(rhs)) => {
-                let lhs = &lhs.slice(lhs_l.start_offset()..);
-                let rhs = &rhs.slice(rhs_l.start_offset()..);
+                let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+                let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
                 let cfg = gemm_config(1., 0., (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<f32>(elem_count)? };
-                unsafe { gemm_strided_batched_f32(&self.device.blas, cfg, rhs, lhs, &mut out) }
+                unsafe { gemm_strided_batched_f32(&self.device.blas.0, cfg, rhs, lhs, &mut out) }
                     .w()?;
                 CudaStorageSlice::F32(out)
             }
             (CudaStorageSlice::F64(lhs), CudaStorageSlice::F64(rhs)) => {
-                let lhs = &lhs.slice(lhs_l.start_offset()..);
-                let rhs = &rhs.slice(rhs_l.start_offset()..);
+                let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+                let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
                 let cfg = gemm_config(1., 0., (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<f64>(elem_count)? };
-                unsafe {
-                    self.device
-                        .blas
-                        .gemm_strided_batched(cfg, rhs, lhs, &mut out)
-                }
-                .w()?;
+                unsafe { gemm_strided_batched_f64(&self.device.blas.0, cfg, rhs, lhs, &mut out) }
+                    .w()?;
                 CudaStorageSlice::F64(out)
             }
             _ => Err(CudaError::InternalError("dtype mismatch in matmul op"))?,
@@ -2950,42 +2946,39 @@ unsafe fn gemm_strided_batched_f32(
     c: &mut CudaSlice<f32>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
     use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
-    use baracuda_cublas_sys::types as sys;
-    use baracuda_driver::DevicePtrMut;
 
     let compute_type = if gemm_reduced_precision_f32() {
-        cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32
+        cublasComputeType_t::Compute32FFastTF32
     } else {
-        cublasComputeType_t::CUBLAS_COMPUTE_32F
+        cublasComputeType_t::Compute32F
     };
     let alpha = &cfg.gemm.alpha as *const f32 as *const _;
     let beta = &cfg.gemm.beta as *const f32 as *const _;
 
-    let stream = c.stream().clone();
-    let (a, _guard_a) = a.device_ptr(&stream);
-    let (b, _guard_b) = b.device_ptr(&stream);
-    let (c, _guard_c) = c.device_ptr_mut(&stream);
+    let a_ptr = a.as_raw().0 as *const _;
+    let b_ptr = b.as_raw().0 as *const _;
+    let c_ptr = c.as_raw().0 as *mut _;
 
     unsafe {
         baracuda_cublas::gemm_strided_batched_ex(
-            *cublas.handle(),
+            cublas,
             cfg.gemm.transa,
             cfg.gemm.transb,
             cfg.gemm.m,
             cfg.gemm.n,
             cfg.gemm.k,
             alpha,
-            a as *const _,
-            cudaDataType_t::CUDA_R_32F,
+            a_ptr,
+            cudaDataType_t::R_32F,
             cfg.gemm.lda,
             cfg.stride_a,
-            b as *const _,
-            cudaDataType_t::CUDA_R_32F,
+            b_ptr,
+            cudaDataType_t::R_32F,
             cfg.gemm.ldb,
             cfg.stride_b,
             beta,
-            c as *mut _,
-            cudaDataType_t::CUDA_R_32F,
+            c_ptr,
+            cudaDataType_t::R_32F,
             cfg.gemm.ldc,
             cfg.stride_c,
             cfg.batch_size,
@@ -3003,8 +2996,6 @@ unsafe fn gemm_strided_batched_f16(
     c: &mut CudaSlice<f16>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
     use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
-    use baracuda_cublas_sys::types as sys;
-    use baracuda_driver::DevicePtrMut;
 
     let alpha = cfg.gemm.alpha;
     let beta = cfg.gemm.beta;
@@ -3012,42 +3003,41 @@ unsafe fn gemm_strided_batched_f16(
     let beta_f32: f32 = cfg.gemm.beta.to_f32();
     let (compute_type, alpha, beta) = if gemm_reduced_precision_f16() {
         (
-            cublasComputeType_t::CUBLAS_COMPUTE_16F,
+            cublasComputeType_t::Compute16F,
             (&alpha) as *const f16 as *const _,
             (&beta) as *const f16 as *const _,
         )
     } else {
         (
-            cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            cublasComputeType_t::Compute32F,
             (&alpha_f32) as *const f32 as *const _,
             (&beta_f32) as *const f32 as *const _,
         )
     };
 
-    let stream = c.stream().clone();
-    let (a, _guard_a) = a.device_ptr(&stream);
-    let (b, _guard_b) = b.device_ptr(&stream);
-    let (c, _guard_c) = c.device_ptr_mut(&stream);
+    let a_ptr = a.as_raw().0 as *const _;
+    let b_ptr = b.as_raw().0 as *const _;
+    let c_ptr = c.as_raw().0 as *mut _;
     unsafe {
         baracuda_cublas::gemm_strided_batched_ex(
-            *cublas.handle(),
+            cublas,
             cfg.gemm.transa,
             cfg.gemm.transb,
             cfg.gemm.m,
             cfg.gemm.n,
             cfg.gemm.k,
             alpha,
-            a as *const _,
-            cudaDataType_t::CUDA_R_16F,
+            a_ptr,
+            cudaDataType_t::R_16F,
             cfg.gemm.lda,
             cfg.stride_a,
-            b as *const _,
-            cudaDataType_t::CUDA_R_16F,
+            b_ptr,
+            cudaDataType_t::R_16F,
             cfg.gemm.ldb,
             cfg.stride_b,
             beta,
-            c as *mut _,
-            cudaDataType_t::CUDA_R_16F,
+            c_ptr,
+            cudaDataType_t::R_16F,
             cfg.gemm.ldc,
             cfg.stride_c,
             cfg.batch_size,
@@ -3065,8 +3055,6 @@ unsafe fn gemm_strided_batched_bf16(
     c: &mut CudaSlice<bf16>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
     use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
-    use baracuda_cublas_sys::types as sys;
-    use baracuda_driver::DevicePtrMut;
 
     let alpha_f32: f32 = cfg.gemm.alpha.to_f32();
     let beta_f32: f32 = cfg.gemm.beta.to_f32();
@@ -3074,46 +3062,90 @@ unsafe fn gemm_strided_batched_bf16(
     // https://docs.nvidia.com/cuda/cublas/index.html#cublasgemmstridedbatchedex
     let (compute_type, alpha, beta) = if gemm_reduced_precision_bf16() {
         (
-            cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF,
+            cublasComputeType_t::Compute32FFast16BF,
             (&alpha_f32) as *const f32 as *const _,
             (&beta_f32) as *const f32 as *const _,
         )
     } else {
         (
-            cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            cublasComputeType_t::Compute32F,
             (&alpha_f32) as *const f32 as *const _,
             (&beta_f32) as *const f32 as *const _,
         )
     };
 
-    let stream = c.stream().clone();
-    let (a, _guard_a) = a.device_ptr(&stream);
-    let (b, _guard_b) = b.device_ptr(&stream);
-    let (c, _guard_c) = c.device_ptr_mut(&stream);
+    let a_ptr = a.as_raw().0 as *const _;
+    let b_ptr = b.as_raw().0 as *const _;
+    let c_ptr = c.as_raw().0 as *mut _;
     unsafe {
         baracuda_cublas::gemm_strided_batched_ex(
-            *cublas.handle(),
+            cublas,
             cfg.gemm.transa,
             cfg.gemm.transb,
             cfg.gemm.m,
             cfg.gemm.n,
             cfg.gemm.k,
             alpha,
-            a as *const _,
-            cudaDataType_t::CUDA_R_16BF,
+            a_ptr,
+            cudaDataType_t::R_16BF,
             cfg.gemm.lda,
             cfg.stride_a,
-            b as *const _,
-            cudaDataType_t::CUDA_R_16BF,
+            b_ptr,
+            cudaDataType_t::R_16BF,
             cfg.gemm.ldb,
             cfg.stride_b,
             beta,
-            c as *mut _,
-            cudaDataType_t::CUDA_R_16BF,
+            c_ptr,
+            cudaDataType_t::R_16BF,
             cfg.gemm.ldc,
             cfg.stride_c,
             cfg.batch_size,
             compute_type,
+            99_i32,
+        )
+    }
+}
+
+unsafe fn gemm_strided_batched_f64(
+    cublas: &baracuda_cublas::Handle,
+    cfg: StridedBatchedConfig<f64>,
+    a: &baracuda_driver::DeviceSlice<f64>,
+    b: &baracuda_driver::DeviceSlice<f64>,
+    c: &mut CudaSlice<f64>,
+) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
+
+    let alpha = &cfg.gemm.alpha as *const f64 as *const _;
+    let beta = &cfg.gemm.beta as *const f64 as *const _;
+
+    let a_ptr = a.as_raw().0 as *const _;
+    let b_ptr = b.as_raw().0 as *const _;
+    let c_ptr = c.as_raw().0 as *mut _;
+
+    unsafe {
+        baracuda_cublas::gemm_strided_batched_ex(
+            cublas,
+            cfg.gemm.transa,
+            cfg.gemm.transb,
+            cfg.gemm.m,
+            cfg.gemm.n,
+            cfg.gemm.k,
+            alpha,
+            a_ptr,
+            cudaDataType_t::R_64F,
+            cfg.gemm.lda,
+            cfg.stride_a,
+            b_ptr,
+            cudaDataType_t::R_64F,
+            cfg.gemm.ldb,
+            cfg.stride_b,
+            beta,
+            c_ptr,
+            cudaDataType_t::R_64F,
+            cfg.gemm.ldc,
+            cfg.stride_c,
+            cfg.batch_size,
+            cublasComputeType_t::Compute64F,
             99_i32,
         )
     }

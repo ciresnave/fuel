@@ -1,6 +1,6 @@
 [package]
     categories.workspace = true
-    description          = "Vulkan GPU executor for the fuel lazy-graph layer. Uses Vulkane for device management and precompiled SPIR-V kernels (sourced from WGSL / GLSL / Slang — see fuel-graph-executor/src/shaders)."
+    description          = "Vulkan GPU executor for the fuel lazy-graph layer. Uses Vulkane for device management and precompiled SPIR-V from fuel-vulkan-kernels (sources in fuel-kernels-source)."
     edition.workspace    = true
     keywords.workspace   = true
     license.workspace    = true
@@ -13,15 +13,24 @@
     fuel-graph             = { workspace = true }
     fuel-graph-executor    = { workspace = true }
     fuel-reference-backend = { workspace = true }
+    # Precompiled SPIR-V kernels. Sources live in fuel-kernels-source
+    # and are compiled ahead of time (see
+    # `fuel-kernels-source/kernels/compile.sh`) — vulkane does NOT
+    # need its naga / shaderc / slang features at build or run time.
+    # Fuel stays toolchain-free for downstream consumers.
+    fuel-vulkan-kernels    = { workspace = true }
     half                   = { workspace = true }
+    memmap2                = { workspace = true }
     tracing                = { workspace = true }
-    # Shaders are precompiled to SPIR-V ahead of time (see
-    # `fuel-graph-executor/src/shaders/compile.sh`) and loaded via
-    # `vulkane::safe::ShaderRegistry`, so vulkane does NOT need its
-    # naga / shaderc / slang features at build or run time. Fuel
-    # stays toolchain-free for downstream consumers.
-    vulkane                = "0.6"
+    # Local path during 0.7 integration; will flip back to a crates.io
+    # version once we've validated the new budget / defrag APIs against
+    # the live workspace. Vulkane 0.7.0 adds:
+    #   - vram_budget() / vram_used() — VK_EXT_memory_budget proxy
+    #   - register_pressure_callback(threshold, hysteresis, cb)
+    #   - would_fit(size, memory_type) -> FitStatus (predictive)
+    #   - build_defragmentation_plan / apply_defragmentation_plan
+    vulkane                = { path = "../../vulkane/vulkane" }
 
 [dev-dependencies]
     fuel-graph-cpu = { workspace = true }
-    fuel-core      = { path = "../fuel-core" }
+    fuel-core      = { path = "../fuel-core", features = ["vulkan"] }

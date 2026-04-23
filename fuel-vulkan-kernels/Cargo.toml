@@ -1,0 +1,11 @@
+[package]
+categories.workspace = true
+description          = "Precompiled SPIR-V kernels for the Fuel Vulkan backend. Sources live in fuel-kernels-source; SPIR-V here is committed and consumed via include_bytes! so downstream consumers need no shader toolchain at build time."
+edition.workspace    = true
+keywords.workspace   = true
+license.workspace    = true
+name                 = "fuel-vulkan-kernels"
+repository.workspace = true
+version.workspace    = true
+
+[dependencies]

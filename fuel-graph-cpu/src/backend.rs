@@ -116,8 +116,34 @@ impl GraphBackend for CpuBackend {
         &self,
         a: &Self::Storage, b: &Self::Storage,
         _bmnk: (usize, usize, usize, usize),
-        _la: &Layout, _lb: &Layout,
+        la: &Layout, lb: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
+        // Stride-aware executor may pass lazy-view inputs where the
+        // RefTensor's baked-in shape differs from the layout. The CPU
+        // matmul (`fast_matmul` / `ops::matmul`) reads the raw storage
+        // shape, so we materialize any strided views first.
+        let a_mat;
+        let b_mat;
+        let a = if storage_needs_materialize(a, la) {
+            a_mat = materialize_view(a, la);
+            &a_mat
+        } else { a };
+        let b = if storage_needs_materialize(b, lb) {
+            b_mat = materialize_view(b, lb);
+            &b_mat
+        } else { b };
+
+        // GQA support: the LLaMA cached path passes unexpanded K/V
+        // [batch, n_kv_heads, ...] against Q [batch, n_heads, ...] and
+        // relies on the backend to infer `n_rep = n_heads / n_kv_heads`
+        // from the batch-dim mismatch. The Vulkan matmul does this
+        // natively; the CPU path has no such shortcut so we expand B
+        // here by tiling along the mismatched batch dim.
+        let b_expanded;
+        let b = if let Some(b_tiled) = expand_b_for_gqa(&storage_shape(a), &storage_shape(b), b) {
+            b_expanded = b_tiled;
+            &b_expanded
+        } else { b };
         Ok(match (a, b) {
             (AnyRefTensor::F32(a), AnyRefTensor::F32(b)) =>
                 AnyRefTensor::F32(fast_matmul::matmul_f32(a, b)),
@@ -170,7 +196,21 @@ impl GraphBackend for CpuBackend {
         }
     }
 
-    fn binary(&self, op: BinaryOp, a: &Self::Storage, b: &Self::Storage, _la: &Layout, _lb: &Layout) -> fuel_core_types::Result<Self::Storage> {
+    fn binary(&self, op: BinaryOp, a: &Self::Storage, b: &Self::Storage, la: &Layout, lb: &Layout) -> fuel_core_types::Result<Self::Storage> {
+        // Materialize any strided view (lazy permute, lazy broadcast
+        // with stride=0) into a contiguous tensor matching the layout's
+        // shape. Reference ops require matching shapes.
+        let a_mat;
+        let b_mat;
+        let a = if storage_needs_materialize(a, la) {
+            a_mat = materialize_view(a, la);
+            &a_mat
+        } else { a };
+        let b = if storage_needs_materialize(b, lb) {
+            b_mat = materialize_view(b, lb);
+            &b_mat
+        } else { b };
+
         macro_rules! dispatch {
             ($func:path) => {
                 Ok(match (a, b) {
@@ -222,6 +262,11 @@ impl GraphBackend for CpuBackend {
     }
 
     fn cast(&self, a: &Self::Storage, _layout: &Layout, dtype: DType) -> fuel_core_types::Result<Self::Storage> {
+        // Same-dtype cast is a clone (common when a graph has a
+        // defensive `cast(T)` on an already-T tensor).
+        if a.dtype() == dtype {
+            return Ok(a.clone());
+        }
         // Delegate to the reference backend's cast dispatch
         use fuel_reference_backend::exec::AnyRefTensor as A;
         Ok(match (a, dtype) {
@@ -339,10 +384,19 @@ impl GraphBackend for CpuBackend {
         x: &Self::Storage,
         cos: &Self::Storage,
         sin: &Self::Storage,
-        _xl: &Layout,
+        xl: &Layout,
         _cl: &Layout,
         _sl: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
+        // Stride-aware executor path (`get_gt` on x) may pass a lazy
+        // permute view where the underlying RefTensor's baked-in shape
+        // differs from the layout's logical shape. Materialize first
+        // so `ops::rope` sees a contiguous tensor with the right shape.
+        let x_mat;
+        let x = if storage_needs_materialize(x, xl) {
+            x_mat = materialize_view(x, xl);
+            &x_mat
+        } else { x };
         Ok(match (x, cos, sin) {
             (AnyRefTensor::F32(x), AnyRefTensor::F32(c), AnyRefTensor::F32(s)) => {
                 AnyRefTensor::F32(ops::rope(x, c, s))
@@ -418,5 +472,140 @@ impl GraphBackend for CpuBackend {
             AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::gather(t, dim, ids_u32)),
             _ => fuel_core_types::bail!("gather: unsupported dtype"),
         })
+    }
+}
+
+/// GQA expansion: if A's batch dims are a multiple of B's (same rank,
+/// same trailing-two dims), tile B along the mismatched batch dim(s)
+/// to match A. Returns `None` if no expansion is needed.
+///
+/// Handles the common case in the cached decode path:
+///   A = [batch, n_heads, m, k]         (attention scores / Q)
+///   B = [batch, n_kv_heads, k, n]      (K^T / V, n_rep = n_heads / n_kv_heads)
+/// We tile B's dim[1] from n_kv_heads → n_heads by repeating each
+/// kv-head n_rep times.
+fn expand_b_for_gqa(
+    a_shape: &Shape,
+    b_shape: &Shape,
+    b: &AnyRefTensor,
+) -> Option<AnyRefTensor> {
+    let a_dims = a_shape.dims();
+    let b_dims = b_shape.dims();
+    if a_dims.len() != b_dims.len() || a_dims.len() < 3 {
+        return None;
+    }
+    let rank = a_dims.len();
+    // Trailing two dims (matrix dims) must match.
+    if a_dims[rank - 2] == 0 || b_dims[rank - 2] == 0 {
+        return None;
+    }
+    // Find a single batch dim where a > b and a % b == 0. Other batch
+    // dims must match exactly.
+    let mut mismatch_dim = None;
+    for i in 0..(rank - 2) {
+        if a_dims[i] == b_dims[i] {
+            continue;
+        }
+        if b_dims[i] == 0 || a_dims[i] % b_dims[i] != 0 || mismatch_dim.is_some() {
+            return None;
+        }
+        mismatch_dim = Some(i);
+    }
+    let dim = mismatch_dim?;
+    let n_rep = a_dims[dim] / b_dims[dim];
+    if n_rep <= 1 {
+        return None;
+    }
+
+    // Tile B's `dim` by n_rep. Inner (dim+1..) size and outer (0..dim)
+    // size give us the block structure.
+    let inner: usize = b_dims[dim + 1..].iter().product::<usize>().max(1);
+    let outer: usize = b_dims[..dim].iter().product::<usize>().max(1);
+    let per_outer = b_dims[dim] * inner;
+
+    let mut new_dims: Vec<usize> = b_dims.to_vec();
+    new_dims[dim] = a_dims[dim];
+    let new_shape = Shape::from_dims(&new_dims);
+
+    macro_rules! tile {
+        ($data:expr, $variant:ident) => {{
+            let src = $data.as_slice();
+            let new_len = outer * a_dims[dim] * inner;
+            let mut out = Vec::with_capacity(new_len);
+            for o in 0..outer {
+                for kv in 0..b_dims[dim] {
+                    let src_off = o * per_outer + kv * inner;
+                    for _ in 0..n_rep {
+                        out.extend_from_slice(&src[src_off..src_off + inner]);
+                    }
+                }
+            }
+            AnyRefTensor::$variant(RefTensor::from_vec(out, new_shape))
+        }};
+    }
+
+    Some(match b {
+        AnyRefTensor::F32(t) => tile!(t, F32),
+        AnyRefTensor::F64(t) => tile!(t, F64),
+        AnyRefTensor::BF16(t) => tile!(t, BF16),
+        AnyRefTensor::F16(t) => tile!(t, F16),
+        AnyRefTensor::U32(t) => tile!(t, U32),
+    })
+}
+
+/// Returns the shape of the underlying RefTensor.
+fn storage_shape(storage: &AnyRefTensor) -> Shape {
+    match storage {
+        AnyRefTensor::F32(t) => t.shape().clone(),
+        AnyRefTensor::F64(t) => t.shape().clone(),
+        AnyRefTensor::BF16(t) => t.shape().clone(),
+        AnyRefTensor::F16(t) => t.shape().clone(),
+        AnyRefTensor::U32(t) => t.shape().clone(),
+    }
+}
+
+/// True if the storage's baked-in shape doesn't match the layout's
+/// shape (lazy view) OR the layout is non-contiguous (stride != row-major).
+fn storage_needs_materialize(storage: &AnyRefTensor, layout: &Layout) -> bool {
+    storage_shape(storage).dims() != layout.shape().dims() || !layout.is_contiguous()
+}
+
+/// Materialize a strided view (lazy permute, lazy broadcast, or any
+/// storage whose layout differs from its baked-in shape) into a
+/// contiguous `AnyRefTensor` matching `layout.shape()`.
+fn materialize_view(storage: &AnyRefTensor, layout: &Layout) -> AnyRefTensor {
+    let out_shape = layout.shape().clone();
+    let n = out_shape.elem_count();
+    let strides = layout.stride();
+    let offset = layout.start_offset();
+    let dims = out_shape.dims();
+
+    macro_rules! mat {
+        ($src:expr, $variant:ident) => {{
+            let src = $src.as_slice();
+            let mut out = Vec::with_capacity(n);
+            let mut idx = vec![0usize; dims.len()];
+            for _ in 0..n {
+                let mut flat = offset;
+                for d in 0..dims.len() {
+                    flat += idx[d] * strides[d];
+                }
+                out.push(src[flat]);
+                for d in (0..dims.len()).rev() {
+                    idx[d] += 1;
+                    if idx[d] < dims[d] { break; }
+                    idx[d] = 0;
+                }
+            }
+            AnyRefTensor::$variant(RefTensor::from_vec(out, out_shape))
+        }};
+    }
+
+    match storage {
+        AnyRefTensor::F32(t) => mat!(t, F32),
+        AnyRefTensor::F64(t) => mat!(t, F64),
+        AnyRefTensor::BF16(t) => mat!(t, BF16),
+        AnyRefTensor::F16(t) => mat!(t, F16),
+        AnyRefTensor::U32(t) => mat!(t, U32),
     }
 }

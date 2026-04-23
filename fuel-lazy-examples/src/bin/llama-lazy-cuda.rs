@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut streamed: Vec<u32> = prompt_tokens.clone();
     let mut printed_text = tokenizer.decode(&streamed, true)?;
     let t0 = Instant::now();
-    let output_tokens = model.generate_streaming_cuda(
+    let output_tokens = model.generate_streaming_gpu_on(
         &prompt_tokens,
         max_new,
         SamplingStrategy::Temperature { temp: 0.8, seed: 42 },

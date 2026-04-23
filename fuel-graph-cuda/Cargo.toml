@@ -18,6 +18,7 @@
     baracuda-types      = { workspace = true }
     baracuda-core       = { workspace = true }
     baracuda-driver     = { workspace = true }
+    baracuda-cuda-sys   = { workspace = true }
     baracuda-cublas     = { workspace = true }
     baracuda-cublas-sys = { workspace = true }
     baracuda-curand     = { workspace = true }

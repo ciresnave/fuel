@@ -1,0 +1,24 @@
+# Configuration for cargo-anatomy
+
+[evaluation]
+[evaluation.abstraction]
+# Minimum ratio considered abstract
+abstract_min = 0.7
+# Maximum ratio considered concrete
+concrete_max = 0.3
+
+[evaluation.cohesion]
+# Values greater than this are high cohesion
+high_gt = 1.0
+
+[evaluation.instability]
+# Minimum ratio considered unstable
+unstable_min = 0.7
+# Maximum ratio considered stable
+stable_max = 0.3
+
+[evaluation.distance]
+# Maximum normalized distance considered good
+good_max = 0.4
+# Minimum normalized distance considered bad
+bad_min = 0.6

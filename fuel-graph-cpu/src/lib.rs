@@ -293,6 +293,7 @@ fn eval_node(
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),
+        Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
         Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
         Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),
         Op::LayerNormLastDimBackward { eps } => {
@@ -316,6 +317,24 @@ fn eval_node(
         Op::Clamp { min, max } => eval_clamp(*min, *max, inputs, cache),
         Op::Maximum => binary!(inputs, cache, ops::maximum),
         Op::Minimum => binary!(inputs, cache, ops::minimum),
+        Op::Copy { .. } | Op::Move { .. } => {
+            // CPU-only context: Copy/Move is a pass-through (the input
+            // is already on CPU; the target is trivially CPU since
+            // there's no other device in this executor). The
+            // destructive semantics of Move kick in at the executor
+            // cache layer, not here.
+            cache.get(&inputs[0]).expect("topo order missing copy/move input").clone()
+        }
+        Op::Release => {
+            // Release on CPU: return a zero-element marker. The actual
+            // refcount-based dealloc happens when the caller's cache
+            // drops its entry; Release signals the scheduler that the
+            // input should not be considered live beyond this point.
+            AnyTensor::F32(RefTensor::from_arc(
+                std::sync::Arc::<[f32]>::from(Vec::<f32>::new()),
+                fuel_core_types::Shape::from_dims(&[0]),
+            ))
+        }
     }
 }
 
@@ -595,6 +614,119 @@ fn eval_rope(
             "rope: dtype mismatch x={:?} cos={:?} sin={:?}",
             a.dtype(), b.dtype(), c.dtype()
         ),
+    }
+}
+
+fn eval_qmatmul(
+    quant_type: fuel_graph::QuantType,
+    k: usize,
+    n: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let a = cache.get(&inputs[0]).expect("qmatmul missing activations");
+    let w = cache.get(&inputs[1]).expect("qmatmul missing weight bytes");
+    let a_f32 = match a {
+        AnyTensor::F32(t) => t,
+        _ => panic!("qmatmul: activations must be F32, got {:?}", a.dtype()),
+    };
+    let w_u32 = match w {
+        AnyTensor::U32(t) => t,
+        _ => panic!("qmatmul: weight bytes must be U32, got {:?}", w.dtype()),
+    };
+    let w_bytes: Vec<u8> = w_u32.as_slice().iter().flat_map(|&u| u.to_le_bytes()).collect();
+    let w_deq = cpu_dequantize_blocks(&w_bytes, quant_type, n, k);
+    let w_ref = RefTensor::from_vec(w_deq, fuel_core_types::Shape::from_dims(&[n, k]));
+    // [N, K] → transpose → [K, N] for X @ W_t convention.
+    let w_t = ops::transpose_last_two(&w_ref);
+    AnyTensor::F32(ops::matmul(a_f32, &w_t))
+}
+
+/// CPU reference dequantization of Q-type blocks to F32 [n_rows, k_cols]
+/// row-major. Must match the GPU `dequant_q4_0` / `dequant_q8_0` output.
+fn cpu_dequantize_blocks(
+    bytes: &[u8],
+    quant_type: fuel_graph::QuantType,
+    n_rows: usize,
+    k_cols: usize,
+) -> Vec<f32> {
+    use half::f16;
+    let bpb = quant_type.bytes_per_block();
+    let epb = quant_type.elements_per_block();
+    let blocks_per_row = k_cols / epb;
+    let mut out = vec![0.0_f32; n_rows * k_cols];
+    for row in 0..n_rows {
+        for bi in 0..blocks_per_row {
+            let block_off = (row * blocks_per_row + bi) * bpb;
+            let out_base = row * k_cols + bi * epb;
+            match quant_type {
+                fuel_graph::QuantType::Q4_0 => {
+                    let scale = f16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]).to_f32();
+                    for kk in 0..16 {
+                        let packed = bytes[block_off + 2 + kk];
+                        let lo = (packed & 0x0F) as i32 - 8;
+                        let hi = ((packed >> 4) & 0x0F) as i32 - 8;
+                        out[out_base + kk]       = lo as f32 * scale;
+                        out[out_base + 16 + kk]  = hi as f32 * scale;
+                    }
+                }
+                fuel_graph::QuantType::Q8_0 => {
+                    let scale = f16::from_le_bytes([bytes[block_off], bytes[block_off + 1]]).to_f32();
+                    for kk in 0..32 {
+                        let q = bytes[block_off + 2 + kk] as i8 as i32;
+                        out[out_base + kk] = q as f32 * scale;
+                    }
+                }
+                fuel_graph::QuantType::Q4_K_M => {
+                    cpu_dequantize_q4_km_block(
+                        &bytes[block_off..block_off + 144],
+                        &mut out[out_base..out_base + 256],
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// CPU reference dequant for one Q4_K_M super-block. Mirrors the
+/// fuel-reference-backend implementation and the GPU kernel.
+fn cpu_dequantize_q4_km_block(bytes: &[u8], out: &mut [f32]) {
+    use half::f16;
+    debug_assert_eq!(bytes.len(), 144);
+    debug_assert_eq!(out.len(), 256);
+    let d    = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
+    let dmin = f16::from_le_bytes([bytes[2], bytes[3]]).to_f32();
+    let scales: [u8; 12] = bytes[4..16].try_into().unwrap();
+    let qs = &bytes[16..144];
+    let get_sm = |j: usize| -> (u8, u8) {
+        if j < 4 {
+            (scales[j] & 63, scales[j + 4] & 63)
+        } else {
+            let sc = (scales[j + 4] & 0xF) | ((scales[j - 4] >> 6) << 4);
+            let m  = (scales[j + 4] >> 4)  | ((scales[j] >> 6) << 4);
+            (sc, m)
+        }
+    };
+    let mut is = 0;
+    let mut ys_idx = 0;
+    for j in (0..256).step_by(64) {
+        let qsub = &qs[j / 2 .. j / 2 + 32];
+        let (sc, m) = get_sm(is);
+        let d1 = d * sc as f32;
+        let m1 = dmin * m as f32;
+        let (sc, m) = get_sm(is + 1);
+        let d2 = d * sc as f32;
+        let m2 = dmin * m as f32;
+        for &q in qsub {
+            out[ys_idx] = d1 * (q & 0xF) as f32 - m1;
+            ys_idx += 1;
+        }
+        for &q in qsub {
+            out[ys_idx] = d2 * (q >> 4) as f32 - m2;
+            ys_idx += 1;
+        }
+        is += 2;
     }
 }
 
