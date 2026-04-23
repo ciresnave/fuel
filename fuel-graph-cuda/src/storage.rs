@@ -2949,13 +2949,14 @@ unsafe fn gemm_strided_batched_f32(
     b: &baracuda_driver::DeviceSlice<f32>,
     c: &mut CudaSlice<f32>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
     use baracuda_cublas_sys::types as sys;
     use baracuda_driver::DevicePtrMut;
 
     let compute_type = if gemm_reduced_precision_f32() {
-        sys::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32
+        cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32
     } else {
-        sys::cublasComputeType_t::CUBLAS_COMPUTE_32F
+        cublasComputeType_t::CUBLAS_COMPUTE_32F
     };
     let alpha = &cfg.gemm.alpha as *const f32 as *const _;
     let beta = &cfg.gemm.beta as *const f32 as *const _;
@@ -2975,21 +2976,21 @@ unsafe fn gemm_strided_batched_f32(
             cfg.gemm.k,
             alpha,
             a as *const _,
-            sys::cudaDataType_t::CUDA_R_32F,
+            cudaDataType_t::CUDA_R_32F,
             cfg.gemm.lda,
             cfg.stride_a,
             b as *const _,
-            sys::cudaDataType_t::CUDA_R_32F,
+            cudaDataType_t::CUDA_R_32F,
             cfg.gemm.ldb,
             cfg.stride_b,
             beta,
             c as *mut _,
-            sys::cudaDataType_t::CUDA_R_32F,
+            cudaDataType_t::CUDA_R_32F,
             cfg.gemm.ldc,
             cfg.stride_c,
             cfg.batch_size,
             compute_type,
-            sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            99_i32,
         )
     }
 }
@@ -3001,6 +3002,7 @@ unsafe fn gemm_strided_batched_f16(
     b: &baracuda_driver::DeviceSlice<f16>,
     c: &mut CudaSlice<f16>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
     use baracuda_cublas_sys::types as sys;
     use baracuda_driver::DevicePtrMut;
 
@@ -3010,13 +3012,13 @@ unsafe fn gemm_strided_batched_f16(
     let beta_f32: f32 = cfg.gemm.beta.to_f32();
     let (compute_type, alpha, beta) = if gemm_reduced_precision_f16() {
         (
-            sys::cublasComputeType_t::CUBLAS_COMPUTE_16F,
+            cublasComputeType_t::CUBLAS_COMPUTE_16F,
             (&alpha) as *const f16 as *const _,
             (&beta) as *const f16 as *const _,
         )
     } else {
         (
-            sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            cublasComputeType_t::CUBLAS_COMPUTE_32F,
             (&alpha_f32) as *const f32 as *const _,
             (&beta_f32) as *const f32 as *const _,
         )
@@ -3036,21 +3038,21 @@ unsafe fn gemm_strided_batched_f16(
             cfg.gemm.k,
             alpha,
             a as *const _,
-            sys::cudaDataType_t::CUDA_R_16F,
+            cudaDataType_t::CUDA_R_16F,
             cfg.gemm.lda,
             cfg.stride_a,
             b as *const _,
-            sys::cudaDataType_t::CUDA_R_16F,
+            cudaDataType_t::CUDA_R_16F,
             cfg.gemm.ldb,
             cfg.stride_b,
             beta,
             c as *mut _,
-            sys::cudaDataType_t::CUDA_R_16F,
+            cudaDataType_t::CUDA_R_16F,
             cfg.gemm.ldc,
             cfg.stride_c,
             cfg.batch_size,
             compute_type,
-            sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            99_i32,
         )
     }
 }
@@ -3062,6 +3064,7 @@ unsafe fn gemm_strided_batched_bf16(
     b: &baracuda_driver::DeviceSlice<bf16>,
     c: &mut CudaSlice<bf16>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
+    use baracuda_cublas::{cublasComputeType_t, cudaDataType_t};
     use baracuda_cublas_sys::types as sys;
     use baracuda_driver::DevicePtrMut;
 
@@ -3071,13 +3074,13 @@ unsafe fn gemm_strided_batched_bf16(
     // https://docs.nvidia.com/cuda/cublas/index.html#cublasgemmstridedbatchedex
     let (compute_type, alpha, beta) = if gemm_reduced_precision_bf16() {
         (
-            sys::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF,
+            cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF,
             (&alpha_f32) as *const f32 as *const _,
             (&beta_f32) as *const f32 as *const _,
         )
     } else {
         (
-            sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            cublasComputeType_t::CUBLAS_COMPUTE_32F,
             (&alpha_f32) as *const f32 as *const _,
             (&beta_f32) as *const f32 as *const _,
         )
@@ -3097,21 +3100,21 @@ unsafe fn gemm_strided_batched_bf16(
             cfg.gemm.k,
             alpha,
             a as *const _,
-            sys::cudaDataType_t::CUDA_R_16BF,
+            cudaDataType_t::CUDA_R_16BF,
             cfg.gemm.lda,
             cfg.stride_a,
             b as *const _,
-            sys::cudaDataType_t::CUDA_R_16BF,
+            cudaDataType_t::CUDA_R_16BF,
             cfg.gemm.ldb,
             cfg.stride_b,
             beta,
             c as *mut _,
-            sys::cudaDataType_t::CUDA_R_16BF,
+            cudaDataType_t::CUDA_R_16BF,
             cfg.gemm.ldc,
             cfg.stride_c,
             cfg.batch_size,
             compute_type,
-            sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            99_i32,
         )
     }
 }
