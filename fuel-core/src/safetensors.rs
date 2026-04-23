@@ -297,7 +297,7 @@ fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Resul
         DeviceLocation::Cuda { .. } => {
             let cuda_dev = device.as_cuda_device().unwrap();
             let mut slice = unsafe { cuda_dev.alloc::<u8>(data.len())? };
-            cuda_dev.memcpy_htod(data, &mut slice)?;
+            cuda_dev.memcpy_htod(data, &mut slice.as_slice_mut())?;
             let slice = match dtype {
                 DType::F6E2M3 => crate::cuda_backend::CudaStorageSlice::F6E2M3(slice),
                 DType::F6E3M2 => crate::cuda_backend::CudaStorageSlice::F6E3M2(slice),

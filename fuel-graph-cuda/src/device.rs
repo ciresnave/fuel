@@ -174,22 +174,56 @@ impl CudaDevice {
     }
 
     /// Host → device copy, async on this device's default stream.
+    /// Destination can be a DeviceBuffer or a DeviceSliceMut — the shared
+    /// behaviour is "a contiguous device-side region with a raw pointer and
+    /// a length", which we reach via the raw sys API.
     pub fn memcpy_htod<T: baracuda_types::DeviceRepr>(
         &self,
         src: &[T],
-        dst: &DeviceBuffer<T>,
+        dst: &mut baracuda_driver::DeviceSliceMut<T>,
     ) -> Result<()> {
-        dst.copy_from_host_async(src, &self.stream).w()
+        use baracuda_cuda_sys::{driver, CUresult};
+        assert_eq!(src.len(), dst.len());
+        let bytes = src.len() * std::mem::size_of::<T>();
+        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let cu = d
+            .cu_memcpy_htod_async()
+            .map_err(|_| CudaError::InternalError("cuMemcpyHtoDAsync not available"))
+            .w()?;
+        let r = unsafe {
+            cu(
+                dst.as_raw(),
+                src.as_ptr() as *const std::ffi::c_void,
+                bytes,
+                self.stream.as_raw(),
+            )
+        };
+        if r == CUresult::SUCCESS {
+            Ok(())
+        } else {
+            Err(CudaError::InternalError("cuMemcpyHtoDAsync failed").into())
+        }
     }
 
     /// Device → host blocking copy — returns an owned Vec.
     pub fn clone_dtoh<T: baracuda_types::DeviceRepr + Default + Clone>(
         &self,
-        src: &DeviceBuffer<T>,
+        src: &baracuda_driver::DeviceSlice<T>,
     ) -> Result<Vec<T>> {
+        use baracuda_cuda_sys::{driver, CUresult};
         let mut out = vec![T::default(); src.len()];
-        src.copy_to_host(&mut out).w()?;
-        Ok(out)
+        let bytes = src.len() * std::mem::size_of::<T>();
+        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let cu = d
+            .cu_memcpy_dtoh()
+            .map_err(|_| CudaError::InternalError("cuMemcpyDtoH not available"))
+            .w()?;
+        let r = unsafe { cu(out.as_mut_ptr() as *mut std::ffi::c_void, src.as_raw(), bytes) };
+        if r == CUresult::SUCCESS {
+            Ok(out)
+        } else {
+            Err(CudaError::InternalError("cuMemcpyDtoH failed").into())
+        }
     }
 
     /// Device → device copy, async on this device's default stream.
@@ -225,13 +259,26 @@ impl CudaDevice {
         Ok(dst)
     }
 
-    /// Device → host blocking copy (dst must have `len >= src.len()`).
+    /// Device → host blocking copy (dst must have `len == src.len()`).
     pub fn memcpy_dtoh<T: baracuda_types::DeviceRepr>(
         &self,
-        src: &DeviceBuffer<T>,
+        src: &baracuda_driver::DeviceSlice<T>,
         dst: &mut [T],
     ) -> Result<()> {
-        src.copy_to_host(dst).w()
+        use baracuda_cuda_sys::{driver, CUresult};
+        assert_eq!(src.len(), dst.len());
+        let bytes = src.len() * std::mem::size_of::<T>();
+        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let cu = d
+            .cu_memcpy_dtoh()
+            .map_err(|_| CudaError::InternalError("cuMemcpyDtoH not available"))
+            .w()?;
+        let r = unsafe { cu(dst.as_mut_ptr() as *mut std::ffi::c_void, src.as_raw(), bytes) };
+        if r == CUresult::SUCCESS {
+            Ok(())
+        } else {
+            Err(CudaError::InternalError("cuMemcpyDtoH failed").into())
+        }
     }
 
     /// Host → device (new buffer): allocate + copy in one call.
