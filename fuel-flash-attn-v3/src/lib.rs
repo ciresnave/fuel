@@ -10,8 +10,10 @@
 mod ffi;
 
 use fuel::backend::BackendStorage;
-use fuel::cuda_backend::cudarc::driver::DevicePtr;
-use fuel::{CpuStorage, DType, Layout, Result, Shape, Tensor};
+use fuel::dyn_backend::DynBackendStorage;
+use fuel::{DType, Layout, Result, Shape, Tensor};
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
+use fuel_graph_cuda::CudaBackendStorage;
 use half::{bf16, f16};
 
 fn round_multiple(x: usize, m: usize) -> usize {
@@ -28,7 +30,7 @@ pub struct FlashAttn {
 
 impl FlashAttn {
     fn cuda_fwd_t<
-        T: fuel::cuda_backend::CudaDType + fuel::cuda_backend::cudarc::driver::DeviceRepr,
+        T: fuel_graph_cuda::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
     >(
         &self,
         q: &fuel::CudaStorage,
@@ -47,9 +49,9 @@ impl FlashAttn {
         let q = q.as_cuda_slice::<T>()?;
         let k = k.as_cuda_slice::<T>()?;
         let v = v.as_cuda_slice::<T>()?;
-        let q = q.slice(q_l.start_offset()..);
-        let k = k.slice(k_l.start_offset()..);
-        let v = v.slice(v_l.start_offset()..);
+        let q = q.slice(q_l.start_offset()..q.len());
+        let k = k.slice(k_l.start_offset()..k.len());
+        let v = v.slice(v_l.start_offset()..v.len());
 
         let q_stride = q_l.stride();
         let k_stride = k_l.stride();
@@ -127,15 +129,12 @@ impl FlashAttn {
                 );
             }
 
-            let alibi_slopes = match &*alibi_slopes {
-                fuel::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
-                _ => fuel::bail!("alibi_slopes must be a cuda tensor"),
-            };
+            let alibi_slopes = alibi_slopes.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("alibi_slopes must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
-            let alibi_slopes = alibi_slopes.slice(alibi_slopes_layout.start_offset()..);
+            let alibi_slopes = alibi_slopes.slice(alibi_slopes_layout.start_offset()..alibi_slopes.len());
 
             // Dropping the guard here doesn't seem very safe.
-            let (ptr, _guard) = alibi_slopes.device_ptr(&stream);
+            let ptr = alibi_slopes.as_raw().0;
             ptr as *const core::ffi::c_void
         } else {
             std::ptr::null()
@@ -181,11 +180,11 @@ impl FlashAttn {
         }
 
         unsafe {
-            let (q_ptr, _guard) = q.device_ptr(&stream);
-            let (k_ptr, _guard) = k.device_ptr(&stream);
-            let (v_ptr, _guard) = v.device_ptr(&stream);
-            let (dst_ptr, _guard) = dst.device_ptr(&stream);
-            let (softmax_lse_ptr, _guard) = softmax_lse.device_ptr(&stream);
+            let q_ptr = q.as_raw().0;
+            let k_ptr = k.as_raw().0;
+            let v_ptr = v.as_raw().0;
+            let dst_ptr = dst.as_raw().0;
+            let softmax_lse_ptr = softmax_lse.as_raw().0;
             ffi::run_mha(
                 q_ptr as *const core::ffi::c_void,
                 k_ptr as *const core::ffi::c_void,
@@ -239,32 +238,39 @@ impl fuel::CustomOp3 for FlashAttn {
         "flash-attn-v3"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
-        fuel::bail!("no cpu support for flash-attn-v3")
-    }
-
-    fn cuda_fwd(
-        &self,
-        q: &fuel::CudaStorage,
-        q_l: &Layout,
-        k: &fuel::CudaStorage,
-        k_l: &Layout,
-        v: &fuel::CudaStorage,
-        v_l: &Layout,
-    ) -> Result<(fuel::CudaStorage, Shape)> {
-        match q.dtype() {
-            fuel::DType::F16 => self.cuda_fwd_t::<f16>(q, q_l, k, k_l, v, v_l, false),
-            fuel::DType::BF16 => self.cuda_fwd_t::<bf16>(q, q_l, k, k_l, v, v_l, true),
-            dt => fuel::bail!("flash-attn-v3 is only supported for f16/bf16 ({dt:?})"),
+        s1: &dyn DynBackendStorage,
+        l1: &Layout,
+        s2: &dyn DynBackendStorage,
+        l2: &Layout,
+        s3: &dyn DynBackendStorage,
+        l3: &Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        if s1.as_any().is::<CpuBackendStorage>() {
+            fuel::bail!("no cpu support for flash-attn-v3");
         }
+        let q = s1
+            .as_any()
+            .downcast_ref::<CudaBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-v3 requires CUDA storage".into()).bt())?
+            .inner();
+        let k = s2
+            .as_any()
+            .downcast_ref::<CudaBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-v3 requires CUDA storage".into()).bt())?
+            .inner();
+        let v = s3
+            .as_any()
+            .downcast_ref::<CudaBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-v3 requires CUDA storage".into()).bt())?
+            .inner();
+        let (out, shape) = match q.dtype() {
+            fuel::DType::F16 => self.cuda_fwd_t::<f16>(q, l1, k, l2, v, l3, false),
+            fuel::DType::BF16 => self.cuda_fwd_t::<bf16>(q, l1, k, l2, v, l3, true),
+            dt => fuel::bail!("flash-attn-v3 is only supported for f16/bf16 ({dt:?})"),
+        }?;
+        Ok((Box::new(CudaBackendStorage::new(out)), shape))
     }
 }
 
@@ -436,7 +442,7 @@ struct FlashAttnVarLen {
 
 impl FlashAttnVarLen {
     fn cuda_fwd_t<
-        T: fuel::cuda_backend::CudaDType + fuel::cuda_backend::cudarc::driver::DeviceRepr,
+        T: fuel_graph_cuda::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
     >(
         &self,
         q: &fuel::CudaStorage,
@@ -453,20 +459,20 @@ impl FlashAttnVarLen {
         let out_l = Layout::contiguous(&out_shape);
 
         let (seqlens_q, seqlens_q_layout) = self.seqlens_q.storage_and_layout();
-        let seqlens_q = match &*seqlens_q {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?, // Should be i32!
-            _ => fuel::bail!("seqlens_q must be a cuda tensor"),
-        };
+        let seqlens_q = seqlens_q
+            .as_cuda_storage()
+            .ok_or_else(|| fuel::Error::Msg("seqlens_q must be a cuda tensor".into()).bt())?
+            .as_cuda_slice::<u32>()?;
         let seqlens_q = match seqlens_q_layout.contiguous_offsets() {
             Some((o1, o2)) => seqlens_q.slice(o1..o2),
             None => fuel::bail!("seqlens_q has to be contiguous"),
         };
 
         let (seqlens_k, seqlens_k_layout) = self.seqlens_k.storage_and_layout();
-        let seqlens_k = match &*seqlens_k {
-            fuel::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?, // Should be i32!
-            _ => fuel::bail!("seqlens_k must be a cuda tensor"),
-        };
+        let seqlens_k = seqlens_k
+            .as_cuda_storage()
+            .ok_or_else(|| fuel::Error::Msg("seqlens_k must be a cuda tensor".into()).bt())?
+            .as_cuda_slice::<u32>()?;
         let seqlens_k = match seqlens_k_layout.contiguous_offsets() {
             Some((o1, o2)) => seqlens_k.slice(o1..o2),
             None => fuel::bail!("seqlens_k has to be contiguous"),
@@ -475,9 +481,9 @@ impl FlashAttnVarLen {
         let q = q.as_cuda_slice::<T>()?;
         let k = k.as_cuda_slice::<T>()?;
         let v = v.as_cuda_slice::<T>()?;
-        let q = q.slice(q_l.start_offset()..);
-        let k = k.slice(k_l.start_offset()..);
-        let v = v.slice(v_l.start_offset()..);
+        let q = q.slice(q_l.start_offset()..q.len());
+        let k = k.slice(k_l.start_offset()..k.len());
+        let v = v.slice(v_l.start_offset()..v.len());
 
         let q_stride = q_l.stride();
         let k_stride = k_l.stride();
@@ -566,15 +572,12 @@ impl FlashAttnVarLen {
                 );
             }
 
-            let alibi_slopes = match &*alibi_slopes {
-                fuel::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
-                _ => fuel::bail!("alibi_slopes must be a cuda tensor"),
-            };
+            let alibi_slopes = alibi_slopes.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("alibi_slopes must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
-            let alibi_slopes = alibi_slopes.slice(alibi_slopes_layout.start_offset()..);
+            let alibi_slopes = alibi_slopes.slice(alibi_slopes_layout.start_offset()..alibi_slopes.len());
 
             // Dropping the guard here doesn't seem very safe.
-            let (ptr, _guard) = alibi_slopes.device_ptr(&stream);
+            let ptr = alibi_slopes.as_raw().0;
             ptr as *const core::ffi::c_void
         } else {
             std::ptr::null()
@@ -625,13 +628,13 @@ impl FlashAttnVarLen {
             window_size_right = self.max_seqlen_k as i32;
         }
         unsafe {
-            let (q_ptr, _guard) = q.device_ptr(&stream);
-            let (k_ptr, _guard) = k.device_ptr(&stream);
-            let (v_ptr, _guard) = v.device_ptr(&stream);
-            let (dst_ptr, _guard) = dst.device_ptr(&stream);
-            let (softmax_lse_ptr, _guard) = softmax_lse.device_ptr(&stream);
-            let (seqlens_q_ptr, _guard) = seqlens_q.device_ptr(&stream);
-            let (seqlens_k_ptr, _guard) = seqlens_k.device_ptr(&stream);
+            let q_ptr = q.as_raw().0;
+            let k_ptr = k.as_raw().0;
+            let v_ptr = v.as_raw().0;
+            let dst_ptr = dst.as_raw().0;
+            let softmax_lse_ptr = softmax_lse.as_raw().0;
+            let seqlens_q_ptr = seqlens_q.as_raw().0;
+            let seqlens_k_ptr = seqlens_k.as_raw().0;
             ffi::run_mha(
                 q_ptr as *const core::ffi::c_void,
                 k_ptr as *const core::ffi::c_void,
@@ -685,32 +688,39 @@ impl fuel::CustomOp3 for FlashAttnVarLen {
         "flash-attn-v3-varlen"
     }
 
-    fn cpu_fwd(
+    fn fwd(
         &self,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-        _: &CpuStorage,
-        _: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
-        fuel::bail!("no cpu support for flash-attn-v3")
-    }
-
-    fn cuda_fwd(
-        &self,
-        q: &fuel::CudaStorage,
-        q_l: &Layout,
-        k: &fuel::CudaStorage,
-        k_l: &Layout,
-        v: &fuel::CudaStorage,
-        v_l: &Layout,
-    ) -> Result<(fuel::CudaStorage, Shape)> {
-        match q.dtype() {
-            fuel::DType::F16 => self.cuda_fwd_t::<f16>(q, q_l, k, k_l, v, v_l, false),
-            fuel::DType::BF16 => self.cuda_fwd_t::<bf16>(q, q_l, k, k_l, v, v_l, true),
-            dt => fuel::bail!("flash-attn-v3 is only supported for f16/bf16 ({dt:?})"),
+        s1: &dyn DynBackendStorage,
+        l1: &Layout,
+        s2: &dyn DynBackendStorage,
+        l2: &Layout,
+        s3: &dyn DynBackendStorage,
+        l3: &Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        if s1.as_any().is::<CpuBackendStorage>() {
+            fuel::bail!("no cpu support for flash-attn-v3-varlen");
         }
+        let q = s1
+            .as_any()
+            .downcast_ref::<CudaBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-v3-varlen requires CUDA storage".into()).bt())?
+            .inner();
+        let k = s2
+            .as_any()
+            .downcast_ref::<CudaBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-v3-varlen requires CUDA storage".into()).bt())?
+            .inner();
+        let v = s3
+            .as_any()
+            .downcast_ref::<CudaBackendStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-v3-varlen requires CUDA storage".into()).bt())?
+            .inner();
+        let (out, shape) = match q.dtype() {
+            fuel::DType::F16 => self.cuda_fwd_t::<f16>(q, l1, k, l2, v, l3, false),
+            fuel::DType::BF16 => self.cuda_fwd_t::<bf16>(q, l1, k, l2, v, l3, true),
+            dt => fuel::bail!("flash-attn-v3-varlen is only supported for f16/bf16 ({dt:?})"),
+        }?;
+        Ok((Box::new(CudaBackendStorage::new(out)), shape))
     }
 }
 

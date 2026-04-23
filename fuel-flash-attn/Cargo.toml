@@ -11,8 +11,13 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-fuel = { workspace = true, features = ["cuda"] }
-half = { workspace = true }
+fuel            = { workspace = true, features = ["cuda"] }
+fuel-graph-cuda = { workspace = true }
+fuel-core-types = { workspace = true }
+fuel-cpu-backend = { workspace = true }
+baracuda-types  = { workspace = true }
+baracuda-driver = { workspace = true }
+half            = { workspace = true }
 
 [build-dependencies]
 cudaforge = { workspace = true }
