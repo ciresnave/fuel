@@ -185,7 +185,7 @@ impl Map1 for UnaryKernel {
         let el_count = shape.elem_count();
         let cfg = LaunchConfig::for_num_elems(el_count as u32);
         let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..);
+        let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>(self.0), &kernels::UNARY)?;
         let mut out = unsafe { dev.alloc::<T>(el_count)? };
         let mut builder = func.builder();
@@ -222,8 +222,8 @@ impl Map2 for BinaryKernel {
         } else {
             SlicePtrOrNull::Ptr(dev.clone_htod(&[dims, lhs_l.stride(), rhs_l.stride()].concat())?)
         };
-        let lhs = &lhs.slice(lhs_l.start_offset()..);
-        let rhs = &rhs.slice(rhs_l.start_offset()..);
+        let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
+        let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
         let func = dev.get_or_load_func(&kernel_name::<T>(self.0), &kernels::BINARY)?;
         let out = unsafe { dev.alloc::<T>(elem_count)? };
         let mut builder = func.builder();

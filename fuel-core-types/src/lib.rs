@@ -10,6 +10,7 @@
 pub type DimVec = smallvec::SmallVec<[usize; 6]>;
 
 pub mod backend;
+pub mod capability;
 pub mod conv;
 pub mod cpu;
 mod cpu_storage;
@@ -24,6 +25,7 @@ pub mod scalar;
 pub mod shape;
 pub mod strided_index;
 
+pub use capability::Capability;
 pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 pub use device::DeviceLocation;
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};

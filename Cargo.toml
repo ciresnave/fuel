@@ -123,7 +123,7 @@ criterion = { version = "0.8", default-features = false }
 # The `baracuda` umbrella crate re-exports sub-crates behind feature flags;
 # Fuel depends on the sub-crates directly so features stay explicit and
 # transitive weight is minimal per consuming crate.
-baracuda-types      = { path = "../baracuda/crates/baracuda-types" }
+baracuda-types      = { path = "../baracuda/crates/baracuda-types", features = ["half-crate", "f8-crate"] }
 baracuda-core       = { path = "../baracuda/crates/baracuda-core" }
 baracuda-cuda-sys   = { path = "../baracuda/crates/baracuda-cuda-sys" }
 baracuda-driver     = { path = "../baracuda/crates/baracuda-driver" }

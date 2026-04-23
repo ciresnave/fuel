@@ -42,7 +42,7 @@
 
 pub mod opt;
 
-use fuel_core_types::{DType, Shape};
+use fuel_core_types::{DeviceLocation, DType, Shape};
 use half::{bf16, f16};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -105,6 +105,40 @@ pub fn topo_order_multi(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
 /// A node ID in the arena. Stable for the lifetime of the [`Graph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub usize);
+
+/// Quantization block format for [`Op::QMatMul`]. Matches the
+/// GGML/GGUF block layouts; each variant implies a fixed bytes-per-block
+/// and elements-per-block. Only variants for which a backend has a
+/// fused dequant-in-kernel matmul are currently exposed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuantType {
+    /// 32-element block = 2 bytes f16 scale + 16 bytes packed u4 quants.
+    Q4_0,
+    /// 32-element block = 2 bytes f16 scale + 32 bytes i8 quants.
+    Q8_0,
+    /// 256-element super-block = 2 bytes f16 d + 2 bytes f16 dmin +
+    /// 12 bytes of 6-bit-packed sub-block scales/mins + 128 bytes
+    /// of 4-bit-packed quants. GGML k-quant "medium" format.
+    Q4_K_M,
+}
+
+impl QuantType {
+    /// Bytes per quantization block.
+    pub fn bytes_per_block(self) -> usize {
+        match self {
+            QuantType::Q4_0 => 18,
+            QuantType::Q8_0 => 34,
+            QuantType::Q4_K_M => 144,
+        }
+    }
+    /// Elements per quantization block.
+    pub fn elements_per_block(self) -> usize {
+        match self {
+            QuantType::Q4_0 | QuantType::Q8_0 => 32,
+            QuantType::Q4_K_M => 256,
+        }
+    }
+}
 
 /// The closed enum of operations a graph node can represent.
 ///
@@ -246,6 +280,30 @@ pub enum Op {
     /// per layer (~1760 per TinyLlama token). This fuses it to 1.
     Rope,
 
+    /// Quantized matrix multiply: `C = A @ dequant(W_Q)`. The second
+    /// input is a U32-typed tensor holding raw quantization-block
+    /// bytes; the backend dequantizes on the fly inside its matmul
+    /// kernel (avoiding a full dequant roundtrip through F32/BF16).
+    ///
+    /// Input shapes:
+    ///   A: `[..., M, K]` F32 (activations)
+    ///   W_Q: `[n_bytes / 4]` U32 — a row-major stream of Q-type blocks
+    ///         for a `[N, K]` weight matrix (llama.cpp/GGUF convention).
+    /// Output shape: `[..., M, N]` F32.
+    ///
+    /// Backward: gradient through W_Q is zero (quantized weights are
+    /// frozen in the expected use case). Gradient through A is not
+    /// implemented at the moment — add it if/when we need to fine-tune
+    /// over Q-weights.
+    QMatMul {
+        /// Quantization type for the weight blocks.
+        quant_type: QuantType,
+        /// Weight input-feature dim (the contracted dim).
+        k: usize,
+        /// Weight output-feature dim.
+        n: usize,
+    },
+
     // --- backward helpers ---
     //
     // These ops encapsulate the "all at once" backward rules for
@@ -345,6 +403,59 @@ pub enum Op {
     /// substituting `indices` at position `dim`. `out[p with dim ←
     /// indices[p]] += src[p]`.
     ScatterAdd { dim: usize },
+
+    // --- cross-device transfer ---
+    /// Copy the input tensor to a specific device. Source stays
+    /// resident (non-destructive). Source device is implicit from
+    /// `inputs[0]`'s current residency. When source and target
+    /// devices match, the backend is free to turn this into a cheap
+    /// clone; when they differ, the backend must actually transfer
+    /// the data (today: through a host buffer — Phase 3 has no P2P
+    /// fast path yet).
+    ///
+    /// Phase 3 of the unified scheduler work. The scheduler (Phase 4)
+    /// inserts these nodes automatically; users can also construct
+    /// them explicitly via `Tensor::copy_to_device`.
+    Copy { target: DeviceLocation },
+
+    /// Release the input tensor's device-resident storage. Produces a
+    /// zero-element marker output (NodeId placeholder for graph
+    /// bookkeeping; no meaningful data). After this op runs, the
+    /// input's device storage is gone; any subsequent reader of the
+    /// input's NodeId must get its data from a different path (a
+    /// sibling Copy output, or re-execution of the producer).
+    ///
+    /// Destructive on `inputs[0]`. Scheduler must pin `Op::Release`
+    /// to run after every other reader of its input via
+    /// [`opt::derive_ordering`].
+    Release,
+
+    /// Transfer the input tensor to `target` device, destroying the
+    /// source in the process. Semantically equivalent to
+    /// `Op::Copy { target }` followed by `Op::Release` on the source,
+    /// with the explicit guarantee that backends MAY fast-path the
+    /// fused form as a single transfer (e.g., a zero-copy handoff if
+    /// source and target are the same memory type).
+    ///
+    /// Output is a fresh tensor on `target` with the input's shape
+    /// and dtype. Destructive on `inputs[0]`; the scheduler pins this
+    /// op to run after every non-destructive reader of the source via
+    /// [`opt::derive_ordering`].
+    Move { target: DeviceLocation },
+}
+
+impl Op {
+    /// Index into `inputs` that this op destroys on execution. `None`
+    /// means the op is non-destructive — every input remains readable
+    /// after the op completes. Destructive ops need the scheduler to
+    /// pin them to run after all other readers of the destroyed input,
+    /// via ordering edges derived by [`opt::derive_ordering`].
+    pub fn destructive_input(&self) -> Option<usize> {
+        match self {
+            Op::Release | Op::Move { .. } => Some(0),
+            _ => None,
+        }
+    }
 }
 
 /// Concrete data stored on a `Const` node. One variant per supported
@@ -414,15 +525,51 @@ pub struct Node {
 
 /// The graph arena. Stores every node added during a computation-building
 /// session. Nodes are append-only and indexed by [`NodeId`].
+///
+/// Placement metadata (`DeviceLocation` per node) lives in a side-table
+/// so existing `Node { ... }` construction sites don't need to be
+/// modified. This is the Phase-1 shape: placements are opt-in, inert
+/// hints that the executor may validate but does not yet act on.
 #[derive(Debug, Default)]
 pub struct Graph {
     nodes: Vec<Node>,
+    /// Sparse map of per-node placement hints. Entries are only present
+    /// when explicitly set via [`Graph::set_placement`]. Absent entries
+    /// mean "inherit from the executor's default device."
+    placements: HashMap<NodeId, DeviceLocation>,
+    /// NodeIds the executor must schedule even when their outputs are
+    /// unreachable from the user's roots. Populated by graph-mutating
+    /// rules that emit side-effecting ops (e.g. `Op::Release` for
+    /// residency eviction). See [`Graph::add_side_effect_root`].
+    side_effect_roots: Vec<NodeId>,
 }
 
 impl Graph {
     /// Create an empty graph.
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self { nodes: Vec::new(), placements: HashMap::new(), side_effect_roots: Vec::new() }
+    }
+
+    /// Register a NodeId as a side-effect root — a node whose output
+    /// isn't reachable from any user-requested root but whose
+    /// execution the executor must still schedule. Used for
+    /// destructive ops (e.g. `Op::Release`) emitted by graph-mutating
+    /// rules: the rule needs Release to run (freeing device memory),
+    /// but Release's zero-element marker has no consumer.
+    ///
+    /// The executor's realize paths walk the user's roots AND these
+    /// side-effect roots via a single combined `execution_plan` call.
+    pub fn add_side_effect_root(&mut self, id: NodeId) {
+        assert!(id.0 < self.nodes.len(), "add_side_effect_root: id out of bounds");
+        if !self.side_effect_roots.contains(&id) {
+            self.side_effect_roots.push(id);
+        }
+    }
+
+    /// Snapshot the registered side-effect roots. Executor concatenates
+    /// these with the user's requested roots before computing the plan.
+    pub fn side_effect_roots(&self) -> &[NodeId] {
+        &self.side_effect_roots
     }
 
     /// The number of nodes currently in the graph.
@@ -450,6 +597,44 @@ impl Graph {
         self.nodes.push(node);
         id
     }
+
+    /// Rewrite every occurrence of `old_input` in `node`'s input list to
+    /// `new_input`. In-place mutation — the *only* exception to the
+    /// otherwise append-only invariant.
+    ///
+    /// Callers are responsible for ensuring `new_input` is semantically
+    /// equivalent to `old_input` at this edge: same shape, same dtype,
+    /// and produces data the consumer can read without error on the
+    /// relevant device. Used by transform passes (residency eviction,
+    /// fusion) that need to redirect a specific consumer's edge.
+    pub(crate) fn rewrite_input(
+        &mut self,
+        node: NodeId,
+        old_input: NodeId,
+        new_input: NodeId,
+    ) {
+        assert!(node.0 < self.nodes.len(), "rewrite_input: node out of bounds");
+        let inputs = &mut self.nodes[node.0].inputs;
+        for inp in inputs.iter_mut() {
+            if *inp == old_input {
+                *inp = new_input;
+            }
+        }
+    }
+
+    /// Tag a node with a target device. The executor will validate
+    /// (post-Phase-1) that the node's op can be evaluated on that
+    /// device. In Phase 1 the tag is informational only.
+    pub fn set_placement(&mut self, id: NodeId, loc: DeviceLocation) {
+        assert!(id.0 < self.nodes.len(), "set_placement: id out of bounds");
+        self.placements.insert(id, loc);
+    }
+
+    /// Read a node's placement hint, or `None` if the node inherits from
+    /// the executor default.
+    pub fn placement(&self, id: NodeId) -> Option<DeviceLocation> {
+        self.placements.get(&id).copied()
+    }
 }
 
 /// A shared, mutable graph. Builders clone this cheaply and hand it to
@@ -467,6 +652,14 @@ pub struct Tensor {
 }
 
 impl Tensor {
+    /// Wrap an existing `(graph, node_id)` pair as a Tensor handle.
+    /// Used by graph-rewriting passes (e.g., `opt::insert_copies`)
+    /// that produce new root `NodeId`s and need to hand them back to
+    /// call sites as Tensors.
+    pub fn from_existing(graph: SharedGraph, id: NodeId) -> Self {
+        Self { graph, id }
+    }
+
     /// The node ID this handle points to.
     pub fn id(&self) -> NodeId {
         self.id
@@ -486,6 +679,103 @@ impl Tensor {
     /// The dtype of this tensor, read from the underlying node.
     pub fn dtype(&self) -> DType {
         self.graph.borrow().node(self.id).dtype
+    }
+
+    /// The placement hint for this tensor's node, if one was set. `None`
+    /// means "inherit from the executor's default device."
+    pub fn placement(&self) -> Option<DeviceLocation> {
+        self.graph.borrow().placement(self.id)
+    }
+
+    /// Tag this tensor's node with a target device. The executor will
+    /// validate (post-Phase-1) that the node's op can be evaluated on
+    /// that device. Returns the same `Tensor` handle so this composes
+    /// with builder-style graph construction:
+    ///
+    /// ```ignore
+    /// let y = a.matmul(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
+    /// ```
+    pub fn on_device(self, loc: DeviceLocation) -> Self {
+        self.graph.borrow_mut().set_placement(self.id, loc);
+        self
+    }
+
+    /// Release this tensor's device-resident storage. Appends an
+    /// `Op::Release` node whose output is a zero-element marker (shape
+    /// `[0]`, same dtype as self). Destructive on `self` — after this
+    /// op runs, `self`'s storage is gone.
+    ///
+    /// The ordering-analysis pass (`opt::derive_ordering`, arriving in
+    /// a follow-up PR) automatically pins the Release to run after
+    /// every non-destructive reader of `self`. Callers should NOT
+    /// invoke this directly in a graph that has other readers of
+    /// `self` until that pass is in place — today's executor has no
+    /// mechanism to stop them running in the wrong order.
+    pub fn release(&self) -> Self {
+        let dtype = self.dtype();
+        let id = self.graph.borrow_mut().push(Node {
+            op:     Op::Release,
+            inputs: vec![self.id],
+            shape:  Shape::from_dims(&[0]),
+            dtype,
+        });
+        Tensor { graph: Rc::clone(&self.graph), id }
+    }
+
+    /// Move this tensor's data to `target` device — destroying the
+    /// source in the process. Appends an `Op::Move` node. The output
+    /// has the same shape and dtype as the input and lives on
+    /// `target`; the source's device storage is freed once the op
+    /// runs.
+    ///
+    /// Semantically equivalent to `copy_to_device(target)` followed
+    /// by dropping the source. Use this when you KNOW the source
+    /// won't be needed after the transfer — it lets backends skip
+    /// the intermediate alloc in fast-path cases and lets the
+    /// scheduler free the source's device memory immediately.
+    ///
+    /// If the source may still be read by other ops, use
+    /// [`Self::copy_to_device`] instead — Copy leaves the source
+    /// resident.
+    ///
+    /// The ordering-analysis pass (`opt::derive_ordering`)
+    /// automatically pins this op to run after every non-destructive
+    /// reader of the source. The caller does NOT need to worry about
+    /// topo ordering — just emit the Move wherever the data-flow
+    /// says it should go.
+    pub fn move_to_device(&self, target: DeviceLocation) -> Self {
+        let shape = self.shape();
+        let dtype = self.dtype();
+        let id = self.graph.borrow_mut().push(Node {
+            op:     Op::Move { target },
+            inputs: vec![self.id],
+            shape,
+            dtype,
+        });
+        Tensor { graph: Rc::clone(&self.graph), id }
+    }
+
+    /// Copy this tensor's data to `target` device. Source stays
+    /// resident. Appends an `Op::Copy` node. The output has the same
+    /// shape and dtype as the input; only residency changes.
+    ///
+    /// Same-device copies are still a legal thing to ask for — the
+    /// backend can optimize them into a cheap clone (or the scheduler
+    /// can elide the Copy node entirely). Cross-device copies go
+    /// through the active backend's `GraphBackend::copy_to` — today a
+    /// host round-trip in the
+    /// [`Router`](../fuel_graph_router/struct.Router.html); P2P comes
+    /// later.
+    pub fn copy_to_device(&self, target: DeviceLocation) -> Self {
+        let shape = self.shape();
+        let dtype = self.dtype();
+        let id = self.graph.borrow_mut().push(Node {
+            op:     Op::Copy { target },
+            inputs: vec![self.id],
+            shape,
+            dtype,
+        });
+        Tensor { graph: Rc::clone(&self.graph), id }
     }
 
     /// Build a `Const` tensor from an `f32` slice and shape on a fresh
@@ -714,6 +1004,76 @@ impl Tensor {
             inputs: vec![lhs.id, rhs.id],
             shape:  Shape::from_dims(&out_dims),
             dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a [`Op::QMatMul`] node that multiplies `self` (F32
+    /// activations, shape `[..., M, K]`) with a Q-type quantized
+    /// weight matrix of logical shape `[N, K]` stored as a raw byte
+    /// stream (passed in as a U32 tensor; length = n_bytes / 4).
+    ///
+    /// Output shape: `[..., M, N]` F32. The backend dequantizes the
+    /// weight blocks on the fly inside the matmul kernel, so the
+    /// quantized blocks stay resident at their compressed size.
+    pub fn qmatmul(
+        &self,
+        weight_bytes: &Tensor,
+        quant_type: QuantType,
+        k: usize,
+        n: usize,
+    ) -> Tensor {
+        assert!(
+            Rc::ptr_eq(&self.graph, &weight_bytes.graph),
+            "qmatmul: tensors must live on the same graph",
+        );
+        assert_eq!(
+            self.dtype(),
+            DType::F32,
+            "qmatmul: activations must be F32, got {:?}",
+            self.dtype(),
+        );
+        assert_eq!(
+            weight_bytes.dtype(),
+            DType::U32,
+            "qmatmul: weight_bytes must be U32 (raw block bytes reinterpreted), got {:?}",
+            weight_bytes.dtype(),
+        );
+        let a_dims = self.shape();
+        let a_dims = a_dims.dims();
+        assert!(
+            a_dims.len() >= 2,
+            "qmatmul: activations must be rank ≥ 2, got {a_dims:?}",
+        );
+        assert_eq!(
+            a_dims[a_dims.len() - 1], k,
+            "qmatmul: last dim of activations ({}) must equal k ({k})",
+            a_dims[a_dims.len() - 1],
+        );
+        assert_eq!(
+            k % quant_type.elements_per_block(),
+            0,
+            "qmatmul: k={k} must be a multiple of {quant_type:?}'s block size ({})",
+            quant_type.elements_per_block(),
+        );
+        // Validate the weight byte count matches [N, K/block_size] blocks.
+        let expected_bytes = n * (k / quant_type.elements_per_block()) * quant_type.bytes_per_block();
+        let expected_u32_elems = expected_bytes / 4;
+        assert_eq!(
+            weight_bytes.shape().elem_count(), expected_u32_elems,
+            "qmatmul: weight_bytes has {} u32 elements, expected {expected_u32_elems} for N={n}, K={k}, {quant_type:?}",
+            weight_bytes.shape().elem_count(),
+        );
+        let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
+        out_dims.push(n);
+        let id = self.graph.borrow_mut().push(Node {
+            op:     Op::QMatMul { quant_type, k, n },
+            inputs: vec![self.id, weight_bytes.id],
+            shape:  Shape::from_dims(&out_dims),
+            dtype:  DType::F32,
         });
         Self {
             graph: self.graph.clone(),
@@ -2593,6 +2953,21 @@ impl Tensor {
                          selection."
                     );
                 }
+                Op::QMatMul { .. } => {
+                    // Quantized matmul is only used for frozen weights
+                    // in the expected serving-inference use case, so
+                    // backward is not implemented. If we ever need to
+                    // fine-tune through quantized weights (e.g. QLoRA
+                    // on adapter params attached to a frozen Q-weight),
+                    // the plan is: dequantize the weight once, run a
+                    // standard matmul backward, zero the gradient on
+                    // the Q-bytes input.
+                    panic!(
+                        "backward: QMatMul is not differentiable (quantized \
+                         weights are frozen). Use a dequantize + standard \
+                         matmul if you need gradients through this input."
+                    );
+                }
                 Op::SoftmaxLastDimBackward
                 | Op::LayerNormLastDimBackward { .. }
                 | Op::RmsNormLastDimBackward { .. } => {
@@ -3008,6 +3383,37 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, src, grad_src, &graph_handle);
                 }
+                Op::Copy { .. } => {
+                    // Forward: out = copy(x, target). Backward: the
+                    // gradient flows back to `x`'s original device, so
+                    // the reverse would be another Copy. The source
+                    // device is x's residency — we don't have the typed
+                    // "where was x?" here without tracking it, so we
+                    // fall back to the graph's placement hint on x (if
+                    // any) or trust the scheduler to re-insert the
+                    // correct copy during Phase 4. For Phase 3 we
+                    // assume inference-only use and pass upstream through.
+                    let x = inputs[0];
+                    accumulate_grad(&mut upstream, x, up_id, &graph_handle);
+                }
+                Op::Release => {
+                    // Release has no data output and no gradient to
+                    // propagate. Input is destroyed; any downstream
+                    // node that needs gradient through the original
+                    // tensor must get it from a sibling Copy's backward
+                    // path, not this one.
+                }
+                Op::Move { .. } => {
+                    // Move is Copy + destroy-source. For backward,
+                    // treat it the same as Copy — gradient flows back
+                    // through the move. The Phase 3-style assumption
+                    // still applies: we pass upstream through and rely
+                    // on the scheduler to re-insert the correct reverse
+                    // transfer in a training pass. For inference-only
+                    // use (the current case), this is a no-op.
+                    let x = inputs[0];
+                    accumulate_grad(&mut upstream, x, up_id, &graph_handle);
+                }
             }
         }
 
@@ -3272,6 +3678,93 @@ fn accumulate_grad(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destructive_input_release_is_some_zero() {
+        assert_eq!(Op::Release.destructive_input(), Some(0));
+    }
+
+    #[test]
+    fn destructive_input_move_is_some_zero() {
+        assert_eq!(Op::Move { target: DeviceLocation::Cpu }.destructive_input(), Some(0));
+    }
+
+    #[test]
+    fn destructive_input_non_destructive_ops_are_none() {
+        assert_eq!(Op::Copy { target: DeviceLocation::Cpu }.destructive_input(), None);
+        assert_eq!(Op::Add.destructive_input(), None);
+        assert_eq!(Op::Mul.destructive_input(), None);
+        assert_eq!(Op::MatMul.destructive_input(), None);
+        assert_eq!(Op::Relu.destructive_input(), None);
+    }
+
+    #[test]
+    fn move_to_device_emits_op_move_node() {
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let moved = a.move_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
+        let g = moved.graph().borrow();
+        match &g.node(moved.id()).op {
+            Op::Move { target } => {
+                assert_eq!(*target, DeviceLocation::Vulkan { gpu_id: 0 });
+            }
+            other => panic!("expected Op::Move, got {other:?}"),
+        }
+        assert_eq!(g.node(moved.id()).inputs, vec![a.id()]);
+        // Output has the input's shape (residency changes, data doesn't).
+        assert_eq!(g.node(moved.id()).shape.elem_count(), 2);
+    }
+
+    #[test]
+    fn copy_to_device_emits_op_copy_node() {
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let b = a.copy_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
+        let g = b.graph().borrow();
+        match &g.node(b.id()).op {
+            Op::Copy { target } => {
+                assert_eq!(*target, DeviceLocation::Vulkan { gpu_id: 0 });
+            }
+            other => panic!("expected Op::Copy, got {other:?}"),
+        }
+        // Source stays resident: the original `a` node still in the graph
+        // and is the input of the Copy node.
+        assert_eq!(g.node(b.id()).inputs, vec![a.id()]);
+    }
+
+    #[test]
+    fn release_builder_emits_op_release_node() {
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let released = a.release();
+        let g = released.graph().borrow();
+        assert!(matches!(g.node(released.id()).op, Op::Release));
+        assert_eq!(g.node(released.id()).inputs, vec![a.id()]);
+        // Output is a zero-element marker.
+        assert_eq!(g.node(released.id()).shape.elem_count(), 0);
+    }
+
+    #[test]
+    fn placement_is_none_by_default() {
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        assert_eq!(a.placement(), None);
+    }
+
+    #[test]
+    fn on_device_sets_placement_hint() {
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        // Only tag the Add node; the const leaves remain unplaced.
+        let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
+        assert_eq!(c.placement(), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
+        assert_eq!(a.placement(), None);
+        assert_eq!(b.placement(), None);
+    }
+
+    #[test]
+    fn placement_survives_graph_re_reads() {
+        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]));
+        let tagged = a.clone().on_device(DeviceLocation::Cpu);
+        // Re-read from a fresh borrow — round-trips through the side-table.
+        assert_eq!(tagged.graph().borrow().placement(tagged.id()), Some(DeviceLocation::Cpu));
+    }
 
     #[test]
     fn from_f32_creates_single_const_node() {

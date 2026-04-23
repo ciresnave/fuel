@@ -299,10 +299,16 @@ __device__ void rope(const T * src, const T * cos, const T * sin, T * dst, const
     uint32_t i_d = i_td - (d / 2) * i_t;
     uint32_t i1 = i_bh * td + i_t * d + i_d;
     uint32_t i2 = i1 + d / 2;
-    uint32_t i_cs = i_t * (d / 2) + i_d;
+    // Fuel convention: cos/sin tables are shape [seq, head_dim] with
+    // positions [:, :half] and [:, half:] holding the same scalar for a
+    // given (pos, i). Row stride is `d`, NOT `d/2` (the candle-sourced
+    // convention). We pick the first-half entry for `c` and keep the
+    // formula symmetric; the duplicated second half is consulted
+    // implicitly by selecting the same (i_t, i_d) again.
+    uint32_t i_cs = i_t * d + i_d;
     if (stride_b > 0) {
       uint32_t b_idx = (2 * idx) / stride_b;
-      i_cs += b_idx * (td / 2);
+      i_cs += b_idx * td;
     }
     T c = cos[i_cs];
     T s = sin[i_cs];
@@ -603,6 +609,15 @@ fast_argmax(const size_t src_numel, const size_t el_to_sum_per_block,
       const TYPENAME *src, TYPENAME *dst, const TYPENAME *alpha,               \
       const int n_cols, const int block_size, const float eps) {               \
     rmsnorm<TYPENAME>(src, dst, alpha, n_cols, block_size, eps);               \
+  }                                                                            \
+  /* Gain-less variant. Fuel's `rms_norm_last_dim` op is plain                */\
+  /* RMS normalization; gain is applied as a separate Mul in the graph.      */\
+  /* This kernel avoids the nullptr-arg plumbing that cudarc doesn't         */\
+  /* support cleanly.                                                        */\
+  extern "C" __global__ void FN_NAME##_noalpha(                                \
+      const TYPENAME *src, TYPENAME *dst,                                      \
+      const int n_cols, const int block_size, const float eps) {               \
+    rmsnorm<TYPENAME>(src, dst, (const TYPENAME*)nullptr, n_cols, block_size, eps); \
   }                                                                            \
 
 #define LAYERNORM_OP(TYPENAME, FN_NAME) \

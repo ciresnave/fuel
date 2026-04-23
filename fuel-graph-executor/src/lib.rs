@@ -13,10 +13,31 @@
 //! providing only the device-specific pieces: memory allocation,
 //! matmul, unary/binary kernels, reductions, and softmax.
 
-pub mod shaders;
 
 use fuel_core_types::{DType, DimVec, Layout, Shape};
-use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_graph::{topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_graph::opt::execution_plan;
+
+/// Merge the graph's side-effect roots into the user's requested roots
+/// for the purposes of executing the plan. Deduplicates; preserves the
+/// user's roots in order (they come first, then side-effect roots).
+fn extend_with_side_effect_roots(
+    graph: &fuel_graph::Graph,
+    user_roots: &[NodeId],
+) -> Vec<NodeId> {
+    let side = graph.side_effect_roots();
+    if side.is_empty() {
+        return user_roots.to_vec();
+    }
+    let mut out = Vec::with_capacity(user_roots.len() + side.len());
+    out.extend_from_slice(user_roots);
+    for &s in side {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
 use fuel_reference_backend::exec::AnyRefTensor;
 use fuel_reference_backend::RefTensor;
 use std::collections::HashMap;
@@ -91,9 +112,11 @@ impl<S> TrackedTensor<S> {
 
 /// Per-node cache entry during a realize pass.
 pub enum CacheEntry<S> {
-    /// Points into the executor's persistent `const_pool`. The pool
-    /// outlives the per-realize cache — zero GPU/CPU alloc on hit.
-    ConstRef(usize),
+    /// Shared ref into the executor's persistent `const_pool` via an
+    /// Arc clone. The Arc ensures the weight storage survives even
+    /// if the const_pool evicts the underlying entry mid-walk (which
+    /// can happen when the pool is size-bounded). Arc clone is O(1).
+    ConstRef(std::sync::Arc<TrackedTensor<S>>),
     /// An intermediate computed during this realize pass. Freed when
     /// the cache is dropped at the end of realize.
     Owned(TrackedTensor<S>),
@@ -136,6 +159,28 @@ pub trait GraphBackend {
     /// The dtype of a storage value.
     fn storage_dtype(&self, storage: &Self::Storage) -> DType;
 
+    /// Transfer a storage to the target device. For a single-backend
+    /// executor (CPU-only, Vulkan-only, CUDA-only) this is either a
+    /// clone (same device) or an error (cross-device — the standalone
+    /// backend has no peer to hand off to). The router backend
+    /// (`fuel-graph-router`) overrides this with a real host-round-trip
+    /// implementation.
+    ///
+    /// `layout` describes the logical tensor shape; backends that
+    /// serialize through a host buffer need it to construct the
+    /// HostBuffer.
+    fn copy_to(
+        &self,
+        storage: &Self::Storage,
+        layout: &Layout,
+        target: fuel_core_types::DeviceLocation,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (storage, layout, target);
+        fuel_core_types::bail!(
+            "GraphBackend: copy_to not implemented; this backend is single-device"
+        )
+    }
+
     // -- compute --
 
     fn matmul(
@@ -144,6 +189,87 @@ pub trait GraphBackend {
         bmnk: (usize, usize, usize, usize),
         la: &Layout, lb: &Layout,
     ) -> fuel_core_types::Result<Self::Storage>;
+
+    /// Quantized matmul for Q4_0-weights: `C = A @ dequant_q4_0(W)`.
+    /// `w_q_bytes` holds the raw Q4_0 block byte stream (18 bytes per
+    /// 32-element block, stored as U32 for alignment). Logical weight
+    /// shape: `[n, k]`. Activation `a`: `[..., m, k]`. Output:
+    /// `[..., m, n]` F32.
+    ///
+    /// One trait method per quant format instead of a single
+    /// `qmatmul(QuantType)` dispatcher — kernels are already
+    /// specialized per format, and the executor already has
+    /// `quant_type` in hand from the `Op::QMatMul` variant, so
+    /// collapsing the dispatch there saves one hop.
+    ///
+    /// Default impl returns `Err`; executor falls back to CPU.
+    fn matmul_q4_0(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (a, w_q_bytes, k, n, a_layout);
+        fuel_core_types::bail!("GraphBackend: matmul_q4_0 not implemented natively")
+    }
+
+    /// Quantized matmul for Q4_K_M weights (k-quant family with
+    /// per-row scales + mins). Not yet kernel-implemented in any
+    /// backend. Default bails.
+    fn matmul_q4_km(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (a, w_q_bytes, k, n, a_layout);
+        fuel_core_types::bail!("GraphBackend: matmul_q4_km not implemented natively")
+    }
+
+    /// Quantized matmul for Q8_0 weights (34 bytes per 32 elems, one
+    /// f16 scale + 32 signed i8 quants). Default bails — follow-up
+    /// kernel work.
+    fn matmul_q8_0(
+        &self,
+        a: &Self::Storage,
+        w_q_bytes: &Self::Storage,
+        k: usize,
+        n: usize,
+        a_layout: &Layout,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (a, w_q_bytes, k, n, a_layout);
+        fuel_core_types::bail!("GraphBackend: matmul_q8_0 not implemented natively")
+    }
+
+    /// Quantize an F32 storage buffer to GGML Q8_0 blocks (34 bytes per
+    /// 32 elements). Returns a U32-typed storage holding the raw block
+    /// byte stream. Used for KV-cache compression between decode steps.
+    ///
+    /// Default impl returns Err. Backends that support on-device Q8
+    /// quantization override this.
+    fn quantize_q8_0(
+        &self,
+        src_f32: &Self::Storage,
+        n_elements: usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (src_f32, n_elements);
+        fuel_core_types::bail!("GraphBackend: quantize_q8_0 not implemented natively")
+    }
+
+    /// Dequantize a U32-typed Q8_0 block stream to an F32 storage buffer.
+    /// `n_blocks` is the number of Q8_0 blocks (each 34 bytes / 32 elems).
+    fn dequantize_q8_0(
+        &self,
+        blocks: &Self::Storage,
+        n_blocks: usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (blocks, n_blocks);
+        fuel_core_types::bail!("GraphBackend: dequantize_q8_0 not implemented natively")
+    }
 
     fn unary(
         &self, op: UnaryOp,
@@ -197,9 +323,11 @@ pub trait GraphBackend {
         )
     }
 
-    /// Concatenate `a` and `b` along `dim` in a single dispatch. Both
-    /// inputs must be contiguous. Output has shape `a.shape` with
-    /// `a.shape[dim] + b.shape[dim]` at `dim`.
+    /// Concatenate `a` and `b` along `dim` in a single dispatch. Inputs
+    /// may be strided (lazy permute views, lazy broadcast) — per-operand
+    /// layouts carry both shape and strides. Output has shape `a.shape`
+    /// with `a.shape[dim] + b.shape[dim]` at `dim` and is always
+    /// contiguous.
     ///
     /// Default impl returns `Err`; the executor falls back to the
     /// `outer × 2` strided-copy loop. Backends override this when a
@@ -209,10 +337,10 @@ pub trait GraphBackend {
         a: &Self::Storage,
         b: &Self::Storage,
         dim: usize,
-        a_shape: &Shape,
-        b_shape: &Shape,
+        a_layout: &Layout,
+        b_layout: &Layout,
     ) -> fuel_core_types::Result<Self::Storage> {
-        let _ = (a, b, dim, a_shape, b_shape);
+        let _ = (a, b, dim, a_layout, b_layout);
         fuel_core_types::bail!("GraphBackend: concat_along_dim not implemented natively")
     }
 
@@ -329,11 +457,120 @@ pub trait GraphBackend {
 /// - Layout computation for permute, slice, concat
 /// - CPU fallback bridge for unsupported ops
 /// - Tracing spans at realize / topo-walk / per-op granularity
+/// Internal entry in the executor's size-bounded const pool.
+struct ConstPoolEntry<S> {
+    /// Arc so walk-time CacheEntry::ConstRef clones survive pool
+    /// eviction: the pool drops its Arc, but outstanding clones keep
+    /// the storage alive until the walk completes.
+    tensor: std::sync::Arc<TrackedTensor<S>>,
+    bytes: usize,
+    /// Monotonic access-time counter. Lower = older. `get` / `insert`
+    /// bump it; eviction picks the smallest values.
+    last_access: u64,
+}
+
+/// Size-bounded LRU cache for model weight constants. Keyed on the
+/// host Arc pointer of the originating `ConstData`. When a new entry
+/// would push total bytes over `max_bytes`, older entries are
+/// evicted until under budget — evicting just drops the
+/// device-side Arc<Storage>, reclaiming VRAM. The next access
+/// re-uploads from the original host `Arc<[T]>`, which is cheap
+/// (Arc clone of the host data + one upload dispatch).
+///
+/// Tiering mechanism for weights specifically: the canonical
+/// weight bytes are already on host (owned by the `ConstData` on
+/// the graph), so we don't need a ResidencyFile round-trip. The
+/// const pool's device cache is the "VRAM tier"; evicting pushes
+/// the weight back to its natural host tier (the `Arc<[T]>`).
+///
+/// For computed tensors without a host canonical copy (KV cache,
+/// activations), use the ResidencyFile-based evict/fault_back
+/// flow on VulkanBackend instead.
+pub(crate) struct ConstPool<S> {
+    entries: HashMap<usize, ConstPoolEntry<S>>,
+    total_bytes: usize,
+    max_bytes: Option<usize>,
+    access_counter: u64,
+}
+
+impl<S> ConstPool<S> {
+    fn new() -> Self {
+        Self { entries: HashMap::new(), total_bytes: 0, max_bytes: None, access_counter: 0 }
+    }
+
+    fn set_max_bytes(&mut self, max: Option<usize>) {
+        self.max_bytes = max;
+        self.evict_to_fit(0);
+    }
+
+    fn contains(&self, key: &usize) -> bool { self.entries.contains_key(key) }
+
+    pub(crate) fn len(&self) -> usize { self.entries.len() }
+
+    pub(crate) fn total_bytes(&self) -> usize { self.total_bytes }
+
+    /// Look up an entry; bumps its LRU timestamp on hit. Returns an
+    /// Arc clone so the caller can stash it in a `CacheEntry::ConstRef`
+    /// that survives pool eviction.
+    fn get(&mut self, key: &usize) -> Option<std::sync::Arc<TrackedTensor<S>>> {
+        self.access_counter += 1;
+        let c = self.access_counter;
+        self.entries.get_mut(key).map(|e| {
+            e.last_access = c;
+            std::sync::Arc::clone(&e.tensor)
+        })
+    }
+
+    /// Insert a new entry. Evicts LRU entries if needed to stay under
+    /// `max_bytes`. If the new entry alone exceeds max_bytes, it's
+    /// inserted anyway — the pool tolerates a single over-max entry
+    /// rather than refusing to cache (which would undo the perf win
+    /// for the weight it's meant to cache).
+    ///
+    /// Returns an Arc clone of the freshly inserted tensor so the
+    /// caller can stash it in a `CacheEntry::ConstRef`.
+    fn insert(&mut self, key: usize, tensor: TrackedTensor<S>, bytes: usize) -> std::sync::Arc<TrackedTensor<S>> {
+        self.evict_to_fit(bytes);
+        self.access_counter += 1;
+        let last_access = self.access_counter;
+        let arc_tensor = std::sync::Arc::new(tensor);
+        if let Some(existing) = self.entries.insert(
+            key,
+            ConstPoolEntry { tensor: std::sync::Arc::clone(&arc_tensor), bytes, last_access },
+        ) {
+            self.total_bytes -= existing.bytes;
+        }
+        self.total_bytes += bytes;
+        arc_tensor
+    }
+
+    /// Evict LRU entries until `total_bytes + incoming <= max_bytes`.
+    /// No-op if `max_bytes` is None. Returns the number of entries evicted.
+    fn evict_to_fit(&mut self, incoming: usize) -> usize {
+        let Some(max) = self.max_bytes else { return 0 };
+        let mut evicted = 0;
+        while self.total_bytes + incoming > max && !self.entries.is_empty() {
+            // O(n) LRU pick — n is tens to hundreds of cached weights,
+            // well within acceptable for the eviction path.
+            let Some((&lru_key, _)) = self.entries.iter()
+                .min_by_key(|(_, e)| e.last_access)
+            else { break };
+            if let Some(entry) = self.entries.remove(&lru_key) {
+                self.total_bytes -= entry.bytes;
+                evicted += 1;
+            }
+        }
+        evicted
+    }
+}
+
 pub struct GraphExecutor<B: GraphBackend> {
     pub backend: B,
-    /// Persistent weight cache, keyed on host Arc data pointer.
-    /// Only caches consts with Arc::strong_count > 1 (model weights).
-    const_pool: HashMap<usize, TrackedTensor<B::Storage>>,
+    /// Size-bounded LRU cache for weight constants. Only caches
+    /// consts with Arc::strong_count > 1 (model weights — tensors
+    /// held somewhere outside the graph, so re-upload on eviction
+    /// is a free Arc-clone of the host data).
+    const_pool: ConstPool<B::Storage>,
     /// Pre-populated entries for the next realize call.
     injected: HashMap<NodeId, TrackedTensor<B::Storage>>,
     /// If true, realize runs the backend-agnostic `fuel_graph::opt`
@@ -342,16 +579,60 @@ pub struct GraphExecutor<B: GraphBackend> {
     /// arena (appends canonical nodes), which existing test code may
     /// not expect; opt-in per-executor via `with_optimization(true)`.
     optimize: bool,
+    /// Phase-1 placement: the device this executor represents. When
+    /// set, `validate_placements` checks every graph node's optional
+    /// placement hint matches this device. Phase 2 will turn this into
+    /// a `Vec<BackendInstance>` for true multi-device dispatch.
+    pub default_device: Option<fuel_core_types::DeviceLocation>,
 }
 
 impl<B: GraphBackend> GraphExecutor<B> {
     pub fn new(backend: B) -> Self {
         Self {
             backend,
-            const_pool: HashMap::new(),
+            const_pool: ConstPool::new(),
             injected: HashMap::new(),
             optimize: false,
+            default_device: None,
         }
+    }
+
+    /// Tag this executor with the device it represents. Used by
+    /// `validate_placements` to check that graph-level placement hints
+    /// are consistent with what the executor can actually run.
+    pub fn with_default_device(mut self, loc: fuel_core_types::DeviceLocation) -> Self {
+        self.default_device = Some(loc);
+        self
+    }
+
+    /// Walk every node reachable from `roots` and verify that any
+    /// set placement hint matches this executor's `default_device`.
+    /// Nodes with no placement hint are skipped (they inherit the
+    /// default). Returns `Err` on the first mismatch.
+    ///
+    /// Phase 1 only surfaces the API; callers invoke it explicitly
+    /// before `realize*`. Phase 2 will fold this into the dispatch
+    /// path and use per-node placement to route work between backends.
+    pub fn validate_placements(&self, roots: &[&Tensor]) -> fuel_core_types::Result<()> {
+        let Some(my_dev) = self.default_device else {
+            return Ok(());
+        };
+        if roots.is_empty() {
+            return Ok(());
+        }
+        let graph = roots[0].graph().borrow();
+        let root_ids: Vec<NodeId> = roots.iter().map(|t| t.id()).collect();
+        for id in fuel_graph::topo_order_multi(&graph, &root_ids) {
+            if let Some(placement) = graph.placement(id) {
+                if placement != my_dev {
+                    fuel_core_types::bail!(
+                        "validate_placements: node {:?} requests {:?} but executor is on {:?}",
+                        id, placement, my_dev
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Enable or disable graph-level optimization (CSE, algebraic
@@ -362,6 +643,31 @@ impl<B: GraphBackend> GraphExecutor<B> {
         self.optimize = enabled;
         self
     }
+
+    /// Set a maximum byte budget for the weight cache (`const_pool`).
+    /// When adding a weight would exceed the limit, the least-recently-
+    /// used cached weight is evicted to free space. Evicting just
+    /// drops the device Arc — subsequent access re-uploads from the
+    /// original host `Arc<[T]>`.
+    ///
+    /// Useful for running models larger than VRAM: configure the
+    /// limit to some fraction of available VRAM, leaving headroom
+    /// for activations, KV cache, and working-set buffers. Pair with
+    /// [`KVCache::park`] for idle KV eviction.
+    ///
+    /// `None` disables the limit (today's default — unbounded
+    /// accumulation, matches pre-tiering behavior).
+    pub fn with_const_pool_limit(mut self, max_bytes: Option<usize>) -> Self {
+        self.const_pool.set_max_bytes(max_bytes);
+        self
+    }
+
+    /// Current weight-cache size in bytes. Exposed for tests and
+    /// observability.
+    pub fn const_pool_bytes(&self) -> usize { self.const_pool.total_bytes() }
+
+    /// Current number of cached weight entries. Exposed for tests.
+    pub fn const_pool_entries(&self) -> usize { self.const_pool.len() }
 
     /// Pre-populate a node with an existing device-side tensor.
     pub fn pre_populate(&mut self, node_id: NodeId, storage: B::Storage, shape: Shape) {
@@ -387,7 +693,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let _span = info_span!("realize_f32").entered();
         let root_id = self.resolve_roots(&[tensor])[0];
         let graph = tensor.graph().borrow();
-        let order = topo_order(&graph, root_id);
+        let effective_roots = extend_with_side_effect_roots(&graph, &[root_id]);
+        let order = execution_plan(&graph, &effective_roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
         let mut cache = self.drain_injected();
         for id in order {
@@ -395,10 +702,20 @@ impl<B: GraphBackend> GraphExecutor<B> {
             let node = graph.node(id);
             let entry = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
+            // If this op destroyed an input (Op::Release et al.), drop
+            // the input from cache — derive_ordering guaranteed every
+            // non-destructive reader of it has already run.
+            if let Some(d_idx) = node.op.destructive_input() {
+                if let Some(&destroyed) = node.inputs.get(d_idx) {
+                    cache.remove(&destroyed);
+                }
+            }
         }
         drop(_walk);
         let _rb = info_span!("d2h_readback").entered();
         let gt = self.take_owned(cache.remove(&root_id).expect("realize: missing root"));
+        // Materialize lazy views so the buffer order matches the logical shape.
+        let gt = self.materialize_if_needed(&gt);
         let buf = self.backend.download(&gt.storage).expect("D2H");
         match buf {
             fuel_core_types::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape),
@@ -412,19 +729,32 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let roots: Vec<NodeId> = self.resolve_roots(tensors);
         let graph_rc = tensors[0].graph();
         let graph = graph_rc.borrow();
-        let order = topo_order_multi(&graph, &roots);
+        let effective_roots = extend_with_side_effect_roots(&graph, &roots);
+        let order = execution_plan(&graph, &effective_roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
         let mut cache = self.drain_injected();
+        let root_set: std::collections::HashSet<NodeId> = roots.iter().copied().collect();
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
             let entry = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
+            // Drop destroyed input from cache once a destructive op runs —
+            // ordering guarantees no downstream reader still needs it.
+            // Exception: don't drop requested output roots.
+            if let Some(d_idx) = node.op.destructive_input() {
+                if let Some(&destroyed) = node.inputs.get(d_idx) {
+                    if !root_set.contains(&destroyed) {
+                        cache.remove(&destroyed);
+                    }
+                }
+            }
         }
         drop(_walk);
         let _rb = info_span!("d2h_readback").entered();
         roots.iter().map(|id| {
-            let gt = self.resolve(cache.get(id).expect("realize_many: missing"));
+            let gt = self.materialize_if_needed(
+                self.resolve(cache.get(id).expect("realize_many: missing")));
             let buf = self.backend.download(&gt.storage).expect("D2H");
             match buf {
                 fuel_core_types::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape.clone()),
@@ -444,14 +774,23 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let roots: Vec<NodeId> = self.resolve_roots(tensors);
         let graph_rc = tensors[0].graph();
         let graph = graph_rc.borrow();
-        let order = topo_order_multi(&graph, &roots);
+        let effective_roots = extend_with_side_effect_roots(&graph, &roots);
+        let order = execution_plan(&graph, &effective_roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
         let mut cache = self.drain_injected();
+        let root_set: std::collections::HashSet<NodeId> = roots.iter().copied().collect();
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
             let entry = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
+            if let Some(d_idx) = node.op.destructive_input() {
+                if let Some(&destroyed) = node.inputs.get(d_idx) {
+                    if !root_set.contains(&destroyed) {
+                        cache.remove(&destroyed);
+                    }
+                }
+            }
         }
         drop(_walk);
         let _rb = info_span!("d2h_readback", n_d2h).entered();
@@ -459,28 +798,35 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let mut gpu_out = Vec::with_capacity(roots.len() - n_d2h);
         for (i, id) in roots.iter().enumerate() {
             if i < n_d2h {
-                let gt = self.resolve(cache.get(id).expect("split: missing"));
+                // Materialize lazy views before download so the
+                // buffer order matches the logical shape.
+                let gt = self.materialize_if_needed(
+                    self.resolve(cache.get(id).expect("split: missing")));
                 let buf = self.backend.download(&gt.storage).expect("D2H");
                 match buf {
                     fuel_core_types::HostBuffer::F32(v) => cpu_out.push(v),
                     other => panic!("split: got {:?}", other.dtype()),
                 }
             } else {
-                match cache.remove(id) {
-                    Some(CacheEntry::Owned(gt)) => {
-                        let shape = gt.shape.clone();
-                        let layout = gt.layout();
-                        let s = std::sync::Arc::try_unwrap(gt.storage)
-                            .unwrap_or_else(|arc| self.backend.try_clone(&arc, &layout).expect("split clone"));
-                        gpu_out.push((s, shape));
-                    }
-                    Some(CacheEntry::ConstRef(key)) => {
-                        let p = self.const_pool.get(&key).expect("dangling");
-                        let s = self.backend.try_clone(&p.storage, &p.layout()).expect("clone");
-                        gpu_out.push((s, p.shape.clone()));
+                // Materialize lazy views so the returned storage is
+                // contiguous in the logical shape order.
+                let gt = match cache.remove(id) {
+                    Some(entry) => {
+                        let resolved = match &entry {
+                            CacheEntry::ConstRef(arc) => arc.as_ref(),
+                            CacheEntry::Owned(gt) => gt,
+                        };
+                        self.materialize_if_needed(resolved)
                     }
                     None => panic!("split: missing root"),
-                }
+                };
+                let shape = gt.shape.clone();
+                let s = std::sync::Arc::try_unwrap(gt.storage)
+                    .unwrap_or_else(|arc| {
+                        let layout = Layout::contiguous(&shape);
+                        self.backend.try_clone(&arc, &layout).expect("split clone")
+                    });
+                gpu_out.push((s, shape));
             }
         }
         (cpu_out, gpu_out)
@@ -498,7 +844,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
 
     fn resolve<'a>(&'a self, entry: &'a CacheEntry<B::Storage>) -> &'a TrackedTensor<B::Storage> {
         match entry {
-            CacheEntry::ConstRef(key) => self.const_pool.get(key).expect("dangling ConstRef"),
+            CacheEntry::ConstRef(arc) => arc.as_ref(),
             CacheEntry::Owned(gt) => gt,
         }
     }
@@ -547,8 +893,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
     fn take_owned(&self, entry: CacheEntry<B::Storage>) -> TrackedTensor<B::Storage> {
         match entry {
             CacheEntry::Owned(gt) => gt,
-            CacheEntry::ConstRef(key) => {
-                let p = self.const_pool.get(&key).expect("dangling");
+            CacheEntry::ConstRef(arc) => {
+                let p = arc.as_ref();
                 let s = self.backend.try_clone(&p.storage, &p.layout()).expect("take clone");
                 TrackedTensor::new(s, p.shape.clone())
             }
@@ -581,6 +927,28 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 let batch: usize = ad[..rank - 2].iter().product::<usize>().max(1);
                 self.backend.matmul(&a.storage, &b.storage, (batch, m, n, k), &a.layout(), &b.layout())
                     .expect("MatMul")
+            }
+
+            // -- quantized matmul: C = A @ dequant(W_Q) --
+            // Dispatch flat-per-quant-type so the backend doesn't do
+            // a second match on quant_type; we have it in hand on the
+            // op variant and there's no reason to nest dispatches.
+            Op::QMatMul { quant_type, k, n } => {
+                let a = self.get_gt(inputs, 0, cache);
+                // Weight bytes are a const U32 buffer — always contiguous.
+                let w = self.get_gt_c(inputs, 1, cache);
+                let result = match quant_type {
+                    fuel_graph::QuantType::Q4_0 =>
+                        self.backend.matmul_q4_0(&a.storage, &w.storage, *k, *n, &a.layout()),
+                    fuel_graph::QuantType::Q8_0 =>
+                        self.backend.matmul_q8_0(&a.storage, &w.storage, *k, *n, &a.layout()),
+                    fuel_graph::QuantType::Q4_K_M =>
+                        self.backend.matmul_q4_km(&a.storage, &w.storage, *k, *n, &a.layout()),
+                };
+                match result {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
             }
 
             // -- unary --
@@ -773,9 +1141,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            // -- rope (fused) --
+            // -- rope (fused, stride-aware on x) --
             Op::Rope => {
-                let x = self.get_gt_c(inputs, 0, cache);
+                let x = self.get_gt(inputs, 0, cache);
                 let cos = self.get_gt_c(inputs, 1, cache);
                 let sin = self.get_gt_c(inputs, 2, cache);
                 match self.backend.rope(
@@ -803,6 +1171,37 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
+            // -- cross-device transfer --
+            Op::Copy { target } | Op::Move { target } => {
+                // Copy and Move produce the same output (fresh tensor
+                // on target); they differ only in whether the scheduler
+                // lets the source die. The executor's post-op cache
+                // eviction handles that automatically via
+                // destructive_input().
+                let a = self.get_gt(inputs, 0, cache);
+                let layout = a.layout();
+                match self.backend.copy_to(&a.storage, &layout, *target) {
+                    Ok(s) => s,
+                    // Single-device backends bail on cross-device; in
+                    // that case fall through to the CPU fallback,
+                    // which on the reference backend is a pass-through.
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
+            // -- destructive release --
+            Op::Release => {
+                // Release produces a zero-element marker. The scheduler's
+                // ordering pass (derive_ordering, arriving in a follow-up
+                // PR) pins this op to run after every reader of its input.
+                // Until that pass lands, Release emitted into the graph
+                // today still runs in topo order — it just can't be
+                // safely scheduled ahead of non-destructive readers by
+                // the rule author. Backends allocate a zero-element
+                // output via cpu_fallback.
+                return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+            }
+
             // -- fallback for anything else --
             _ => {
                 return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
@@ -828,45 +1227,35 @@ impl<B: GraphBackend> GraphExecutor<B> {
         inputs: &[NodeId],
         cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
     ) -> B::Storage {
-        let a = self.get_gt_c(inputs, 0, cache);
-        let b = self.get_gt_c(inputs, 1, cache);
+        // Stride-aware: binary shader handles non-contiguous inputs
+        // (lazy permute views, broadcasts with stride=0) directly.
+        let a = self.get_gt(inputs, 0, cache);
+        let b = self.get_gt(inputs, 1, cache);
         self.backend.binary(op, &a.storage, &b.storage, &a.layout(), &b.layout()).expect("binary")
     }
 
     fn do_permute(&self, a: &TrackedTensor<B::Storage>, axes: &[usize], out_shape: &Shape) -> TrackedTensor<B::Storage> {
-        let in_dims = a.shape.dims();
-        let rank = in_dims.len();
+        let rank = a.shape.dims().len();
 
-        // Detect last-two-dims transpose (the common K^T pattern).
-        // Only return a lazy view for this specific case — it's been
-        // verified correct via parity test. Other permutations
-        // (e.g. reshape→permute for Q/K/V head splitting) still
-        // materialize because some downstream ops (RoPE, concat)
-        // assume contiguous storage via get_gt_c.
-        let is_last2_swap = rank >= 2
-            && axes.len() == rank
-            && axes[..rank - 2].iter().enumerate().all(|(i, &a)| a == i)
-            && axes[rank - 2] == rank - 1
-            && axes[rank - 1] == rank - 2
-            && a.custom_layout.is_none();  // only if input is contiguous
-
-        if is_last2_swap {
-            let _s = debug_span!("permute_view_transpose", elems = out_shape.elem_count()).entered();
-            let mut strides = vec![0usize; rank];
-            let mut s = 1usize;
-            for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i]; }
-            // Swap last two strides.
-            strides.swap(rank - 2, rank - 1);
-            let layout = Layout::new(out_shape.clone(), strides.into(), 0);
+        // Lazy view: reorder strides without data movement. Works for
+        // any permutation of any layout (contiguous or already strided).
+        // Downstream ops that need contiguous data call get_gt_c which
+        // auto-materializes; stride-aware ops (matmul, RoPE) use
+        // get_gt and handle strides natively.
+        if axes.len() == rank {
+            let _s = debug_span!("permute_view", elems = out_shape.elem_count()).entered();
+            let src_layout = a.layout();
+            let permuted = src_layout.permute(axes).expect("permute axes valid");
             return TrackedTensor {
                 storage: std::sync::Arc::clone(&a.storage),
                 shape: out_shape.clone(),
-                custom_layout: Some(layout),
+                custom_layout: Some(permuted),
             };
         }
 
-        // General case: materialize.
-        let _s = debug_span!("permute", elems = out_shape.elem_count()).entered();
+        // Fallback: axes.len() != rank (shouldn't happen for valid permutations).
+        let _s = debug_span!("permute_copy", elems = out_shape.elem_count()).entered();
+        let in_dims = a.shape.dims();
         let mut strides: DimVec = DimVec::from_elem(0, rank);
         let mut s = 1usize;
         for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i]; }
@@ -893,17 +1282,26 @@ impl<B: GraphBackend> GraphExecutor<B> {
             let s = self.backend.try_clone(&a.storage, &target_layout).expect("broadcast pad");
             return TrackedTensor::new(s, target.clone());
         }
-        let _s = debug_span!("broadcast_strided", src = a.shape.elem_count(), dst = target.elem_count()).entered();
+        // Lazy broadcast view: set stride=0 on broadcast dims. Binary
+        // ops (the typical consumer of broadcasts, e.g. norm-gain *
+        // activations) handle stride=0 natively. get_gt_c auto-
+        // materializes for ops that need contiguous storage.
+        let _s = debug_span!("broadcast_view", elems = target.elem_count()).entered();
+        let src_layout = a.layout();
+        let src_stride = src_layout.stride();
         let mut strides: DimVec = DimVec::from_elem(0, dst_dims.len());
-        let mut s = 1usize;
-        for i in (0..src_dims.len()).rev() {
-            if src_dims[i] == dst_dims[pad + i] { strides[pad + i] = s; }
-            s *= src_dims[i];
+        for i in 0..src_dims.len() {
+            if src_dims[i] == dst_dims[pad + i] {
+                strides[pad + i] = src_stride[i];
+            }
+            // else: size-1 source dim broadcast to > 1 target dim, stride stays 0
         }
-        let src_layout = Layout::new(target.clone(), strides, 0);
-        let mut dst = self.backend.alloc_zeros(target, self.backend.storage_dtype(&a.storage)).expect("broadcast alloc");
-        self.backend.copy_strided_src(&a.storage, &mut dst, 0, &src_layout).expect("broadcast copy");
-        TrackedTensor::new(dst, target.clone())
+        let layout = Layout::new(target.clone(), strides, src_layout.start_offset());
+        TrackedTensor {
+            storage: std::sync::Arc::clone(&a.storage),
+            shape: target.clone(),
+            custom_layout: Some(layout),
+        }
     }
 
     fn do_concat(
@@ -912,39 +1310,53 @@ impl<B: GraphBackend> GraphExecutor<B> {
         cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
     ) -> TrackedTensor<B::Storage> {
         let _s = debug_span!("concat", dim, elems = out_shape.elem_count()).entered();
-        let a = self.get_gt_c(inputs, 0, cache);
-        let b = self.get_gt_c(inputs, 1, cache);
+        // Stride-aware: native concat handles per-operand strides
+        // (lazy permute / broadcast views) directly.
+        let a = self.get_gt(inputs, 0, cache);
+        let b = self.get_gt(inputs, 1, cache);
 
         // Fast path: backend provides a single-dispatch concat.
-        if let Ok(s) = self.backend.concat_along_dim(&a.storage, &b.storage, dim, &a.shape, &b.shape) {
+        if let Ok(s) = self.backend.concat_along_dim(&a.storage, &b.storage, dim, &a.layout(), &b.layout()) {
             return TrackedTensor::new(s, out_shape.clone());
         }
 
-        let dtype = self.backend.storage_dtype(&a.storage);
+        // Fallback: materialize both inputs to contiguous, then use
+        // copy_strided_src to build the concat output.
+        let a_c = self.materialize_if_needed(a);
+        let b_c = self.materialize_if_needed(b);
+        let dtype = self.backend.storage_dtype(&a_c.storage);
         let mut dst = self.backend.alloc_zeros(out_shape, dtype).expect("concat alloc");
         let out_dims = out_shape.dims();
-        let a_dim = a.shape.dims()[dim];
-        let b_dim = b.shape.dims()[dim];
+        let a_dim = a_c.shape.dims()[dim];
+        let b_dim = b_c.shape.dims()[dim];
         let inner: usize = out_dims[dim + 1..].iter().product::<usize>().max(1);
         let outer: usize = out_dims[..dim].iter().product::<usize>().max(1);
         let out_row = out_dims[dim] * inner;
         if outer == 1 {
-            self.backend.copy_strided_src(&a.storage, &mut dst, 0, &a.layout()).expect("concat a");
-            self.backend.copy_strided_src(&b.storage, &mut dst, a_dim * inner, &b.layout()).expect("concat b");
+            self.backend.copy_strided_src(&a_c.storage, &mut dst, 0, &a_c.layout()).expect("concat a");
+            self.backend.copy_strided_src(&b_c.storage, &mut dst, a_dim * inner, &b_c.layout()).expect("concat b");
         } else {
             let a_ss = a_dim * inner;
             let b_ss = b_dim * inner;
             for o in 0..outer {
                 let al = Layout::contiguous_with_offset(&Shape::from_dims(&[a_ss]), o * a_ss);
-                self.backend.copy_strided_src(&a.storage, &mut dst, o * out_row, &al).expect("concat a");
+                self.backend.copy_strided_src(&a_c.storage, &mut dst, o * out_row, &al).expect("concat a");
                 let bl = Layout::contiguous_with_offset(&Shape::from_dims(&[b_ss]), o * b_ss);
-                self.backend.copy_strided_src(&b.storage, &mut dst, o * out_row + a_ss, &bl).expect("concat b");
+                self.backend.copy_strided_src(&b_c.storage, &mut dst, o * out_row + a_ss, &bl).expect("concat b");
             }
         }
         TrackedTensor::new(dst, out_shape.clone())
     }
 
     fn do_slice(&self, dim: usize, start: usize, a: &TrackedTensor<B::Storage>, out_shape: &Shape) -> TrackedTensor<B::Storage> {
+        // TODO(lazy-slice): a lazy stride view would be zero-copy but
+        // our stride-aware shaders (binary, concat, matmul, rope) don't
+        // currently add the view's `start_offset` to computed offsets,
+        // which silently breaks any downstream op that reads a sliced
+        // view with non-zero start (partial RoPE's `x_pass` is the
+        // motivating case in Phi-2). Materialize the slice for now;
+        // revisit once all stride-aware kernels take start_offset.
+        let _s = debug_span!("slice_copy", dim, start, elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
         let mut strides: DimVec = DimVec::from_elem(0, rank);
@@ -965,15 +1377,16 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let refcount = const_data_arc_strong_count(data);
         let elems = data.elem_count();
         if refcount > 1 {
-            if self.const_pool.contains_key(&ptr) {
+            if let Some(arc) = self.const_pool.get(&ptr) {
                 let _s = debug_span!("const_cache_hit", elems).entered();
-                return CacheEntry::ConstRef(ptr);
+                return CacheEntry::ConstRef(arc);
             }
             let _s = debug_span!("const_upload_persistent", elems).entered();
             let buf = const_data_to_host_buffer(data);
             let storage = self.backend.upload(&buf, shape).expect("const upload");
-            self.const_pool.insert(ptr, TrackedTensor::new(storage, shape.clone()));
-            return CacheEntry::ConstRef(ptr);
+            let bytes = elems * data.dtype().size_in_bytes();
+            let arc = self.const_pool.insert(ptr, TrackedTensor::new(storage, shape.clone()), bytes);
+            return CacheEntry::ConstRef(arc);
         }
         let _s = debug_span!("const_upload_ephemeral", elems).entered();
         let buf = const_data_to_host_buffer(data);
@@ -1033,6 +1446,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::SoftmaxLastDimBackward => "SoftmaxLastDimBackward",
         Op::LayerNormLastDimBackward { .. } => "LayerNormLastDimBackward",
         Op::Rope => "Rope",
+        Op::QMatMul { .. } => "QMatMul",
         _ => "Other",
     }
 }
