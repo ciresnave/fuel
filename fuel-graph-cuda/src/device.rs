@@ -2,14 +2,104 @@
 use fuel_core_types::dtype::WithDType;
 use fuel_core_types::{CpuStorage, DType, Layout, Result, Shape};
 use fuel_cuda_kernels as kernels;
-pub use cudarc;
-use baracuda_driver::Function;
+use baracuda_curand::RngKind;
+use baracuda_driver::{DeviceBuffer, Dim3, Function, LaunchBuilder};
 use float8::F8E4M3;
 use half::{bf16, f16};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{CudaError, CudaStorage, CudaStorageSlice, WrapErr};
+
+// ---------------------------------------------------------------------------
+// cudarc-compatible launch shim
+// ---------------------------------------------------------------------------
+//
+// baracuda's [`LaunchBuilder`] is a value-style builder: every call consumes
+// `self` and returns `Self`. Fuel's CUDA code (inherited from candle-cuda)
+// uses cudarc's mutation-style `LaunchArgs` where calls take `&mut self` —
+// ~100 launch sites across storage.rs / dyn_impl.rs / downstream crates
+// depend on that shape.
+//
+// The `LaunchArgs` wrapper below preserves the mutation semantics on top of
+// baracuda's value-style builder: an internal `Option<LaunchBuilder>`
+// lets each `arg()` call `take()` the current builder, call its `.arg()`,
+// and stash the returned builder back. Call sites read exactly like the
+// cudarc original:
+//
+// ```ignore
+// let mut builder = func.builder();
+// builder.arg(&src);
+// builder.arg(&mut out);
+// builder_arg!(builder, n_cols as i32);
+// unsafe { builder.launch(cfg) }.w()?;
+// ```
+
+/// cudarc-shaped launch-args builder layered over baracuda's
+/// `LaunchBuilder`. See module doc for rationale.
+pub struct LaunchArgs<'f> {
+    inner: Option<LaunchBuilder<'f>>,
+}
+
+impl<'f> LaunchArgs<'f> {
+    pub(crate) fn new(b: LaunchBuilder<'f>) -> Self {
+        Self { inner: Some(b) }
+    }
+
+    /// Append an argument; preserves cudarc's `&mut self` return for
+    /// chained or statement usage.
+    pub fn arg<K: baracuda_types::KernelArg>(&mut self, arg: K) -> &mut Self {
+        let b = self.inner.take().expect("LaunchArgs already launched");
+        self.inner = Some(b.arg(arg));
+        self
+    }
+
+    /// Submit the kernel. Consumes the builder (matches cudarc's
+    /// drop-after-launch behavior — don't reuse the `LaunchArgs` after
+    /// calling this).
+    ///
+    /// # Safety
+    ///
+    /// Same obligations as `baracuda_driver::LaunchBuilder::launch`:
+    /// argument count / types must match the kernel signature,
+    /// pointer-valued args must be live for the duration of
+    /// submission, and grid/block dimensions must fit the device.
+    pub unsafe fn launch(&mut self, cfg: LaunchConfig) -> baracuda_driver::Result<()> {
+        let b = self
+            .inner
+            .take()
+            .expect("LaunchArgs already launched")
+            .grid(Dim3 { x: cfg.grid_dim.0, y: cfg.grid_dim.1, z: cfg.grid_dim.2 })
+            .block(Dim3 { x: cfg.block_dim.0, y: cfg.block_dim.1, z: cfg.block_dim.2 })
+            .shared_mem_bytes(cfg.shared_mem_bytes);
+        unsafe { b.launch() }
+    }
+}
+
+/// cudarc-shaped launch config. Populated with the same `grid_dim /
+/// block_dim / shared_mem_bytes` fields fuel's launch sites used
+/// against cudarc. `LaunchArgs::launch` translates into baracuda's
+/// `.grid().block().shared_mem_bytes()` chain.
+#[derive(Clone, Copy, Debug)]
+pub struct LaunchConfig {
+    pub grid_dim: (u32, u32, u32),
+    pub block_dim: (u32, u32, u32),
+    pub shared_mem_bytes: u32,
+}
+
+impl LaunchConfig {
+    /// Grid = ceil(n / 256), block = 256. Matches cudarc's
+    /// `for_num_elems` helper for 1-D elementwise kernels.
+    pub fn for_num_elems(n: u32) -> Self {
+        const BLOCK: u32 = 256;
+        let grid = n.div_ceil(BLOCK).max(1);
+        Self {
+            grid_dim: (grid, 1, 1),
+            block_dim: (BLOCK, 1, 1),
+            shared_mem_bytes: 0,
+        }
+    }
+}
 
 /// Unique identifier for cuda devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -50,79 +140,77 @@ impl std::fmt::Debug for CudaDevice {
 }
 
 impl CudaDevice {
+    /// Allocate a new async device buffer (uninitialized).
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn alloc<T: baracuda_types::DeviceRepr>(
         &self,
         len: usize,
-    ) -> Result<baracuda_driver::DeviceBuffer<T>> {
-        unsafe { self.stream.alloc::<T>(len) }.w()
+    ) -> Result<DeviceBuffer<T>> {
+        DeviceBuffer::new_async(&self.context, len, &self.stream).w()
     }
 
+    /// Allocate a new device buffer, zeroed. (Baracuda's `zeros` is
+    /// synchronous; the result is usable on any stream afterward.)
     pub fn alloc_zeros<T: baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits>(
         &self,
         len: usize,
-    ) -> Result<baracuda_driver::DeviceBuffer<T>> {
-        self.stream.alloc_zeros::<T>(len).w()
+    ) -> Result<DeviceBuffer<T>> {
+        DeviceBuffer::zeros(&self.context, len).w()
     }
 
-    pub fn memcpy_htod<
-        T: baracuda_types::DeviceRepr,
-        Src: baracuda_types::HostSlice<T> + ?Sized,
-        Dst: baracuda_driver::DevicePtrMut<T>,
-    >(
+    /// Host → device copy, async on this device's default stream.
+    pub fn memcpy_htod<T: baracuda_types::DeviceRepr>(
         &self,
-        src: &Src,
-        dst: &mut Dst,
+        src: &[T],
+        dst: &DeviceBuffer<T>,
     ) -> Result<()> {
-        self.stream.memcpy_htod(src, dst).w()
+        dst.copy_from_host_async(src, &self.stream).w()
     }
 
-    pub fn clone_dtoh<T: baracuda_types::DeviceRepr, Src: baracuda_driver::DevicePtr<T>>(
+    /// Device → host blocking copy — returns an owned Vec.
+    pub fn clone_dtoh<T: baracuda_types::DeviceRepr + Default + Clone>(
         &self,
-        src: &Src,
+        src: &DeviceBuffer<T>,
     ) -> Result<Vec<T>> {
-        self.stream.clone_dtoh(src).w()
+        let mut out = vec![T::default(); src.len()];
+        src.copy_to_host(&mut out).w()?;
+        Ok(out)
     }
 
-    pub fn memcpy_dtod<
-        T,
-        Src: baracuda_driver::DevicePtr<T>,
-        Dst: baracuda_driver::DevicePtrMut<T>,
-    >(
+    /// Device → device copy, async on this device's default stream.
+    pub fn memcpy_dtod<T: baracuda_types::DeviceRepr>(
         &self,
-        src: &Src,
-        dst: &mut Dst,
+        src: &DeviceBuffer<T>,
+        dst: &DeviceBuffer<T>,
     ) -> Result<()> {
-        self.stream.memcpy_dtod(src, dst).w()
+        src.copy_to_device_async(dst, &self.stream).w()
     }
 
-    pub fn memcpy_dtoh<
-        T: baracuda_types::DeviceRepr,
-        Src: baracuda_driver::DevicePtr<T>,
-        Dst: baracuda_types::HostSlice<T>,
-    >(
+    /// Device → host blocking copy (dst must have `len >= src.len()`).
+    pub fn memcpy_dtoh<T: baracuda_types::DeviceRepr>(
         &self,
-        src: &Src,
-        dst: &mut Dst,
+        src: &DeviceBuffer<T>,
+        dst: &mut [T],
     ) -> Result<()> {
-        self.stream.memcpy_dtoh(src, dst).w()
+        src.copy_to_host(dst).w()
     }
 
-    pub fn clone_htod<T: baracuda_types::DeviceRepr, Src: baracuda_types::HostSlice<T> + ?Sized>(
+    /// Host → device (new buffer): allocate + copy in one call.
+    pub fn clone_htod<T: baracuda_types::DeviceRepr>(
         &self,
-        src: &Src,
-    ) -> Result<baracuda_driver::DeviceBuffer<T>> {
-        self.stream.clone_htod(src).w()
+        src: &[T],
+    ) -> Result<DeviceBuffer<T>> {
+        DeviceBuffer::from_slice(&self.context, src).w()
     }
 }
 
 pub struct CudaFunc {
-    func: CudaFunction,
+    func: Function,
     stream: Arc<baracuda_driver::Stream>,
 }
 
 impl std::ops::Deref for CudaFunc {
-    type Target = CudaFunction;
+    type Target = Function;
 
     fn deref(&self) -> &Self::Target {
         &self.func
@@ -130,11 +218,14 @@ impl std::ops::Deref for CudaFunc {
 }
 
 impl CudaFunc {
-    pub fn into_cuda_function(self) -> CudaFunction {
+    pub fn into_cuda_function(self) -> Function {
         self.func
     }
 }
 
+/// Push one or more args onto a `LaunchArgs` as a statement. Handles
+/// the "bind temporary to extend lifetime, then push by reference"
+/// idiom that cudarc's PushKernelArg requires.
 #[macro_export]
 macro_rules! builder_arg {
     ($b:ident, $($arg:expr),*) => {
@@ -146,8 +237,10 @@ macro_rules! builder_arg {
 }
 
 impl CudaFunc {
-    pub fn builder(&self) -> cudarc::driver::LaunchArgs<'_> {
-        self.stream.launch_builder(&self.func)
+    /// Start a launch builder pre-bound to this function's stream.
+    /// Returns a cudarc-shaped `LaunchArgs` layer — see its docs.
+    pub fn builder(&self) -> LaunchArgs<'_> {
+        LaunchArgs::new(self.func.launch().stream(&self.stream))
     }
 }
 
@@ -156,23 +249,24 @@ impl CudaDevice {
         self.stream.clone()
     }
 
-    /// When turned on, all cuda tensors **created after calling this function** will
-    /// not track uses via cuda events.
+    /// Event-tracking toggle. Was a cudarc-specific knob that disabled
+    /// per-tensor event bookkeeping on shared-stream workloads. Baracuda
+    /// doesn't expose an equivalent — its `DeviceBuffer` lifetime model
+    /// doesn't rely on events the same way. This is now a no-op kept
+    /// only for source compatibility with existing callers
+    /// (`fuel-examples/llama2-c/main.rs`); remove once the caller drops
+    /// the API call.
     ///
     /// # Safety
     ///
-    /// It is up to the user to ensure proper synchronization between multiple streams:
-    /// - Ensure that no tensor is freed before a use on another stream is finished.
-    /// - Ensure that a tensor is not used on another stream before allocation on the
-    ///   allocating stream finishes.
-    /// - Ensure that a tensor is not written two concurrently by multiple streams.
-    pub unsafe fn disable_event_tracking(&self) {
-        unsafe { self.context.disable_event_tracking() }
-    }
+    /// No longer does anything; marked `unsafe` purely to preserve the
+    /// old signature.
+    pub unsafe fn disable_event_tracking(&self) {}
 
-    pub fn is_event_tracking(&self) -> bool {
-        self.context.is_event_tracking()
-    }
+    /// Always returns `true` for the same reason `disable_event_tracking`
+    /// is a no-op now — baracuda's `DeviceBuffer` model is implicitly
+    /// stream-ordered and doesn't expose the flag.
+    pub fn is_event_tracking(&self) -> bool { true }
 
     #[cfg(all(feature = "ug", not(target_arch = "wasm32")))]
     pub fn compile(
@@ -184,12 +278,13 @@ impl CudaDevice {
         fuel_ug::cuda::code_gen::r#gen(&mut buf, func_name, &kernel)?;
         let cuda_code = String::from_utf8(buf)?;
         let opts = baracuda_nvrtc::CompileOptions {
-            use_fast_math: Some(true),
+            use_fast_math: true,
             ..Default::default()
         };
-        let ptx = cudarc::nvrtc::safe::compile_ptx_with_opts(cuda_code, opts).w()?;
-        let module = self.context.load_module(ptx).w()?;
-        let func = module.load_function(func_name).w()?;
+        let prog = baracuda_nvrtc::Program::compile_with(&cuda_code, func_name, &opts).w()?;
+        let ptx = prog.ptx().w()?;
+        let module = baracuda_driver::Module::load_ptx(&self.context, &ptx).w()?;
+        let func = module.get_function(func_name).w()?;
         Ok(CudaFunc {
             func,
             stream: self.stream.clone(),
@@ -208,7 +303,7 @@ impl CudaDevice {
     ) -> Result<CudaFunc> {
         let ms = self.custom_modules.read().unwrap();
         if let Some(mdl) = ms.get(module_name).as_ref() {
-            let func = mdl.load_function(fn_name).w()?;
+            let func = mdl.get_function(fn_name).w()?;
             return Ok(CudaFunc {
                 func,
                 stream: self.stream.clone(),
@@ -216,9 +311,9 @@ impl CudaDevice {
         }
         drop(ms);
         let mut ms = self.custom_modules.write().unwrap();
-        let cuda_module = self.context.load_module(ptx.into()).w()?;
+        let cuda_module = Arc::new(baracuda_driver::Module::load_ptx(&self.context, ptx).w()?);
         ms.insert(module_name.to_string(), cuda_module.clone());
-        let func = cuda_module.load_function(fn_name).w()?;
+        let func = cuda_module.get_function(fn_name).w()?;
         Ok(CudaFunc {
             func,
             stream: self.stream.clone(),
@@ -228,7 +323,7 @@ impl CudaDevice {
     pub fn get_or_load_func(&self, fn_name: &str, mdl: &kernels::Module) -> Result<CudaFunc> {
         let ms = self.modules.read().unwrap();
         if let Some(mdl) = ms.mdls[mdl.index()].as_ref() {
-            let func = mdl.load_function(fn_name).w()?;
+            let func = mdl.get_function(fn_name).w()?;
             return Ok(CudaFunc {
                 func,
                 stream: self.stream.clone(),
@@ -236,9 +331,9 @@ impl CudaDevice {
         }
         drop(ms);
         let mut ms = self.modules.write().unwrap();
-        let cuda_module = self.context.load_module(mdl.ptx().into()).w()?;
+        let cuda_module = Arc::new(baracuda_driver::Module::load_ptx(&self.context, mdl.ptx()).w()?);
         ms.mdls[mdl.index()] = Some(cuda_module.clone());
-        let func = cuda_module.load_function(fn_name).w()?;
+        let func = cuda_module.get_function(fn_name).w()?;
         Ok(CudaFunc {
             func,
             stream: self.stream.clone(),
@@ -251,40 +346,37 @@ impl CudaDevice {
 }
 
 impl CudaDevice {
+    /// Construct a CudaDevice with a freshly-created stream.
     pub fn new_with_stream(ordinal: usize) -> Result<Self> {
-        let context = baracuda_driver::Context::new(ordinal).w()?;
-        let stream = context.new_stream().w()?;
-        let blas = baracuda_cublas::Handle::new(stream.clone()).w()?;
-        let curand = baracuda_curand::Generator::new(299792458, stream.clone()).w()?;
-        let module_store = ModuleStore {
-            mdls: [const { None }; kernels::ALL_IDS.len()],
-        };
-        Ok(Self {
-            id: DeviceId::new(),
-            context,
-            stream,
-            blas: Arc::new(blas),
-            curand: Arc::new(Mutex::new(CudaRng(curand))),
-            modules: Arc::new(std::sync::RwLock::new(module_store)),
-            custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            seed_value: Arc::new(RwLock::new(299792458)),
-        })
+        let device = baracuda_driver::Device::get(ordinal as u32).w()?;
+        let context = baracuda_driver::Context::new(&device).w()?;
+        let stream = baracuda_driver::Stream::new(&context).w()?;
+        Self::new_from(context, stream)
     }
-}
 
-impl CudaDevice {
+    /// Construct a CudaDevice with the default stream on a fresh
+    /// context. Baracuda doesn't expose a "default stream getter" — we
+    /// create one explicitly per context, which is what cudarc's
+    /// default-stream path effectively did underneath.
     pub fn new(ordinal: usize) -> Result<Self> {
-        let context = baracuda_driver::Context::new(ordinal).w()?;
-        let stream = context.default_stream();
-        let blas = baracuda_cublas::Handle::new(stream.clone()).w()?;
-        let curand = baracuda_curand::Generator::new(299792458, stream.clone()).w()?;
+        Self::new_with_stream(ordinal)
+    }
+
+    fn new_from(
+        context: baracuda_driver::Context,
+        stream: baracuda_driver::Stream,
+    ) -> Result<Self> {
+        let mut blas = baracuda_cublas::Handle::new().w()?;
+        blas.set_stream(&stream).w()?;
+        let mut curand = baracuda_curand::Generator::new(RngKind::Default).w()?;
+        curand.seed(299792458).w()?;
         let module_store = ModuleStore {
             mdls: [const { None }; kernels::ALL_IDS.len()],
         };
         Ok(Self {
             id: DeviceId::new(),
-            context,
-            stream,
+            context: Arc::new(context),
+            stream: Arc::new(stream),
             blas: Arc::new(blas),
             curand: Arc::new(Mutex::new(CudaRng(curand))),
             modules: Arc::new(std::sync::RwLock::new(module_store)),
@@ -294,10 +386,10 @@ impl CudaDevice {
     }
 
     pub fn set_seed(&self, seed: u64) -> Result<()> {
-        // We do not call set_seed but instead create a new curand object. This ensures that the
-        // state will be identical and the same random numbers will be generated.
+        // Baracuda's Generator has a direct `set_seed` — no need to
+        // rebuild the generator the way cudarc required.
         let mut curand = self.curand.lock().unwrap();
-        curand.0 = baracuda_curand::Generator::new(seed, self.stream.clone()).w()?;
+        curand.0.seed(seed).w()?;
         *self.seed_value.write().unwrap() = seed;
         Ok(())
     }
@@ -308,7 +400,7 @@ impl CudaDevice {
 
     pub fn location(&self) -> fuel_core_types::DeviceLocation {
         fuel_core_types::DeviceLocation::Cuda {
-            gpu_id: self.context.ordinal(),
+            gpu_id: self.context.device().ordinal() as usize,
         }
     }
 
@@ -390,12 +482,12 @@ impl CudaDevice {
             .w()?,
             DType::F32 => {
                 let mut data = unsafe { self.alloc::<f32>(elem_count)? };
-                curand.0.fill_with_uniform(&mut data).w()?;
+                curand.0.uniform(&mut data).w()?;
                 CudaStorageSlice::F32(data)
             }
             DType::F64 => {
                 let mut data = unsafe { self.alloc::<f64>(elem_count)? };
-                curand.0.fill_with_uniform(&mut data).w()?;
+                curand.0.uniform(&mut data).w()?;
                 CudaStorageSlice::F64(data)
             }
             DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
@@ -447,13 +539,13 @@ impl CudaDevice {
                 let mut data = unsafe { self.alloc::<f32>(elem_count_round)? };
                 curand
                     .0
-                    .fill_with_normal(&mut data, mean as f32, std as f32)
+                    .normal(&mut data, mean as f32, std as f32)
                     .w()?;
                 CudaStorageSlice::F32(data)
             }
             DType::F64 => {
                 let mut data = unsafe { self.alloc::<f64>(elem_count_round)? };
-                curand.0.fill_with_normal(&mut data, mean, std).w()?;
+                curand.0.normal(&mut data, mean, std).w()?;
                 CudaStorageSlice::F64(data)
             }
             DType::F8E4M3 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {

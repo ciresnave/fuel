@@ -7,10 +7,9 @@ use fuel_core_types::{CpuStorage, DType, Layout, Result};
 use crate::builder_arg as barg;
 use fuel_cuda_kernels as kernels;
 
-use cudarc::cublas::{Gemm, GemmConfig, StridedBatchedConfig};
-use cudarc::driver::{
-    CudaSlice, DevicePtr, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
-};
+use baracuda_driver::{DeviceBuffer as CudaSlice, DevicePtr};
+use baracuda_types::{DeviceRepr, KernelArg as PushKernelArg, ValidAsZeroBits};
+use crate::device::{LaunchArgs, LaunchConfig};
 use half::{bf16, f16};
 
 
@@ -18,13 +17,40 @@ use crate::device::CudaDevice;
 use crate::error::{CudaError, WrapErr};
 use crate::utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, S};
 
+// cudarc-shaped GEMM config structs, replicated locally so Fuel's matmul
+// call sites don't need rewriting. The BLAS call is now
+// `baracuda_cublas::gemm_strided_batched_ex` — fields flow through
+// positionally.
+#[allow(dead_code)]
+pub(crate) struct GemmConfig<T> {
+    pub alpha: T,
+    pub beta: T,
+    pub m: i32,
+    pub n: i32,
+    pub k: i32,
+    pub lda: i32,
+    pub ldb: i32,
+    pub ldc: i32,
+    pub transa: baracuda_cublas_sys::types::cublasOperation_t,
+    pub transb: baracuda_cublas_sys::types::cublasOperation_t,
+}
+
+#[allow(dead_code)]
+pub(crate) struct StridedBatchedConfig<T> {
+    pub gemm: GemmConfig<T>,
+    pub stride_a: i64,
+    pub stride_b: i64,
+    pub stride_c: i64,
+    pub batch_size: i32,
+}
+
 pub enum SlicePtrOrNull<T> {
     Ptr(CudaSlice<T>),
     Null,
 }
 
 impl<T: DeviceRepr> SlicePtrOrNull<T> {
-    pub fn builder_arg<'a, 'b: 'a>(&'b self, builder: &mut cudarc::driver::LaunchArgs<'a>) {
+    pub fn builder_arg<'a, 'b: 'a>(&'b self, builder: &mut crate::device::LaunchArgs<'a>) {
         match self {
             SlicePtrOrNull::Ptr(slice) => builder.arg(slice),
             SlicePtrOrNull::Null => builder.arg(&0usize),
@@ -32,7 +58,7 @@ impl<T: DeviceRepr> SlicePtrOrNull<T> {
     }
 }
 
-fn push_scalar_arg<'a>(scalar: &'a fuel_core_types::scalar::Scalar, builder: &mut cudarc::driver::LaunchArgs<'a>) {
+fn push_scalar_arg<'a>(scalar: &'a fuel_core_types::scalar::Scalar, builder: &mut crate::device::LaunchArgs<'a>) {
     use fuel_core_types::scalar::Scalar;
     match scalar {
         Scalar::U8(v) => builder.arg(v),
@@ -397,10 +423,19 @@ impl<U: UnaryOpT> Map1 for U {
     }
 }
 
-fn slice_ptr<T: DeviceRepr>(v: &CudaSlice<T>, lo: usize) -> (u64, cudarc::driver::SyncOnDrop<'_>) {
-    let (_, guard) = v.device_ptr(v.stream());
-    let (ptr, _) = v.slice(lo..).device_ptr(v.stream());
-    (ptr, guard)
+/// Lifetime-phantom stand-in for cudarc's `SyncOnDrop`. Baracuda's
+/// `DeviceBuffer` manages its own lifetime via Arc refcounting, so no
+/// explicit sync-on-drop guard is needed — but callers bound their
+/// pointer usage to `_guard` drop order, so this PhantomData preserves
+/// the call-site pattern without changing every destructure.
+#[doc(hidden)]
+pub struct SliceGuard<'a>(std::marker::PhantomData<&'a ()>);
+
+fn slice_ptr<T: DeviceRepr>(v: &CudaSlice<T>, lo: usize) -> (u64, SliceGuard<'_>) {
+    // Base pointer + byte-offset by `lo` elements.
+    let base = v.as_raw().0 as u64;
+    let offset_bytes = (lo * std::mem::size_of::<T>()) as u64;
+    (base + offset_bytes, SliceGuard(std::marker::PhantomData))
 }
 
 struct IndexSelect<'a>(&'a CudaStorage, &'a Layout, usize);
@@ -1726,7 +1761,7 @@ impl CudaStorage {
 
         macro_rules! launch_softmax {
             ($slice:expr, $kname:expr, $ty:ty) => {{
-                use cudarc::driver::LaunchConfig;
+                use crate::device::LaunchConfig;
                 let src = &$slice.slice(layout.start_offset()..);
                 let func = device.get_or_load_func($kname, &kernels::REDUCE)?;
                 let mut out = unsafe { device.alloc::<$ty>(n_rows * n_cols)? };
@@ -1746,7 +1781,7 @@ impl CudaStorage {
 
         let slice = match &self.slice {
             CudaStorageSlice::F32(s) => {
-                use cudarc::driver::LaunchConfig;
+                use crate::device::LaunchConfig;
                 let src = &s.slice(layout.start_offset()..);
                 let func = device.get_or_load_func("softmax_f32", &kernels::REDUCE)?;
                 let mut out = unsafe { device.alloc::<f32>(n_rows * n_cols)? };
@@ -1763,7 +1798,7 @@ impl CudaStorage {
                 CudaStorageSlice::F32(out)
             }
             CudaStorageSlice::F64(s) => {
-                use cudarc::driver::LaunchConfig;
+                use crate::device::LaunchConfig;
                 let src = &s.slice(layout.start_offset()..);
                 let func = device.get_or_load_func("softmax_f64", &kernels::REDUCE)?;
                 let mut out = unsafe { device.alloc::<f64>(n_rows * n_cols)? };
@@ -1805,7 +1840,7 @@ impl CudaStorage {
         n: usize,
         a_layout: &Layout,
     ) -> Result<Self> {
-        use cudarc::driver::LaunchConfig;
+        use crate::device::LaunchConfig;
         if self.dtype() != DType::F32 {
             return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_0: A must be F32, got {:?}", self.dtype());
@@ -1884,7 +1919,7 @@ impl CudaStorage {
         n: usize,
         a_layout: &Layout,
     ) -> Result<Self> {
-        use cudarc::driver::LaunchConfig;
+        use crate::device::LaunchConfig;
         if self.dtype() != DType::F32 {
             return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_km: A must be F32, got {:?}", self.dtype());
@@ -1951,7 +1986,7 @@ impl CudaStorage {
     /// vector — the caller multiplies by gain in a separate op).
     /// F32 only today.
     pub fn rms_norm_last_dim(&self, layout: &Layout, eps: f64) -> Result<Self> {
-        use cudarc::driver::LaunchConfig;
+        use crate::device::LaunchConfig;
         if self.dtype() != DType::F32 {
             return fuel_core_types::bail!(
                 "CudaStorage: rms_norm_last_dim requires f32 input, got {:?}",
@@ -2009,7 +2044,7 @@ impl CudaStorage {
         sin: &Self,
         x_layout: &Layout,
     ) -> Result<Self> {
-        use cudarc::driver::LaunchConfig;
+        use crate::device::LaunchConfig;
         if self.dtype() != DType::F32 || cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
             return fuel_core_types::bail!("CudaStorage: rope requires f32 inputs");
         }
@@ -2914,7 +2949,7 @@ unsafe fn gemm_strided_batched_f32(
     b: &baracuda_driver::DeviceSlice<f32>,
     c: &mut CudaSlice<f32>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
-    use baracuda_cublas_sys::types;
+    use baracuda_cublas_sys::types as sys;
     use baracuda_driver::DevicePtrMut;
 
     let compute_type = if gemm_reduced_precision_f32() {
@@ -2931,7 +2966,7 @@ unsafe fn gemm_strided_batched_f32(
     let (c, _guard_c) = c.device_ptr_mut(&stream);
 
     unsafe {
-        cudarc::cublas::result::gemm_strided_batched_ex(
+        baracuda_cublas::gemm_strided_batched_ex(
             *cublas.handle(),
             cfg.gemm.transa,
             cfg.gemm.transb,
@@ -2966,7 +3001,7 @@ unsafe fn gemm_strided_batched_f16(
     b: &baracuda_driver::DeviceSlice<f16>,
     c: &mut CudaSlice<f16>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
-    use baracuda_cublas_sys::types;
+    use baracuda_cublas_sys::types as sys;
     use baracuda_driver::DevicePtrMut;
 
     let alpha = cfg.gemm.alpha;
@@ -2992,7 +3027,7 @@ unsafe fn gemm_strided_batched_f16(
     let (b, _guard_b) = b.device_ptr(&stream);
     let (c, _guard_c) = c.device_ptr_mut(&stream);
     unsafe {
-        cudarc::cublas::result::gemm_strided_batched_ex(
+        baracuda_cublas::gemm_strided_batched_ex(
             *cublas.handle(),
             cfg.gemm.transa,
             cfg.gemm.transb,
@@ -3027,7 +3062,7 @@ unsafe fn gemm_strided_batched_bf16(
     b: &baracuda_driver::DeviceSlice<bf16>,
     c: &mut CudaSlice<bf16>,
 ) -> std::result::Result<(), baracuda_cublas::Error> {
-    use baracuda_cublas_sys::types;
+    use baracuda_cublas_sys::types as sys;
     use baracuda_driver::DevicePtrMut;
 
     let alpha_f32: f32 = cfg.gemm.alpha.to_f32();
@@ -3053,7 +3088,7 @@ unsafe fn gemm_strided_batched_bf16(
     let (b, _guard_b) = b.device_ptr(&stream);
     let (c, _guard_c) = c.device_ptr_mut(&stream);
     unsafe {
-        cudarc::cublas::result::gemm_strided_batched_ex(
+        baracuda_cublas::gemm_strided_batched_ex(
             *cublas.handle(),
             cfg.gemm.transa,
             cfg.gemm.transb,
