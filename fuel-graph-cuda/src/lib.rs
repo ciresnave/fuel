@@ -42,7 +42,7 @@ pub mod error;
 pub mod storage;
 pub mod utils;
 
-pub use device::{CudaDevice, DeviceId};
+pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};
 pub use storage::{CudaStorage, CudaStorageSlice, SlicePtrOrNull, kernel_name};

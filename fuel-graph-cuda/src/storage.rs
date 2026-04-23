@@ -2124,43 +2124,43 @@ impl CudaStorage {
         let device = &self.device;
         match &self.slice {
             CudaStorageSlice::U8(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::U8(cpu_storage))
             }
             CudaStorageSlice::U32(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::U32(cpu_storage))
             }
             CudaStorageSlice::I16(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::I16(cpu_storage))
             }
             CudaStorageSlice::I32(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::I32(cpu_storage))
             }
             CudaStorageSlice::I64(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::I64(cpu_storage))
             }
             CudaStorageSlice::BF16(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::BF16(cpu_storage))
             }
             CudaStorageSlice::F16(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::F16(cpu_storage))
             }
             CudaStorageSlice::F32(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::F32(cpu_storage))
             }
             CudaStorageSlice::F64(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::F64(cpu_storage))
             }
             CudaStorageSlice::F8E4M3(slice) => {
-                let cpu_storage = device.clone_dtoh(slice)?;
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(CpuStorage::F8E4M3(cpu_storage))
             }
             CudaStorageSlice::F4(_)

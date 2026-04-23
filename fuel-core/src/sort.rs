@@ -55,10 +55,9 @@ impl ArgSort {
 #[cfg(feature = "cuda")]
 mod cuda {
     use super::*;
-    use crate::cuda_backend::cudarc::driver::{
-        CudaSlice, DeviceRepr, LaunchConfig, ValidAsZeroBits,
-    };
-    use crate::cuda_backend::{kernel_name, kernels, CudaStorageSlice as S, WrapErr};
+    use baracuda_driver::DeviceBuffer as CudaSlice;
+    use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+    use crate::cuda_backend::{kernel_name, kernels, CudaStorageSlice as S, LaunchConfig, WrapErr};
     use crate::CudaDevice;
     use fuel_core_types::dtype::WithDType;
 
@@ -70,8 +69,6 @@ mod cuda {
             layout: &crate::Layout,
             _wrap: W,
         ) -> Result<S> {
-            use cudarc::driver::PushKernelArg;
-
             let slice = match layout.contiguous_offsets() {
                 None => crate::bail!("input has to be contiguous"),
                 Some((o1, o2)) => src.slice(o1..o2),
@@ -93,11 +90,13 @@ mod cuda {
                 block_dim: (block_dim as u32, 1, 1),
                 shared_mem_bytes: (ncols_pad * std::mem::size_of::<u32>()) as u32,
             };
-            let stream = dev.cuda_stream();
-            let mut builder = stream.launch_builder(&func);
+            let mut builder = func.builder();
             let ncols = ncols as i32;
             let ncols_pad = ncols_pad as i32;
-            builder.arg(&slice).arg(&dst).arg(&ncols).arg(&ncols_pad);
+            builder.arg(&slice);
+            builder.arg(&dst);
+            builder.arg(&ncols);
+            builder.arg(&ncols_pad);
             unsafe { builder.launch(cfg) }.w()?;
             Ok(S::U32(dst))
         }
