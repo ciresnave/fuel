@@ -15,8 +15,7 @@ use clap::{Parser, ValueEnum};
 use fuel::{DType, Device, Tensor};
 use fuel_transformers::generation::LogitsProcessor;
 use fuel_transformers::models::llama::LlamaEosToks;
-use cudarc::driver::safe::CudaDevice;
-use cudarc::nccl::safe::{Comm, Id};
+use baracuda_nccl::{Communicator as Comm, UniqueId as Id};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use std::io::Write;
 use std::rc::Rc;
@@ -144,12 +143,11 @@ fn main() -> Result<()> {
     };
 
     let num_shards = args.num_shards;
-    // Primitive IPC
+    // Primitive IPC — rank 0 broadcasts the ncclUniqueId via a temp file
     let id = if rank == 0 {
         let id = Id::new().unwrap();
         let tmp_file = comm_file.with_extension(".comm.tgz");
-        std::fs::File::create(&tmp_file)?
-            .write_all(&id.internal().iter().map(|&i| i as u8).collect::<Vec<_>>())?;
+        std::fs::File::create(&tmp_file)?.write_all(&id.as_bytes())?;
         std::fs::rename(&tmp_file, &comm_file)?;
         id
     } else {
@@ -157,19 +155,12 @@ fn main() -> Result<()> {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
         let data = std::fs::read(&comm_file)?;
-        let internal: [i8; 128] = data
-            .into_iter()
-            .map(|i| i as i8)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-        let id: Id = Id::uninit(internal);
-        id
+        let bytes: [u8; 128] = data.try_into().expect("nccl unique id must be 128 bytes");
+        Id::from_bytes(bytes)
     };
-    let device = CudaDevice::new(rank)?;
-    let comm = match Comm::from_rank(device, rank, num_shards, id) {
+    let comm = match Comm::init_rank(num_shards as i32, id, rank as i32) {
         Ok(comm) => Rc::new(comm),
-        Err(err) => anyhow::bail!("nccl error {:?}", err.0),
+        Err(err) => anyhow::bail!("nccl error {:?}", err),
     };
     if rank == 0 {
         std::fs::remove_file(comm_file)?;

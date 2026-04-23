@@ -1,8 +1,11 @@
 ﻿use fuel::backend::BackendStorage;
-use fuel::{CpuStorage, CustomOp1, DType, Device, IndexOp, Layout, Result, Shape, Tensor, D};
+use fuel::dyn_backend::DynBackendStorage;
+use fuel::{CustomOp1, DType, Device, IndexOp, Layout, Result, Shape, Tensor, D};
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
+use fuel_graph_cuda::CudaBackendStorage;
 use fuel_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use fuel_nn::{Embedding, Linear, Module, RmsNorm};
-use cudarc::nccl::safe::{Comm, ReduceOp};
+use baracuda_nccl::{Communicator as Comm, RedOp};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -42,50 +45,61 @@ impl CustomOp1 for AllReduce {
         "allreduce"
     }
 
-    fn cpu_fwd(&self, _s: &CpuStorage, _l: &Layout) -> Result<(CpuStorage, Shape)> {
-        fuel::bail!("AllReduce is never used on cpu")
-    }
-
-    #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn fwd(
         &self,
-        s: &fuel::CudaStorage,
+        storage: &dyn DynBackendStorage,
         l: &Layout,
-    ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::WrapErr;
-        use cudarc::driver::DeviceSlice;
-        use half::{bf16, f16};
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        if storage.as_any().is::<CpuBackendStorage>() {
+            fuel::bail!("AllReduce is never used on cpu");
+        }
 
-        let elem_count = l.shape().elem_count();
-        let dev = s.device().clone();
-        let dst = match s.dtype() {
-            DType::BF16 => {
-                let s = s.as_cuda_slice::<bf16>()?;
-                let s = match l.contiguous_offsets() {
-                    Some((0, l)) if l == s.len() => s,
-                    Some(_) | None => fuel::bail!("input has to be contiguous"),
-                };
-                let mut dst = unsafe { dev.alloc::<bf16>(elem_count) }.w()?;
-                self.comm
-                    .all_reduce(s, &mut dst, &ReduceOp::Sum)
-                    .map_err(fuel::Error::debug)?;
-                fuel::CudaStorage::wrap_cuda_slice(dst, dev)
-            }
-            DType::F16 => {
-                let s = s.as_cuda_slice::<f16>()?;
-                let s = match l.contiguous_offsets() {
-                    Some((0, l)) if l == s.len() => s,
-                    Some(_) | None => fuel::bail!("input has to be contiguous"),
-                };
-                let mut dst = unsafe { dev.alloc::<f16>(elem_count) }.w()?;
-                self.comm
-                    .all_reduce(s, &mut dst, &ReduceOp::Sum)
-                    .map_err(fuel::Error::debug)?;
-                fuel::CudaStorage::wrap_cuda_slice(dst, dev)
-            }
-            dtype => fuel::bail!("unsupported dtype {dtype:?}"),
-        };
-        Ok((dst, l.shape().clone()))
+        #[cfg(feature = "cuda")]
+        {
+            let cuda = storage
+                .as_any()
+                .downcast_ref::<CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg("AllReduce requires CUDA storage".into()).bt())?;
+            let s = cuda.inner();
+            let elem_count = l.shape().elem_count();
+            let dev = s.device().clone();
+            let dst = match s.dtype() {
+                // NCCL reductions for bf16 / f16 need baracuda-nccl
+                // `NcclScalar` impls for `half::bf16` / `half::f16`. Only
+                // i8/u8/i32/u32/i64/u64/f32/f64 are impl'd today; the
+                // half-type impls should follow the same pattern that
+                // baracuda-types' `half-crate` feature uses for DeviceRepr
+                // / ValidAsZeroBits. Pending upstream.
+                DType::BF16 | DType::F16 => fuel::bail!(
+                    "nccl all_reduce for {:?} is not yet supported on baracuda-nccl \
+                     (NcclScalar impls for half::bf16/half::f16 pending upstream)",
+                    s.dtype()
+                ),
+                DType::F32 => {
+                    let s = s.as_cuda_slice::<f32>()?;
+                    match l.contiguous_offsets() {
+                        Some((0, n)) if n == s.len() => {}
+                        Some(_) | None => fuel::bail!("input has to be contiguous"),
+                    };
+                    let mut dst = unsafe { dev.alloc::<f32>(elem_count) }?;
+                    baracuda_nccl::all_reduce(
+                        s,
+                        &mut dst,
+                        elem_count,
+                        RedOp::Sum,
+                        &self.comm,
+                        &dev.cuda_stream(),
+                    )
+                    .map_err(|e| fuel::Error::Msg(format!("nccl all_reduce: {e:?}")).bt())?;
+                    fuel::CudaStorage::wrap_cuda_slice(dst, dev)
+                }
+                dtype => fuel::bail!("unsupported dtype {dtype:?}"),
+            };
+            return Ok((Box::new(CudaBackendStorage::new(dst)), l.shape().clone()));
+        }
+
+        #[cfg(not(feature = "cuda"))]
+        fuel::bail!("AllReduce requires the cuda feature")
     }
 }
 
@@ -109,15 +123,15 @@ fn shard(dim: usize, rank: usize, world_size: usize) -> fuel_nn::var_builder::Sh
 
 impl TensorParallelColumnLinear {
     fn load(vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
+        let rank = comm.rank().expect("nccl rank failed") as usize;
+        let size = comm.nranks().expect("nccl nranks failed") as usize;
         let weight = vb.get_with_hints((), "weight", shard(0, rank, size))?;
         Ok(Self::new(Linear::new(weight, None)))
     }
 
     fn load_multi(vb: VarBuilder, prefixes: &[&str], comm: Rc<Comm>) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
+        let rank = comm.rank().expect("nccl rank failed") as usize;
+        let size = comm.nranks().expect("nccl nranks failed") as usize;
         let weights: Vec<_> = prefixes
             .iter()
             .map(|p| vb.pp(p).get_with_hints((), "weight", shard(0, rank, size)))
@@ -129,8 +143,8 @@ impl TensorParallelColumnLinear {
 
 impl TensorParallelRowLinear {
     fn load(vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
+        let rank = comm.rank().expect("nccl rank failed") as usize;
+        let size = comm.nranks().expect("nccl nranks failed") as usize;
         let weight = vb.get_with_hints((), "weight", shard(1, rank, size))?;
         Ok(Self::new(Linear::new(weight, None), comm))
     }
@@ -283,8 +297,8 @@ impl CausalSelfAttention {
         Ok(Self {
             qkv_proj,
             o_proj,
-            num_attention_heads: cfg.num_attention_heads / comm.world_size(),
-            num_key_value_heads: cfg.num_key_value_heads() / comm.world_size(),
+            num_attention_heads: cfg.num_attention_heads / comm.nranks().expect("nccl nranks failed") as usize,
+            num_key_value_heads: cfg.num_key_value_heads() / comm.nranks().expect("nccl nranks failed") as usize,
             head_dim: cfg.hidden_size / cfg.num_attention_heads,
             cache: cache.clone(),
         })
