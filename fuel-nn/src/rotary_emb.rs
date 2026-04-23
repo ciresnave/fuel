@@ -26,77 +26,89 @@ impl fuel::CustomOp3 for RotaryEmbI {
         s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
     ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
-        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s1 = s1.inner();
-        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s2 = s2.inner();
-        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s3 = s3.inner();
-        fn inner<T: fuel::WithDType + num_traits::Float>(
-            src: &[T],
-            l_src: &Layout,
-            cos: &[T],
-            l_cos: &Layout,
-            sin: &[T],
-            l_sin: &Layout,
-        ) -> Result<(CpuStorage, Shape)> {
-            let src = match l_src.contiguous_offsets() {
-                None => fuel::bail!("input src has to be contiguous"),
-                Some((o1, o2)) => &src[o1..o2],
-            };
-            let cos = match l_cos.contiguous_offsets() {
-                None => fuel::bail!("input cos has to be contiguous"),
-                Some((o1, o2)) => &cos[o1..o2],
-            };
-            let sin = match l_sin.contiguous_offsets() {
-                None => fuel::bail!("input sin has to be contiguous"),
-                Some((o1, o2)) => &sin[o1..o2],
-            };
-            let (b, h, t, d) = l_src.shape().dims4()?;
-            let unbatched_rope = l_cos.dims().len() == 3 && l_sin.dims().len() == 3;
-            let el_count = b * h * t * d;
-            let mut dst = vec![T::zero(); el_count];
-            src.par_chunks(t * d)
-                .zip(dst.par_chunks_mut(t * d))
-                .enumerate()
-                .for_each(|(bh_i, (src, dst))| {
-                    for i_over_2 in 0..t * d / 2 {
-                        let i = 2 * i_over_2;
-                        let rope_i = if unbatched_rope {
-                            let b_i = bh_i / h;
-                            i_over_2 + b_i * t * d / 2
-                        } else {
-                            i_over_2
-                        };
-                        dst[i] = src[i] * cos[rope_i] - src[i + 1] * sin[rope_i];
-                        dst[i + 1] = src[i] * sin[rope_i] + src[i + 1] * cos[rope_i];
-                    }
-                });
-            let storage = T::to_cpu_storage_owned(dst);
-            Ok((storage, (b, h, t, d).into()))
+        if let Some(cpu1) = s1.as_any().downcast_ref::<CpuBackendStorage>() {
+            let cpu2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+            let cpu3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+            let s1 = cpu1.inner();
+            let s2 = cpu2.inner();
+            let s3 = cpu3.inner();
+            fn inner<T: fuel::WithDType + num_traits::Float>(
+                src: &[T],
+                l_src: &Layout,
+                cos: &[T],
+                l_cos: &Layout,
+                sin: &[T],
+                l_sin: &Layout,
+            ) -> Result<(CpuStorage, Shape)> {
+                let src = match l_src.contiguous_offsets() {
+                    None => fuel::bail!("input src has to be contiguous"),
+                    Some((o1, o2)) => &src[o1..o2],
+                };
+                let cos = match l_cos.contiguous_offsets() {
+                    None => fuel::bail!("input cos has to be contiguous"),
+                    Some((o1, o2)) => &cos[o1..o2],
+                };
+                let sin = match l_sin.contiguous_offsets() {
+                    None => fuel::bail!("input sin has to be contiguous"),
+                    Some((o1, o2)) => &sin[o1..o2],
+                };
+                let (b, h, t, d) = l_src.shape().dims4()?;
+                let unbatched_rope = l_cos.dims().len() == 3 && l_sin.dims().len() == 3;
+                let el_count = b * h * t * d;
+                let mut dst = vec![T::zero(); el_count];
+                src.par_chunks(t * d)
+                    .zip(dst.par_chunks_mut(t * d))
+                    .enumerate()
+                    .for_each(|(bh_i, (src, dst))| {
+                        for i_over_2 in 0..t * d / 2 {
+                            let i = 2 * i_over_2;
+                            let rope_i = if unbatched_rope {
+                                let b_i = bh_i / h;
+                                i_over_2 + b_i * t * d / 2
+                            } else {
+                                i_over_2
+                            };
+                            dst[i] = src[i] * cos[rope_i] - src[i + 1] * sin[rope_i];
+                            dst[i + 1] = src[i] * sin[rope_i] + src[i + 1] * cos[rope_i];
+                        }
+                    });
+                let storage = T::to_cpu_storage_owned(dst);
+                Ok((storage, (b, h, t, d).into()))
+            }
+
+            use CpuStorage as C;
+            let (result, shape) = match (s1, s2, s3) {
+                (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                _ => fuel::bail!(
+                    "unsupported dtype for rope {:?} {:?} {:?}",
+                    s1.dtype(),
+                    s2.dtype(),
+                    s3.dtype()
+                ),
+            }?;
+            return Ok((Box::new(CpuBackendStorage::from(result)), shape));
         }
 
-        use CpuStorage as C;
-        let (result, shape) = match (s1, s2, s3) {
-            (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            _ => fuel::bail!(
-                "unsupported dtype for rope {:?} {:?} {:?}",
-                s1.dtype(),
-                s2.dtype(),
-                s3.dtype()
-            ),
-        }?;
-        Ok((Box::new(CpuBackendStorage::from(result)), shape))
+        #[cfg(feature = "cuda")]
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
+            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
+            let (out, shape) = self.cuda_inner(cuda1.inner(), l1, cuda2.inner(), l2, cuda3.inner(), l3)?;
+            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(out)), shape));
+        }
+
+        fuel::bail!("{}: unsupported backend", self.name())
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
         l1: &Layout,
@@ -105,9 +117,9 @@ impl fuel::CustomOp3 for RotaryEmbI {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
-        };
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
         use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
@@ -352,81 +364,93 @@ impl fuel::CustomOp3 for RotaryEmb {
         s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
     ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
-        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s1 = s1.inner();
-        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s2 = s2.inner();
-        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s3 = s3.inner();
-        fn inner<T: fuel::WithDType + num_traits::Float>(
-            src: &[T],
-            l_src: &Layout,
-            cos: &[T],
-            l_cos: &Layout,
-            sin: &[T],
-            l_sin: &Layout,
-        ) -> Result<(CpuStorage, Shape)> {
-            let src = match l_src.contiguous_offsets() {
-                None => fuel::bail!("input src has to be contiguous"),
-                Some((o1, o2)) => &src[o1..o2],
-            };
-            let cos = match l_cos.contiguous_offsets() {
-                None => fuel::bail!("input cos has to be contiguous"),
-                Some((o1, o2)) => &cos[o1..o2],
-            };
-            let sin = match l_sin.contiguous_offsets() {
-                None => fuel::bail!("input sin has to be contiguous"),
-                Some((o1, o2)) => &sin[o1..o2],
-            };
-            let (b, h, t, d) = l_src.shape().dims4()?;
-            let unbatched_rope = l_cos.dims().len() == 3 && l_sin.dims().len() == 3;
-            let el_count = b * h * t * d;
-            let mut dst = vec![T::zero(); el_count];
-            src.par_chunks(t * d)
-                .zip(dst.par_chunks_mut(t * d))
-                .enumerate()
-                .for_each(|(bh_i, (src, dst))| {
-                    for i_t in 0..t {
-                        for i_d in 0..d / 2 {
-                            let i1 = i_t * d + i_d;
-                            let i2 = i1 + d / 2;
-                            let i_cs = i_t * (d / 2) + i_d;
-                            let i_cs = if unbatched_rope {
-                                let b_i = bh_i / h;
-                                i_cs + b_i * t * d / 2
-                            } else {
-                                i_cs
-                            };
-                            dst[i1] = src[i1] * cos[i_cs] - src[i2] * sin[i_cs];
-                            dst[i2] = src[i1] * sin[i_cs] + src[i2] * cos[i_cs];
+        if let Some(cpu1) = s1.as_any().downcast_ref::<CpuBackendStorage>() {
+            let cpu2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+            let cpu3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+            let s1 = cpu1.inner();
+            let s2 = cpu2.inner();
+            let s3 = cpu3.inner();
+            fn inner<T: fuel::WithDType + num_traits::Float>(
+                src: &[T],
+                l_src: &Layout,
+                cos: &[T],
+                l_cos: &Layout,
+                sin: &[T],
+                l_sin: &Layout,
+            ) -> Result<(CpuStorage, Shape)> {
+                let src = match l_src.contiguous_offsets() {
+                    None => fuel::bail!("input src has to be contiguous"),
+                    Some((o1, o2)) => &src[o1..o2],
+                };
+                let cos = match l_cos.contiguous_offsets() {
+                    None => fuel::bail!("input cos has to be contiguous"),
+                    Some((o1, o2)) => &cos[o1..o2],
+                };
+                let sin = match l_sin.contiguous_offsets() {
+                    None => fuel::bail!("input sin has to be contiguous"),
+                    Some((o1, o2)) => &sin[o1..o2],
+                };
+                let (b, h, t, d) = l_src.shape().dims4()?;
+                let unbatched_rope = l_cos.dims().len() == 3 && l_sin.dims().len() == 3;
+                let el_count = b * h * t * d;
+                let mut dst = vec![T::zero(); el_count];
+                src.par_chunks(t * d)
+                    .zip(dst.par_chunks_mut(t * d))
+                    .enumerate()
+                    .for_each(|(bh_i, (src, dst))| {
+                        for i_t in 0..t {
+                            for i_d in 0..d / 2 {
+                                let i1 = i_t * d + i_d;
+                                let i2 = i1 + d / 2;
+                                let i_cs = i_t * (d / 2) + i_d;
+                                let i_cs = if unbatched_rope {
+                                    let b_i = bh_i / h;
+                                    i_cs + b_i * t * d / 2
+                                } else {
+                                    i_cs
+                                };
+                                dst[i1] = src[i1] * cos[i_cs] - src[i2] * sin[i_cs];
+                                dst[i2] = src[i1] * sin[i_cs] + src[i2] * cos[i_cs];
+                            }
                         }
-                    }
-                });
-            let storage = T::to_cpu_storage_owned(dst);
-            Ok((storage, (b, h, t, d).into()))
+                    });
+                let storage = T::to_cpu_storage_owned(dst);
+                Ok((storage, (b, h, t, d).into()))
+            }
+
+            use CpuStorage as C;
+            let (result, shape) = match (s1, s2, s3) {
+                (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                _ => fuel::bail!(
+                    "unsupported dtype for rope {:?} {:?} {:?}",
+                    s1.dtype(),
+                    s2.dtype(),
+                    s3.dtype()
+                ),
+            }?;
+            return Ok((Box::new(CpuBackendStorage::from(result)), shape));
         }
 
-        use CpuStorage as C;
-        let (result, shape) = match (s1, s2, s3) {
-            (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            _ => fuel::bail!(
-                "unsupported dtype for rope {:?} {:?} {:?}",
-                s1.dtype(),
-                s2.dtype(),
-                s3.dtype()
-            ),
-        }?;
-        Ok((Box::new(CpuBackendStorage::from(result)), shape))
+        #[cfg(feature = "cuda")]
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
+            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
+            let (out, shape) = self.cuda_inner(cuda1.inner(), l1, cuda2.inner(), l2, cuda3.inner(), l3)?;
+            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(out)), shape));
+        }
+
+        fuel::bail!("{}: unsupported backend", self.name())
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
         l1: &Layout,
@@ -435,9 +459,9 @@ impl fuel::CustomOp3 for RotaryEmb {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
-        };
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
         use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
@@ -666,82 +690,94 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         s3: &dyn fuel::dyn_backend::DynBackendStorage,
         l3: &Layout,
     ) -> Result<(Box<dyn fuel::dyn_backend::DynBackendStorage>, Shape)> {
-        let s1 = s1.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s1 = s1.inner();
-        let s2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s2 = s2.inner();
-        let s3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
-        let s3 = s3.inner();
-        fn inner<T: fuel::WithDType + num_traits::Float>(
-            src: &[T],
-            l_src: &Layout,
-            cos: &[T],
-            l_cos: &Layout,
-            sin: &[T],
-            l_sin: &Layout,
-        ) -> Result<(CpuStorage, Shape)> {
-            let src = match l_src.contiguous_offsets() {
-                None => fuel::bail!("input src has to be contiguous"),
-                Some((o1, o2)) => &src[o1..o2],
-            };
-            let cos = match l_cos.contiguous_offsets() {
-                None => fuel::bail!("input cos has to be contiguous"),
-                Some((o1, o2)) => &cos[o1..o2],
-            };
-            let sin = match l_sin.contiguous_offsets() {
-                None => fuel::bail!("input sin has to be contiguous"),
-                Some((o1, o2)) => &sin[o1..o2],
-            };
-            let (b, t, h, d) = l_src.shape().dims4()?;
-            let unbatched_rope = l_cos.dims().len() == 3 && l_sin.dims().len() == 3;
-            let el_count = b * h * t * d;
-            let mut dst = vec![T::zero(); el_count];
-            src.par_chunks(t * h * d)
-                .zip(dst.par_chunks_mut(t * h * d))
-                .enumerate()
-                .for_each(|(b_i, (src, dst))| {
-                    for i_t in 0..t {
-                        for i_d in 0..d / 2 {
-                            let i_cs = i_t * (d / 2) + i_d;
-                            let i_cs = if unbatched_rope {
-                                i_cs + b_i * t * d / 2
-                            } else {
-                                i_cs
-                            };
-                            for i_h in 0..h {
-                                let i1 = i_t * h * d + i_h * d + i_d;
-                                let i2 = i1 + d / 2;
-                                dst[i1] = src[i1] * cos[i_cs] - src[i2] * sin[i_cs];
-                                dst[i2] = src[i1] * sin[i_cs] + src[i2] * cos[i_cs];
+        if let Some(cpu1) = s1.as_any().downcast_ref::<CpuBackendStorage>() {
+            let cpu2 = s2.as_any().downcast_ref::<CpuBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+            let cpu3 = s3.as_any().downcast_ref::<CpuBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CPU storage", self.name())))?;
+            let s1 = cpu1.inner();
+            let s2 = cpu2.inner();
+            let s3 = cpu3.inner();
+            fn inner<T: fuel::WithDType + num_traits::Float>(
+                src: &[T],
+                l_src: &Layout,
+                cos: &[T],
+                l_cos: &Layout,
+                sin: &[T],
+                l_sin: &Layout,
+            ) -> Result<(CpuStorage, Shape)> {
+                let src = match l_src.contiguous_offsets() {
+                    None => fuel::bail!("input src has to be contiguous"),
+                    Some((o1, o2)) => &src[o1..o2],
+                };
+                let cos = match l_cos.contiguous_offsets() {
+                    None => fuel::bail!("input cos has to be contiguous"),
+                    Some((o1, o2)) => &cos[o1..o2],
+                };
+                let sin = match l_sin.contiguous_offsets() {
+                    None => fuel::bail!("input sin has to be contiguous"),
+                    Some((o1, o2)) => &sin[o1..o2],
+                };
+                let (b, t, h, d) = l_src.shape().dims4()?;
+                let unbatched_rope = l_cos.dims().len() == 3 && l_sin.dims().len() == 3;
+                let el_count = b * h * t * d;
+                let mut dst = vec![T::zero(); el_count];
+                src.par_chunks(t * h * d)
+                    .zip(dst.par_chunks_mut(t * h * d))
+                    .enumerate()
+                    .for_each(|(b_i, (src, dst))| {
+                        for i_t in 0..t {
+                            for i_d in 0..d / 2 {
+                                let i_cs = i_t * (d / 2) + i_d;
+                                let i_cs = if unbatched_rope {
+                                    i_cs + b_i * t * d / 2
+                                } else {
+                                    i_cs
+                                };
+                                for i_h in 0..h {
+                                    let i1 = i_t * h * d + i_h * d + i_d;
+                                    let i2 = i1 + d / 2;
+                                    dst[i1] = src[i1] * cos[i_cs] - src[i2] * sin[i_cs];
+                                    dst[i2] = src[i1] * sin[i_cs] + src[i2] * cos[i_cs];
+                                }
                             }
                         }
-                    }
-                });
-            let storage = T::to_cpu_storage_owned(dst);
-            Ok((storage, (b, t, h, d).into()))
+                    });
+                let storage = T::to_cpu_storage_owned(dst);
+                Ok((storage, (b, t, h, d).into()))
+            }
+
+            use CpuStorage as C;
+            let (result, shape) = match (s1, s2, s3) {
+                (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
+                _ => fuel::bail!(
+                    "unsupported dtype for rope {:?} {:?} {:?}",
+                    s1.dtype(),
+                    s2.dtype(),
+                    s3.dtype()
+                ),
+            }?;
+            return Ok((Box::new(CpuBackendStorage::from(result)), shape));
         }
 
-        use CpuStorage as C;
-        let (result, shape) = match (s1, s2, s3) {
-            (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F32(s1), C::F32(s2), C::F32(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            (C::F64(s1), C::F64(s2), C::F64(s3)) => inner(s1, l1, s2, l2, s3, l3),
-            _ => fuel::bail!(
-                "unsupported dtype for rope {:?} {:?} {:?}",
-                s1.dtype(),
-                s2.dtype(),
-                s3.dtype()
-            ),
-        }?;
-        Ok((Box::new(CpuBackendStorage::from(result)), shape))
+        #[cfg(feature = "cuda")]
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
+            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+                .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
+            let (out, shape) = self.cuda_inner(cuda1.inner(), l1, cuda2.inner(), l2, cuda3.inner(), l3)?;
+            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(out)), shape));
+        }
+
+        fuel::bail!("{}: unsupported backend", self.name())
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
         l1: &Layout,
@@ -750,9 +786,9 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
-        };
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
         use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
