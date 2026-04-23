@@ -143,16 +143,18 @@ impl fuel::CustomOp1 for Sigmoid {
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         storage: &fuel::CudaStorage,
         layout: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
         use fuel::backend::BackendStorage;
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
-        };
-        use fuel::cuda_backend::SlicePtrOrNull;
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
+        #[allow(unused_imports)]
+        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+                use fuel::cuda_backend::SlicePtrOrNull;
         use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
@@ -484,15 +486,17 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         storage: &fuel::CudaStorage,
         layout: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
-        };
-        use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
+        #[allow(unused_imports)]
+        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+                use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
         struct S;
@@ -687,17 +691,19 @@ impl fuel::CustomOp2 for RmsNorm {
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
         l1: &Layout,
         s2: &fuel::CudaStorage,
         l2: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
-        };
-        use fuel::cuda_backend::{kernel_name, kernels, Map2, WrapErr};
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
+        #[allow(unused_imports)]
+        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+                use fuel::cuda_backend::{kernel_name, kernels, Map2, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
         struct S {
@@ -958,7 +964,7 @@ impl fuel::CustomOp3 for LayerNorm {
     }
 
     #[cfg(feature = "cuda")]
-    fn cuda_fwd(
+    fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
         l1: &Layout,
@@ -967,10 +973,12 @@ impl fuel::CustomOp3 for LayerNorm {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::cuda_backend::cudarc::driver::{
-            CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
-        };
-        use fuel::cuda_backend::{kernel_name, kernels, Map3, WrapErr};
+        use baracuda_driver::DeviceBuffer as CudaSlice;
+        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+        use fuel::cuda_backend::LaunchConfig;
+        #[allow(unused_imports)]
+        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
+                use fuel::cuda_backend::{kernel_name, kernels, Map3, WrapErr};
         use fuel::{CudaDevice, WithDType};
 
         struct S {

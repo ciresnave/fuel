@@ -30,7 +30,7 @@ pub fn moe_gemm(
     use fuel::DType;
     use half::{bf16, f16};
 
-    fn cuda_fwd<
+    fn cuda_inner<
         T: fuel::cuda_backend::CudaDType + fuel::cuda_backend::cudarc::driver::DeviceRepr,
     >(
         input: &Tensor,
@@ -215,7 +215,7 @@ pub fn moe_gemm_gguf(
     use half::{bf16, f16};
 
     #[allow(clippy::too_many_arguments)]
-    fn cuda_fwd(
+    fn cuda_inner(
         input: &Tensor,
         weights: &QTensor,
         topk_weights: &Option<Tensor>,
