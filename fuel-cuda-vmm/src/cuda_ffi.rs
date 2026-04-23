@@ -1,10 +1,16 @@
 //! Low-level CUDA Virtual Memory Management FFI bindings.
 //!
-//! This module provides safe wrappers around CUDA's VMM APIs using cudarc.
-//! All functions perform proper error checking and return Result types.
+//! Safe wrappers over CUDA's VMM APIs using baracuda-cuda-sys. The raw
+//! driver symbols are resolved lazily at runtime by baracuda's dynamic
+//! loader (`driver()`), so merely linking this crate doesn't pull in
+//! `libcuda`. Each public fn performs `CUresult::SUCCESS` checking and
+//! maps failures to [`VmmError`].
 
 use crate::error::{Result, VmmError};
-use cudarc::driver::sys;
+use baracuda_cuda_sys::{
+    driver, types as sys, CUdeviceptr, CUmemAccessDesc, CUmemAllocationProp, CUmemLocation,
+    CUresult,
+};
 
 /// Memory location type for CUDA allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,16 +38,16 @@ impl AllocationProp {
     }
 
     /// Convert to CUDA allocation properties.
-    fn to_cuda_prop(&self) -> sys::CUmemAllocationProp {
-        sys::CUmemAllocationProp {
-            type_: sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED,
-            requestedHandleTypes: sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_NONE,
-            location: sys::CUmemLocation {
-                type_: sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
+    fn to_cuda_prop(&self) -> CUmemAllocationProp {
+        CUmemAllocationProp {
+            type_: sys::CUmemAllocationType::PINNED,
+            requested_handle_types: sys::CUmemAllocationHandleType::NONE,
+            location: CUmemLocation {
+                type_: sys::CUmemLocationType::DEVICE,
                 id: self.device_ordinal,
             },
-            win32HandleMetaData: std::ptr::null_mut(),
-            allocFlags: unsafe { std::mem::zeroed() },
+            win32_handle_meta_data: std::ptr::null_mut(),
+            alloc_flags: Default::default(),
         }
     }
 }
@@ -59,11 +65,11 @@ pub enum AccessFlags {
 
 impl AccessFlags {
     /// Convert to CUDA access flags.
-    fn to_cuda_flags(&self) -> sys::CUmemAccess_flags {
+    fn to_cuda_flags(&self) -> i32 {
         match self {
-            AccessFlags::None => sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_NONE,
-            AccessFlags::Read => sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READ,
-            AccessFlags::ReadWrite => sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+            AccessFlags::None => sys::CUmemAccess_flags::NONE,
+            AccessFlags::Read => sys::CUmemAccess_flags::READ,
+            AccessFlags::ReadWrite => sys::CUmemAccess_flags::READWRITE,
         }
     }
 }
@@ -72,211 +78,148 @@ impl AccessFlags {
 pub type MemGenericAllocationHandle = sys::CUmemGenericAllocationHandle;
 
 /// Device pointer (virtual address).
-pub type DevicePtr = sys::CUdeviceptr;
+pub type DevicePtr = CUdeviceptr;
+
+/// Granularity option (passed through to `cuMemGetAllocationGranularity`).
+///
+/// Mirrors `CUmemAllocationGranularity_flags` constants: MINIMUM=0,
+/// RECOMMENDED=1.
+pub type GranularityFlags = i32;
+
+fn check(result: CUresult, what: &str) -> Result<()> {
+    if result == CUresult::SUCCESS {
+        Ok(())
+    } else {
+        Err(VmmError::cuda(format!("{what} failed: {result:?}")))
+    }
+}
+
+fn load_err<E: core::fmt::Debug>(e: E, what: &str) -> VmmError {
+    VmmError::cuda(format!("{what} loader error: {e:?}"))
+}
 
 /// Allocate physical GPU memory.
-///
-/// # Arguments
-/// * `size` - Size in bytes (must be multiple of granularity).
-/// * `prop` - Allocation properties (device, type, etc.).
-///
-/// # Returns
-/// Handle to physical memory allocation.
 pub unsafe fn mem_create(size: usize, prop: &AllocationProp) -> Result<MemGenericAllocationHandle> {
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_create()
+        .map_err(|e| load_err(e, "cuMemCreate"))?;
     let mut handle: MemGenericAllocationHandle = 0;
     let cuda_prop = prop.to_cuda_prop();
-
-    let result = unsafe {
-        sys::cuMemCreate(
-            &mut handle,
-            size,
-            &cuda_prop,
-            0, // flags
-        )
-    };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::cuda(format!(
-            "cuMemCreate failed with code {:?}",
-            result
-        )));
-    }
-
+    check(unsafe { cu(&mut handle, size, &cuda_prop, 0) }, "cuMemCreate")?;
     Ok(handle)
 }
 
 /// Release physical GPU memory.
-///
-/// # Arguments
-/// * `handle` - Handle to physical memory allocation.
 pub unsafe fn mem_release(handle: MemGenericAllocationHandle) -> Result<()> {
-    let result = unsafe { sys::cuMemRelease(handle) };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::cuda(format!(
-            "cuMemRelease failed with code {:?}",
-            result
-        )));
-    }
-
-    Ok(())
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_release()
+        .map_err(|e| load_err(e, "cuMemRelease"))?;
+    check(unsafe { cu(handle) }, "cuMemRelease")
 }
 
 /// Reserve virtual address space.
-///
-/// # Arguments
-/// * `size` - Size in bytes.
-/// * `alignment` - Alignment in bytes (must be power of 2).
-/// * `addr` - Requested starting address (0 for any address).
-///
-/// # Returns
-/// Base virtual address of reserved range.
 pub unsafe fn mem_address_reserve(
     size: usize,
     alignment: usize,
     addr: DevicePtr,
 ) -> Result<DevicePtr> {
-    let mut ptr: DevicePtr = 0;
-
-    let result = unsafe {
-        sys::cuMemAddressReserve(
-            &mut ptr, size, alignment, addr, 0, // flags
-        )
-    };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::cuda(format!(
-            "cuMemAddressReserve failed with code {:?}",
-            result
-        )));
-    }
-
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_address_reserve()
+        .map_err(|e| load_err(e, "cuMemAddressReserve"))?;
+    let mut ptr: CUdeviceptr = CUdeviceptr(0);
+    check(
+        unsafe { cu(&mut ptr, size, alignment, addr, 0) },
+        "cuMemAddressReserve",
+    )?;
     Ok(ptr)
 }
 
 /// Free virtual address space.
-///
-/// # Arguments
-/// * `ptr` - Base virtual address to free.
-/// * `size` - Size in bytes.
 pub unsafe fn mem_address_free(ptr: DevicePtr, size: usize) -> Result<()> {
-    let result = unsafe { sys::cuMemAddressFree(ptr, size) };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::cuda(format!(
-            "cuMemAddressFree failed with code {:?}",
-            result
-        )));
-    }
-
-    Ok(())
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_address_free()
+        .map_err(|e| load_err(e, "cuMemAddressFree"))?;
+    check(unsafe { cu(ptr, size) }, "cuMemAddressFree")
 }
 
 /// Map physical memory to virtual address range.
-///
-/// # Arguments
-/// * `ptr` - Virtual address to map to.
-/// * `size` - Size in bytes.
-/// * `offset` - Offset into physical memory handle.
-/// * `handle` - Physical memory handle.
 pub unsafe fn mem_map(
     ptr: DevicePtr,
     size: usize,
     offset: usize,
     handle: MemGenericAllocationHandle,
 ) -> Result<()> {
-    let result = unsafe {
-        sys::cuMemMap(
-            ptr, size, offset, handle, 0, // flags
-        )
-    };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::MappingFailed(format!(
-            "cuMemMap failed with code {:?}",
-            result
-        )));
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d.cu_mem_map().map_err(|e| load_err(e, "cuMemMap"))?;
+    let r = unsafe { cu(ptr, size, offset, handle, 0) };
+    if r == CUresult::SUCCESS {
+        Ok(())
+    } else {
+        Err(VmmError::MappingFailed(format!(
+            "cuMemMap failed: {r:?}"
+        )))
     }
-
-    Ok(())
 }
 
 /// Unmap memory from virtual address range.
-///
-/// # Arguments
-/// * `ptr` - Virtual address to unmap.
-/// * `size` - Size in bytes.
 pub unsafe fn mem_unmap(ptr: DevicePtr, size: usize) -> Result<()> {
-    let result = unsafe { sys::cuMemUnmap(ptr, size) };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::UnmappingFailed(format!(
-            "cuMemUnmap failed with code {:?}",
-            result
-        )));
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_unmap()
+        .map_err(|e| load_err(e, "cuMemUnmap"))?;
+    let r = unsafe { cu(ptr, size) };
+    if r == CUresult::SUCCESS {
+        Ok(())
+    } else {
+        Err(VmmError::UnmappingFailed(format!(
+            "cuMemUnmap failed: {r:?}"
+        )))
     }
-
-    Ok(())
 }
 
 /// Set memory access permissions.
-///
-/// # Arguments
-/// * `ptr` - Virtual address.
-/// * `size` - Size in bytes.
-/// * `device_ordinal` - Device to set access for.
-/// * `flags` - Access permissions.
 pub unsafe fn mem_set_access(
     ptr: DevicePtr,
     size: usize,
     device_ordinal: i32,
     flags: AccessFlags,
 ) -> Result<()> {
-    let access_desc = sys::CUmemAccessDesc {
-        location: sys::CUmemLocation {
-            type_: sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_set_access()
+        .map_err(|e| load_err(e, "cuMemSetAccess"))?;
+    let access_desc = CUmemAccessDesc {
+        location: CUmemLocation {
+            type_: sys::CUmemLocationType::DEVICE,
             id: device_ordinal,
         },
         flags: flags.to_cuda_flags(),
     };
-
-    let result = unsafe { sys::cuMemSetAccess(ptr, size, &access_desc, 1) };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::cuda(format!(
-            "cuMemSetAccess failed with code {:?}",
-            result
-        )));
-    }
-
-    Ok(())
+    check(
+        unsafe { cu(ptr, size, &access_desc, 1) },
+        "cuMemSetAccess",
+    )
 }
 
-/// Get minimum allocation granularity for a device.
-///
-/// # Arguments
-/// * `prop` - Allocation properties.
-/// * `option` - Granularity option.
-///
-/// # Returns
-/// Minimum granularity in bytes.
+/// Get minimum / recommended allocation granularity for a device.
 pub unsafe fn mem_get_allocation_granularity(
     prop: &AllocationProp,
-    option: sys::CUmemAllocationGranularity_flags,
+    option: GranularityFlags,
 ) -> Result<usize> {
+    let d = driver().map_err(|e| load_err(e, "cuda driver"))?;
+    let cu = d
+        .cu_mem_get_allocation_granularity()
+        .map_err(|e| load_err(e, "cuMemGetAllocationGranularity"))?;
     let mut granularity: usize = 0;
     let cuda_prop = prop.to_cuda_prop();
-
-    let result =
-        unsafe { sys::cuMemGetAllocationGranularity(&mut granularity, &cuda_prop, option) };
-
-    if result != sys::cudaError_enum::CUDA_SUCCESS {
-        return Err(VmmError::cuda(format!(
-            "cuMemGetAllocationGranularity failed with code {:?}",
-            result
-        )));
-    }
-
+    check(
+        unsafe { cu(&mut granularity, &cuda_prop, option) },
+        "cuMemGetAllocationGranularity",
+    )?;
     Ok(granularity)
 }
 
@@ -286,7 +229,7 @@ pub fn get_recommended_granularity(device_ordinal: i32) -> Result<usize> {
     unsafe {
         mem_get_allocation_granularity(
             &prop,
-            sys::CUmemAllocationGranularity_flags::CU_MEM_ALLOC_GRANULARITY_RECOMMENDED,
+            sys::CUmemAllocationGranularity_flags::RECOMMENDED,
         )
     }
 }
@@ -295,10 +238,7 @@ pub fn get_recommended_granularity(device_ordinal: i32) -> Result<usize> {
 pub fn get_minimum_granularity(device_ordinal: i32) -> Result<usize> {
     let prop = AllocationProp::device(device_ordinal);
     unsafe {
-        mem_get_allocation_granularity(
-            &prop,
-            sys::CUmemAllocationGranularity_flags::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
-        )
+        mem_get_allocation_granularity(&prop, sys::CUmemAllocationGranularity_flags::MINIMUM)
     }
 }
 

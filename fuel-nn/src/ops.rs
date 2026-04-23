@@ -142,7 +142,10 @@ impl fuel::CustomOp1 for Sigmoid {
         Ok((Box::new(CpuBackendStorage::from(result)), layout.shape().clone()))
     }
 
-    #[cfg(feature = "cuda")]
+}
+
+#[cfg(feature = "cuda")]
+impl Sigmoid {
     fn cuda_inner(
         &self,
         storage: &fuel::CudaStorage,
@@ -170,7 +173,7 @@ impl fuel::CustomOp1 for Sigmoid {
                 let el_count = shape.elem_count();
                 let cfg = LaunchConfig::for_num_elems(el_count as u32);
                 let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-                let src = &src.slice(layout.start_offset()..);
+                let src = &src.slice(layout.start_offset()..src.len());
                 let func = dev.get_or_load_func(&kernel_name::<T>("usigmoid"), &kernels::UNARY)?;
                 // SAFETY: Set later by running the kernel.
                 let out = unsafe { dev.alloc::<T>(el_count)? };
@@ -484,7 +487,10 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
         Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
-    #[cfg(feature = "cuda")]
+}
+
+#[cfg(feature = "cuda")]
+impl SoftmaxLastDim {
     fn cuda_inner(
         &self,
         storage: &fuel::CudaStorage,
@@ -688,7 +694,10 @@ impl fuel::CustomOp2 for RmsNorm {
         Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
-    #[cfg(feature = "cuda")]
+}
+
+#[cfg(feature = "cuda")]
+impl RmsNorm {
     fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,
@@ -960,7 +969,10 @@ impl fuel::CustomOp3 for LayerNorm {
         Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }
 
-    #[cfg(feature = "cuda")]
+}
+
+#[cfg(feature = "cuda")]
+impl LayerNorm {
     fn cuda_inner(
         &self,
         s1: &fuel::CudaStorage,

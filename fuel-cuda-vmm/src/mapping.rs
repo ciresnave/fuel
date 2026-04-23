@@ -55,7 +55,9 @@ impl VirtualAddressRange {
         }
 
         // Reserve virtual address space
-        let ptr = unsafe { cuda_ffi::mem_address_reserve(size, alignment, 0)? };
+        let ptr = unsafe {
+            cuda_ffi::mem_address_reserve(size, alignment, baracuda_cuda_sys::CUdeviceptr(0))?
+        };
 
         Ok(Self {
             ptr,
@@ -80,7 +82,7 @@ impl VirtualAddressRange {
 
     /// Get base virtual address.
     pub fn base_address(&self) -> usize {
-        self.ptr as usize
+        self.ptr.0 as usize
     }
 
     /// Get total size in bytes.
@@ -116,7 +118,7 @@ impl VirtualAddressRange {
                 capacity: self.size,
             });
         }
-        Ok(self.ptr + offset as u64)
+        Ok(baracuda_cuda_sys::CUdeviceptr(self.ptr.0 + offset as u64))
     }
 
     /// Consume self and return raw pointer (caller takes ownership).
