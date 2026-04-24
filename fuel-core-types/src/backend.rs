@@ -7,7 +7,7 @@
 //!
 //! - [`BackendDevice`] — a handle to a physical or virtual compute device.
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, HostBuffer, Layout, Result, Shape};
+use crate::{CpuStorage, DType, HostBuffer, HostBufferRef, Layout, Result, Shape};
 
 /// A typed, device-resident buffer that implements all tensor operations for
 /// one backend.
@@ -233,29 +233,44 @@ pub trait BackendStorage: Sized {
 
 /// Capability trait for storage types whose data lives in
 /// host-addressable RAM — i.e., the storage can be viewed as a
-/// [`HostBuffer`] without a device-to-host copy.
+/// typed slice without a device-to-host copy.
 ///
 /// This is intentionally NOT a supertrait of `BackendStorage` or
 /// `DynBackendStorage`. Host-residency is orthogonal to the
 /// static-vs-dyn dispatch axis: a storage type can implement
 /// `HostStorage` alongside either (or both) of those.
 ///
-/// Today the only implementor is the CPU backend's
-/// `CpuBackendStorage`. Future implementors:
+/// Implementors:
 ///
+/// - `CpuBackendStorage` (owned `Vec<T>` via [`HostBuffer`])
 /// - `MmappedHostStorage` — memory-mapped weights via `mmap2`
 /// - `PinnedHostStorage` — page-locked memory for GPU DMA
-/// - `RemoteHostStorage` — network-accessible buffers for multi-host
+/// - `SharedMemHostStorage` — inter-process shared memory
+/// - `RemoteHostStorage` — network-accessible buffers for multi-host (future)
+///
+/// The primary accessor is [`as_host_buffer_ref`](Self::as_host_buffer_ref),
+/// returning a borrowed [`HostBufferRef`]. This is the shape that works
+/// uniformly for owned, mmap-backed, pinned, and shared-memory storage;
+/// only the owned form has a `HostBuffer` to hand out by reference.
 pub trait HostStorage {
-    /// Borrow the underlying data as a [`HostBuffer`] (zero-copy).
-    fn as_host_buffer(&self) -> Result<&HostBuffer>;
+    /// Borrow the underlying data as a [`HostBufferRef`] (zero-copy).
+    ///
+    /// This is the required method — all the other accessors on this
+    /// trait have default impls built on top.
+    fn as_host_buffer_ref(&self) -> Result<HostBufferRef<'_>>;
 
-    /// Extract the underlying data as an owned [`HostBuffer`]. May
-    /// clone if the storage is shared; prefer [`as_host_buffer`] when
-    /// a borrow suffices.
+    /// Extract the underlying data as an owned [`HostBuffer`].
+    ///
+    /// Default impl materializes via `as_host_buffer_ref().to_owned()`,
+    /// which is a full copy. Owned-buffer implementors (e.g.
+    /// `CpuBackendStorage`) should override to hand out the existing
+    /// buffer without copying.
     fn into_host_buffer(self) -> Result<HostBuffer>
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        Ok(self.as_host_buffer_ref()?.to_owned())
+    }
 }
 
 /// A handle to a physical or virtual compute device.

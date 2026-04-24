@@ -159,7 +159,9 @@ intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
 libc = { version = "0.2" }
 libm = { version = "0.2.15" }
 log = "0.4"
+bytemuck = "1.25"
 memmap2 = { version = "0.9.3", features = ["stable_deref_trait"] }
+tempfile = "3.27"
 num_cpus = "1.15.0"
 num-traits = "0.2.15"
 once_cell = "1"

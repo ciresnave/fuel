@@ -64,10 +64,14 @@ impl From<CpuBackendStorage> for CpuStorage {
 }
 
 impl fuel_core_types::backend::HostStorage for CpuBackendStorage {
-    fn as_host_buffer(&self) -> fuel_core_types::Result<&fuel_core_types::HostBuffer> {
-        Ok(&self.0)
+    fn as_host_buffer_ref(
+        &self,
+    ) -> fuel_core_types::Result<fuel_core_types::HostBufferRef<'_>> {
+        Ok(self.0.as_ref())
     }
 
+    // Override the default to hand out the existing `Vec<T>` without
+    // a copy — we own the buffer outright.
     fn into_host_buffer(self) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
         Ok(self.0)
     }

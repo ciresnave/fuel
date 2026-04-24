@@ -239,4 +239,99 @@ impl HostBuffer {
         };
         Ok(s)
     }
+
+    /// Borrow this buffer as a [`HostBufferRef`] (zero-copy).
+    ///
+    /// The ref form is the common shape for `HostStorage::as_host_buffer_ref`;
+    /// owned-buffer implementors delegate through here.
+    pub fn as_ref(&self) -> HostBufferRef<'_> {
+        match self {
+            Self::U8(v) => HostBufferRef::U8(v),
+            Self::U32(v) => HostBufferRef::U32(v),
+            Self::I16(v) => HostBufferRef::I16(v),
+            Self::I32(v) => HostBufferRef::I32(v),
+            Self::I64(v) => HostBufferRef::I64(v),
+            Self::BF16(v) => HostBufferRef::BF16(v),
+            Self::F16(v) => HostBufferRef::F16(v),
+            Self::F32(v) => HostBufferRef::F32(v),
+            Self::F64(v) => HostBufferRef::F64(v),
+            Self::F8E4M3(v) => HostBufferRef::F8E4M3(v),
+            Self::F6E2M3(v) => HostBufferRef::F6E2M3(v),
+            Self::F6E3M2(v) => HostBufferRef::F6E3M2(v),
+            Self::F4(v) => HostBufferRef::F4(v),
+            Self::F8E8M0(v) => HostBufferRef::F8E8M0(v),
+        }
+    }
+}
+
+impl<'a> HostBufferRef<'a> {
+    /// The [`DType`] of the borrowed data.
+    pub fn dtype(&self) -> DType {
+        match self {
+            Self::U8(_) => DType::U8,
+            Self::U32(_) => DType::U32,
+            Self::I16(_) => DType::I16,
+            Self::I32(_) => DType::I32,
+            Self::I64(_) => DType::I64,
+            Self::BF16(_) => DType::BF16,
+            Self::F16(_) => DType::F16,
+            Self::F32(_) => DType::F32,
+            Self::F64(_) => DType::F64,
+            Self::F8E4M3(_) => DType::F8E4M3,
+            Self::F6E2M3(_) => DType::F6E2M3,
+            Self::F6E3M2(_) => DType::F6E3M2,
+            Self::F4(_) => DType::F4,
+            Self::F8E8M0(_) => DType::F8E8M0,
+        }
+    }
+
+    /// Number of elements in the borrowed slice.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::U8(v) => v.len(),
+            Self::U32(v) => v.len(),
+            Self::I16(v) => v.len(),
+            Self::I32(v) => v.len(),
+            Self::I64(v) => v.len(),
+            Self::BF16(v) => v.len(),
+            Self::F16(v) => v.len(),
+            Self::F32(v) => v.len(),
+            Self::F64(v) => v.len(),
+            Self::F8E4M3(v) => v.len(),
+            Self::F6E2M3(v) => v.len(),
+            Self::F6E3M2(v) => v.len(),
+            Self::F4(v) => v.len(),
+            Self::F8E8M0(v) => v.len(),
+        }
+    }
+
+    /// `true` if the borrowed slice is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Materialize into an owned [`HostBuffer`] (copies the slice).
+    ///
+    /// Use when a caller needs ownership and the storage backend is not
+    /// itself buffer-owning (mmap-backed, pinned, remote, …). For
+    /// `CpuBackendStorage` the cheaper path is `into_host_buffer`, which
+    /// transfers the existing `Vec<T>` without allocating.
+    pub fn to_owned(&self) -> HostBuffer {
+        match self {
+            Self::U8(v) => HostBuffer::U8(v.to_vec()),
+            Self::U32(v) => HostBuffer::U32(v.to_vec()),
+            Self::I16(v) => HostBuffer::I16(v.to_vec()),
+            Self::I32(v) => HostBuffer::I32(v.to_vec()),
+            Self::I64(v) => HostBuffer::I64(v.to_vec()),
+            Self::BF16(v) => HostBuffer::BF16(v.to_vec()),
+            Self::F16(v) => HostBuffer::F16(v.to_vec()),
+            Self::F32(v) => HostBuffer::F32(v.to_vec()),
+            Self::F64(v) => HostBuffer::F64(v.to_vec()),
+            Self::F8E4M3(v) => HostBuffer::F8E4M3(v.to_vec()),
+            Self::F6E2M3(v) => HostBuffer::F6E2M3(v.to_vec()),
+            Self::F6E3M2(v) => HostBuffer::F6E3M2(v.to_vec()),
+            Self::F4(v) => HostBuffer::F4(v.to_vec()),
+            Self::F8E8M0(v) => HostBuffer::F8E8M0(v.to_vec()),
+        }
+    }
 }
