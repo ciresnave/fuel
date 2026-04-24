@@ -912,6 +912,30 @@ impl LazyTensor {
             inner: self.inner.const_u32_like(data, shape),
         }
     }
+
+    /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
+    /// `Tensor::conv2d` for the full shape contract: `self` must be
+    /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
+    /// `bias` is optional and must be `[Cout]` when provided. Returns
+    /// a rank-4 lazy tensor `[N, Cout, Hout, Wout]`.
+    pub fn conv2d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        groups: usize,
+    ) -> Self {
+        Self {
+            inner: self.inner.conv2d(
+                &weight.inner,
+                bias.map(|b| &b.inner),
+                stride,
+                padding,
+                groups,
+            ),
+        }
+    }
 }
 
 // ---- safetensors integration -----------------------------------------------

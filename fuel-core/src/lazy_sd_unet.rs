@@ -24,11 +24,9 @@
 //! - **GEGLU** activation: `x * gelu(gate)` with `(x, gate) =
 //!   split(proj(input), dim=-1)`. Doubles the FFN's input projection
 //!   width.
-//! - **Strided 3×3 Conv2d** (`conv2d_k3_s2_p1`): extends the VAE's
-//!   stride-1 general conv to the stride-2 case used by SD's
-//!   Downsample2D. Uses the same im2col composition pattern; the
-//!   stride-2 subsample is done via a reshape-and-slice trick on the
-//!   padded input (even/odd tile).
+//! - **Strided 3×3 Conv2d** (`conv2d_k3_s2_p1`): the stride-2 case
+//!   used by SD's Downsample2D. Dispatches to the native `Op::Conv2D`
+//!   with `stride=(2,2)`.
 //!
 //! Everything else — GroupNorm, Conv2d 3×3 s=1, Conv2d 1×1,
 //! 2× nearest upsample, multi-head attention — is reused from the
@@ -39,14 +37,10 @@
 //! - Forward-only; no autograd validation.
 //! - No KV cache / no step-to-step reuse. Diffusion's schedule loops
 //!   are outside this module's responsibility.
-//! - **Performance**: no native Conv2d op exists yet, so every 3×3
-//!   conv is 9 slice+concat+matmul subgraphs. With 64+ convs in the
-//!   UNet at resolutions up to the latent size, expect minutes per
-//!   forward pass on CPU. A real SD generation (~20 steps) is impractical
-//!   at this performance; the point of this port is architectural
-//!   correctness, not inference viability. The path forward is a
-//!   native Conv2d lazy op — that one addition benefits every
-//!   conv-using anchor.
+//! - **Performance**: every conv now routes through the native
+//!   `Op::Conv2D`. The CPU backend still uses a reference 5-loop
+//!   implementation, so generation remains slow but the composition
+//!   overhead is gone; tiled/GPU kernels are later work.
 
 use crate::lazy::LazyTensor;
 use fuel_core_types::Shape;
@@ -517,132 +511,49 @@ fn group_norm(
     normed_chw.mul(&g).add(&b)
 }
 
+/// 3×3 conv, stride 1, padding 1. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k3_s1_p1(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-    h: usize,
-    w_sz: usize,
+    _h: usize,
+    _w_sz: usize,
 ) -> LazyTensor {
-    let padded = pad_hw_zeros(x, cin, h, w_sz, 1);
-    let mut slices: Vec<LazyTensor> = Vec::with_capacity(9);
-    for ky in 0..3 {
-        let sh = padded.slice(2, ky, h);
-        for kx in 0..3 {
-            slices.push(sh.slice(3, kx, w_sz));
-        }
-    }
-    let mut stacked = slices[0].clone();
-    for s in &slices[1..] {
-        stacked = stacked.concat(s, 1);
-    }
-    let stacked_tlast = stacked
-        .permute(&[0, 2, 3, 1])
-        .reshape(Shape::from_dims(&[1, h * w_sz, 9 * cin]));
-    let mut w_out = vec![0.0_f32; 9 * cin * cout];
-    for o in 0..cout {
-        for i in 0..cin {
-            for ky in 0..3usize {
-                for kx in 0..3usize {
-                    w_out[((ky * 3 + kx) * cin + i) * cout + o] =
-                        w[((o * cin + i) * 3 + ky) * 3 + kx];
-                }
-            }
-        }
-    }
-    let w_t = x.const_f32_like(w_out, Shape::from_dims(&[9 * cin, cout]));
-    let y = stacked_tlast.matmul(&w_t);
-    let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
-        .reshape(Shape::from_dims(&[1, 1, cout]))
-        .broadcast_to(Shape::from_dims(&[1, h * w_sz, cout]));
-    y.add(&bias)
-        .reshape(Shape::from_dims(&[1, h, w_sz, cout]))
-        .permute(&[0, 3, 1, 2])
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
-/// Stride-2 3×3 conv with padding 1. Built on top of the stride-1
-/// version — run the full conv then subsample every other row and
-/// column via reshape+slice. Wasteful (2× compute for half output)
-/// but simple; a direct stride-2 im2col would be faster and is the
-/// natural follow-up when a native Conv2d op is still out of reach.
+/// Stride-2 3×3 conv with padding 1. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k3_s2_p1(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-    h: usize,
-    w_sz: usize,
+    _h: usize,
+    _w_sz: usize,
 ) -> LazyTensor {
-    assert!(h.is_multiple_of(2));
-    assert!(w_sz.is_multiple_of(2));
-    // PyTorch's Conv2d(stride=2, padding=1) on an input of size H starts
-    // at position -1 (pad) and steps by 2 → reads positions
-    // {-1, 1, 3, ..., H-1}. To match, we pad to H+2 and take every
-    // second row starting at index 0 (since pad is at index 0).
-    let padded = pad_hw_zeros(x, cin, h, w_sz, 1);
-    // Reshape padded [1, Cin, H+2, W+2] → [1, Cin, (H/2+1), 2, (W/2+1), 2]
-    // — take only the first H/2 and W/2 rows/cols from the "even"
-    // positions matching PyTorch's stride-2 schedule.
-    // Simpler: directly use conv2d_k3_s1_p1 and subsample.
-    let full = conv2d_k3_s1_p1(x, w, b, cin, cout, h, w_sz);  // [1, Cout, H, W]
-    // Subsample every 2nd row + 2nd col. Reshape + slice.
-    let h2 = h / 2;
-    let w2 = w_sz / 2;
-    let r1 = full
-        .reshape(Shape::from_dims(&[1, cout, h2, 2, w_sz]))
-        .slice(3, 0, 1)
-        .reshape(Shape::from_dims(&[1, cout, h2, w_sz]));
-    // But PyTorch stride-2 conv with padding=1 actually starts at the
-    // padded-offset 0, then 2, 4, ... — matching our subsample of the
-    // stride-1 output at rows {1, 3, ...}, not {0, 2, ...}. Replicate
-    // that convention: slice at index 1 in the half. Update the slice
-    // call accordingly.
-    let _ = r1;
-    // Proper reconstruction: the stride-1 conv with padding=1 gives
-    // outputs at [0..H). The stride-2 equivalent gives outputs at
-    // [0, 2, 4, ..., H-2] — i.e. the even rows of the stride-1 output.
-    let sub_r = full
-        .reshape(Shape::from_dims(&[1, cout, h2, 2, w_sz]))
-        .slice(3, 0, 1)
-        .reshape(Shape::from_dims(&[1, cout, h2, w_sz]));
-    let sub_rc = sub_r
-        .reshape(Shape::from_dims(&[1, cout, h2, w2, 2]))
-        .slice(4, 0, 1)
-        .reshape(Shape::from_dims(&[1, cout, h2, w2]));
-    sub_rc
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    x.conv2d(&w_t, Some(&b_t), (2, 2), (1, 1), 1)
 }
 
+/// 1×1 conv, stride 1, padding 0. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k1_s1_p0(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-    h: usize,
-    w_sz: usize,
+    _h: usize,
+    _w_sz: usize,
 ) -> LazyTensor {
-    let mut w_t = vec![0.0_f32; cin * cout];
-    for o in 0..cout {
-        for i in 0..cin {
-            w_t[i * cout + o] = w[o * cin + i];
-        }
-    }
-    let w_mat = x.const_f32_like(w_t, Shape::from_dims(&[cin, cout]));
-    let xf = x
-        .permute(&[0, 2, 3, 1])
-        .reshape(Shape::from_dims(&[1, h * w_sz, cin]));
-    let y = xf.matmul(&w_mat);
-    let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
-        .reshape(Shape::from_dims(&[1, 1, cout]))
-        .broadcast_to(Shape::from_dims(&[1, h * w_sz, cout]));
-    y.add(&bias)
-        .reshape(Shape::from_dims(&[1, h, w_sz, cout]))
-        .permute(&[0, 3, 1, 2])
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]));
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
 fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
@@ -650,20 +561,6 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTens
     let x6 = x6.concat(&x6, 3);
     let x6 = x6.concat(&x6, 5);
     x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w]))
-}
-
-fn pad_hw_zeros(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyTensor {
-    let z_w = x.const_f32_like(
-        vec![0.0_f32; c * h * p],
-        Shape::from_dims(&[1, c, h, p]),
-    );
-    let x_wpad = z_w.concat(x, 3).concat(&z_w, 3);
-    let w_p = w + 2 * p;
-    let z_h = x.const_f32_like(
-        vec![0.0_f32; c * p * w_p],
-        Shape::from_dims(&[1, c, p, w_p]),
-    );
-    z_h.concat(&x_wpad, 2).concat(&z_h, 2)
 }
 
 fn linear(

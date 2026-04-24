@@ -404,6 +404,34 @@ pub enum Op {
     /// indices[p]] += src[p]`.
     ScatterAdd { dim: usize },
 
+    // --- 2-D convolution ---
+    /// 2-D convolution with stride, symmetric padding, and grouped
+    /// channels. Inputs: `(x, weight)` or `(x, weight, bias)`.
+    ///   - `x`:     `[N, Cin, H, W]`
+    ///   - `weight`: `[Cout, Cin/groups, Kh, Kw]`
+    ///   - `bias`:  `[Cout]` (optional)
+    ///
+    /// Output shape: `[N, Cout, Hout, Wout]` where
+    ///   Hout = (H + 2·pad.0 − Kh) / stride.0 + 1
+    ///   Wout = (W + 2·pad.1 − Kw) / stride.1 + 1
+    ///
+    /// `groups` splits the channels into `groups` independent
+    /// convolutions (`Cin/groups` input channels per group mapped to
+    /// `Cout/groups` output channels). `groups=1` is the standard
+    /// cross-channel conv; `groups=Cin=Cout` is the depthwise case
+    /// (ConvNeXt's kernel-7 block mixer).
+    ///
+    /// The op exists as a primitive so backends can fuse the full
+    /// im2col+gemm (or direct conv) pipeline into a single kernel
+    /// launch. The lazy-graph composition path (slice + concat +
+    /// matmul) was correct but spawned ~9·Cin ops per forward pass;
+    /// this op is the unblock for conv-heavy anchor inference speed.
+    Conv2D {
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    },
+
     // --- cross-device transfer ---
     /// Copy the input tensor to a specific device. Source stays
     /// resident (non-destructive). Source device is implicit from
@@ -1074,6 +1102,94 @@ impl Tensor {
             inputs: vec![self.id, weight_bytes.id],
             shape:  Shape::from_dims(&out_dims),
             dtype:  DType::F32,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a [`Op::Conv2D`] node. `self` must be `[N, Cin, H, W]`
+    /// (rank 4); `weight` must be `[Cout, Cin/groups, Kh, Kw]` (rank
+    /// 4) and live on the same graph. `bias` is optional — when
+    /// present it must be rank 1 with length `Cout`. Returns a rank-4
+    /// tensor of shape `[N, Cout, Hout, Wout]`.
+    ///
+    /// Panics if the input ranks don't match, the channel counts are
+    /// inconsistent with `groups`, or the output spatial dims would
+    /// be non-positive.
+    pub fn conv2d(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        groups: usize,
+    ) -> Tensor {
+        assert!(
+            Rc::ptr_eq(&self.graph, &weight.graph),
+            "conv2d: x and weight must live on the same graph",
+        );
+        if let Some(b) = bias {
+            assert!(
+                Rc::ptr_eq(&self.graph, &b.graph),
+                "conv2d: bias must live on the same graph",
+            );
+        }
+        assert!(groups >= 1, "conv2d: groups must be ≥ 1, got {groups}");
+        let x_dims = self.shape();
+        let x_dims = x_dims.dims();
+        let w_dims = weight.shape();
+        let w_dims = w_dims.dims();
+        assert_eq!(
+            x_dims.len(), 4,
+            "conv2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
+        );
+        assert_eq!(
+            w_dims.len(), 4,
+            "conv2d: weight must be rank 4 [Cout, Cin/groups, Kh, Kw], got {w_dims:?}",
+        );
+        let (n, cin, h_in, w_in) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
+        let (cout, cin_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
+        assert_eq!(
+            cin, cin_per_g * groups,
+            "conv2d: x has {cin} in-channels but weight expects {} ({}·{groups})",
+            cin_per_g * groups, cin_per_g,
+        );
+        assert_eq!(
+            cout % groups, 0,
+            "conv2d: Cout={cout} must be divisible by groups={groups}",
+        );
+        if let Some(b) = bias {
+            let b_dims = b.shape();
+            let b_dims = b_dims.dims();
+            assert_eq!(
+                b_dims, &[cout],
+                "conv2d: bias shape {b_dims:?} must match [Cout={cout}]",
+            );
+        }
+        // Hout = (H + 2·pad.0 − Kh) / stride.0 + 1
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+        assert!(stride_h >= 1 && stride_w >= 1, "conv2d: stride must be ≥ 1");
+        let h_padded = h_in + 2 * pad_h;
+        let w_padded = w_in + 2 * pad_w;
+        assert!(
+            h_padded >= kh && w_padded >= kw,
+            "conv2d: padded input ({h_padded}×{w_padded}) smaller than kernel ({kh}×{kw})",
+        );
+        let h_out = (h_padded - kh) / stride_h + 1;
+        let w_out = (w_padded - kw) / stride_w + 1;
+        let dtype = self.dtype();
+        let mut inputs = vec![self.id, weight.id];
+        if let Some(b) = bias {
+            inputs.push(b.id);
+        }
+        let id = self.graph.borrow_mut().push(Node {
+            op: Op::Conv2D { stride, padding, groups },
+            inputs,
+            shape: Shape::from_dims(&[n, cout, h_out, w_out]),
+            dtype,
         });
         Self {
             graph: self.graph.clone(),
@@ -3414,6 +3530,20 @@ impl Tensor {
                     let x = inputs[0];
                     accumulate_grad(&mut upstream, x, up_id, &graph_handle);
                 }
+                Op::Conv2D { .. } => {
+                    // Backward for Conv2D is straightforward in
+                    // principle (transposed-conv for x-grad, correlation
+                    // for w-grad, sum-over-NHW for bias-grad) but needs
+                    // its own set of ops and rule family. Not required
+                    // for Phase 6a forward-path anchor validation.
+                    // When an anchor or task needs conv backward,
+                    // extend this arm with the standard rules.
+                    panic!(
+                        "Tensor::backward: Op::Conv2D does not yet have a \
+                         gradient rule. Conv2D is a forward-only primitive \
+                         for Phase 6a's inference-focused anchor suite.",
+                    );
+                }
             }
         }
 
@@ -3682,6 +3812,34 @@ mod tests {
     #[test]
     fn destructive_input_release_is_some_zero() {
         assert_eq!(Op::Release.destructive_input(), Some(0));
+    }
+
+    #[test]
+    fn conv2d_builder_emits_conv2d_node_with_right_shape() {
+        // k=3 s=1 p=1 keeps H and W.
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]));
+        let w = x.const_f32_like(vec![0.0_f32; 3 * 2 * 3 * 3], Shape::from_dims(&[3, 2, 3, 3]));
+        let b = x.const_f32_like(vec![0.0_f32; 3], Shape::from_dims(&[3]));
+        let y = x.conv2d(&w, Some(&b), (1, 1), (1, 1), 1);
+        assert_eq!(y.shape().dims(), &[1, 3, 4, 4]);
+    }
+
+    #[test]
+    fn conv2d_builder_stride_and_no_padding() {
+        // k=3 s=2 p=0 on H=W=8 gives (8-3)/2+1 = 3.
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 8 * 8], Shape::from_dims(&[1, 2, 8, 8]));
+        let w = x.const_f32_like(vec![0.0_f32; 4 * 2 * 3 * 3], Shape::from_dims(&[4, 2, 3, 3]));
+        let y = x.conv2d(&w, None, (2, 2), (0, 0), 1);
+        assert_eq!(y.shape().dims(), &[1, 4, 3, 3]);
+    }
+
+    #[test]
+    fn conv2d_builder_depthwise_groups() {
+        // groups=Cin=Cout=4 is the depthwise case. Weight per channel is [Cin/groups=1, kH, kW].
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 4 * 4 * 4], Shape::from_dims(&[1, 4, 4, 4]));
+        let w = x.const_f32_like(vec![0.0_f32; 4 * 1 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
+        let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
+        assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
     }
 
     #[test]

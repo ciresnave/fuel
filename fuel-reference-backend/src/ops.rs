@@ -608,6 +608,87 @@ pub fn matmul_2d<T: Float>(a: &RefTensor<T>, b: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(out, Shape::from_dims(&[m, n]))
 }
 
+// ---------- 2-D convolution ------------------------------------------------
+
+/// Textbook 2-D convolution. Bit-match reference for the `Op::Conv2D`
+/// op. Inputs:
+///   - `x`:      `[N, Cin, H, W]`
+///   - `weight`: `[Cout, Cin/groups, Kh, Kw]`
+///   - `bias`:   `Option<[Cout]>`
+///   - `stride`: `(stride_h, stride_w)`
+///   - `padding`: `(pad_h, pad_w)` — symmetric zero-pad on each side
+///   - `groups`: channel-group count (1 = regular, Cin=Cout=groups = depthwise)
+///
+/// Output `[N, Cout, Hout, Wout]` with
+///   Hout = (H + 2·pad_h − Kh) / stride_h + 1
+///   Wout = (W + 2·pad_w − Kw) / stride_w + 1
+///
+/// Written as five nested loops for obviousness; fast backends wrap
+/// im2col + gemm instead. This function is the oracle their output
+/// must match.
+pub fn conv2d<T: Float>(
+    x: &RefTensor<T>,
+    weight: &RefTensor<T>,
+    bias: Option<&RefTensor<T>>,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    groups: usize,
+) -> RefTensor<T> {
+    let xd = x.shape().dims();
+    let wd = weight.shape().dims();
+    assert_eq!(xd.len(), 4, "conv2d: x must be rank 4, got {xd:?}");
+    assert_eq!(wd.len(), 4, "conv2d: weight must be rank 4, got {wd:?}");
+    let (n, cin, h, w) = (xd[0], xd[1], xd[2], xd[3]);
+    let (cout, cin_per_g, kh, kw) = (wd[0], wd[1], wd[2], wd[3]);
+    assert_eq!(cin, cin_per_g * groups, "conv2d: channel/groups mismatch");
+    assert_eq!(cout % groups, 0, "conv2d: Cout must be divisible by groups");
+    let cout_per_g = cout / groups;
+    let (stride_h, stride_w) = stride;
+    let (pad_h, pad_w) = padding;
+    let h_out = (h + 2 * pad_h - kh) / stride_h + 1;
+    let w_out = (w + 2 * pad_w - kw) / stride_w + 1;
+
+    let x_data = x.as_slice();
+    let w_data = weight.as_slice();
+    let b_data = bias.map(|b| b.as_slice());
+    let mut out = vec![T::zero(); n * cout * h_out * w_out];
+
+    for ni in 0..n {
+        for g in 0..groups {
+            for co_in_g in 0..cout_per_g {
+                let co = g * cout_per_g + co_in_g;
+                for oh in 0..h_out {
+                    for ow in 0..w_out {
+                        let mut acc = T::zero();
+                        for ci_in_g in 0..cin_per_g {
+                            let ci = g * cin_per_g + ci_in_g;
+                            for ky in 0..kh {
+                                let ih = oh * stride_h + ky;
+                                if ih < pad_h || ih >= h + pad_h { continue; }
+                                let ih = ih - pad_h;
+                                for kx in 0..kw {
+                                    let iw = ow * stride_w + kx;
+                                    if iw < pad_w || iw >= w + pad_w { continue; }
+                                    let iw = iw - pad_w;
+                                    let x_off = ((ni * cin + ci) * h + ih) * w + iw;
+                                    let w_off = ((co * cin_per_g + ci_in_g) * kh + ky) * kw + kx;
+                                    acc = acc + x_data[x_off] * w_data[w_off];
+                                }
+                            }
+                        }
+                        if let Some(bd) = b_data {
+                            acc = acc + bd[co];
+                        }
+                        let out_off = ((ni * cout + co) * h_out + oh) * w_out + ow;
+                        out[out_off] = acc;
+                    }
+                }
+            }
+        }
+    }
+    RefTensor::from_vec(out, Shape::from_dims(&[n, cout, h_out, w_out]))
+}
+
 // ---------- reshape --------------------------------------------------------
 
 /// Reshape a tensor to a new shape. The element count of the new shape
@@ -1578,17 +1659,15 @@ pub fn broadcast_div<T: Float>(a: &RefTensor<T>, b: &RefTensor<T>) -> RefTensor<
 // ---------- convolution and pooling ----------------------------------------
 
 /// 2-D convolution on a rank-4 input, the textbook 7-nested-loop form.
+/// Superseded by [`conv2d`] — this is the simpler variant with no bias
+/// and no groups support, kept for the tests that exercised it before
+/// the full op landed.
 ///
 /// - Input shape: `[N, C_in, H, W]`
 /// - Kernel shape: `[C_out, C_in, kH, kW]`
 /// - Output shape: `[N, C_out, H_out, W_out]` where
 ///   `H_out = (H + 2*padding - kH) / stride + 1` and likewise for W.
-///
-/// Zero-padding is used for the padded region. No dilation, no groups —
-/// those are mechanical to add when a validation test needs them. This is
-/// the literal mathematical definition of convolution expressed as loops,
-/// no cleverness.
-pub fn conv2d<T: Float>(
+pub fn conv2d_simple<T: Float>(
     x: &RefTensor<T>,
     kernel: &RefTensor<T>,
     stride: usize,
@@ -3005,7 +3084,7 @@ mod tests {
             &[1, 1, 3, 3],
         );
         let k = t(vec![1.0], &[1, 1, 1, 1]);
-        let y = conv2d(&x, &k, 1, 0);
+        let y = conv2d_simple(&x, &k, 1, 0);
         assert_eq!(y.shape().dims(), &[1, 1, 3, 3]);
         assert_eq!(y.as_slice(), x.as_slice());
     }
@@ -3019,7 +3098,7 @@ mod tests {
             &[1, 1, 3, 3],
         );
         let k = t(vec![1.0, 1.0, 1.0, 1.0], &[1, 1, 2, 2]);
-        let y = conv2d(&x, &k, 1, 0);
+        let y = conv2d_simple(&x, &k, 1, 0);
         assert_eq!(y.shape().dims(), &[1, 1, 2, 2]);
         // Windows: (1+2+4+5)=12, (2+3+5+6)=16, (4+5+7+8)=24, (5+6+8+9)=28
         assert_eq!(y.as_slice(), &[12.0, 16.0, 24.0, 28.0]);
@@ -3037,7 +3116,7 @@ mod tests {
             vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
             &[1, 1, 3, 3],
         );
-        let y = conv2d(&x, &k, 1, 1);
+        let y = conv2d_simple(&x, &k, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 1, 3, 3]);
         // Each output pixel is the center of the 3×3 window = the input pixel itself.
         assert_eq!(y.as_slice(), x.as_slice());
@@ -3062,7 +3141,7 @@ mod tests {
             ],
             &[3, 2, 1, 1],
         );
-        let y = conv2d(&x, &k, 1, 0);
+        let y = conv2d_simple(&x, &k, 1, 0);
         assert_eq!(y.shape().dims(), &[1, 3, 2, 2]);
         // out_ch 0 = in 0, out_ch 1 = in 1, out_ch 2 = in 0 + in 1
         assert_eq!(

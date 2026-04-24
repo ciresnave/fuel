@@ -270,6 +270,12 @@ fn eval_node(
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),
         Op::Permute(axes) => eval_permute(axes, inputs, cache),
 
+        // --- 2-D convolution (defers to reference nested loops for
+        // now; a gemm-backed im2col fast-path is a follow-up) ---
+        Op::Conv2D { stride, padding, groups } => {
+            eval_conv2d(*stride, *padding, *groups, inputs, cache)
+        }
+
         // --- dtype, shape, broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
@@ -381,6 +387,36 @@ fn eval_matmul(inputs: &[NodeId], cache: &HashMap<NodeId, AnyTensor>) -> AnyTens
             "matmul: unsupported operand dtypes (lhs={:?}, rhs={:?})",
             a.dtype(),
             b.dtype(),
+        ),
+    }
+}
+
+fn eval_conv2d(
+    stride: (usize, usize),
+    padding: (usize, usize),
+    groups: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let x = cache.get(&inputs[0]).expect("conv2d: missing x");
+    let w = cache.get(&inputs[1]).expect("conv2d: missing weight");
+    let b = inputs.get(2).and_then(|id| cache.get(id));
+    match (x, w, b) {
+        (AnyTensor::F32(x), AnyTensor::F32(w), Some(AnyTensor::F32(bias))) => {
+            AnyTensor::F32(ops::conv2d(x, w, Some(bias), stride, padding, groups))
+        }
+        (AnyTensor::F32(x), AnyTensor::F32(w), None) => {
+            AnyTensor::F32(ops::conv2d(x, w, None, stride, padding, groups))
+        }
+        (AnyTensor::F64(x), AnyTensor::F64(w), Some(AnyTensor::F64(bias))) => {
+            AnyTensor::F64(ops::conv2d(x, w, Some(bias), stride, padding, groups))
+        }
+        (AnyTensor::F64(x), AnyTensor::F64(w), None) => {
+            AnyTensor::F64(ops::conv2d(x, w, None, stride, padding, groups))
+        }
+        (a, b_, c_) => panic!(
+            "conv2d: unsupported operand dtype combination x={:?} w={:?} bias={:?}",
+            a.dtype(), b_.dtype(), c_.map(|t| t.dtype()),
         ),
     }
 }
