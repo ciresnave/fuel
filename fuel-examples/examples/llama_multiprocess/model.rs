@@ -61,20 +61,47 @@ impl CustomOp1 for AllReduce {
                 .downcast_ref::<CudaBackendStorage>()
                 .ok_or_else(|| fuel::Error::Msg("AllReduce requires CUDA storage".into()).bt())?;
             let s = cuda.inner();
+            use half::{bf16, f16};
+
             let elem_count = l.shape().elem_count();
             let dev = s.device().clone();
             let dst = match s.dtype() {
-                // NCCL reductions for bf16 / f16 need baracuda-nccl
-                // `NcclScalar` impls for `half::bf16` / `half::f16`. Only
-                // i8/u8/i32/u32/i64/u64/f32/f64 are impl'd today; the
-                // half-type impls should follow the same pattern that
-                // baracuda-types' `half-crate` feature uses for DeviceRepr
-                // / ValidAsZeroBits. Pending upstream.
-                DType::BF16 | DType::F16 => fuel::bail!(
-                    "nccl all_reduce for {:?} is not yet supported on baracuda-nccl \
-                     (NcclScalar impls for half::bf16/half::f16 pending upstream)",
-                    s.dtype()
-                ),
+                DType::BF16 => {
+                    let s = s.as_cuda_slice::<bf16>()?;
+                    match l.contiguous_offsets() {
+                        Some((0, n)) if n == s.len() => {}
+                        Some(_) | None => fuel::bail!("input has to be contiguous"),
+                    };
+                    let mut dst = unsafe { dev.alloc::<bf16>(elem_count) }?;
+                    baracuda_nccl::all_reduce(
+                        s,
+                        &mut dst,
+                        elem_count,
+                        RedOp::Sum,
+                        &self.comm,
+                        &dev.cuda_stream(),
+                    )
+                    .map_err(|e| fuel::Error::Msg(format!("nccl all_reduce: {e:?}")).bt())?;
+                    fuel::CudaStorage::wrap_cuda_slice(dst, dev)
+                }
+                DType::F16 => {
+                    let s = s.as_cuda_slice::<f16>()?;
+                    match l.contiguous_offsets() {
+                        Some((0, n)) if n == s.len() => {}
+                        Some(_) | None => fuel::bail!("input has to be contiguous"),
+                    };
+                    let mut dst = unsafe { dev.alloc::<f16>(elem_count) }?;
+                    baracuda_nccl::all_reduce(
+                        s,
+                        &mut dst,
+                        elem_count,
+                        RedOp::Sum,
+                        &self.comm,
+                        &dev.cuda_stream(),
+                    )
+                    .map_err(|e| fuel::Error::Msg(format!("nccl all_reduce: {e:?}")).bt())?;
+                    fuel::CudaStorage::wrap_cuda_slice(dst, dev)
+                }
                 DType::F32 => {
                     let s = s.as_cuda_slice::<f32>()?;
                     match l.contiguous_offsets() {

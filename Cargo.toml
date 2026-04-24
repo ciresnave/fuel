@@ -137,7 +137,7 @@ baracuda-curand     = { path = "../baracuda/crates/baracuda-curand" }
 baracuda-nvrtc-sys  = { path = "../baracuda/crates/baracuda-nvrtc-sys" }
 baracuda-nvrtc      = { path = "../baracuda/crates/baracuda-nvrtc" }
 baracuda-nccl-sys   = { path = "../baracuda/crates/baracuda-nccl-sys" }
-baracuda-nccl       = { path = "../baracuda/crates/baracuda-nccl" }
+baracuda-nccl       = { path = "../baracuda/crates/baracuda-nccl", features = ["half-crate"] }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 hf-hub = "0.5.0"
