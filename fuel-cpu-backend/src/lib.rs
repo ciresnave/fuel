@@ -13,6 +13,7 @@ pub mod mkl;
 #[allow(dead_code)] // Not yet wired to fuel-core delegation; kept for future use
 pub mod conv2d;
 pub mod dyn_impl;
+pub mod host_storage;
 pub mod ops;
 pub mod utils;
 
