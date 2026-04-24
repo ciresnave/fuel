@@ -50,12 +50,23 @@ fn pinned_write_then_read() {
     }
 }
 
-// NOTE: zero-length `PinnedBuffer` is not yet supported by baracuda
-// (`cuMemHostAlloc(0)` returns a null ptr and baracuda's `Deref` then
-// constructs a slice from it, tripping Rust's nightly
-// `slice::from_raw_parts` soundness check). Mirror request of the
-// `DeviceBuffer` zero-length fix the user landed as baracuda c01ca70.
-// Not tested here until it lands.
+#[test]
+#[ignore]
+fn pinned_zero_length_round_trip() {
+    // Baracuda 235c37e made `cuMemHostAlloc(0)` sound by returning a
+    // `NonNull::dangling` sentinel (same trick stdlib uses for
+    // empty-`Vec`). Derefing to `&[T]` and re-materializing through
+    // `as_host_buffer_ref` on a zero-length buffer both stay sound.
+    let Some(dev) = dev_or_skip() else { return };
+    let buf = PinnedHostStorage::zeros_f32(&dev, 0).expect("alloc");
+    assert!(buf.is_empty());
+    let view = buf.as_host_buffer_ref().expect("view");
+    assert_eq!(view.len(), 0);
+    match view {
+        HostBufferRef::F32(s) => assert!(s.is_empty()),
+        _ => panic!("unexpected dtype"),
+    }
+}
 
 #[test]
 #[ignore]
