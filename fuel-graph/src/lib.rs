@@ -484,6 +484,81 @@ impl Op {
             _ => None,
         }
     }
+
+    /// Short human-readable name for this op — used by executor error
+    /// messages to identify the offending graph node without spilling
+    /// all of `Debug`'s field contents. Keeps panic messages one-liner-
+    /// friendly while still telling you which kind of op blew up.
+    pub fn short_name(&self) -> &'static str {
+        op_short_name(self)
+    }
+}
+
+fn op_short_name(op: &Op) -> &'static str {
+    match op {
+        Op::Const(_)             => "Const",
+        Op::Add                  => "Add",
+        Op::Sub                  => "Sub",
+        Op::Mul                  => "Mul",
+        Op::Div                  => "Div",
+        Op::Neg                  => "Neg",
+        Op::Sqr                  => "Sqr",
+        Op::Sqrt                 => "Sqrt",
+        Op::Exp                  => "Exp",
+        Op::Log                  => "Log",
+        Op::Sin                  => "Sin",
+        Op::Cos                  => "Cos",
+        Op::Tanh                 => "Tanh",
+        Op::Sigmoid              => "Sigmoid",
+        Op::Silu                 => "Silu",
+        Op::Gelu                 => "Gelu",
+        Op::Relu                 => "Relu",
+        Op::Step                 => "Step",
+        Op::MatMul               => "MatMul",
+        Op::Transpose            => "Transpose",
+        Op::Permute(_)           => "Permute",
+        Op::Cast(_)              => "Cast",
+        Op::BroadcastTo(_)       => "BroadcastTo",
+        Op::Reshape(_)           => "Reshape",
+        Op::ReduceSumTo(_)       => "ReduceSumTo",
+        Op::SumAll               => "SumAll",
+        Op::MaxAll               => "MaxAll",
+        Op::MinAll               => "MinAll",
+        Op::MeanAll              => "MeanAll",
+        Op::SumDim(_)            => "SumDim",
+        Op::MaxDim(_)            => "MaxDim",
+        Op::MinDim(_)            => "MinDim",
+        Op::MeanDim(_)           => "MeanDim",
+        Op::SoftmaxLastDim       => "SoftmaxLastDim",
+        Op::LayerNormLastDim{..} => "LayerNormLastDim",
+        Op::RmsNormLastDim{..}   => "RmsNormLastDim",
+        Op::Rope                 => "Rope",
+        Op::QMatMul{..}          => "QMatMul",
+        Op::SoftmaxLastDimBackward
+                                 => "SoftmaxLastDimBackward",
+        Op::LayerNormLastDimBackward { .. }
+                                 => "LayerNormLastDimBackward",
+        Op::RmsNormLastDimBackward { .. }
+                                 => "RmsNormLastDimBackward",
+        Op::ArgMaxDim(_)         => "ArgMaxDim",
+        Op::ArgMinDim(_)         => "ArgMinDim",
+        Op::Concat{..}           => "Concat",
+        Op::Slice{..}            => "Slice",
+        Op::AddScalar(_)         => "AddScalar",
+        Op::MulScalar(_)         => "MulScalar",
+        Op::PowI(_)              => "PowI",
+        Op::Clamp{..}            => "Clamp",
+        Op::Maximum              => "Maximum",
+        Op::Minimum              => "Minimum",
+        Op::IndexSelect{..}      => "IndexSelect",
+        Op::Gather{..}           => "Gather",
+        Op::IndexAdd{..}         => "IndexAdd",
+        Op::ScatterAdd{..}       => "ScatterAdd",
+        Op::Conv2D{..}           => "Conv2D",
+        Op::Copy{..}             => "Copy",
+        Op::Release              => "Release",
+        Op::Move{..}             => "Move",
+    }
 }
 
 /// Concrete data stored on a `Const` node. One variant per supported
@@ -615,6 +690,32 @@ impl Graph {
     /// ID, so any such panic indicates a bug in graph construction.
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0]
+    }
+
+    /// Produce a one-line human-readable description of a node and its
+    /// immediate inputs — the identifier string that executor panics
+    /// prepend so realize-time failures can be localized to the exact
+    /// graph position that blew up. Format is stable enough for grep
+    /// but explicitly intended for humans reading panic output, not for
+    /// parsing.
+    pub fn describe_node(&self, id: NodeId) -> String {
+        let n = self.node(id);
+        let op_short = n.op.short_name();
+        if n.inputs.is_empty() {
+            return format!(
+                "Node#{} ({op_short}, out shape={:?} dtype={:?})",
+                id.0, n.shape, n.dtype,
+            );
+        }
+        let inputs: Vec<String> = n.inputs.iter().map(|&inp| {
+            let ni = self.node(inp);
+            let ip = ni.op.short_name();
+            format!("Node#{}[{ip}, {:?}, {:?}]", inp.0, ni.shape, ni.dtype)
+        }).collect();
+        format!(
+            "Node#{} ({op_short}, out shape={:?} dtype={:?}, inputs=[{}])",
+            id.0, n.shape, n.dtype, inputs.join(", "),
+        )
     }
 
     /// Append a node and return its fresh ID. Internal helper used by the
