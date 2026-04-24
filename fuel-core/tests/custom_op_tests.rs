@@ -1,18 +1,17 @@
-﻿// TODO: rewrite this integration test against the post-refactor
-// CustomOp1 API. The current body uses `cpu_fwd` methods that were
-// removed when CustomOp1 switched to a single `fwd(&dyn
-// DynBackendStorage, ...)` entry point. The replacement requires
-// downcasting through `fuel_cpu_backend::dyn_impl::CpuBackendStorage`,
-// which means adding `fuel-cpu-backend` as a dev-dep of fuel-core and
-// rewriting the impls. Disabled via `#![cfg(any())]` until then; see
-// `fuel-core/src/sort.rs` and `fuel-core/src/quantized/mod.rs` for
-// examples of how to structure a CustomOp1 impl against the new API.
-#![cfg(any())]
+//! Integration tests for the Phase-7 [`CustomOp1`] / [`InplaceOp1`] /
+//! [`UgIOp1`] public API.
+//!
+//! These exercise the full surface an external consumer of `fuel-core`
+//! has to implement: the `fwd(&dyn DynBackendStorage, &Layout)` entry
+//! point, downcasting through `fuel_cpu_backend::dyn_impl::
+//! CpuBackendStorage`, and the forward + backward + inplace variants.
+//! For the downcast pattern in a real fuel-core op, see
+//! [`fuel_core::sort::ArgSort`].
 
-use fuel_core::backend::BackendStorage;
-use fuel_core::cpu_backend;
+use fuel_core::dyn_backend::DynBackendStorage;
 use fuel_core::test_utils::to_vec1_round;
-use fuel_core::{CpuStorage, CustomOp1, DType, Device, Error, Layout, Result, Shape, Tensor};
+use fuel_core::{CpuStorage, CustomOp1, DType, Device, Error, InplaceOp1, Layout, Result, Shape, Tensor};
+use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 
 fn fwd<T: num_traits::Float>(v: T, alpha: f64) -> T {
     if v.is_sign_positive() {
@@ -32,14 +31,35 @@ impl CustomOp1 for Elu {
         "elu"
     }
 
-    fn cpu_fwd(&self, s: &CpuStorage, l: &Layout) -> Result<(CpuStorage, Shape)> {
-        let storage = fuel_core::map_dtype!(
-            "elu",
-            s,
-            |s| cpu_backend::unary_map(s, l, |v| fwd(v, self.alpha)),
-            (F8E4M3, BF16, F16, F32, F64)
-        );
-        Ok((storage, l.shape().clone()))
+    fn fwd(
+        &self,
+        storage: &dyn DynBackendStorage,
+        layout: &Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        let cpu = storage
+            .as_any()
+            .downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| Error::Msg(format!("{}: CPU storage required", CustomOp1::name(self))).bt())?;
+        let alpha = self.alpha;
+        let out = match &cpu.0 {
+            CpuStorage::F8E4M3(s) => CpuStorage::F8E4M3(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
+            ),
+            CpuStorage::BF16(s) => CpuStorage::BF16(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
+            ),
+            CpuStorage::F16(s) => CpuStorage::F16(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
+            ),
+            CpuStorage::F32(s) => CpuStorage::F32(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
+            ),
+            CpuStorage::F64(s) => CpuStorage::F64(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
+            ),
+            s => return Err(Error::UnsupportedDTypeForOp(s.dtype(), CustomOp1::name(self)).bt()),
+        };
+        Ok((Box::new(CpuBackendStorage(out)), layout.shape().clone()))
     }
 }
 
@@ -56,7 +76,9 @@ fn custom_op1_no_backward() -> Result<()> {
     Ok(())
 }
 
-// Define a similar struct as Elu but with backward support.
+/// Derivative of [`fwd`]: `1` on the positive branch, `alpha * exp(v)`
+/// on the negative branch. Used by [`EluBackward`] for the custom
+/// backward pass of [`EluWithBackward`].
 fn bwd<T: num_traits::Float>(v: T, alpha: f64) -> T {
     if v.is_sign_positive() {
         T::one()
@@ -75,14 +97,35 @@ impl CustomOp1 for EluBackward {
         "elu-bwd"
     }
 
-    fn cpu_fwd(&self, s: &CpuStorage, l: &Layout) -> Result<(CpuStorage, Shape)> {
-        let storage = fuel_core::map_dtype!(
-            "elu-bwd",
-            s,
-            |s| cpu_backend::unary_map(s, l, |v| bwd(v, self.alpha)),
-            (F8E4M3, BF16, F16, F32, F64)
-        );
-        Ok((storage, l.shape().clone()))
+    fn fwd(
+        &self,
+        storage: &dyn DynBackendStorage,
+        layout: &Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        let cpu = storage
+            .as_any()
+            .downcast_ref::<CpuBackendStorage>()
+            .ok_or_else(|| Error::Msg(format!("{}: CPU storage required", self.name())).bt())?;
+        let alpha = self.alpha;
+        let out = match &cpu.0 {
+            CpuStorage::F8E4M3(s) => CpuStorage::F8E4M3(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
+            ),
+            CpuStorage::BF16(s) => CpuStorage::BF16(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
+            ),
+            CpuStorage::F16(s) => CpuStorage::F16(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
+            ),
+            CpuStorage::F32(s) => CpuStorage::F32(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
+            ),
+            CpuStorage::F64(s) => CpuStorage::F64(
+                fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
+            ),
+            s => return Err(Error::UnsupportedDTypeForOp(s.dtype(), self.name()).bt()),
+        };
+        Ok((Box::new(CpuBackendStorage(out)), layout.shape().clone()))
     }
 }
 
@@ -99,8 +142,12 @@ impl CustomOp1 for EluWithBackward {
         "elu"
     }
 
-    fn cpu_fwd(&self, s: &CpuStorage, l: &Layout) -> Result<(CpuStorage, Shape)> {
-        self.0.cpu_fwd(s, l)
+    fn fwd(
+        &self,
+        storage: &dyn DynBackendStorage,
+        layout: &Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        CustomOp1::fwd(&self.0, storage, layout)
     }
 
     fn bwd(&self, arg: &Tensor, _res: &Tensor, grad_res: &Tensor) -> Result<Option<Tensor>> {
@@ -124,20 +171,24 @@ fn custom_op1_with_backward() -> Result<()> {
     Ok(())
 }
 
-impl fuel_core::InplaceOp1 for Elu {
+impl InplaceOp1 for Elu {
     fn name(&self) -> &'static str {
         "elu"
     }
 
-    fn cpu_fwd(&self, s: &mut CpuStorage, _l: &Layout) -> Result<()> {
+    fn fwd(&self, storage: &mut dyn DynBackendStorage, _layout: &Layout) -> Result<()> {
+        let cpu = storage
+            .as_any_mut()
+            .downcast_mut::<CpuBackendStorage>()
+            .ok_or_else(|| Error::Msg(format!("{}: CPU storage required", <Self as InplaceOp1>::name(self))).bt())?;
         let alpha = self.alpha;
-        match s {
+        match &mut cpu.0 {
             CpuStorage::F8E4M3(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
             CpuStorage::BF16(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
             CpuStorage::F16(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
             CpuStorage::F32(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
             CpuStorage::F64(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
-            _ => fuel_core::bail!("unsupported dtype for inplace elu"),
+            s => fuel_core::bail!("unsupported dtype {:?} for inplace elu", s.dtype()),
         }
         Ok(())
     }
