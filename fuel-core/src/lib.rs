@@ -82,6 +82,7 @@ pub mod lazy_sd_vae;
 pub mod lazy_whisper;
 pub mod lazy_yolov8;
 pub mod layout;
+pub mod seq_bucketing;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
 pub mod model_progress;
