@@ -425,6 +425,10 @@ mod tests {
         let flat = logits.realize_f32();
         assert_eq!(flat.len(), 1 * tokens.len() * cfg.vocab_size);
         assert!(flat.iter().all(|v| v.is_finite()));
+
+        // Phase 6a oracle gate.
+        let flat_ref = logits.realize_f32_reference();
+        crate::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 
     #[test]
