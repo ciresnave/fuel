@@ -76,19 +76,11 @@ macro_rules! ctor {
     ($name:ident, $variant:ident, $t:ty) => {
         /// Allocate a zeroed pinned buffer of `len` elements.
         ///
-        /// Returns an error if `len == 0` — baracuda's `PinnedBuffer`
-        /// doesn't support zero-length allocations yet (the underlying
-        /// `cuMemHostAlloc(0)` returns a null ptr which trips `Deref`'s
-        /// soundness check). Same class of issue as the
-        /// `DeviceBuffer` zero-length fix baracuda shipped in c01ca70;
-        /// pending an equivalent change on the pinned path.
+        /// Zero-length allocations are supported (baracuda 235c37e +
+        /// later): `PinnedBuffer` returns a `NonNull::dangling` sentinel
+        /// matching stdlib's empty-`Vec` trick, so `Deref` into `&[T]`
+        /// stays sound and `Drop` skips the free.
         pub fn $name(dev: &CudaDevice, len: usize) -> Result<Self> {
-            if len == 0 {
-                return Err(Error::Msg(
-                    "PinnedHostStorage: zero-length allocations not yet supported \
-                     (pending baracuda PinnedBuffer zero-length fix)".into()
-                ).bt());
-            }
             let buf = PinnedBuffer::<$t>::new(dev.context_ref(), len).w()?;
             // cuMemHostAlloc does NOT zero the allocation; most callers
             // want a zeroed buffer, so do it here. If the caller wants
