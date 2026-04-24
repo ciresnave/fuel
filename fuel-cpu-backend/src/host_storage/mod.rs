@@ -12,5 +12,7 @@
 //! - (future) `SharedMemHostStorage` — cross-process shared regions.
 
 pub mod mmap;
+pub mod shared_mem;
 
 pub use mmap::MmappedHostStorage;
+pub use shared_mem::SharedMemHostStorage;

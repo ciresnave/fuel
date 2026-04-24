@@ -434,6 +434,15 @@ impl CudaDevice {
     pub fn cublas_handle(&self) -> Arc<CublasHandle> {
         self.blas.clone()
     }
+
+    /// Borrow the underlying baracuda [`Context`](baracuda_driver::Context).
+    ///
+    /// Used by crates like [`crate::pinned`] that build CUDA host
+    /// allocations (pinned memory) or other context-scoped resources on
+    /// top of the device's existing context.
+    pub fn context_ref(&self) -> &baracuda_driver::Context {
+        &self.context
+    }
 }
 
 impl CudaDevice {
