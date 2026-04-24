@@ -39,12 +39,14 @@ pub mod cudnn;
 pub mod device;
 pub mod dyn_impl;
 pub mod error;
+pub mod pinned;
 pub mod storage;
 pub mod utils;
 
 pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};
+pub use pinned::PinnedHostStorage;
 pub use storage::{CudaStorage, CudaStorageSlice, SlicePtrOrNull, kernel_name};
 pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 
