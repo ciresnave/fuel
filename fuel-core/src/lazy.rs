@@ -198,6 +198,20 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise maximum.
+    pub fn maximum(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.maximum(&other.inner),
+        }
+    }
+
+    /// Element-wise minimum.
+    pub fn minimum(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.minimum(&other.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.

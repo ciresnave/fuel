@@ -80,6 +80,7 @@ pub mod lazy_sd_text_encoder;
 pub mod lazy_sd_unet;
 pub mod lazy_sd_vae;
 pub mod lazy_whisper;
+pub mod lazy_yolov8;
 pub mod layout;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
