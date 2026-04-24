@@ -917,12 +917,17 @@ where they are not earning their maintenance cost.
       correctness oracle for `fuel-graph-cpu` via equivalence tests —
       every op the fast executor runs has a reference counterpart that
       the test suite verifies it agrees with.
-- [ ] **CI oracle gate.** The anchor-model suite runs on both the reference
-      backend and the optimized pipeline, and CI asserts outputs match
-      within tolerance on every PR. This gate applies to every sub-phase
-      below. (Not yet wired into CI — the equivalence tests in
-      `fuel-graph-cpu::tests` are the precursor, but they only cover the
-      per-op level, not full anchor models.)
+- [x] **CI oracle gate.** Each Phase 6a anchor's synthetic-weights
+      forward test now realizes output through *both*
+      `realize_f32()` (fast) and `realize_f32_reference()` (oracle)
+      and asserts elementwise `assert_allclose_f32(atol=1e-4,
+      rtol=1e-3)` agreement. Since `cargo test --workspace` already
+      runs in CI on Linux/Windows/macOS, the gate is live — 8 anchor
+      tests cover BERT, ConvNeXt, Whisper (enc+dec), SD CLIP text
+      encoder, SD VAE, Qwen2-MoE, YOLOv8. (SD UNet is not yet covered:
+      it has no end-to-end forward test, building one would triple
+      the test runtime, and the UNet uses the same primitives the
+      VAE already exercises. Follow-up.)
 - [ ] **Debuggability requirements**, non-negotiable from day one:
   - `Tensor::realize_eagerly()` — forces immediate execution of any pending
     graph for a single tensor, for use in debug prints and interactive
@@ -932,12 +937,15 @@ where they are not earning their maintenance cost.
     selected, which candidates were considered, and the cost-model inputs
     that drove the decision. Controlled by an environment variable and a
     per-graph flag.
-  - Shape mismatch errors report *where in the graph* the mismatch
-    occurred, not just "at realize time," using the source location of the
-    op that introduced the conflict. (Build-time shape validation in the
-    `Tensor::*` builders already catches most of these with source
-    locations via Rust panics; the structured graph-traversal version is
-    still owed.)
+  - [x] Shape mismatch errors report *where in the graph* the mismatch
+    occurred. Build-time shape validation in the `Tensor::*` builders
+    catches most of these with source locations via Rust panics; the
+    structured graph-traversal version is also now in place — every
+    per-node realize in both `fuel-reference-backend::exec` and
+    `fuel-graph-cpu` is wrapped in `catch_unwind` + `resume_unwind`
+    with a `Graph::describe_node(id)`-produced prefix, so realize-time
+    panics carry the exact node id, op short name, output shape/dtype,
+    and input shapes/dtypes.
 
 #### Sub-phase 6a — Lazy frontend + single-backend (CPU) planner
 
@@ -971,8 +979,15 @@ possible hardware configuration.*
       (compositional), RmsNorm (compositional), and SwiGLU / SiLU. Full
       forward-and-backward tests on a 3-layer LLaMA-style transformer
       block passing as of this session.
-- [ ] Implement **sequence-length bucketing** for dynamic shapes. Not yet
-      started.
+- [x] Implement **sequence-length bucketing** for dynamic shapes.
+      `fuel_core::seq_bucketing` module provides `pick_bucket(seq_len,
+      &buckets)` and a `BucketedLen` wrapper carrying `(actual,
+      bucket, padding)`. A `DEFAULT_BUCKETS` constant
+      `[64, 128, 256, 512, 1024, 2048, 4096]` mirrors serving-side
+      conventions. Integration into `generate()` is a follow-up
+      (requires graph-memoization plumbing the executor doesn't have
+      yet); the primitive stands alone. Phase 6d's paged attention
+      supersedes this — tracked for removal at that point.
 - [x] **KV cache for autoregressive decode.** `LlamaKVCache` /
       `LayerKVCache` types, `forward_with_cache` method that prepends
       cached K/V via concat, `realize_many_f32` (both executors) for
