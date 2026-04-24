@@ -133,7 +133,7 @@ pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
 
     for id in order {
         let node = graph.node(id);
-        let result = eval_node(&node.op, &node.inputs, &node.shape, &cache);
+        let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
 
@@ -162,7 +162,7 @@ fn realize_any(tensor: &Tensor) -> AnyTensor {
 
     for id in order {
         let node = graph.node(id);
-        let result = eval_node(&node.op, &node.inputs, &node.shape, &cache);
+        let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
     drop(_walk);
@@ -170,6 +170,45 @@ fn realize_any(tensor: &Tensor) -> AnyTensor {
     cache
         .remove(&tensor.id())
         .expect("realize: target tensor missing from cache after topo walk")
+}
+
+/// Wrap per-node `eval_node` in `catch_unwind` so a downstream panic
+/// (unsupported dtype combo, shape mismatch the builder didn't catch,
+/// etc.) re-panics with a prepended graph-location identifier. See
+/// the sibling helper in `fuel-reference-backend/src/exec.rs` for the
+/// same pattern — both realize paths produce identically-formatted
+/// augmented error messages so debug output looks the same regardless
+/// of which executor was running.
+fn eval_node_with_graph_context(
+    graph: &fuel_graph::Graph,
+    id: NodeId,
+    node: &fuel_graph::Node,
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
+    let inputs = node.inputs.clone();
+    let shape = node.shape.clone();
+    let op = node.op.clone();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        eval_node(&op, &inputs, &shape, cache)
+    }));
+    match result {
+        Ok(t) => t,
+        Err(payload) => {
+            let original = panic_payload_to_string(&payload);
+            let location = graph.describe_node(id);
+            let msg = format!(
+                "fuel-graph-cpu realize: panic at {location}\n  original panic: {original}"
+            );
+            resume_unwind(Box::new(msg))
+        }
+    }
+}
+
+fn panic_payload_to_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&'static str>() { return s.to_string(); }
+    if let Some(s) = p.downcast_ref::<String>()       { return s.clone();     }
+    "<non-string panic payload>".to_string()
 }
 
 // Dispatch macros mirroring `fuel_reference_backend::exec`'s, but
@@ -1131,5 +1170,38 @@ mod tests {
             current = current.matmul(&step);
         }
         assert_equivalent_f32(&current);
+    }
+
+    /// Realize-time panic augmentation: a `Log` on a U32 tensor panics
+    /// inside `eval_node` (unary ops aren't implemented for integer
+    /// tensors). Verify the re-raised panic message prepends graph-
+    /// location context ("Node#N", op short name, and the input's
+    /// shape + dtype) so the user can locate the failing site in
+    /// production graphs.
+    #[test]
+    fn realize_panic_includes_graph_location() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        // Any tensor handle works as a "graph anchor" — we just need
+        // the graph object to attach the U32 const to.
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]));
+        let idx = anchor.const_u32_like(vec![1_u32, 2, 3], Shape::from_dims(&[3]));
+        let bad = idx.log();  // Op::Log, dtype=U32
+        let result = catch_unwind(AssertUnwindSafe(|| realize_f32(&bad)));
+        let err = result.expect_err("realize of Log(U32) should panic");
+        let msg = if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = err.downcast_ref::<&'static str>() {
+            s.to_string()
+        } else {
+            panic!("unknown panic payload type")
+        };
+        assert!(
+            msg.contains("fuel-graph-cpu realize: panic at Node#"),
+            "expected graph-location prefix, got: {msg}"
+        );
+        assert!(msg.contains("Log"),
+            "expected op short name 'Log' in message, got: {msg}");
+        assert!(msg.contains("U32"),
+            "expected input dtype 'U32' in message, got: {msg}");
     }
 }

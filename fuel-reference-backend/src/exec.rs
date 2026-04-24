@@ -113,13 +113,53 @@ pub fn realize(tensor: &Tensor) -> AnyRefTensor {
 
     for id in order {
         let node = graph.node(id);
-        let result = eval_node_with_op(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+        let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
 
     cache
         .remove(&tensor.id())
         .expect("realize: target tensor missing from cache after topo walk")
+}
+
+/// Wrap per-node `eval_node_with_op` in `catch_unwind` so a downstream
+/// panic (unsupported dtype combo, shape mismatch the builder didn't
+/// catch, etc.) re-panics with a prepended graph-location identifier.
+/// The augmented message tells you *which* node blew up and what its
+/// immediate inputs looked like, so "realize panicked somewhere in
+/// 4,000 ops" becomes "realize panicked at Node#1734 (Conv2D,
+/// inputs=[Node#1733 Conv2D [1,64,32,32]f32, Node#12 Const [64,3,3,3]f32])".
+fn eval_node_with_graph_context(
+    graph: &fuel_graph::Graph,
+    id: NodeId,
+    node: &fuel_graph::Node,
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
+    let inputs = node.inputs.clone();
+    let shape = node.shape.clone();
+    let dtype = node.dtype;
+    let op = node.op.clone();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        eval_node_with_op(&op, &inputs, &shape, dtype, cache)
+    }));
+    match result {
+        Ok(t) => t,
+        Err(payload) => {
+            let original = panic_payload_to_string(&payload);
+            let location = graph.describe_node(id);
+            let msg = format!(
+                "fuel-reference-backend realize: panic at {location}\n  original panic: {original}"
+            );
+            resume_unwind(Box::new(msg))
+        }
+    }
+}
+
+fn panic_payload_to_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&'static str>() { return s.to_string(); }
+    if let Some(s) = p.downcast_ref::<String>()       { return s.clone();     }
+    "<non-string panic payload>".to_string()
 }
 
 // ---- convenience wrappers --------------------------------------------------
@@ -169,7 +209,7 @@ pub fn realize_many(tensors: &[&Tensor]) -> Vec<AnyRefTensor> {
 
     for id in order {
         let node = graph.node(id);
-        let result = eval_node_with_op(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+        let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
 
