@@ -138,14 +138,19 @@ impl std::ops::Deref for CublasHandle {
 
 #[derive(Clone)]
 pub struct CudaDevice {
+    // Field order matters for Drop. Rust drops struct fields in
+    // declaration order, and baracuda's Stream / cuBLAS Handle / cuRAND
+    // Generator / loaded Modules all hold raw CUDA resources that must
+    // be destroyed *before* the owning Context is torn down (otherwise
+    // the driver access-violates on process exit). Keep `context` last.
     id: DeviceId,
-    context: Arc<baracuda_driver::Context>,
+    seed_value: Arc<RwLock<u64>>,
+    curand: Arc<Mutex<CudaRng>>,
+    pub(crate) blas: Arc<CublasHandle>,
     modules: Arc<std::sync::RwLock<ModuleStore>>,
     custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<baracuda_driver::Module>>>>,
     stream: Arc<baracuda_driver::Stream>,
-    pub(crate) blas: Arc<CublasHandle>,
-    curand: Arc<Mutex<CudaRng>>,
-    seed_value: Arc<RwLock<u64>>,
+    context: Arc<baracuda_driver::Context>,
 }
 
 impl std::fmt::Debug for CudaDevice {
