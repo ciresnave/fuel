@@ -74,6 +74,7 @@ mod indexer;
 pub mod kv_cache;
 pub mod lazy;
 pub mod lazy_bert;
+pub mod lazy_convnext;
 pub mod lazy_whisper;
 pub mod layout;
 #[cfg(feature = "metal")]
