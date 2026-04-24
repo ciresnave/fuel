@@ -388,83 +388,23 @@ fn conv2d_stride_eq_kernel(
 }
 
 /// Depthwise Conv2d, kernel=7, stride=1, padding=3. Weight shape
-/// `[C, 1, 7, 7]`, bias `[C]`. Each of the 49 kernel taps becomes a
-/// shifted slice of the padded input multiplied by a per-channel
-/// scalar (broadcast across space) and summed.
+/// `[C, 1, 7, 7]`, bias `[C]`. Dispatches to the native
+/// [`LazyTensor::conv2d`] op with `groups=C` (the depthwise
+/// signature). Was composed from 49 slice+mul+add subgraphs before
+/// the native op landed; keeping the helper as a thin wrapper so
+/// ConvNeXt's block code doesn't need to know about the groups
+/// argument.
 fn conv2d_depthwise_k7_s1_p3(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     c: usize,
-    h: usize,
-    w_sz: usize,
+    _h: usize,
+    _w_sz: usize,
 ) -> LazyTensor {
-    const K: usize = 7;
-    const P: usize = 3;
-    // Pad by P on each side along H and W. Fuel has no native pad op,
-    // so we concat zero tensors. Only ever two zero consts per pad step
-    // since we pad each side identically.
-    let padded = pad_hw_zeros(x, c, h, w_sz, P);
-
-    // Extract per-tap shifted slices. For tap (ky, kx), the window of
-    // interest is padded[:, :, ky..ky+H, kx..kx+W].
-    // Use slice(2, ky, H) + slice(3, kx, W).
-    // Kernel is stored as `[C, 1, K, K]` row-major, indexed as
-    // `w[c * K*K + 0 + ky * K + kx]`.
-    // For each (ky, kx) tap:
-    //   scalar_per_c = w[:, 0, ky, kx]  shape [C]
-    //   shifted = padded_slice            shape [1, C, H, W]
-    //   contribution = shifted * broadcast(scalar_per_c)
-    //   accumulate into y.
-
-    // Start with the bias broadcast as the initial accumulator.
-    let y0 = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .broadcast_to(Shape::from_dims(&[1, c, h, w_sz]));
-
-    // Build a per-tap [C] vector of scalars from the flat kernel.
-    // The outer loop only builds graph nodes — it runs once per
-    // forward, and each tap adds a modest subgraph.
-    let mut y = y0;
-    for ky in 0..K {
-        // Slice padded along H at (ky, H).
-        let sliced_h = padded.slice(2, ky, h);  // [1, C, H, W_p]
-        for kx in 0..K {
-            let sliced = sliced_h.slice(3, kx, w_sz);  // [1, C, H, W]
-            // Build scalar-per-channel from kernel.
-            let mut tap: Vec<f32> = Vec::with_capacity(c);
-            for ci in 0..c {
-                tap.push(w[ci * K * K + ky * K + kx]);
-            }
-            let tap_t = x
-                .const_f32_like(tap, Shape::from_dims(&[c]))
-                .reshape(Shape::from_dims(&[1, c, 1, 1]))
-                .broadcast_to(Shape::from_dims(&[1, c, h, w_sz]));
-            let contrib = sliced.mul(&tap_t);
-            y = y.add(&contrib);
-        }
-    }
-    y
-}
-
-/// Zero-pad `x: [1, C, H, W]` by `p` on each side along both spatial
-/// axes, returning `[1, C, H+2p, W+2p]`. Two concats per axis with a
-/// const zero tensor.
-fn pad_hw_zeros(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyTensor {
-    // Pad along width first: two [1, C, H, p] zeros on each side.
-    let z_w = x.const_f32_like(
-        vec![0.0_f32; c * h * p],
-        Shape::from_dims(&[1, c, h, p]),
-    );
-    let x_wpad = z_w.concat(x, 3).concat(&z_w, 3);  // [1, C, H, W+2p]
-    // Then along height: [1, C, p, W+2p] zeros.
-    let w_p = w + 2 * p;
-    let z_h = x.const_f32_like(
-        vec![0.0_f32; c * p * w_p],
-        Shape::from_dims(&[1, c, p, w_p]),
-    );
-    z_h.concat(&x_wpad, 2).concat(&z_h, 2)
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]));
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]));
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c)
 }
 
 // ---- Safetensors loader ----------------------------------------------------

@@ -290,6 +290,11 @@ pub fn eval_node_with_op(
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),
         Op::Permute(axes) => eval_permute(axes, inputs, cache),
 
+        // --- 2-D convolution ---
+        Op::Conv2D { stride, padding, groups } => {
+            eval_conv2d(*stride, *padding, *groups, inputs, cache)
+        }
+
         // --- dtype, shape, and broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
@@ -659,6 +664,37 @@ fn eval_matmul(
         (a, b) => panic!(
             "matmul: unsupported operand dtypes (lhs={:?}, rhs={:?})",
             a.dtype(), b.dtype()
+        ),
+    }
+}
+
+fn eval_conv2d(
+    stride: (usize, usize),
+    padding: (usize, usize),
+    groups: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let x = cache.get(&inputs[0]).expect("conv2d: missing x");
+    let w = cache.get(&inputs[1]).expect("conv2d: missing weight");
+    let b = inputs.get(2).and_then(|id| cache.get(id));
+    // Require x, weight, and bias to all be the same float dtype.
+    match (x, w, b) {
+        (AnyRefTensor::F32(x), AnyRefTensor::F32(w), Some(AnyRefTensor::F32(bias))) => {
+            AnyRefTensor::F32(ops::conv2d(x, w, Some(bias), stride, padding, groups))
+        }
+        (AnyRefTensor::F32(x), AnyRefTensor::F32(w), None) => {
+            AnyRefTensor::F32(ops::conv2d(x, w, None, stride, padding, groups))
+        }
+        (AnyRefTensor::F64(x), AnyRefTensor::F64(w), Some(AnyRefTensor::F64(bias))) => {
+            AnyRefTensor::F64(ops::conv2d(x, w, Some(bias), stride, padding, groups))
+        }
+        (AnyRefTensor::F64(x), AnyRefTensor::F64(w), None) => {
+            AnyRefTensor::F64(ops::conv2d(x, w, None, stride, padding, groups))
+        }
+        (a, b_, c_) => panic!(
+            "conv2d: unsupported operand dtype combination x={:?} w={:?} bias={:?}",
+            a.dtype(), b_.dtype(), c_.map(|t| t.dtype()),
         ),
     }
 }
@@ -1069,6 +1105,63 @@ mod tests {
         let c = a.add(&b).mul(&a);
         let result = realize_f32(&c);
         assert_eq!(result.as_slice(), &[5.0, 14.0, 27.0]);
+    }
+
+    #[test]
+    fn realize_conv2d_identity_3x3() {
+        // 1×1×3×3 identity input, 1×1×1×1 kernel = 1.0 → should equal input.
+        let x = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            Shape::from_dims(&[1, 1, 3, 3]),
+        );
+        let w = x.const_f32_like(vec![1.0], Shape::from_dims(&[1, 1, 1, 1]));
+        let y = x.conv2d(&w, None, (1, 1), (0, 0), 1);
+        let result = realize_f32(&y);
+        assert_eq!(result.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn realize_conv2d_k3_s1_p1_known() {
+        // 1×1×3×3 input of ones; 1×1×3×3 kernel of ones with zero bias, stride 1, pad 1.
+        // Each output position sums the 3×3 window (with zero-pad edges).
+        // Interior (1,1) sees a full 3×3 of 1s → 9. Corners see 2×2 = 4. Edges see 2×3 = 6.
+        let x = Tensor::from_f32(
+            vec![1.0; 9],
+            Shape::from_dims(&[1, 1, 3, 3]),
+        );
+        let w = x.const_f32_like(vec![1.0; 9], Shape::from_dims(&[1, 1, 3, 3]));
+        let b = x.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1]));
+        let y = x.conv2d(&w, Some(&b), (1, 1), (1, 1), 1);
+        let out = realize_f32(&y);
+        assert_eq!(
+            out.as_slice(),
+            &[4.0, 6.0, 4.0, 6.0, 9.0, 6.0, 4.0, 6.0, 4.0],
+        );
+    }
+
+    #[test]
+    fn realize_conv2d_depthwise_matches_per_channel() {
+        // Depthwise 3×3 conv. Two channels with independent per-channel
+        // kernels; verify each output channel depends only on its own
+        // input channel.
+        let x = Tensor::from_f32(
+            vec![
+                1.0, 2.0, 3.0, 4.0,   // ch 0
+                10.0, 20.0, 30.0, 40.0, // ch 1
+            ],
+            Shape::from_dims(&[1, 2, 2, 2]),
+        );
+        // Kernel [2, 1, 1, 1] — a single scalar per channel.
+        let w = x.const_f32_like(vec![2.0, 0.5], Shape::from_dims(&[2, 1, 1, 1]));
+        let y = x.conv2d(&w, None, (1, 1), (0, 0), 2);
+        let out = realize_f32(&y);
+        assert_eq!(
+            out.as_slice(),
+            &[
+                2.0, 4.0, 6.0, 8.0,       // ch 0 × 2.0
+                5.0, 10.0, 15.0, 20.0,    // ch 1 × 0.5
+            ],
+        );
     }
 
     #[test]

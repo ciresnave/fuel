@@ -14,13 +14,12 @@
 //!   norm layer. Composed from `mean_dim` + manual variance + `sqrt`
 //!   + broadcast.
 //! - **`conv2d_k3_s1_p1`** — general (cross-channel) 3×3 convolution
-//!   with stride 1 and padding 1. Nine overlapping spatial slices
-//!   concatenated along the channel axis, matmul with the kernel
-//!   reshaped to `[9*Cin, Cout]`. This is the workhorse op for
-//!   SD's conv blocks; ConvNeXt needed only the depthwise variant.
+//!   with stride 1 and padding 1. Dispatches to the native `Op::Conv2D`
+//!   (groups=1, stride=(1,1), padding=(1,1)). This is the workhorse op
+//!   for SD's conv blocks; ConvNeXt needed only the depthwise variant.
 //! - **`conv2d_k1_s1_p0`** — pointwise `1×1` conv (used for residual
-//!   shortcuts when the ResNet block changes channel count). Just a
-//!   channel-axis matmul after a reshape.
+//!   shortcuts when the ResNet block changes channel count). Dispatches
+//!   to the native `Op::Conv2D` with padding=0.
 //! - **`upsample_nearest_2x`** — replicate each spatial element into
 //!   a `2×2` block via reshape + concat-along-new-axis.
 //! - **`vae_spatial_attention`** — single-head self-attention over
@@ -39,12 +38,10 @@
 //!   use has a backward rule in principle (slice, concat, matmul,
 //!   mean_dim, mul, add, sqrt, sub, reshape, permute) so the pieces
 //!   are there, but we haven't validated end-to-end backprop.
-//! - Performance. Without a native Conv2d op, each 3×3 conv spawns 9
-//!   slice+concat+matmul sub-graphs; with 33 convs in the decoder at
-//!   resolutions up to 512×512 this is slow on CPU (minutes per
-//!   forward pass at full resolution). A native Conv2d op is the
-//!   right fix; until then, run at lower latent sizes for smoke
-//!   tests.
+//! - Performance. Every conv routes through the native `Op::Conv2D`
+//!   (a reference 5-loop implementation on CPU). This is far faster
+//!   than the old slice+concat+matmul composition but still unoptimized
+//!   — GPU dispatch and tiled CPU kernels are later work.
 
 use crate::lazy::LazyTensor;
 use fuel_core_types::Shape;
@@ -319,99 +316,36 @@ fn group_norm(
 
 /// General 3×3 conv, stride 1, padding 1. Input `[1, Cin, H, W]`,
 /// kernel `[Cout, Cin, 3, 3]` in HF order, bias `[Cout]`. Output
-/// `[1, Cout, H, W]`.
-///
-/// Pad each side by 1, take 9 overlapping time+space slices, concat
-/// along the channel axis to build `[1, 9*Cin, H, W]`, matmul with the
-/// kernel reshaped as `[9*Cin, Cout]`.
+/// `[1, Cout, H, W]`. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k3_s1_p1(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-    h: usize,
-    w_sz: usize,
+    _h: usize,
+    _w_sz: usize,
 ) -> LazyTensor {
-    let padded = pad_hw_zeros(x, cin, h, w_sz, 1);
-    // Nine slices: for (ky, kx) in 0..3 × 0..3, padded[:, :, ky..ky+H, kx..kx+W].
-    let mut slices: Vec<LazyTensor> = Vec::with_capacity(9);
-    for ky in 0..3 {
-        let sh = padded.slice(2, ky, h);
-        for kx in 0..3 {
-            let s = sh.slice(3, kx, w_sz);
-            slices.push(s);
-        }
-    }
-    // Concat along channel axis: [1, 9*Cin, H, W].
-    let mut stacked = slices[0].clone();
-    for s in &slices[1..] {
-        stacked = stacked.concat(s, 1);
-    }
-    let stacked_tlast = stacked
-        .permute(&[0, 2, 3, 1])
-        .reshape(Shape::from_dims(&[1, h * w_sz, 9 * cin]));
-    // Kernel reshuffle. HF stores `[Cout, Cin, 3, 3]`. The slice stack
-    // above emits channels in (ky, kx, cin) order, so the matching
-    // [9*Cin, Cout] kernel layout is `kernel[ky*3*Cin + kx*Cin + ci]`
-    // indexing the `[ky, kx, ci]` row, with the column being c_out.
-    let mut w_out = vec![0.0_f32; 9 * cin * cout];
-    for o in 0..cout {
-        for i in 0..cin {
-            for ky in 0..3usize {
-                for kx in 0..3usize {
-                    w_out[((ky * 3 + kx) * cin + i) * cout + o]
-                        = w[((o * cin + i) * 3 + ky) * 3 + kx];
-                }
-            }
-        }
-    }
-    let w_t = x.const_f32_like(w_out, Shape::from_dims(&[9 * cin, cout]));
-    let y = stacked_tlast.matmul(&w_t);  // [1, H*W, Cout]
-    // Bias.
-    let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
-        .reshape(Shape::from_dims(&[1, 1, cout]))
-        .broadcast_to(Shape::from_dims(&[1, h * w_sz, cout]));
-    let y = y.add(&bias);
-    y.reshape(Shape::from_dims(&[1, h, w_sz, cout])).permute(&[0, 3, 1, 2])
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
 /// 1×1 conv, stride 1, padding 0. Input `[1, Cin, H, W]`, kernel
 /// `[Cout, Cin, 1, 1]`, bias `[Cout]`. Output `[1, Cout, H, W]`.
-///
-/// Just a channel-axis matmul: reshape to `[1, H*W, Cin]`, matmul with
-/// a `[Cin, Cout]` kernel, reshape back.
+/// Dispatches to the native `Op::Conv2D`.
 fn conv2d_k1_s1_p0(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-    h: usize,
-    w_sz: usize,
+    _h: usize,
+    _w_sz: usize,
 ) -> LazyTensor {
-    // HF kernel is [Cout, Cin, 1, 1] row-major = [Cout, Cin]. Load-time
-    // transpose to [Cin, Cout] is done by the loader for general
-    // linears; here we do it inline so the weight stays at Arc<[f32]>
-    // and we don't have to pre-transpose.
-    let mut w_t = vec![0.0_f32; cin * cout];
-    for o in 0..cout {
-        for i in 0..cin {
-            w_t[i * cout + o] = w[o * cin + i];
-        }
-    }
-    let w_mat = x.const_f32_like(w_t, Shape::from_dims(&[cin, cout]));
-    let xf = x
-        .permute(&[0, 2, 3, 1])
-        .reshape(Shape::from_dims(&[1, h * w_sz, cin]));
-    let y = xf.matmul(&w_mat);  // [1, H*W, Cout]
-    let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
-        .reshape(Shape::from_dims(&[1, 1, cout]))
-        .broadcast_to(Shape::from_dims(&[1, h * w_sz, cout]));
-    let y = y.add(&bias);
-    y.reshape(Shape::from_dims(&[1, h, w_sz, cout])).permute(&[0, 3, 1, 2])
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]));
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
 /// 2× nearest-neighbor upsample along both spatial axes. `[1, C, H, W]`
@@ -426,21 +360,6 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTens
     let x6 = x6.concat(&x6, 5);
     // Reshape to [1, C, 2H, 2W].
     x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w]))
-}
-
-/// Zero-pad `[1, C, H, W]` by `p` on each side of both spatial axes.
-fn pad_hw_zeros(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyTensor {
-    let z_w = x.const_f32_like(
-        vec![0.0_f32; c * h * p],
-        Shape::from_dims(&[1, c, h, p]),
-    );
-    let x_wpad = z_w.concat(x, 3).concat(&z_w, 3);
-    let w_p = w + 2 * p;
-    let z_h = x.const_f32_like(
-        vec![0.0_f32; c * p * w_p],
-        Shape::from_dims(&[1, c, p, w_p]),
-    );
-    z_h.concat(&x_wpad, 2).concat(&z_h, 2)
 }
 
 /// `y = x @ W + b`. `x`: `[1, seq, in_f]`, `W`: `[in_f, out_f]`.
