@@ -806,6 +806,12 @@ mod tests {
         assert_eq!(raw.grid_xy.len(), 2 * n_expected);
         assert!(cls.iter().all(|v| v.is_finite()));
         assert!(reg.iter().all(|v| v.is_finite()));
+
+        // Phase 6a oracle gate: fast path must agree with reference.
+        let cls_ref = raw.cls_logits.realize_f32_reference();
+        let reg_ref = raw.reg_dists.realize_f32_reference();
+        crate::test_utils::assert_allclose_f32(&cls, &cls_ref, 1e-4, 1e-3);
+        crate::test_utils::assert_allclose_f32(&reg, &reg_ref, 1e-4, 1e-3);
     }
 
     #[test]

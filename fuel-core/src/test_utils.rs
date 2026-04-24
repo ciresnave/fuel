@@ -45,6 +45,48 @@ pub fn assert_tensor_eq(t1: &Tensor, t2: &Tensor) -> Result<()> {
     Ok(())
 }
 
+/// Oracle-gate comparison helper: assert two `f32` slices match within
+/// absolute tolerance `atol` OR relative tolerance `rtol`.
+///
+/// Used by the Phase 6a CI oracle gate — every anchor model's forward
+/// pass runs on both `realize_f32()` (fast) and `realize_f32_reference()`
+/// (oracle), and the two outputs must agree within tolerance. Prints
+/// the first mismatching index plus max abs/rel deviations when the
+/// assertion fires so divergences are easy to localize.
+pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
+    assert_eq!(a.len(), b.len(),
+        "assert_allclose_f32: length mismatch {} vs {}", a.len(), b.len());
+    let mut max_abs = 0.0_f32;
+    let mut max_rel = 0.0_f32;
+    let mut first_bad: Option<usize> = None;
+    for (i, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
+        if !x.is_finite() || !y.is_finite() {
+            assert!(
+                x.is_finite() == y.is_finite() && x.is_nan() == y.is_nan(),
+                "assert_allclose_f32: finiteness mismatch at index {i}: {x} vs {y}"
+            );
+            continue;
+        }
+        let ad = (x - y).abs();
+        let rd = ad / x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
+        if ad > max_abs { max_abs = ad; }
+        if rd > max_rel { max_rel = rd; }
+        if ad > atol && rd > rtol && first_bad.is_none() {
+            first_bad = Some(i);
+        }
+    }
+    if let Some(i) = first_bad {
+        panic!(
+            "assert_allclose_f32: first mismatch at index {i}: a={} b={} \
+             (diff abs={} rel={}); max abs={max_abs} max rel={max_rel} \
+             over {} elements (atol={atol} rtol={rtol})",
+            a[i], b[i], (a[i] - b[i]).abs(),
+            (a[i] - b[i]).abs() / a[i].abs().max(b[i].abs()).max(f32::MIN_POSITIVE),
+            a.len(),
+        );
+    }
+}
+
 /// Extracts a scalar f32 value from a rank-0 tensor, rounded to `digits` decimal places.
 ///
 /// # Example

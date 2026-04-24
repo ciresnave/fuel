@@ -779,5 +779,9 @@ mod tests {
             "forward produced non-finite values (first 8): {:?}",
             &out[..8.min(out.len())],
         );
+
+        // Phase 6a oracle gate.
+        let out_ref = hidden.realize_f32_reference();
+        crate::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
     }
 }
