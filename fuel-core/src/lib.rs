@@ -75,6 +75,7 @@ pub mod kv_cache;
 pub mod lazy;
 pub mod lazy_bert;
 pub mod lazy_convnext;
+pub mod lazy_qwen2_moe;
 pub mod lazy_sd_text_encoder;
 pub mod lazy_sd_unet;
 pub mod lazy_sd_vae;
