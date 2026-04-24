@@ -117,27 +117,24 @@ fuel-ug = { path = "./fuel-ug", version = "0.10.2" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------
-# Path deps to the local baracuda workspace during the migration from cudarc.
-# Once baracuda 0.0.1-alpha.2 is fully published on crates.io (all 42 crates),
-# swap `path = ...` for `version = "0.0.1-alpha.2"` and remove the path key.
-# The `baracuda` umbrella crate re-exports sub-crates behind feature flags;
-# Fuel depends on the sub-crates directly so features stay explicit and
-# transitive weight is minimal per consuming crate.
-baracuda-types      = { path = "../baracuda/crates/baracuda-types", features = ["half-crate", "f8-crate"] }
-baracuda-core       = { path = "../baracuda/crates/baracuda-core" }
-baracuda-cuda-sys   = { path = "../baracuda/crates/baracuda-cuda-sys" }
-baracuda-driver     = { path = "../baracuda/crates/baracuda-driver" }
-baracuda-runtime    = { path = "../baracuda/crates/baracuda-runtime" }
-baracuda-cublas-sys = { path = "../baracuda/crates/baracuda-cublas-sys" }
-baracuda-cublas     = { path = "../baracuda/crates/baracuda-cublas" }
-baracuda-cudnn-sys  = { path = "../baracuda/crates/baracuda-cudnn-sys" }
-baracuda-cudnn      = { path = "../baracuda/crates/baracuda-cudnn" }
-baracuda-curand-sys = { path = "../baracuda/crates/baracuda-curand-sys" }
-baracuda-curand     = { path = "../baracuda/crates/baracuda-curand" }
-baracuda-nvrtc-sys  = { path = "../baracuda/crates/baracuda-nvrtc-sys" }
-baracuda-nvrtc      = { path = "../baracuda/crates/baracuda-nvrtc" }
-baracuda-nccl-sys   = { path = "../baracuda/crates/baracuda-nccl-sys" }
-baracuda-nccl       = { path = "../baracuda/crates/baracuda-nccl", features = ["half-crate"] }
+# Fuel depends on baracuda's sub-crates directly (not the `baracuda` umbrella)
+# so feature flags stay explicit and transitive weight is minimal per consuming
+# crate. All 42 crates in the baracuda family are published on crates.io.
+baracuda-types      = { version = "0.0.1-alpha.2", features = ["half-crate", "f8-crate"] }
+baracuda-core       = { version = "0.0.1-alpha.2" }
+baracuda-cuda-sys   = { version = "0.0.1-alpha.2" }
+baracuda-driver     = { version = "0.0.1-alpha.2" }
+baracuda-runtime    = { version = "0.0.1-alpha.2" }
+baracuda-cublas-sys = { version = "0.0.1-alpha.2" }
+baracuda-cublas     = { version = "0.0.1-alpha.2" }
+baracuda-cudnn-sys  = { version = "0.0.1-alpha.2" }
+baracuda-cudnn      = { version = "0.0.1-alpha.2" }
+baracuda-curand-sys = { version = "0.0.1-alpha.2" }
+baracuda-curand     = { version = "0.0.1-alpha.2" }
+baracuda-nvrtc-sys  = { version = "0.0.1-alpha.2" }
+baracuda-nvrtc      = { version = "0.0.1-alpha.2" }
+baracuda-nccl-sys   = { version = "0.0.1-alpha.2" }
+baracuda-nccl       = { version = "0.0.1-alpha.2", features = ["half-crate"] }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 hf-hub = "0.5.0"
