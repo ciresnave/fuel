@@ -218,6 +218,26 @@ pub fn recommend_for_node(
     pick_to_location(pick)
 }
 
+/// Apply a placement plan to a [`Graph`] by calling
+/// [`Graph::set_placement`] for every entry. After this, a follow-up
+/// [`fuel_graph::opt::insert_copies`] pass will see the per-node
+/// hints and insert `Op::Copy` nodes at the boundaries between
+/// devices that disagree.
+///
+/// This is the bridge between [`recommend_placement`] and the
+/// existing graph-rewrite pass — combined they let the user say
+/// "tell me where things should run, then mutate the graph to
+/// actually place them there" in two function calls.
+pub fn apply_placement_plan(
+    graph: &fuel_graph::SharedGraph,
+    plan: &HashMap<NodeId, DeviceLocation>,
+) {
+    let mut g = graph.borrow_mut();
+    for (&id, &loc) in plan {
+        g.set_placement(id, loc);
+    }
+}
+
 fn run_and_persist(
     probe: &ProbeReport,
     opts: &ScheduleOptions,
@@ -415,4 +435,71 @@ mod tests {
         assert!(matches!(plan[&small_a.id()], DeviceLocation::Cpu));
     }
 
+    /// Full pipeline: recommend_placement → apply_placement_plan →
+    /// fuel_graph::opt::insert_copies. Verifies Copy nodes appear at
+    /// the boundary between CPU and CUDA placements.
+    #[test]
+    fn apply_then_insert_copies_emits_copies_at_device_boundaries() {
+        // Hand-craft a dispatch table: size 12 → CPU, size 20 → CUDA.
+        let entries = vec![
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
+                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+        ];
+        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let table = DispatchTable::build(&report);
+
+        // Build the heterogeneous graph (small + big matmul).
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_b = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+            Shape::from_dims(&[64, 64]),
+        );
+        let small_mm = small_a.matmul(&small_b);  // size 12 → CPU
+
+        let big_a = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+            Shape::from_dims(&[1024, 1024]),
+        );
+        let big_b = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+            Shape::from_dims(&[1024, 1024]),
+        );
+        let big_mm = big_a.matmul(&big_b);  // size 20 → CUDA
+
+        let n_before = small_a.graph().borrow().len();
+
+        let plan = recommend_placement(
+            &small_a.graph().borrow(),
+            &table,
+            Criterion::Fastest,
+            DeviceLocation::Cpu,
+        );
+        apply_placement_plan(small_a.graph(), &plan);
+
+        let roots = vec![small_mm.id(), big_mm.id()];
+        let _new_roots = fuel_graph::opt::insert_copies(small_a.graph(), &roots);
+
+        let g = small_a.graph().borrow();
+        let n_after = g.len();
+
+        // big_a + big_b are placeless Const inputs feeding into big_mm
+        // which is placed on CUDA → 2 Copy nodes get inserted.
+        let mut cuda_copies = 0;
+        for i in n_before..n_after {
+            if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op {
+                if matches!(target, DeviceLocation::Cuda { .. }) {
+                    cuda_copies += 1;
+                }
+            }
+        }
+        assert!(cuda_copies >= 2,
+            "expected ≥2 Copy(_, Cuda) nodes for big_a + big_b; got {cuda_copies} \
+             (n_before={n_before} n_after={n_after})");
+    }
 }
