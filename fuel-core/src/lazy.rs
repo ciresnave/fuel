@@ -539,6 +539,17 @@ impl LazyTensor {
     ) -> Vec<f32> {
         executor.realize_f32(&self.inner).into_vec()
     }
+
+    /// Realize on a Vulkan GPU via the generic executor. Mirrors the
+    /// CUDA helper above so the Phase 6b Judge can profile Vulkan
+    /// equivalence classes uniformly with CUDA.
+    #[cfg(feature = "vulkan")]
+    pub fn realize_f32_vulkan(
+        &self,
+        executor: &mut GraphExecutor<fuel_graph_vulkan::VulkanBackend>,
+    ) -> Vec<f32> {
+        executor.realize_f32(&self.inner).into_vec()
+    }
 }
 
 /// Realize many tensors in a single CPU topo-walk.
