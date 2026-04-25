@@ -5,8 +5,12 @@
 #![allow(clippy::redundant_closure_call)]
 use crate::{CpuStorage, CpuStorageRef, Error, Result};
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 /// The different types of elements allowed in tensors.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum DType {
     /// Unsigned 8-bit integer.
     U8,

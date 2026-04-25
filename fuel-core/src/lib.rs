@@ -88,6 +88,7 @@ pub mod metal_backend;
 pub mod model_progress;
 #[cfg(feature = "mkl")]
 mod mkl;
+pub mod judge;
 pub mod npy;
 pub mod probe;
 pub mod op;
