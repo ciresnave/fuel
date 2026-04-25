@@ -218,17 +218,33 @@ pub fn recommend_for_node(
     pick_to_location(pick)
 }
 
-/// Apply a placement plan to a [`Graph`] by calling
-/// [`Graph::set_placement`] for every entry. After this, a follow-up
-/// [`fuel_graph::opt::insert_copies`] pass will see the per-node
-/// hints and insert `Op::Copy` nodes at the boundaries between
-/// devices that disagree.
+/// Apply a placement plan to a [`Graph`] — set per-node placement
+/// hints for every entry **that doesn't already have one**. Skipping
+/// pre-set hints is the safe default: a user who explicitly pinned a
+/// node to a device shouldn't have that overridden by the dispatch
+/// table's recommendation. Use [`force_apply_placement_plan`] when
+/// the override is intentional.
 ///
-/// This is the bridge between [`recommend_placement`] and the
-/// existing graph-rewrite pass — combined they let the user say
-/// "tell me where things should run, then mutate the graph to
-/// actually place them there" in two function calls.
+/// After this, a follow-up [`fuel_graph::opt::insert_copies`] pass
+/// will see the per-node hints and insert `Op::Copy` nodes at the
+/// boundaries between devices that disagree.
 pub fn apply_placement_plan(
+    graph: &fuel_graph::SharedGraph,
+    plan: &HashMap<NodeId, DeviceLocation>,
+) {
+    let mut g = graph.borrow_mut();
+    for (&id, &loc) in plan {
+        if g.placement(id).is_none() {
+            g.set_placement(id, loc);
+        }
+    }
+}
+
+/// Like [`apply_placement_plan`] but overwrites existing hints.
+/// Useful when a re-Judge produces fresher recommendations or when
+/// a user wants to dispatch-route a graph that's been hand-pinned
+/// in an earlier pass.
+pub fn force_apply_placement_plan(
     graph: &fuel_graph::SharedGraph,
     plan: &HashMap<NodeId, DeviceLocation>,
 ) {
@@ -236,6 +252,31 @@ pub fn apply_placement_plan(
     for (&id, &loc) in plan {
         g.set_placement(id, loc);
     }
+}
+
+/// One-call Phase 6b auto-router: runs [`recommend_placement`],
+/// applies the resulting hints (skip-existing semantics), and runs
+/// [`fuel_graph::opt::insert_copies`] to materialise the cross-
+/// device transfers. Returns the new root IDs from `insert_copies`
+/// (which may have been remapped if any of `roots`'s ops were
+/// rewritten as part of inserting Copy nodes).
+///
+/// This is the "do the right thing" entry point for users who want
+/// the Phase 6b dispatch table to drive placement automatically.
+/// Users who want finer control compose the three steps manually.
+pub fn auto_place_and_route(
+    graph: &fuel_graph::SharedGraph,
+    roots: &[NodeId],
+    table: &DispatchTable,
+    criterion: Criterion,
+    fallback_device: DeviceLocation,
+) -> Vec<NodeId> {
+    let plan = {
+        let g = graph.borrow();
+        recommend_placement(&g, table, criterion, fallback_device)
+    };
+    apply_placement_plan(graph, &plan);
+    fuel_graph::opt::insert_copies(graph, roots)
 }
 
 fn run_and_persist(
@@ -433,6 +474,108 @@ mod tests {
         assert_eq!(plan[&unprofiled.id()], DeviceLocation::Cpu);
         // Const nodes → fallback (no Op::Const → OpKind mapping)
         assert!(matches!(plan[&small_a.id()], DeviceLocation::Cpu));
+    }
+
+    /// Skip-existing semantics: if a node already has a placement
+    /// hint, the auto-router must not overwrite it. The user's
+    /// explicit `set_placement` call is authoritative.
+    #[test]
+    fn apply_placement_plan_skips_pre_set_hints() {
+        let entries = vec![
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+        ];
+        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let table = DispatchTable::build(&report);
+
+        let a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]));
+        let b = a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+            Shape::from_dims(&[1024, 1024]),
+        );
+        let mm = a.matmul(&b);  // dispatch table would pick CUDA
+
+        // User pins it to CPU explicitly.
+        a.graph().borrow_mut().set_placement(mm.id(), DeviceLocation::Cpu);
+
+        let plan = recommend_placement(
+            &a.graph().borrow(),
+            &table,
+            Criterion::Fastest,
+            DeviceLocation::Cpu,
+        );
+        // Recommendation says CUDA, but apply_placement_plan must respect the existing CPU hint.
+        assert_eq!(plan[&mm.id()], DeviceLocation::Cuda { gpu_id: 0 });
+        apply_placement_plan(a.graph(), &plan);
+        assert_eq!(
+            a.graph().borrow().placement(mm.id()),
+            Some(DeviceLocation::Cpu),
+            "user's explicit hint must not be overwritten by recommend_placement",
+        );
+    }
+
+    /// `auto_place_and_route` does the full dance in one call:
+    /// recommend → apply (skip-existing) → insert_copies.
+    #[test]
+    fn auto_place_and_route_inserts_copies_for_split_graph() {
+        let entries = vec![
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
+                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+        ];
+        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let table = DispatchTable::build(&report);
+
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_b = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+            Shape::from_dims(&[64, 64]),
+        );
+        let small_mm = small_a.matmul(&small_b);  // → CPU
+
+        let big_a = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+            Shape::from_dims(&[1024, 1024]),
+        );
+        let big_b = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+            Shape::from_dims(&[1024, 1024]),
+        );
+        let big_mm = big_a.matmul(&big_b);  // → CUDA
+
+        let n_before = small_a.graph().borrow().len();
+        let _new_roots = auto_place_and_route(
+            small_a.graph(),
+            &[small_mm.id(), big_mm.id()],
+            &table,
+            Criterion::Fastest,
+            DeviceLocation::Cpu,
+        );
+        let n_after = small_a.graph().borrow().len();
+
+        // Same expectation as the manual-pipeline test: ≥2 Copy nodes
+        // targeting CUDA appeared at the boundary between the
+        // CPU-placed sub-graph and the CUDA-placed sub-graph.
+        let g = small_a.graph().borrow();
+        let mut cuda_copies = 0;
+        for i in n_before..n_after {
+            if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op {
+                if matches!(target, DeviceLocation::Cuda { .. }) {
+                    cuda_copies += 1;
+                }
+            }
+        }
+        assert!(
+            cuda_copies >= 2,
+            "auto_place_and_route should have inserted ≥2 Copy(_, Cuda) nodes; got {cuda_copies}"
+        );
     }
 
     /// Full pipeline: recommend_placement → apply_placement_plan →
