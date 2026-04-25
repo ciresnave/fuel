@@ -45,6 +45,7 @@
 
 pub mod exec;
 pub mod ops;
+pub mod probe;
 
 use fuel_core_types::Shape;
 use std::sync::Arc;

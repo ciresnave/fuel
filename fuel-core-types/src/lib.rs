@@ -21,11 +21,13 @@ pub mod dyn_backend;
 pub mod error;
 pub mod layout;
 pub mod op;
+pub mod probe;
 pub mod scalar;
 pub mod shape;
 pub mod strided_index;
 
 pub use capability::Capability;
+pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
 pub use cpu_storage::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 pub use device::DeviceLocation;
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
