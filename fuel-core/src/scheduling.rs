@@ -36,24 +36,33 @@
 use crate::dispatch::{Criterion, DispatchOptions, DispatchTable, Pick};
 use crate::judge::{Judge, OpKind, ProfileEntry, ProfileReport, SizeClass};
 use crate::probe::{HardwareChange, ProbeReport};
+use crate::transfer_cost::BandwidthMatrix;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Result};
 use fuel_graph::{Graph, NodeId, Op};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Options for [`prepare_dispatch_table`] — lets callers override
-/// paths, force a re-Judge, and control dispatch-table construction.
+/// Options for [`prepare_dispatch_table`] and the Phase 6c
+/// [`prepare_dp_inputs`] / [`auto_place_and_route_with_transfer_cost`]
+/// — lets callers override paths, force re-measurement, and tune
+/// dispatch-table construction.
 pub struct ScheduleOptions {
     /// Explicit path for the probe report. `None` = OS cache default.
     pub probe_path: Option<PathBuf>,
     /// Explicit path for the profile report. `None` = OS cache default.
     pub profile_path: Option<PathBuf>,
+    /// Explicit path for the bandwidth report (Phase 6c). `None` =
+    /// OS cache default (`bandwidth.json` next to probe.json).
+    pub bandwidth_path: Option<PathBuf>,
     /// Force the Judge to re-run even if the persisted state is
     /// otherwise reusable. Useful after toolchain upgrades where a
     /// driver version bump didn't happen but compiler codegen
     /// changed.
     pub force_rejudge: bool,
+    /// Force the bandwidth matrix to be re-measured. Same use case
+    /// as `force_rejudge` for the transfer-cost half of Phase 6c.
+    pub force_remeasure_bandwidth: bool,
     /// Judge config. Default = `Judge::default()`.
     pub judge: Judge,
     /// Dispatch table construction options.
@@ -63,11 +72,13 @@ pub struct ScheduleOptions {
 impl Default for ScheduleOptions {
     fn default() -> Self {
         Self {
-            probe_path:    None,
-            profile_path:  None,
-            force_rejudge: false,
-            judge:         Judge::default(),
-            dispatch:      DispatchOptions::default(),
+            probe_path:                None,
+            profile_path:              None,
+            bandwidth_path:            None,
+            force_rejudge:             false,
+            force_remeasure_bandwidth: false,
+            judge:                     Judge::default(),
+            dispatch:                  DispatchOptions::default(),
         }
     }
 }
@@ -277,6 +288,125 @@ pub fn auto_place_and_route(
     };
     apply_placement_plan(graph, &plan);
     fuel_graph::opt::insert_copies(graph, roots)
+}
+
+/// Default cache path for the bandwidth report — `bandwidth.json`
+/// next to `probe.json` in the OS cache dir.
+fn default_bandwidth_path() -> Option<PathBuf> {
+    crate::probe::default_report_path()
+        .and_then(|p| p.parent().map(|parent| parent.join(crate::transfer_cost::BANDWIDTH_REPORT_FILENAME)))
+}
+
+/// Probe → load-or-judge → load-or-measure-bandwidth, returning all
+/// three Phase 6c inputs in one call. Reuses persisted reports when
+/// the current probe matches the prior one (same hardware-change
+/// rule the Judge uses); re-measures any piece marked
+/// `force_*` in the options or that's missing a persisted file.
+///
+/// Both reports persist to disk on a fresh measurement so subsequent
+/// calls warm-start.
+pub fn prepare_dp_inputs(
+    opts: ScheduleOptions,
+) -> Result<(ProbeReport, ProfileReport, BandwidthMatrix)> {
+    let probe_path     = opts.probe_path.clone().or_else(crate::probe::default_report_path);
+    let profile_path   = opts.profile_path.clone().or_else(crate::judge::default_report_path);
+    let bandwidth_path = opts.bandwidth_path.clone().or_else(default_bandwidth_path);
+
+    let current_probe = ProbeReport::probe_all();
+
+    // Decide reuse eligibility once — same rule for both judge and
+    // bandwidth caches. Hardware-change diff is the source of truth.
+    let mut hardware_unchanged = false;
+    if let Some(pp) = probe_path.as_ref() {
+        if let Ok(Some(prior)) = ProbeReport::load(pp) {
+            if matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
+                hardware_unchanged = true;
+            }
+        }
+    }
+
+    // -- Profile report --
+    let profile = if hardware_unchanged && !opts.force_rejudge {
+        if let Some(pp) = profile_path.as_ref() {
+            ProfileReport::load(pp)?.unwrap_or_else(|| opts.judge.run(&current_probe))
+        } else {
+            opts.judge.run(&current_probe)
+        }
+    } else {
+        opts.judge.run(&current_probe)
+    };
+
+    // -- Bandwidth matrix --
+    let bandwidth = if hardware_unchanged && !opts.force_remeasure_bandwidth {
+        if let Some(bp) = bandwidth_path.as_ref() {
+            BandwidthMatrix::load(bp)?.unwrap_or_else(|| BandwidthMatrix::measure(&current_probe))
+        } else {
+            BandwidthMatrix::measure(&current_probe)
+        }
+    } else {
+        BandwidthMatrix::measure(&current_probe)
+    };
+
+    // -- Persist (best-effort) --
+    if let Some(p) = probe_path.as_ref() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = current_probe.save(p) {
+            eprintln!("fuel scheduling: failed to persist probe report to {p:?}: {e}");
+        }
+    }
+    if let Some(p) = profile_path.as_ref() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = profile.save(p) {
+            eprintln!("fuel scheduling: failed to persist profile report to {p:?}: {e}");
+        }
+    }
+    if let Some(p) = bandwidth_path.as_ref() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = bandwidth.save(p) {
+            eprintln!("fuel scheduling: failed to persist bandwidth report to {p:?}: {e}");
+        }
+    }
+
+    Ok((current_probe, profile, bandwidth))
+}
+
+/// One-call Phase 6c auto-router: probe → load-or-judge → load-or-
+/// measure-bandwidth → DP-plan → apply hints → insert_copies. Returns
+/// the new root IDs after `Op::Copy` insertion.
+///
+/// This is the transfer-cost-aware analogue of the Phase 6b
+/// [`auto_place_and_route`]. The DP planner accounts for both
+/// per-op compute cost (from the Judge) and per-edge transfer cost
+/// (from the bandwidth matrix), producing placements that minimise
+/// the total cost rather than just the sum of per-node winners.
+///
+/// Unprofiled-op nodes (Const, GELU, etc.) take `fallback_device`.
+pub fn auto_place_and_route_with_transfer_cost(
+    graph: &fuel_graph::SharedGraph,
+    roots: &[NodeId],
+    opts: ScheduleOptions,
+    fallback_device: DeviceLocation,
+) -> Result<Vec<NodeId>> {
+    let (probe, profile, bandwidth) = prepare_dp_inputs(opts)?;
+    let mut backends_seen: std::collections::HashSet<BackendId> = Default::default();
+    let mut available_backends: Vec<BackendId> = Vec::new();
+    for d in &probe.devices {
+        if backends_seen.insert(d.backend) {
+            available_backends.push(d.backend);
+        }
+    }
+    let plan = {
+        let g = graph.borrow();
+        dp_plan(&g, roots, &profile, &bandwidth, &available_backends, fallback_device)
+    };
+    apply_placement_plan(graph, &plan);
+    Ok(fuel_graph::opt::insert_copies(graph, roots))
 }
 
 // ---- Phase 6c: transfer-cost-aware DP planner ----------------------------
@@ -572,9 +702,11 @@ mod tests {
         let _ = std::fs::create_dir_all(&scratch);
 
         let opts = ScheduleOptions {
-            probe_path:    Some(scratch.join("probe.json")),
-            profile_path:  Some(scratch.join("judge.json")),
-            force_rejudge: true,
+            probe_path:                Some(scratch.join("probe.json")),
+            profile_path:              Some(scratch.join("judge.json")),
+            bandwidth_path:            Some(scratch.join("bandwidth.json")),
+            force_rejudge:             true,
+            force_remeasure_bandwidth: true,
             judge: Judge {
                 iterations: 3,
                 warmup: 1,
@@ -616,19 +748,23 @@ mod tests {
         };
 
         let first = prepare_dispatch_table(ScheduleOptions {
-            probe_path:    Some(scratch.join("probe.json")),
-            profile_path:  Some(scratch.join("judge.json")),
-            force_rejudge: true,
-            judge:         tiny_judge(),
-            dispatch:      Default::default(),
+            probe_path:                Some(scratch.join("probe.json")),
+            profile_path:              Some(scratch.join("judge.json")),
+            bandwidth_path:            Some(scratch.join("bandwidth.json")),
+            force_rejudge:             true,
+            force_remeasure_bandwidth: true,
+            judge:                     tiny_judge(),
+            dispatch:                  Default::default(),
         }).expect("first run");
 
         let second = prepare_dispatch_table(ScheduleOptions {
-            probe_path:    Some(scratch.join("probe.json")),
-            profile_path:  Some(scratch.join("judge.json")),
-            force_rejudge: false,  // reuse eligible
-            judge:         tiny_judge(),
-            dispatch:      Default::default(),
+            probe_path:                Some(scratch.join("probe.json")),
+            profile_path:              Some(scratch.join("judge.json")),
+            bandwidth_path:            Some(scratch.join("bandwidth.json")),
+            force_rejudge:             false,  // reuse eligible
+            force_remeasure_bandwidth: false,
+            judge:                     tiny_judge(),
+            dispatch:                  Default::default(),
         }).expect("second run");
 
         // Second run's profile should equal first's (loaded from disk,
@@ -760,6 +896,58 @@ mod tests {
             Some(DeviceLocation::Cpu),
             "user's explicit hint must not be overwritten by recommend_placement",
         );
+    }
+
+    /// Phase 6c orchestrator end-to-end: probe → judge → bandwidth →
+    /// dp_plan → apply → insert_copies. Verifies the full chain
+    /// completes without panicking on the dev rig and that the
+    /// persisted reports are written.
+    #[test]
+    fn end_to_end_dp_orchestrator() {
+        let scratch = std::env::temp_dir().join(format!(
+            "fuel-dp-orch-test-{}", std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&scratch);
+
+        // Build a small graph the planner will actually route.
+        let a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let b = a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+            Shape::from_dims(&[64, 64]),
+        );
+        let mm = a.matmul(&b);
+
+        let opts = ScheduleOptions {
+            probe_path:                Some(scratch.join("probe.json")),
+            profile_path:              Some(scratch.join("judge.json")),
+            bandwidth_path:            Some(scratch.join("bandwidth.json")),
+            force_rejudge:             true,
+            force_remeasure_bandwidth: true,
+            judge: Judge {
+                iterations: 3,
+                warmup: 1,
+                size_plan_override: Some(vec![
+                    (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
+                ]),
+            },
+            dispatch: Default::default(),
+        };
+
+        let new_roots = auto_place_and_route_with_transfer_cost(
+            a.graph(),
+            &[mm.id()],
+            opts,
+            DeviceLocation::Cpu,
+        ).expect("orchestrator");
+
+        // We don't assert specific placement (depends on rig) — just
+        // that the orchestrator runs without panic and emits roots.
+        assert!(!new_roots.is_empty());
+        assert!(scratch.join("probe.json").exists());
+        assert!(scratch.join("judge.json").exists());
+        assert!(scratch.join("bandwidth.json").exists());
+
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// Phase 6c: a transfer-dominated single-op graph routes to CPU
