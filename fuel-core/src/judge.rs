@@ -285,6 +285,9 @@ impl Judge {
         #[cfg(feature = "cuda")]
         let mut cuda_executor: Option<fuel_graph_executor::GraphExecutor<fuel_graph_cuda::CudaBackend>> =
             None;
+        #[cfg(feature = "vulkan")]
+        let mut vulkan_executor: Option<fuel_graph_executor::GraphExecutor<fuel_graph_vulkan::VulkanBackend>> =
+            None;
 
         let realize: Box<dyn FnMut(&crate::lazy::LazyTensor) -> Vec<f32>> = match device.backend {
             BackendId::Reference => Box::new(|t| t.realize_f32_reference()),
@@ -314,9 +317,33 @@ impl Judge {
                 // borrow-checker's inability to see that.
                 Box::new(move |t| t.realize_f32_cuda(unsafe { &mut *exe_ptr }))
             }
+            #[cfg(feature = "vulkan")]
+            BackendId::Vulkan => {
+                let backend = match fuel_graph_vulkan::VulkanBackend::with_selection(
+                    fuel_graph_vulkan::DeviceSelection::Index(device.device_index as usize),
+                ) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!(
+                            "judge: skipping vulkan:{} — VulkanBackend init failed: {e}",
+                            device.device_index,
+                        );
+                        return None;
+                    }
+                };
+                vulkan_executor = Some(fuel_graph_executor::GraphExecutor::new(backend));
+                let exe = vulkan_executor.as_mut().unwrap();
+                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_graph_vulkan::VulkanBackend>
+                    = exe;
+                // SAFETY: same shape as the CUDA arm — exe lives in
+                // the Option on the stack frame that outlives the
+                // closure's lifetime.
+                Box::new(move |t| t.realize_f32_vulkan(unsafe { &mut *exe_ptr }))
+            }
+            #[cfg(not(feature = "vulkan"))]
             BackendId::Vulkan => {
                 eprintln!(
-                    "judge: skipping vulkan:{} — realize wiring pending",
+                    "judge: skipping vulkan:{} — vulkan feature not enabled",
                     device.device_index,
                 );
                 return None;
@@ -331,9 +358,12 @@ impl Judge {
         };
 
         let entry = self.time_op(op, size, device, size_class, realize);
-        // `cuda_executor` drops here, tearing down the CUDA context.
+        // Drop the per-device executors here, tearing down their
+        // contexts before we move on to the next device.
         #[cfg(feature = "cuda")]
         drop(cuda_executor);
+        #[cfg(feature = "vulkan")]
+        drop(vulkan_executor);
         entry
     }
 
