@@ -5,6 +5,7 @@
 //! backend for fuel's generic `GraphExecutor<B>`.
 
 pub mod pipelines;
+pub mod probe;
 mod recorder;
 pub mod residency;
 
