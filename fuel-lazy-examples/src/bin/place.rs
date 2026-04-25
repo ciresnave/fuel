@@ -12,9 +12,11 @@
 //! the fallback-to-default behaviour side by side.
 
 use fuel::dispatch::Criterion;
-use fuel::scheduling::{prepare_dispatch_table, recommend_placement, ScheduleOptions};
+use fuel::scheduling::{
+    apply_placement_plan, prepare_dispatch_table, recommend_placement, ScheduleOptions,
+};
 use fuel_core_types::{DeviceLocation, Shape};
-use fuel_graph::Tensor;
+use fuel_graph::{Op, Tensor};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -74,6 +76,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {label:<28}  →  {:?}", plan[&t.id()]);
         }
         println!();
+    }
+    drop(graph);
+
+    // Step 4: apply the Fastest plan, run insert_copies, count the
+    // Copy nodes that materialised at device boundaries. This is the
+    // bridge between dispatch-driven recommendations and the actual
+    // graph mutation the executor sees.
+    let plan = recommend_placement(
+        &root.graph().borrow(),
+        &table,
+        Criterion::Fastest,
+        fallback,
+    );
+    let n_before = root.graph().borrow().len();
+    apply_placement_plan(root.graph(), &plan);
+    let _new_roots = fuel_graph::opt::insert_copies(
+        root.graph(),
+        &[tiny_mm.id(), mid_mm.id(), big_mm.id(), unprofiled_sub.id(), unprofiled_silu.id()],
+    );
+    let n_after = root.graph().borrow().len();
+
+    let g = root.graph().borrow();
+    let mut copies_to: std::collections::BTreeMap<String, usize> = Default::default();
+    for i in n_before..n_after {
+        if let Op::Copy { target } = &g.node(fuel_graph::NodeId(i)).op {
+            *copies_to.entry(format!("{:?}", target)).or_default() += 1;
+        }
+    }
+    println!(
+        "After apply_placement_plan + insert_copies: {} new Copy node(s) inserted",
+        n_after - n_before,
+    );
+    for (target, n) in &copies_to {
+        println!("  Copy(_, {target})  ×{n}");
     }
 
     Ok(())
