@@ -40,6 +40,7 @@ pub mod device;
 pub mod dyn_impl;
 pub mod error;
 pub mod pinned;
+pub mod probe;
 pub mod storage;
 pub mod utils;
 
