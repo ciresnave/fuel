@@ -89,6 +89,7 @@ pub mod model_progress;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod npy;
+pub mod probe;
 pub mod op;
 pub mod pickle;
 pub mod quantized;

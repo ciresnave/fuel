@@ -21,4 +21,4 @@
 [features]
     default = []
     cuda = ["fuel/cuda", "dep:fuel-graph-cuda"]
-    vulkan = ["dep:fuel-graph-vulkan"]
+    vulkan = ["fuel/vulkan", "dep:fuel-graph-vulkan"]
