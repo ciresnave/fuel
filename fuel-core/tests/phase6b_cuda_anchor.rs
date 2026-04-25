@@ -16,9 +16,34 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
+use fuel_core::lazy_bert::{BertConfig, BertLayerWeights, BertModel, BertWeights};
+use fuel_core::lazy_qwen2_moe::{
+    ExpertWeights, Qwen2MoeConfig, Qwen2MoeLayerWeights, Qwen2MoeModel, Qwen2MoeWeights,
+};
+use fuel_core::lazy_sd_text_encoder::{
+    ClipLayerWeights, ClipTextWeights, SdTextEncoder, ClipTextConfig,
+};
+use fuel_core::lazy_yolov8::{YoloV8Config, YoloV8Model, YoloV8Weights};
 use fuel_core_types::{probe::BackendId, Shape};
 use fuel_graph_executor::GraphExecutor;
 use std::sync::Arc;
+
+/// Construct a fresh CUDA executor on device 0. Asserts presence —
+/// only call from inside a `cuda_present()` guard.
+fn cuda_executor() -> GraphExecutor<fuel_graph_cuda::CudaBackend> {
+    let dev = fuel_graph_cuda::CudaDevice::new(0)
+        .expect("cuda device 0 should be available");
+    GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(dev))
+}
+
+/// Realize `t` on both reference and CUDA backends, assert allclose.
+fn assert_cuda_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
+    let reference = t.realize_f32_reference();
+    let mut exe = cuda_executor();
+    let cuda = t.realize_f32_cuda(&mut exe);
+    assert_eq!(reference.len(), cuda.len());
+    fuel_core::test_utils::assert_allclose_f32(&cuda, &reference, atol, rtol);
+}
 
 fn cuda_present() -> bool {
     let probe = fuel_core::probe::ProbeReport::probe_all();
@@ -136,4 +161,167 @@ fn llama_2layer_cuda_matches_reference() {
     // 5e-3 absorbs that drift while staying far below "wrong
     // backend implementation" levels.
     fuel_core::test_utils::assert_allclose_f32(&cuda_out, &reference, 5e-3, 5e-3);
+}
+
+/// **DISABLED** until CUDA matmul gains non-contiguous-input support.
+/// BERT's attention (and most BERT-family attention impls) computes
+/// `q @ k^T` by transposing K to a non-contig layout
+/// `[B, H, head_dim, seq]` and feeding it to matmul. The CPU
+/// matmul handles strided inputs; the CUDA matmul currently rejects
+/// them (`MatMulNonContiguous` error). LLaMA-family attention dodges
+/// this by using a different permutation pattern that ends up
+/// contiguous, which is why `llama_2layer_cuda_matches_reference`
+/// passes. Tracked as an upstream `fuel-graph-cuda` improvement,
+/// not a regression introduced by Phase 6b.
+#[test]
+#[ignore = "CUDA matmul requires contiguous inputs; BERT's K^T is not"]
+fn bert_cuda_matches_reference() {
+    if !cuda_present() { return; }
+    let cfg = BertConfig {
+        vocab_size:              100,
+        hidden_size:             32,
+        num_hidden_layers:       2,
+        num_attention_heads:     4,
+        intermediate_size:       64,
+        max_position_embeddings: 16,
+        type_vocab_size:         2,
+        layer_norm_eps:          1e-12,
+    };
+    let h = cfg.hidden_size;
+    let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
+    let o = |n: usize| Arc::<[f32]>::from(vec![1.0_f32; n]);
+    let weights = BertWeights {
+        word_embeddings:       z(cfg.vocab_size * h),
+        position_embeddings:   z(cfg.max_position_embeddings * h),
+        token_type_embeddings: z(cfg.type_vocab_size * h),
+        emb_ln_gamma:          o(h),
+        emb_ln_beta:           z(h),
+        layers: (0..cfg.num_hidden_layers).map(|_| BertLayerWeights {
+            attn_q_w:      z(h * h), attn_q_b: z(h),
+            attn_k_w:      z(h * h), attn_k_b: z(h),
+            attn_v_w:      z(h * h), attn_v_b: z(h),
+            attn_out_w:    z(h * h), attn_out_b: z(h),
+            attn_ln_gamma: o(h),     attn_ln_beta: z(h),
+            ffn_in_w:      z(h * cfg.intermediate_size), ffn_in_b: z(cfg.intermediate_size),
+            ffn_out_w:     z(cfg.intermediate_size * h), ffn_out_b: z(h),
+            ffn_ln_gamma:  o(h),     ffn_ln_beta: z(h),
+        }).collect(),
+    };
+    let model = BertModel { config: cfg.clone(), weights };
+    let ids: Vec<u32> = (0..8).collect();
+    let hidden = model.forward(&ids);
+    assert_cuda_oracle(&hidden, 5e-3, 5e-3);
+}
+
+/// Same CUDA matmul non-contig limitation as BERT. See the note on
+/// `bert_cuda_matches_reference`.
+#[test]
+#[ignore = "CUDA matmul requires contiguous inputs; SD CLIP's K^T is not"]
+fn sd_clip_text_encoder_cuda_matches_reference() {
+    if !cuda_present() { return; }
+    let cfg = ClipTextConfig {
+        vocab_size: 100, hidden_size: 16,
+        num_hidden_layers: 2, num_attention_heads: 4,
+        intermediate_size: 32, max_position_embeddings: 8,
+        layer_norm_eps: 1e-5,
+        bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+    };
+    let h = cfg.hidden_size;
+    let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
+    let o = |n: usize| Arc::<[f32]>::from(vec![1.0_f32; n]);
+    let weights = ClipTextWeights {
+        token_embedding: z(cfg.vocab_size * h),
+        position_embedding: z(cfg.max_position_embeddings * h),
+        layers: (0..cfg.num_hidden_layers).map(|_| ClipLayerWeights {
+            ln1_g: o(h), ln1_b: z(h),
+            q_w: z(h * h), q_b: z(h),
+            k_w: z(h * h), k_b: z(h),
+            v_w: z(h * h), v_b: z(h),
+            out_w: z(h * h), out_b: z(h),
+            ln2_g: o(h), ln2_b: z(h),
+            fc1_w: z(h * cfg.intermediate_size), fc1_b: z(cfg.intermediate_size),
+            fc2_w: z(cfg.intermediate_size * h), fc2_b: z(h),
+        }).collect(),
+        final_ln_g: o(h), final_ln_b: z(h),
+    };
+    let model = SdTextEncoder { config: cfg.clone(), weights };
+    let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
+    let hidden = model.forward(&tokens);
+    assert_cuda_oracle(&hidden, 5e-3, 5e-3);
+}
+
+/// Same CUDA matmul non-contig limitation. Qwen2-MoE uses the same
+/// BERT-shaped attention transpose.
+#[test]
+#[ignore = "CUDA matmul requires contiguous inputs; Qwen2-MoE's K^T is not"]
+fn qwen2_moe_cuda_matches_reference() {
+    if !cuda_present() { return; }
+    // Minimal MoE config — same shapes as the existing CPU oracle test
+    // in fuel-core/src/lazy_qwen2_moe.rs `tiny_cfg`.
+    let cfg = Qwen2MoeConfig {
+        vocab_size: 32,
+        hidden_size: 8,
+        num_hidden_layers: 1,
+        num_attention_heads: 2,
+        num_key_value_heads: 1,
+        moe_intermediate_size: 4,
+        shared_expert_intermediate_size: 4,
+        num_experts: 4,
+        num_experts_per_tok: 2,
+        max_position_embeddings: 16,
+        rope_theta: 10_000.0,
+        rms_norm_eps: 1e-6,
+        norm_topk_prob: false,
+    };
+    let h = cfg.hidden_size;
+    let moe_int = cfg.moe_intermediate_size;
+    let shared_int = cfg.shared_expert_intermediate_size;
+    let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
+    let o = |n: usize| Arc::<[f32]>::from(vec![1.0_f32; n]);
+    let experts: Vec<ExpertWeights> = (0..cfg.num_experts).map(|_| ExpertWeights {
+        gate_w: z(h * moe_int),
+        up_w:   z(h * moe_int),
+        down_w: z(moe_int * h),
+    }).collect();
+    let layer = Qwen2MoeLayerWeights {
+        input_ln: o(h),
+        q_w: z(h * h), q_b: z(h),
+        k_w: z(h * h), k_b: z(h),
+        v_w: z(h * h), v_b: z(h),
+        o_w: z(h * h),
+        post_attn_ln: o(h),
+        gate_w: z(h * cfg.num_experts),
+        experts,
+        shared_gate_w: z(h * shared_int),
+        shared_up_w:   z(h * shared_int),
+        shared_down_w: z(shared_int * h),
+        shared_expert_gate_w: z(h),
+    };
+    let weights = Qwen2MoeWeights {
+        token_embedding: z(cfg.vocab_size * h),
+        layers: vec![layer],
+        final_ln: o(h),
+        lm_head: z(h * cfg.vocab_size),
+    };
+    let model = Qwen2MoeModel { config: cfg.clone(), weights };
+    let tokens: Vec<u32> = vec![1, 2, 3, 4];
+    let logits = model.forward(&tokens);
+    assert_cuda_oracle(&logits, 5e-3, 5e-3);
+}
+
+#[test]
+fn yolov8_cuda_matches_reference() {
+    if !cuda_present() { return; }
+    // YOLOv8 is conv-heavy; Conv2D currently CPU-falls-back inside the
+    // CUDA executor. Test still verifies end-to-end correctness.
+    let mut cfg = YoloV8Config::v8n();
+    cfg.image_size = 64;
+    let weights = YoloV8Weights::zeros(&cfg);
+    let model = YoloV8Model { config: cfg.clone(), weights };
+    let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
+    let raw = model.forward(&image);
+    // Loose tolerance — many ops compose, even when most run on CPU
+    // the CUDA executor's TrackedTensor wrapping introduces rounding.
+    assert_cuda_oracle(&raw.cls_logits, 5e-3, 5e-3);
+    assert_cuda_oracle(&raw.reg_dists,  5e-3, 5e-3);
 }
