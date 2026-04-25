@@ -26,12 +26,14 @@
 
 use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
 use fuel_core::lazy_bert::{BertConfig, BertLayerWeights, BertModel, BertWeights};
+use fuel_core::lazy_convnext::ConvNextModel;
 use fuel_core::lazy_qwen2_moe::{
     ExpertWeights, Qwen2MoeConfig, Qwen2MoeLayerWeights, Qwen2MoeModel, Qwen2MoeWeights,
 };
 use fuel_core::lazy_sd_text_encoder::{
     ClipLayerWeights, ClipTextWeights, SdTextEncoder, ClipTextConfig,
 };
+use fuel_core::lazy_whisper::WhisperModel;
 use fuel_core::lazy_yolov8::{YoloV8Config, YoloV8Model, YoloV8Weights};
 use fuel_core_types::{probe::BackendId, Shape};
 use fuel_graph_executor::GraphExecutor;
@@ -313,6 +315,43 @@ fn qwen2_moe_cuda_matches_reference() {
     let model = Qwen2MoeModel { config: cfg.clone(), weights };
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
     let logits = model.forward(&tokens);
+    assert_cuda_oracle(&logits, 5e-3, 5e-3);
+}
+
+/// Whisper exercises encoder + decoder + cross-attention + Conv1d
+/// (slice+concat composition for the encoder's strided convs). The
+/// fix from earlier today (rmsnorm/layernorm uninit shared mem)
+/// matters here too: layernorm is used throughout. Decoder forward
+/// is the more interesting test — it adds cross-attention on top
+/// of the encoder's output.
+#[test]
+fn whisper_decoder_cuda_matches_reference() {
+    if !cuda_present() { return; }
+    let cfg = fuel_core::lazy_whisper::tiny_cfg();
+    let weights = fuel_core::lazy_whisper::zero_weights(&cfg);
+    let model = WhisperModel { config: cfg.clone(), weights };
+    // mel_time = 32 → encoder produces 16 source tokens.
+    let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
+    let enc = model.forward_encoder(&mel, 32);
+    let tokens: Vec<u32> = vec![1, 2, 3, 4];
+    let logits = model.forward_decoder(&tokens, &enc);
+    assert_cuda_oracle(&logits, 5e-3, 5e-3);
+}
+
+/// ConvNeXt is conv-heavy: stem patchify + depthwise 7×7 + inverted-
+/// bottleneck MLP + global-average pool + linear head. With no native
+/// CUDA Conv2D dispatch yet, every Conv2D node falls back to CPU
+/// inside the CUDA executor; the test still verifies the end-to-end
+/// CUDA path (executor wrapping, layer norm, GELU, MLP matmuls)
+/// produces oracle-equivalent output.
+#[test]
+fn convnext_cuda_matches_reference() {
+    if !cuda_present() { return; }
+    let cfg = fuel_core::lazy_convnext::tiny_cfg();
+    let weights = fuel_core::lazy_convnext::zero_weights(&cfg);
+    let model = ConvNextModel { weights, config: cfg.clone() };
+    let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
+    let logits = model.forward(&image);
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
 }
 

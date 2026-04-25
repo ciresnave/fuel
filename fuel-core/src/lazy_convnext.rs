@@ -577,13 +577,82 @@ impl ConvNextModel {
     }
 }
 
+// ---- Test helpers (public so integration tests can reuse) ------------------
+
+fn arc(v: Vec<f32>) -> Arc<[f32]> { Arc::from(v) }
+
+/// Hyperparameters for a tiny synthetic ConvNeXt variant — small
+/// enough to forward in milliseconds while exercising every block
+/// type (stem, downsample, depthwise conv block, head).
+pub fn tiny_cfg() -> ConvNextConfig {
+    ConvNextConfig {
+        dims: vec![4, 8],
+        depths: vec![1, 1],
+        image_size: 16,
+        in_channels: 3,
+        stem_patch: 4,
+        num_classes: 10,
+        layer_norm_eps: 1e-6,
+    }
+}
+
+/// Synthetic zero weights for a ConvNeXt config (LayerNorm gains
+/// `1.0`, layer-scale γ initialised to `1e-6` to match the timm
+/// default). Exposed publicly so integration tests across the
+/// workspace can build the same shape-validated fixture as the
+/// in-module tests.
+pub fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
+    let p = cfg.stem_patch;
+    let cin = cfg.in_channels;
+    let d0 = cfg.dims[0];
+    let z = |n: usize| arc(vec![0.0_f32; n]);
+    let o = |n: usize| arc(vec![1.0_f32; n]);
+    let eps_init = |n: usize| arc(vec![1e-6_f32; n]);
+
+    let mut stages = Vec::new();
+    for (si, &c) in cfg.dims.iter().enumerate() {
+        let downsample = if si == 0 {
+            None
+        } else {
+            let cin_prev = cfg.dims[si - 1];
+            Some(ConvNextDownsample {
+                ln_g: o(cin_prev), ln_b: z(cin_prev),
+                conv_w: z(c * cin_prev * 4),
+                conv_b: z(c),
+            })
+        };
+        let mut blocks = Vec::new();
+        for _ in 0..cfg.depths[si] {
+            blocks.push(ConvNextBlockWeights {
+                dw_w: z(c * 49),
+                dw_b: z(c),
+                ln_g: o(c), ln_b: z(c),
+                fc1_w: z(c * 4 * c), fc1_b: z(4 * c),
+                fc2_w: z(4 * c * c), fc2_b: z(c),
+                gamma: eps_init(c),
+            });
+        }
+        stages.push(ConvNextStageWeights { downsample, blocks });
+    }
+
+    ConvNextWeights {
+        stem_conv_w: z(d0 * cin * p * p),
+        stem_conv_b: z(d0),
+        stem_ln_g: o(d0),
+        stem_ln_b: z(d0),
+        stages,
+        head_ln_g: o(*cfg.dims.last().unwrap()),
+        head_ln_b: z(*cfg.dims.last().unwrap()),
+        head_fc_w: z(cfg.num_classes * cfg.dims.last().unwrap()),
+        head_fc_b: z(cfg.num_classes),
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn arc(v: Vec<f32>) -> Arc<[f32]> { Arc::from(v) }
 
     #[test]
     fn parse_default_config() {
@@ -600,64 +669,8 @@ mod tests {
         assert_eq!(cfg.num_classes, 21841);
     }
 
-    fn tiny_cfg() -> ConvNextConfig {
-        ConvNextConfig {
-            dims: vec![4, 8],
-            depths: vec![1, 1],
-            image_size: 16,
-            in_channels: 3,
-            stem_patch: 4,
-            num_classes: 10,
-            layer_norm_eps: 1e-6,
-        }
-    }
-
-    fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
-        let p = cfg.stem_patch;
-        let cin = cfg.in_channels;
-        let d0 = cfg.dims[0];
-        let z = |n: usize| arc(vec![0.0_f32; n]);
-        let o = |n: usize| arc(vec![1.0_f32; n]);
-        let eps_init = |n: usize| arc(vec![1e-6_f32; n]);
-
-        let mut stages = Vec::new();
-        for (si, &c) in cfg.dims.iter().enumerate() {
-            let downsample = if si == 0 {
-                None
-            } else {
-                let cin_prev = cfg.dims[si - 1];
-                Some(ConvNextDownsample {
-                    ln_g: o(cin_prev), ln_b: z(cin_prev),
-                    conv_w: z(c * cin_prev * 4),
-                    conv_b: z(c),
-                })
-            };
-            let mut blocks = Vec::new();
-            for _ in 0..cfg.depths[si] {
-                blocks.push(ConvNextBlockWeights {
-                    dw_w: z(c * 49),
-                    dw_b: z(c),
-                    ln_g: o(c), ln_b: z(c),
-                    fc1_w: z(c * 4 * c), fc1_b: z(4 * c),
-                    fc2_w: z(4 * c * c), fc2_b: z(c),
-                    gamma: eps_init(c),
-                });
-            }
-            stages.push(ConvNextStageWeights { downsample, blocks });
-        }
-
-        ConvNextWeights {
-            stem_conv_w: z(d0 * cin * p * p),
-            stem_conv_b: z(d0),
-            stem_ln_g: o(d0),
-            stem_ln_b: z(d0),
-            stages,
-            head_ln_g: o(*cfg.dims.last().unwrap()),
-            head_ln_b: z(*cfg.dims.last().unwrap()),
-            head_fc_w: z(cfg.num_classes * cfg.dims.last().unwrap()),
-            head_fc_b: z(cfg.num_classes),
-        }
-    }
+    // tiny_cfg + zero_weights are now public helpers at module top
+    // level; tests below import them via `use super::*;`.
 
     #[test]
     fn forward_shape_and_finite_tiny() {
