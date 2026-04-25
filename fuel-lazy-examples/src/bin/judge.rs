@@ -13,6 +13,7 @@
 //! is max element-wise relative error vs the reference backend's
 //! output on the same input.
 
+use fuel::dispatch::{Criterion, DispatchTable};
 use fuel::judge::{Judge, ProfileEntry};
 use fuel::probe::ProbeReport;
 
@@ -33,6 +34,8 @@ fn main() {
     eprintln!();
 
     print_table(&report.entries);
+    println!();
+    print_dispatch_summary(&report);
 
     if let Some(path) = std::env::args().nth(1) {
         report.save(std::path::Path::new(&path)).expect("save");
@@ -69,6 +72,28 @@ fn print_table(entries: &[ProfileEntry]) {
             format!("{}:{}", e.backend, e.device_index),
             latency_str,
             e.max_rel_error,
+        );
+    }
+}
+
+fn print_dispatch_summary(report: &fuel::judge::ProfileReport) {
+    let tbl = DispatchTable::build(report);
+    println!("Dispatch winners (reference excluded):");
+    println!("{:<10}  {:<5}  {:<4}  {:<14}  {:<14}  {:<14}", "op", "dtype",
+        "2^n", "fastest", "accurate", "balanced");
+    println!("{}", "-".repeat(72));
+    for (op, dtype, size) in tbl.keys() {
+        let pick = |c| tbl.pick(op, dtype, size, c)
+            .map(|p| format!("{}:{}", p.backend, p.device_index))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "{:<10}  {:<5}  {:<4}  {:<14}  {:<14}  {:<14}",
+            op.to_string(),
+            format!("{:?}", dtype),
+            size.0,
+            pick(Criterion::Fastest),
+            pick(Criterion::MostAccurate),
+            pick(Criterion::Balanced),
         );
     }
 }
