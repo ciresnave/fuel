@@ -2004,8 +2004,8 @@ fn tensor_norm() -> Result<()> {
 fn transfers_cuda_to_device() -> Result<()> {
     use rand::seq::SliceRandom;
 
-    let devices = cudarc::driver::safe::CudaContext::device_count()
-        .map_err(fuel_core::cuda::CudaError::from)?;
+    let devices = baracuda_driver::Device::count()
+        .map_err(|e| fuel_core::Error::Msg(format!("cuda device count: {e}")))?;
     if devices < 2 {
         return Ok(());
     }
@@ -2047,10 +2047,10 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
     let (storage1, _) = t1.storage_and_layout();
     let (storage2, _) = t2.storage_and_layout();
     let extract = |s: RwLockReadGuard<'_, Storage>| {
-        use cudarc::driver::DevicePtr;
+        use baracuda_driver::DevicePtr;
         let c = s.as_cuda_storage().expect("expected cuda storage");
         let slice = c.as_cuda_slice::<u32>().unwrap();
-        let ptr = slice.device_ptr(slice.stream()).0;
+        let ptr = slice.device_ptr().0;
         ptr
     };
     let id1 = extract(storage1);

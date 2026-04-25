@@ -397,7 +397,7 @@ impl Tensor {
 pub struct UgIOp1 {
     name: &'static str,
     #[cfg(feature = "cuda")]
-    func: cudarc::driver::CudaFunction,
+    func: fuel_graph_cuda::CudaFunc,
     #[cfg(feature = "metal")]
     func: fuel_metal_kernels::metal::ComputePipeline,
 }
@@ -415,10 +415,7 @@ impl UgIOp1 {
         {
             let device = device.as_cuda_device()?;
             let func = device.compile(name, kernel)?;
-            Ok(Self {
-                name,
-                func: func.into_cuda_function(),
-            })
+            Ok(Self { name, func })
         }
         #[cfg(feature = "metal")]
         {
@@ -483,10 +480,8 @@ impl InplaceOp1 for UgIOp1 {
         {
             let sto = &mut sto.storage;
             use crate::cuda_backend::WrapErr;
-            use cudarc::driver::PushKernelArg;
 
             let elem_count = layout.shape().elem_count();
-            let stream = sto.device.cuda_stream();
             // TODO: support more dtypes.
             let sto = sto.as_cuda_slice::<f32>()?;
             let sto = match layout.contiguous_offsets() {
@@ -498,12 +493,12 @@ impl InplaceOp1 for UgIOp1 {
             } else {
                 (elem_count, 1)
             };
-            let cfg = cudarc::driver::LaunchConfig {
+            let cfg = fuel_graph_cuda::LaunchConfig {
                 grid_dim: (g as u32, 1, 1),
                 block_dim: (b as u32, 1, 1),
                 shared_mem_bytes: 0,
             };
-            let mut builder = stream.launch_builder(&self.func);
+            let mut builder = self.func.builder();
             builder.arg(&sto);
             unsafe { builder.launch(cfg) }.w()?;
             return Ok(());

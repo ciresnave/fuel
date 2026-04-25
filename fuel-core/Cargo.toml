@@ -28,9 +28,9 @@ fuel-metal = { workspace = true, optional = true }
 fuel-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
-# baracuda replaces cudarc. fuel-core needs the traits + driver + cudnn +
-# nccl optionally; the sub-crates are pulled individually for an explicit
-# feature graph.
+# baracuda CUDA FFI — fuel-core needs the traits + driver + cudnn + nccl
+# optionally; the sub-crates are pulled individually so the feature graph
+# stays explicit.
 baracuda-types  = { workspace = true, optional = true }
 baracuda-core   = { workspace = true, optional = true }
 baracuda-driver = { workspace = true, optional = true }
@@ -109,7 +109,10 @@ metal = [
 vulkan = ["dep:fuel-graph-vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
-ug = ["dep:fuel-ug", "fuel-core-types/ug"]
+# When combined with `cuda`, fuel-graph-cuda's `compile()` method that turns
+# an SSA kernel into a CudaFunc is itself gated on `ug` — pipe the feature
+# through so `UgIOp1::new(..., device)` can build the kernel.
+ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-graph-cuda?/ug"]
 
 [[bench]]
 name = "bench_main"
