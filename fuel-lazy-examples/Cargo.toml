@@ -10,6 +10,8 @@
 
 [dependencies]
     fuel = { workspace = true }
+    fuel-core-types = { workspace = true }
+    fuel-graph = { workspace = true }
     fuel-graph-cuda = { workspace = true, optional = true }
     fuel-graph-executor = { workspace = true }
     fuel-graph-vulkan = { workspace = true, optional = true }
