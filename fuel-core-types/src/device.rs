@@ -1,5 +1,8 @@
 ﻿//! Identifies a physical device location (CPU or a specific GPU).
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 /// Identifies a physical device location (CPU or a specific GPU).
 ///
 /// # Example
@@ -10,6 +13,7 @@
 /// assert_eq!(loc, DeviceLocation::Cpu);
 /// ```
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum DeviceLocation {
     /// The CPU.
     Cpu,

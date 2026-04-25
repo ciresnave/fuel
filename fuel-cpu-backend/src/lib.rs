@@ -15,6 +15,7 @@ pub mod conv2d;
 pub mod dyn_impl;
 pub mod host_storage;
 pub mod ops;
+pub mod probe;
 pub mod utils;
 
 pub use ops::*;
