@@ -1105,31 +1105,58 @@ bucketing — are tracked below.
 *Introduce backend choice. Prove the planner can pick between alternatives
 on a single piece of hardware.*
 
-- Add CUDA and Metal as selectable backends in the planner. Backends
-  operate strictly on their native typed storage (`CpuStorage`,
-  `CudaStorage`, `MetalStorage`); the internal dispatch boundary maps the
-  localized graph onto strongly typed backend engines. No inner `dyn`
-  downcasting.
-- Implement the **probe-score-init lifecycle**: at startup, each backend
-  reports its hardware compatibility score (0–100) for the available
-  hardware, and the planner learns which backends are viable.
-- Implement the **Judge module**: profile every
-  (operation, backend, dtype, size class) tuple for latency and numerical
-  precision against the reference backend. Results stored in a persistent
-  on-disk dispatch table so the Judge runs once at install time, not per
-  execution.
-- Implement **ranked dispatch tables**: top-N backends per
-  (op, dtype, size class), per criterion (fastest / most accurate /
-  balanced). Runtime dispatch is an O(1) table lookup.
-- The **cost model** for 6b is simple: one device means no transfer costs,
-  just per-op latency from the dispatch table.
-- Validate all anchor models on CUDA and (where available) Metal,
-  oracle-gated.
+- [x] Add CUDA and (future) Metal as selectable backends in the planner.
+      CUDA + Vulkan already selectable via `fuel-graph-router`'s
+      `DynBackend` (shipped in Router Phase 2/3). Metal remains future
+      work — needs a `fuel-graph-metal` mirror of `fuel-graph-cuda`.
+- [x] ~~Probe-score-init lifecycle~~ → **Probe lifecycle**. Dropped the
+      self-reported 0-100 score — per design discussion (user call), the
+      Judge's empirical numbers are strictly more informative than any
+      score a backend could self-report, so the probe step is just
+      "enumerate visible (backend, device) pairs." Shipped as
+      `fuel_core::probe` + per-backend `enumerate_devices()` free
+      functions. Unit of judgment is `(backend, device)` rather than
+      backend alone — same silicon through CUDA vs Vulkan is two
+      profile entries (different submission paths). Equivalence classes
+      collapse identical hardware (four RTX 4090s → profile once, apply
+      to all). Live-validated on a 5-device rig (cpu + cuda + ref +
+      2×vulkan).
+- [x] **Judge module** shipped as `fuel_core::judge`. Profiles
+      `(op, dtype, size_class) × (backend, device)` for MatMul and
+      AddElementwise at three sizes each, measures median wall-clock
+      latency and max relative error vs the reference backend. Warmup
+      iterations discard cold-cache effects; equivalence classes
+      profiled once per class. Backends: cpu + reference + cuda wired;
+      Vulkan pending a `realize_f32_vulkan` helper.
+- [x] **Ranked dispatch tables** as `fuel_core::dispatch::DispatchTable`.
+      Three criteria (Fastest / MostAccurate / Balanced), O(1)
+      `pick(op, dtype, size_class, criterion)` lookup,
+      `pick_nearest()` fallback for unprofiled size classes. Reference
+      backend excluded from picks by default. Balanced criterion uses
+      a default accuracy penalty coefficient of 100 (1% rel error ≈
+      2× latency tax).
+- [x] Cost model for 6b is simple: one device means no transfer costs,
+      just per-op latency + accuracy from the dispatch table.
+- [x] **Orchestrator** `fuel_core::scheduling::prepare_dispatch_table`
+      does probe → load persisted Judge output → skip Judge if hardware
+      unchanged → build dispatch. Cold start ~50s on the dev rig; warm
+      start <1s (JSON load only). Both probe and profile reports persist
+      to `%LOCALAPPDATA%\fuel\` / `$XDG_CACHE_HOME/fuel/`.
+- [ ] Validate all anchor models on CUDA and (where available) Metal,
+      oracle-gated. **Partial**: single-op matmul passes the oracle
+      gate (`fuel-core/tests/phase6b_cuda_anchor.rs`). Composed-graph
+      and full-LLaMA forwards on CUDA currently diverge / NaN —
+      tracked in `project_cuda_composed_divergence` memory entry;
+      those are CUDA-kernel bugs upstream of the Phase 6b machinery
+      and don't block the other 6b deliverables.
 
 **Exit criterion for 6b**: anchor models run on CUDA and Metal with
 per-operation backend selection, oracle-equivalent to the reference
 backend, and measurably faster than the lazy-CPU baseline on workloads
-where the GPU is an improvement.
+where the GPU is an improvement. **Status**: probe/judge/dispatch
+machinery shipped and live-validated. Router-level dispatch-aware
+routing is the next commit. Bit-equivalent anchor runs on CUDA are
+blocked on the CUDA composed-graph divergence investigation.
 
 #### Sub-phase 6c — Multi-device routing on one node
 

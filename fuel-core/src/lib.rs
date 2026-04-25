@@ -92,6 +92,7 @@ pub mod dispatch;
 pub mod judge;
 pub mod npy;
 pub mod probe;
+pub mod scheduling;
 pub mod op;
 pub mod pickle;
 pub mod quantized;
