@@ -245,6 +245,34 @@ pub trait GraphBackend {
         fuel_core_types::bail!("GraphBackend: matmul_q8_0 not implemented natively")
     }
 
+    /// 2-D convolution. `input` has logical shape `[N, C_in, H, W]`,
+    /// `weight` has shape `[C_out, C_in/groups, K_h, K_w]`. Returns
+    /// just the conv result — bias add (if any) is composed by the
+    /// executor as a separate broadcast-add over the c_out axis.
+    ///
+    /// Default impl bails so non-CUDA backends fall through to CPU
+    /// fallback in the executor's `Op::Conv2D` arm. Backends that
+    /// implement native conv2d (CUDA today) override this.
+    ///
+    /// Restrictions in v1: symmetric stride / padding (`stride.0 ==
+    /// stride.1` and `padding.0 == padding.1`), `groups == 1`. The
+    /// executor checks these *before* calling and dispatches to CPU
+    /// fallback for the asymmetric / grouped cases without ever
+    /// hitting this method.
+    fn conv2d(
+        &self,
+        input:        &Self::Storage,
+        weight:       &Self::Storage,
+        input_layout:  &Layout,
+        weight_layout: &Layout,
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (input, weight, input_layout, weight_layout, stride, padding, groups);
+        fuel_core_types::bail!("GraphBackend: conv2d not implemented natively")
+    }
+
     /// Quantize an F32 storage buffer to GGML Q8_0 blocks (34 bytes per
     /// 32 elements). Returns a U32-typed storage holding the raw block
     /// byte stream. Used for KV-cache compression between decode steps.
@@ -948,6 +976,72 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 match result {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+
+            // -- 2-D convolution --
+            //
+            // Inputs: [input, weight, optional bias]. The trait method
+            // takes only input + weight (the conv proper); bias-add
+            // is composed as a separate broadcast-add over the c_out
+            // axis using the existing binary infrastructure. Backends
+            // that don't implement native conv2d return Err from the
+            // default trait impl and we fall through to cpu_fallback.
+            //
+            // CPU fallback is also used when stride/padding are
+            // asymmetric or groups != 1 (the v1 native dispatch
+            // doesn't cover those cases — depthwise convs and
+            // YOLOv8-style stride-2 with non-uniform padding).
+            Op::Conv2D { stride, padding, groups } => {
+                let input  = self.get_gt_c(inputs, 0, cache);
+                let weight = self.get_gt_c(inputs, 1, cache);
+                let symmetric = stride.0 == stride.1 && padding.0 == padding.1;
+                if !symmetric || *groups != 1 {
+                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                }
+                let conv_storage = match self.backend.conv2d(
+                    &input.storage, &weight.storage,
+                    &input.layout(), &weight.layout(),
+                    *stride, *padding, *groups,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                };
+                if inputs.len() < 3 {
+                    // No bias — return the raw conv output.
+                    conv_storage
+                } else {
+                    // Bias has shape [c_out]; reshape it as
+                    // [1, c_out, 1, 1] then broadcast to the conv
+                    // output shape, producing stride [0, 1, 0, 0].
+                    // The CUDA binary kernel handles strided inputs
+                    // including stride-0 broadcasts.
+                    let bias = self.get_gt_c(inputs, 2, cache);
+                    let dims = shape.dims();
+                    let c_out = dims[1];
+                    let bias_layout_4d = Layout::contiguous(Shape::from_dims(&[1, c_out, 1, 1]));
+                    let bias_layout = match bias_layout_4d.broadcast_as(shape.clone()) {
+                        Ok(l) => l,
+                        Err(_) => {
+                            return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                        }
+                    };
+                    match self.backend.binary(
+                        BinaryOp::Add,
+                        &conv_storage, &bias.storage,
+                        &Layout::contiguous(shape),
+                        &bias_layout,
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            // Bias broadcast not supported by this
+                            // backend's binary path — fall back to CPU
+                            // for the whole conv2d.
+                            return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                        }
+                    }
                 }
             }
 
