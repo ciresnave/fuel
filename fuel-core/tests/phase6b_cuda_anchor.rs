@@ -1,14 +1,23 @@
 //! Phase 6b oracle-gate: anchor-class CUDA forward passes match the
 //! reference backend within tolerance.
 //!
-//! The simple-matmul case is the smoke test — it just confirms the
-//! `realize_f32_reference()` vs `realize_f32_cuda(&mut exe)` oracle
-//! comparison loop is wired end-to-end. The LLaMA case is the real
-//! gate: a 2-layer synthetic forward exercises matmul, RoPE,
-//! softmax, RMS norm, and SwiGLU on CUDA, and the rms_norm /
-//! layernorm shared-memory uninit-read fix in
-//! `fuel-cuda-kernels/src/reduce.cu` (committed alongside this test)
-//! is what makes it pass.
+//! Each test below picks an anchor model, builds it with synthetic
+//! deterministic weights, and asserts the CUDA forward output is
+//! oracle-equivalent to the reference backend within 5e-3 rel error
+//! (looser than the CPU oracle's 1e-4 because cuBLAS gemm sum-order
+//! drift accumulates faster on multi-op composed graphs).
+//!
+//! Two upstream fixes had to land for the full set to pass:
+//!
+//! - `fuel-cuda-kernels/src/reduce.cu`: rmsnorm / layernorm cross-
+//!   warp reduce reads were uninitialized for warp lanes >= n_warps,
+//!   producing scale-shrunk outputs (~4.31× off when shared memory
+//!   wasn't zero from a prior kernel). Fixed by clamping the read.
+//! - `fuel-graph-cuda::gemm_config`: the matmul stride-pattern matcher
+//!   only accepted natural row-major-contig and col-major-contig
+//!   layouts. Extended to accept strided variants (lda > row size,
+//!   the BERT-style K^T pattern), unblocking BERT, SD CLIP, and
+//!   Qwen2-MoE.
 //!
 //! Feature-gated on `cuda` and requires a CUDA device. Skips
 //! cleanly when no CUDA visible.
@@ -163,18 +172,13 @@ fn llama_2layer_cuda_matches_reference() {
     fuel_core::test_utils::assert_allclose_f32(&cuda_out, &reference, 5e-3, 5e-3);
 }
 
-/// **DISABLED** until CUDA matmul gains non-contiguous-input support.
-/// BERT's attention (and most BERT-family attention impls) computes
-/// `q @ k^T` by transposing K to a non-contig layout
-/// `[B, H, head_dim, seq]` and feeding it to matmul. The CPU
-/// matmul handles strided inputs; the CUDA matmul currently rejects
-/// them (`MatMulNonContiguous` error). LLaMA-family attention dodges
-/// this by using a different permutation pattern that ends up
-/// contiguous, which is why `llama_2layer_cuda_matches_reference`
-/// passes. Tracked as an upstream `fuel-graph-cuda` improvement,
-/// not a regression introduced by Phase 6b.
+/// BERT's attention computes `q @ k^T` with K reshaped to
+/// `[B, H, head_dim, seq]` (stride `[..., 1, seq]` — the transpose
+/// pattern). cuBLAS supports this natively as `Op::T` with
+/// `lda = seq`; the gemm_config matcher in fuel-graph-cuda was
+/// extended to accept the strided variant alongside the natural
+/// row/col-major contiguous cases.
 #[test]
-#[ignore = "CUDA matmul requires contiguous inputs; BERT's K^T is not"]
 fn bert_cuda_matches_reference() {
     if !cuda_present() { return; }
     let cfg = BertConfig {
@@ -213,10 +217,9 @@ fn bert_cuda_matches_reference() {
     assert_cuda_oracle(&hidden, 5e-3, 5e-3);
 }
 
-/// Same CUDA matmul non-contig limitation as BERT. See the note on
-/// `bert_cuda_matches_reference`.
+/// SD's CLIP text encoder uses the same BERT-style K^T transpose
+/// pattern that the gemm_config strided-input fix unblocked.
 #[test]
-#[ignore = "CUDA matmul requires contiguous inputs; SD CLIP's K^T is not"]
 fn sd_clip_text_encoder_cuda_matches_reference() {
     if !cuda_present() { return; }
     let cfg = ClipTextConfig {
@@ -250,25 +253,29 @@ fn sd_clip_text_encoder_cuda_matches_reference() {
     assert_cuda_oracle(&hidden, 5e-3, 5e-3);
 }
 
-/// Same CUDA matmul non-contig limitation. Qwen2-MoE uses the same
-/// BERT-shaped attention transpose.
+/// Qwen2-MoE uses BERT-shaped attention plus dense MoE routing
+/// across `num_experts` per-expert SwiGLU FFNs and a shared expert.
+/// Exercises the gemm_config strided-input fix for K^T plus the
+/// per-expert weighted-sum matmul chain.
 #[test]
-#[ignore = "CUDA matmul requires contiguous inputs; Qwen2-MoE's K^T is not"]
 fn qwen2_moe_cuda_matches_reference() {
     if !cuda_present() { return; }
     // Minimal MoE config — same shapes as the existing CPU oracle test
     // in fuel-core/src/lazy_qwen2_moe.rs `tiny_cfg`.
+    // Mirrors lazy_qwen2_moe::tests::tiny_cfg — these are the exact
+    // dim relations the in-module CPU oracle test uses, so we know
+    // the forward pass constructs cleanly.
     let cfg = Qwen2MoeConfig {
         vocab_size: 32,
         hidden_size: 8,
         num_hidden_layers: 1,
         num_attention_heads: 2,
-        num_key_value_heads: 1,
-        moe_intermediate_size: 4,
-        shared_expert_intermediate_size: 4,
-        num_experts: 4,
+        num_key_value_heads: 2,
+        moe_intermediate_size: 12,
+        shared_expert_intermediate_size: 16,
+        num_experts: 3,
         num_experts_per_tok: 2,
-        max_position_embeddings: 16,
+        max_position_embeddings: 32,
         rope_theta: 10_000.0,
         rms_norm_eps: 1e-6,
         norm_topk_prob: false,

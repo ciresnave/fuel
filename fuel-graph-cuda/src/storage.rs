@@ -1386,13 +1386,37 @@ fn gemm_config<T>(
     let rhs_m2 = rhs_stride[rhs_stride.len() - 2];
     let lhs_m1 = lhs_stride[lhs_stride.len() - 1];
     let lhs_m2 = lhs_stride[lhs_stride.len() - 2];
-    // The a tensor has dims batching, k, n (rhs)
-    // We also allow for the case where the stride on the minor dimension is not as expected but
-    // there is a single element.
-    let (lda, transa) = if (rhs_m1 == 1 || n == 1) && (rhs_m2 == n || k == 1) {
-        (n as i32, Op::N)
-    } else if (rhs_m1 == k || n == 1) && (rhs_m2 == 1 || k == 1) {
-        (k as i32, Op::T)
+
+    // The "A" tensor in cuBLAS terms is our `rhs` (we do the row-
+    // major↔col-major swap by passing rhs as cuBLAS A and lhs as
+    // cuBLAS B). Logical shape of rhs: (k, n) row-major.
+    //
+    // Two stride patterns are supported, each mapping to one of
+    // cuBLAS's transpose flags:
+    //
+    //   Op::N  — row-major-like: stride[-1] == 1 and stride[-2] >= n.
+    //            The natural contig case is stride[-2] == n; the
+    //            relaxed case stride[-2] > n covers strided views
+    //            that arise from `permute()` of a larger tensor
+    //            (rows are contiguous internally but the matrix is
+    //            embedded in a parent buffer with row spacing > n).
+    //            cuBLAS lda IS the row stride, so we pass stride[-2].
+    //
+    //   Op::T  — col-major-like / transposed: stride[-2] == 1 and
+    //            stride[-1] >= k. The natural case is stride[-1] == k
+    //            (a clean transpose); the relaxed case is the same
+    //            permute-of-larger-tensor pattern but on the
+    //            transposed axis. lda = stride[-1].
+    //
+    // Degenerate dims (n==1 or k==1) make the corresponding stride
+    // irrelevant — we still need to emit a positive lda, so clamp
+    // by the logical dim size.
+    let (lda, transa) = if (rhs_m1 == 1 || n == 1) && (rhs_m2 >= n || k == 1) {
+        let ld = rhs_m2.max(n).max(1) as i32;
+        (ld, Op::N)
+    } else if (rhs_m2 == 1 || k == 1) && (rhs_m1 >= k || n == 1) {
+        let ld = rhs_m1.max(k).max(1) as i32;
+        (ld, Op::T)
     } else {
         Err(CudaError::MatMulNonContiguous {
             lhs_stride: lhs_l.clone(),
@@ -1400,13 +1424,14 @@ fn gemm_config<T>(
             mnk: (m, n, k),
         })?
     };
-    // The b tensor has dims batching, m, k (lhs)
-    // We also allow for the case where the stride on the minor dimension is not as expected but
-    // there is a single element.
-    let (ldb, transb) = if (lhs_m1 == 1 || k == 1) && (lhs_m2 == k || m == 1) {
-        (k as i32, Op::N)
-    } else if (lhs_m1 == m || k == 1) && (lhs_m2 == 1 || m == 1) {
-        (m as i32, Op::T)
+    // The "B" tensor in cuBLAS terms is our `lhs`. Logical shape: (m, k)
+    // row-major. Same two patterns apply, swapping (n, k) ↔ (k, m).
+    let (ldb, transb) = if (lhs_m1 == 1 || k == 1) && (lhs_m2 >= k || m == 1) {
+        let ld = lhs_m2.max(k).max(1) as i32;
+        (ld, Op::N)
+    } else if (lhs_m2 == 1 || m == 1) && (lhs_m1 >= m || k == 1) {
+        let ld = lhs_m1.max(m).max(1) as i32;
+        (ld, Op::T)
     } else {
         Err(CudaError::MatMulNonContiguous {
             lhs_stride: lhs_l.clone(),
