@@ -93,6 +93,7 @@ pub mod judge;
 pub mod npy;
 pub mod probe;
 pub mod scheduling;
+pub mod transfer_cost;
 pub mod op;
 pub mod pickle;
 pub mod quantized;
