@@ -145,7 +145,12 @@ __device__ void layernorm(const T * x, T * dst, const T * alpha, const T * beta,
             s_sum[warp_id] = mean_var;
         }
         __syncthreads();
-        mean_var = s_sum[lane_id];
+        // Same uninit-shared-memory hazard as in `rmsnorm` above —
+        // only `n_warps` entries of s_sum are written, the rest hold
+        // whatever a prior kernel left in shared memory. Clamp the
+        // read so out-of-range lanes contribute zero.
+        const int n_warps = block_size / WARP_SIZE;
+        mean_var = (lane_id < n_warps) ? s_sum[lane_id] : make_float2(0.f, 0.f);
         mean_var = warp_reduce_sum(mean_var);
     }
 
@@ -207,7 +212,16 @@ __device__ void rmsnorm(const T * x, T * dst, const T * alpha, const int ncols, 
             s_sum[warp_id] = tmp;
         }
         __syncthreads();
-        tmp = s_sum[lane_id];
+        // Only `n_warps` entries of s_sum are written; the rest are
+        // uninitialized shared memory whose contents depend on what
+        // a prior kernel launch happened to leave behind. Reading
+        // them adds garbage to the row's sum-of-squares, which
+        // corrupts `mean` and therefore `scale`. Clamp the read so
+        // out-of-range lanes contribute zero. Discovered as the
+        // matmul → rms_norm → matmul composed-graph divergence
+        // during Phase 6b oracle gating (2026-04-25).
+        const int n_warps = block_size / WARP_SIZE;
+        tmp = (lane_id < n_warps) ? s_sum[lane_id] : 0.0f;
         tmp = warp_reduce_sum(tmp);
     }
 
