@@ -13,7 +13,7 @@
 
 use fuel::dispatch::Criterion;
 use fuel::scheduling::{
-    apply_placement_plan, prepare_dispatch_table, recommend_placement, ScheduleOptions,
+    auto_place_and_route, prepare_dispatch_table, recommend_placement, ScheduleOptions,
 };
 use fuel_core_types::{DeviceLocation, Shape};
 use fuel_graph::{Op, Tensor};
@@ -79,21 +79,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(graph);
 
-    // Step 4: apply the Fastest plan, run insert_copies, count the
-    // Copy nodes that materialised at device boundaries. This is the
-    // bridge between dispatch-driven recommendations and the actual
-    // graph mutation the executor sees.
-    let plan = recommend_placement(
-        &root.graph().borrow(),
+    // Step 4: one-call auto-routing — `auto_place_and_route` does
+    // recommend → apply (skip-existing) → insert_copies in one shot.
+    let n_before = root.graph().borrow().len();
+    let _new_roots = auto_place_and_route(
+        root.graph(),
+        &[tiny_mm.id(), mid_mm.id(), big_mm.id(), unprofiled_sub.id(), unprofiled_silu.id()],
         &table,
         Criterion::Fastest,
         fallback,
-    );
-    let n_before = root.graph().borrow().len();
-    apply_placement_plan(root.graph(), &plan);
-    let _new_roots = fuel_graph::opt::insert_copies(
-        root.graph(),
-        &[tiny_mm.id(), mid_mm.id(), big_mm.id(), unprofiled_sub.id(), unprofiled_silu.id()],
     );
     let n_after = root.graph().borrow().len();
 
