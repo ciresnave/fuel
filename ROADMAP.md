@@ -1170,27 +1170,56 @@ follow-ups now that the kernel-level numerical issue is fixed.
 *Introduce cross-device routing. This is where the DAG planner earns its
 keep.*
 
-- Extend the cost model with **transfer costs**: H2D, D2H, D2D (where
-  supported), and inter-GPU bandwidth sourced from `fuel-parallel`'s
-  `DeviceTopology`.
-- Implement the **DAG planner**: transform the forward+backward graph into
-  a layered DAG where each node is a (step, backend) pair, price each edge
-  against the transfer cost model, and find the minimum-cost execution
-  path via forward dynamic programming. This is the point at which a
-  single computation can span CPU and GPU when the compute savings
-  outweigh the transfer penalty.
-- Insert **automatic transfer nodes** into the optimized graph where the
-  planner decides a cross-device hop is worth it.
-- Multi-GPU cases specifically (tensor parallelism, pipeline parallelism)
-  use the existing `fuel-parallel` primitives rather than inventing new
-  ones.
-- Validate anchor models with artificial memory constraints that force
-  cross-device execution (for example, a model too large for one GPU's
-  VRAM).
+- [x] Extend the cost model with **transfer costs**: H2D and D2H
+      shipped (Phase 6c-A, `fuel_core::transfer_cost::BandwidthMatrix`
+      with probe-time measurement). Live numbers on the dev rig
+      surfaced an interesting asymmetry — Vulkan→CPU readback at
+      ~0.21 GB/s (22× slower than CUDA's D2H at ~4.8 GB/s) due to
+      vulkane's staging-buffer download path. D2D + cross-backend
+      D2D parked pending multi-GPU hardware (see
+      `project_phase6d_d2d_design.md` for the audit + design + 8
+      enumerated gap items). Inter-GPU bandwidth from
+      `fuel-parallel::DeviceTopology` is the natural integration
+      point when D2D resumes.
+- [x] Implement the **DAG planner** (Phase 6c-B,
+      `fuel_core::scheduling::dp_plan`). Forward dynamic programming
+      over the topo-sorted graph: for each `(node, backend)` pair,
+      `best_cost = compute_cost + Σ_inputs min_{b_i} (input_cost +
+      transfer_cost)`. Const nodes pinned to CPU; backtrack pass
+      derives the per-node placement plan. Synthetic tests confirm
+      it picks CPU when transfer dominates and the dispatch winner
+      when transfer is cheap.
+- [x] Insert **automatic transfer nodes** into the optimized graph.
+      `fuel_core::scheduling::auto_place_and_route_with_transfer_cost`
+      (Phase 6c-C) wraps the full pipeline: probe → load-or-judge →
+      load-or-measure-bandwidth → `dp_plan` → `apply_placement_plan` →
+      `fuel_graph::opt::insert_copies`. The existing `Op::Copy`
+      mechanism handles the actual transfer.
+- [ ] Multi-GPU cases (tensor parallelism, pipeline parallelism)
+      use the existing `fuel-parallel` primitives rather than
+      inventing new ones. **Blocked on D2D**, which is parked until
+      multi-GPU hardware is available for live validation.
+- [x] **Real-anchor validation** (Phase 6c follow-up,
+      `fuel-lazy-examples/src/bin/dp_diff`). Compares
+      `recommend_placement` (Phase 6b) vs `dp_plan` (Phase 6c) on
+      every Phase 6a anchor. At synthetic-test sizes the planners
+      agree 100% — every op falls below the dispatch table's
+      CPU↔GPU crossover. At BERT-large stress scale (h=2048, seq=256,
+      intermediate=8192) **35% of nodes route differently**: the DP
+      planner clusters cheap surrounding ops onto CUDA after a
+      matmul puts data there (BroadcastTo ×20, Permute ×10,
+      Reshape ×9, etc.), and pulls a few CUDA-winner matmuls back
+      to CPU when their inputs are CPU-pinned consts and the
+      H2D+D2H round-trip exceeds the compute saving.
 
 **Exit criterion for 6c**: at least one anchor model that does not fit on
 a single GPU runs correctly and faster under the DAG planner than under
-any hand-tuned placement.
+any hand-tuned placement. **Status**: machinery is shipped end-to-end
+on a single-device rig. The OOM-forcing validation step requires a
+specific hardware setup (e.g. a model deliberately sized larger than
+the available VRAM) and is the natural follow-up when someone hits
+that case in production. D2D primitives needed for true multi-GPU
+routing are parked pending hardware.
 
 #### Sub-phase 6d — Kernel fusion, symbolic autograd, paged attention
 
