@@ -59,6 +59,48 @@ impl GraphBackend for CudaBackend {
         a.matmul(b, bmnk, la, lb)
     }
 
+    fn conv2d(
+        &self,
+        input:  &Self::Storage,
+        weight: &Self::Storage,
+        input_layout:  &Layout,
+        weight_layout: &Layout,
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        // Executor pre-screened: symmetric stride/padding, groups==1.
+        // Translate to ParamsConv2D and dispatch to the existing
+        // CudaStorage::conv2d (im2col + matmul, or cuDNN if the
+        // `cudnn` feature is on).
+        if stride.0 != stride.1 || padding.0 != padding.1 || groups != 1 {
+            fuel_core_types::bail!(
+                "CudaBackend::conv2d: only symmetric stride/padding + groups=1 supported (got stride={stride:?} padding={padding:?} groups={groups})"
+            );
+        }
+        let i_dims = input_layout.shape().dims();
+        let w_dims = weight_layout.shape().dims();
+        if i_dims.len() != 4 || w_dims.len() != 4 {
+            fuel_core_types::bail!(
+                "CudaBackend::conv2d: expected rank-4 input + weight, got {i_dims:?} and {w_dims:?}"
+            );
+        }
+        let params = fuel_core_types::conv::ParamsConv2D {
+            b_size:  i_dims[0],
+            i_h:     i_dims[2],
+            i_w:     i_dims[3],
+            c_in:    w_dims[1],
+            k_h:     w_dims[2],
+            k_w:     w_dims[3],
+            c_out:   w_dims[0],
+            padding: padding.0,
+            stride:  stride.0,
+            dilation: 1,
+            cudnn_fwd_algo: None,
+        };
+        input.conv2d(input_layout, weight, weight_layout, &params)
+    }
+
     fn unary(&self, op: UnaryOp, a: &Self::Storage, layout: &Layout) -> fuel_core_types::Result<Self::Storage> {
         let kernel = match op {
             UnaryOp::Neg => "uneg",
