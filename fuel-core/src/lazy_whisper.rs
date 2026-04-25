@@ -938,38 +938,41 @@ impl WhisperTokenizer {
     }
 }
 
-// ---- Tests -----------------------------------------------------------------
+// ---- Test helpers (public so integration tests can reuse) ------------------
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tiny_cfg() -> WhisperConfig {
-        WhisperConfig {
-            vocab_size:              128,
-            num_mel_bins:             8,
-            d_model:                  16,
-            encoder_layers:            2,
-            encoder_attention_heads:   4,
-            encoder_ffn_dim:          32,
-            decoder_layers:            2,
-            decoder_attention_heads:   4,
-            decoder_ffn_dim:          32,
-            max_source_positions:     16,  // mel_time/2
-            max_target_positions:     32,
-            scale_embedding:       false,
-            bos_token_id:             1,
-            eos_token_id:             2,
-            pad_token_id:             0,
-            decoder_start_token_id:   1,
-        }
+/// Hyperparameters for a tiny synthetic Whisper variant — small
+/// enough to forward in milliseconds, structurally identical to the
+/// real Whisper-tiny shape (encoder + decoder + cross-attention).
+pub fn tiny_cfg() -> WhisperConfig {
+    WhisperConfig {
+        vocab_size:              128,
+        num_mel_bins:             8,
+        d_model:                  16,
+        encoder_layers:            2,
+        encoder_attention_heads:   4,
+        encoder_ffn_dim:          32,
+        decoder_layers:            2,
+        decoder_attention_heads:   4,
+        decoder_ffn_dim:          32,
+        max_source_positions:     16,  // mel_time/2
+        max_target_positions:     32,
+        scale_embedding:       false,
+        bos_token_id:             1,
+        eos_token_id:             2,
+        pad_token_id:             0,
+        decoder_start_token_id:   1,
     }
+}
 
-    fn arc(v: Vec<f32>) -> Arc<[f32]> {
-        Arc::from(v)
-    }
+fn arc(v: Vec<f32>) -> Arc<[f32]> {
+    Arc::from(v)
+}
 
-    fn zero_weights(cfg: &WhisperConfig) -> WhisperWeights {
+/// Synthetic zero-weights (with `1.0` for LayerNorm gain) for the
+/// given Whisper config. Public so integration tests across the
+/// workspace can reuse the same shape-validated weight constructor
+/// the in-module tests use.
+pub fn zero_weights(cfg: &WhisperConfig) -> WhisperWeights {
         let d = cfg.d_model;
         let z = |n: usize| arc(vec![0.0_f32; n]);
         let o = |n: usize| arc(vec![1.0_f32; n]);
@@ -1024,6 +1027,10 @@ mod tests {
             },
         }
     }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn parse_whisper_tiny_config() {
