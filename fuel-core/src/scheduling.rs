@@ -34,7 +34,7 @@
 //! per-user config) can override via [`ScheduleOptions`].
 
 use crate::dispatch::{Criterion, DispatchOptions, DispatchTable, Pick};
-use crate::judge::{Judge, OpKind, ProfileReport, SizeClass};
+use crate::judge::{Judge, OpKind, ProfileEntry, ProfileReport, SizeClass};
 use crate::probe::{HardwareChange, ProbeReport};
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Result};
@@ -279,6 +279,252 @@ pub fn auto_place_and_route(
     fuel_graph::opt::insert_copies(graph, roots)
 }
 
+// ---- Phase 6c: transfer-cost-aware DP planner ----------------------------
+
+/// Phase 6c DP-based placement planner. Produces a per-node placement
+/// that minimises **total cost = compute + transfer**, via forward
+/// dynamic programming over the topo-sorted graph.
+///
+/// For each node in topo order and for each candidate backend `b`,
+/// we compute:
+///
+/// ```text
+///   best_cost[node, b] = compute_cost(node, b) +
+///                        Σ_inputs min_{b_i} ( best_cost[input, b_i]
+///                                          + transfer_cost(b_i → b, input_bytes) )
+/// ```
+///
+/// After the forward pass, each root picks its min-cost backend, and
+/// a backtrack pass propagates the chosen backend to every reachable
+/// input. Nodes that aren't profiled (op kind not in the dispatch
+/// table, e.g. ConvNeXt's GELU today) get the `fallback_device` and
+/// don't contribute meaningful compute cost — but their inputs still
+/// pay transfer costs to wherever they end up.
+///
+/// Compared to [`recommend_placement`], the DP planner accounts for
+/// the cost of the inputs being on a different backend. That changes
+/// the right answer in cases where a fast backend's transfer cost
+/// exceeds the compute speedup.
+pub fn dp_plan(
+    graph: &fuel_graph::Graph,
+    roots: &[NodeId],
+    profile: &ProfileReport,
+    bandwidth: &crate::transfer_cost::BandwidthMatrix,
+    available_backends: &[BackendId],
+    fallback_device: DeviceLocation,
+) -> HashMap<NodeId, DeviceLocation> {
+    use fuel_graph::topo_order_multi;
+    let order = topo_order_multi(graph, roots);
+
+    // (node, backend) → (cumulative_cost_ns, [chosen_backend_per_input]).
+    let mut cost: HashMap<(NodeId, BackendId), (f64, Vec<BackendId>)> = HashMap::new();
+
+    let backends = if available_backends.is_empty() {
+        // Default: fall back to CPU only; gives sensible behaviour when
+        // the caller forgot to enumerate. Equivalent to recommend_placement
+        // with no GPU options.
+        vec![BackendId::Cpu]
+    } else {
+        available_backends.to_vec()
+    };
+
+    for &id in &order {
+        let node = graph.node(id);
+        let kind = op_to_kind(&node.op);
+        let size_class = SizeClass::from_elem_count(node.shape.elem_count());
+        let dtype = node.dtype;
+        // Const nodes live in host memory; consumers on non-CPU
+        // backends pay the upload. Pin them to CPU so the DP can't
+        // "place" a Const on CUDA for free.
+        let is_const = matches!(node.op, fuel_graph::Op::Const(_));
+
+        for &b in &backends {
+            // Const ops only have a finite cost on CPU. Non-CPU
+            // backends see Const-on-{CUDA, Vulkan, ...} as infinite,
+            // forcing consumers to transfer.
+            if is_const && b != BackendId::Cpu {
+                cost.insert((id, b), (f64::INFINITY, vec![]));
+                continue;
+            }
+            // Compute cost on backend b for this op. Read directly
+            // from the profile report — we want the actual measured
+            // latency for THIS (op, dtype, size, backend), not just
+            // "did this backend win the dispatch table." If the
+            // backend isn't in the profile (didn't measure it),
+            // fall back to a generic penalty so the DP can still
+            // make progress.
+            let compute = if let Some(k) = kind {
+                if dtype == DType::F32 {
+                    profile_lookup_latency_ns(profile, k, dtype, size_class, b)
+                        .unwrap_or(UNPROFILED_BACKEND_PENALTY_NS)
+                } else {
+                    UNPROFILED_BACKEND_PENALTY_NS
+                }
+            } else {
+                // Op not profiled (e.g. GELU, Mul). Assign a small
+                // backend-agnostic compute estimate so transfer
+                // costs dominate routing.
+                UNPROFILED_OP_COMPUTE_NS
+            };
+
+            // For each input, pick min over b_i of [input_cost(b_i) + transfer(b_i, b)].
+            let mut total_cost = compute;
+            let mut input_choices = Vec::with_capacity(node.inputs.len());
+            for &input in &node.inputs {
+                let input_node = graph.node(input);
+                let bytes = input_node.shape.elem_count() * dtype_size_bytes(input_node.dtype);
+                let mut best = f64::INFINITY;
+                let mut best_b = backends[0];
+                for &b_i in &backends {
+                    let prior = cost.get(&(input, b_i)).map(|(c, _)| *c).unwrap_or(f64::INFINITY);
+                    if !prior.is_finite() { continue; }
+                    let xfer = transfer_cost_with_cpu_fallback(bandwidth, b_i, b, bytes);
+                    let candidate = prior + xfer;
+                    if candidate < best {
+                        best   = candidate;
+                        best_b = b_i;
+                    }
+                }
+                if best.is_finite() {
+                    total_cost += best;
+                    input_choices.push(best_b);
+                } else {
+                    // No reachable input cost — this (node, b) is
+                    // unreachable. Mark with infinity so it loses
+                    // backtracking.
+                    total_cost = f64::INFINITY;
+                    break;
+                }
+            }
+            cost.insert((id, b), (total_cost, input_choices));
+        }
+    }
+
+    // Pick min-cost backend for each root, then backtrack.
+    let mut placement: HashMap<NodeId, BackendId> = HashMap::new();
+    for &root in roots {
+        let mut best = f64::INFINITY;
+        let mut best_b = backends[0];
+        for &b in &backends {
+            if let Some(&(c, _)) = cost.get(&(root, b)).map(|x| x).iter().next().copied() {
+                if c < best {
+                    best   = c;
+                    best_b = b;
+                }
+            }
+        }
+        placement.insert(root, best_b);
+    }
+
+    // Backtrack: for each placed node, propagate input choices.
+    let mut stack: Vec<NodeId> = roots.to_vec();
+    while let Some(id) = stack.pop() {
+        let chosen_b = match placement.get(&id) {
+            Some(&b) => b,
+            None     => continue,
+        };
+        if let Some((_, inputs_chosen)) = cost.get(&(id, chosen_b)).cloned() {
+            let node = graph.node(id);
+            for (idx, &input) in node.inputs.iter().enumerate() {
+                if let Some(&b_i) = inputs_chosen.get(idx) {
+                    if !placement.contains_key(&input) {
+                        placement.insert(input, b_i);
+                        stack.push(input);
+                    }
+                }
+            }
+        }
+    }
+
+    // Translate to DeviceLocation. Backends not in the dispatch's
+    // pick_to_location table fall back to `fallback_device`.
+    placement
+        .into_iter()
+        .map(|(id, b)| {
+            let pick = crate::dispatch::Pick { backend: b, device_index: 0 };
+            (id, pick_to_location(pick).unwrap_or(fallback_device))
+        })
+        .collect()
+}
+
+/// Per-byte transfer cost from `src` to `dst`. If no direct entry,
+/// route via CPU as a two-hop transfer (the worst case is the
+/// Vulkan→CPU→CUDA pattern; CPU→CPU is essentially free).
+fn transfer_cost_with_cpu_fallback(
+    bandwidth: &crate::transfer_cost::BandwidthMatrix,
+    src: BackendId,
+    dst: BackendId,
+    bytes: usize,
+) -> f64 {
+    if src == dst {
+        return 0.0;
+    }
+    if let Some(t) = bandwidth.lookup(src, dst) {
+        return t.ns_per_byte * bytes as f64;
+    }
+    // Two-hop via CPU.
+    let leg1 = bandwidth.lookup(src, BackendId::Cpu).map(|t| t.ns_per_byte);
+    let leg2 = bandwidth.lookup(BackendId::Cpu, dst).map(|t| t.ns_per_byte);
+    match (leg1, leg2) {
+        (Some(a), Some(b)) => (a + b) * bytes as f64,
+        _ => f64::INFINITY,  // unreachable pair
+    }
+}
+
+fn dtype_size_bytes(d: DType) -> usize {
+    match d {
+        DType::F32 | DType::U32 | DType::I32 => 4,
+        DType::F64 | DType::I64 => 8,
+        DType::F16 | DType::BF16 | DType::I16 => 2,
+        DType::U8 | DType::F8E4M3 | DType::F8E8M0 => 1,
+        DType::F4 => 1,         // packed; per-element fractional, round up
+        DType::F6E2M3 | DType::F6E3M2 => 1,
+    }
+}
+
+/// Find the closest measured `(op, dtype, size_class, backend)`
+/// latency in the profile report. Returns `None` if no entry for
+/// the requested backend exists at any size class for this
+/// (op, dtype). Walks the profile linearly — fine for v1; a
+/// pre-built index would be cheap to add later if profiles get
+/// large.
+fn profile_lookup_latency_ns(
+    profile: &ProfileReport,
+    op: OpKind,
+    dtype: DType,
+    size_class: SizeClass,
+    backend: BackendId,
+) -> Option<f64> {
+    // Exact size-class match first.
+    if let Some(e) = profile.entries.iter().find(|e|
+        e.op == op && e.dtype == dtype && e.size_class == size_class && e.backend == backend
+    ) {
+        return Some(e.latency_ns as f64);
+    }
+    // Nearest-size fallback (same op/dtype/backend, closest size).
+    let candidates: Vec<&ProfileEntry> = profile.entries.iter()
+        .filter(|e| e.op == op && e.dtype == dtype && e.backend == backend)
+        .collect();
+    if candidates.is_empty() { return None; }
+    let target = size_class.0 as i32;
+    let nearest = candidates.iter()
+        .min_by_key(|e| (e.size_class.0 as i32 - target).abs())
+        .unwrap();
+    Some(nearest.latency_ns as f64)
+}
+
+/// Penalty (in ns) for a backend that has no profile entry for the
+/// op at any size. Should be high enough that the DP avoids picking
+/// it when other backends DO have profiles, but not infinite — a
+/// genuine "no choice" case (every backend missing) should still
+/// produce a placement rather than panicking.
+const UNPROFILED_BACKEND_PENALTY_NS: f64 = 1_000_000_000.0;  // 1 second
+
+/// Compute cost for ops whose op kind isn't profiled. Should be
+/// small relative to transfer costs so unprofiled ops route along
+/// with their inputs by default.
+const UNPROFILED_OP_COMPUTE_NS: f64 = 1_000.0;
+
 fn run_and_persist(
     probe: &ProbeReport,
     opts: &ScheduleOptions,
@@ -514,6 +760,110 @@ mod tests {
             Some(DeviceLocation::Cpu),
             "user's explicit hint must not be overwritten by recommend_placement",
         );
+    }
+
+    /// Phase 6c: a transfer-dominated single-op graph routes to CPU
+    /// even though the dispatch table picks CUDA — because the input
+    /// is on CPU and the H2D + D2H round-trip costs more than the
+    /// compute saving. Without transfer cost the planner would pick
+    /// CUDA; with it, CPU wins.
+    #[test]
+    fn dp_plan_avoids_costly_transfers() {
+        use crate::transfer_cost::{BandwidthMatrix, TransferCost, BANDWIDTH_REPORT_VERSION};
+        // CUDA is the winner of dispatch (small compute cost penalty)
+        // but every byte costs 100ns to upload + 100ns to download.
+        // Even a tiny tensor crosses the threshold where keeping it
+        // on CPU is cheaper.
+        let entries = vec![
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
+                backend: BackendId::Cuda, device_index: 0, latency_ns:     5_000, iterations: 1, max_rel_error: 0.0 },
+        ];
+        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let table = DispatchTable::build(&report);
+
+        // Punitive bandwidth: 100 ns/byte each way. A 64×64 f32
+        // matmul output is 64*64*4 = 16384 bytes = 1.6ms one-way
+        // transfer = 3.2ms round-trip. The compute saving on CUDA
+        // is 5µs vs 10µs CPU — only 5µs. Transfer cost dwarfs it.
+        let bandwidth = BandwidthMatrix {
+            version: BANDWIDTH_REPORT_VERSION,
+            measurement_bytes: 1 << 24,
+            entries: vec![
+                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cpu,  ns_per_byte:   0.05 },
+                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cuda, ns_per_byte: 100.0  },
+                TransferCost { src: BackendId::Cuda, dst: BackendId::Cpu,  ns_per_byte: 100.0  },
+            ],
+        };
+
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_b = small_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+            Shape::from_dims(&[64, 64]),
+        );
+        let mm = small_a.matmul(&small_b);
+
+        let plan = dp_plan(
+            &small_a.graph().borrow(),
+            &[mm.id()],
+            &report,
+            &bandwidth,
+            &[BackendId::Cpu, BackendId::Cuda],
+            DeviceLocation::Cpu,
+        );
+
+        // The dispatch table's first-choice would have been CUDA
+        // (`recommend_placement` produces CUDA here too). The DP
+        // planner accounts for the transfer cost and picks CPU.
+        assert_eq!(plan[&mm.id()], DeviceLocation::Cpu,
+            "DP planner should pick CPU when transfer cost dominates");
+    }
+
+    /// Phase 6c: when transfer is cheap enough, the DP planner DOES
+    /// route to the dispatch winner. Sanity check that the planner
+    /// isn't pessimistically pinning everything to CPU.
+    #[test]
+    fn dp_plan_picks_dispatch_winner_when_transfer_is_cheap() {
+        use crate::transfer_cost::{BandwidthMatrix, TransferCost, BANDWIDTH_REPORT_VERSION};
+        let entries = vec![
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+        ];
+        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let table = DispatchTable::build(&report);
+        // Realistic-ish PCIe bandwidth: 0.15 ns/byte (≈6.5 GB/s).
+        let bandwidth = BandwidthMatrix {
+            version: BANDWIDTH_REPORT_VERSION,
+            measurement_bytes: 1 << 24,
+            entries: vec![
+                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cpu,  ns_per_byte: 0.05 },
+                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cuda, ns_per_byte: 0.15 },
+                TransferCost { src: BackendId::Cuda, dst: BackendId::Cpu,  ns_per_byte: 0.20 },
+            ],
+        };
+
+        let big_a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]));
+        let big_b = big_a.const_f32_like(
+            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+            Shape::from_dims(&[1024, 1024]),
+        );
+        let mm = big_a.matmul(&big_b);
+
+        let plan = dp_plan(
+            &big_a.graph().borrow(),
+            &[mm.id()],
+            &report,
+            &bandwidth,
+            &[BackendId::Cpu, BackendId::Cuda],
+            DeviceLocation::Cpu,
+        );
+
+        // 1024² f32 = 4 MiB transfer ≈ 0.6ms each way = 1.2ms round-trip;
+        // CUDA saves 45ms vs CPU. CUDA wins easily.
+        assert_eq!(plan[&mm.id()], DeviceLocation::Cuda { gpu_id: 0 });
     }
 
     /// `auto_place_and_route` does the full dance in one call:
