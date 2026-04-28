@@ -55,6 +55,9 @@ use std::sync::Arc;
 #[cfg(feature = "aocl")]
 use fuel_aocl_cpu_backend::AoclBackend;
 
+#[cfg(feature = "onemkl")]
+use fuel_mkl_cpu_backend::MklBackend;
+
 #[cfg(feature = "vulkan")]
 use fuel_graph_vulkan::{VulkanBackend, VulkanStorage};
 
@@ -610,6 +613,16 @@ impl_dyn_backend!(
     BackendId::Aocl
 );
 
+// oneMKL: same story as AOCL — CPU storage, same `AnyStorage::Cpu`
+// wrapper, dispatch table picks per op.
+#[cfg(feature = "onemkl")]
+impl_dyn_backend!(
+    MklBackend, as_cpu, AnyStorage::Cpu,
+    DeviceLocation::Cpu,
+    CPU_CAPABILITIES,
+    BackendId::Mkl
+);
+
 // -- Router ----------------------------------------------------------------
 
 /// Multi-backend graph dispatcher.
@@ -729,6 +742,24 @@ impl Router {
             }
             Err(e) => {
                 eprintln!("Router::add_aocl: AOCL not loadable on this host, skipping: {e}");
+                self
+            }
+        }
+    }
+
+    /// Attach the oneMKL CPU backend if `mkl_rt` loads on the current
+    /// host. Same shape as `add_aocl`: silent no-op on missing runtime,
+    /// chainable. The dispatch table picks empirically per op.
+    #[cfg(feature = "onemkl")]
+    pub fn add_mkl(mut self) -> Self {
+        match MklBackend::try_new() {
+            Ok(backend) => {
+                let b: Arc<dyn DynBackend> = Arc::new(backend);
+                self.backends.push(b);
+                self
+            }
+            Err(e) => {
+                eprintln!("Router::add_mkl: oneMKL not loadable on this host, skipping: {e}");
                 self
             }
         }

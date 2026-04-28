@@ -563,6 +563,15 @@ impl LazyTensor {
     ) -> Vec<f32> {
         executor.realize_f32(&self.inner).into_vec()
     }
+
+    /// Realize on the oneMKL CPU backend. Mirrors `realize_f32_aocl`.
+    #[cfg(feature = "onemkl")]
+    pub fn realize_f32_mkl(
+        &self,
+        executor: &mut GraphExecutor<fuel_mkl_cpu_backend::MklBackend>,
+    ) -> Vec<f32> {
+        executor.realize_f32(&self.inner).into_vec()
+    }
 }
 
 /// Realize many tensors in a single CPU topo-walk.

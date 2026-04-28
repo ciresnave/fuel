@@ -10,6 +10,7 @@ members = [
     "fuel-core",
     "fuel-core-types",
     "fuel-cpu-backend",
+    "fuel-mkl-cpu-backend",
     "fuel-cublaslt",
     "fuel-cuda-kernels",
     "fuel-cuda-vmm",
@@ -94,12 +95,16 @@ accelerate-src = { version = "0.3.2" }
 # selection layer ships.
 aocl-blas  = { path = "../aocl/crates/aocl-blas" }
 aocl-types = { path = "../aocl/crates/aocl-types" }
+# Intel oneMKL safe wrapper for the Phase 7b second CPU backend.
+# Crates.io release 0.1.0 (2026-04-28).
+onemkl = "0.1"
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
 fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.2" }
 fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.2" }
 fuel-core-types = { path = "./fuel-core-types", version = "0.10.2" }
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
+fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
 fuel-graph-cuda = { path = "./fuel-graph-cuda", version = "0.10.2" }

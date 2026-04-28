@@ -13,6 +13,7 @@ readme = "README.md"
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
 fuel-aocl-cpu-backend = { workspace = true, optional = true }
+fuel-mkl-cpu-backend = { workspace = true, optional = true }
 fuel-core-types = { workspace = true, features = ["serde"] }
 fuel-cpu-backend = { workspace = true }
 fuel-graph = { workspace = true }
@@ -96,6 +97,13 @@ mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl"]
 # 2×2 sgemm probe at startup and bails gracefully if libaocl_blas is
 # missing.
 aocl = ["dep:fuel-aocl-cpu-backend"]
+
+# Intel oneMKL CPU backend for the lazy-graph layer (Phase 7b). Distinct
+# from the legacy `mkl` feature above (which feeds the eager fuel-cpu-
+# backend's intel-mkl-src linkage). `onemkl` is the lazy-graph path,
+# loading mkl_rt at runtime via the `onemkl` crate. Both can coexist;
+# Phase 6b's judge picks empirically.
+onemkl = ["dep:fuel-mkl-cpu-backend"]
 
 # Apple Accelerate BLAS for CPU (macOS only). Faster matmul on Apple hardware.
 accelerate = ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate"]

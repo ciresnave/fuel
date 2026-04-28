@@ -86,22 +86,31 @@ fn aocl_dispatch_table_prefers_aocl_for_matmul() {
     let table = DispatchTable::build(&report);
 
     let mut aocl_wins = 0usize;
+    let mut mkl_wins  = 0usize;
     let mut cpu_wins  = 0usize;
+    let mut other     = 0usize;
     for &sz in &[256usize, 512] {
         let n = sz * sz;
         let class = SizeClass::from_elem_count(n);
         let pick = table.pick_nearest(OpKind::MatMul, DType::F32, class, Criterion::Fastest);
         match pick.map(|p| p.backend) {
             Some(BackendId::Aocl) => aocl_wins += 1,
-            Some(BackendId::Cpu)  => cpu_wins += 1,
-            other => eprintln!("unexpected pick at size {sz}: {other:?}"),
+            Some(BackendId::Mkl)  => mkl_wins  += 1,
+            Some(BackendId::Cpu)  => cpu_wins  += 1,
+            _ => other += 1,
         }
     }
-    eprintln!("dispatch picks — aocl={aocl_wins}, cpu={cpu_wins} (out of 2 size classes)");
-    // Hard floor: we expect at least one AOCL win on Zen. If not, the
-    // spike's working hypothesis is wrong and we want a loud failure.
+    eprintln!(
+        "dispatch picks — aocl={aocl_wins}, mkl={mkl_wins}, cpu={cpu_wins}, other={other} \
+         (out of 2 size classes)",
+    );
+    // The empirical layer should route away from the portable CPU
+    // baseline — either AOCL or MKL (when also enabled) wins. Which
+    // specific vendor wins is a hardware/build-profile question, not
+    // a Fuel-architecture one.
     assert!(
-        aocl_wins >= 1,
-        "AOCL did not win MatMul at any tested size — spike hypothesis broken on this host"
+        aocl_wins + mkl_wins >= 1,
+        "neither AOCL nor MKL won MatMul at any tested size — \
+         the empirical dispatch is collapsing to portable CPU on this host",
     );
 }

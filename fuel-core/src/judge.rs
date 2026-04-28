@@ -186,10 +186,42 @@ impl Judge {
         #[cfg(feature = "aocl")]
         let mut aocl_executor: Option<fuel_graph_executor::GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>> =
             None;
+        #[cfg(feature = "onemkl")]
+        let mut mkl_executor: Option<fuel_graph_executor::GraphExecutor<fuel_mkl_cpu_backend::MklBackend>> =
+            None;
 
         let realize: Box<dyn FnMut(&crate::lazy::LazyTensor) -> Vec<f32>> = match device.backend {
             BackendId::Reference => Box::new(|t| t.realize_f32_reference()),
             BackendId::Cpu       => Box::new(|t| t.realize_f32()),
+            #[cfg(feature = "onemkl")]
+            BackendId::Mkl => {
+                let backend = match fuel_mkl_cpu_backend::MklBackend::try_new() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!(
+                            "judge: skipping mkl:{} — MklBackend::try_new failed: {e}",
+                            device.device_index,
+                        );
+                        return None;
+                    }
+                };
+                mkl_executor = Some(fuel_graph_executor::GraphExecutor::new(backend));
+                let exe = mkl_executor.as_mut().unwrap();
+                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_mkl_cpu_backend::MklBackend>
+                    = exe;
+                // SAFETY: same shape as AOCL/CUDA/Vulkan arms — exe
+                // lives in the Option on the stack frame that outlives
+                // the closure's lifetime.
+                Box::new(move |t| t.realize_f32_mkl(unsafe { &mut *exe_ptr }))
+            }
+            #[cfg(not(feature = "onemkl"))]
+            BackendId::Mkl => {
+                eprintln!(
+                    "judge: skipping mkl:{} — onemkl feature not enabled",
+                    device.device_index,
+                );
+                return None;
+            }
             #[cfg(feature = "aocl")]
             BackendId::Aocl => {
                 let backend = match fuel_aocl_cpu_backend::AoclBackend::try_new() {
@@ -293,6 +325,8 @@ impl Judge {
         drop(vulkan_executor);
         #[cfg(feature = "aocl")]
         drop(aocl_executor);
+        #[cfg(feature = "onemkl")]
+        drop(mkl_executor);
         entry
     }
 
