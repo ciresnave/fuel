@@ -502,10 +502,33 @@ impl LazyTensor {
 
     // ---- realization (the bridge to the reference backend) ----
 
-    /// Realize this tensor as an `f32` `Vec` using the generic
-    /// `GraphExecutor<CpuBackend>`. Uses `gemm` for matmul and the
-    /// reference backend for all other ops.
+    /// Realize this tensor as an `f32` `Vec`.
+    ///
+    /// When [`crate::dispatch::cached`] returns a populated dispatch
+    /// table — i.e. the app called
+    /// [`crate::dispatch::populate_dispatch_table`] earlier this
+    /// process, OR a prior process persisted one for this hardware —
+    /// the realize uses a `Router` that consults the table per op,
+    /// picking among every registered CPU backend (`fuel-graph-cpu`
+    /// always; `fuel-aocl-cpu-backend` when the `aocl` feature is on;
+    /// `fuel-mkl-cpu-backend` when `onemkl` is on).
+    ///
+    /// When no table is cached, falls through to the original
+    /// `GraphExecutor<CpuBackend>` path — same behaviour as before
+    /// the Phase 7b refactor. Users who never call
+    /// `populate_dispatch_table` see no behaviour change and pay no
+    /// startup cost.
     pub fn realize_f32(&self) -> Vec<f32> {
+        if let Some(table) = crate::dispatch::cached() {
+            let mut router = fuel_graph_router::Router::new().add_cpu();
+            #[cfg(feature = "aocl")]
+            { router = router.add_aocl(); }
+            #[cfg(feature = "onemkl")]
+            { router = router.add_mkl(); }
+            let router = router.with_dispatch_table(table);
+            let mut exe = GraphExecutor::new(router);
+            return exe.realize_f32(&self.inner).into_vec();
+        }
         let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
         exe.realize_f32(&self.inner).into_vec()
     }
