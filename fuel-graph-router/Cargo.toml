@@ -17,6 +17,7 @@ fuel-reference-backend = { workspace = true }
 fuel-graph-vulkan      = { workspace = true, optional = true }
 fuel-graph-cuda        = { workspace = true, optional = true }
 fuel-aocl-cpu-backend  = { workspace = true, optional = true }
+fuel-mkl-cpu-backend   = { workspace = true, optional = true }
 half                   = { workspace = true }
 
 [features]
@@ -24,6 +25,7 @@ default = []
 vulkan  = ["dep:fuel-graph-vulkan"]
 cuda    = ["dep:fuel-graph-cuda"]
 aocl    = ["dep:fuel-aocl-cpu-backend"]
+onemkl  = ["dep:fuel-mkl-cpu-backend"]
 
 [dev-dependencies]
 # Tests reuse Q4_K block layout + dequant reference from fuel-core.
