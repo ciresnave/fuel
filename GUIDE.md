@@ -165,13 +165,48 @@ let dataset = mnist::load()?; // downloads to ~/.cache/huggingface/datasets
 
 ---
 
+## "I want my model to run on the fastest available CPU backend"
+
+**Start here**: [`fuel-core::dispatch`](fuel-core/src/dispatch.rs)
+
+Compiling with `--features aocl,onemkl` makes the AOCL and oneMKL backends
+*available*. By default they're not used — `LazyTensor::realize_f32()` keeps
+running through the portable Rust `gemm` baseline so behaviour stays
+predictable for users who never opt in. To switch on per-op empirical
+routing across every CPU backend Fuel sees, the app calls
+`fuel_core::dispatch::populate_dispatch_table()` once:
+
+```rust
+use fuel_core::dispatch;
+
+dispatch::populate_dispatch_table()?;  // first run: ~10–60s. Cached after.
+// Every subsequent realize_f32() now consults the dispatch table per op.
+```
+
+The Phase 6b judge profiles every loaded backend × every (op, dtype,
+size_class) triple, persists the result to the OS cache dir, and the
+Router uses it at realize time to pick the empirical winner per op. No
+vendor heuristic involved — MKL and AOCL both run on Zen5 in our tests
+and the dispatch table picks whichever was actually faster that run.
+
+If a previous profile becomes stale (driver upgrade, BLAS swap), call
+`dispatch::invalidate()`. The next `populate_dispatch_table()` re-runs.
+
+See [ROADMAP.md](ROADMAP.md) Phase 7b for the per-vendor backend layer
+and Phase 6b for the empirical dispatch infrastructure.
+
+---
+
 ## "I want to add a new hardware backend"
 
 **Start here**: [`fuel-core/src/backend.rs`](fuel-core/src/backend.rs)
 
 The `BackendDevice` and `BackendStorage` traits define the contract a new backend
 must implement. The CPU, CUDA, and Metal backends are already in `fuel-core`
-behind Cargo feature flags.
+behind Cargo feature flags. AOCL and oneMKL ship as separate per-vendor crates
+(`fuel-aocl-cpu-backend`, `fuel-mkl-cpu-backend`) following the Phase 7b pattern;
+mirror them when adding a new CPU vendor (Apple Accelerate, ARM Performance
+Libraries, OpenBLAS).
 
 See [ROADMAP.md](ROADMAP.md) Phase 5 for the planned progression:
 

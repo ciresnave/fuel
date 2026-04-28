@@ -222,6 +222,59 @@ verify the library actually loaded; if the DLL is missing the call returns
 back to other CPU backends. You won't see a hard crash from a missing optional
 runtime — only an `eprintln!` from the probe collector.
 
+On Windows, both `AoclBackend::try_new` and `MklBackend::try_new` discover
+the vendor's BLIS / mkl_rt DLL automatically — they look at standard install
+paths and the `AOCL_ROOT` / `MKLROOT` env vars and prepend the matching `bin`
+directory to the process's `PATH` before the load probe. So `cargo run
+--features aocl,onemkl` works out of the box on a normal AOCL / oneAPI install
+without any manual `setvars.bat` or path-extension shell prep.
+
+### Activating empirical backend selection
+
+Compiling with `--features aocl,onemkl` *registers* both backends, but by
+default `LazyTensor::realize_f32()` keeps using the portable Rust `gemm` —
+exactly as it did before the per-vendor backends existed. To switch on
+per-op empirical routing, the app calls `populate_dispatch_table()` once:
+
+```rust
+use fuel_core::dispatch;
+
+fn main() -> fuel_core::Result<()> {
+    // Option 1: blocking on the main thread. First run measures every
+    // backend × op × size_class (~10–60s depending on hardware) and
+    // persists the profile to disk. Every subsequent run loads from
+    // disk in sub-millisecond.
+    dispatch::populate_dispatch_table()?;
+
+    // Option 2: background thread. Routing kicks in once the judge
+    // returns; the first few realize calls fall through to the
+    // portable CPU baseline, which is fine.
+    std::thread::spawn(|| {
+        let _ = dispatch::populate_dispatch_table();
+    });
+
+    // Option 3: skip the call entirely. realize_f32 keeps using the
+    // portable CPU path; no behaviour change. The disk-cache lazy-load
+    // means a previous process's `populate_dispatch_table()` is still
+    // honored — `dispatch::cached()` quietly loads it on first use.
+
+    // ... your model code uses LazyTensor::realize_f32() as normal ...
+    Ok(())
+}
+```
+
+Once a dispatch table is cached, every `LazyTensor::realize_f32()` call
+consults it per op. On a Zen-class AMD CPU with both AOCL and oneMKL
+enabled, this typically picks AOCL or MKL (whichever wins the empirical
+race that run) for matmul-heavy work and stays on the portable backend
+for the few percent that's elementwise. No code changes downstream — the
+`realize_f32()` call site is identical to the no-routing default.
+
+If a previous profile becomes stale (driver upgrade, BLAS lib swap, OS
+kernel update with measurably different behaviour), call
+`dispatch::invalidate()`. The next `populate_dispatch_table()` re-runs
+the judge and overwrites the persisted profile.
+
 ### Where to download the vendor runtimes
 
 - **NVIDIA CUDA driver** — [nvidia.com/Download](https://www.nvidia.com/Download/index.aspx).
