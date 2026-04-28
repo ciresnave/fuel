@@ -41,6 +41,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("affine",                    include_bytes!("../spv/affine.spv")),
     ("binary",                    include_bytes!("../spv/binary.spv")),
     ("concat_along_dim",          include_bytes!("../spv/concat_along_dim.spv")),
+    ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
     ("dequant_q4_0",              include_bytes!("../spv/dequant_q4_0.spv")),
     ("dequant_q4_km",             include_bytes!("../spv/dequant_q4_km.spv")),
     ("dequant_q8_0",              include_bytes!("../spv/dequant_q8_0.spv")),
@@ -124,6 +125,10 @@ pub const ADD_ASSIGN_SCALED: &str = "add_assign_scaled";
 pub const ROPE: &str = "rope";
 /// Single-dispatch concat along an arbitrary dim.
 pub const CONCAT_ALONG_DIM: &str = "concat_along_dim";
+/// Conv2D im2col patches rearrangement. Output of this kernel feeds
+/// the existing matmul shaders as the right-hand operand to compute
+/// conv2d (one matmul per (batch, group) sub-block).
+pub const CONV2D_IM2COL: &str = "conv2d_im2col";
 /// GGML Q4_0 block dequantization to f32.
 pub const DEQUANT_Q4_0: &str = "dequant_q4_0";
 /// GGML Q4_K_M super-block dequantization to f32.

@@ -110,6 +110,12 @@ pub struct Pipelines {
     pub concat_along_dim_pipeline: ComputePipeline,
     pub concat_along_dim_layout: PipelineLayout,
 
+    /// Conv2D im2col patches rearrangement. Pairs with the existing
+    /// matmul pipelines: dispatch this first to write the patches
+    /// matrix, then dispatch matmul (weight × patches) per group.
+    pub conv2d_im2col_pipeline: ComputePipeline,
+    pub conv2d_im2col_layout: PipelineLayout,
+
     pub dequant_q4_0_pipeline: ComputePipeline,
     pub dequant_q4_0_layout: PipelineLayout,
 
@@ -267,6 +273,7 @@ impl Pipelines {
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
+        let conv2d_im2col_mod = registry.load_module(device, shaders::CONV2D_IM2COL)?;
         let dequant_q4_0_mod = registry.load_module(device, shaders::DEQUANT_Q4_0)?;
         let dequant_q4_km_mod = registry.load_module(device, shaders::DEQUANT_Q4_KM)?;
         let dequant_q8_0_mod = registry.load_module(device, shaders::DEQUANT_Q8_0)?;
@@ -299,6 +306,8 @@ impl Pipelines {
         let add_assign_scaled_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let rope_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let concat_along_dim_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        // conv2d_im2col uses 1 storage in (x) + 1 storage out (patches) + 1 uniform.
+        let conv2d_im2col_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let dequant_q4_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let dequant_q4_km_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let dequant_q8_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -330,6 +339,7 @@ impl Pipelines {
         let add_assign_scaled_pipeline = ComputePipeline::new(device, &add_assign_scaled_layout, &add_assign_scaled_mod, "main")?;
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
         let concat_along_dim_pipeline = ComputePipeline::new(device, &concat_along_dim_layout, &concat_along_dim_mod, "main")?;
+        let conv2d_im2col_pipeline = ComputePipeline::new(device, &conv2d_im2col_layout, &conv2d_im2col_mod, "main")?;
         let dequant_q4_0_pipeline = ComputePipeline::new(device, &dequant_q4_0_layout, &dequant_q4_0_mod, "main")?;
         let dequant_q4_km_pipeline = ComputePipeline::new(device, &dequant_q4_km_layout, &dequant_q4_km_mod, "main")?;
         let dequant_q8_0_pipeline = ComputePipeline::new(device, &dequant_q8_0_layout, &dequant_q8_0_mod, "main")?;
@@ -361,6 +371,7 @@ impl Pipelines {
             add_assign_scaled_pipeline, add_assign_scaled_layout,
             rope_pipeline, rope_layout,
             concat_along_dim_pipeline, concat_along_dim_layout,
+            conv2d_im2col_pipeline, conv2d_im2col_layout,
             dequant_q4_0_pipeline, dequant_q4_0_layout,
             dequant_q4_km_pipeline, dequant_q4_km_layout,
             dequant_q8_0_pipeline, dequant_q8_0_layout,
