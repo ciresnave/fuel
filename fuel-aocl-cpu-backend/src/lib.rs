@@ -29,6 +29,7 @@
 //! CPU. The Phase 6b dispatch table picks among them by `BackendId`,
 //! not by `DeviceLocation`.
 
+mod dll_path;
 pub mod probe;
 
 use fuel_core_types::{DType, Layout, Result, Shape};
@@ -41,7 +42,14 @@ use fuel_reference_backend::RefTensor;
 /// call, `Err` if the library can't be loaded (or any deeper failure
 /// surfaces). Public so callers that just want a "is AOCL available?"
 /// signal can use it without constructing the backend.
+///
+/// On Windows, this best-effort extends `PATH` with the standard
+/// AOCL BLIS install directory if it isn't already there — see
+/// [`dll_path`] for the discovery order. The AMD installer doesn't
+/// add the BLIS dir to system PATH, so without this, every Windows
+/// run would need a manual `set PATH=...` before invocation.
 pub fn probe_aocl_loadable() -> Result<()> {
+    dll_path::ensure_loadable();
     use aocl_types::Trans;
     let a = [1.0_f32, 2.0, 3.0, 4.0];
     let b = [1.0_f32, 0.0, 0.0, 1.0];
