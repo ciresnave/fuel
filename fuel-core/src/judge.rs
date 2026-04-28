@@ -42,126 +42,17 @@
 
 use crate::probe::ProbeReport;
 use fuel_core_types::probe::{BackendId, DeviceDescriptor};
-use fuel_core_types::{DType, Error, Result, Shape};
-use serde::{Deserialize, Serialize};
-use std::path::Path;
+use fuel_core_types::{DType, Result, Shape};
 use std::time::Instant;
 
-/// Schema version for persisted profile reports. Bump when the
-/// entry layout changes in a way that can't be covered by
-/// `#[serde(default)]`.
-pub const PROFILE_REPORT_VERSION: u32 = 1;
-
-/// A subset of `fuel_graph::Op` covered by the Judge. Adding an
-/// entry here + an impl in [`Judge::measure_single`] adds one axis
-/// to every future profile report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum OpKind {
-    /// Dense matrix multiply, `[M, K] @ [K, N] → [M, N]`.
-    MatMul,
-    /// Elementwise addition of two equally-shaped tensors.
-    AddElementwise,
-}
-
-impl OpKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OpKind::MatMul         => "matmul",
-            OpKind::AddElementwise => "add",
-        }
-    }
-}
-
-impl std::fmt::Display for OpKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Log2-bucketed total element count. A 256×256 matmul input has
-/// 65,536 elements → `size_class = 16`; a 1024×1024 has 1,048,576 →
-/// `size_class = 20`. Two shapes that round to the same size class
-/// share a profile entry.
-///
-/// The bucket axis is deliberately coarse for v1 — no dispatch
-/// table wants to profile every shape the user might throw at it.
-/// When the dispatch table gets shape-sensitive enough to notice
-/// that matmul performance varies per (M, N, K) tile dimension,
-/// swap this for a per-op tuple (e.g. `MatMulSize { m, n, k }`)
-/// without breaking the outer `ProfileEntry` shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SizeClass(pub u8);
-
-impl SizeClass {
-    /// Bucket a raw element count. Saturates at `u8::MAX`.
-    pub fn from_elem_count(n: usize) -> Self {
-        let n = n.max(1);
-        // 64-bit usize floor-log2 via leading_zeros.
-        let log2 = 63 - (n as u64).leading_zeros() as u8;
-        SizeClass(log2)
-    }
-}
-
-/// Single (op_kind, dtype, size_class) × (backend, device_index)
-/// datum produced by one measurement run.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProfileEntry {
-    pub op:            OpKind,
-    pub dtype:         DType,
-    pub size_class:    SizeClass,
-    pub backend:       BackendId,
-    pub device_index:  u32,
-    /// Median wall-clock time per invocation over `iterations`.
-    pub latency_ns:    u64,
-    /// Number of timed iterations that produced `latency_ns`.
-    pub iterations:    u32,
-    /// Max relative element-wise error vs the reference backend's
-    /// output on the same input. Zero by definition for reference-
-    /// backend entries. Finite but potentially large on exotic
-    /// accelerators; the dispatch table uses this to serve "most
-    /// accurate" criteria.
-    pub max_rel_error: f32,
-}
-
-/// A persistable table of every profile measurement the Judge
-/// produced in one run.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProfileReport {
-    pub version: u32,
-    pub entries: Vec<ProfileEntry>,
-}
-
-impl ProfileReport {
-    /// Atomic write to `path` as JSON (via sibling `.tmp` + rename).
-    pub fn save(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_vec_pretty(self)
-            .map_err(|e| Error::Msg(format!("judge: JSON encode failed: {e}")))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &json)
-            .map_err(|e| Error::Msg(format!("judge: write {tmp:?} failed: {e}")))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|e| Error::Msg(format!("judge: rename {tmp:?} → {path:?} failed: {e}")))?;
-        Ok(())
-    }
-
-    /// Load a previously-persisted report. Returns `Ok(None)` on a
-    /// missing file or schema-version mismatch (both are "cache miss,
-    /// re-run the Judge" signals).
-    pub fn load(path: &Path) -> Result<Option<Self>> {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(Error::Msg(format!("judge: read {path:?} failed: {e}"))),
-        };
-        let report: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::Msg(format!("judge: parse {path:?} failed: {e}")))?;
-        if report.version != PROFILE_REPORT_VERSION {
-            return Ok(None);
-        }
-        Ok(Some(report))
-    }
-}
+// Re-export the dispatch types (moved to fuel-core-types so
+// `fuel-graph-router`'s Router can consume them without depending
+// on `fuel-core`). All existing callers `use fuel_core::judge::*`
+// keep working — `ProfileReport::save` / `ProfileReport::load` are
+// inherent methods on the moved type.
+pub use fuel_core_types::dispatch::{
+    OpKind, ProfileEntry, ProfileReport, SizeClass, PROFILE_REPORT_VERSION,
+};
 
 /// Default filename for the persisted profile report.
 pub const PROFILE_REPORT_FILENAME: &str = "judge.json";
@@ -224,6 +115,10 @@ impl Judge {
                 OpSize::Elementwise(1 << 16),
                 OpSize::Elementwise(1 << 20),
             ],
+            // OpKind is `#[non_exhaustive]` — future variants land
+            // here until the Judge gets a measurement strategy for
+            // them. Empty plan = "Judge skips this op silently."
+            _ => Vec::new(),
         }
     }
 

@@ -45,10 +45,15 @@ pub mod residency_eviction;
 pub use residency_eviction::ResidencyEvictionRule;
 
 use fuel_core_types::{bail, Capability, DType, DeviceLocation, HostBuffer, Layout, Result, Shape};
+use fuel_core_types::dispatch::{Criterion, DispatchTable, OpKind, SizeClass};
+use fuel_core_types::probe::BackendId;
 use fuel_graph_cpu::CpuBackend;
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
 use fuel_reference_backend::exec::AnyRefTensor;
 use std::sync::Arc;
+
+#[cfg(feature = "aocl")]
+use fuel_aocl_cpu_backend::AoclBackend;
 
 #[cfg(feature = "vulkan")]
 use fuel_graph_vulkan::{VulkanBackend, VulkanStorage};
@@ -135,6 +140,14 @@ fn same_device(a: &AnyStorage, b: &AnyStorage, op: &str) -> Result<DeviceLocatio
 pub trait DynBackend {
     /// The device identity this backend represents.
     fn device(&self) -> DeviceLocation;
+
+    /// Stable identifier for this backend implementation, matching
+    /// the Phase 6b probe's [`BackendId`]. Routers with multiple
+    /// backends sharing the same `device()` (e.g. CpuBackend and
+    /// AoclBackend both at `DeviceLocation::Cpu`) use this to
+    /// dispatch the right one based on the empirical dispatch
+    /// table's pick.
+    fn backend_id(&self) -> BackendId;
 
     /// Ops this backend implements natively. The Router/scheduler
     /// consults this slice to route nodes, plan transfers, and
@@ -302,9 +315,10 @@ pub trait DynBackend {
 /// backend. `$cast` is the AnyStorage accessor (e.g. `as_cpu`);
 /// `$wrap` is the AnyStorage variant constructor (e.g. `AnyStorage::Cpu`).
 macro_rules! impl_dyn_backend {
-    ($backend:ty, $cast:ident, $wrap:path, $device:expr, $caps:expr) => {
+    ($backend:ty, $cast:ident, $wrap:path, $device:expr, $caps:expr, $backend_id:expr) => {
         impl DynBackend for $backend {
             fn device(&self) -> DeviceLocation { $device }
+            fn backend_id(&self) -> BackendId { $backend_id }
             fn capabilities(&self) -> &[Capability] { $caps }
 
             fn alloc_zeros(&self, shape: &Shape, dtype: DType) -> Result<AnyStorage> {
@@ -567,20 +581,33 @@ const CUDA_CAPABILITIES: &[Capability] = &[
     Capability::MatMulQ4KM,
 ];
 
-impl_dyn_backend!(CpuBackend, as_cpu, AnyStorage::Cpu, DeviceLocation::Cpu, CPU_CAPABILITIES);
+impl_dyn_backend!(CpuBackend, as_cpu, AnyStorage::Cpu, DeviceLocation::Cpu, CPU_CAPABILITIES, BackendId::Cpu);
 
 #[cfg(feature = "vulkan")]
 impl_dyn_backend!(
     VulkanBackend, as_vulkan, AnyStorage::Vulkan,
     DeviceLocation::Vulkan { gpu_id: 0 },
-    VULKAN_CAPABILITIES
+    VULKAN_CAPABILITIES,
+    BackendId::Vulkan
 );
 
 #[cfg(feature = "cuda")]
 impl_dyn_backend!(
     CudaBackend, as_cuda, AnyStorage::Cuda,
     DeviceLocation::Cuda { gpu_id: 0 },
-    CUDA_CAPABILITIES
+    CUDA_CAPABILITIES,
+    BackendId::Cuda
+);
+
+// AOCL is a CPU backend — its storage type is `AnyRefTensor`, the
+// same as `CpuBackend`'s. So `AnyStorage::Cpu` wraps both, and
+// switching between them is a vtable swap rather than a transfer.
+#[cfg(feature = "aocl")]
+impl_dyn_backend!(
+    AoclBackend, as_cpu, AnyStorage::Cpu,
+    DeviceLocation::Cpu,
+    CPU_CAPABILITIES,
+    BackendId::Aocl
 );
 
 // -- Router ----------------------------------------------------------------
@@ -595,6 +622,17 @@ pub struct Router {
     /// "which devices can host this node?" in O(1). Empty today —
     /// filled as part of Phase 4 wiring.
     capability_index: std::collections::HashMap<Capability, Vec<DeviceLocation>>,
+    /// Phase 6b empirical dispatch table. When set, op-dispatch sites
+    /// consult it to pick between competing backends sharing the same
+    /// `DeviceLocation` — e.g. the portable CpuBackend vs an
+    /// AoclBackend at `DeviceLocation::Cpu`. Populated externally by
+    /// `fuel_core::dispatch::populate_dispatch_table()` and passed in
+    /// via [`Router::with_dispatch_table`]. None means no empirical
+    /// data available yet — Router falls through to first-registered.
+    dispatch_table: Option<Arc<DispatchTable>>,
+    /// Selection criterion when consulting `dispatch_table`. Defaults
+    /// to `Criterion::Fastest`.
+    dispatch_criterion: Criterion,
 }
 
 impl Router {
@@ -605,7 +643,28 @@ impl Router {
             backends: Vec::new(),
             default_device: DeviceLocation::Cpu,
             capability_index: std::collections::HashMap::new(),
+            dispatch_table: None,
+            dispatch_criterion: Criterion::Fastest,
         }
+    }
+
+    /// Attach an empirical dispatch table. When set, op-dispatch
+    /// sites consult it to pick between competing backends sharing
+    /// the same `DeviceLocation` (e.g. CpuBackend vs AoclBackend at
+    /// `DeviceLocation::Cpu`). Apps typically obtain the table from
+    /// `fuel_core::dispatch::cached()` after calling
+    /// `populate_dispatch_table()` either eagerly or in a background
+    /// thread.
+    pub fn with_dispatch_table(mut self, table: Arc<DispatchTable>) -> Self {
+        self.dispatch_table = Some(table);
+        self
+    }
+
+    /// Pick the criterion used when consulting the dispatch table.
+    /// Default: `Criterion::Fastest`.
+    pub fn with_dispatch_criterion(mut self, c: Criterion) -> Self {
+        self.dispatch_criterion = c;
+        self
     }
 
     /// Register a backend's capabilities into the router's lookup
@@ -647,6 +706,32 @@ impl Router {
         self.backends.push(b);
         self.default_device = device;
         self
+    }
+
+    /// Attach the AOCL CPU backend (AMD AOCL-BLAS / BLIS) if it
+    /// loads on the current host. Coexists with the portable
+    /// `CpuBackend` at `DeviceLocation::Cpu`; when a dispatch table
+    /// is attached, op-dispatch picks between them per-op.
+    ///
+    /// Returns the Router unchanged on hosts where AOCL isn't
+    /// loadable (no `libaocl_blas` on the dynamic loader path) so
+    /// builders can chain `add_cpu().add_aocl()` unconditionally.
+    #[cfg(feature = "aocl")]
+    pub fn add_aocl(mut self) -> Self {
+        match AoclBackend::try_new() {
+            Ok(backend) => {
+                let b: Arc<dyn DynBackend> = Arc::new(backend);
+                // AOCL announces only the core CPU capabilities; the
+                // capability_index already lists DeviceLocation::Cpu
+                // from the prior add_cpu(), so we skip duplicate-add.
+                self.backends.push(b);
+                self
+            }
+            Err(e) => {
+                eprintln!("Router::add_aocl: AOCL not loadable on this host, skipping: {e}");
+                self
+            }
+        }
     }
 
     /// List all devices capable of running a given op. Returns an
@@ -710,6 +795,46 @@ impl Router {
             .ok_or_else(|| fuel_core_types::Error::Msg(
                 format!("Router: no backend attached for {loc:?}")
             ))
+    }
+
+    /// Find a specific backend by `BackendId` at a given device. Used
+    /// after the dispatch table picks (BackendId, device) — the
+    /// Router still needs to locate the matching attached backend.
+    fn backend_for_id(&self, id: BackendId, loc: DeviceLocation) -> Option<&dyn DynBackend> {
+        self.backends.iter()
+            .find(|b| b.backend_id() == id && b.device() == loc)
+            .map(|b| b.as_ref())
+    }
+
+    /// Pick a backend for a single op based on the empirical
+    /// dispatch table (when present). Falls through to
+    /// `backend_for(target)` if the table is absent, the op isn't
+    /// profiled, or the picked BackendId isn't attached.
+    ///
+    /// `n_elements` is the bucketing input — typically the output
+    /// element count for matmul / unary / binary ops. The dispatch
+    /// table uses log2-bucketed size classes, so off-by-a-few is
+    /// fine; nearest-class lookup handles it.
+    fn pick_for_op(
+        &self,
+        op: OpKind,
+        dtype: DType,
+        n_elements: usize,
+        target: DeviceLocation,
+    ) -> Result<&dyn DynBackend> {
+        if let Some(table) = &self.dispatch_table {
+            let class = SizeClass::from_elem_count(n_elements);
+            if let Some(pick) = table.pick_nearest(op, dtype, class, self.dispatch_criterion) {
+                if let Some(b) = self.backend_for_id(pick.backend, target) {
+                    return Ok(b);
+                }
+                // Pick named a backend that isn't attached to this
+                // Router (compiled out, or the app didn't add it).
+                // Silent fall-through — the table is advisory, not
+                // authoritative.
+            }
+        }
+        self.backend_for(target)
     }
 
     /// Copy a storage to `target` via host round-trip. Source stays
@@ -798,7 +923,12 @@ impl GraphBackend for Router {
         la: &Layout, lb: &Layout,
     ) -> Result<Self::Storage> {
         let dev = same_device(a, b, "matmul")?;
-        self.backend_for(dev)?.matmul(a, b, bmnk, la, lb)
+        // Output element count = batch * m * n. Used to bucket the
+        // op into a SizeClass for the empirical dispatch lookup.
+        let (batch, m, n, _k) = bmnk;
+        let out_elems = batch.max(1) * m * n;
+        self.pick_for_op(OpKind::MatMul, a.dtype(), out_elems, dev)?
+            .matmul(a, b, bmnk, la, lb)
     }
 
     fn unary(

@@ -5,8 +5,10 @@
 //! not yet useful for realize-time dispatch — the router needs
 //! to ask "given this (op, dtype, size_class), which backend wins
 //! under criterion X?" and get a constant-time answer. This
-//! module translates the Judge's raw matrix into that lookup
-//! table.
+//! module hosts the process-wide cache for that table; the table
+//! types themselves live in [`fuel_core_types::dispatch`] so that
+//! `fuel-graph-router`'s `Router` can consume them without
+//! depending on `fuel-core`.
 //!
 //! # Criteria
 //!
@@ -25,252 +27,140 @@
 //!   penalty — steep enough that numerically-unsound fast paths
 //!   don't win by default.
 //!
-//! # Fallback for unprofiled sizes
+//! # Process-wide cache
 //!
-//! The Judge only profiles a discrete set of size classes. A real
-//! dispatch query at runtime arrives with a specific shape; if that
-//! shape's log2-bucket wasn't measured, we fall back to the nearest
-//! profiled class. Near-neighbour lookup is in [`DispatchTable::pick_nearest`].
+//! The dispatch table is hardware-determined: it doesn't depend on
+//! the app, only on the CPU/GPU configuration. So a single
+//! process-wide instance is the right granularity, with three
+//! states:
 //!
-//! # Reference backend
-//!
-//! By default the reference backend is excluded from dispatch picks
-//! — it's there as a correctness oracle, not a production executor.
-//! [`DispatchTable::with_reference_backend`] opts it back in if
-//! you want to force correctness-at-any-cost for a particular path
-//! (debugging, say).
+//! 1. **In-memory** — populated by an explicit
+//!    [`populate_dispatch_table`] call this process. Authoritative.
+//! 2. **On-disk** — persisted from a prior process; the same
+//!    hardware was profiled previously. Lazy-loaded on first
+//!    [`cached`] call.
+//! 3. **Absent** — no profile yet, or hardware changed since the
+//!    persisted profile was taken. Routed ops fall through to the
+//!    Router's default backend until [`populate_dispatch_table`]
+//!    runs successfully.
 
-use crate::judge::{OpKind, ProfileEntry, ProfileReport, SizeClass};
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DType;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use fuel_core_types::Result;
+pub use fuel_core_types::dispatch::{
+    Criterion, DispatchOptions, DispatchTable, OpKind, Pick, ProfileEntry, ProfileReport,
+    SizeClass, DEFAULT_ACCURACY_PENALTY,
+};
 
-/// A selection criterion — what "best" means for a lookup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Criterion {
-    /// Lowest median latency.
-    Fastest,
-    /// Lowest max relative error vs the reference backend.
-    MostAccurate,
-    /// Weighted blend — lower is better. See module docs.
-    Balanced,
+use std::sync::{Arc, OnceLock, RwLock};
+
+/// Process-wide dispatch table. The outer `OnceLock` is set on
+/// first access, with lazy-loaded contents from disk if a prior
+/// run persisted a profile for the current hardware. The inner
+/// `RwLock` exists so [`populate_dispatch_table`] and [`invalidate`]
+/// can update the cache after first access — `OnceLock` alone is
+/// write-once, which would prevent re-profiling on driver upgrades.
+static DISPATCH_TABLE: OnceLock<RwLock<Option<Arc<DispatchTable>>>> = OnceLock::new();
+
+fn slot() -> &'static RwLock<Option<Arc<DispatchTable>>> {
+    DISPATCH_TABLE.get_or_init(|| {
+        // First access this process: try to populate from disk
+        // synchronously. Sub-millisecond if a valid prior profile
+        // exists for the same hardware; returns None otherwise.
+        let initial = try_load_persisted().map(Arc::new);
+        RwLock::new(initial)
+    })
 }
 
-impl Criterion {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Criterion::Fastest      => "fastest",
-            Criterion::MostAccurate => "accurate",
-            Criterion::Balanced     => "balanced",
+/// The currently-active dispatch table, if any.
+///
+/// Returns `None` when no profile has been computed for this
+/// hardware (first run, fresh install, or after [`invalidate`]).
+/// Routed ops should fall through to a default backend in that case.
+///
+/// On the first call this process, lazily attempts to load a prior
+/// run's profile from disk — sub-millisecond on cache hit.
+/// Subsequent calls return without touching the filesystem.
+pub fn cached() -> Option<Arc<DispatchTable>> {
+    slot().read().unwrap().clone()
+}
+
+/// Force-populate the dispatch table by running the probe + judge
+/// matrix and persisting the result.
+///
+/// Idempotent: if a table is already cached (in memory or via the
+/// lazy disk-load on first access), returns immediately. To force a
+/// fresh measurement (driver upgrade, hardware change), call
+/// [`invalidate`] first.
+///
+/// Apps that want zero startup cost should call this from a
+/// background thread; the routed-op path falls through to default
+/// backends until the populate completes. Apps that prefer
+/// determinism should call this on the main thread at startup —
+/// blocks for tens of seconds on first-ever run, instant on every
+/// subsequent run thanks to disk cache.
+pub fn populate_dispatch_table() -> Result<()> {
+    if cached().is_some() { return Ok(()); }
+    let probe = crate::probe::ProbeReport::probe_all();
+    if let Some(p) = crate::probe::default_report_path() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
+        probe.save(&p)?;
     }
-}
-
-impl std::fmt::Display for Criterion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Weight applied to `max_rel_error` in the Balanced criterion's
-/// cost function. Higher = more willing to give up speed for
-/// accuracy. 100 ≈ "1% rel error is worth ~2× latency." Adjust via
-/// [`DispatchTable::with_balanced_penalty`] if your workload is
-/// unusually sensitive.
-pub const DEFAULT_ACCURACY_PENALTY: f64 = 100.0;
-
-/// Lookup key into [`DispatchTable`]. Combines the per-op axes
-/// (what + on what data + how big) with the user's criterion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct DispatchKey {
-    op:         OpKind,
-    dtype:      DType,
-    size_class: SizeClass,
-    criterion:  Criterion,
-}
-
-/// Where the dispatch table decided an op should run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Pick {
-    pub backend:      BackendId,
-    pub device_index: u32,
-}
-
-/// O(1) runtime dispatch table, constructed once from a
-/// [`ProfileReport`] and then queried at realize time.
-#[derive(Debug, Clone)]
-pub struct DispatchTable {
-    entries: HashMap<DispatchKey, Pick>,
-    /// All size classes present for each `(op, dtype)` — sorted
-    /// ascending so `pick_nearest` can do a linear scan for the
-    /// closest profiled bucket. Cheap because the table is built
-    /// once and queried many times.
-    size_index: HashMap<(OpKind, DType), Vec<SizeClass>>,
-    accuracy_penalty: f64,
-    include_reference: bool,
-}
-
-/// Options for building a [`DispatchTable`]. Use
-/// [`DispatchOptions::default`] + the `with_*` setters.
-#[derive(Debug, Clone, Copy)]
-pub struct DispatchOptions {
-    /// Include the reference backend in dispatch picks. Default
-    /// false (reference is an oracle, not a production executor).
-    pub include_reference: bool,
-    /// Weight of `max_rel_error` in the Balanced criterion. Default
-    /// [`DEFAULT_ACCURACY_PENALTY`].
-    pub accuracy_penalty:  f64,
-}
-
-impl Default for DispatchOptions {
-    fn default() -> Self {
-        Self { include_reference: false, accuracy_penalty: DEFAULT_ACCURACY_PENALTY }
-    }
-}
-
-impl DispatchOptions {
-    pub fn with_reference_backend(mut self, include: bool) -> Self {
-        self.include_reference = include;
-        self
-    }
-    pub fn with_balanced_penalty(mut self, k: f64) -> Self {
-        self.accuracy_penalty = k;
-        self
-    }
-}
-
-impl DispatchTable {
-    /// Build a dispatch table from a profile report with default
-    /// options. Reference backend excluded from picks; Balanced
-    /// criterion uses [`DEFAULT_ACCURACY_PENALTY`].
-    pub fn build(report: &ProfileReport) -> Self {
-        Self::build_with(report, DispatchOptions::default())
-    }
-
-    /// Build with customised options — opt the reference backend
-    /// back in, tune the Balanced penalty, etc.
-    pub fn build_with(report: &ProfileReport, opts: DispatchOptions) -> Self {
-        let mut tbl = Self {
-            entries:           HashMap::new(),
-            size_index:        HashMap::new(),
-            accuracy_penalty:  opts.accuracy_penalty,
-            include_reference: opts.include_reference,
-        };
-        tbl.rebuild_from(report);
-        tbl
-    }
-
-    fn rebuild_from(&mut self, report: &ProfileReport) {
-        self.entries.clear();
-        self.size_index.clear();
-
-        // Group entries by (op, dtype, size_class).
-        let mut groups: HashMap<(OpKind, DType, SizeClass), Vec<&ProfileEntry>> = HashMap::new();
-        for e in &report.entries {
-            if !self.include_reference && e.backend == BackendId::Reference {
-                continue;
-            }
-            groups.entry((e.op, e.dtype, e.size_class)).or_default().push(e);
+    let report = crate::judge::Judge::default().run(&probe);
+    if let Some(p) = crate::judge::default_report_path() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-
-        for ((op, dtype, size_class), group) in &groups {
-            for &criterion in &[Criterion::Fastest, Criterion::MostAccurate, Criterion::Balanced] {
-                if let Some(winner) = self.pick_winner(group, criterion) {
-                    let key = DispatchKey { op: *op, dtype: *dtype, size_class: *size_class, criterion };
-                    self.entries.insert(key, Pick {
-                        backend:      winner.backend,
-                        device_index: winner.device_index,
-                    });
-                }
-            }
-            self.size_index.entry((*op, *dtype)).or_default().push(*size_class);
-        }
-
-        for classes in self.size_index.values_mut() {
-            classes.sort_by_key(|s| s.0);
-            classes.dedup();
-        }
+        report.save(&p)?;
     }
+    let table = Arc::new(DispatchTable::build(&report));
+    *slot().write().unwrap() = Some(table);
+    Ok(())
+}
 
-    fn pick_winner<'a>(&self, group: &[&'a ProfileEntry], crit: Criterion) -> Option<&'a ProfileEntry> {
-        match crit {
-            Criterion::Fastest => group.iter().copied()
-                .min_by_key(|e| e.latency_ns),
-            Criterion::MostAccurate => group.iter().copied()
-                .min_by(|a, b| {
-                    a.max_rel_error.total_cmp(&b.max_rel_error)
-                        .then(a.latency_ns.cmp(&b.latency_ns))
-                }),
-            Criterion::Balanced => group.iter().copied()
-                .min_by(|a, b| {
-                    let sa = a.latency_ns as f64 * (1.0 + self.accuracy_penalty * a.max_rel_error as f64);
-                    let sb = b.latency_ns as f64 * (1.0 + self.accuracy_penalty * b.max_rel_error as f64);
-                    sa.total_cmp(&sb)
-                }),
-        }
+/// Drop the in-memory cache and delete the persisted profile on
+/// disk. The next [`populate_dispatch_table`] call will re-run the
+/// probe + judge from scratch.
+///
+/// Use this when an external change has invalidated the existing
+/// profile — driver upgrade, BLAS library swap, OS update —
+/// and you want the next measurement to reflect the new state.
+/// Without this call, [`cached`] would keep returning the stale
+/// in-memory table and [`populate_dispatch_table`] would no-op
+/// because of its idempotence guard.
+pub fn invalidate() -> Result<()> {
+    *slot().write().unwrap() = None;
+    if let Some(p) = crate::probe::default_report_path() {
+        let _ = std::fs::remove_file(&p);
     }
-
-    /// Exact lookup — returns `None` if the requested size class
-    /// wasn't profiled. Use [`Self::pick_nearest`] for a nearest-
-    /// neighbour fallback.
-    pub fn pick(&self, op: OpKind, dtype: DType, size_class: SizeClass, criterion: Criterion) -> Option<Pick> {
-        self.entries.get(&DispatchKey { op, dtype, size_class, criterion }).copied()
+    if let Some(p) = crate::judge::default_report_path() {
+        let _ = std::fs::remove_file(&p);
     }
+    Ok(())
+}
 
-    /// Nearest-neighbour lookup. If `size_class` wasn't measured
-    /// exactly, pick the closest profiled class (ties go to the
-    /// larger class, which is usually the safer scale-up).
-    pub fn pick_nearest(&self, op: OpKind, dtype: DType, size_class: SizeClass, criterion: Criterion) -> Option<Pick> {
-        if let Some(p) = self.pick(op, dtype, size_class, criterion) {
-            return Some(p);
-        }
-        let classes = self.size_index.get(&(op, dtype))?;
-        if classes.is_empty() {
-            return None;
-        }
-        let target = size_class.0 as i32;
-        let nearest = classes.iter()
-            .min_by_key(|c| {
-                let diff = (c.0 as i32 - target).abs();
-                // Tie-break: prefer the larger size class. `(diff,
-                // -c.0 as i32)` would work but we want `(diff,
-                // -larger_bucket_number_in_unique_sort_key)`. Flip
-                // the sign so smaller key = larger bucket wins at
-                // tied diff.
-                (diff, -(c.0 as i32))
-            })?;
-        self.pick(op, dtype, *nearest, criterion)
+/// Try to load a previously-persisted dispatch table from disk.
+/// Returns `None` if anything is missing, the schema versions
+/// mismatch, or the current hardware doesn't match what was probed
+/// when the profile was last saved.
+fn try_load_persisted() -> Option<DispatchTable> {
+    let probe_path = crate::probe::default_report_path()?;
+    let prior_probe = crate::probe::ProbeReport::load(&probe_path).ok().flatten()?;
+    let now_probe = crate::probe::ProbeReport::probe_all();
+    if now_probe.diff(&prior_probe).needs_rejudge() {
+        return None;
     }
-
-    /// Total number of dispatch entries in the table. Useful for
-    /// progress logging.
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
-
-    /// Every distinct `(op, dtype, size_class)` for which the table
-    /// has at least one criterion entry. Returns a sorted Vec (stable
-    /// under repeat calls) — OpKind / DType / SizeClass don't
-    /// implement Ord so the sort is by their string / u8 forms.
-    pub fn keys(&self) -> Vec<(OpKind, DType, SizeClass)> {
-        let mut seen: std::collections::HashSet<(OpKind, DType, SizeClass)> = Default::default();
-        for k in self.entries.keys() {
-            seen.insert((k.op, k.dtype, k.size_class));
-        }
-        let mut out: Vec<_> = seen.into_iter().collect();
-        out.sort_by(|a, b| {
-            a.0.as_str().cmp(b.0.as_str())
-                .then(format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
-                .then(a.2.0.cmp(&b.2.0))
-        });
-        out
-    }
+    let judge_path = crate::judge::default_report_path()?;
+    let report = ProfileReport::load(&judge_path).ok().flatten()?;
+    Some(DispatchTable::build(&report))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::judge::{OpKind, ProfileEntry, ProfileReport, SizeClass, PROFILE_REPORT_VERSION};
+    use crate::judge::PROFILE_REPORT_VERSION;
+    use fuel_core_types::probe::BackendId;
+    use fuel_core_types::DType;
 
     fn entry(backend: BackendId, op: OpKind, size: u8, latency: u64, err: f32) -> ProfileEntry {
         ProfileEntry {
@@ -310,67 +200,36 @@ mod tests {
 
     #[test]
     fn most_accurate_excludes_reference_by_default() {
-        // Reference is EXCLUDED → CPU wins with 1e-6 over CUDA's 1e-4
         let tbl = DispatchTable::build(&sample_report());
         let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::MostAccurate).unwrap();
         assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
     }
 
     #[test]
-    fn most_accurate_with_reference_opt_in() {
+    fn pick_nearest_falls_back_to_largest_class() {
+        let tbl = DispatchTable::build(&sample_report());
+        // Size class 14: not profiled. Nearest are 12 (diff 2) and 16
+        // (diff 2). Tie-break prefers larger → 16 → CPU wins fastest.
+        let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(14), Criterion::Fastest).unwrap();
+        assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
+    }
+
+    #[test]
+    fn build_with_reference_includes_reference() {
         let tbl = DispatchTable::build_with(
             &sample_report(),
             DispatchOptions::default().with_reference_backend(true),
         );
+        // Reference is now a candidate; for size 12 most-accurate, ref's 0.0 wins
         let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::MostAccurate).unwrap();
         assert_eq!(p, Pick { backend: BackendId::Reference, device_index: 0 });
     }
 
     #[test]
-    fn balanced_penalizes_numerically_sketchy_backends() {
-        // At size class 16: CPU=500μs @ 1e-6, CUDA=1000μs @ 1e-3.
-        // Balanced score: CPU ≈ 500_000 × (1 + 100*1e-6) = 500_050
-        //                 CUDA ≈ 1_000_000 × (1 + 100*1e-3) = 1_100_000
-        // CPU wins.
-        let tbl = DispatchTable::build(&sample_report());
-        let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(16), Criterion::Balanced).unwrap();
-        assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
-    }
-
-    #[test]
-    fn pick_returns_none_for_unprofiled_class() {
-        let tbl = DispatchTable::build(&sample_report());
-        assert!(tbl.pick(OpKind::MatMul, DType::F32, SizeClass(20), Criterion::Fastest).is_none());
-    }
-
-    #[test]
-    fn pick_nearest_falls_back_to_closest_profiled_class() {
-        let tbl = DispatchTable::build(&sample_report());
-        // 14 is equidistant from 12 and 16; tie goes to the larger.
-        let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(14), Criterion::Fastest).unwrap();
-        // Size 16: CPU @ 500μs beats CUDA @ 1000μs.
-        assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
-        // Class 18 is closer to 16 than to 12 → pick reflects size 16.
-        let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(18), Criterion::Fastest).unwrap();
-        assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
-        // Class 8 is closer to 12 → pick reflects size 12 (CUDA fastest).
-        let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(8), Criterion::Fastest).unwrap();
-        assert_eq!(p, Pick { backend: BackendId::Cuda, device_index: 0 });
-    }
-
-    #[test]
-    fn pick_nearest_none_when_op_has_no_entries() {
-        let tbl = DispatchTable::build(&sample_report());
-        assert!(tbl.pick_nearest(OpKind::AddElementwise, DType::F32, SizeClass(10), Criterion::Fastest).is_none());
-    }
-
-    #[test]
-    fn dispatch_table_keys_enumerate_all_profiled_classes() {
+    fn keys_returns_distinct_combinations() {
         let tbl = DispatchTable::build(&sample_report());
         let keys = tbl.keys();
-        // Two size classes × one op × one dtype → 2 distinct profiled classes.
+        // Two distinct (op, dtype, size_class) triples in the sample
         assert_eq!(keys.len(), 2);
-        assert!(keys.iter().any(|(op, _, s)| *op == OpKind::MatMul && s.0 == 12));
-        assert!(keys.iter().any(|(op, _, s)| *op == OpKind::MatMul && s.0 == 16));
     }
 }
