@@ -638,55 +638,24 @@ pub fn conv2d<T: Float>(
     let wd = weight.shape().dims();
     assert_eq!(xd.len(), 4, "conv2d: x must be rank 4, got {xd:?}");
     assert_eq!(wd.len(), 4, "conv2d: weight must be rank 4, got {wd:?}");
-    let (n, cin, h, w) = (xd[0], xd[1], xd[2], xd[3]);
-    let (cout, cin_per_g, kh, kw) = (wd[0], wd[1], wd[2], wd[3]);
-    assert_eq!(cin, cin_per_g * groups, "conv2d: channel/groups mismatch");
-    assert_eq!(cout % groups, 0, "conv2d: Cout must be divisible by groups");
-    let cout_per_g = cout / groups;
-    let (stride_h, stride_w) = stride;
-    let (pad_h, pad_w) = padding;
-    let h_out = (h + 2 * pad_h - kh) / stride_h + 1;
-    let w_out = (w + 2 * pad_w - kw) / stride_w + 1;
-
-    let x_data = x.as_slice();
-    let w_data = weight.as_slice();
-    let b_data = bias.map(|b| b.as_slice());
-    let mut out = vec![T::zero(); n * cout * h_out * w_out];
-
-    for ni in 0..n {
-        for g in 0..groups {
-            for co_in_g in 0..cout_per_g {
-                let co = g * cout_per_g + co_in_g;
-                for oh in 0..h_out {
-                    for ow in 0..w_out {
-                        let mut acc = T::zero();
-                        for ci_in_g in 0..cin_per_g {
-                            let ci = g * cin_per_g + ci_in_g;
-                            for ky in 0..kh {
-                                let ih = oh * stride_h + ky;
-                                if ih < pad_h || ih >= h + pad_h { continue; }
-                                let ih = ih - pad_h;
-                                for kx in 0..kw {
-                                    let iw = ow * stride_w + kx;
-                                    if iw < pad_w || iw >= w + pad_w { continue; }
-                                    let iw = iw - pad_w;
-                                    let x_off = ((ni * cin + ci) * h + ih) * w + iw;
-                                    let w_off = ((co * cin_per_g + ci_in_g) * kh + ky) * kw + kx;
-                                    acc = acc + x_data[x_off] * w_data[w_off];
-                                }
-                            }
-                        }
-                        if let Some(bd) = b_data {
-                            acc = acc + bd[co];
-                        }
-                        let out_off = ((ni * cout + co) * h_out + oh) * w_out + ow;
-                        out[out_off] = acc;
-                    }
-                }
-            }
-        }
-    }
-    RefTensor::from_vec(out, Shape::from_dims(&[n, cout, h_out, w_out]))
+    let s = fuel_conv::ConvShape {
+        batch: xd[0], c_in: xd[1], h: xd[2], w: xd[3],
+        c_out: wd[0], k_h: wd[2], k_w: wd[3],
+        stride, padding, groups,
+    };
+    s.validate().expect("conv2d shape validation");
+    let mut out = vec![T::zero(); s.output_len()];
+    fuel_conv::conv2d_direct(
+        x.as_slice(),
+        weight.as_slice(),
+        bias.map(|b| b.as_slice()),
+        &s,
+        &mut out,
+    );
+    RefTensor::from_vec(
+        out,
+        Shape::from_dims(&[s.batch, s.c_out, s.h_out(), s.w_out()]),
+    )
 }
 
 // ---------- reshape --------------------------------------------------------

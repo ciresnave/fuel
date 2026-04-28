@@ -1838,6 +1838,174 @@ impl GraphBackend for VulkanBackend {
         Ok(out)
     }
 
+    fn conv2d(
+        &self,
+        input:  &Self::Storage,
+        weight: &Self::Storage,
+        input_layout:  &Layout,
+        weight_layout: &Layout,
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        // Phase 1 of Vulkan conv2d: im2col + matmul, groups=1 only.
+        // Matches the current CUDA backend's parity surface; depthwise
+        // (groups != 1) will land on both backends together once the
+        // baracuda-cudnn group-count API ships.
+        if groups != 1 {
+            fuel_core_types::bail!(
+                "VulkanBackend::conv2d: groups != 1 not yet supported \
+                 (got groups={groups}); falling back to CPU"
+            );
+        }
+        let i_dims = input_layout.shape().dims();
+        let w_dims = weight_layout.shape().dims();
+        if i_dims.len() != 4 || w_dims.len() != 4 {
+            fuel_core_types::bail!(
+                "VulkanBackend::conv2d: expected rank-4 input + weight, got {i_dims:?} and {w_dims:?}"
+            );
+        }
+        if input.dtype != DType::F32 || weight.dtype != DType::F32 {
+            fuel_core_types::bail!(
+                "VulkanBackend::conv2d: only F32 inputs supported today (got input={:?}, weight={:?})",
+                input.dtype, weight.dtype
+            );
+        }
+        if !input_layout.is_contiguous() || !weight_layout.is_contiguous() {
+            fuel_core_types::bail!(
+                "VulkanBackend::conv2d: strided inputs not supported; \
+                 the executor's materialize_if_needed should have handled this"
+            );
+        }
+        let s = fuel_conv::ConvShape {
+            batch: i_dims[0], c_in: i_dims[1], h: i_dims[2], w: i_dims[3],
+            c_out: w_dims[0], k_h: w_dims[2], k_w: w_dims[3],
+            stride, padding, groups,
+        };
+        s.validate().map_err(|e| fuel_core_types::Error::Msg(
+            format!("VulkanBackend::conv2d: shape validation: {e}")
+        ))?;
+        let h_out = s.h_out();
+        let w_out = s.w_out();
+        let m = s.c_out;                         // weight rows
+        let k_dim = s.c_in_per_group() * s.k_h * s.k_w; // weight cols / patches rows
+        let n = h_out * w_out;                   // patches cols / out spatial
+
+        // Allocate the patches scratch + the output buffer.
+        let patches_n = s.im2col_len();
+        let patches = self.alloc_device((patches_n * 4) as u64, patches_n, DType::F32)?;
+        let out_n = s.output_len();
+        let out = self.alloc_device((out_n * 4) as u64, out_n, DType::F32)?;
+
+        // -------- im2col dispatch --------
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Im2ColParams {
+            batch: u32, c_in: u32, h: u32, w: u32,
+            h_out: u32, w_out: u32,
+            k_h: u32, k_w: u32,
+            stride_h: u32, stride_w: u32,
+            pad_h: u32, pad_w: u32,
+            groups: u32, cin_per_g: u32,
+            total_elements: u32, _pad: u32,
+        }
+        let total = patches_n as u32;
+        let im2col_params = Im2ColParams {
+            batch:    s.batch as u32,
+            c_in:     s.c_in as u32,
+            h:        s.h as u32,
+            w:        s.w as u32,
+            h_out:    h_out as u32,
+            w_out:    w_out as u32,
+            k_h:      s.k_h as u32,
+            k_w:      s.k_w as u32,
+            stride_h: s.stride.0 as u32,
+            stride_w: s.stride.1 as u32,
+            pad_h:    s.padding.0 as u32,
+            pad_w:    s.padding.1 as u32,
+            groups:   s.groups as u32,
+            cin_per_g: s.c_in_per_group() as u32,
+            total_elements: total,
+            _pad: 0,
+        };
+        let (im2col_pbuf, im2col_pmem) = self.upload_params(&im2col_params)?;
+        let im2col_wg = (total + 255) / 256;
+        self.dispatch_2buf(
+            "conv2d_im2col",
+            &self.pipelines.conv2d_im2col_pipeline,
+            &self.pipelines.conv2d_im2col_layout,
+            input, &patches, im2col_pbuf, im2col_pmem,
+            std::mem::size_of::<Im2ColParams>() as u64,
+            im2col_wg, 1, 1,
+        )?;
+
+        // -------- matmul dispatch --------
+        // groups == 1: a single batched matmul where weight broadcasts
+        // across `batch`.
+        //   A = weight,  shape [m, k_dim]    (no batch dim → broadcast)
+        //   B = patches, shape [batch, k_dim, n]
+        //   C = out,     shape [batch, m, n]
+        //
+        // The matmul shader computes a_off = batch * sa_batch and
+        // b_off = (batch / n_rep) * sb_batch. To get A-broadcast +
+        // B-per-batch we set `sa_batch = 0` (so a_off = 0 every batch)
+        // and `n_rep = 1` (so b_off advances per batch). The shader's
+        // n_rep mechanism is GQA-shaped — designed for multiple A
+        // heads sharing one B — which is the opposite of what conv2d
+        // needs, so we don't use it here.
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct MatmulParams {
+            m: u32, n: u32, k: u32,
+            sa_batch: u32, sa_row: u32, sa_col: u32,
+            sb_batch: u32, sb_row: u32, sb_col: u32,
+            sc_batch: u32,
+            n_rep: u32,
+            _pad: u32,
+        }
+        let matmul_params = MatmulParams {
+            m: m as u32, n: n as u32, k: k_dim as u32,
+            sa_batch: 0,                   // A is shared across batches
+            sa_row:   k_dim as u32,
+            sa_col:   1,
+            sb_batch: (k_dim * n) as u32,  // B walks per batch
+            sb_row:   n as u32,
+            sb_col:   1,
+            sc_batch: (m * n) as u32,
+            n_rep:    1,
+            _pad: 0,
+        };
+        let (mm_pbuf, mm_pmem) = self.upload_params(&matmul_params)?;
+        let mm_params_size = std::mem::size_of::<MatmulParams>() as u64;
+        let gz = s.batch as u32;
+
+        // Choose pipeline: M==1 → matvec; otherwise the WGSL register-tile
+        // matmul. (The tiled GLSL variant pays barriers that aren't
+        // worth it for typical conv2d M sizes — c_out is usually 64–512.)
+        if m == 1 {
+            let gx = n as u32;
+            self.dispatch_3buf(
+                "conv2d.matvec",
+                &self.pipelines.matvec_pipeline,
+                &self.pipelines.matvec_layout,
+                weight, &patches, &out, mm_pbuf, mm_pmem, mm_params_size,
+                gx, 1, gz,
+            )?;
+        } else {
+            // WGSL register-tile: 16x16 workgroups, 4x4 output tile each
+            // → groups_x = ceil(n/64), groups_y = ceil(m/64).
+            let gx = ((n + 63) / 64) as u32;
+            let gy = ((m + 63) / 64) as u32;
+            self.dispatch_3buf(
+                "conv2d.matmul",
+                &self.pipelines.matmul_pipeline,
+                &self.pipelines.matmul_layout,
+                weight, &patches, &out, mm_pbuf, mm_pmem, mm_params_size,
+                gx, gy, gz,
+            )?;
+        }
+
+        Ok(out)
+    }
+
     fn matmul_q4_0(
         &self,
         a: &Self::Storage,

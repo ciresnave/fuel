@@ -9,6 +9,7 @@
     version.workspace    = true
 
 [dependencies]
+    fuel-conv              = { workspace = true }
     fuel-core-types        = { workspace = true }
     fuel-graph             = { workspace = true }
     fuel-graph-executor    = { workspace = true }
@@ -32,5 +33,6 @@
     vulkane                = { path = "../../vulkane/vulkane" }
 
 [dev-dependencies]
+    fuel-conv      = { workspace = true }
     fuel-graph-cpu = { workspace = true }
     fuel-core      = { path = "../fuel-core", features = ["vulkan"] }

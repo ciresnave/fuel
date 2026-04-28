@@ -1,0 +1,12 @@
+[package]
+    categories.workspace = true
+    description          = "Reference 2D convolution primitives (im2col + direct loop). Backend-agnostic; consumed by fuel-reference-backend, vendor CPU backends, and as the parity oracle for GPU conv shaders."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-conv"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    num-traits = { workspace = true }
