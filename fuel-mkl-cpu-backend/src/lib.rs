@@ -28,6 +28,7 @@
 //! `AnyStorage::Cpu` wraps all three; switching among them is a
 //! vtable swap, not a transfer.
 
+mod dll_path;
 pub mod probe;
 
 use fuel_core_types::{DType, Layout, Result, Shape};
@@ -42,7 +43,14 @@ use fuel_reference_backend::RefTensor;
 /// returns wrong values. Public so callers that just want a
 /// "is oneMKL available?" signal can use it without constructing the
 /// backend.
+///
+/// On Windows, this best-effort extends `PATH` with the standard
+/// oneMKL bin directory if it isn't already there — see [`dll_path`]
+/// for the discovery order. Without this, a default-launched
+/// `cargo run --features onemkl` would crash with
+/// `STATUS_DLL_NOT_FOUND` unless the user pre-runs `setvars.bat`.
 pub fn probe_mkl_loadable() -> Result<()> {
+    dll_path::ensure_loadable();
     use onemkl::enums::{Layout as MklLayout, Transpose};
     use onemkl::matrix::{MatrixMut, MatrixRef};
 
