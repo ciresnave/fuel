@@ -19,6 +19,7 @@ fuel-cpu-backend = { workspace = true }
 fuel-graph = { workspace = true }
 fuel-graph-cpu = { workspace = true }
 fuel-graph-executor = { workspace = true }
+fuel-graph-router = { workspace = true }
 fuel-reference-backend = { workspace = true }
 hf-hub = { workspace = true }
 serde = { workspace = true }
@@ -95,15 +96,16 @@ mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl"]
 # AMD AOCL-BLAS (BLIS) for CPU. Faster matmul on Zen-class AMD CPUs.
 # Phase 7b spike: links via the out-of-tree `aocl-blas` crate; runs the
 # 2×2 sgemm probe at startup and bails gracefully if libaocl_blas is
-# missing.
-aocl = ["dep:fuel-aocl-cpu-backend"]
+# missing. Pulls fuel-graph-router/aocl so LazyTensor::realize_f32 can
+# route through AOCL when the dispatch table picks it.
+aocl = ["dep:fuel-aocl-cpu-backend", "fuel-graph-router/aocl"]
 
 # Intel oneMKL CPU backend for the lazy-graph layer (Phase 7b). Distinct
 # from the legacy `mkl` feature above (which feeds the eager fuel-cpu-
 # backend's intel-mkl-src linkage). `onemkl` is the lazy-graph path,
 # loading mkl_rt at runtime via the `onemkl` crate. Both can coexist;
 # Phase 6b's judge picks empirically.
-onemkl = ["dep:fuel-mkl-cpu-backend"]
+onemkl = ["dep:fuel-mkl-cpu-backend", "fuel-graph-router/onemkl"]
 
 # Apple Accelerate BLAS for CPU (macOS only). Faster matmul on Apple hardware.
 accelerate = ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate"]
