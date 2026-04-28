@@ -62,6 +62,9 @@ impl ProbeReport {
         Self::collect(&mut devices, "cpu",
             || fuel_cpu_backend::probe::enumerate_devices());
 
+        #[cfg(feature = "aocl")]
+        Self::collect(&mut devices, "aocl",
+            || fuel_aocl_cpu_backend::probe::enumerate_devices());
         #[cfg(feature = "cuda")]
         Self::collect(&mut devices, "cuda",
             || fuel_graph_cuda::probe::enumerate_devices());

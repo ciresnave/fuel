@@ -155,15 +155,87 @@ you have cuDNN installed, use `--features cudnn` for even more speedups.
 Fuel is designed so that a CPU-only build compiles without any GPU toolkit
 installed. GPU support is opt-in via Cargo feature flags:
 
-| Feature      | What it enables                                    | Requires               |
-| ------------ | -------------------------------------------------- | ---------------------- |
-| *(none)*     | CPU-only build. No CUDA or Metal code compiled in. | —                      |
-| `cuda`       | NVIDIA GPU backend (cuBLAS, cuDNN).                | CUDA toolkit ≥ 11      |
-| `cudnn`      | Enables `cuda` + cuDNN accelerated conv/norm ops.  | CUDA toolkit + cuDNN   |
-| `nccl`       | Multi-GPU communication via NVIDIA NCCL.           | CUDA + NCCL runtime    |
-| `metal`      | Apple Silicon / macOS GPU backend (Metal).         | macOS 13+              |
-| `accelerate` | Apple Accelerate BLAS (CPU, macOS only).           | macOS                  |
-| `mkl`        | Intel MKL BLAS (CPU, Linux/Windows).               | Intel MKL installation |
+| Feature      | What it enables                                              | Requires                |
+| ------------ | ------------------------------------------------------------ | ----------------------- |
+| *(none)*     | CPU-only build (portable Rust gemm). No GPU code compiled.   | —                       |
+| `cuda`       | NVIDIA GPU backend (cuBLAS, cuDNN).                          | CUDA toolkit ≥ 11       |
+| `cudnn`      | Enables `cuda` + cuDNN accelerated conv/norm ops.            | CUDA toolkit + cuDNN    |
+| `nccl`       | Multi-GPU communication via NVIDIA NCCL.                     | CUDA + NCCL runtime     |
+| `vulkan`     | Cross-vendor GPU backend via Vulkan (precompiled SPIR-V).    | Vulkan ≥ 1.3 loader     |
+| `metal`      | Apple Silicon / macOS GPU backend (Metal).                   | macOS 13+               |
+| `accelerate` | Apple Accelerate BLAS (CPU, macOS only).                     | macOS                   |
+| `mkl`        | Intel MKL BLAS (CPU, Linux/Windows). Faster on Intel CPUs.   | Intel oneMKL runtime    |
+| `aocl`       | AMD AOCL-BLAS / BLIS (CPU). Faster on Zen-class AMD CPUs.    | AMD AOCL runtime        |
+
+Multiple CPU backends can coexist: with `--features mkl,aocl` both will register
+on startup, the [Phase 6b judge](fuel-core/src/judge.rs) profiles each, and the
+dispatch table picks the winner per `(op, dtype, size_class)` empirically. The
+"wrong" backend for a given CPU (MKL on AMD, AOCL on Intel) just loses the
+profile race — it doesn't break anything, and there's no need to gate via
+`#[cfg(target_arch)]` heuristics.
+
+### Runtime requirements (where the shared libraries come from)
+
+Cargo features enable the *Rust glue*. The actual numerical kernels live in
+vendor-shipped shared libraries that must be resolvable by the OS dynamic
+loader at runtime — not at compile time. `cargo build --features X` succeeds
+without the runtime present; the binary fails on first call when it can't find
+the DLL / `.so` / `.dylib`.
+
+The required runtime library, default install path, and how the OS loader
+finds it for each feature:
+
+**`cuda`** — `nvcuda.dll` / `libcuda.so` from the NVIDIA driver install. The
+driver installer adds it to system `PATH` / `ld.so` config automatically.
+
+**`cudnn`** — `cudnn*.dll` / `libcudnn.so` from the CUDA toolkit or a
+standalone cuDNN install. Add `<cuda>/bin` to `PATH` (Windows) or
+`<cuda>/lib64` to `LD_LIBRARY_PATH` (Linux).
+
+**`vulkan`** — `vulkan-1.dll` / `libvulkan.so.1` from the GPU driver install.
+The driver installer adds it to system `PATH` / `ld.so` config automatically.
+
+**`metal`** / **`accelerate`** — built into macOS. Always available.
+
+**`mkl`** — `mkl_rt.2.dll` / `libmkl_rt.so.2`. Default install paths:
+`C:\Program Files (x86)\Intel\oneAPI\mkl\<ver>` on Windows;
+`/opt/intel/oneapi/mkl/<ver>` on Linux. Run `setvars.bat` / `source setvars.sh`
+from the oneAPI install dir, OR add the MKL `redist` / `lib/intel64` directory
+to `PATH` / `LD_LIBRARY_PATH`.
+
+**`aocl`** — `AOCL-LibBlis-Win-dll.dll` / `libblis.so`. Default install paths:
+`C:\Program Files\AMD\AOCL-Windows\amd-blis\lib\LP64` on Windows;
+`/opt/AMD/aocl-linux-*/aocl-blis/lib/LP64` on Linux. **Not added to system
+`PATH` by the AOCL installer.** Add the `lib/LP64` directory above to `PATH` /
+`LD_LIBRARY_PATH` manually before running.
+
+If a runtime library is missing or off the loader's search path, you'll see
+errors like `STATUS_DLL_NOT_FOUND` (Windows error 0xc0000135) or
+`error while loading shared libraries` (Linux). The fix is always "make the
+directory containing the named library visible to the dynamic loader" —
+either through PATH/LD_LIBRARY_PATH, the OS config files (`/etc/ld.so.conf.d/`
+on Linux), or by copying the DLL next to your executable on Windows.
+
+Backends self-test on startup. `AoclBackend::try_new()` runs a 2×2 sgemm to
+verify the library actually loaded; if the DLL is missing the call returns
+`Err`, the backend doesn't register, and the rest of Fuel transparently falls
+back to other CPU backends. You won't see a hard crash from a missing optional
+runtime — only an `eprintln!` from the probe collector.
+
+### Where to download the vendor runtimes
+
+- **NVIDIA CUDA driver** — [nvidia.com/Download](https://www.nvidia.com/Download/index.aspx).
+  The driver alone is enough; the full CUDA toolkit is not required for
+  `--features cuda` at runtime.
+- **NVIDIA cuDNN** — [developer.nvidia.com/cudnn](https://developer.nvidia.com/cudnn).
+  Requires an NVIDIA developer account.
+- **Vulkan loader** — bundled with GPU drivers (NVIDIA, AMD, Intel, Mesa). The
+  Vulkan SDK is also available at
+  [vulkan.lunarg.com](https://vulkan.lunarg.com/).
+- **Intel oneMKL** —
+  [intel.com → oneAPI → oneMKL](https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html).
+- **AMD AOCL** — [amd.com/en/developer/aocl.html](https://www.amd.com/en/developer/aocl.html).
+  Linux and Windows installers available.
 
 To add a GPU backend when running examples:
 

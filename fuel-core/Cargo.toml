@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
+fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-core-types = { workspace = true, features = ["serde"] }
 fuel-cpu-backend = { workspace = true }
 fuel-graph = { workspace = true }
@@ -89,6 +90,12 @@ nccl = ["cuda", "dep:baracuda-nccl", "fuel-graph-cuda?/nccl"]
 
 # Intel MKL BLAS for CPU (Linux/Windows). Faster matmul on Intel hardware.
 mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl"]
+
+# AMD AOCL-BLAS (BLIS) for CPU. Faster matmul on Zen-class AMD CPUs.
+# Phase 7b spike: links via the out-of-tree `aocl-blas` crate; runs the
+# 2×2 sgemm probe at startup and bails gracefully if libaocl_blas is
+# missing.
+aocl = ["dep:fuel-aocl-cpu-backend"]
 
 # Apple Accelerate BLAS for CPU (macOS only). Faster matmul on Apple hardware.
 accelerate = ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate"]
