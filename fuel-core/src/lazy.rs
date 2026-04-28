@@ -550,6 +550,19 @@ impl LazyTensor {
     ) -> Vec<f32> {
         executor.realize_f32(&self.inner).into_vec()
     }
+
+    /// Realize on the AOCL CPU backend. The executor is owned per call
+    /// to keep parity with the CPU helper above (CPU executors have no
+    /// stateful context to preserve across calls — matmul kernels in
+    /// AOCL-BLAS are stateless). The Judge constructs one executor for
+    /// the whole measurement run and reuses it across iterations.
+    #[cfg(feature = "aocl")]
+    pub fn realize_f32_aocl(
+        &self,
+        executor: &mut GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>,
+    ) -> Vec<f32> {
+        executor.realize_f32(&self.inner).into_vec()
+    }
 }
 
 /// Realize many tensors in a single CPU topo-walk.

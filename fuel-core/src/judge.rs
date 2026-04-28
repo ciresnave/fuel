@@ -288,10 +288,42 @@ impl Judge {
         #[cfg(feature = "vulkan")]
         let mut vulkan_executor: Option<fuel_graph_executor::GraphExecutor<fuel_graph_vulkan::VulkanBackend>> =
             None;
+        #[cfg(feature = "aocl")]
+        let mut aocl_executor: Option<fuel_graph_executor::GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>> =
+            None;
 
         let realize: Box<dyn FnMut(&crate::lazy::LazyTensor) -> Vec<f32>> = match device.backend {
             BackendId::Reference => Box::new(|t| t.realize_f32_reference()),
             BackendId::Cpu       => Box::new(|t| t.realize_f32()),
+            #[cfg(feature = "aocl")]
+            BackendId::Aocl => {
+                let backend = match fuel_aocl_cpu_backend::AoclBackend::try_new() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!(
+                            "judge: skipping aocl:{} — AoclBackend::try_new failed: {e}",
+                            device.device_index,
+                        );
+                        return None;
+                    }
+                };
+                aocl_executor = Some(fuel_graph_executor::GraphExecutor::new(backend));
+                let exe = aocl_executor.as_mut().unwrap();
+                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>
+                    = exe;
+                // SAFETY: same shape as the CUDA / Vulkan arms — exe
+                // lives in the Option on the stack frame that outlives
+                // the closure's lifetime.
+                Box::new(move |t| t.realize_f32_aocl(unsafe { &mut *exe_ptr }))
+            }
+            #[cfg(not(feature = "aocl"))]
+            BackendId::Aocl => {
+                eprintln!(
+                    "judge: skipping aocl:{} — aocl feature not enabled",
+                    device.device_index,
+                );
+                return None;
+            }
             #[cfg(feature = "cuda")]
             BackendId::Cuda => {
                 // One executor per device for the whole measurement
@@ -364,6 +396,8 @@ impl Judge {
         drop(cuda_executor);
         #[cfg(feature = "vulkan")]
         drop(vulkan_executor);
+        #[cfg(feature = "aocl")]
+        drop(aocl_executor);
         entry
     }
 

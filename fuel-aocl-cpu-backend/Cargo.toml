@@ -1,0 +1,18 @@
+[package]
+    categories.workspace = true
+    description          = "AMD AOCL-BLAS-backed CPU executor for the fuel lazy-graph layer."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-aocl-cpu-backend"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    aocl-blas              = { workspace = true }
+    aocl-types             = { workspace = true }
+    fuel-core-types        = { workspace = true }
+    fuel-graph             = { workspace = true }
+    fuel-graph-cpu         = { workspace = true }
+    fuel-graph-executor    = { workspace = true }
+    fuel-reference-backend = { workspace = true }
