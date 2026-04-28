@@ -130,8 +130,11 @@ layout and the README example list.
 
 ## Planned Work
 
-Work is organized into six phases. Later phases depend on earlier ones being
-stable but phases within a group can proceed in parallel.
+Work is organized into nine phases. Later phases depend on earlier ones being
+stable but phases within a group can proceed in parallel. Phase 9 is
+extension hooks for downstream consumers (specifically: an out-of-tree
+agentic library); not gated on the others, just gated on a real consumer
+asking for them.
 
 ---
 
@@ -1352,9 +1355,11 @@ are `Vec<T>`.
   - `MmappedHostStorage` for zero-copy safetensors loading.
   - `PinnedHostStorage` for page-locked GPU DMA memory.
   - `SharedMemHostStorage` for IPC across processes.
-- [ ] **Fix `fuel-core/tests/custom_op_tests.rs`** — still gated with
-      `#![cfg(any())]`. Post-refactor, rewrite against `HostStorage`
-      trait methods with `fuel-cpu-backend` as a dev-dep.
+- [x] **Fix `fuel-core/tests/custom_op_tests.rs`** — no longer gated.
+      Active integration test against the post-refactor public API
+      (`CustomOp1` / `InplaceOp1` / `UgIOp1`), using
+      `fuel_cpu_backend::dyn_impl::CpuBackendStorage` for the
+      downcast pattern.
 
 #### 7b — Vendor-optimized CPU backend crates
 
@@ -1364,30 +1369,49 @@ so there are no feature-flag conflicts across transitive deps. The
 pure-Rust `fuel-cpu-backend` stays the default; these are for users
 who want the last 20-40% of performance out of specific hardware.*
 
-- [ ] **`fuel-mkl-ffi` crate.** Thin FFI wrappers around Intel oneMKL's
-      cblas interface. Adapted from rstsr-mkl-ffi's approach — copy the
-      core wrappers into the Fuel tree so we control the release
-      cadence and can adapt the Rust API to Fuel conventions. Minimal
-      scope: `sgemm`, `dgemm`, a few common LAPACK routines. Can grow
-      as Fuel's op catalog needs more FFI targets.
-- [ ] **`fuel-aocl-ffi` crate.** Same pattern for AMD's AOCL. AOCL is
-      BLIS under the hood with AMD-specific kernel tunings; on Zen 4
-      and Zen 5 it typically wins 10-30% over MKL for large GEMMs.
-      Adapted from rstsr-aocl-ffi.
-- [ ] **`fuel-mkl-cpu-backend` crate.** Depends on `fuel-core-types`
-      (for `HostStorage` and `BackendStorage`) and `fuel-mkl-ffi`.
-      Provides `MklCpuBackendStorage` that wraps any `HostStorage`,
-      implements `BackendStorage`, dispatches matmul / conv / the
-      obvious BLAS targets through MKL, and falls back to `gemm` for
-      anything MKL doesn't have a native implementation of. Builds
-      require the Intel oneMKL runtime to be installed; the crate's
-      README documents the setup.
-- [ ] **`fuel-aocl-cpu-backend` crate.** Same for AOCL. Builds require
-      AMD AOCL runtime to be installed.
-- [ ] **Runtime CPU detection (optional wrapper crate).** A
-      `fuel-cpu-auto-backend` that depends on all three and picks at
-      startup via `raw-cpuid`: Intel → MKL, AMD → AOCL, unknown →
-      pure-Rust. Opt-in; not wired into the default dep chain.
+- [x] **FFI / safe-wrapper crates live OUTSIDE the Fuel workspace.**
+      Architectural decision (2026-04-27): unsafe bindings + safe
+      Rust wrappers for each vendor library are user-maintained
+      standalone projects, not Fuel sub-crates. This keeps Fuel
+      backend-agnostic and lets the wrappers serve other consumers
+      too. Released as of 2026-04-28:
+  - **AOCL**: `aocl-blas-sys`, `aocl-blas`, plus 11 sibling crates
+    for the rest of AOCL. On crates.io.
+  - **oneMKL**: `onemkl-sys` 0.1.0, `onemkl` 0.1.0. On crates.io.
+- [x] **`fuel-aocl-cpu-backend` crate.** Shipped 2026-04-28
+      (commit `05d3adb9`). Wraps `aocl_blas::gemm` for matmul,
+      delegates other ops to `CpuBackend`, runs a 2×2 sgemm probe at
+      `try_new` time. `aocl` Cargo feature on `fuel-core` /
+      `fuel-graph-router` enables it. Windows DLL auto-discovery
+      added 2026-04-28 (commit `89bdbcca`) so `cargo run` works
+      without manual PATH gymnastics.
+- [x] **`fuel-mkl-cpu-backend` crate.** Shipped 2026-04-28
+      (commit `edad5ccd`). Same shape as AOCL: wraps
+      `onemkl::blas::level3::gemm` for matmul, delegates rest. Naming
+      detail: feature flag is `onemkl` not `mkl` because the legacy
+      `mkl` feature on `fuel-core` is the eager-backend
+      `intel-mkl-src` linkage used by ~100 example files; couldn't
+      reuse the name without a sweeping migration. When the eager
+      backend deprecates, `mkl` can be reclaimed.
+- [ ] **`fuel-accelerate-cpu-backend` crate.** Same pattern for
+      Apple Accelerate (macOS). Awaiting a user-side `accelerate`
+      binding crate.
+- [ ] **`fuel-armpl-cpu-backend` crate.** Same pattern for ARM
+      Performance Libraries. Awaiting user-side `armpl` binding
+      crate.
+- [ ] **`fuel-openblas-cpu-backend` crate.** Fallback for ARM and
+      RISC-V where no vendor-tuned BLAS is available. Awaiting
+      user-side `openblas` binding crate.
+- [~] **Runtime CPU detection (`fuel-cpu-auto-backend`).** **Supplanted
+      by Phase 6b/7b's empirical dispatch.** The original idea was a
+      `raw-cpuid`-based startup picker (Intel → MKL, AMD → AOCL,
+      unknown → pure-Rust). Phase 6b ships a stronger answer: the
+      Judge profiles all loaded backends per `(op, dtype, size_class)`
+      and the dispatch table picks the empirical winner. No
+      heuristic-based picker needed; the "wrong" backend on a CPU
+      just loses the profile race silently. Keeping the heuristic
+      picker in addition would be redundant and could disagree with
+      the empirical layer. Not building this crate.
 
 **Naming note**: the crate names are library-named
 (`fuel-mkl-cpu-backend`, `fuel-aocl-cpu-backend`) rather than
@@ -1635,6 +1659,118 @@ headline numbers are partly algorithm and partly hardware.
 
 ---
 
+### Phase 9 — Extension points for downstream agentic libraries
+
+*Not urgent. Future-facing. Gated on a real downstream consumer
+existing — i.e. when a separate agentic / cognitive-architecture
+library on top of Fuel is far enough along to need these hooks. Do
+not pre-build before that consumer exists.*
+
+#### Why Phase 9 exists
+
+A downstream "AGI library" — built on top of Fuel, not as part of
+it — needs to make scheduling and execution decisions that are
+*content-conditioned* (route based on tensor uncertainty, divert
+work on prediction error, persist "inner monologue" state across
+realize calls, distinguish self-state from sensory inputs). Today,
+Fuel's surface lets you set placement hints and define custom ops,
+but doesn't expose enough for an agent runtime to live cleanly above
+without monkey-patching.
+
+The right architectural cut: Fuel provides **theory-neutral
+primitives** (metadata slots, runtime callbacks, persistent values).
+The downstream library defines what GWT / IIT / Active-Inference /
+hybrid semantics mean on top of those primitives. Fuel never ships
+`enum SensoryBus` or `Op::DivertOnPredictionError` — those are the
+agent library's concern, not Fuel's.
+
+#### What this is NOT
+
+- Fuel does not become an AGI framework. The AGI semantics live
+  one layer up.
+- No within-graph cycles. AGI's "inner monologue" is multi-step
+  *streaming*, not a directed cyclic graph. Streaming is implemented
+  by a Rust-level realize loop reading and writing persistent values
+  between realize calls; the graph itself stays acyclic.
+- No `Op::If` / `Op::Branch` in the graph. Conditional execution is
+  Rust-level control flow above the realize loop, not a graph-level
+  primitive. (Same reason every mature ML framework that experimented
+  with in-graph control flow ended up regretting it.)
+
+#### Three deliverables
+
+**9a. Per-tensor user metadata slot.** A small additive change.
+`LazyTensor::with_metadata(Arc<dyn Any + Send + Sync>)` builder +
+`metadata() -> Option<&Arc<...>>` accessor. Metadata travels with
+the lazy graph node, survives optimization passes (canonicalization
+must preserve it), and is observable via `SchedulerRule` callbacks
+and on the realized output. Fuel itself never reads or interprets
+the contents — they're an opaque user payload. Sized: ~1-2 days
+including survival-through-optimizer testing.
+
+**9b. Runtime executor hooks.** Today's `SchedulerRule` runs at
+plan time on the static graph. Add a sibling `RuntimeHook` trait
+that fires after each node's realize:
+
+```rust
+pub trait RuntimeHook: Send + Sync {
+    fn on_node_realized(
+        &self,
+        id: NodeId,
+        op: &Op,
+        output: &dyn DynBackendStorage,
+    ) -> HookAction;
+}
+
+pub enum HookAction {
+    Continue,                 // proceed with the planned next node
+    Skip(NodeId),             // jump execution to a later node
+    Inject(GraphFragment),    // splice new nodes into the plan
+}
+```
+
+Lets the agent library steer execution mid-realize without
+rewriting the executor. Output observation has to handle GPU
+residency cleanly — either lazy host-readback on demand, or
+shape-only metadata for the cheap path. Sized: 1-2 weeks for design
+plus careful implementation. Real value beyond AGI: debugging,
+tracing, checkpointing.
+
+**9c. Named persistent values across realize calls.** Generalize
+KVCache's "pre-populate + survive across realizes" pattern to
+arbitrary user-named handles. `PersistentStore::write(name, tensor)`
+plus `Graph::read_persistent(name)`. Each realize can read and write
+across step boundaries; the agent library's outer realize loop
+threads state by name. Covers "inner monologue," "world model
+across observations," and any other multi-step state pattern.
+Sized: ~1 week — KVCache is most of the work, generalization is
+mostly API shape.
+
+#### Success criteria for Phase 9
+
+- A downstream cognitive-architecture library exists that uses 9a,
+  9b, and 9c to implement at least one published theory of cognition
+  (GWT, IIT, Active Inference, or a hybrid) without modifying Fuel
+  source. The library's behaviour can be reasoned about purely in
+  terms of those three primitives plus normal Rust control flow.
+- Fuel's anti-goals (above) still hold: no AGI semantics, no theory
+  of cognition, no agent abstractions inside Fuel itself.
+- The hooks have at least one non-AGI consumer too (debugging,
+  tracing, checkpointing) — pure single-purpose hooks tend to drift
+  toward the consumer's specific needs over time, which we want to
+  avoid.
+
+#### Order of delivery
+
+9a first (small, additive, immediately useful for diagnostic
+metadata even pre-AGI). 9c next (KVCache generalization is its own
+internal cleanup). 9b last (biggest investment, biggest design
+risk, depends on the executor staying stable for the rest of Phase
+6/7/8). Total: ~3-4 weeks across all three when a consumer needs
+them.
+
+---
+
 ## Anti-goals by layer
 
 These are explicit rules. When a proposed addition fits one of these descriptions,
@@ -1725,22 +1861,27 @@ fuel-core-types (Shape, DType, Layout, BackendStorage trait, errors)
 ### Phase 7 sub-graph (vendor-optimized CPU backends)
 
 ```text
-                            fuel-cpu-auto-backend   (optional runtime dispatch)
-                                      │
-                     ┌────────────────┼────────────────┐
-                     ▼                ▼                ▼
-         fuel-mkl-cpu-backend    fuel-cpu-backend    fuel-aocl-cpu-backend
-                     │            (pure Rust;              │
-                     ▼             gemm under              ▼
-               fuel-mkl-ffi        the hood)         fuel-aocl-ffi
-                     │                                     │
-                     ▼                                     ▼
-              Intel oneMKL runtime                    AMD AOCL runtime
-                 (system lib)                         (system lib)
+                Phase 6b dispatch table  (empirical per-op winner)
+                              │ picks
+       ┌──────────────────────┼──────────────────────────┐
+       ▼                      ▼                          ▼
+ fuel-aocl-cpu-backend  fuel-graph-cpu / fuel-cpu-     fuel-mkl-cpu-backend
+       │                  backend (pure Rust;                │
+       ▼                   gemm under                        ▼
+   aocl-blas               the hood)                      onemkl
+       │                                                    │
+       ▼                                                    ▼
+  AOCL BLIS runtime                                  Intel oneMKL runtime
+   (external crate                                    (external crate
+    aocl-blas-sys)                                     onemkl-sys)
 
-All three implement the same BackendStorage / BackendDevice trait surface
-and operate on HostStorage-backed tensors. Consumers pick one (or several
-via fuel-cpu-auto-backend) at Cargo.toml level; no feature flags.
+All CPU backends implement the same GraphBackend trait surface and share
+AnyRefTensor storage (so switching among them is a vtable swap, not a
+transfer). Consumers enable backends via Cargo features (aocl, onemkl,
+later accelerate / armpl / openblas). Phase 6b's Judge profiles each
+loaded backend; the Router's pick_for_op consults the dispatch table per
+op. No raw-cpuid heuristic picker — empirical wins on data, not on
+vendor brand.
 ```
 
 The backend crate split is the Tier 2 target state from Phase 5. Before that
