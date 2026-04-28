@@ -1,0 +1,324 @@
+//! Cross-crate dispatch table types — Phase 6b's empirical
+//! `(op, dtype, size_class) → (backend, device)` lookup.
+//!
+//! These types live here, not in `fuel-core`, because both
+//! `fuel-core` (which produces tables via the [`Judge`] in its
+//! `judge` module) and `fuel-graph-router` (which consumes them at
+//! op-dispatch time to pick between competing backends) need the
+//! same shapes. The producer-side `Judge` and the
+//! `populate_dispatch_table` / `cached` cache APIs live in
+//! `fuel-core` because they call into `LazyTensor`'s realize path.
+//! Only the data + the pure lookup helpers are here.
+//!
+//! [`Judge`]: https://docs.rs/fuel-core/latest/fuel_core/judge/struct.Judge.html
+
+use crate::DType;
+use crate::probe::BackendId;
+use std::collections::HashMap;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+/// Schema version for persisted profile reports. Bump when the
+/// entry layout changes in a way that can't be covered by
+/// `#[serde(default)]`.
+pub const PROFILE_REPORT_VERSION: u32 = 1;
+
+/// Op kinds the Judge profiles. Adding a variant + a Judge match
+/// arm extends the profile matrix; existing reports parse forward
+/// thanks to `#[non_exhaustive]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
+pub enum OpKind {
+    /// Dense matrix multiply, `[M, K] @ [K, N] → [M, N]`.
+    MatMul,
+    /// Elementwise addition of two equally-shaped tensors.
+    AddElementwise,
+}
+
+impl OpKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OpKind::MatMul         => "matmul",
+            OpKind::AddElementwise => "add",
+        }
+    }
+}
+
+impl std::fmt::Display for OpKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Log2-bucketed total element count. A 256×256 matmul input has
+/// 65,536 elements → `size_class = 16`; a 1024×1024 has 1,048,576 →
+/// `size_class = 20`. Two shapes that round to the same size class
+/// share a profile entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SizeClass(pub u8);
+
+impl SizeClass {
+    /// Bucket a raw element count. Saturates at `u8::MAX`.
+    pub fn from_elem_count(n: usize) -> Self {
+        let n = n.max(1);
+        let log2 = 63 - (n as u64).leading_zeros() as u8;
+        SizeClass(log2)
+    }
+}
+
+/// Single (op_kind, dtype, size_class) × (backend, device_index)
+/// datum produced by one measurement run.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ProfileEntry {
+    pub op:            OpKind,
+    pub dtype:         DType,
+    pub size_class:    SizeClass,
+    pub backend:       BackendId,
+    pub device_index:  u32,
+    /// Median wall-clock time per invocation over `iterations`.
+    pub latency_ns:    u64,
+    /// Number of timed iterations that produced `latency_ns`.
+    pub iterations:    u32,
+    /// Max relative element-wise error vs the reference backend's
+    /// output on the same input.
+    pub max_rel_error: f32,
+}
+
+/// A persistable table of every profile measurement the Judge
+/// produced in one run.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ProfileReport {
+    pub version: u32,
+    pub entries: Vec<ProfileEntry>,
+}
+
+#[cfg(feature = "serde")]
+impl ProfileReport {
+    /// Atomic write to `path` as JSON (sibling `.tmp` + rename).
+    pub fn save(&self, path: &std::path::Path) -> crate::Result<()> {
+        let json = serde_json::to_vec_pretty(self)
+            .map_err(|e| crate::Error::Msg(format!("judge: JSON encode failed: {e}")))?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &json)
+            .map_err(|e| crate::Error::Msg(format!("judge: write {tmp:?} failed: {e}")))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| crate::Error::Msg(format!("judge: rename {tmp:?} → {path:?} failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Load a previously-persisted report. Returns `Ok(None)` on a
+    /// missing file or schema-version mismatch (both are "cache miss,
+    /// re-run the Judge" signals).
+    pub fn load(path: &std::path::Path) -> crate::Result<Option<Self>> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(crate::Error::Msg(format!("judge: read {path:?} failed: {e}"))),
+        };
+        let report: Self = serde_json::from_slice(&bytes)
+            .map_err(|e| crate::Error::Msg(format!("judge: parse {path:?} failed: {e}")))?;
+        if report.version != PROFILE_REPORT_VERSION {
+            return Ok(None);
+        }
+        Ok(Some(report))
+    }
+}
+
+/// A selection criterion — what "best" means for a lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Criterion {
+    /// Lowest median latency.
+    Fastest,
+    /// Lowest max relative error vs the reference backend.
+    MostAccurate,
+    /// Weighted blend — lower is better.
+    Balanced,
+}
+
+impl Criterion {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Criterion::Fastest      => "fastest",
+            Criterion::MostAccurate => "accurate",
+            Criterion::Balanced     => "balanced",
+        }
+    }
+}
+
+impl std::fmt::Display for Criterion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Default weight applied to `max_rel_error` in the Balanced
+/// criterion's cost function.
+pub const DEFAULT_ACCURACY_PENALTY: f64 = 100.0;
+
+/// Lookup key into [`DispatchTable`]. Combines the per-op axes
+/// (what + on what data + how big) with the user's criterion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct DispatchKey {
+    op:         OpKind,
+    dtype:      DType,
+    size_class: SizeClass,
+    criterion:  Criterion,
+}
+
+/// Where the dispatch table decided an op should run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Pick {
+    pub backend:      BackendId,
+    pub device_index: u32,
+}
+
+/// Options for building a [`DispatchTable`].
+#[derive(Debug, Clone, Copy)]
+pub struct DispatchOptions {
+    pub include_reference: bool,
+    pub accuracy_penalty:  f64,
+}
+
+impl Default for DispatchOptions {
+    fn default() -> Self {
+        Self { include_reference: false, accuracy_penalty: DEFAULT_ACCURACY_PENALTY }
+    }
+}
+
+impl DispatchOptions {
+    pub fn with_reference_backend(mut self, include: bool) -> Self {
+        self.include_reference = include;
+        self
+    }
+    pub fn with_balanced_penalty(mut self, k: f64) -> Self {
+        self.accuracy_penalty = k;
+        self
+    }
+}
+
+/// O(1) runtime dispatch table, constructed once from a
+/// [`ProfileReport`] and then queried at realize time.
+#[derive(Debug, Clone)]
+pub struct DispatchTable {
+    entries: HashMap<DispatchKey, Pick>,
+    /// All size classes present for each `(op, dtype)` — sorted
+    /// ascending so `pick_nearest` can do a linear scan for the
+    /// closest profiled bucket.
+    size_index: HashMap<(OpKind, DType), Vec<SizeClass>>,
+    accuracy_penalty: f64,
+    include_reference: bool,
+}
+
+impl DispatchTable {
+    /// Build a dispatch table from a profile report with default options.
+    pub fn build(report: &ProfileReport) -> Self {
+        Self::build_with(report, DispatchOptions::default())
+    }
+
+    pub fn build_with(report: &ProfileReport, opts: DispatchOptions) -> Self {
+        let mut tbl = Self {
+            entries:           HashMap::new(),
+            size_index:        HashMap::new(),
+            accuracy_penalty:  opts.accuracy_penalty,
+            include_reference: opts.include_reference,
+        };
+        tbl.rebuild_from(report);
+        tbl
+    }
+
+    fn rebuild_from(&mut self, report: &ProfileReport) {
+        self.entries.clear();
+        self.size_index.clear();
+        let mut groups: HashMap<(OpKind, DType, SizeClass), Vec<&ProfileEntry>> = HashMap::new();
+        for e in &report.entries {
+            if !self.include_reference && e.backend == BackendId::Reference {
+                continue;
+            }
+            groups.entry((e.op, e.dtype, e.size_class)).or_default().push(e);
+        }
+        for ((op, dtype, size_class), group) in &groups {
+            for &criterion in &[Criterion::Fastest, Criterion::MostAccurate, Criterion::Balanced] {
+                if let Some(winner) = self.pick_winner(group, criterion) {
+                    let key = DispatchKey { op: *op, dtype: *dtype, size_class: *size_class, criterion };
+                    self.entries.insert(key, Pick {
+                        backend:      winner.backend,
+                        device_index: winner.device_index,
+                    });
+                }
+            }
+            self.size_index.entry((*op, *dtype)).or_default().push(*size_class);
+        }
+        for classes in self.size_index.values_mut() {
+            classes.sort_by_key(|s| s.0);
+            classes.dedup();
+        }
+    }
+
+    fn pick_winner<'a>(&self, group: &[&'a ProfileEntry], crit: Criterion) -> Option<&'a ProfileEntry> {
+        match crit {
+            Criterion::Fastest => group.iter().copied()
+                .min_by_key(|e| e.latency_ns),
+            Criterion::MostAccurate => group.iter().copied()
+                .min_by(|a, b| {
+                    a.max_rel_error.total_cmp(&b.max_rel_error)
+                        .then(a.latency_ns.cmp(&b.latency_ns))
+                }),
+            Criterion::Balanced => group.iter().copied()
+                .min_by(|a, b| {
+                    let sa = a.latency_ns as f64 * (1.0 + self.accuracy_penalty * a.max_rel_error as f64);
+                    let sb = b.latency_ns as f64 * (1.0 + self.accuracy_penalty * b.max_rel_error as f64);
+                    sa.total_cmp(&sb)
+                }),
+        }
+    }
+
+    /// Exact lookup — returns `None` if the requested size class
+    /// wasn't profiled.
+    pub fn pick(&self, op: OpKind, dtype: DType, size_class: SizeClass, criterion: Criterion) -> Option<Pick> {
+        self.entries.get(&DispatchKey { op, dtype, size_class, criterion }).copied()
+    }
+
+    /// Nearest-neighbour lookup. Ties go to the larger size class.
+    pub fn pick_nearest(&self, op: OpKind, dtype: DType, size_class: SizeClass, criterion: Criterion) -> Option<Pick> {
+        if let Some(p) = self.pick(op, dtype, size_class, criterion) {
+            return Some(p);
+        }
+        let classes = self.size_index.get(&(op, dtype))?;
+        if classes.is_empty() {
+            return None;
+        }
+        let target = size_class.0 as i32;
+        let nearest = classes.iter()
+            .min_by_key(|c| {
+                let diff = (c.0 as i32 - target).abs();
+                (diff, -(c.0 as i32))
+            })?;
+        self.pick(op, dtype, *nearest, criterion)
+    }
+
+    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+
+    /// Every distinct `(op, dtype, size_class)` for which the table
+    /// has at least one criterion entry. Sorted, stable across calls.
+    pub fn keys(&self) -> Vec<(OpKind, DType, SizeClass)> {
+        let mut seen: std::collections::HashSet<(OpKind, DType, SizeClass)> = Default::default();
+        for k in self.entries.keys() {
+            seen.insert((k.op, k.dtype, k.size_class));
+        }
+        let mut out: Vec<_> = seen.into_iter().collect();
+        out.sort_by(|a, b| {
+            a.0.as_str().cmp(b.0.as_str())
+                .then(format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+                .then(a.2.0.cmp(&b.2.0))
+        });
+        out
+    }
+}
