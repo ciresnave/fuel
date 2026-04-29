@@ -134,7 +134,16 @@ criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------
 # Fuel depends on baracuda's sub-crates directly (not the `baracuda` umbrella)
 # so feature flags stay explicit and transitive weight is minimal per consuming
-# crate. All 42 crates in the baracuda family are published on crates.io.
+# crate. All 46 baracuda crates are published on crates.io.
+#
+# Pinned to alpha.2 even though alpha.3 is live: alpha.3 reshaped the
+# baracuda-cudnn API surface (Handle::create_conv2d → ConvolutionDescriptor::new,
+# baracuda_cudnn_sys::types::* → top-level types, ConvForward struct
+# → convolution_forward standalone fn, CudnnDataType impls dropped for
+# u8/half::f16/half::bf16 in favor of baracuda_types::{Half, BFloat16}).
+# Migrating fuel-graph-cuda::cudnn to the new shape is real work and
+# should be coordinated with the baracuda team. See ROADMAP.md
+# §"CUDA stack restructure" for status.
 baracuda-types      = { version = "0.0.1-alpha.2", features = ["half-crate", "f8-crate"] }
 baracuda-core       = { version = "0.0.1-alpha.2" }
 baracuda-cuda-sys   = { version = "0.0.1-alpha.2" }

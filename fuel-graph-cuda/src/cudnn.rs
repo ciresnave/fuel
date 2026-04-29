@@ -12,10 +12,6 @@ thread_local! {
     static CUDNN: RefCell<HashMap<crate::DeviceId, Arc<Cudnn>>> = HashMap::new().into();
 }
 
-}
-
-}
-
 pub(crate) fn launch_conv2d<
     T: DeviceRepr + WithDType + ValidAsZeroBits + baracuda_cudnn::CudnnDataType,
     Y: baracuda_cudnn::CudnnDataType,
