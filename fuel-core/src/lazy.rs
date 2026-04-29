@@ -1007,6 +1007,31 @@ impl LazyTensor {
         }
     }
 
+    /// Append a [`fuel_graph::Op::FlashAttn`] node. `self` is `q`
+    /// of shape `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]`
+    /// with `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional)
+    /// is `[Hq]`. Returns the attention output, shape `[B, Hq, Sq, D]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attn(
+        &self,
+        k: &Self,
+        v: &Self,
+        alibi_slopes: Option<&Self>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+    ) -> Self {
+        Self {
+            inner: self.inner.flash_attn(
+                &k.inner, &v.inner,
+                alibi_slopes.map(|t| &t.inner),
+                softmax_scale, causal, window_size_left, window_size_right, softcap,
+            ),
+        }
+    }
+
     /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
     /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4

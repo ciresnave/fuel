@@ -274,6 +274,37 @@ pub trait GraphBackend {
         fuel_core_types::bail!("GraphBackend: conv2d not implemented natively")
     }
 
+    /// Multi-head scaled-dot-product attention (FlashAttention-shaped).
+    /// `q` is `[B, Hq, Sq, D]`, `k`/`v` are `[B, Hkv, Sk, D]` with
+    /// `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (if present) is
+    /// `[Hq]`. Output is `[B, Hq, Sq, D]`.
+    ///
+    /// Default impl bails so backends without a native flash-attn
+    /// kernel fall through to CPU fallback. The reference backend
+    /// uses `attention_naive` for the fallback path.
+    #[allow(clippy::too_many_arguments)]
+    fn flash_attn(
+        &self,
+        q: &Self::Storage,
+        k: &Self::Storage,
+        v: &Self::Storage,
+        alibi_slopes: Option<&Self::Storage>,
+        q_layout: &Layout,
+        k_layout: &Layout,
+        v_layout: &Layout,
+        alibi_layout: Option<&Layout>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (q, k, v, alibi_slopes, q_layout, k_layout, v_layout,
+                 alibi_layout, softmax_scale, causal, window_size_left,
+                 window_size_right, softcap);
+        fuel_core_types::bail!("GraphBackend: flash_attn not implemented natively")
+    }
+
     /// 2-D transposed convolution. `input` is `[N, Cin, H, W]`,
     /// `weight` is `[Cin, Cout/groups, Kh, Kw]`. Returns the bare
     /// transposed-conv result; bias compose is done by callers.
@@ -1119,6 +1150,36 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     &input.storage, &weight.storage,
                     &input.layout(), &weight.layout(),
                     *stride, *padding, *output_padding, *dilation, *groups,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                }
+            }
+
+            // -- multi-head attention --
+            //
+            // Inputs: [q, k, v, optional alibi_slopes]. Backends without
+            // a native flash-attn kernel return Err from the default
+            // trait impl; the executor catches it and falls back to
+            // attention_naive via cpu_fallback.
+            Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
+                let q = self.get_gt_c(inputs, 0, cache);
+                let k = self.get_gt_c(inputs, 1, cache);
+                let v = self.get_gt_c(inputs, 2, cache);
+                let alibi = if inputs.len() >= 4 {
+                    Some(self.get_gt_c(inputs, 3, cache))
+                } else {
+                    None
+                };
+                let alibi_layout = alibi.as_ref().map(|t| t.layout());
+                match self.backend.flash_attn(
+                    &q.storage, &k.storage, &v.storage,
+                    alibi.as_ref().map(|t| t.storage.as_ref()),
+                    &q.layout(), &k.layout(), &v.layout(),
+                    alibi_layout.as_ref(),
+                    *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
                 ) {
                     Ok(s) => s,
                     Err(_) => {

@@ -432,6 +432,29 @@ pub enum Op {
         groups:  usize,
     },
 
+    /// Multi-head scaled-dot-product attention (FlashAttention-shaped).
+    ///
+    /// Inputs: `[q, k, v, optional alibi_slopes]`.
+    ///   - `q`: `[B, Hq, Sq, D]`
+    ///   - `k`: `[B, Hkv, Sk, D]`  (Hkv ≤ Hq for GQA; Hq must be a multiple of Hkv)
+    ///   - `v`: `[B, Hkv, Sk, D]`
+    ///   - `alibi_slopes` (optional): `[Hq]`
+    ///
+    /// Output: `[B, Hq, Sq, D]` (same shape as `q`).
+    ///
+    /// Backends without a native flash-attention kernel fall through to
+    /// the executor's CPU fallback, which uses
+    /// `fuel_reference_backend::attention::attention_naive`. The lazy
+    /// node carries enough metadata that the planner can pick a fast
+    /// kernel where one exists.
+    FlashAttn {
+        softmax_scale:     f32,
+        causal:            bool,
+        window_size_left:  Option<usize>,
+        window_size_right: Option<usize>,
+        softcap:           Option<f32>,
+    },
+
     /// 2-D transposed convolution (a.k.a. fractionally-strided / "deconv").
     ///
     /// Inputs: `[x, weight]` (no bias — composed externally if needed).
@@ -577,6 +600,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::ScatterAdd{..}       => "ScatterAdd",
         Op::Conv2D{..}           => "Conv2D",
         Op::ConvTranspose2D{..}  => "ConvTranspose2D",
+        Op::FlashAttn{..}        => "FlashAttn",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
@@ -1386,6 +1410,67 @@ impl Tensor {
             op: Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups },
             inputs: vec![self.id, weight.id],
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a [`Op::FlashAttn`] node. `self` is `q` of shape
+    /// `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]` with
+    /// `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional) is
+    /// `[Hq]`. Returns a tensor with `q`'s shape.
+    pub fn flash_attn(
+        &self,
+        k: &Tensor,
+        v: &Tensor,
+        alibi_slopes: Option<&Tensor>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+    ) -> Tensor {
+        assert!(Rc::ptr_eq(&self.graph, &k.graph), "flash_attn: q + k must live on the same graph");
+        assert!(Rc::ptr_eq(&self.graph, &v.graph), "flash_attn: q + v must live on the same graph");
+        if let Some(a) = alibi_slopes {
+            assert!(Rc::ptr_eq(&self.graph, &a.graph), "flash_attn: alibi_slopes must live on the same graph");
+        }
+        let q_dims = self.shape();
+        let q_dims = q_dims.dims();
+        let k_dims = k.shape();
+        let k_dims = k_dims.dims();
+        let v_dims = v.shape();
+        let v_dims = v_dims.dims();
+        assert_eq!(q_dims.len(), 4, "flash_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}");
+        assert_eq!(k_dims.len(), 4, "flash_attn: k must be rank 4 [B, Hkv, Sk, D], got {k_dims:?}");
+        assert_eq!(v_dims.len(), 4, "flash_attn: v must be rank 4 [B, Hkv, Sk, D], got {v_dims:?}");
+        let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
+        let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
+        assert_eq!(b, bk, "flash_attn: B mismatch q vs k ({b} vs {bk})");
+        assert_eq!(b, bv, "flash_attn: B mismatch q vs v");
+        assert_eq!(hkv, hkv_v, "flash_attn: Hkv mismatch k vs v");
+        assert_eq!(sk, sk_v, "flash_attn: Sk mismatch k vs v");
+        assert_eq!(d, dk, "flash_attn: head_dim mismatch q vs k");
+        assert_eq!(d, dv, "flash_attn: head_dim mismatch q vs v");
+        assert_eq!(hq % hkv, 0, "flash_attn: Hq={hq} must be a multiple of Hkv={hkv}");
+        if let Some(a) = alibi_slopes {
+            let ad = a.shape();
+            let ad = ad.dims();
+            assert_eq!(ad, &[hq], "flash_attn: alibi_slopes must be [Hq={hq}], got {ad:?}");
+        }
+        let dtype = self.dtype();
+        let mut inputs = vec![self.id, k.id, v.id];
+        if let Some(a) = alibi_slopes {
+            inputs.push(a.id);
+        }
+        let id = self.graph.borrow_mut().push(Node {
+            op: Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap },
+            inputs,
+            shape: Shape::from_dims(&[b, hq, sq, d]),
             dtype,
         });
         Self {
@@ -3911,6 +3996,22 @@ impl Tensor {
                         "Tensor::backward: Op::ConvTranspose2D does not \
                          yet have its own gradient rule (only used \
                          in the forward path of Conv2D's backward).",
+                    );
+                }
+                Op::FlashAttn { .. } => {
+                    // Backward via recompute is implemented in
+                    // fuel_reference_backend::attention::attention_flash_backward.
+                    // Wiring it as a graph rewrite needs three new
+                    // gradient nodes (dQ, dK, dV) plus the recompute
+                    // pass — sized as a follow-up. Today's lazy
+                    // gradient is undefined for FlashAttn; users who
+                    // need training-on-attention should compose
+                    // attention from matmul + softmax (which has
+                    // working gradients) until the rule lands.
+                    panic!(
+                        "Tensor::backward: Op::FlashAttn does not \
+                         yet have a gradient rule. Compose attention \
+                         from matmul + softmax for differentiable use.",
                     );
                 }
             }

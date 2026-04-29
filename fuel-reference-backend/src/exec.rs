@@ -337,6 +337,12 @@ pub fn eval_node_with_op(
         Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
             eval_conv_transpose2d(*stride, *padding, *output_padding, *dilation, *groups, inputs, cache)
         }
+        Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
+            eval_flash_attn(
+                *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
+                inputs, cache,
+            )
+        }
 
         // --- dtype, shape, and broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
@@ -764,6 +770,48 @@ fn eval_conv_transpose2d(
         (a, b) => panic!(
             "conv_transpose2d: unsupported operand dtype combination x={:?} w={:?}",
             a.dtype(), b.dtype(),
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_flash_attn(
+    softmax_scale:     f32,
+    causal:            bool,
+    window_size_left:  Option<usize>,
+    window_size_right: Option<usize>,
+    softcap:           Option<f32>,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    use crate::attention::{attention_naive, AttentionParams};
+    let q = cache.get(&inputs[0]).expect("flash_attn: missing q");
+    let k = cache.get(&inputs[1]).expect("flash_attn: missing k");
+    let v = cache.get(&inputs[2]).expect("flash_attn: missing v");
+    let alibi = inputs.get(3).and_then(|id| cache.get(id));
+    let p = AttentionParams {
+        softmax_scale,
+        causal,
+        window_size_left,
+        window_size_right,
+        softcap,
+    };
+    match (q, k, v, alibi) {
+        (AnyRefTensor::F32(q), AnyRefTensor::F32(k), AnyRefTensor::F32(v), Some(AnyRefTensor::F32(a))) => {
+            AnyRefTensor::F32(attention_naive(q, k, v, Some(a), &p))
+        }
+        (AnyRefTensor::F32(q), AnyRefTensor::F32(k), AnyRefTensor::F32(v), None) => {
+            AnyRefTensor::F32(attention_naive(q, k, v, None, &p))
+        }
+        (AnyRefTensor::F64(q), AnyRefTensor::F64(k), AnyRefTensor::F64(v), Some(AnyRefTensor::F64(a))) => {
+            AnyRefTensor::F64(attention_naive(q, k, v, Some(a), &p))
+        }
+        (AnyRefTensor::F64(q), AnyRefTensor::F64(k), AnyRefTensor::F64(v), None) => {
+            AnyRefTensor::F64(attention_naive(q, k, v, None, &p))
+        }
+        (qa, ka, va, alba) => panic!(
+            "flash_attn: unsupported operand dtype combination q={:?} k={:?} v={:?} alibi={:?}",
+            qa.dtype(), ka.dtype(), va.dtype(), alba.map(|t| t.dtype()),
         ),
     }
 }
