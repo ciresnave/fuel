@@ -250,15 +250,16 @@ pub trait GraphBackend {
     /// just the conv result — bias add (if any) is composed by the
     /// executor as a separate broadcast-add over the c_out axis.
     ///
-    /// Default impl bails so non-CUDA backends fall through to CPU
-    /// fallback in the executor's `Op::Conv2D` arm. Backends that
-    /// implement native conv2d (CUDA today) override this.
+    /// Default impl bails so backends without native conv2d fall
+    /// through to CPU fallback in the executor's `Op::Conv2D` arm.
+    /// Backends that implement native conv2d (CUDA, Vulkan, AOCL, MKL)
+    /// override this.
     ///
-    /// Restrictions in v1: symmetric stride / padding (`stride.0 ==
-    /// stride.1` and `padding.0 == padding.1`), `groups == 1`. The
-    /// executor checks these *before* calling and dispatches to CPU
-    /// fallback for the asymmetric / grouped cases without ever
-    /// hitting this method.
+    /// Contract: symmetric stride / padding (`stride.0 == stride.1`
+    /// and `padding.0 == padding.1`) — the executor screens this
+    /// before calling. `groups` may be any value; backends that
+    /// don't support `groups > 1` should `bail!` and the executor
+    /// falls back to CPU.
     fn conv2d(
         &self,
         input:        &Self::Storage,
@@ -988,15 +989,17 @@ impl<B: GraphBackend> GraphExecutor<B> {
             // that don't implement native conv2d return Err from the
             // default trait impl and we fall through to cpu_fallback.
             //
-            // CPU fallback is also used when stride/padding are
-            // asymmetric or groups != 1 (the v1 native dispatch
-            // doesn't cover those cases — depthwise convs and
-            // YOLOv8-style stride-2 with non-uniform padding).
+            // CPU fallback is used for asymmetric stride/padding (no
+            // backend handles those today) and for any case the backend
+            // can't take — including groups != 1 on backends that don't
+            // implement grouped conv (Vulkan, im2col-fallback CUDA).
+            // CUDA-cuDNN, AOCL, and MKL all handle groups > 1 natively
+            // and the executor lets them try.
             Op::Conv2D { stride, padding, groups } => {
                 let input  = self.get_gt_c(inputs, 0, cache);
                 let weight = self.get_gt_c(inputs, 1, cache);
                 let symmetric = stride.0 == stride.1 && padding.0 == padding.1;
-                if !symmetric || *groups != 1 {
+                if !symmetric {
                     return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
                 }
                 let conv_storage = match self.backend.conv2d(
