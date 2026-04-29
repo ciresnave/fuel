@@ -43,6 +43,7 @@
 //! (lazy execution and autonomous scheduling). Every other backend and every
 //! fused kernel must pass oracle-equivalence against it before landing.
 
+pub mod attention;
 pub mod exec;
 pub mod ops;
 pub mod probe;
