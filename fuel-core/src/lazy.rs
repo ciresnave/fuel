@@ -1006,6 +1006,27 @@ impl LazyTensor {
             ),
         }
     }
+
+    /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
+    /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
+    /// (note transposed channel order vs `conv2d`). Returns a rank-4
+    /// lazy tensor `[N, Cout, Hout, Wout]`.
+    pub fn conv_transpose2d(
+        &self,
+        weight: &Self,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+    ) -> Self {
+        Self {
+            inner: self.inner.conv_transpose2d(
+                &weight.inner,
+                stride, padding, output_padding, dilation, groups,
+            ),
+        }
+    }
 }
 
 // ---- safetensors integration -----------------------------------------------
