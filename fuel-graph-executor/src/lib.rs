@@ -274,6 +274,30 @@ pub trait GraphBackend {
         fuel_core_types::bail!("GraphBackend: conv2d not implemented natively")
     }
 
+    /// 2-D transposed convolution. `input` is `[N, Cin, H, W]`,
+    /// `weight` is `[Cin, Cout/groups, Kh, Kw]`. Returns the bare
+    /// transposed-conv result; bias compose is done by callers.
+    ///
+    /// Default impl bails so backends without native support fall
+    /// through to CPU fallback in the executor's `Op::ConvTranspose2D`
+    /// arm.
+    fn conv_transpose2d(
+        &self,
+        input:         &Self::Storage,
+        weight:        &Self::Storage,
+        input_layout:  &Layout,
+        weight_layout: &Layout,
+        stride:         (usize, usize),
+        padding:        (usize, usize),
+        output_padding: (usize, usize),
+        dilation:       (usize, usize),
+        groups:         usize,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (input, weight, input_layout, weight_layout,
+                 stride, padding, output_padding, dilation, groups);
+        fuel_core_types::bail!("GraphBackend: conv_transpose2d not implemented natively")
+    }
+
     /// Quantize an F32 storage buffer to GGML Q8_0 blocks (34 bytes per
     /// 32 elements). Returns a U32-typed storage holding the raw block
     /// byte stream. Used for KV-cache compression between decode steps.
@@ -1044,6 +1068,28 @@ impl<B: GraphBackend> GraphExecutor<B> {
                             // for the whole conv2d.
                             return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
                         }
+                    }
+                }
+            }
+
+            // -- transposed convolution --
+            //
+            // Inputs: [input, weight]. Used for upsamplers and as the
+            // dX half of Conv2D's gradient rule. Asymmetric stride /
+            // padding / dilation is forwarded to the backend as-is —
+            // unlike Conv2D, no symmetry pre-screen, since the
+            // backward path produces non-square cases naturally.
+            Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
+                let input  = self.get_gt_c(inputs, 0, cache);
+                let weight = self.get_gt_c(inputs, 1, cache);
+                match self.backend.conv_transpose2d(
+                    &input.storage, &weight.storage,
+                    &input.layout(), &weight.layout(),
+                    *stride, *padding, *output_padding, *dilation, *groups,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
                     }
                 }
             }
