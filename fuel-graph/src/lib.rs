@@ -432,6 +432,27 @@ pub enum Op {
         groups:  usize,
     },
 
+    /// 2-D transposed convolution (a.k.a. fractionally-strided / "deconv").
+    ///
+    /// Inputs: `[x, weight]` (no bias — composed externally if needed).
+    ///   - `x`:      `[N, Cin, H, W]`
+    ///   - `weight`: `[Cin, Cout/groups, Kh, Kw]` (note transposed
+    ///     channel order vs `Conv2D`)
+    ///
+    /// Output shape: `[N, Cout, Hout, Wout]` where
+    ///   Hout = (H − 1)·stride.0 − 2·pad.0 + dil.0·(Kh − 1) + out_pad.0 + 1
+    ///   Wout = (W − 1)·stride.1 − 2·pad.1 + dil.1·(Kw − 1) + out_pad.1 + 1
+    ///
+    /// Used directly for Stable Diffusion-style upsamplers and as the
+    /// `dX` half of `Conv2D`'s gradient rule.
+    ConvTranspose2D {
+        stride:         (usize, usize),
+        padding:        (usize, usize),
+        output_padding: (usize, usize),
+        dilation:       (usize, usize),
+        groups:         usize,
+    },
+
     // --- cross-device transfer ---
     /// Copy the input tensor to a specific device. Source stays
     /// resident (non-destructive). Source device is implicit from
@@ -555,6 +576,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::IndexAdd{..}         => "IndexAdd",
         Op::ScatterAdd{..}       => "ScatterAdd",
         Op::Conv2D{..}           => "Conv2D",
+        Op::ConvTranspose2D{..}  => "ConvTranspose2D",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
@@ -1289,6 +1311,80 @@ impl Tensor {
         let id = self.graph.borrow_mut().push(Node {
             op: Op::Conv2D { stride, padding, groups },
             inputs,
+            shape: Shape::from_dims(&[n, cout, h_out, w_out]),
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a [`Op::ConvTranspose2D`] node. `self` must be
+    /// `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
+    /// (note transposed channel order vs `conv2d`). Returns a rank-4
+    /// tensor `[N, Cout, Hout, Wout]`.
+    ///
+    /// Panics if ranks don't match, channel counts are inconsistent
+    /// with `groups`, or output spatial dims would be non-positive.
+    pub fn conv_transpose2d(
+        &self,
+        weight: &Tensor,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+    ) -> Tensor {
+        assert!(
+            Rc::ptr_eq(&self.graph, &weight.graph),
+            "conv_transpose2d: x and weight must live on the same graph",
+        );
+        assert!(groups >= 1, "conv_transpose2d: groups must be ≥ 1, got {groups}");
+        let x_dims = self.shape();
+        let x_dims = x_dims.dims();
+        let w_dims = weight.shape();
+        let w_dims = w_dims.dims();
+        assert_eq!(
+            x_dims.len(), 4,
+            "conv_transpose2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
+        );
+        assert_eq!(
+            w_dims.len(), 4,
+            "conv_transpose2d: weight must be rank 4 [Cin, Cout/groups, Kh, Kw], got {w_dims:?}",
+        );
+        let (n, cin, h_in, w_in) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
+        let (cin_w, cout_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
+        assert_eq!(
+            cin, cin_w,
+            "conv_transpose2d: x has {cin} in-channels but weight has {cin_w}",
+        );
+        assert_eq!(
+            cin % groups, 0,
+            "conv_transpose2d: Cin={cin} must be divisible by groups={groups}",
+        );
+        let cout = cout_per_g * groups;
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+        let (out_pad_h, out_pad_w) = output_padding;
+        let (dil_h, dil_w) = dilation;
+        assert!(stride_h >= 1 && stride_w >= 1, "conv_transpose2d: stride must be ≥ 1");
+        assert!(dil_h >= 1 && dil_w >= 1, "conv_transpose2d: dilation must be ≥ 1");
+        // Hout = (Hin − 1)·stride − 2·pad + dil·(K − 1) + out_pad + 1
+        let h_out = (h_in.saturating_sub(1)) * stride_h
+            + dil_h * (kh - 1) + out_pad_h + 1;
+        let w_out = (w_in.saturating_sub(1)) * stride_w
+            + dil_w * (kw - 1) + out_pad_w + 1;
+        assert!(
+            h_out > 2 * pad_h && w_out > 2 * pad_w,
+            "conv_transpose2d: padding ({pad_h}×{pad_w}) is larger than the produced output dims",
+        );
+        let h_out = h_out - 2 * pad_h;
+        let w_out = w_out - 2 * pad_w;
+        let dtype = self.dtype();
+        let id = self.graph.borrow_mut().push(Node {
+            op: Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups },
+            inputs: vec![self.id, weight.id],
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
             dtype,
         });
@@ -3631,18 +3727,190 @@ impl Tensor {
                     let x = inputs[0];
                     accumulate_grad(&mut upstream, x, up_id, &graph_handle);
                 }
-                Op::Conv2D { .. } => {
-                    // Backward for Conv2D is straightforward in
-                    // principle (transposed-conv for x-grad, correlation
-                    // for w-grad, sum-over-NHW for bias-grad) but needs
-                    // its own set of ops and rule family. Not required
-                    // for Phase 6a forward-path anchor validation.
-                    // When an anchor or task needs conv backward,
-                    // extend this arm with the standard rules.
+                Op::Conv2D { stride, padding, groups } => {
+                    // Forward: Y = conv2d(X, W; stride, pad, groups).
+                    //   X: [N, Cin, H, W]   W: [Cout, Cin/g, Kh, Kw]
+                    //   Y: [N, Cout, Hout, Wout]
+                    //
+                    // Backward:
+                    //   dX = conv_transpose2d(dY, W; stride, pad, ?, dil=1, groups)
+                    //        — output_padding chosen so the unpadded
+                    //        spatial dims of dX match X's.
+                    //   dW = conv2d(X^T_NC, dY^T_NC; stride=dil, pad=pad, groups)^T_NC
+                    //        — i.e. swap N/C on both, run a regular
+                    //        conv with strides/dilations swapped, then
+                    //        swap N/C of the result. This expresses the
+                    //        sum-over-NHW correlation as a gemm.
+                    //   dB (if present) = sum dY over (N, H, W) — bias
+                    //        is composed externally, so we don't have a
+                    //        direct bias edge here; the broadcast-add
+                    //        in the executor's Op::Conv2D arm absorbs
+                    //        the bias-grad path through standard rules.
+                    let x      = inputs[0];
+                    let weight = inputs[1];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let w_shape = node_shape(&graph_handle, weight);
+                    let dtype = node_dtype(&graph_handle, x);
+
+                    // --- dX via transposed conv ---
+                    // ConvTranspose2D's natural output before subtracting
+                    // padding is (Hin−1)·s + (Kh−1) + 1 + out_pad. We
+                    // want dX's unpadded dims = X's spatial dims, so:
+                    //   out_pad = X.h − ((dY.h−1)·s + (Kh−1) + 1) + 2·pad
+                    let x_dims = x_shape.dims();
+                    let w_dims = w_shape.dims();
+                    let dy_dims = node_shape(&graph_handle, id).dims().to_vec();
+                    let (sh, sw) = stride;
+                    let (ph, pw) = padding;
+                    let (kh, kw) = (w_dims[2], w_dims[3]);
+                    let (h_in, w_in) = (x_dims[2], x_dims[3]);
+                    let (dy_h, dy_w) = (dy_dims[2], dy_dims[3]);
+                    // base unpadded h_out from ConvTranspose2D formula
+                    let base_h = (dy_h - 1) * sh + (kh - 1) + 1;
+                    let base_w = (dy_w - 1) * sw + (kw - 1) + 1;
+                    let want_h = h_in + 2 * ph;
+                    let want_w = w_in + 2 * pw;
+                    let out_pad_h = want_h.saturating_sub(base_h);
+                    let out_pad_w = want_w.saturating_sub(base_w);
+
+                    // For groups=1, Conv2D's weight `[Cout, Cin, Kh, Kw]`
+                    // is what ConvTranspose2D expects directly: its
+                    // "Cin_input" is the input's Cin (= Cout of forward
+                    // conv = dY's Cin) and "Cout/g" is the output's Cin
+                    // (= Cin of forward conv). No permute needed.
+                    // groups>1 needs a per-group weight reshape — punt.
+                    if groups != 1 {
+                        panic!(
+                            "Tensor::backward: Op::Conv2D groups>1 backward \
+                             not yet implemented (got groups={groups}). The \
+                             stride/padding/groups=1 case is wired; grouped \
+                             backward needs a per-group weight reshape.",
+                        );
+                    }
+                    let perm_01 = vec![1usize, 0, 2, 3];
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::ConvTranspose2D {
+                            stride,
+                            padding,
+                            output_padding: (out_pad_h, out_pad_w),
+                            dilation: (1, 1),
+                            groups,
+                        },
+                        vec![up_id, weight],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+
+                    // --- dW via correlation expressed as a conv2d ---
+                    // X.transpose(0, 1):  [Cin, N, H, W]
+                    // dY.transpose(0, 1): [Cout, N, Hout, Wout]
+                    // conv2d(X^T, dY^T, stride=1, padding=pad, dil=stride):
+                    //   out: [Cin, Cout, kh, kw]
+                    // .transpose(0, 1): [Cout, Cin, kh, kw] = w_shape.
+                    //
+                    // The dilation-equals-forward-stride trick is the
+                    // standard way to express stride-S backward as a
+                    // dilation-S forward. Today's lazy Op::Conv2D
+                    // doesn't carry a dilation field — for stride=1
+                    // (dilation=1) this works directly; for stride>1
+                    // we need to either add dilation to Conv2D or
+                    // CPU-fall-back. Punt the stride>1 case for now.
+                    if sh != 1 || sw != 1 {
+                        panic!(
+                            "Tensor::backward: Op::Conv2D stride>1 backward \
+                             not yet implemented (got stride={stride:?}). \
+                             Op::Conv2D needs a `dilation` field to express \
+                             this without composing extra ops.",
+                        );
+                    }
+                    let x_swapped_shape = {
+                        let d = x_dims;
+                        Shape::from_dims(&[d[1], d[0], d[2], d[3]])
+                    };
+                    let x_swapped = push_node(
+                        &graph_handle,
+                        Op::Permute(perm_01.clone()),
+                        vec![x],
+                        x_swapped_shape,
+                        dtype,
+                    );
+                    let dy_swapped_shape = Shape::from_dims(&[
+                        dy_dims[1], dy_dims[0], dy_dims[2], dy_dims[3],
+                    ]);
+                    let dy_swapped = push_node(
+                        &graph_handle,
+                        Op::Permute(perm_01.clone()),
+                        vec![up_id],
+                        dy_swapped_shape,
+                        dtype,
+                    );
+                    // Output of conv2d(X^T_NC, dY^T_NC) is [Cin, Cout, kh, kw];
+                    // permute(1,0,2,3) → [Cout, Cin, kh, kw] = w_shape.
+                    let conv_out_shape = Shape::from_dims(&[
+                        w_dims[1], w_dims[0], w_dims[2], w_dims[3],
+                    ]);
+                    let grad_w_pre_transpose = push_node(
+                        &graph_handle,
+                        Op::Conv2D {
+                            stride: (1, 1),
+                            padding,
+                            groups: 1,
+                        },
+                        vec![x_swapped, dy_swapped],
+                        conv_out_shape,
+                        dtype,
+                    );
+                    let grad_w = push_node(
+                        &graph_handle,
+                        Op::Permute(perm_01),
+                        vec![grad_w_pre_transpose],
+                        w_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, weight, grad_w, &graph_handle);
+
+                    // Bias (if any, inputs[2]) — sum dY over N, H, W.
+                    // Bias arrives as shape [Cout] but the executor's
+                    // forward path reshapes it to [1, Cout, 1, 1] before
+                    // broadcasting against [N, Cout, Hout, Wout]. The
+                    // backward of broadcast_to is reduce_sum_to, which
+                    // requires its target shape be broadcast-compatible
+                    // *into* dY's shape — `[Cout]` is not (rank-1 doesn't
+                    // align). Reduce to `[1, Cout, 1, 1]` first, then
+                    // reshape back to `[Cout]`.
+                    if inputs.len() >= 3 {
+                        let bias = inputs[2];
+                        let bias_shape = node_shape(&graph_handle, bias);
+                        let cout_4d = Shape::from_dims(&[1, dy_dims[1], 1, 1]);
+                        let reduced = push_node(
+                            &graph_handle,
+                            Op::ReduceSumTo(cout_4d.clone()),
+                            vec![up_id],
+                            cout_4d,
+                            dtype,
+                        );
+                        let grad_b = push_node(
+                            &graph_handle,
+                            Op::Reshape(bias_shape.clone()),
+                            vec![reduced],
+                            bias_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, bias, grad_b, &graph_handle);
+                    }
+                }
+                Op::ConvTranspose2D { .. } => {
+                    // Higher-order grad of the transposed conv isn't
+                    // needed for Conv2D's backward (which only consumes
+                    // the forward output). Adding it requires the same
+                    // dilation-as-stride trick as Conv2D's dW. Punt
+                    // until a real consumer asks for it.
                     panic!(
-                        "Tensor::backward: Op::Conv2D does not yet have a \
-                         gradient rule. Conv2D is a forward-only primitive \
-                         for Phase 6a's inference-focused anchor suite.",
+                        "Tensor::backward: Op::ConvTranspose2D does not \
+                         yet have its own gradient rule (only used \
+                         in the forward path of Conv2D's backward).",
                     );
                 }
             }
@@ -3941,6 +4209,36 @@ mod tests {
         let w = x.const_f32_like(vec![0.0_f32; 4 * 1 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
         assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
+    }
+
+    #[test]
+    fn conv_transpose2d_builder_emits_node_with_right_shape() {
+        // Hin=4, Kh=3, s=2, pad=1, out_pad=1 → Hout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]));
+        let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3 * 3], Shape::from_dims(&[2, 3, 3, 3]));
+        let y = x.conv_transpose2d(&w, (2, 2), (1, 1), (1, 1), (1, 1), 1);
+        assert_eq!(y.shape().dims(), &[1, 3, 8, 8]);
+    }
+
+    #[test]
+    fn conv2d_backward_grads_have_input_shapes() {
+        // Forward Y = conv2d(X, W) with stride=1, pad=1, groups=1 keeps H,W.
+        // Backward should produce dX with X's shape and dW with W's shape.
+        let x = Tensor::from_f32(
+            (0..(1*2*4*4)).map(|i| (i as f32) * 0.05 - 0.5).collect::<Vec<f32>>(),
+            Shape::from_dims(&[1, 2, 4, 4]),
+        );
+        let w = x.const_f32_like(
+            (0..(3*2*3*3)).map(|i| (i as f32) * 0.07 - 0.4).collect::<Vec<f32>>(),
+            Shape::from_dims(&[3, 2, 3, 3]),
+        );
+        let y = x.conv2d(&w, None, (1, 1), (1, 1), 1);
+        let scalar_out = y.sum_all();
+        let grads = scalar_out.backward();
+        let dx = grads.get(&x).expect("conv2d backward produced no dX");
+        let dw = grads.get(&w).expect("conv2d backward produced no dW");
+        assert_eq!(dx.shape().dims(), x.shape().dims());
+        assert_eq!(dw.shape().dims(), w.shape().dims());
     }
 
     #[test]

@@ -334,6 +334,9 @@ pub fn eval_node_with_op(
         Op::Conv2D { stride, padding, groups } => {
             eval_conv2d(*stride, *padding, *groups, inputs, cache)
         }
+        Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
+            eval_conv_transpose2d(*stride, *padding, *output_padding, *dilation, *groups, inputs, cache)
+        }
 
         // --- dtype, shape, and broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
@@ -735,6 +738,32 @@ fn eval_conv2d(
         (a, b_, c_) => panic!(
             "conv2d: unsupported operand dtype combination x={:?} w={:?} bias={:?}",
             a.dtype(), b_.dtype(), c_.map(|t| t.dtype()),
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_conv_transpose2d(
+    stride:         (usize, usize),
+    padding:        (usize, usize),
+    output_padding: (usize, usize),
+    dilation:       (usize, usize),
+    groups:         usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let x = cache.get(&inputs[0]).expect("conv_transpose2d: missing x");
+    let w = cache.get(&inputs[1]).expect("conv_transpose2d: missing weight");
+    match (x, w) {
+        (AnyRefTensor::F32(x), AnyRefTensor::F32(w)) => {
+            AnyRefTensor::F32(ops::conv_transpose2d(x, w, stride, padding, output_padding, dilation, groups))
+        }
+        (AnyRefTensor::F64(x), AnyRefTensor::F64(w)) => {
+            AnyRefTensor::F64(ops::conv_transpose2d(x, w, stride, padding, output_padding, dilation, groups))
+        }
+        (a, b) => panic!(
+            "conv_transpose2d: unsupported operand dtype combination x={:?} w={:?}",
+            a.dtype(), b.dtype(),
         ),
     }
 }

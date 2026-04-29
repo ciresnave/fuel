@@ -658,6 +658,88 @@ pub fn conv2d<T: Float>(
     )
 }
 
+/// Textbook 2-D transposed convolution (a.k.a. "deconv"). Bit-match
+/// reference for `Op::ConvTranspose2D`.
+///
+/// Inputs:
+///   - `x`:      `[N, Cin, H, W]`
+///   - `weight`: `[Cin, Cout/groups, Kh, Kw]` (note transposed channel
+///     order vs `conv2d`)
+///
+/// Output `[N, Cout, Hout, Wout]` with
+///   Hout = (H − 1)·stride.0 − 2·pad.0 + dil.0·(Kh − 1) + out_pad.0 + 1
+///   Wout = (W − 1)·stride.1 − 2·pad.1 + dil.1·(Kw − 1) + out_pad.1 + 1
+///
+/// Written as the obvious nested-loop form: scatter each input element
+/// into the output through every kernel position. Slow but correct.
+#[allow(clippy::too_many_arguments)]
+pub fn conv_transpose2d<T: Float>(
+    x: &RefTensor<T>,
+    weight: &RefTensor<T>,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    output_padding: (usize, usize),
+    dilation: (usize, usize),
+    groups: usize,
+) -> RefTensor<T> {
+    let xd = x.shape().dims();
+    let wd = weight.shape().dims();
+    assert_eq!(xd.len(), 4, "conv_transpose2d: x must be rank 4, got {xd:?}");
+    assert_eq!(wd.len(), 4, "conv_transpose2d: weight must be rank 4, got {wd:?}");
+    let (n, cin, h_in, w_in) = (xd[0], xd[1], xd[2], xd[3]);
+    let (cin_w, cout_per_g, kh, kw) = (wd[0], wd[1], wd[2], wd[3]);
+    assert_eq!(cin, cin_w, "conv_transpose2d: x has {cin} in-channels but weight has {cin_w}");
+    assert_eq!(cin % groups, 0, "conv_transpose2d: Cin={cin} must be divisible by groups={groups}");
+    let cin_per_g = cin / groups;
+    let cout = cout_per_g * groups;
+    let (sh, sw) = stride;
+    let (ph, pw) = padding;
+    let (oph, opw) = output_padding;
+    let (dh, dw) = dilation;
+    let h_out_unpadded = (h_in.saturating_sub(1)) * sh + dh * (kh - 1) + oph + 1;
+    let w_out_unpadded = (w_in.saturating_sub(1)) * sw + dw * (kw - 1) + opw + 1;
+    assert!(
+        h_out_unpadded > 2 * ph && w_out_unpadded > 2 * pw,
+        "conv_transpose2d: padding larger than produced output dims",
+    );
+    let h_out = h_out_unpadded - 2 * ph;
+    let w_out = w_out_unpadded - 2 * pw;
+    let xs = x.as_slice();
+    let ws = weight.as_slice();
+    let mut out = vec![T::zero(); n * cout * h_out * w_out];
+    for ni in 0..n {
+        for g in 0..groups {
+            for ic_in_g in 0..cin_per_g {
+                let ic = g * cin_per_g + ic_in_g;
+                for oc_in_g in 0..cout_per_g {
+                    let oc = g * cout_per_g + oc_in_g;
+                    for h in 0..h_in {
+                        for w in 0..w_in {
+                            let xv = xs[((ni * cin + ic) * h_in + h) * w_in + w];
+                            for ki in 0..kh {
+                                for kj in 0..kw {
+                                    // Transposed conv scatters: each input pixel
+                                    // contributes to a kh×kw region in output.
+                                    let oh_unpadded = h * sh + ki * dh;
+                                    let ow_unpadded = w * sw + kj * dw;
+                                    if oh_unpadded < ph || ow_unpadded < pw { continue; }
+                                    let oh = oh_unpadded - ph;
+                                    let ow = ow_unpadded - pw;
+                                    if oh >= h_out || ow >= w_out { continue; }
+                                    let wv = ws[(((ic * cout_per_g) + oc_in_g) * kh + ki) * kw + kj];
+                                    let off = ((ni * cout + oc) * h_out + oh) * w_out + ow;
+                                    out[off] = out[off] + xv * wv;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    RefTensor::from_vec(out, Shape::from_dims(&[n, cout, h_out, w_out]))
+}
+
 // ---------- reshape --------------------------------------------------------
 
 /// Reshape a tensor to a new shape. The element count of the new shape
