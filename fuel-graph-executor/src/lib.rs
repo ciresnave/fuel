@@ -727,6 +727,39 @@ impl<B: GraphBackend> GraphExecutor<B> {
         self.injected.insert(node_id, TrackedTensor::new(storage, shape));
     }
 
+    /// Per-node eval wrapper that catches panics and re-panics with
+    /// graph-location context prepended. Mirrors what
+    /// `fuel_reference_backend::exec::eval_node_with_graph_context`
+    /// does for the reference backend, so realize-time panics from
+    /// either backend tell you "Node#1734 (Conv2D, ...)" instead of
+    /// just "shape mismatch".
+    fn eval_node_with_graph_context(
+        &mut self,
+        graph: &fuel_graph::Graph,
+        id: NodeId,
+        op: &Op,
+        inputs: &[NodeId],
+        shape: &Shape,
+        dtype: fuel_core_types::DType,
+        cache: &std::collections::HashMap<NodeId, CacheEntry<B::Storage>>,
+    ) -> CacheEntry<B::Storage> {
+        use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.eval_node(op, inputs, shape, dtype, cache)
+        }));
+        match result {
+            Ok(t) => t,
+            Err(payload) => {
+                let original = panic_payload_to_string(&payload);
+                let location = graph.describe_node(id);
+                let msg = format!(
+                    "fuel-graph-executor realize: panic at {location}\n  original panic: {original}"
+                );
+                resume_unwind(Box::new(msg))
+            }
+        }
+    }
+
     /// Resolve the (possibly-rewritten) root NodeIds for a slice of
     /// tensor handles. When optimization is disabled this is a noop
     /// identity map. When enabled it runs the optimizer pass, which
@@ -753,7 +786,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
-            let entry = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+            let entry = self.eval_node_with_graph_context(&graph, id, &node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
             // If this op destroyed an input (Op::Release et al.), drop
             // the input from cache — derive_ordering guaranteed every
@@ -790,7 +823,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
-            let entry = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+            let entry = self.eval_node_with_graph_context(&graph, id, &node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
             // Drop destroyed input from cache once a destructive op runs —
             // ordering guarantees no downstream reader still needs it.
@@ -835,7 +868,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
-            let entry = self.eval_node(&node.op, &node.inputs, &node.shape, node.dtype, &cache);
+            let entry = self.eval_node_with_graph_context(&graph, id, &node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
             if let Some(d_idx) = node.op.destructive_input() {
                 if let Some(&destroyed) = node.inputs.get(d_idx) {
@@ -1562,6 +1595,12 @@ impl<B: GraphBackend> GraphExecutor<B> {
 }
 
 // ---- free-function helpers --------------------------------------------------
+
+fn panic_payload_to_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&'static str>() { return s.to_string(); }
+    if let Some(s) = p.downcast_ref::<String>()       { return s.clone();     }
+    "<non-string panic payload>".to_string()
+}
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
