@@ -387,4 +387,39 @@ mod tests {
             assert!(rel < 1e-4, "at index {i}: mkl={o}, ref={r} (rel {rel})");
         }
     }
+
+    /// MKL must agree with the reference backend on a depthwise
+    /// conv2d (groups = c_in = c_out). Validates that the executor's
+    /// post-screen-removal lets `groups > 1` reach the MKL backend
+    /// instead of CPU-falling-back.
+    #[test]
+    fn mkl_depthwise_conv2d_matches_reference_when_available() {
+        let backend = match MklBackend::try_new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("MKL not available, skipping: {e}");
+                return;
+            }
+        };
+        let (n, c, h, w) = (1usize, 4, 6, 6);
+        let (k, pad) = (3, 1);
+        let x = Tensor::from_f32(
+            (0..(n * c * h * w)).map(|i| ((i as f32) * 1.3e-2).sin()).collect::<Vec<_>>(),
+            Shape::from_dims(&[n, c, h, w]),
+        );
+        let weight = x.const_f32_like(
+            (0..(c * 1 * k * k)).map(|i| ((i as f32) * 1.7e-2).cos()).collect::<Vec<_>>(),
+            Shape::from_dims(&[c, 1, k, k]),
+        );
+        let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c);
+        let mut exe = fuel_graph_executor::GraphExecutor::new(backend);
+        let out = exe.realize_f32(&y).into_vec();
+        let reference = fuel_reference_backend::exec::realize_f32(&y).into_vec();
+        assert_eq!(out.len(), reference.len());
+        for (i, (&o, &r)) in out.iter().zip(reference.iter()).enumerate() {
+            let denom = o.abs().max(r.abs()).max(f32::MIN_POSITIVE);
+            let rel = (o - r).abs() / denom;
+            assert!(rel < 1e-4, "at index {i}: mkl={o}, ref={r} (rel {rel})");
+        }
+    }
 }
