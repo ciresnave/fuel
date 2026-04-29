@@ -137,6 +137,9 @@ pub struct ParamsConv2D {
     pub stride: usize,
     /// Dilation factor applied to the kernel.
     pub dilation: usize,
+    /// Number of groups for grouped convolution. `1` is regular convolution;
+    /// `c_in` is depthwise. Groups must divide both `c_in` and `c_out`.
+    pub groups: usize,
     /// Optional cuDNN algorithm selection for the forward pass.
     pub cudnn_fwd_algo: Option<CudnnFwdAlgo>,
 }

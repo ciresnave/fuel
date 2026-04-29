@@ -2279,14 +2279,12 @@ impl CudaStorage {
         let l_out = params.l_out();
         let dst_el = params.c_out * l_out * params.b_size;
         let slice = match (&self.slice, &kernel.slice) {
-            (S::U8(inp), S::U8(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<u8>(dst_el)? };
-                crate::cudnn::launch_conv1d::<u8, u8>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::U8(out)
-            }
+            // cuDNN's INT8 path is signed (i8); Fuel's u8 storage variant
+            // has no signed counterpart, so we surface an error instead of
+            // a silent reinterpret cast.
+            (S::U8(_), S::U8(_)) => Err(CudaError::InternalError(
+                "conv1d does not support u8 (cuDNN INT8 is signed)"
+            ))?,
             (S::BF16(inp), S::BF16(k)) => {
                 let inp = &inp.slice(inp_l.start_offset()..inp.len());
                 let k = &k.slice(kernel_l.start_offset()..k.len());
@@ -2403,6 +2401,13 @@ impl CudaStorage {
     ) -> Result<Self> {
         const USE_IM2COL_CONV2D: bool = true;
 
+        if params.groups != 1 {
+            fuel_core_types::bail!(
+                "CUDA im2col conv2d fallback does not support groups>1 (got groups={}); enable the `cudnn` feature for grouped/depthwise conv",
+                params.groups,
+            );
+        }
+
         let device = self.device().clone();
         if !USE_IM2COL_CONV2D {
             let slice = Conv2D(params).map(&self.slice, l, &kernel.slice, kernel_l, &device)?;
@@ -2464,14 +2469,12 @@ impl CudaStorage {
         let (out_w, out_h) = (params.out_w(), params.out_h());
         let dst_el = params.c_out * out_w * out_h * params.b_size;
         let slice = match (&self.slice, &kernel.slice) {
-            (S::U8(inp), S::U8(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<u8>(dst_el)? };
-                crate::cudnn::launch_conv2d::<u8, u8>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::U8(out)
-            }
+            // cuDNN's INT8 path is signed (i8); Fuel's u8 storage variant
+            // has no signed counterpart, so we surface an error instead of
+            // a silent reinterpret cast.
+            (S::U8(_), S::U8(_)) => Err(CudaError::InternalError(
+                "conv2d does not support u8 (cuDNN INT8 is signed)"
+            ))?,
             (S::BF16(inp), S::BF16(k)) => {
                 let inp = &inp.slice(inp_l.start_offset()..inp.len());
                 let k = &k.slice(kernel_l.start_offset()..k.len());

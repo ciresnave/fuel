@@ -357,22 +357,10 @@ fn convnext_cuda_matches_reference() {
 
 /// CUDA grouped (depthwise) conv2d via cuDNN's set_group_count.
 ///
-/// **Currently `#[ignore]`d.** baracuda alpha.3 added
-/// `cudnnSetConvolutionGroupCount` (the API needed for this) but
-/// also reshaped the cudnn surface (Handle methods → standalone
-/// functions, ConvolutionDescriptor field shape, `cudnn_sys::types`
-/// module relocation, CudnnDataType impls dropped for u8 / half::*).
-/// Migrating fuel-graph-cuda::cudnn to alpha.3 is real work; tracked
-/// in ROADMAP under "CUDA stack restructure". Once the migration
-/// lands, drop the `#[ignore]` and this test exercises the depthwise
-/// path natively. With alpha.2, the path bails at CudaBackend::conv2d
-/// and falls through to CPU reference — the test would tautologically
-/// pass.
-///
 /// Shape mirrors the ConvNeXt depthwise op: 7×7 kernel, stride 1,
-/// padding 3, groups == c_in == c_out.
+/// padding 3, groups == c_in == c_out. Requires the `cudnn` feature
+/// (im2col fallback bails on groups>1).
 #[test]
-#[ignore]
 fn cuda_depthwise_conv2d_matches_reference() {
     if !cuda_present() { return; }
     let (n, c, h, w_sz) = (1usize, 16, 8, 8);

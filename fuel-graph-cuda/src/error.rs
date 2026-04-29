@@ -17,6 +17,14 @@ pub enum CudaError {
     #[error(transparent)]
     Curand(#[from] baracuda_curand::Error),
 
+    #[cfg(feature = "cudnn")]
+    #[error(transparent)]
+    Cudnn(#[from] baracuda_cudnn::Error),
+
+    #[cfg(feature = "cudnn")]
+    #[error(transparent)]
+    CudnnLoader(#[from] baracuda_core::LoaderError),
+
     #[error("missing kernel '{module_name}'")]
     MissingKernel { module_name: String },
 
