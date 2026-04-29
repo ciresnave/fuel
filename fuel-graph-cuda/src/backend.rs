@@ -69,13 +69,13 @@ impl GraphBackend for CudaBackend {
         padding: (usize, usize),
         groups:  usize,
     ) -> fuel_core_types::Result<Self::Storage> {
-        // Executor pre-screened: symmetric stride/padding, groups==1.
-        // Translate to ParamsConv2D and dispatch to the existing
-        // CudaStorage::conv2d (im2col + matmul, or cuDNN if the
-        // `cudnn` feature is on).
-        if stride.0 != stride.1 || padding.0 != padding.1 || groups != 1 {
+        // Executor pre-screened: symmetric stride/padding. Grouped /
+        // depthwise convolution flows through cuDNN's native group_count
+        // (no per-group chunking) when the `cudnn` feature is on; the
+        // im2col fallback path still requires groups==1.
+        if stride.0 != stride.1 || padding.0 != padding.1 {
             fuel_core_types::bail!(
-                "CudaBackend::conv2d: only symmetric stride/padding + groups=1 supported (got stride={stride:?} padding={padding:?} groups={groups})"
+                "CudaBackend::conv2d: only symmetric stride/padding supported (got stride={stride:?} padding={padding:?})"
             );
         }
         let i_dims = input_layout.shape().dims();
@@ -96,6 +96,7 @@ impl GraphBackend for CudaBackend {
             padding: padding.0,
             stride:  stride.0,
             dilation: 1,
+            groups,
             cudnn_fwd_algo: None,
         };
         input.conv2d(input_layout, weight, weight_layout, &params)

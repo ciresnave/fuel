@@ -263,6 +263,10 @@ impl Tensor {
             padding,
             stride,
             dilation,
+            // Eager path handles groups by per-group chunking + concat, so each
+            // chunk runs as a single-group conv. The graph backend takes the
+            // native cuDNN-grouped path and sets a non-1 value here.
+            groups: 1,
             cudnn_fwd_algo,
         };
         if groups == 1 {
