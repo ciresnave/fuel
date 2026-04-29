@@ -355,6 +355,39 @@ fn convnext_cuda_matches_reference() {
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
 }
 
+/// CUDA grouped (depthwise) conv2d via cuDNN's set_group_count.
+///
+/// **Currently `#[ignore]`d.** baracuda alpha.3 added
+/// `cudnnSetConvolutionGroupCount` (the API needed for this) but
+/// also reshaped the cudnn surface (Handle methods → standalone
+/// functions, ConvolutionDescriptor field shape, `cudnn_sys::types`
+/// module relocation, CudnnDataType impls dropped for u8 / half::*).
+/// Migrating fuel-graph-cuda::cudnn to alpha.3 is real work; tracked
+/// in ROADMAP under "CUDA stack restructure". Once the migration
+/// lands, drop the `#[ignore]` and this test exercises the depthwise
+/// path natively. With alpha.2, the path bails at CudaBackend::conv2d
+/// and falls through to CPU reference — the test would tautologically
+/// pass.
+///
+/// Shape mirrors the ConvNeXt depthwise op: 7×7 kernel, stride 1,
+/// padding 3, groups == c_in == c_out.
+#[test]
+#[ignore]
+fn cuda_depthwise_conv2d_matches_reference() {
+    if !cuda_present() { return; }
+    let (n, c, h, w_sz) = (1usize, 16, 8, 8);
+    let k = 7;
+    let pad = 3;
+    let x_data: Vec<f32> = (0..(n * c * h * w_sz))
+        .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+    let w_data: Vec<f32> = (0..(c * 1 * k * k))
+        .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
+    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]));
+    let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
+    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c); // groups = c → depthwise
+    assert_cuda_oracle(&y, 5e-4, 5e-4);
+}
+
 #[test]
 fn yolov8_cuda_matches_reference() {
     if !cuda_present() { return; }
