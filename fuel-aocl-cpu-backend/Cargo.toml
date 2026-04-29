@@ -11,6 +11,7 @@
 [dependencies]
     aocl-blas              = { workspace = true }
     aocl-types             = { workspace = true }
+    fuel-conv              = { workspace = true }
     fuel-core-types        = { workspace = true }
     fuel-graph             = { workspace = true }
     fuel-graph-cpu         = { workspace = true }

@@ -153,6 +153,71 @@ impl GraphBackend for AoclBackend {
         Ok(AnyRefTensor::F32(matmul_f32_aocl(af, bf)))
     }
 
+    fn conv2d(
+        &self,
+        input:  &Self::Storage,
+        weight: &Self::Storage,
+        input_layout:  &Layout,
+        weight_layout: &Layout,
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    ) -> Result<Self::Storage> {
+        // f32 contiguous fast path: im2col + AOCL gemm. Other dtypes
+        // and non-contiguous layouts fall through to CpuBackend
+        // (which uses the reference's nested-loop conv2d via the
+        // executor's trait-default fallback path).
+        let happy_f32 = matches!(input, AnyRefTensor::F32(_))
+            && matches!(weight, AnyRefTensor::F32(_))
+            && input_layout.is_contiguous()
+            && weight_layout.is_contiguous();
+        if !happy_f32 {
+            return self.cpu.conv2d(
+                input, weight, input_layout, weight_layout, stride, padding, groups,
+            );
+        }
+        let i_dims = input_layout.shape().dims();
+        let w_dims = weight_layout.shape().dims();
+        if i_dims.len() != 4 || w_dims.len() != 4 {
+            return self.cpu.conv2d(
+                input, weight, input_layout, weight_layout, stride, padding, groups,
+            );
+        }
+        let (xf, wf) = match (input, weight) {
+            (AnyRefTensor::F32(x), AnyRefTensor::F32(w)) => (x, w),
+            _ => unreachable!("happy_f32 guards this match"),
+        };
+        let s = fuel_conv::ConvShape {
+            batch: i_dims[0], c_in: i_dims[1], h: i_dims[2], w: i_dims[3],
+            c_out: w_dims[0], k_h: w_dims[2], k_w: w_dims[3],
+            stride, padding, groups,
+        };
+        if s.validate().is_err() {
+            return self.cpu.conv2d(
+                input, weight, input_layout, weight_layout, stride, padding, groups,
+            );
+        }
+        let mut out = vec![0.0_f32; s.output_len()];
+        let mut patches = vec![0.0_f32; s.im2col_len()];
+        fuel_conv::conv2d_via_gemm(
+            xf.as_slice(), wf.as_slice(), None,
+            &s, &mut out, &mut patches,
+            |m, n, k, a, b, c| {
+                use aocl_types::Trans;
+                aocl_blas::gemm(
+                    Trans::No, Trans::No,
+                    m, n, k,
+                    1.0_f32, a, b,
+                    0.0_f32, c,
+                ).expect("aocl_blas::gemm in conv2d_via_gemm");
+            },
+        );
+        Ok(AnyRefTensor::F32(RefTensor::from_vec(
+            out,
+            Shape::from_dims(&[s.batch, s.c_out, s.h_out(), s.w_out()]),
+        )))
+    }
+
     fn unary(&self, op: UnaryOp, a: &Self::Storage, layout: &Layout) -> Result<Self::Storage> {
         self.cpu.unary(op, a, layout)
     }
