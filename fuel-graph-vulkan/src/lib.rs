@@ -2809,6 +2809,139 @@ impl GraphBackend for VulkanBackend {
     ) -> fuel_core_types::Result<Self::Storage> {
         fuel_core_types::bail!("VulkanBackend: gather not yet native")
     }
+
+    fn flash_attn(
+        &self,
+        q: &Self::Storage,
+        k: &Self::Storage,
+        v: &Self::Storage,
+        alibi_slopes: Option<&Self::Storage>,
+        q_layout: &Layout,
+        k_layout: &Layout,
+        v_layout: &Layout,
+        _alibi_layout: Option<&Layout>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        // F32-only, contiguous-only first cut. Strided / non-f32
+        // returns Err -> executor falls back to attention_naive.
+        if q.dtype != DType::F32 || k.dtype != DType::F32 || v.dtype != DType::F32 {
+            fuel_core_types::bail!(
+                "VulkanBackend::flash_attn: only F32 supported (got q={:?} k={:?} v={:?})",
+                q.dtype, k.dtype, v.dtype,
+            );
+        }
+        if !q_layout.is_contiguous() || !k_layout.is_contiguous() || !v_layout.is_contiguous() {
+            fuel_core_types::bail!("VulkanBackend::flash_attn: strided inputs not yet supported");
+        }
+        let q_dims = q_layout.shape().dims();
+        let k_dims = k_layout.shape().dims();
+        let v_dims = v_layout.shape().dims();
+        if q_dims.len() != 4 || k_dims.len() != 4 || v_dims.len() != 4 {
+            fuel_core_types::bail!(
+                "VulkanBackend::flash_attn: expected rank-4 q/k/v, got {q_dims:?} {k_dims:?} {v_dims:?}"
+            );
+        }
+        let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        let (_, hkv, sk, _) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
+        // Shader's D_MAX is 128. Larger head_dim → fall back to CPU.
+        if d > 128 {
+            fuel_core_types::bail!("VulkanBackend::flash_attn: head_dim={d} exceeds D_MAX=128");
+        }
+        if hq % hkv != 0 {
+            fuel_core_types::bail!("VulkanBackend::flash_attn: Hq={hq} must be a multiple of Hkv={hkv}");
+        }
+
+        let out_n = b * hq * sq * d;
+        let out = self.alloc_device((out_n * 4) as u64, out_n, DType::F32)?;
+
+        // Alibi binding: bind a 1-element dummy buffer when no slopes
+        // (the descriptor needs *something* there even if has_alibi=0).
+        let dummy_alibi;
+        let alibi_storage = match alibi_slopes {
+            Some(a) => a,
+            None => {
+                dummy_alibi = self.alloc_device(4, 1, DType::F32)?;
+                &dummy_alibi
+            }
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Params {
+            b: u32,
+            hq: u32,
+            hkv: u32,
+            sq: u32,
+            sk: u32,
+            d: u32,
+            groups: u32,
+            causal: u32,
+            window_left: u32,
+            window_right: u32,
+            has_window_left: u32,
+            has_window_right: u32,
+            has_alibi: u32,
+            has_softcap: u32,
+            softmax_scale: f32,
+            softcap: f32,
+        }
+        let params = Params {
+            b: b as u32,
+            hq: hq as u32,
+            hkv: hkv as u32,
+            sq: sq as u32,
+            sk: sk as u32,
+            d: d as u32,
+            groups: (hq / hkv) as u32,
+            causal: if causal { 1 } else { 0 },
+            window_left: window_size_left.unwrap_or(0) as u32,
+            window_right: window_size_right.unwrap_or(0) as u32,
+            has_window_left: if window_size_left.is_some() { 1 } else { 0 },
+            has_window_right: if window_size_right.is_some() { 1 } else { 0 },
+            has_alibi: if alibi_slopes.is_some() { 1 } else { 0 },
+            has_softcap: if softcap.is_some() { 1 } else { 0 },
+            softmax_scale,
+            softcap: softcap.unwrap_or(0.0),
+        };
+        let (pbuf, pmem) = self.upload_params(&params)?;
+
+        // Workgroup grid: (B, Hq, ceil(Sq / BR=16))
+        let groups_x = b as u32;
+        let groups_y = hq as u32;
+        let groups_z = ((sq + 15) / 16) as u32;
+
+        // 5-storage + 1-uniform descriptor: (q, k, v, alibi, o).
+        let desc = self.pipelines
+            .allocate_desc(&self.pipelines.layout_5s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, q.buffer(), 0, q.byte_size());
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, k.buffer(), 0, k.byte_size());
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, v.buffer(), 0, v.byte_size());
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, alibi_storage.buffer(), 0, alibi_storage.byte_size());
+        desc.write_buffer(4, DescriptorType::STORAGE_BUFFER, out.buffer(), 0, out.byte_size());
+        desc.write_buffer(5, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<Params>() as u64);
+
+        let rb = [
+            q.buffer().raw() as u64,
+            k.buffer().raw() as u64,
+            v.buffer().raw() as u64,
+            alibi_storage.buffer().raw() as u64,
+        ];
+        let wb = [out.buffer().raw() as u64];
+        self.record_dispatch_batched(
+            "flash_attention",
+            &self.pipelines.flash_attention_pipeline,
+            &self.pipelines.flash_attention_layout,
+            desc,
+            (groups_x, groups_y, groups_z),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        Ok(out)
+    }
 }
 
 // -- utilities ----------------------------------------------------------------

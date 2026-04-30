@@ -38,6 +38,9 @@ pub struct Pipelines {
     pub layout_3s1u: DescriptorSetLayout,
     /// 4 storage + 1 uniform (rope: x, cos, sin, out, params).
     pub layout_4s1u: DescriptorSetLayout,
+    /// 5 storage buffers + 1 uniform — used by flash_attention
+    /// (q, k, v, alibi, o + params).
+    pub layout_5s1u: DescriptorSetLayout,
 
     pub unary_pipeline: ComputePipeline,
     pub unary_layout: PipelineLayout,
@@ -115,6 +118,12 @@ pub struct Pipelines {
     /// matrix, then dispatch matmul (weight × patches) per group.
     pub conv2d_im2col_pipeline: ComputePipeline,
     pub conv2d_im2col_layout: PipelineLayout,
+
+    /// FlashAttention v2 forward (Phase 8 Tier 2). Single-dispatch
+    /// kernel: tiled scaled-dot-product attention with online softmax.
+    /// Workgroup grid is (B, Hq, ceil(Sq / BR=16)).
+    pub flash_attention_pipeline: ComputePipeline,
+    pub flash_attention_layout: PipelineLayout,
 
     pub dequant_q4_0_pipeline: ComputePipeline,
     pub dequant_q4_0_layout: PipelineLayout,
@@ -241,6 +250,18 @@ impl Pipelines {
             uniform_binding(4),
         ])?;
 
+        // Layout: 5 storage buffers (binding 0..4) + 1 uniform (binding 5).
+        // Used by flash_attention: (q, k, v, alibi, o, params).
+        // alibi is bound to a 1-element dummy buffer when has_alibi=0.
+        let layout_5s1u = DescriptorSetLayout::new(device, &[
+            storage_binding(0),
+            storage_binding(1),
+            storage_binding(2),
+            storage_binding(3),
+            storage_binding(4),
+            uniform_binding(5),
+        ])?;
+
         let desc_pool = RefCell::new(make_desc_pool(device)?);
 
         // Build the registry once and resolve every shader through it
@@ -274,6 +295,7 @@ impl Pipelines {
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
         let conv2d_im2col_mod = registry.load_module(device, shaders::CONV2D_IM2COL)?;
+        let flash_attention_mod = registry.load_module(device, shaders::FLASH_ATTENTION)?;
         let dequant_q4_0_mod = registry.load_module(device, shaders::DEQUANT_Q4_0)?;
         let dequant_q4_km_mod = registry.load_module(device, shaders::DEQUANT_Q4_KM)?;
         let dequant_q8_0_mod = registry.load_module(device, shaders::DEQUANT_Q8_0)?;
@@ -308,6 +330,8 @@ impl Pipelines {
         let concat_along_dim_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         // conv2d_im2col uses 1 storage in (x) + 1 storage out (patches) + 1 uniform.
         let conv2d_im2col_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        // flash_attention: q + k + v + alibi (or dummy) + o + params.
+        let flash_attention_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
         let dequant_q4_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let dequant_q4_km_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let dequant_q8_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -340,6 +364,7 @@ impl Pipelines {
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
         let concat_along_dim_pipeline = ComputePipeline::new(device, &concat_along_dim_layout, &concat_along_dim_mod, "main")?;
         let conv2d_im2col_pipeline = ComputePipeline::new(device, &conv2d_im2col_layout, &conv2d_im2col_mod, "main")?;
+        let flash_attention_pipeline = ComputePipeline::new(device, &flash_attention_layout, &flash_attention_mod, "main")?;
         let dequant_q4_0_pipeline = ComputePipeline::new(device, &dequant_q4_0_layout, &dequant_q4_0_mod, "main")?;
         let dequant_q4_km_pipeline = ComputePipeline::new(device, &dequant_q4_km_layout, &dequant_q4_km_mod, "main")?;
         let dequant_q8_0_pipeline = ComputePipeline::new(device, &dequant_q8_0_layout, &dequant_q8_0_mod, "main")?;
@@ -348,7 +373,7 @@ impl Pipelines {
         let quantize_q8_0_pipeline = ComputePipeline::new(device, &quantize_q8_0_layout, &quantize_q8_0_mod, "main")?;
 
         Ok(Self {
-            layout_2s1u, layout_3s1u, layout_4s1u,
+            layout_2s1u, layout_3s1u, layout_4s1u, layout_5s1u,
             unary_pipeline, unary_layout,
             binary_pipeline, binary_layout,
             affine_pipeline, affine_layout,
@@ -372,6 +397,7 @@ impl Pipelines {
             rope_pipeline, rope_layout,
             concat_along_dim_pipeline, concat_along_dim_layout,
             conv2d_im2col_pipeline, conv2d_im2col_layout,
+            flash_attention_pipeline, flash_attention_layout,
             dequant_q4_0_pipeline, dequant_q4_0_layout,
             dequant_q4_km_pipeline, dequant_q4_km_layout,
             dequant_q8_0_pipeline, dequant_q8_0_layout,
