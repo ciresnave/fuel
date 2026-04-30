@@ -26,6 +26,10 @@
     baracuda-cudnn      = { workspace = true, optional = true }
     baracuda-cudnn-sys  = { workspace = true, optional = true }
     baracuda-nccl       = { workspace = true, optional = true }
+    # FlashAttention v2 sm80 kernels — optional, behind the `flash-attn`
+    # feature. The -sys crate has no fuel deps so this dep is one-way
+    # (no cycle with the eager-wrapper crate).
+    fuel-flash-attn-cuda-sys = { workspace = true, optional = true }
     # Numeric + tracing
     float8     = { workspace = true }
     half       = { workspace = true }
@@ -39,6 +43,7 @@
     default = []
     nccl    = ["dep:baracuda-nccl"]
     ug      = ["dep:fuel-ug"]
+    flash-attn = ["dep:fuel-flash-attn-cuda-sys"]
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
     fuel-ug = { workspace = true, optional = true }

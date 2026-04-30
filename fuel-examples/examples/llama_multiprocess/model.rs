@@ -303,7 +303,7 @@ impl CausalSelfAttention {
         let k = k.transpose(1, 2)?;
         let v = v.transpose(1, 2)?;
         let softmax_scale = 1f32 / (self.head_dim as f32).sqrt();
-        let y = fuel_flash_attn::flash_attn(&q, &k, &v, softmax_scale, seq_len > 1)?
+        let y = fuel_flash_attn_cuda::flash_attn(&q, &k, &v, softmax_scale, seq_len > 1)?
             .reshape((b_sz, seq_len, hidden_size))?;
         let y = self.o_proj.forward(&y)?;
         Ok(y)

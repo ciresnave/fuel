@@ -87,6 +87,11 @@ cuda = [
 # Enables cuda + cuDNN accelerated convolution and normalization.
 cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-graph-cuda?/cudnn"]
 
+# Enables CUDA FlashAttention v2 (sm80) via fuel-flash-attn-cuda-sys.
+# Implies `cuda`. Adds a substantial nvcc build (~30 min for 37 .cu
+# kernels + CUTLASS headers); only opt in if you actually need it.
+flash-attn = ["cuda", "fuel-graph-cuda?/flash-attn"]
+
 # Multi-GPU communication via NVIDIA NCCL.
 nccl = ["cuda", "dep:baracuda-nccl", "fuel-graph-cuda?/nccl"]
 

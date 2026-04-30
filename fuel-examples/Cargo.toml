@@ -17,7 +17,7 @@ fuel-graph-cuda = { workspace = true, optional = true }
 fuel-datasets = { workspace = true, optional = true }
 fuel-nn = { workspace = true }
 fuel-transformers = { workspace = true }
-fuel-flash-attn = { workspace = true, optional = true }
+fuel-flash-attn-cuda = { workspace = true, optional = true }
 fuel-onnx = { workspace = true, optional = true }
 
 chrono = "0.4"
@@ -83,7 +83,7 @@ cuda = [
     "dep:fuel-graph-cuda",
 ]
 cudnn = ["fuel/cudnn", "fuel-nn/cudnn", "fuel-transformers/cudnn"]
-flash-attn = ["cuda", "fuel-transformers/flash-attn", "dep:fuel-flash-attn"]
+flash-attn = ["cuda", "fuel-transformers/flash-attn", "dep:fuel-flash-attn-cuda"]
 mkl = [
     "dep:intel-mkl-src",
     "fuel/mkl",

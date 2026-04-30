@@ -1,9 +1,9 @@
 ﻿[package]
-name = "fuel-flash-attn-v3"
+name = "fuel-flash-attn-v3-cuda"
 version = "0.10.2"
 edition = "2021"
 
-description = "Flash attention v3 layer for the fuel ML framework."
+description = "CUDA sm90 (Hopper) port of Dao-AILab FlashAttention v3 for the fuel ML framework. Eager-mode Tensor API only; lazy-graph callers go through the `flash-attn` feature on `fuel-graph-cuda`."
 repository = "https://github.com/huggingface/fuel"
 keywords = ["blas", "tensor", "machine-learning"]
 categories = ["science"]
