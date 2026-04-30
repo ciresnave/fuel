@@ -12,6 +12,10 @@ readme = "README.md"
 exclude = ["cutlass/docs/**", "cutlass/test/**", "cutlass/examples/**", "cutlass/tools/**", "cutlass/media/**"]
 
 [dependencies]
+# Raw FFI + nvcc-built kernels live in the -sys sibling so both this
+# eager wrapper and the lazy-graph CUDA backend can call them without
+# creating a dep cycle.
+fuel-flash-attn-v3-cuda-sys = { workspace = true }
 fuel             = { workspace = true, features = ["cuda"] }
 fuel-graph-cuda  = { workspace = true }
 fuel-core-types  = { workspace = true }
@@ -19,12 +23,6 @@ fuel-cpu-backend = { workspace = true }
 baracuda-types   = { workspace = true }
 baracuda-driver  = { workspace = true }
 half             = { workspace = true }
-
-[build-dependencies]
-anyhow    = { workspace = true }
-num_cpus  = { workspace = true }
-rayon     = { workspace = true }
-cudaforge = { workspace = true }
 
 [dev-dependencies]
 anyhow  = { workspace = true }

@@ -7,7 +7,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-mod ffi;
+// Raw FFI lives in fuel-flash-attn-v3-cuda-sys. The C symbol is
+// `run_mha_v3` (renamed from upstream `run_mha`) so the sm80 sys
+// crate can co-exist in the same binary; rebind it locally as
+// `run_mha` so the eager wrapper's existing call sites stay
+// unchanged.
+mod ffi {
+    pub use fuel_flash_attn_v3_cuda_sys::run_mha_v3 as run_mha;
+}
 
 use fuel::backend::BackendStorage;
 use fuel::dyn_backend::DynBackendStorage;

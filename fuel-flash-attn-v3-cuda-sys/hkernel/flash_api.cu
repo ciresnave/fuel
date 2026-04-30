@@ -199,7 +199,11 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     });
 }
 
-extern "C" void run_mha(
+// Symbol renamed from `run_mha` → `run_mha_v3` so that both
+// fuel-flash-attn-cuda-sys (sm80) and fuel-flash-attn-v3-cuda-sys
+// (sm90) can link into the same binary when both Cargo features
+// are enabled.
+extern "C" void run_mha_v3(
     void *q_ptr,
     void *k_ptr,
     void *v_ptr,
