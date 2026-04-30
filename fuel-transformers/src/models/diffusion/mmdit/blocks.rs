@@ -447,7 +447,7 @@ impl ContextQkvOnlyJointBlock {
     }
 }
 
-// A QKV-attention that is compatible with the interface of fuel_flash_attn::flash_attn
+// A QKV-attention that is compatible with the interface of fuel_flash_attn_cuda::flash_attn
 // Flash attention regards q, k, v dimensions as (batch_size, seqlen, nheads, headdim)
 fn flash_compatible_attention(
     q: &Tensor,
@@ -473,7 +473,7 @@ fn flash_attn(
     softmax_scale: f32,
     causal: bool,
 ) -> Result<Tensor> {
-    fuel_flash_attn::flash_attn(q, k, v, softmax_scale, causal)
+    fuel_flash_attn_cuda::flash_attn(q, k, v, softmax_scale, causal)
 }
 
 #[cfg(not(feature = "flash-attn"))]

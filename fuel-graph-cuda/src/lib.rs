@@ -36,6 +36,8 @@ pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
 
 #[cfg(feature = "cudnn")]
 pub mod cudnn;
+#[cfg(feature = "flash-attn")]
+pub mod flash_attn;
 pub mod device;
 pub mod dyn_impl;
 pub mod error;

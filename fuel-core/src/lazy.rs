@@ -108,6 +108,17 @@ impl LazyTensor {
         }
     }
 
+    /// Build a const f16 tensor on the same graph as `self`.
+    pub fn const_f16_like(
+        &self,
+        data: impl Into<Arc<[half::f16]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        Self {
+            inner: self.inner.const_f16_like(data, shape),
+        }
+    }
+
     /// Build a const bf16 tensor on the same graph as `self`. Used for
     /// bf16-on-device weights in the mixed-precision matmul path —
     /// activations stay f32, weight matrices live as bf16.

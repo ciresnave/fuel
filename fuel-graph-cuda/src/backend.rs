@@ -214,4 +214,29 @@ impl GraphBackend for CudaBackend {
     ) -> fuel_core_types::Result<Self::Storage> {
         a.matmul_q4_km(w_q_bytes, k, n, a_layout)
     }
+
+    #[cfg(feature = "flash-attn")]
+    #[allow(clippy::too_many_arguments)]
+    fn flash_attn(
+        &self,
+        q: &Self::Storage,
+        k: &Self::Storage,
+        v: &Self::Storage,
+        alibi_slopes: Option<&Self::Storage>,
+        q_layout: &Layout,
+        k_layout: &Layout,
+        v_layout: &Layout,
+        _alibi_layout: Option<&Layout>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        crate::flash_attn::launch(
+            q, k, v, alibi_slopes,
+            q_layout, k_layout, v_layout,
+            softmax_scale, causal, window_size_left, window_size_right, softcap,
+        )
+    }
 }

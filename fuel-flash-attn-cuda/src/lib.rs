@@ -1,4 +1,4 @@
-﻿mod ffi;
+﻿use fuel_flash_attn_cuda_sys as ffi;
 
 use fuel::backend::BackendStorage;
 use fuel::dyn_backend::DynBackendStorage;

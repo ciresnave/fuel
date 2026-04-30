@@ -190,7 +190,7 @@ fn flash_attn(
     softmax_scale: f32,
     causal: bool,
 ) -> Result<Tensor> {
-    fuel_flash_attn::flash_attn(q, k, v, softmax_scale, causal)
+    fuel_flash_attn_cuda::flash_attn(q, k, v, softmax_scale, causal)
 }
 
 #[cfg(not(feature = "flash-attn"))]

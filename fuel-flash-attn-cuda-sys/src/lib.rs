@@ -1,7 +1,21 @@
+//! `fuel-flash-attn-cuda-sys` — bare `extern "C"` bindings to the
+//! Dao-AILab FlashAttention v2 CUDA kernels (sm80 / Ampere).
+//!
+//! This crate has no Rust API beyond the FFI declaration and the
+//! kernels-as-static-lib that ships with it. It exists so that both
+//! the eager-mode `fuel-flash-attn-cuda` wrapper AND the lazy-graph
+//! `fuel-graph-cuda` backend can call the same kernels without
+//! creating a circular dependency between those two crates.
+//!
+//! Callers must hand in raw `CUdeviceptr` values + dimensions + a
+//! stream. Type safety, dtype dispatch, and shape validation belong
+//! at the call site — this crate is intentionally as thin as
+//! possible.
+
 use core::ffi::{c_int, c_void};
 
 extern "C" {
-    pub(crate) fn run_mha(
+    pub fn run_mha(
         q_ptr: *const c_void,
         k_ptr: *const c_void,
         v_ptr: *const c_void,

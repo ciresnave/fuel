@@ -1,9 +1,9 @@
 ﻿[package]
-name = "fuel-flash-attn"
+name = "fuel-flash-attn-cuda"
 version = "0.10.2"
 edition = "2021"
 
-description = "Flash attention layer for the fuel ML framework."
+description = "CUDA sm80 (Ampere) port of Dao-AILab FlashAttention v2 for the fuel ML framework. Eager-mode Tensor API; the lazy-graph executor reaches the kernels via the `flash-attn` feature on `fuel-graph-cuda`."
 repository = "https://github.com/huggingface/fuel"
 keywords = ["blas", "tensor", "machine-learning"]
 categories = ["science"]
@@ -11,6 +11,9 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [dependencies]
+# Raw FFI + nvcc-built kernels live in the -sys sibling so the lazy
+# graph backend can also call them without creating a dep cycle.
+fuel-flash-attn-cuda-sys = { workspace = true }
 fuel            = { workspace = true, features = ["cuda"] }
 fuel-graph-cuda = { workspace = true }
 fuel-core-types = { workspace = true }
@@ -18,10 +21,6 @@ fuel-cpu-backend = { workspace = true }
 baracuda-types  = { workspace = true }
 baracuda-driver = { workspace = true }
 half            = { workspace = true }
-
-[build-dependencies]
-cudaforge = { workspace = true }
-anyhow    = { workspace = true }
 
 [dev-dependencies]
 anyhow  = { workspace = true }
