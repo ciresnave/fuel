@@ -1221,6 +1221,49 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
+            Op::FusedLinear => {
+                // Currently dispatches as backend.matmul + backend.binary(Add).
+                // Backends with a true fused kernel (cuBLAS gemm-with-bias-
+                // epilogue, hand-written Slang) can opt in by adding an
+                // override later. Same numerical output either way; this
+                // arm exists so the IR pattern survives optimization
+                // passes intact.
+                let a = self.get_gt(inputs, 0, cache);
+                let b = self.get_gt(inputs, 1, cache);
+                let bias = self.get_gt_c(inputs, 2, cache);
+                let ad = a.shape.dims();
+                let bd = b.shape.dims();
+                let rank = ad.len();
+                let (m, k, n) = (ad[rank - 2], ad[rank - 1], bd[rank - 1]);
+                let batch: usize = ad[..rank - 2].iter().product::<usize>().max(1);
+                match (|| -> fuel_core_types::Result<B::Storage> {
+                    let mm = self.backend.matmul(
+                        &a.storage, &b.storage, (batch, m, n, k),
+                        &a.layout(), &b.layout(),
+                    )?;
+                    let mm_layout = Layout::contiguous(shape.clone());
+                    // Bias is rank-1 [N]; broadcast to mm's [..., M, N] by
+                    // reshaping to [1...1, 1, N] and broadcasting to the
+                    // matmul output shape.
+                    let mut leading: Vec<usize> = vec![1; shape.dims().len() - 1];
+                    leading.push(shape.dims()[shape.dims().len() - 1]);
+                    let bias_4d = Layout::contiguous(Shape::from_dims(&leading));
+                    let bias_layout = bias_4d.broadcast_as(shape.clone()).map_err(|e| {
+                        fuel_core_types::Error::Msg(format!("FusedLinear bias broadcast: {e}"))
+                    })?;
+                    self.backend.binary(
+                        BinaryOp::Add,
+                        &mm, &bias.storage,
+                        &mm_layout, &bias_layout,
+                    )
+                })() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                }
+            }
+
             Op::PagedAttn { softmax_scale, block_size, softcap } => {
                 let q  = self.get_gt_c(inputs, 0, cache);
                 let kc = self.get_gt_c(inputs, 1, cache);

@@ -433,6 +433,21 @@ pub enum Op {
         groups:  usize,
     },
 
+    /// Fused linear layer (Phase 6d Track 3): matmul + bias-add in one
+    /// IR node. Inputs: `[a, b, bias]`.
+    ///   - `a`: `[..., M, K]`
+    ///   - `b`: `[..., K, N]`
+    ///   - `bias`: `[N]` (broadcast across all leading dims of the matmul output)
+    ///
+    /// Output: `[..., M, N]` — bias is added along the last axis.
+    ///
+    /// Created by `opt::fuse_linear` from `MatMul + Add(rank-1 bias)`
+    /// patterns. Backends dispatch to a fused kernel when one exists
+    /// (cuBLAS gemm with bias epilogue, hand-written Slang, etc.) and
+    /// fall through to two-kernel matmul + binary-add otherwise. Same
+    /// numerical result either way.
+    FusedLinear,
+
     /// Multi-head scaled-dot-product attention (FlashAttention-shaped).
     ///
     /// Inputs: `[q, k, v, optional alibi_slopes]`.
@@ -631,6 +646,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Conv2D{..}           => "Conv2D",
         Op::ConvTranspose2D{..}  => "ConvTranspose2D",
         Op::FlashAttn{..}        => "FlashAttn",
+        Op::FusedLinear          => "FusedLinear",
         Op::PagedAttn{..}        => "PagedAttn",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
@@ -4150,6 +4166,41 @@ impl Tensor {
                         "Tensor::backward: Op::PagedAttn is decode-only; \
                          no gradient rule exists.",
                     );
+                }
+                Op::FusedLinear => {
+                    // FusedLinear is structurally `(a @ b) + bias`.
+                    // Decompose its gradient:
+                    //   dA    = upstream @ B^T  (same shape as a)
+                    //   dB    = A^T @ upstream  (same shape as b)
+                    //   dBias = ReduceSumTo([N]) of upstream
+                    //
+                    // We can re-use the MatMul backward formulas
+                    // directly since the only difference is the
+                    // bias-add term, which is independent and has
+                    // its own grad rule.
+                    let a = inputs[0];
+                    let b = inputs[1];
+                    let bias = inputs[2];
+                    let a_shape = node_shape(&graph_handle, a);
+                    let b_shape = node_shape(&graph_handle, b);
+                    let bias_shape = node_shape(&graph_handle, bias);
+                    let dtype = node_dtype(&graph_handle, a);
+                    let b_t_shape = transposed_shape(&b_shape);
+                    let b_t = push_node(&graph_handle, Op::Transpose, vec![b], b_t_shape, dtype);
+                    let grad_a = push_node(&graph_handle, Op::MatMul, vec![up_id, b_t], a_shape.clone(), dtype);
+                    let a_t_shape = transposed_shape(&a_shape);
+                    let a_t = push_node(&graph_handle, Op::Transpose, vec![a], a_t_shape, dtype);
+                    let grad_b = push_node(&graph_handle, Op::MatMul, vec![a_t, up_id], b_shape, dtype);
+                    let grad_bias = push_node(
+                        &graph_handle,
+                        Op::ReduceSumTo(bias_shape.clone()),
+                        vec![up_id],
+                        bias_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
+                    accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
+                    accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
                 }
             }
         }
