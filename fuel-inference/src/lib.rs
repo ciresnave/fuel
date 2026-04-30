@@ -159,3 +159,10 @@ pub mod tool_call;
 
 /// Placeholder for future batching, streaming-decode, and session abstractions.
 pub mod pipelines {}
+
+/// Phase 6d Track 4: bridge from fuel-inference's runtime
+/// orchestration state into the lazy-graph planner. Provides
+/// `SchedulerRule` impls that consult inference-side state
+/// (memory pressure, MoE routing decisions, etc.) to bias the
+/// planner's placement decisions.
+pub mod scheduler_bridge;

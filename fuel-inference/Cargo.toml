@@ -12,6 +12,13 @@
 [dependencies]
     fuel              = { workspace = true }
     fuel-transformers = { workspace = true }
+    # Phase 6d Track 4: scheduler-bridge needs the lazy-graph planner
+    # surface (SchedulerRule trait, Placement, Router). Direction:
+    # fuel-inference (high-level orchestration) drives the planner,
+    # not the reverse.
+    fuel-graph             = { workspace = true }
+    fuel-graph-router      = { workspace = true }
+    fuel-core-types        = { workspace = true }
     rand                = { workspace = true }
     serde               = { workspace = true }
     serde_json          = { workspace = true }
