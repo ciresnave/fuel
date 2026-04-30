@@ -40,6 +40,7 @@
 //!   MVP needs no cross-thread sharing. Moving to `Arc<Mutex<_>>` is a
 //!   one-line change when multi-threaded building becomes relevant.
 
+pub mod grad;
 pub mod opt;
 
 use fuel_core_types::{DeviceLocation, DType, Shape};
@@ -2576,6 +2577,26 @@ impl Tensor {
                 let node = g.node(id);
                 (node.op.clone(), node.inputs.clone())
             };
+
+            // Symbolic-autograd dispatch (Phase 6d Track 2). If a
+            // `GradientRule` is registered for this op, use it. Ops
+            // that haven't migrated yet fall through to the legacy
+            // inline `match` below.
+            if let Some(grads) = crate::grad::dispatch_gradient(
+                &graph_handle, &op, &inputs, id, up_id,
+            ) {
+                debug_assert_eq!(
+                    grads.len(), inputs.len(),
+                    "GradientRule for {:?} returned {} gradients but op has {} inputs",
+                    op.short_name(), grads.len(), inputs.len(),
+                );
+                for (input_id, grad) in inputs.iter().zip(grads.iter()) {
+                    if let Some(g) = grad {
+                        accumulate_grad(&mut upstream, *input_id, *g, &graph_handle);
+                    }
+                }
+                continue;
+            }
 
             match op {
                 Op::Const(_) => {
