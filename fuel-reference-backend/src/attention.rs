@@ -396,6 +396,161 @@ pub fn attention_flash<T: Float>(
     RefTensor::from_vec(out, Shape::from_dims(&[b_q, h_q, sq, d_q]))
 }
 
+/// Paged-cache attention reference (Phase 6d). Reads K/V from a
+/// paged cache via a per-sequence block table; supports variable
+/// context lengths in the same batch.
+///
+/// Inputs:
+/// - `q`:            `[B, Hq, Sq, D]`
+/// - `k_cache`:      `[num_blocks, block_size, Hkv, D]`
+/// - `v_cache`:      `[num_blocks, block_size, Hkv, D]`
+/// - `block_table`:  `[B, max_num_blocks_per_seq]` (u32). `block_table[b, i]`
+///   is the physical block index in `k_cache`/`v_cache` that holds
+///   logical KV positions `[i*block_size .. (i+1)*block_size]` for sequence b.
+/// - `context_lens`: `[B]` (u32). True context length per sequence.
+/// - `alibi_slopes`: optional `[Hq]`.
+///
+/// Output: `[B, Hq, Sq, D]`.
+///
+/// Causal mask is implicit and tied to the global decode position:
+/// query slot `q_pos` (0-indexed within Sq) corresponds to absolute
+/// position `context_lens[b] - Sq + q_pos`. K positions strictly
+/// after that are masked.
+#[allow(clippy::too_many_arguments)]
+pub fn attention_paged_naive<T: Float>(
+    q: &RefTensor<T>,
+    k_cache: &RefTensor<T>,
+    v_cache: &RefTensor<T>,
+    block_table: &RefTensor<u32>,
+    context_lens: &RefTensor<u32>,
+    alibi_slopes: Option<&RefTensor<T>>,
+    softmax_scale: f32,
+    block_size: usize,
+    softcap: Option<f32>,
+) -> RefTensor<T> {
+    let (b, hq, sq, d) = dims_bhsd(q, "attention_paged_naive q");
+    let kc = k_cache.shape().dims();
+    let vc = v_cache.shape().dims();
+    let bt = block_table.shape().dims();
+    let cl = context_lens.shape().dims();
+    assert_eq!(kc.len(), 4, "k_cache must be rank 4 [num_blocks, block_size, Hkv, D]");
+    assert_eq!(vc.len(), 4, "v_cache must be rank 4");
+    assert_eq!(bt.len(), 2, "block_table must be rank 2 [B, max_blocks]");
+    assert_eq!(cl.len(), 1, "context_lens must be rank 1 [B]");
+    let num_blocks = kc[0];
+    assert_eq!(kc[1], block_size, "k_cache block dim {} != block_size {block_size}", kc[1]);
+    assert_eq!(vc[1], block_size);
+    let hkv = kc[2];
+    assert_eq!(vc[2], hkv);
+    assert_eq!(kc[3], d);
+    assert_eq!(vc[3], d);
+    assert_eq!(bt[0], b);
+    assert_eq!(cl[0], b);
+    assert_eq!(hq % hkv, 0, "Hq={hq} must be a multiple of Hkv={hkv}");
+    let groups = hq / hkv;
+    let max_blocks = bt[1];
+    if let Some(slopes) = alibi_slopes {
+        assert_eq!(slopes.shape().dims(), &[hq]);
+    }
+
+    let q_data = q.as_slice();
+    let kc_data = k_cache.as_slice();
+    let vc_data = v_cache.as_slice();
+    let bt_data = block_table.as_slice();
+    let cl_data = context_lens.as_slice();
+    let alibi_data = alibi_slopes.map(|t| t.as_slice());
+
+    let scale = T::from(softmax_scale).expect("scale to T");
+    let softcap = softcap.and_then(|c| T::from(c).map(|t| (t, T::one() / t)));
+
+    // Strides for flat indexing.
+    let q_h_stride = sq * d;
+    let q_b_stride = hq * q_h_stride;
+    // k_cache layout: [num_blocks, block_size, Hkv, D]. Block stride is block_size*Hkv*D.
+    let kv_block_stride = block_size * hkv * d;
+    let kv_pos_stride   = hkv * d;
+    let kv_head_stride  = d;
+
+    let mut out = vec![T::zero(); b * hq * sq * d];
+
+    for bi in 0..b {
+        let ctx_len = cl_data[bi] as usize;
+        for hi in 0..hq {
+            let kv_h = hi / groups;
+            let q_off = bi * q_b_stride + hi * q_h_stride;
+            let o_off = q_off;
+            let alibi_h = alibi_data.map(|a| a[hi]);
+            for q_pos in 0..sq {
+                // Absolute position in the full sequence.
+                let abs_pos = ctx_len.saturating_sub(sq) + q_pos;
+                // Compute scores over [0..ctx_len). Positions > abs_pos masked.
+                let mut scores = vec![T::neg_infinity(); ctx_len];
+                let mut max_score = T::neg_infinity();
+                for k_pos in 0..ctx_len {
+                    if k_pos > abs_pos { continue; }
+                    let block_idx_logical = k_pos / block_size;
+                    let off_in_block = k_pos % block_size;
+                    let phys_block = bt_data[bi * max_blocks + block_idx_logical] as usize;
+                    assert!(phys_block < num_blocks,
+                        "block_table[{bi},{block_idx_logical}]={phys_block} out of range (num_blocks={num_blocks})");
+                    let k_row_off = phys_block * kv_block_stride
+                                  + off_in_block * kv_pos_stride
+                                  + kv_h * kv_head_stride;
+                    // dot(q[bi, hi, q_pos, :], k_cache[phys_block, off_in_block, kv_h, :])
+                    let mut acc = T::zero();
+                    let q_row = &q_data[q_off + q_pos * d .. q_off + (q_pos + 1) * d];
+                    let k_row = &kc_data[k_row_off .. k_row_off + d];
+                    for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                        acc = acc + (*qx) * (*kx);
+                    }
+                    let mut s = acc * scale;
+                    if let Some((c, inv_c)) = softcap {
+                        s = (s * inv_c).tanh() * c;
+                    }
+                    if let Some(slope) = alibi_h {
+                        let delta = T::from(k_pos as f32 - abs_pos as f32)
+                            .expect("alibi delta");
+                        s = s + slope * delta;
+                    }
+                    scores[k_pos] = s;
+                    if s > max_score { max_score = s; }
+                }
+                if !max_score.is_finite() { continue; }
+                let mut sum = T::zero();
+                for s in scores.iter_mut() {
+                    if s.is_finite() {
+                        *s = (*s - max_score).exp();
+                        sum = sum + *s;
+                    } else {
+                        *s = T::zero();
+                    }
+                }
+                let inv_sum = T::one() / sum;
+                for k_pos in 0..ctx_len {
+                    let p_ij = scores[k_pos] * inv_sum;
+                    if p_ij == T::zero() { continue; }
+                    let block_idx_logical = k_pos / block_size;
+                    let off_in_block = k_pos % block_size;
+                    let phys_block = bt_data[bi * max_blocks + block_idx_logical] as usize;
+                    let v_row_off = phys_block * kv_block_stride
+                                  + off_in_block * kv_pos_stride
+                                  + kv_h * kv_head_stride;
+                    let v_row = &vc_data[v_row_off .. v_row_off + d];
+                    for (od, vd) in
+                        out[o_off + q_pos * d .. o_off + (q_pos + 1) * d]
+                            .iter_mut()
+                            .zip(v_row.iter())
+                    {
+                        *od = *od + p_ij * (*vd);
+                    }
+                }
+            }
+        }
+    }
+
+    RefTensor::from_vec(out, Shape::from_dims(&[b, hq, sq, d]))
+}
+
 /// Backward of attention via recompute. Given Q, K, V, the forward
 /// output O, and the upstream gradient dO, returns (dQ, dK, dV).
 ///

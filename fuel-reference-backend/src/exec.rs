@@ -343,6 +343,9 @@ pub fn eval_node_with_op(
                 inputs, cache,
             )
         }
+        Op::PagedAttn { softmax_scale, block_size, softcap } => {
+            eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
+        }
 
         // --- dtype, shape, and broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
@@ -812,6 +815,48 @@ fn eval_flash_attn(
         (qa, ka, va, alba) => panic!(
             "flash_attn: unsupported operand dtype combination q={:?} k={:?} v={:?} alibi={:?}",
             qa.dtype(), ka.dtype(), va.dtype(), alba.map(|t| t.dtype()),
+        ),
+    }
+}
+
+fn eval_paged_attn(
+    softmax_scale: f32,
+    block_size:    usize,
+    softcap:       Option<f32>,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    use crate::attention::attention_paged_naive;
+    let q  = cache.get(&inputs[0]).expect("paged_attn: missing q");
+    let kc = cache.get(&inputs[1]).expect("paged_attn: missing k_cache");
+    let vc = cache.get(&inputs[2]).expect("paged_attn: missing v_cache");
+    let bt = cache.get(&inputs[3]).expect("paged_attn: missing block_table");
+    let cl = cache.get(&inputs[4]).expect("paged_attn: missing context_lens");
+    let alibi = inputs.get(5).and_then(|id| cache.get(id));
+    let block_table = match bt {
+        AnyRefTensor::U32(t) => t,
+        other => panic!("paged_attn: block_table must be U32, got {:?}", other.dtype()),
+    };
+    let context_lens = match cl {
+        AnyRefTensor::U32(t) => t,
+        other => panic!("paged_attn: context_lens must be U32, got {:?}", other.dtype()),
+    };
+    match (q, kc, vc, alibi) {
+        (AnyRefTensor::F32(q), AnyRefTensor::F32(kc), AnyRefTensor::F32(vc), Some(AnyRefTensor::F32(a))) => {
+            AnyRefTensor::F32(attention_paged_naive(q, kc, vc, block_table, context_lens, Some(a), softmax_scale, block_size, softcap))
+        }
+        (AnyRefTensor::F32(q), AnyRefTensor::F32(kc), AnyRefTensor::F32(vc), None) => {
+            AnyRefTensor::F32(attention_paged_naive(q, kc, vc, block_table, context_lens, None, softmax_scale, block_size, softcap))
+        }
+        (AnyRefTensor::F64(q), AnyRefTensor::F64(kc), AnyRefTensor::F64(vc), Some(AnyRefTensor::F64(a))) => {
+            AnyRefTensor::F64(attention_paged_naive(q, kc, vc, block_table, context_lens, Some(a), softmax_scale, block_size, softcap))
+        }
+        (AnyRefTensor::F64(q), AnyRefTensor::F64(kc), AnyRefTensor::F64(vc), None) => {
+            AnyRefTensor::F64(attention_paged_naive(q, kc, vc, block_table, context_lens, None, softmax_scale, block_size, softcap))
+        }
+        (qa, kca, vca, alba) => panic!(
+            "paged_attn: unsupported operand dtype combination q={:?} k={:?} v={:?} alibi={:?}",
+            qa.dtype(), kca.dtype(), vca.dtype(), alba.map(|t| t.dtype()),
         ),
     }
 }

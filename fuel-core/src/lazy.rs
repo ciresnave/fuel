@@ -1043,6 +1043,32 @@ impl LazyTensor {
         }
     }
 
+    /// Append a [`fuel_graph::Op::PagedAttn`] node. `self` is the Q
+    /// tensor `[B, Hq, Sq, D]`. `k_cache` / `v_cache` are paged caches
+    /// `[num_blocks, block_size, Hkv, D]`. `block_table` is `[B,
+    /// max_blocks]` u32; `context_lens` is `[B]` u32.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paged_attn(
+        &self,
+        k_cache: &Self,
+        v_cache: &Self,
+        block_table: &Self,
+        context_lens: &Self,
+        alibi_slopes: Option<&Self>,
+        softmax_scale: f32,
+        block_size: usize,
+        softcap: Option<f32>,
+    ) -> Self {
+        Self {
+            inner: self.inner.paged_attn(
+                &k_cache.inner, &v_cache.inner,
+                &block_table.inner, &context_lens.inner,
+                alibi_slopes.map(|t| &t.inner),
+                softmax_scale, block_size, softcap,
+            ),
+        }
+    }
+
     /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
     /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4

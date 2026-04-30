@@ -455,6 +455,35 @@ pub enum Op {
         softcap:           Option<f32>,
     },
 
+    /// Paged-cache scaled-dot-product attention (Phase 6d).
+    ///
+    /// Inputs: `[q, k_cache, v_cache, block_table, context_lens,
+    /// optional alibi_slopes]`.
+    ///   - `q`:             `[B, Hq, Sq, D]`
+    ///   - `k_cache`:       `[num_blocks, block_size, Hkv, D]`
+    ///   - `v_cache`:       `[num_blocks, block_size, Hkv, D]`
+    ///   - `block_table`:   `[B, max_num_blocks_per_seq]` (u32) — maps logical
+    ///     KV block index → physical block index in `k_cache`/`v_cache`.
+    ///   - `context_lens`:  `[B]` (u32) — per-sequence true context length.
+    ///   - `alibi_slopes`:  `[Hq]` (optional)
+    ///
+    /// Output: `[B, Hq, Sq, D]` (same shape as `q`).
+    ///
+    /// This is the paged-attention variant of `Op::FlashAttn`. It collapses
+    /// every variable-length decode shape into a single execution path —
+    /// the kernel reads only populated blocks via the block table. Replaces
+    /// the bucketing-and-pad pattern from `fuel_core::seq_bucketing`.
+    ///
+    /// Causal masking is implicit: each query position `q_pos` (relative
+    /// to the start of the Sq window) corresponds to absolute position
+    /// `context_lens[b] - Sq + q_pos`. K positions strictly after that
+    /// are masked.
+    PagedAttn {
+        softmax_scale: f32,
+        block_size:    usize,
+        softcap:       Option<f32>,
+    },
+
     /// 2-D transposed convolution (a.k.a. fractionally-strided / "deconv").
     ///
     /// Inputs: `[x, weight]` (no bias — composed externally if needed).
@@ -601,6 +630,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Conv2D{..}           => "Conv2D",
         Op::ConvTranspose2D{..}  => "ConvTranspose2D",
         Op::FlashAttn{..}        => "FlashAttn",
+        Op::PagedAttn{..}        => "PagedAttn",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
@@ -1336,6 +1366,82 @@ impl Tensor {
             op: Op::Conv2D { stride, padding, groups },
             inputs,
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a [`Op::PagedAttn`] node. `self` is the Q tensor of shape
+    /// `[B, Hq, Sq, D]`; `k_cache` and `v_cache` are the paged caches
+    /// shaped `[num_blocks, block_size, Hkv, D]`; `block_table` is
+    /// `[B, max_num_blocks_per_seq]` (u32) mapping logical → physical
+    /// blocks; `context_lens` is `[B]` (u32) of per-sequence lengths;
+    /// `alibi_slopes` is the optional `[Hq]` per-head bias.
+    ///
+    /// Returns a tensor with `q`'s shape `[B, Hq, Sq, D]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paged_attn(
+        &self,
+        k_cache:      &Tensor,
+        v_cache:      &Tensor,
+        block_table:  &Tensor,
+        context_lens: &Tensor,
+        alibi_slopes: Option<&Tensor>,
+        softmax_scale: f32,
+        block_size:    usize,
+        softcap:       Option<f32>,
+    ) -> Tensor {
+        let g = &self.graph;
+        assert!(Rc::ptr_eq(g, &k_cache.graph), "paged_attn: q + k_cache must share graph");
+        assert!(Rc::ptr_eq(g, &v_cache.graph), "paged_attn: q + v_cache must share graph");
+        assert!(Rc::ptr_eq(g, &block_table.graph), "paged_attn: q + block_table must share graph");
+        assert!(Rc::ptr_eq(g, &context_lens.graph), "paged_attn: q + context_lens must share graph");
+        if let Some(a) = alibi_slopes { assert!(Rc::ptr_eq(g, &a.graph), "paged_attn: alibi_slopes must share graph"); }
+        assert!(block_size >= 1, "paged_attn: block_size must be ≥ 1");
+
+        let q_dims = self.shape();
+        let q_dims = q_dims.dims();
+        let kc_dims = k_cache.shape();
+        let kc_dims = kc_dims.dims();
+        let vc_dims = v_cache.shape();
+        let vc_dims = vc_dims.dims();
+        let bt_dims = block_table.shape();
+        let bt_dims = bt_dims.dims();
+        let cl_dims = context_lens.shape();
+        let cl_dims = cl_dims.dims();
+        assert_eq!(q_dims.len(), 4, "paged_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}");
+        assert_eq!(kc_dims.len(), 4, "paged_attn: k_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {kc_dims:?}");
+        assert_eq!(vc_dims.len(), 4, "paged_attn: v_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {vc_dims:?}");
+        assert_eq!(bt_dims.len(), 2, "paged_attn: block_table must be rank 2 [B, max_blocks], got {bt_dims:?}");
+        assert_eq!(cl_dims.len(), 1, "paged_attn: context_lens must be rank 1 [B], got {cl_dims:?}");
+        let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        assert_eq!(kc_dims[1], block_size, "paged_attn: k_cache block dim {} != block_size {block_size}", kc_dims[1]);
+        assert_eq!(vc_dims[1], block_size, "paged_attn: v_cache block dim {} != block_size {block_size}", vc_dims[1]);
+        let hkv = kc_dims[2];
+        assert_eq!(vc_dims[2], hkv, "paged_attn: Hkv mismatch k_cache vs v_cache");
+        assert_eq!(kc_dims[3], d, "paged_attn: D mismatch q vs k_cache");
+        assert_eq!(vc_dims[3], d, "paged_attn: D mismatch q vs v_cache");
+        assert_eq!(hq % hkv, 0, "paged_attn: Hq={hq} must be a multiple of Hkv={hkv}");
+        assert_eq!(bt_dims[0], b, "paged_attn: block_table batch dim {} != B={b}", bt_dims[0]);
+        assert_eq!(cl_dims[0], b, "paged_attn: context_lens len {} != B={b}", cl_dims[0]);
+        assert_eq!(block_table.dtype(), crate::DType::U32, "paged_attn: block_table must be U32");
+        assert_eq!(context_lens.dtype(), crate::DType::U32, "paged_attn: context_lens must be U32");
+        if let Some(a) = alibi_slopes {
+            let ad = a.shape();
+            let ad = ad.dims();
+            assert_eq!(ad, &[hq], "paged_attn: alibi_slopes must be [Hq={hq}], got {ad:?}");
+        }
+
+        let dtype = self.dtype();
+        let mut inputs = vec![self.id, k_cache.id, v_cache.id, block_table.id, context_lens.id];
+        if let Some(a) = alibi_slopes { inputs.push(a.id); }
+        let id = self.graph.borrow_mut().push(Node {
+            op: Op::PagedAttn { softmax_scale, block_size, softcap },
+            inputs,
+            shape: Shape::from_dims(q_dims),
             dtype,
         });
         Self {
@@ -4012,6 +4118,16 @@ impl Tensor {
                         "Tensor::backward: Op::FlashAttn does not \
                          yet have a gradient rule. Compose attention \
                          from matmul + softmax for differentiable use.",
+                    );
+                }
+                Op::PagedAttn { .. } => {
+                    // Paged attention is decode-side only by
+                    // construction (variable-length KV cache, no
+                    // training pass writes through it). No gradient
+                    // rule.
+                    panic!(
+                        "Tensor::backward: Op::PagedAttn is decode-only; \
+                         no gradient rule exists.",
                     );
                 }
             }

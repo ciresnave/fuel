@@ -82,7 +82,10 @@ pub mod lazy_sd_vae;
 pub mod lazy_whisper;
 pub mod lazy_yolov8;
 pub mod layout;
-pub mod seq_bucketing;
+// `seq_bucketing` removed in Phase 6d: paged attention via
+// `Op::PagedAttn` (and `LazyTensor::paged_attn`) supersedes the
+// bucket-and-pad approach. Variable-length decode is now expressed
+// directly via per-sequence `context_lens`.
 #[cfg(feature = "metal")]
 pub mod metal_backend;
 pub mod model_progress;
