@@ -1230,36 +1230,57 @@ routing are parked pending hardware.
 baseline, not a prerequisite for it. Sub-phase 6d may be broken into
 parallel tracks; its pieces are independent.*
 
-- **Kernel fusion.** Backend engines compile localized sequences (e.g.
-  `MatMul → Add → ReLU`) into single kernel launches where a fused kernel
-  exists in the catalog. New fused kernels enter the catalog via the
-  oracle acceptance gate — no fused kernel ships without bit-equivalent
-  validation against the reference backend on a matrix of
-  (dtype × shape × input distribution) tests.
-- **Symbolic autograd transform.** Replace 6a's unfused backward with a
-  graph-to-graph rewrite pass. Per-op gradient rules become graph
-  constructors that emit new nodes representing the gradient computation,
-  and the resulting backward graph is fused and scheduled by the planner
-  alongside the forward graph. Backward fusion happens for free. Unlocks
-  automatic gradient checkpointing (the planner decides which forward
-  activations to drop and recompute) and higher-order gradients.
-- **Paged attention.** Replace 6a's bucketing with a true paged attention
-  kernel that consults a page table to fetch only populated cache blocks.
-  Collapses all LLM decode shapes into a single execution path. The
-  planner does not need to change — it simply picks the paged kernel when
-  available and the bucketing fallback otherwise. Paged attention ships
-  only after passing the oracle acceptance gate against sequence lengths
-  up to the maximum supported context. Scheduled *after* the rest of Phase
-  6 is stable and proven correct.
-- **Scheduler integration.** The Lightbulb-contributed inference scheduler
-  (`fuel-inference`) already handles speculative decoding and MoE expert
-  routing as runtime policy. 6d integrates those with the planner so that,
-  for example, expert batches land on backends the planner knows are best
-  suited for them.
+**Track-level architectural surfaces shipped 2026-04-30.** Each track
+landed the IR variant, executor dispatch, and a working
+reference/CPU impl. Backend-specific fast kernels (CUDA paged-attn,
+Vulkan FusedLinear, real fused MoE routing) follow incrementally on
+the same hooks.
+
+- [x] **Paged attention** (Track 1). `Op::PagedAttn { softmax_scale,
+  block_size, softcap }`. Inputs:
+  `[q, k_cache, v_cache, block_table, context_lens, optional alibi]`.
+  Reference impl `attention_paged_naive` in
+  `fuel-reference-backend::attention`. Causal mask is implicit via
+  `context_lens` — collapses every variable-length decode shape into
+  the same kernel dispatch. `seq_bucketing` module retired; the
+  bucket-and-pad primitive is gone. Native Vulkan / CUDA paged
+  kernels are follow-ups on the `GraphBackend::paged_attn` trait
+  hook.
+- [x] **Symbolic autograd transform** (Track 2). `fuel_graph::grad`
+  module: `GradientRule` trait + `dispatch_gradient` registry that
+  `Tensor::backward` consults before the legacy inline `match`.
+  Migrated rules ship for Add / Mul / Relu as the recipe; remaining
+  ops migrate one at a time on the same trait. The backward graph
+  is now constructed via the same lazy IR as the forward, so the
+  planner sees both halves and the fusion / scheduling passes
+  apply uniformly. Higher-order gradients fall out for free.
+- [x] **Kernel fusion** (Track 3). `Op::FusedLinear` IR variant
+  representing `(a @ b) + bias` as one node, plus
+  `opt::fuse_linear` pattern-match-rewrite pass that detects
+  `MatMul → BroadcastTo → Add(rank-1 bias)` sequences (with a
+  single-consumer guard on the MatMul). Executor's `Op::FusedLinear`
+  arm dispatches as `backend.matmul + backend.binary(Add)` so all
+  backends benefit immediately; backends with a true fused kernel
+  (cuBLAS gemm-with-bias-epilogue, hand-written Slang) opt in by
+  adding a `GraphBackend::fused_linear` override.
+- [x] **Scheduler integration** (Track 4).
+  `fuel_inference::scheduler_bridge` module exports
+  `MemoryPressureRule: SchedulerRule` — the pilot integration that
+  consults `MemoryScheduler` pressure state to bias placement
+  toward each op's primary input device when memory is tight. The
+  pattern: lift inference-side runtime state into a `*Snapshot`
+  struct, implement a `SchedulerRule` that consumes it, plug into
+  the existing `RuleScheduler` pipeline. MoE-routing,
+  speculative-decode, and tiered-storage rules follow the same
+  shape; MoE specifically needs Phase 9a's per-tensor metadata to
+  tag ops with expert IDs first.
 
 **Exit criterion for 6d**: Fuel's performance ceiling matches or exceeds
 the best hand-tuned execution on each anchor model at the time of writing.
-This is the "we built what we set out to build" gate.
+This is the "we built what we set out to build" gate. **Status:** all
+four architectural tracks shipped; per-backend specialization (real
+fused kernels, native paged-attn, MoE-aware placement) is the
+remaining work.
 
 #### Explicitly out of scope for Phase 6
 
@@ -1572,38 +1593,50 @@ above). Before writing anything new, determine what they contain,
 which backends they target, and whether they can be refactored into
 the tiered structure below.
 
-- [ ] Survey `fuel-flash-attn` — list the op surface, target
-      backend(s), and parity-test coverage.
-- [ ] Survey `fuel-flash-attn-v3` — same.
-- [ ] Decide whether Tier 2/3/4 below refactor these crates in place
-      or supersede them. Document the decision.
+- [x] Survey `fuel-flash-attn` — list the op surface, target
+      backend(s), and parity-test coverage. *Shipped: see
+      `docs/phase8_tier0_audit.md`.*
+- [x] Survey `fuel-flash-attn-v3` — same. *Shipped in same audit.*
+- [x] Decide whether Tier 2/3/4 below refactor these crates in place
+      or supersede them. Document the decision. *Decision: rename
+      to `fuel-flash-attn-cuda` / `fuel-flash-attn-v3-cuda`, extract
+      `-sys` siblings to break the dep cycle, refactor in place.*
 
 #### Tier 1 — CPU reference implementation
 
-- [ ] Pure-Rust FlashAttention forward in `fuel-flash-attn` (or
+- [x] Pure-Rust FlashAttention forward in `fuel-flash-attn` (or
       wherever the audit in Tier 0 lands it). ~100 LOC. Slow by
       design; its job is to be the correctness oracle for every
-      other tier.
-- [ ] Backward pass via recomputation — same approach as the
+      other tier. *Shipped as `fuel_reference_backend::attention::
+      attention_flash` (~270 LOC; bigger than 100 because it also
+      handles GQA, causal mask, sliding window, ALiBi, softcap —
+      same surface the kernels target).*
+- [x] Backward pass via recomputation — same approach as the
       upstream reference, matches the tier-2/3 kernels' expectations.
-- [ ] Parity tests against a naive-attention reference on small
+      *Shipped as `attention_flash_backward`.*
+- [x] Parity tests against a naive-attention reference on small
       shapes (seq ≤ 256, head_dim ≤ 128, batch × heads ≤ 8). Tight
       tolerance (1e-5 in f32) — this tier has no excuse for drift.
+      *Shipped: 7 parity tests + 1 finite-difference gradcheck in
+      `fuel-reference-backend/tests/attention.rs`.*
 
 #### Tier 2 — Portable GPU implementation in Slang
 
-- [ ] Single Slang source for FlashAttention v2 (tile-based,
+- [x] Single Slang source for FlashAttention v2 (tile-based,
       workgroup-parallel, online softmax, no warp specialization).
       Compile to SPIR-V for Vulkan; Slang's experimental CUDA PTX
       backend is a free bonus if it works, not a requirement.
-- [ ] Targets VK_KHR_cooperative_matrix when the device advertises
+      *Shipped as `fuel-kernels-source/kernels/flash_attention.slang`
+      → `fuel-vulkan-kernels/spv/flash_attention.spv`.*
+- [~] Targets VK_KHR_cooperative_matrix when the device advertises
       it; falls back to plain workgroup-shared-memory tiling on
-      devices that don't. Skip the matrix-unit path entirely for the
-      first cut if the fallback alone hits "significantly faster
-      than naive attention" — that's the bar for this tier.
-- [ ] Parity tests against Tier 1 across a matrix of
+      devices that don't. *Plain tiling shipped; coop_matrix path
+      is a follow-up.*
+- [x] Parity tests against Tier 1 across a matrix of
       (batch, heads, seq, head_dim, dtype) shapes. Start narrow
       (f32, contiguous, seq ≤ 1024) and widen once green.
+      *Shipped: 4 parity tests in `fuel-core/tests/flash_attn_vulkan.rs`,
+      green on RTX 4070 within 5e-4 of reference.*
 - [ ] Performance notes: record ms/token on a handful of anchor
       shapes on the dev rig's Vulkan iGPU and on an RTX 4070. This
       tier's ceiling is roughly FA v2 perf on Hopper+ — v3/v4
@@ -1614,8 +1647,20 @@ the tiered structure below.
 Only write these when Tier 2 benchmarks show meaningful perf left on
 the table for a specific architecture.
 
+- [x] **CUDA / Ampere (sm80)**: Dao-AILab FA-v2 kernels via
+      `fuel-flash-attn-cuda-sys`. Wired through
+      `CudaBackend::flash_attn` behind the `flash-attn` Cargo
+      feature; validated on RTX 4070 within F16 precision (max
+      abs 4.2e-5) of `attention_naive`.
+- [x] **CUDA / Hopper (sm90)**: Dao-AILab FA-v3 kernels via
+      `fuel-flash-attn-v3-cuda-sys`. Symbol renamed to `run_mha_v3`
+      so both -sys crates link together cleanly. Behind the
+      `flash-attn-v3` Cargo feature; dispatch chain prefers v3 and
+      falls back to v2 on Err. Rust wiring complete; live-Hopper
+      validation deferred to first user with sm90a hardware.
 - [ ] **CUDA / Hopper+**: FA v2 or v3-equivalent using CUTLASS or
-      hand-written PTX. Requires Baracuda exposing
+      hand-written PTX (would supersede the above port-only Tier 3
+      entries with Fuel-native kernels). Requires Baracuda exposing
       `CUtensorMap`/`CUwgmma`/`cuTensorMemAcc` primitives.
 - [ ] **AMD / RDNA3+**: WMMA + LDS prefetch, wavefront-specialized
       pipeline. Blocked on whatever Rust FFI we settle on for ROCm.
@@ -1656,6 +1701,109 @@ headline numbers are partly algorithm and partly hardware.
 - The tiered structure is documented well enough that a contributor
   with a new backend (SYCL, WebGPU, whatever) can plug in at Tier 2
   without having to touch Tiers 1, 3, or 4.
+
+---
+
+### Phase 8.5 — Dynamic activation sparsity (research-flavoured)
+
+*Affects only the Backends/Kernels and IR layers. Not urgent.
+Research effort with model-specific calibration; queue after
+Phase 6/7/8 are stable. Primarily benefits CPU inference; GPU
+gains are model-dependent.*
+
+#### Why Phase 8.5 exists
+
+Older transformer FFN layers (ReLU-MLP, original Llama / OPT /
+BLOOM) produce highly sparse intermediate activations — typically
+70-90% of values are zero or below a meaningful threshold. Naive
+dense compute on the down-projection wastes that work. Modern
+SwiGLU/GeGLU models still have ~30-50% effective sparsity. The
+**gather-compute-scatter** technique — extract active rows into a
+dense subset, run the dense kernel on the subset, scatter back to
+a zero-filled output — captures this win when the sparsity ratio
+is high enough to amortize the predicate overhead.
+
+The published name is *dynamic activation sparsity*. Production
+references: DejaVu (Tri Dao et al., 2023), PowerInfer, TurboSparse.
+DejaVu's headline result: ~2× on Llama 7B at 80% sparsity, with
+negligible quality loss.
+
+#### Where it wins (and doesn't)
+
+- **Wins**: CPU inference (where dense GEMM is bandwidth-bound and
+  sparsity directly saves work), older models with ReLU activations,
+  FFN down-projection (the biggest dense matmul in the layer).
+- **Marginal**: modern SwiGLU/GeGLU models — still positive, but
+  smaller gain. Need higher sparsity ratios on GPU.
+- **Doesn't apply**: attention output (no sparsity-producing
+  activation), embedding lookup (already index-gather),
+  normalization layers (no sparsity).
+
+GPU dense GEMM is brutally hard to beat — cuBLAS sgemm hits ~98%
+of peak on A100. Sparse alternatives need >70-80% real sparsity
+*plus* cheap predicate overhead before they win on GPU. The
+target hardware reality is: this technique should dominate on CPU
+backends (AOCL, MKL, OpenBLAS) and earn its keep on GPU only for
+very large FFN dims.
+
+#### Building blocks (status today)
+
+| Need | Status |
+| --- | --- |
+| Element gather (read indices → dense) | ✅ `Op::IndexSelect`, `Op::Gather` |
+| Element scatter back | ✅ `Op::IndexAdd`, `Op::ScatterAdd` |
+| Threshold→indices op (data-dependent count) | ❌ no `NonZero` / `Where` / `TopK` |
+| Sparse-shaped matmul (variable batch dim) | ⚠️ `Op::MatMul` accepts variable `M`, but the IR's static-shape contract makes data-dependent shapes awkward |
+| Gather-compute-scatter graph-rewrite pass | ❌ |
+
+The two missing pieces are the work. The gather/scatter primitives
+are already there from the lazy-graph IR.
+
+#### Phase 8.5 work items
+
+- [ ] **Add `Op::NonZeroIndices { threshold: f32 }`** to the IR.
+      Returns `[active_count]` u32 indices. Data-dependent shape
+      means the IR needs either a "ragged tensor" representation or
+      a padded representation with a separate count. Padded is
+      simpler; the down-projection sees padded zeros and the cost
+      is bounded.
+- [ ] **`opt::sparsify_ffn_down_projection`** rewrite pass.
+      Detects `Activation(x) → MatMul(W_down)` (FFN down-projection)
+      and rewrites to
+      `IndexSelect(x, indices) → MatMul(IndexSelect(W_down, indices))
+      → ScatterAdd(zeros, indices)`.
+      Conservative single-consumer rule (don't fuse if the activation
+      is consumed elsewhere) similar to `fuse_linear`'s.
+- [ ] **Calibration harness**: per-layer sparsity profile for the
+      Phase 6 anchor suite. Pick the threshold per layer per model.
+      Offline, run once, stored as model metadata.
+- [ ] **Quality gate**: token-equivalence vs the dense reference on
+      each anchor model within a tolerance. Too-aggressive
+      thresholds degrade output; this gate catches them.
+- [ ] **Per-backend native sparse kernels**. Once the IR pattern
+      stabilizes, hand-write CSR/dense gemv variants where the
+      generic gather + dense matmul is leaving perf on the table.
+      AOCL has sparse BLAS; oneMKL has IE-Sparse; cuSPARSE on CUDA;
+      hand-written Slang on Vulkan.
+
+#### Success criteria for Phase 8.5
+
+- At least one anchor model (the ReLU-MLP archetype, e.g. original
+  Llama 7B) shows ≥30% wall-clock speedup on CPU decode with
+  sparsity enabled, without quality regression.
+- The pass is opt-in via a flag/feature, never on by default —
+  the threshold calibration is per-model.
+- Modern SwiGLU models show neutral-to-positive perf (no regression
+  even when the sparsity isn't there).
+- Documentation explains *which* models benefit and how to find
+  the threshold.
+
+#### Honest caveats
+
+This is a research effort, not a routine engineering task.
+~2-3 weeks of focused work, ~60% of which is calibration and
+benchmarking rather than IR plumbing. Not worth interrupting
+current Phase 6/7/8 work for; do not pull forward.
 
 ---
 
