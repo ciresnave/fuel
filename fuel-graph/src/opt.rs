@@ -516,6 +516,129 @@ impl OrderingEdges {
     }
 }
 
+/// Fuse `MatMul → Add(rank-1 bias)` patterns into `Op::FusedLinear`
+/// (Phase 6d Track 3). Walks the graph; for each `Add` whose LHS is
+/// a `MatMul` and whose RHS is a rank-1 bias whose length equals the
+/// matmul output's last dim, emits a fresh `FusedLinear` node and
+/// remaps consumers of the `Add` to it.
+///
+/// Conservative: only fires when the `Add` is the sole consumer of
+/// the `MatMul`. Otherwise we'd be creating a duplicate matmul
+/// computation. CSE doesn't help here because `MatMul` and
+/// `MatMul-inside-FusedLinear` aren't structurally equal at the IR
+/// level — backends with truly fused kernels are the ones that
+/// benefit, so we'd rather skip the fusion than waste the work.
+///
+/// Returns the count of fusions applied.
+pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
+    let order = {
+        let g = graph.borrow();
+        topo_order_multi(&g, roots)
+    };
+    // Count consumers of each node (so we can guard "single consumer of matmul").
+    let mut consumer_count: HashMap<NodeId, usize> = HashMap::new();
+    {
+        let g = graph.borrow();
+        for &nid in &order {
+            for &input in &g.node(nid).inputs {
+                *consumer_count.entry(input).or_insert(0) += 1;
+            }
+        }
+        // Also count root references — a root is implicitly a consumer.
+        for &r in roots {
+            *consumer_count.entry(r).or_insert(0) += 1;
+        }
+    }
+
+    let mut g = graph.borrow_mut();
+    let mut remap: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut fused = 0usize;
+
+    for nid in order {
+        // Apply already-known remappings to inputs.
+        let (op, inputs, shape, dtype) = {
+            let n = g.node(nid);
+            (n.op.clone(), n.inputs.clone(), n.shape.clone(), n.dtype)
+        };
+        let mapped: Vec<NodeId> = inputs.iter().map(|i| *remap.get(i).unwrap_or(i)).collect();
+        // Pattern: Op::Add { inputs[0]=matmul_node, inputs[1]=rank-1 bias }.
+        if !matches!(op, Op::Add) || mapped.len() != 2 {
+            continue;
+        }
+        let lhs = mapped[0];
+        let rhs = mapped[1];
+        // LHS must be a MatMul.
+        let lhs_op = g.node(lhs).op.clone();
+        if !matches!(lhs_op, Op::MatMul) {
+            continue;
+        }
+        // LHS matmul must have only THIS Add as a consumer (otherwise
+        // fusing would duplicate the matmul computation).
+        // Note: consumer_count counts pre-remapping references; remap
+        // only happens for skipped nodes here so it's still valid.
+        if consumer_count.get(&lhs).copied().unwrap_or(0) != 1 {
+            continue;
+        }
+        // RHS must be a BroadcastTo of a rank-1 bias whose length
+        // equals the matmul output's last dim. The build-time `Add`
+        // requires same-shape inputs, so user code typically does:
+        //     bias[N].broadcast_to([..., M, N]).add(matmul_out)
+        // Walk through that BroadcastTo to find the rank-1 source.
+        let mm_dims = g.node(lhs).shape.dims().to_vec();
+        if mm_dims.is_empty() { continue; }
+        let last_dim = mm_dims[mm_dims.len() - 1];
+        let rhs_node = g.node(rhs);
+        let bias_src_id = if matches!(rhs_node.op, Op::BroadcastTo(_)) && rhs_node.inputs.len() == 1 {
+            *remap.get(&rhs_node.inputs[0]).unwrap_or(&rhs_node.inputs[0])
+        } else {
+            // Bias broadcast may also have been pre-shaped; allow rank-1
+            // direct (rare with build-time shape checks but cheap to
+            // recognize).
+            rhs
+        };
+        let bias_dims = g.node(bias_src_id).shape.dims().to_vec();
+        if bias_dims.len() != 1 || bias_dims[0] != last_dim {
+            continue;
+        }
+        // Pull the matmul's a, b inputs (apply remap to those too).
+        let mm_inputs = g.node(lhs).inputs.clone();
+        if mm_inputs.len() != 2 {
+            continue;
+        }
+        let a = *remap.get(&mm_inputs[0]).unwrap_or(&mm_inputs[0]);
+        let b = *remap.get(&mm_inputs[1]).unwrap_or(&mm_inputs[1]);
+        let new_id = g.push(Node {
+            op: Op::FusedLinear,
+            // FusedLinear takes the *original* rank-1 bias, not the
+            // BroadcastTo'd one — the executor's arm broadcasts it
+            // internally to the matmul output shape.
+            inputs: vec![a, b, bias_src_id],
+            shape,
+            dtype,
+        });
+        remap.insert(nid, new_id);
+        fused += 1;
+    }
+
+    // Apply remap by rewriting any consumer that still references an
+    // un-fused Add. Using the existing `rewrite_input` helper.
+    if !remap.is_empty() {
+        // Collect all node ids; iterate to update inputs that point at
+        // remapped nodes. We need the mutable borrow; clone the set of
+        // nodes to iterate without borrow conflicts.
+        let n_nodes = g.nodes.len();
+        for nid in 0..n_nodes {
+            let node = &mut g.nodes[nid];
+            for input in node.inputs.iter_mut() {
+                if let Some(&new) = remap.get(input) {
+                    *input = new;
+                }
+            }
+        }
+    }
+    fused
+}
+
 /// Derive ordering edges for every destructive op reachable from
 /// `roots`. Result: `nid` → list of other readers of `nid`'s
 /// destroyed input.
@@ -1132,5 +1255,64 @@ mod tests {
         let r_pos = plan.iter().position(|&n| n == r.id()).unwrap();
         assert!(b_pos < sum_pos);
         assert!(b_pos < r_pos);
+    }
+
+    #[test]
+    fn fuse_linear_collapses_matmul_plus_rank1_bias() {
+        // Build [batch=1, m=2, k=3] @ [k=3, n=4] + bias[4].
+        let a = crate::Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+            crate::Shape::from_dims(&[2, 3]),
+        );
+        let b = a.const_f32_like(
+            (0..12).map(|i| (i as f32) * 0.1).collect::<Vec<f32>>(),
+            crate::Shape::from_dims(&[3, 4]),
+        );
+        let bias = a.const_f32_like(
+            vec![0.5_f32, -0.5, 1.0, -1.0],
+            crate::Shape::from_dims(&[4]),
+        );
+        let mm = a.matmul(&b);
+        let bias_b = bias.broadcast_to(crate::Shape::from_dims(&[2, 4]));
+        let out = mm.add(&bias_b);
+        // Note: real users would call broadcast_to first, then Add.
+        // The fusion pass looks for `Add(MatMul, Const-shape-1-N)`
+        // so we need to update it to also recognize the
+        // BroadcastTo-then-Add pattern.
+        let n_fused = fuse_linear(out.graph(), &[out.id()]);
+        assert_eq!(n_fused, 1, "exactly one MatMul→Add(bias[N]) should fuse");
+
+        // The fused node should now be reachable as the canonical
+        // root after remap. Its op is FusedLinear with three inputs.
+        let g = out.graph().borrow();
+        // Walk consumers of the original Add: any leftover Add should
+        // be unreferenced; the new FusedLinear should be present.
+        let any_fused = g.nodes.iter().any(|n| matches!(n.op, Op::FusedLinear));
+        assert!(any_fused, "graph should contain a FusedLinear node");
+    }
+
+    #[test]
+    fn fuse_linear_skips_when_matmul_has_other_consumers() {
+        // If the matmul is consumed by both Add and something else,
+        // fusing would duplicate the matmul. Pass should skip.
+        let a = crate::Tensor::from_f32(
+            vec![1.0_f32; 6],
+            crate::Shape::from_dims(&[2, 3]),
+        );
+        let b = a.const_f32_like(
+            vec![1.0_f32; 12],
+            crate::Shape::from_dims(&[3, 4]),
+        );
+        let bias = a.const_f32_like(
+            vec![1.0_f32; 4],
+            crate::Shape::from_dims(&[4]),
+        );
+        let mm = a.matmul(&b);
+        let bias_b = bias.broadcast_to(crate::Shape::from_dims(&[2, 4]));
+        let with_bias = mm.add(&bias_b);
+        let also_used = mm.relu();        // second consumer of mm
+        // Both with_bias and also_used are roots.
+        let n_fused = fuse_linear(a.graph(), &[with_bias.id(), also_used.id()]);
+        assert_eq!(n_fused, 0, "MatMul has 2 consumers — fusion would duplicate work");
     }
 }

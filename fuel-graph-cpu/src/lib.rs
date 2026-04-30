@@ -326,6 +326,7 @@ fn eval_node(
         Op::PagedAttn { softmax_scale, block_size, softcap } => {
             eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
         }
+        Op::FusedLinear => eval_fused_linear(inputs, cache),
 
         // --- dtype, shape, broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
@@ -532,6 +533,34 @@ fn eval_flash_attn(
         (qa, ka, va, alba) => panic!(
             "flash_attn: unsupported operand dtype combination q={:?} k={:?} v={:?} alibi={:?}",
             qa.dtype(), ka.dtype(), va.dtype(), alba.map(|t| t.dtype()),
+        ),
+    }
+}
+
+fn eval_fused_linear(
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let a = cache.get(&inputs[0]).expect("fused_linear: missing a");
+    let b = cache.get(&inputs[1]).expect("fused_linear: missing b");
+    let bias = cache.get(&inputs[2]).expect("fused_linear: missing bias");
+    let mm = match (a, b) {
+        (AnyTensor::F32(a), AnyTensor::F32(b)) => AnyTensor::F32(ops::matmul(a, b)),
+        (AnyTensor::F64(a), AnyTensor::F64(b)) => AnyTensor::F64(ops::matmul(a, b)),
+        _ => panic!("fused_linear: unsupported matmul dtype combination a={:?} b={:?}", a.dtype(), b.dtype()),
+    };
+    match (&mm, bias) {
+        (AnyTensor::F32(mm_t), AnyTensor::F32(bt)) => {
+            let bias_b = ops::broadcast_to(bt, mm_t.shape());
+            AnyTensor::F32(ops::add(mm_t, &bias_b))
+        }
+        (AnyTensor::F64(mm_t), AnyTensor::F64(bt)) => {
+            let bias_b = ops::broadcast_to(bt, mm_t.shape());
+            AnyTensor::F64(ops::add(mm_t, &bias_b))
+        }
+        (mm_a, b_a) => panic!(
+            "fused_linear: bias dtype {:?} must match matmul dtype {:?}",
+            b_a.dtype(), mm_a.dtype(),
         ),
     }
 }

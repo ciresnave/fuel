@@ -346,6 +346,7 @@ pub fn eval_node_with_op(
         Op::PagedAttn { softmax_scale, block_size, softcap } => {
             eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
         }
+        Op::FusedLinear => eval_fused_linear(inputs, cache),
 
         // --- dtype, shape, and broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),
@@ -815,6 +816,41 @@ fn eval_flash_attn(
         (qa, ka, va, alba) => panic!(
             "flash_attn: unsupported operand dtype combination q={:?} k={:?} v={:?} alibi={:?}",
             qa.dtype(), ka.dtype(), va.dtype(), alba.map(|t| t.dtype()),
+        ),
+    }
+}
+
+/// FusedLinear reference: `(a @ b) + bias` where bias broadcasts
+/// along the trailing matmul-output axis. Reference impl runs
+/// matmul + bias-add as two passes; backends with a fused kernel
+/// override the GraphBackend trait method to do it in one launch.
+fn eval_fused_linear(
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let a = cache.get(&inputs[0]).expect("fused_linear: missing a");
+    let b = cache.get(&inputs[1]).expect("fused_linear: missing b");
+    let bias = cache.get(&inputs[2]).expect("fused_linear: missing bias");
+    // Step 1: matmul.
+    let mm = match (a, b) {
+        (AnyRefTensor::F32(a), AnyRefTensor::F32(b)) => AnyRefTensor::F32(ops::matmul(a, b)),
+        (AnyRefTensor::F64(a), AnyRefTensor::F64(b)) => AnyRefTensor::F64(ops::matmul(a, b)),
+        _ => panic!("fused_linear: unsupported matmul dtype combination a={:?} b={:?}", a.dtype(), b.dtype()),
+    };
+    // Step 2: broadcast-add bias along the last axis. Bias must be rank-1
+    // with length equal to the matmul output's last dim.
+    match (&mm, bias) {
+        (AnyRefTensor::F32(mm_t), AnyRefTensor::F32(bt)) => {
+            let bias_b = ops::broadcast_to(bt, mm_t.shape());
+            AnyRefTensor::F32(ops::add(mm_t, &bias_b))
+        }
+        (AnyRefTensor::F64(mm_t), AnyRefTensor::F64(bt)) => {
+            let bias_b = ops::broadcast_to(bt, mm_t.shape());
+            AnyRefTensor::F64(ops::add(mm_t, &bias_b))
+        }
+        (mm_a, b_a) => panic!(
+            "fused_linear: bias dtype {:?} must match matmul dtype {:?}",
+            b_a.dtype(), mm_a.dtype(),
         ),
     }
 }
