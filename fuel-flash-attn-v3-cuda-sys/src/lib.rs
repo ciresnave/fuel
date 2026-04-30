@@ -7,10 +7,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! `fuel-flash-attn-v3-cuda-sys` — bare `extern "C"` bindings to the
+//! Dao-AILab FlashAttention v3 CUDA kernels (sm90 / Hopper).
+//!
+//! Mirror of `fuel-flash-attn-cuda-sys` for the sm90 target. Zero
+//! fuel deps so both the eager-mode v3 wrapper and the lazy-graph
+//! CUDA backend (with `flash-attn-v3` feature) call into it without
+//! creating a dependency cycle.
+//!
+//! The C symbol is `run_mha_v3` (renamed from upstream `run_mha`)
+//! so binaries that also link `fuel-flash-attn-cuda-sys` (sm80)
+//! don't see a duplicate-symbol error.
+
 use core::ffi::{c_int, c_void};
 
 extern "C" {
-    pub(crate) fn run_mha(
+    pub fn run_mha_v3(
         q_ptr: *const c_void,
         k_ptr: *const c_void,
         v_ptr: *const c_void,

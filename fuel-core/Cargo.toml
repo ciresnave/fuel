@@ -92,6 +92,13 @@ cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-graph-cuda?/cudnn"]
 # kernels + CUTLASS headers); only opt in if you actually need it.
 flash-attn = ["cuda", "fuel-graph-cuda?/flash-attn"]
 
+# Enables CUDA FlashAttention v3 (sm90 / Hopper) via
+# fuel-flash-attn-v3-cuda-sys. Implies `cuda`. Even larger nvcc build
+# than v2 (67 kernels). When both `flash-attn` and `flash-attn-v3`
+# are enabled, dispatch tries v3 first and falls back to v2 on Err
+# (e.g. softcap requested or unsupported head_dim).
+flash-attn-v3 = ["cuda", "fuel-graph-cuda?/flash-attn-v3"]
+
 # Multi-GPU communication via NVIDIA NCCL.
 nccl = ["cuda", "dep:baracuda-nccl", "fuel-graph-cuda?/nccl"]
 
