@@ -305,6 +305,39 @@ pub trait GraphBackend {
         fuel_core_types::bail!("GraphBackend: flash_attn not implemented natively")
     }
 
+    /// Paged-cache scaled-dot-product attention. Inputs (in order):
+    /// q, k_cache, v_cache, block_table, context_lens, optional alibi.
+    /// Layouts: q `[B, Hq, Sq, D]`, k/v `[num_blocks, block_size, Hkv, D]`,
+    /// block_table `[B, max_blocks]` u32, context_lens `[B]` u32.
+    /// Output is `[B, Hq, Sq, D]`.
+    ///
+    /// Default impl bails so backends without a native paged kernel
+    /// fall through to CPU fallback.
+    #[allow(clippy::too_many_arguments)]
+    fn paged_attn(
+        &self,
+        q: &Self::Storage,
+        k_cache: &Self::Storage,
+        v_cache: &Self::Storage,
+        block_table: &Self::Storage,
+        context_lens: &Self::Storage,
+        alibi_slopes: Option<&Self::Storage>,
+        q_layout: &Layout,
+        k_cache_layout: &Layout,
+        v_cache_layout: &Layout,
+        block_table_layout: &Layout,
+        context_lens_layout: &Layout,
+        alibi_layout: Option<&Layout>,
+        softmax_scale: f32,
+        block_size: usize,
+        softcap: Option<f32>,
+    ) -> fuel_core_types::Result<Self::Storage> {
+        let _ = (q, k_cache, v_cache, block_table, context_lens, alibi_slopes,
+                 q_layout, k_cache_layout, v_cache_layout, block_table_layout,
+                 context_lens_layout, alibi_layout, softmax_scale, block_size, softcap);
+        fuel_core_types::bail!("GraphBackend: paged_attn not implemented natively")
+    }
+
     /// 2-D transposed convolution. `input` is `[N, Cin, H, W]`,
     /// `weight` is `[Cin, Cout/groups, Kh, Kw]`. Returns the bare
     /// transposed-conv result; bias compose is done by callers.
@@ -1180,6 +1213,33 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     &q.layout(), &k.layout(), &v.layout(),
                     alibi_layout.as_ref(),
                     *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                }
+            }
+
+            Op::PagedAttn { softmax_scale, block_size, softcap } => {
+                let q  = self.get_gt_c(inputs, 0, cache);
+                let kc = self.get_gt_c(inputs, 1, cache);
+                let vc = self.get_gt_c(inputs, 2, cache);
+                let bt = self.get_gt_c(inputs, 3, cache);
+                let cl = self.get_gt_c(inputs, 4, cache);
+                let alibi = if inputs.len() >= 6 {
+                    Some(self.get_gt_c(inputs, 5, cache))
+                } else {
+                    None
+                };
+                let alibi_layout = alibi.as_ref().map(|t| t.layout());
+                match self.backend.paged_attn(
+                    &q.storage, &kc.storage, &vc.storage, &bt.storage, &cl.storage,
+                    alibi.as_ref().map(|t| t.storage.as_ref()),
+                    &q.layout(), &kc.layout(), &vc.layout(),
+                    &bt.layout(), &cl.layout(),
+                    alibi_layout.as_ref(),
+                    *softmax_scale, *block_size, *softcap,
                 ) {
                     Ok(s) => s,
                     Err(_) => {
