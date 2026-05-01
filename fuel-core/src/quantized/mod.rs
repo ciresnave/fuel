@@ -3,7 +3,7 @@
 //! Per-backend kernels live in their own crates:
 //! - CPU: `fuel-cpu-backend::quantized::CpuQStorage`
 //! - CUDA: `fuel-cuda-backend::quantized::QCudaStorage`
-//! - Metal: `fuel-metal::quantized::QMetalStorage`
+//! - Metal: `fuel-metal-backend::quantized::QMetalStorage`
 //!
 //! fuel-core holds the polymorphic [`QTensor`] / [`QMatMul`] front-end and
 //! the file-format readers (gguf/ggml/imatrix). All per-backend dispatch

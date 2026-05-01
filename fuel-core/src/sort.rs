@@ -178,7 +178,7 @@ impl crate::CustomOp1 for ArgSort {
         #[cfg(feature = "metal")]
         if let Some(metal) = storage
             .as_any()
-            .downcast_ref::<fuel_metal::MetalStorage>()
+            .downcast_ref::<fuel_metal_backend::MetalStorage>()
         {
             use crate::DType;
 

@@ -31,7 +31,7 @@ members = [
     "fuel-kernels-source",
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
-    "fuel-metal",
+    "fuel-metal-backend",
     "fuel-metal-kernels",
     "fuel-nn",
     "fuel-onnx",
@@ -65,7 +65,7 @@ default-members = [
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
     "fuel-reference-backend",
-    "fuel-metal",
+    "fuel-metal-backend",
     "fuel-datasets",
     "fuel-examples",
     "fuel-inference",
@@ -126,7 +126,7 @@ fuel-flash-attn-v3-cuda = { path = "./fuel-flash-attn-v3-cuda", version = "0.10.
 fuel-flash-attn-v3-cuda-sys = { path = "./fuel-flash-attn-v3-cuda-sys", version = "0.10.2" }
 fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
 fuel-cuda-kernels = { path = "./fuel-cuda-kernels", version = "0.10.2" }
-fuel-metal = { path = "./fuel-metal", version = "0.10.2" }
+fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.2" }
 fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.10.2" }
 fuel-nn = { path = "./fuel-nn", version = "0.10.2" }
 fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }

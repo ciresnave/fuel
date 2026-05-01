@@ -239,7 +239,7 @@ fn ug_op() -> Result<()> {
             {
                 let device = fuel_core::metal_backend::new_device(0)?;
                 let metal_dev = fuel_core::metal_backend::as_device(&device)?;
-                let op = fuel_metal::ug::MetalUgIOp1::new("test", kernel, metal_dev)?;
+                let op = fuel_metal_backend::ug::MetalUgIOp1::new("test", kernel, metal_dev)?;
                 (device, Box::new(op))
             }
             #[cfg(not(feature = "metal"))]
