@@ -2048,7 +2048,7 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
     let (storage2, _) = t2.storage_and_layout();
     let extract = |s: RwLockReadGuard<'_, Storage>| {
         use baracuda_driver::DevicePtr;
-        let c = s.as_cuda_storage().expect("expected cuda storage");
+        let c = s.downcast_ref::<fuel_core::CudaStorage>().expect("expected cuda storage");
         let slice = c.as_cuda_slice::<u32>().unwrap();
         let ptr = slice.device_ptr().0;
         ptr

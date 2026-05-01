@@ -15,11 +15,9 @@ pub use baracuda_cublas::lt::Activation;
 use baracuda_cublas::lt::{self as lt, LtHandle, MatmulDesc, MatrixLayout};
 use baracuda_cublas_sys::functions::{cublasComputeType_t, cudaDataType_t};
 use baracuda_cublas_sys::types::cublasOperation_t;
-use fuel::backend::BackendStorage;
 use fuel::cuda::WrapErr;
 use fuel::dyn_backend::DynBackendStorage;
 use fuel::{CudaStorage, DType, Device, Error, Layout, Result, Shape, Tensor};
-use fuel_graph_cuda::CudaBackendStorage;
 use half::{bf16, f16};
 use std::ffi::{c_int, c_void};
 use std::sync::Arc;
@@ -255,7 +253,7 @@ impl CublasLTMatmul {
             Some(c) => {
                 let (c_storage, c_l) = c.storage_and_layout();
                 let c = c_storage
-                    .as_cuda_storage()
+                    .downcast_ref::<fuel::CudaStorage>()
                     .ok_or_else(|| Error::Msg("`c` must be a cuda tensor".into()).bt())?
                     .as_cuda_slice::<T>()?;
                 match c_l.contiguous_offsets() {
@@ -324,13 +322,12 @@ impl CublasLTMatmul {
 }
 
 fn wrap_cuda(out: CudaStorage) -> Box<dyn DynBackendStorage> {
-    Box::new(CudaBackendStorage::new(out))
+    Box::new(out)
 }
 
 fn downcast_cuda<'a>(s: &'a dyn DynBackendStorage) -> Result<&'a CudaStorage> {
     s.as_any()
-        .downcast_ref::<CudaBackendStorage>()
-        .map(|b| b.inner())
+        .downcast_ref::<CudaStorage>()
         .ok_or_else(|| Error::Msg("cublaslt ops require a CUDA storage".into()).bt())
 }
 
@@ -448,7 +445,7 @@ impl CublasLTBatchMatmul {
             Some(c) => {
                 let (c_storage, c_l) = c.storage_and_layout();
                 let c = c_storage
-                    .as_cuda_storage()
+                    .downcast_ref::<fuel::CudaStorage>()
                     .ok_or_else(|| Error::Msg("`c` must be a cuda tensor".into()).bt())?
                     .as_cuda_slice::<T>()?;
                 match c_l.contiguous_offsets() {

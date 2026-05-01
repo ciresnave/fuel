@@ -1,7 +1,7 @@
 ﻿/// Helper functions to write CPU kernels.
-use fuel_core_types::{CpuStorage, Error, Layout, Result, WithDType};
+use fuel_core_types::{HostBuffer, Error, Layout, Result, WithDType};
 
-type C = CpuStorage;
+type C = HostBuffer;
 pub trait Map1 {
     fn f<T: WithDType>(&self, vs: &[T], layout: &Layout) -> Result<Vec<T>>;
 

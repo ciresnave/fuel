@@ -1,6 +1,6 @@
 ﻿use super::{GgmlDType, QStorage};
 use crate::quantized::k_quants::GgmlType;
-use crate::{backend::BackendDevice, cuda_backend::WrapErr};
+use crate::cuda_backend::WrapErr;
 use crate::{builder_arg as barg, CudaDevice, CudaStorage, Result};
 use half::f16;
 
@@ -599,7 +599,7 @@ impl QCudaStorage {
         }
 
         self.device
-            .storage_from_cpu_storage(&crate::CpuStorage::F32(out))
+            .storage_from_cpu_storage(&crate::HostBuffer::F32(out))
     }
 
     pub fn dequantize_f16(&self, elem_count: usize) -> Result<CudaStorage> {
@@ -659,7 +659,7 @@ impl QCudaStorage {
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        src: &crate::CpuStorage,
+        src: &crate::HostBuffer,
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
@@ -686,7 +686,7 @@ impl QCudaStorage {
         Ok(())
     }
 
-    pub fn quantize_onto(&mut self, src: &crate::CpuStorage) -> Result<()> {
+    pub fn quantize_onto(&mut self, src: &crate::HostBuffer) -> Result<()> {
         // Run the quantization on cpu.
         let src_len = src.as_slice::<f32>()?.len();
         let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
@@ -796,7 +796,6 @@ impl QCudaStorage {
         storage: &CudaStorage,
         layout: &crate::Layout,
     ) -> Result<(CudaStorage, crate::Shape)> {
-        use crate::backend::BackendStorage;
         let (n, k) = self_shape.dims2()?;
         let (b, m, k2) = match layout.shape().dims() {
             &[b, m, k2] => (b, m, k2),

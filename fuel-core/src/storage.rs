@@ -1,9 +1,8 @@
 ﻿use crate::dyn_backend::DynBackendStorage;
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
-use crate::{CpuStorage, DType, Device, Error, Layout, Result, Shape};
+use crate::{HostBuffer, DType, Device, Error, Layout, Result, Shape};
 use crate::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};
-use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 
 // We do not want to implement Clone on Storage as cloning may fail because of
 // out of memory. Instead try_clone should be used.
@@ -11,21 +10,44 @@ use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
 
 impl Storage {
-    /// Construct storage wrapping a CPU buffer.
-    pub fn from_cpu(s: CpuStorage) -> Self {
-        Storage(Box::new(CpuBackendStorage(s)))
+    /// Construct storage from any concrete `DynBackendStorage` implementor.
+    ///
+    /// This is the backend-agnostic entry point — backends provide a type
+    /// implementing `DynBackendStorage`, and `Storage::new` boxes it. Prefer
+    /// this over the named `from_cpu`/`from_cuda`/`from_metal` constructors,
+    /// which are scheduled for removal.
+    pub fn new<B: DynBackendStorage + 'static>(b: B) -> Self {
+        Storage(Box::new(b))
     }
 
-    /// Construct storage wrapping a CUDA buffer.
-    #[cfg(feature = "cuda")]
-    pub fn from_cuda(s: crate::CudaStorage) -> Self {
-        Storage(Box::new(fuel_graph_cuda::CudaBackendStorage::new(s)))
+    /// Borrow the inner storage as a `DynBackendStorage` trait object.
+    ///
+    /// Backends that need to peel back to their concrete storage type can
+    /// downcast via `storage.as_dyn().as_any().downcast_ref::<MyStorage>()`.
+    /// This replaces the deprecated `as_cpu_storage`/`as_cuda_storage`/
+    /// `as_metal_storage` helpers.
+    pub fn as_dyn(&self) -> &dyn DynBackendStorage {
+        &*self.0
     }
 
-    /// Construct storage wrapping a Metal buffer.
-    #[cfg(feature = "metal")]
-    pub fn from_metal(s: crate::MetalStorage) -> Self {
-        Storage(Box::new(fuel_metal::MetalBackendStorage::new(s)))
+    /// Mutable variant of [`as_dyn`].
+    pub fn as_dyn_mut(&mut self) -> &mut dyn DynBackendStorage {
+        &mut *self.0
+    }
+
+    /// Downcast the inner storage to a concrete backend type.
+    ///
+    /// Returns `Some(&T)` when the boxed `dyn DynBackendStorage` is the
+    /// concrete type `T`; otherwise `None`. This is the backend-agnostic
+    /// replacement for the deleted `as_cpu_storage` / `as_cuda_storage` /
+    /// `as_metal_storage` accessors.
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.0.as_any().downcast_ref::<T>()
+    }
+
+    /// Mutable variant of [`downcast_ref`](Self::downcast_ref).
+    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.0.as_any_mut().downcast_mut::<T>()
     }
 
     pub fn try_clone(&self, layout: &Layout) -> Result<Self> {
@@ -112,40 +134,8 @@ impl Storage {
         Ok(Storage(self.0.to_dtype_dyn(layout, dtype)?))
     }
 
-    pub(crate) fn to_cpu_storage(&self) -> Result<CpuStorage> {
+    pub(crate) fn to_cpu_storage(&self) -> Result<HostBuffer> {
         self.0.to_host_buffer_dyn()
-    }
-
-    // -----------------------------------------------------------------------
-    // CustomOp bridge (temporary — will be removed when CustomOp traits are
-    // redesigned in Step 9 to use &dyn DynBackendStorage directly)
-    // -----------------------------------------------------------------------
-
-    /// Downcast helper: get a `&CpuStorage` from the inner trait object.
-    pub fn as_cpu_storage(&self) -> Result<&CpuStorage> {
-        self.0
-            .as_any()
-            .downcast_ref::<CpuBackendStorage>()
-            .map(|s| &s.0)
-            .ok_or_else(|| Error::Msg("expected cpu storage".into()).bt())
-    }
-
-    /// Downcast helper: get a `&CudaStorage` from the inner trait object.
-    #[cfg(feature = "cuda")]
-    pub fn as_cuda_storage(&self) -> Option<&crate::CudaStorage> {
-        self.0
-            .as_any()
-            .downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
-            .map(|s| s.inner())
-    }
-
-    /// Downcast helper: get a `&MetalStorage` from the inner trait object.
-    #[cfg(feature = "metal")]
-    pub fn as_metal_storage(&self) -> Option<&crate::MetalStorage> {
-        self.0
-            .as_any()
-            .downcast_ref::<fuel_metal::MetalBackendStorage>()
-            .map(|s| s.inner())
     }
 
     pub(crate) fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Self, Shape)> {

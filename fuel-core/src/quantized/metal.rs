@@ -1,5 +1,4 @@
 ﻿use super::{GgmlDType, QStorage};
-use crate::backend::BackendStorage;
 use crate::{DType, MetalDevice, MetalStorage, Result, Shape, D};
 use fuel_metal_kernels::metal::Buffer;
 use std::sync::Arc;
@@ -120,7 +119,7 @@ impl QMetalStorage {
         // Quantization only happens on CPU for now.
         let src = src.to_cpu::<f32>()?;
         let elem_count = src.len();
-        let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));
+        let src = crate::Storage::Cpu(crate::HostBuffer::F32(src));
         let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;
         qcpu_storage.quantize(&src)?;
         let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
@@ -137,7 +136,7 @@ impl QMetalStorage {
         // Quantization only happens on CPU for now.
         let src = src.to_cpu::<f32>()?;
         let elem_count = src.len();
-        let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));
+        let src = crate::Storage::Cpu(crate::HostBuffer::F32(src));
         let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;
         qcpu_storage.quantize_imatrix(&src, imatrix_weights, n_per_row)?;
         let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
@@ -147,7 +146,7 @@ impl QMetalStorage {
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        src: &crate::CpuStorage,
+        src: &crate::HostBuffer,
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
@@ -166,7 +165,7 @@ impl QMetalStorage {
         Ok(())
     }
 
-    pub fn quantize_onto(&mut self, src: &crate::CpuStorage) -> Result<()> {
+    pub fn quantize_onto(&mut self, src: &crate::HostBuffer) -> Result<()> {
         // Quantization only happens on CPU for now.
         let elem_count = src.as_slice::<f32>()?.len();
         let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;

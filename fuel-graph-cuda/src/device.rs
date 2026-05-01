@@ -1,6 +1,6 @@
-﻿use fuel_core_types::CpuStorageRef;
+﻿use fuel_core_types::HostBufferRef;
 use fuel_core_types::dtype::WithDType;
-use fuel_core_types::{CpuStorage, DType, Layout, Result, Shape};
+use fuel_core_types::{HostBuffer, DType, Layout, Result, Shape};
 use fuel_cuda_kernels as kernels;
 use baracuda_curand::RngKind;
 use baracuda_driver::{DeviceBuffer, Dim3, Function, LaunchBuilder};
@@ -719,50 +719,50 @@ impl CudaDevice {
 
     pub fn storage_from_slice<T: WithDType>(&self, s: &[T]) -> Result<CudaStorage> {
         let slice = match T::cpu_storage_ref(s) {
-            CpuStorageRef::U8(storage) => {
+            HostBufferRef::U8(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U8(data)
             }
-            CpuStorageRef::U32(storage) => {
+            HostBufferRef::U32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U32(data)
             }
-            CpuStorageRef::I16(storage) => {
+            HostBufferRef::I16(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::I16(data)
             }
-            CpuStorageRef::I32(storage) => {
+            HostBufferRef::I32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::I32(data)
             }
-            CpuStorageRef::I64(storage) => {
+            HostBufferRef::I64(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::I64(data)
             }
-            CpuStorageRef::BF16(storage) => {
+            HostBufferRef::BF16(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::BF16(data)
             }
-            CpuStorageRef::F16(storage) => {
+            HostBufferRef::F16(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F16(data)
             }
-            CpuStorageRef::F32(storage) => {
+            HostBufferRef::F32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F32(data)
             }
-            CpuStorageRef::F64(storage) => {
+            HostBufferRef::F64(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F64(data)
             }
-            CpuStorageRef::F8E4M3(storage) => {
+            HostBufferRef::F8E4M3(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F8E4M3(data)
             }
-            CpuStorageRef::F4(_)
-            | CpuStorageRef::F6E2M3(_)
-            | CpuStorageRef::F6E3M2(_)
-            | CpuStorageRef::F8E8M0(_) => {
+            HostBufferRef::F4(_)
+            | HostBufferRef::F6E2M3(_)
+            | HostBufferRef::F6E3M2(_)
+            | HostBufferRef::F8E8M0(_) => {
                 return Err(CudaError::UnsupportedDtype {
                     dtype: T::DTYPE,
                     op: "storage_from_slice",
@@ -776,52 +776,52 @@ impl CudaDevice {
         })
     }
 
-    pub fn storage_from_cpu_storage(&self, storage: &CpuStorage) -> Result<CudaStorage> {
+    pub fn storage_from_cpu_storage(&self, storage: &HostBuffer) -> Result<CudaStorage> {
         let slice = match storage {
-            CpuStorage::U8(storage) => {
+            HostBuffer::U8(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U8(data)
             }
-            CpuStorage::U32(storage) => {
+            HostBuffer::U32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U32(data)
             }
-            CpuStorage::I16(storage) => {
+            HostBuffer::I16(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::I16(data)
             }
-            CpuStorage::I32(storage) => {
+            HostBuffer::I32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::I32(data)
             }
-            CpuStorage::I64(storage) => {
+            HostBuffer::I64(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::I64(data)
             }
-            CpuStorage::BF16(storage) => {
+            HostBuffer::BF16(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::BF16(data)
             }
-            CpuStorage::F16(storage) => {
+            HostBuffer::F16(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F16(data)
             }
-            CpuStorage::F32(storage) => {
+            HostBuffer::F32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F32(data)
             }
-            CpuStorage::F64(storage) => {
+            HostBuffer::F64(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F64(data)
             }
-            CpuStorage::F8E4M3(storage) => {
+            HostBuffer::F8E4M3(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::F8E4M3(data)
             }
-            CpuStorage::F4(_)
-            | CpuStorage::F6E2M3(_)
-            | CpuStorage::F6E3M2(_)
-            | CpuStorage::F8E8M0(_) => {
+            HostBuffer::F4(_)
+            | HostBuffer::F6E2M3(_)
+            | HostBuffer::F6E3M2(_)
+            | HostBuffer::F8E8M0(_) => {
                 return Err(CudaError::UnsupportedDtype {
                     dtype: storage.dtype(),
                     op: "storage_from_cpu_storage",
@@ -835,52 +835,52 @@ impl CudaDevice {
         })
     }
 
-    pub fn storage_from_cpu_storage_owned(&self, storage: CpuStorage) -> Result<CudaStorage> {
+    pub fn storage_from_cpu_storage_owned(&self, storage: HostBuffer) -> Result<CudaStorage> {
         let slice = match storage {
-            CpuStorage::U8(storage) => {
+            HostBuffer::U8(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::U8(data)
             }
-            CpuStorage::U32(storage) => {
+            HostBuffer::U32(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::U32(data)
             }
-            CpuStorage::I16(storage) => {
+            HostBuffer::I16(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::I16(data)
             }
-            CpuStorage::I32(storage) => {
+            HostBuffer::I32(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::I32(data)
             }
-            CpuStorage::I64(storage) => {
+            HostBuffer::I64(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::I64(data)
             }
-            CpuStorage::BF16(storage) => {
+            HostBuffer::BF16(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::BF16(data)
             }
-            CpuStorage::F16(storage) => {
+            HostBuffer::F16(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::F16(data)
             }
-            CpuStorage::F32(storage) => {
+            HostBuffer::F32(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::F32(data)
             }
-            CpuStorage::F64(storage) => {
+            HostBuffer::F64(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::F64(data)
             }
-            CpuStorage::F8E4M3(storage) => {
+            HostBuffer::F8E4M3(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::F8E4M3(data)
             }
-            CpuStorage::F4(_)
-            | CpuStorage::F6E2M3(_)
-            | CpuStorage::F6E3M2(_)
-            | CpuStorage::F8E8M0(_) => {
+            HostBuffer::F4(_)
+            | HostBuffer::F6E2M3(_)
+            | HostBuffer::F6E3M2(_)
+            | HostBuffer::F8E8M0(_) => {
                 return Err(CudaError::UnsupportedDtype {
                     dtype: storage.dtype(),
                     op: "storage_from_cpu_storage_owned",

@@ -18,7 +18,7 @@ use fuel::{CustomOp1, Layout, Result, Shape, Tensor};
 use fuel::dyn_backend::DynBackendStorage;
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 #[cfg(feature = "cuda")]
-use fuel_graph_cuda::CudaBackendStorage;
+use fuel::CudaStorage;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -57,7 +57,7 @@ impl CustomOp1 for LayerNorm {
                 let s_variance = 1f32 / (variance / dim2 as f32 + self.eps).sqrt();
                 dst.extend(src.iter().map(|x| x * s_variance))
             }
-            let out = fuel::CpuStorage::F32(dst);
+            let out = fuel::HostBuffer::F32(dst);
             return Ok((
                 Box::new(CpuBackendStorage::from(out)),
                 layout.shape().clone(),
@@ -65,10 +65,8 @@ impl CustomOp1 for LayerNorm {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda) = storage.as_any().downcast_ref::<CudaBackendStorage>() {
-            use fuel::backend::BackendStorage;
+        if let Some(storage) = storage.as_any().downcast_ref::<CudaStorage>() {
             use fuel::cuda_backend::{LaunchConfig, WrapErr};
-            let storage = cuda.inner();
             let (d1, d2) = layout.shape().dims2()?;
             let d1 = d1 as u32;
             let d2 = d2 as u32;
@@ -98,7 +96,7 @@ impl CustomOp1 for LayerNorm {
 
             let out = fuel::CudaStorage::wrap_cuda_slice(dst, dev);
             return Ok((
-                Box::new(CudaBackendStorage::new(out)),
+                Box::new(out),
                 layout.shape().clone(),
             ));
         }

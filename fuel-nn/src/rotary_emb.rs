@@ -1,6 +1,6 @@
 ﻿//! Rotary Embeddings
 //!
-use fuel::{CpuStorage, Layout, Result, Shape, Tensor, D};
+use fuel::{HostBuffer, Layout, Result, Shape, Tensor, D};
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 use rayon::prelude::*;
 
@@ -41,7 +41,7 @@ impl fuel::CustomOp3 for RotaryEmbI {
                 l_cos: &Layout,
                 sin: &[T],
                 l_sin: &Layout,
-            ) -> Result<(CpuStorage, Shape)> {
+            ) -> Result<(HostBuffer, Shape)> {
                 let src = match l_src.contiguous_offsets() {
                     None => fuel::bail!("input src has to be contiguous"),
                     Some((o1, o2)) => &src[o1..o2],
@@ -78,7 +78,7 @@ impl fuel::CustomOp3 for RotaryEmbI {
                 Ok((storage, (b, h, t, d).into()))
             }
 
-            use CpuStorage as C;
+            use HostBuffer as C;
             let (result, shape) = match (s1, s2, s3) {
                 (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
                 (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
@@ -95,13 +95,13 @@ impl fuel::CustomOp3 for RotaryEmbI {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>() {
-            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let (out, shape) = self.cuda_inner(cuda1.inner(), l1, cuda2.inner(), l2, cuda3.inner(), l3)?;
-            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(out)), shape));
+            let (out, shape) = self.cuda_inner(cuda1, l1, cuda2, l2, cuda3, l3)?;
+            return Ok((Box::new(out), shape));
         }
 
         fuel::bail!("{}: unsupported backend", self.name())
@@ -168,7 +168,6 @@ impl RotaryEmbI {
             Ok(dst)
         }
 
-        use fuel::backend::BackendStorage;
         use fuel::cuda_backend::CudaStorageSlice::{BF16, F16, F32, F64};
         let dev = s1.device();
         let slice = match (&s1.slice, &s2.slice, &s3.slice) {
@@ -200,7 +199,6 @@ impl RotaryEmbI {
         sin: &fuel::MetalStorage,
         l_sin: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         let device = src.device();
         let encoder = device.command_encoder()?;
         encoder.set_label("rope_i");
@@ -381,7 +379,7 @@ impl fuel::CustomOp3 for RotaryEmb {
                 l_cos: &Layout,
                 sin: &[T],
                 l_sin: &Layout,
-            ) -> Result<(CpuStorage, Shape)> {
+            ) -> Result<(HostBuffer, Shape)> {
                 let src = match l_src.contiguous_offsets() {
                     None => fuel::bail!("input src has to be contiguous"),
                     Some((o1, o2)) => &src[o1..o2],
@@ -422,7 +420,7 @@ impl fuel::CustomOp3 for RotaryEmb {
                 Ok((storage, (b, h, t, d).into()))
             }
 
-            use CpuStorage as C;
+            use HostBuffer as C;
             let (result, shape) = match (s1, s2, s3) {
                 (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
                 (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
@@ -439,13 +437,13 @@ impl fuel::CustomOp3 for RotaryEmb {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>() {
-            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let (out, shape) = self.cuda_inner(cuda1.inner(), l1, cuda2.inner(), l2, cuda3.inner(), l3)?;
-            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(out)), shape));
+            let (out, shape) = self.cuda_inner(cuda1, l1, cuda2, l2, cuda3, l3)?;
+            return Ok((Box::new(out), shape));
         }
 
         fuel::bail!("{}: unsupported backend", self.name())
@@ -513,7 +511,6 @@ impl RotaryEmb {
             Ok(dst)
         }
 
-        use fuel::backend::BackendStorage;
         use fuel::cuda_backend::CudaStorageSlice::{BF16, F16, F32, F64};
         let dev = s1.device();
         let slice = match (&s1.slice, &s2.slice, &s3.slice) {
@@ -545,7 +542,6 @@ impl RotaryEmb {
         sin: &fuel::MetalStorage,
         l_sin: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         let device = src.device();
         let encoder = device.command_encoder()?;
         encoder.set_label("rope");
@@ -710,7 +706,7 @@ impl fuel::CustomOp3 for RotaryEmbThd {
                 l_cos: &Layout,
                 sin: &[T],
                 l_sin: &Layout,
-            ) -> Result<(CpuStorage, Shape)> {
+            ) -> Result<(HostBuffer, Shape)> {
                 let src = match l_src.contiguous_offsets() {
                     None => fuel::bail!("input src has to be contiguous"),
                     Some((o1, o2)) => &src[o1..o2],
@@ -752,7 +748,7 @@ impl fuel::CustomOp3 for RotaryEmbThd {
                 Ok((storage, (b, t, h, d).into()))
             }
 
-            use CpuStorage as C;
+            use HostBuffer as C;
             let (result, shape) = match (s1, s2, s3) {
                 (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => inner(s1, l1, s2, l2, s3, l3),
                 (C::F16(s1), C::F16(s2), C::F16(s3)) => inner(s1, l1, s2, l2, s3, l3),
@@ -769,13 +765,13 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>() {
-            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let (out, shape) = self.cuda_inner(cuda1.inner(), l1, cuda2.inner(), l2, cuda3.inner(), l3)?;
-            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(out)), shape));
+            let (out, shape) = self.cuda_inner(cuda1, l1, cuda2, l2, cuda3, l3)?;
+            return Ok((Box::new(out), shape));
         }
 
         fuel::bail!("{}: unsupported backend", self.name())
@@ -843,7 +839,6 @@ impl RotaryEmbThd {
             Ok(dst)
         }
 
-        use fuel::backend::BackendStorage;
         use fuel::cuda_backend::CudaStorageSlice::{BF16, F16, F32, F64};
         let dev = s1.device();
         let slice = match (&s1.slice, &s2.slice, &s3.slice) {
@@ -875,7 +870,6 @@ impl RotaryEmbThd {
         sin: &fuel::MetalStorage,
         l_sin: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         let device = src.device();
         let encoder = device.command_encoder()?;
         encoder.set_label("rope_thd");

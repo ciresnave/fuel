@@ -1,10 +1,8 @@
 ﻿use fuel_flash_attn_cuda_sys as ffi;
 
-use fuel::backend::BackendStorage;
 use fuel::dyn_backend::DynBackendStorage;
-use fuel::{DType, Layout, Result, Shape, Tensor};
+use fuel::{CudaStorage, DType, Layout, Result, Shape, Tensor};
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
-use fuel_graph_cuda::CudaBackendStorage;
 use half::{bf16, f16};
 
 pub struct FlashAttn {
@@ -109,7 +107,7 @@ impl FlashAttn {
                 );
             }
 
-            let alibi_slopes = alibi_slopes.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("alibi_slopes must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+            let alibi_slopes = alibi_slopes.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("alibi_slopes must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
             let alibi_slopes = alibi_slopes.slice(alibi_slopes_layout.start_offset()..alibi_slopes.len());
 
@@ -230,25 +228,22 @@ impl fuel::CustomOp3 for FlashAttn {
         }
         let q = s1
             .as_any()
-            .downcast_ref::<CudaBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg("flash-attn requires CUDA storage".into()).bt())?
-            .inner();
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn requires CUDA storage".into()).bt())?;
         let k = s2
             .as_any()
-            .downcast_ref::<CudaBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg("flash-attn requires CUDA storage".into()).bt())?
-            .inner();
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn requires CUDA storage".into()).bt())?;
         let v = s3
             .as_any()
-            .downcast_ref::<CudaBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg("flash-attn requires CUDA storage".into()).bt())?
-            .inner();
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn requires CUDA storage".into()).bt())?;
         let (out, shape) = match q.dtype() {
             fuel::DType::F16 => self.cuda_fwd_t::<f16>(q, l1, k, l2, v, l3, false),
             fuel::DType::BF16 => self.cuda_fwd_t::<bf16>(q, l1, k, l2, v, l3, true),
             dt => fuel::bail!("flash-attn is only supported for f16/bf16 ({dt:?})"),
         }?;
-        Ok((Box::new(CudaBackendStorage::new(out)), shape))
+        Ok((Box::new(out), shape))
     }
 }
 
@@ -475,7 +470,7 @@ impl FlashAttnVarLen {
 
         let (seqlens_q, seqlens_q_layout) = self.seqlens_q.storage_and_layout();
         let seqlens_q = seqlens_q
-            .as_cuda_storage()
+            .downcast_ref::<fuel::CudaStorage>()
             .ok_or_else(|| fuel::Error::Msg("seqlens_q must be a cuda tensor".into()).bt())?
             .as_cuda_slice::<u32>()?;
         let seqlens_q = match seqlens_q_layout.contiguous_offsets() {
@@ -485,7 +480,7 @@ impl FlashAttnVarLen {
 
         let (seqlens_k, seqlens_k_layout) = self.seqlens_k.storage_and_layout();
         let seqlens_k = seqlens_k
-            .as_cuda_storage()
+            .downcast_ref::<fuel::CudaStorage>()
             .ok_or_else(|| fuel::Error::Msg("seqlens_k must be a cuda tensor".into()).bt())?
             .as_cuda_slice::<u32>()?;
         let seqlens_k = match seqlens_k_layout.contiguous_offsets() {
@@ -576,7 +571,7 @@ impl FlashAttnVarLen {
                 );
             }
 
-            let alibi_slopes = alibi_slopes.as_cuda_storage().ok_or_else(|| fuel::Error::Msg("alibi_slopes must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+            let alibi_slopes = alibi_slopes.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("alibi_slopes must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
             let alibi_slopes = alibi_slopes.slice(alibi_slopes_layout.start_offset()..alibi_slopes.len());
 
@@ -699,25 +694,22 @@ impl fuel::CustomOp3 for FlashAttnVarLen {
         }
         let q = s1
             .as_any()
-            .downcast_ref::<CudaBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg("flash-attn-varlen requires CUDA storage".into()).bt())?
-            .inner();
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-varlen requires CUDA storage".into()).bt())?;
         let k = s2
             .as_any()
-            .downcast_ref::<CudaBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg("flash-attn-varlen requires CUDA storage".into()).bt())?
-            .inner();
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-varlen requires CUDA storage".into()).bt())?;
         let v = s3
             .as_any()
-            .downcast_ref::<CudaBackendStorage>()
-            .ok_or_else(|| fuel::Error::Msg("flash-attn-varlen requires CUDA storage".into()).bt())?
-            .inner();
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| fuel::Error::Msg("flash-attn-varlen requires CUDA storage".into()).bt())?;
         let (out, shape) = match q.dtype() {
             fuel::DType::F16 => self.cuda_fwd_t::<f16>(q, l1, k, l2, v, l3, false),
             fuel::DType::BF16 => self.cuda_fwd_t::<bf16>(q, l1, k, l2, v, l3, true),
             dt => fuel::bail!("flash-attn-varlen is only supported for f16/bf16 ({dt:?})"),
         }?;
-        Ok((Box::new(CudaBackendStorage::new(out)), shape))
+        Ok((Box::new(out), shape))
     }
 }
 

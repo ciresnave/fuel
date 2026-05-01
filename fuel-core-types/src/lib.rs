@@ -1,9 +1,10 @@
 ﻿//! Core types and traits for the fuel ML framework.
 //!
 //! This crate contains the foundational types (`DType`, `Shape`, `Layout`, `Error`),
-//! backend traits (`BackendStorage`, `BackendDevice`), and CPU storage types
-//! (`CpuStorage`, `CpuStorageRef`, `CpuDevice`) that are shared across all fuel
-//! backend crates.
+//! the dyn backend traits (`DynBackendStorage`, `DynBackendDevice`), the
+//! orthogonal `HostStorage` capability marker, and CPU storage types
+//! (`HostBuffer`, `HostBufferRef`, `CpuDevice`) that are shared across all
+//! fuel backend crates.
 
 /// A small-vector type for dimension/stride storage.
 /// Avoids heap allocation for tensors with up to 6 dimensions.

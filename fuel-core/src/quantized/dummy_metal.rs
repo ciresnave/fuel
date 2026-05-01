@@ -39,14 +39,14 @@ impl QMetalStorage {
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        _src: &crate::CpuStorage,
+        _src: &crate::HostBuffer,
         _imatrix_weights: &[f32],
         _n_per_row: usize,
     ) -> Result<()> {
         Err(Error::NotCompiledWithMetalSupport)
     }
 
-    pub fn quantize_onto(&mut self, _src: &crate::CpuStorage) -> Result<()> {
+    pub fn quantize_onto(&mut self, _src: &crate::HostBuffer) -> Result<()> {
         Err(Error::NotCompiledWithCudaSupport)
     }
 

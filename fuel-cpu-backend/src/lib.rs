@@ -18,5 +18,6 @@ pub mod ops;
 pub mod probe;
 pub mod utils;
 
+pub use dyn_impl::CpuStorage;
 pub use ops::*;
 pub use utils::*;

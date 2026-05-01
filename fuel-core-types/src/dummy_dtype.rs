@@ -52,25 +52,25 @@ macro_rules! dummy_with_dtype {
                 )
             }
 
-            fn cpu_storage_ref(_data: &[Self]) -> crate::CpuStorageRef<'_> {
+            fn cpu_storage_ref(_data: &[Self]) -> crate::HostBufferRef<'_> {
                 panic!(
                     "{} is a dummy type and does not support storage",
                     stringify!($ty)
                 )
             }
 
-            fn to_cpu_storage_owned(_data: Vec<Self>) -> crate::CpuStorage {
+            fn to_cpu_storage_owned(_data: Vec<Self>) -> crate::HostBuffer {
                 panic!(
                     "{} is a dummy type and does not support storage",
                     stringify!($ty)
                 )
             }
 
-            fn cpu_storage_data(_s: crate::CpuStorage) -> Result<Vec<Self>> {
+            fn cpu_storage_data(_s: crate::HostBuffer) -> Result<Vec<Self>> {
                 Err(Error::UnsupportedDTypeForOp(DType::$dtype, "cpu_storage_data").bt())
             }
 
-            fn cpu_storage_as_slice(_s: &crate::CpuStorage) -> Result<&[Self]> {
+            fn cpu_storage_as_slice(_s: &crate::HostBuffer) -> Result<&[Self]> {
                 Err(Error::UnsupportedDTypeForOp(DType::$dtype, "cpu_storage_as_slice").bt())
             }
         }

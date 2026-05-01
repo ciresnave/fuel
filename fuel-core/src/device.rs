@@ -7,7 +7,7 @@
 //! assert_eq!(dev.location(), fuel_core::DeviceLocation::Cpu);
 //! ```
 use crate::dyn_backend::DynBackendDevice;
-use crate::{CpuStorage, DType, Error, Result, Shape, Storage, WithDType};
+use crate::{HostBuffer, DType, Error, Result, Shape, Storage, WithDType};
 use fuel_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ pub trait NdArray {
     fn shape(&self) -> Result<Shape>;
 
     /// Converts this value into CPU storage.
-    fn to_cpu_storage(&self) -> CpuStorage;
+    fn to_cpu_storage(&self) -> HostBuffer;
 }
 
 impl<S: WithDType> NdArray for S {
@@ -65,7 +65,7 @@ impl<S: WithDType> NdArray for S {
         Ok(Shape::from(()))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         S::to_cpu_storage(&[*self])
     }
 }
@@ -75,7 +75,7 @@ impl<S: WithDType, const N: usize> NdArray for &[S; N] {
         Ok(Shape::from(self.len()))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         S::to_cpu_storage(self.as_slice())
     }
 }
@@ -85,7 +85,7 @@ impl<S: WithDType> NdArray for &[S] {
         Ok(Shape::from(self.len()))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         S::to_cpu_storage(self)
     }
 }
@@ -95,7 +95,7 @@ impl<S: WithDType, const N: usize, const M: usize> NdArray for &[[S; N]; M] {
         Ok(Shape::from((M, N)))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         S::to_cpu_storage_owned(self.concat())
     }
 }
@@ -107,7 +107,7 @@ impl<S: WithDType, const N1: usize, const N2: usize, const N3: usize> NdArray
         Ok(Shape::from((N1, N2, N3)))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         let mut vec = Vec::with_capacity(N1 * N2 * N3);
         for i1 in 0..N1 {
             for i2 in 0..N2 {
@@ -125,7 +125,7 @@ impl<S: WithDType, const N1: usize, const N2: usize, const N3: usize, const N4: 
         Ok(Shape::from((N1, N2, N3, N4)))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         let mut vec = Vec::with_capacity(N1 * N2 * N3 * N4);
         for i1 in 0..N1 {
             for i2 in 0..N2 {
@@ -143,7 +143,7 @@ impl<S: WithDType> NdArray for Vec<S> {
         Ok(Shape::from(self.len()))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         S::to_cpu_storage(self.as_slice())
     }
 }
@@ -163,7 +163,7 @@ impl<S: WithDType> NdArray for Vec<&[S]> {
         Ok(Shape::from((n, m)))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         let data = self.iter().copied().flatten().copied().collect::<Vec<_>>();
         S::to_cpu_storage_owned(data)
     }
@@ -184,7 +184,7 @@ impl<S: WithDType> NdArray for Vec<Vec<S>> {
         Ok(Shape::from((n, m)))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         let len: usize = self.iter().map(|v| v.len()).sum();
         let mut dst = Vec::with_capacity(len);
         for v in self.iter() {
@@ -210,7 +210,7 @@ impl<S: WithDType> NdArray for Vec<Vec<Vec<S>>> {
         Ok(Shape::from([[n].as_slice(), shape0.dims()].concat()))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         if self.is_empty() {
             return S::to_cpu_storage_owned(vec![]);
         }
@@ -244,7 +244,7 @@ impl<S: WithDType> NdArray for Vec<Vec<Vec<Vec<S>>>> {
         Ok(Shape::from([[n].as_slice(), shape0.dims()].concat()))
     }
 
-    fn to_cpu_storage(&self) -> CpuStorage {
+    fn to_cpu_storage(&self) -> HostBuffer {
         let len: usize = self
             .iter()
             .map(|v| {
@@ -298,7 +298,7 @@ impl Device {
         {
             let dev = crate::CudaDevice::new(ordinal)?;
             Ok(Device {
-                inner: Arc::new(fuel_graph_cuda::CudaBackendDevice(dev)),
+                inner: Arc::new(dev),
             })
         }
         #[cfg(not(feature = "cuda"))]
@@ -314,8 +314,7 @@ impl Device {
         {
             self.inner
                 .as_any()
-                .downcast_ref::<fuel_graph_cuda::CudaBackendDevice>()
-                .map(|d| &d.0)
+                .downcast_ref::<crate::CudaDevice>()
                 .ok_or_else(|| Error::Msg("expected a cuda device".into()).bt())
         }
         #[cfg(not(feature = "cuda"))]
@@ -330,8 +329,7 @@ impl Device {
         {
             self.inner
                 .as_any()
-                .downcast_ref::<fuel_metal::MetalBackendDevice>()
-                .map(|d| &d.0)
+                .downcast_ref::<crate::MetalDevice>()
                 .ok_or_else(|| Error::Msg("expected a metal device".into()).bt())
         }
         #[cfg(not(feature = "metal"))]
@@ -346,7 +344,7 @@ impl Device {
         {
             let dev = crate::CudaDevice::new_with_stream(ordinal)?;
             Ok(Device {
-                inner: Arc::new(fuel_graph_cuda::CudaBackendDevice(dev)),
+                inner: Arc::new(dev),
             })
         }
         #[cfg(not(feature = "cuda"))]
@@ -362,7 +360,7 @@ impl Device {
         {
             let dev = crate::MetalDevice::new(ordinal)?;
             Ok(Device {
-                inner: Arc::new(fuel_metal::MetalBackendDevice(dev)),
+                inner: Arc::new(dev),
             })
         }
         #[cfg(not(feature = "metal"))]
@@ -384,7 +382,7 @@ impl Device {
     #[cfg(feature = "cuda")]
     pub(crate) fn from_cuda_device(dev: crate::CudaDevice) -> Self {
         Device {
-            inner: Arc::new(fuel_graph_cuda::CudaBackendDevice(dev)),
+            inner: Arc::new(dev),
         }
     }
 
@@ -392,7 +390,7 @@ impl Device {
     #[cfg(feature = "metal")]
     pub(crate) fn from_metal_device(dev: crate::MetalDevice) -> Self {
         Device {
-            inner: Arc::new(fuel_metal::MetalBackendDevice(dev)),
+            inner: Arc::new(dev),
         }
     }
 

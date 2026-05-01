@@ -440,10 +440,8 @@ impl InplaceOp1 for UgIOp1 {
         #[cfg(feature = "metal")]
         if let Some(sto) = storage
             .as_any_mut()
-            .downcast_mut::<fuel_metal::MetalBackendStorage>()
+            .downcast_mut::<fuel_metal::MetalStorage>()
         {
-            let sto = &mut sto.storage;
-            use crate::backend::BackendStorage;
             use objc2_metal;
 
             let elem_count = layout.shape().elem_count();
@@ -476,9 +474,8 @@ impl InplaceOp1 for UgIOp1 {
         #[cfg(feature = "cuda")]
         if let Some(sto) = storage
             .as_any_mut()
-            .downcast_mut::<fuel_graph_cuda::CudaBackendStorage>()
+            .downcast_mut::<fuel_graph_cuda::CudaStorage>()
         {
-            let sto = &mut sto.storage;
             use crate::cuda_backend::WrapErr;
 
             let elem_count = layout.shape().elem_count();

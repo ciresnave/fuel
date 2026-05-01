@@ -1,12 +1,8 @@
 ﻿//! `DynBackendStorage` and `DynBackendDevice` implementations for the CPU backend.
 //!
-//! This module defines newtype wrappers `CpuBackendStorage` and `CpuBackendDevice`
-//! that implement the object-safe `DynBackend*` traits from `fuel-core-types`.
-//!
-//! These newtypes exist because of Rust's orphan rule: both `DynBackendStorage`
-//! and `CpuStorage` are defined in `fuel-core-types`, but the impl needs access
-//! to the computation infrastructure in this crate (`fuel-cpu-backend`). The
-//! newtype is zero-cost — it's just a transparent wrapper around `CpuStorage`.
+//! `CpuStorage` (defined here) owns raw tensor data as a typed `HostBuffer` and
+//! implements `DynBackendStorage` directly. `CpuBackendDevice` is the stateless
+//! device handle. `CpuBackendStorage` is a backward-compat alias for `CpuStorage`.
 
 use fuel_core_types::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
@@ -14,7 +10,7 @@ use fuel_core_types::conv::{
 use fuel_core_types::cpu::erf;
 use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use fuel_core_types::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_core_types::{CpuStorage, DType, DeviceLocation, Error, Layout, Result,
+use fuel_core_types::{CpuStorage as HostBuffer, DType, DeviceLocation, Error, Layout, Result,
                          Scalar, Shape};
 use float8::F8E4M3;
 use half::{bf16, f16};
@@ -26,44 +22,44 @@ use crate::utils::{unary_map, binary_map, Map1, Map1Any, Map2,
                    Map2U8, Map2InPlace};
 
 // ---------------------------------------------------------------------------
-// CpuBackendStorage — newtype wrapper
+// CpuStorage — newtype wrapping HostBuffer
 // ---------------------------------------------------------------------------
 
-/// Newtype wrapper around [`CpuStorage`] implementing [`DynBackendStorage`].
+/// CPU backend storage: owns raw tensor data as a typed `HostBuffer`.
 ///
-/// This wrapper is zero-cost (transparent) and exists solely to satisfy the
-/// orphan rule: `CpuStorage` and `DynBackendStorage` are both defined in
-/// `fuel-core-types`, so their impl must live in that crate or in a crate
-/// that defines one of them.  Since `CpuBackendStorage` is defined *here*,
-/// we can implement the trait here.
+/// Defined in `fuel-cpu-backend` so the orphan rule allows implementing
+/// `DynBackendStorage` here with full access to CPU kernels.
 #[derive(Debug, Clone)]
-pub struct CpuBackendStorage(pub CpuStorage);
+pub struct CpuStorage(pub HostBuffer);
 
-impl CpuBackendStorage {
-    /// Unwrap the inner `CpuStorage`.
-    pub fn into_inner(self) -> CpuStorage {
+/// Backward-compat alias.
+pub type CpuBackendStorage = CpuStorage;
+
+impl CpuStorage {
+    /// Unwrap the inner `HostBuffer`.
+    pub fn into_inner(self) -> HostBuffer {
         self.0
     }
 
-    /// Borrow the inner `CpuStorage`.
-    pub fn inner(&self) -> &CpuStorage {
+    /// Borrow the inner `HostBuffer`.
+    pub fn inner(&self) -> &HostBuffer {
         &self.0
     }
 }
 
-impl From<CpuStorage> for CpuBackendStorage {
-    fn from(s: CpuStorage) -> Self {
+impl From<HostBuffer> for CpuStorage {
+    fn from(s: HostBuffer) -> Self {
         Self(s)
     }
 }
 
-impl From<CpuBackendStorage> for CpuStorage {
-    fn from(s: CpuBackendStorage) -> Self {
+impl From<CpuStorage> for HostBuffer {
+    fn from(s: CpuStorage) -> Self {
         s.0
     }
 }
 
-impl fuel_core_types::backend::HostStorage for CpuBackendStorage {
+impl fuel_core_types::backend::HostStorage for CpuStorage {
     fn as_host_buffer_ref(
         &self,
     ) -> fuel_core_types::Result<fuel_core_types::HostBufferRef<'_>> {
@@ -81,9 +77,7 @@ impl fuel_core_types::backend::HostStorage for CpuBackendStorage {
 // CpuBackendDevice — newtype wrapper
 // ---------------------------------------------------------------------------
 
-/// Newtype wrapper around [`CpuDevice`] implementing [`DynBackendDevice`].
-///
-/// Same orphan-rule motivation as [`CpuBackendStorage`].
+/// CPU device handle (stateless) implementing [`DynBackendDevice`].
 #[derive(Debug, Clone, Copy)]
 pub struct CpuBackendDevice;
 
@@ -91,10 +85,10 @@ pub struct CpuBackendDevice;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Downcast a `&dyn DynBackendStorage` to `&CpuBackendStorage`.
-fn downcast(s: &dyn DynBackendStorage) -> Result<&CpuBackendStorage> {
+/// Downcast a `&dyn DynBackendStorage` to `&CpuStorage`.
+fn downcast(s: &dyn DynBackendStorage) -> Result<&CpuStorage> {
     s.as_any()
-        .downcast_ref::<CpuBackendStorage>()
+        .downcast_ref::<CpuStorage>()
         .ok_or_else(|| Error::DeviceMismatchBinaryOp {
             lhs: DeviceLocation::Cpu,
             rhs: s.device_dyn().location_dyn(),
@@ -102,11 +96,11 @@ fn downcast(s: &dyn DynBackendStorage) -> Result<&CpuBackendStorage> {
         }.bt())
 }
 
-/// Downcast a `&mut dyn DynBackendStorage` to `&mut CpuBackendStorage`.
-fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut CpuBackendStorage> {
+/// Downcast a `&mut dyn DynBackendStorage` to `&mut CpuStorage`.
+fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut CpuStorage> {
     let loc = s.device_dyn().location_dyn();
     s.as_any_mut()
-        .downcast_mut::<CpuBackendStorage>()
+        .downcast_mut::<CpuStorage>()
         .ok_or_else(|| Error::DeviceMismatchBinaryOp {
             lhs: DeviceLocation::Cpu,
             rhs: loc,
@@ -119,7 +113,7 @@ fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut CpuBackendStorage>
 // ---------------------------------------------------------------------------
 
 /// Helper: apply a per-element unary operation selected by [`UnaryOp`].
-fn cpu_unary_op(s: &CpuStorage, layout: &Layout, op: UnaryOp) -> Result<CpuStorage> {
+fn cpu_unary_op(s: &HostBuffer, layout: &Layout, op: UnaryOp) -> Result<HostBuffer> {
     use UnaryOp::*;
 
     // Most unary ops only make sense on floating types; for integer types they
@@ -178,31 +172,31 @@ fn silu_f64(v: f64) -> f64 {
 /// Apply a float-only unary op.  For half/f8 types, promote to f32/f64 then demote.
 /// Integer types return an error.
 fn float_unary(
-    s: &CpuStorage,
+    s: &HostBuffer,
     layout: &Layout,
     f32_fn: impl Fn(f32) -> f32 + Copy,
     f64_fn: impl Fn(f64) -> f64 + Copy,
-) -> Result<CpuStorage> {
+) -> Result<HostBuffer> {
     match s {
-        CpuStorage::BF16(data) => {
+        HostBuffer::BF16(data) => {
             let out = unary_map(data, layout, |v: bf16| bf16::from_f32(f32_fn(v.to_f32())));
-            Ok(CpuStorage::BF16(out))
+            Ok(HostBuffer::BF16(out))
         }
-        CpuStorage::F16(data) => {
+        HostBuffer::F16(data) => {
             let out = unary_map(data, layout, |v: f16| f16::from_f32(f32_fn(v.to_f32())));
-            Ok(CpuStorage::F16(out))
+            Ok(HostBuffer::F16(out))
         }
-        CpuStorage::F32(data) => {
+        HostBuffer::F32(data) => {
             let out = unary_map(data, layout, f32_fn);
-            Ok(CpuStorage::F32(out))
+            Ok(HostBuffer::F32(out))
         }
-        CpuStorage::F64(data) => {
+        HostBuffer::F64(data) => {
             let out = unary_map(data, layout, f64_fn);
-            Ok(CpuStorage::F64(out))
+            Ok(HostBuffer::F64(out))
         }
-        CpuStorage::F8E4M3(data) => {
+        HostBuffer::F8E4M3(data) => {
             let out = unary_map(data, layout, |v: F8E4M3| F8E4M3::from_f32(f32_fn(v.to_f32())));
-            Ok(CpuStorage::F8E4M3(out))
+            Ok(HostBuffer::F8E4M3(out))
         }
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "unary_op").bt()),
     }
@@ -210,101 +204,101 @@ fn float_unary(
 
 /// Apply a float unary op; integer types pass through as identity.
 fn float_unary_identity_int(
-    s: &CpuStorage,
+    s: &HostBuffer,
     layout: &Layout,
     f32_fn: impl Fn(f32) -> f32 + Copy,
     f64_fn: impl Fn(f64) -> f64 + Copy,
-) -> Result<CpuStorage> {
+) -> Result<HostBuffer> {
     match s {
-        CpuStorage::U8(d) => Ok(CpuStorage::U8(unary_map(d, layout, |v| v))),
-        CpuStorage::U32(d) => Ok(CpuStorage::U32(unary_map(d, layout, |v| v))),
-        CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v| v))),
-        CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v| v))),
-        CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v| v))),
+        HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v| v))),
+        HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v| v))),
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v| v))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v| v))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v| v))),
         _ => float_unary(s, layout, f32_fn, f64_fn),
     }
 }
 
-fn all_unary_neg(s: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
+fn all_unary_neg(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        CpuStorage::BF16(d) => Ok(CpuStorage::BF16(unary_map(d, layout, |v: bf16| -v))),
-        CpuStorage::F16(d) => Ok(CpuStorage::F16(unary_map(d, layout, |v: f16| -v))),
-        CpuStorage::F32(d) => Ok(CpuStorage::F32(unary_map(d, layout, |v: f32| -v))),
-        CpuStorage::F64(d) => Ok(CpuStorage::F64(unary_map(d, layout, |v: f64| -v))),
-        CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v: i16| -v))),
-        CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v: i32| -v))),
-        CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v: i64| -v))),
-        CpuStorage::F8E4M3(d) => Ok(CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| -v))),
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| -v))),
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| -v))),
+        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| -v))),
+        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| -v))),
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| -v))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| -v))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| -v))),
+        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| -v))),
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "neg").bt()),
     }
 }
 
-fn all_unary_sqr(s: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
+fn all_unary_sqr(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        CpuStorage::BF16(d) => Ok(CpuStorage::BF16(unary_map(d, layout, |v: bf16| v * v))),
-        CpuStorage::F16(d) => Ok(CpuStorage::F16(unary_map(d, layout, |v: f16| v * v))),
-        CpuStorage::F32(d) => Ok(CpuStorage::F32(unary_map(d, layout, |v: f32| v * v))),
-        CpuStorage::F64(d) => Ok(CpuStorage::F64(unary_map(d, layout, |v: f64| v * v))),
-        CpuStorage::U8(d) => Ok(CpuStorage::U8(unary_map(d, layout, |v: u8| v * v))),
-        CpuStorage::U32(d) => Ok(CpuStorage::U32(unary_map(d, layout, |v: u32| v * v))),
-        CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v: i16| v * v))),
-        CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v: i32| v * v))),
-        CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v: i64| v * v))),
-        CpuStorage::F8E4M3(d) => Ok(CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| v * v))),
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| v * v))),
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| v * v))),
+        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v * v))),
+        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v * v))),
+        HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v * v))),
+        HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v: u32| v * v))),
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v * v))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v * v))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v * v))),
+        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v * v))),
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "sqr").bt()),
     }
 }
 
-fn all_unary_abs(s: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
+fn all_unary_abs(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        CpuStorage::BF16(d) => Ok(CpuStorage::BF16(unary_map(d, layout, |v: bf16| v.abs()))),
-        CpuStorage::F16(d) => Ok(CpuStorage::F16(unary_map(d, layout, |v: f16| v.abs()))),
-        CpuStorage::F32(d) => Ok(CpuStorage::F32(unary_map(d, layout, |v: f32| v.abs()))),
-        CpuStorage::F64(d) => Ok(CpuStorage::F64(unary_map(d, layout, |v: f64| v.abs()))),
-        CpuStorage::U8(d) => Ok(CpuStorage::U8(unary_map(d, layout, |v: u8| v))),
-        CpuStorage::U32(d) => Ok(CpuStorage::U32(unary_map(d, layout, |v: u32| v))),
-        CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v: i16| v.abs()))),
-        CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v: i32| v.abs()))),
-        CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v: i64| v.abs()))),
-        CpuStorage::F8E4M3(d) => Ok(CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.abs()))),
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| v.abs()))),
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| v.abs()))),
+        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v.abs()))),
+        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v.abs()))),
+        HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v))),
+        HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v: u32| v))),
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v.abs()))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v.abs()))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v.abs()))),
+        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.abs()))),
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "abs").bt()),
     }
 }
 
-fn all_unary_relu(s: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
+fn all_unary_relu(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        CpuStorage::BF16(d) => Ok(CpuStorage::BF16(unary_map(d, layout, |v: bf16| v.max(bf16::ZERO)))),
-        CpuStorage::F16(d) => Ok(CpuStorage::F16(unary_map(d, layout, |v: f16| v.max(f16::ZERO)))),
-        CpuStorage::F32(d) => Ok(CpuStorage::F32(unary_map(d, layout, |v: f32| v.max(0.0)))),
-        CpuStorage::F64(d) => Ok(CpuStorage::F64(unary_map(d, layout, |v: f64| v.max(0.0)))),
-        CpuStorage::U8(d) => Ok(CpuStorage::U8(unary_map(d, layout, |v: u8| v))),
-        CpuStorage::U32(d) => Ok(CpuStorage::U32(unary_map(d, layout, |v: u32| v))),
-        CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v: i16| v.max(0)))),
-        CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v: i32| v.max(0)))),
-        CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v: i64| v.max(0)))),
-        CpuStorage::F8E4M3(d) => Ok(CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.max(F8E4M3::ZERO)))),
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| v.max(bf16::ZERO)))),
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| v.max(f16::ZERO)))),
+        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v.max(0.0)))),
+        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v.max(0.0)))),
+        HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v))),
+        HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v: u32| v))),
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v.max(0)))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v.max(0)))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v.max(0)))),
+        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.max(F8E4M3::ZERO)))),
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "relu").bt()),
     }
 }
 
-fn all_unary_sign(s: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
+fn all_unary_sign(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        CpuStorage::BF16(d) => Ok(CpuStorage::BF16(unary_map(d, layout, |v: bf16| {
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| {
             bf16::from((v > bf16::ZERO) as i8) - bf16::from((v < bf16::ZERO) as i8)
         }))),
-        CpuStorage::F16(d) => Ok(CpuStorage::F16(unary_map(d, layout, |v: f16| {
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| {
             f16::from((v > f16::ZERO) as i8) - f16::from((v < f16::ZERO) as i8)
         }))),
-        CpuStorage::F32(d) => Ok(CpuStorage::F32(unary_map(d, layout, |v: f32| {
+        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| {
             f32::from(v > 0.) - f32::from(v < 0.)
         }))),
-        CpuStorage::F64(d) => Ok(CpuStorage::F64(unary_map(d, layout, |v: f64| {
+        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| {
             f64::from(v > 0.) - f64::from(v < 0.)
         }))),
-        CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v: i16| v.signum()))),
-        CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v: i32| v.signum()))),
-        CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v: i64| v.signum()))),
-        CpuStorage::F8E4M3(d) => Ok(CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| {
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v.signum()))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v.signum()))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v.signum()))),
+        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| {
             let f = v.to_f32();
             F8E4M3::from_f32(f32::from(f > 0.) - f32::from(f < 0.))
         }))),
@@ -314,12 +308,12 @@ fn all_unary_sign(s: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
 
 /// Apply a binary op selected by [`BinaryOp`].
 fn cpu_binary_op(
-    lhs: &CpuStorage,
-    rhs: &CpuStorage,
+    lhs: &HostBuffer,
+    rhs: &HostBuffer,
     lhs_l: &Layout,
     rhs_l: &Layout,
     op: BinaryOp,
-) -> Result<CpuStorage> {
+) -> Result<HostBuffer> {
     use BinaryOp::*;
     match op {
         Add => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a + b, "add"),
@@ -332,13 +326,13 @@ fn cpu_binary_op(
 }
 
 fn all_binary<F>(
-    lhs: &CpuStorage,
-    rhs: &CpuStorage,
+    lhs: &HostBuffer,
+    rhs: &HostBuffer,
     lhs_l: &Layout,
     rhs_l: &Layout,
     f: F,
     op_name: &'static str,
-) -> Result<CpuStorage>
+) -> Result<HostBuffer>
 where
     F: Fn(f64, f64) -> f64 + Copy,
 {
@@ -349,42 +343,42 @@ where
                 let result = f($conv_fn(a), $conv_fn(b));
                 $result_fn(result)
             });
-            Ok(CpuStorage::$variant(out))
+            Ok(HostBuffer::$variant(out))
         }};
     }
 
     match (lhs, rhs) {
-        (CpuStorage::BF16(a), CpuStorage::BF16(b)) => dispatch_pair!(a, b, BF16, |v: bf16| v.to_f64(), |v: f64| bf16::from_f64(v)),
-        (CpuStorage::F16(a), CpuStorage::F16(b)) => dispatch_pair!(a, b, F16, |v: f16| v.to_f64(), |v: f64| f16::from_f64(v)),
-        (CpuStorage::F32(a), CpuStorage::F32(b)) => {
+        (HostBuffer::BF16(a), HostBuffer::BF16(b)) => dispatch_pair!(a, b, BF16, |v: bf16| v.to_f64(), |v: f64| bf16::from_f64(v)),
+        (HostBuffer::F16(a), HostBuffer::F16(b)) => dispatch_pair!(a, b, F16, |v: f16| v.to_f64(), |v: f64| f16::from_f64(v)),
+        (HostBuffer::F32(a), HostBuffer::F32(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as f32);
-            Ok(CpuStorage::F32(out))
+            Ok(HostBuffer::F32(out))
         }
-        (CpuStorage::F64(a), CpuStorage::F64(b)) => {
+        (HostBuffer::F64(a), HostBuffer::F64(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a, b));
-            Ok(CpuStorage::F64(out))
+            Ok(HostBuffer::F64(out))
         }
-        (CpuStorage::U8(a), CpuStorage::U8(b)) => {
+        (HostBuffer::U8(a), HostBuffer::U8(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as u8);
-            Ok(CpuStorage::U8(out))
+            Ok(HostBuffer::U8(out))
         }
-        (CpuStorage::U32(a), CpuStorage::U32(b)) => {
+        (HostBuffer::U32(a), HostBuffer::U32(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as u32);
-            Ok(CpuStorage::U32(out))
+            Ok(HostBuffer::U32(out))
         }
-        (CpuStorage::I16(a), CpuStorage::I16(b)) => {
+        (HostBuffer::I16(a), HostBuffer::I16(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as i16);
-            Ok(CpuStorage::I16(out))
+            Ok(HostBuffer::I16(out))
         }
-        (CpuStorage::I32(a), CpuStorage::I32(b)) => {
+        (HostBuffer::I32(a), HostBuffer::I32(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as i32);
-            Ok(CpuStorage::I32(out))
+            Ok(HostBuffer::I32(out))
         }
-        (CpuStorage::I64(a), CpuStorage::I64(b)) => {
+        (HostBuffer::I64(a), HostBuffer::I64(b)) => {
             let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as i64);
-            Ok(CpuStorage::I64(out))
+            Ok(HostBuffer::I64(out))
         }
-        (CpuStorage::F8E4M3(a), CpuStorage::F8E4M3(b)) => dispatch_pair!(a, b, F8E4M3, |v: F8E4M3| v.to_f64(), |v: f64| F8E4M3::from_f64(v)),
+        (HostBuffer::F8E4M3(a), HostBuffer::F8E4M3(b)) => dispatch_pair!(a, b, F8E4M3, |v: F8E4M3| v.to_f64(), |v: f64| F8E4M3::from_f64(v)),
         _ => Err(Error::DTypeMismatchBinaryOp {
             lhs: lhs.dtype(),
             rhs: rhs.dtype(),
@@ -462,10 +456,10 @@ fn elu<T: num_traits::Float>(v: T, alpha: T) -> T {
 }
 
 // ---------------------------------------------------------------------------
-// impl DynBackendStorage for CpuBackendStorage
+// impl DynBackendStorage for CpuStorage
 // ---------------------------------------------------------------------------
 
-impl DynBackendStorage for CpuBackendStorage {
+impl DynBackendStorage for CpuStorage {
     fn try_clone_dyn(&self, _layout: &Layout) -> Result<Box<dyn DynBackendStorage>> {
         Ok(Box::new(self.clone()))
     }
@@ -483,7 +477,7 @@ impl DynBackendStorage for CpuBackendStorage {
         Arc::new(CpuBackendDevice)
     }
 
-    fn to_host_buffer_dyn(&self) -> Result<CpuStorage> {
+    fn to_host_buffer_dyn(&self) -> Result<HostBuffer> {
         Ok(self.0.clone())
     }
 
@@ -494,32 +488,32 @@ impl DynBackendStorage for CpuBackendStorage {
         add: f64,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let result = Map1::map(&crate::ops::Affine(mul, add), &self.0, layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn powf_dyn(&self, layout: &Layout, e: f64) -> Result<Box<dyn DynBackendStorage>> {
         use num_traits::Float;
         let result = match &self.0 {
-            CpuStorage::BF16(d) => CpuStorage::BF16(unary_map(d, layout, |v: bf16| v.powf(bf16::from_f64(e)))),
-            CpuStorage::F16(d) => CpuStorage::F16(unary_map(d, layout, |v: f16| v.powf(f16::from_f64(e)))),
-            CpuStorage::F32(d) => CpuStorage::F32(unary_map(d, layout, |v: f32| v.powf(e as f32))),
-            CpuStorage::F64(d) => CpuStorage::F64(unary_map(d, layout, |v: f64| v.powf(e))),
-            CpuStorage::F8E4M3(d) => CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.powf(F8E4M3::from_f64(e)))),
+            HostBuffer::BF16(d) => HostBuffer::BF16(unary_map(d, layout, |v: bf16| v.powf(bf16::from_f64(e)))),
+            HostBuffer::F16(d) => HostBuffer::F16(unary_map(d, layout, |v: f16| v.powf(f16::from_f64(e)))),
+            HostBuffer::F32(d) => HostBuffer::F32(unary_map(d, layout, |v: f32| v.powf(e as f32))),
+            HostBuffer::F64(d) => HostBuffer::F64(unary_map(d, layout, |v: f64| v.powf(e))),
+            HostBuffer::F8E4M3(d) => HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.powf(F8E4M3::from_f64(e)))),
             other => return Err(Error::UnsupportedDTypeForOp(other.dtype(), "powf").bt()),
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn elu_dyn(&self, layout: &Layout, alpha: f64) -> Result<Box<dyn DynBackendStorage>> {
         let result = match &self.0 {
-            CpuStorage::BF16(d) => CpuStorage::BF16(unary_map(d, layout, |v| elu(v, bf16::from_f64(alpha)))),
-            CpuStorage::F16(d) => CpuStorage::F16(unary_map(d, layout, |v| elu(v, f16::from_f64(alpha)))),
-            CpuStorage::F32(d) => CpuStorage::F32(unary_map(d, layout, |v| elu(v, alpha as f32))),
-            CpuStorage::F64(d) => CpuStorage::F64(unary_map(d, layout, |v| elu(v, alpha))),
-            CpuStorage::F8E4M3(d) => CpuStorage::F8E4M3(unary_map(d, layout, |v| elu(v, F8E4M3::from_f64(alpha)))),
+            HostBuffer::BF16(d) => HostBuffer::BF16(unary_map(d, layout, |v| elu(v, bf16::from_f64(alpha)))),
+            HostBuffer::F16(d) => HostBuffer::F16(unary_map(d, layout, |v| elu(v, f16::from_f64(alpha)))),
+            HostBuffer::F32(d) => HostBuffer::F32(unary_map(d, layout, |v| elu(v, alpha as f32))),
+            HostBuffer::F64(d) => HostBuffer::F64(unary_map(d, layout, |v| elu(v, alpha))),
+            HostBuffer::F8E4M3(d) => HostBuffer::F8E4M3(unary_map(d, layout, |v| elu(v, F8E4M3::from_f64(alpha)))),
             other => return Err(Error::UnsupportedDTypeForOp(other.dtype(), "elu").bt()),
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn reduce_op_dyn(
@@ -587,7 +581,7 @@ impl DynBackendStorage for CpuBackendStorage {
                 )?
             }
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn cmp_dyn(
@@ -599,7 +593,7 @@ impl DynBackendStorage for CpuBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let rhs = downcast(rhs)?;
         let result = Map2U8::map(&crate::ops::Cmp(op), &self.0, lhs_layout, &rhs.0, rhs_layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn to_dtype_dyn(&self, layout: &Layout, dtype: DType) -> Result<Box<dyn DynBackendStorage>> {
@@ -610,7 +604,7 @@ impl DynBackendStorage for CpuBackendStorage {
         // We replicate the approach from fuel-core's BackendStorage::to_dtype:
         // match (self.dtype(), target) and use unary_map for each conversion.
         let result = cpu_to_dtype(&self.0, layout, dtype)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn unary_op_dyn(
@@ -619,7 +613,7 @@ impl DynBackendStorage for CpuBackendStorage {
         op: UnaryOp,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let result = cpu_unary_op(&self.0, layout, op)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn binary_op_dyn(
@@ -631,7 +625,7 @@ impl DynBackendStorage for CpuBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let rhs = downcast(rhs)?;
         let result = cpu_binary_op(&self.0, &rhs.0, lhs_layout, rhs_layout, op)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn where_cond_dyn(
@@ -645,14 +639,14 @@ impl DynBackendStorage for CpuBackendStorage {
         let t = downcast(on_true)?;
         let f = downcast(on_false)?;
         let result = match &self.0 {
-            CpuStorage::U8(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
-            CpuStorage::U32(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
-            CpuStorage::I16(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
-            CpuStorage::I32(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
-            CpuStorage::I64(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
+            HostBuffer::U8(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
+            HostBuffer::U32(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
+            HostBuffer::I16(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
+            HostBuffer::I32(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
+            HostBuffer::I64(pred) => Map2::map(&crate::ops::WCond(pred, cond_layout), &t.0, on_true_layout, &f.0, on_false_layout)?,
             _ => return Err(Error::UnsupportedDTypeForOp(self.0.dtype(), "where-cond").bt()),
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn conv1d_dyn(
@@ -698,14 +692,14 @@ impl DynBackendStorage for CpuBackendStorage {
                 let res_l = Layout::contiguous((b, l_out, params.c_out)).transpose(1, 2)?;
                 let mut res_t = unsafe { cpu_alloc_uninit(res_l.shape(), res.dtype())? };
                 cpu_copy_strided_src(&res, &mut res_t, 0, &res_l)?;
-                Ok(Box::new(CpuBackendStorage(res_t)))
+                Ok(Box::new(CpuStorage(res_t)))
             };
         };
         let res = Map2::map(&crate::ops::MatMul((b, m, n, k)), &col, &col_l, &kernel.0, &kernel_l_c)?;
         let res_l = Layout::contiguous((b, l_out, params.c_out)).transpose(1, 2)?;
         let mut res_t = unsafe { cpu_alloc_uninit(res_l.shape(), res.dtype())? };
         cpu_copy_strided_src(&res, &mut res_t, 0, &res_l)?;
-        Ok(Box::new(CpuBackendStorage(res_t)))
+        Ok(Box::new(CpuStorage(res_t)))
     }
 
     fn conv_transpose1d_dyn(
@@ -723,7 +717,7 @@ impl DynBackendStorage for CpuBackendStorage {
             &kernel.0,
             kernel_l,
         )?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn conv2d_dyn(
@@ -741,7 +735,7 @@ impl DynBackendStorage for CpuBackendStorage {
             &kernel.0,
             kernel_l,
         )?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn conv_transpose2d_dyn(
@@ -759,7 +753,7 @@ impl DynBackendStorage for CpuBackendStorage {
             &kernel.0,
             kernel_l,
         )?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn avg_pool2d_dyn(
@@ -769,7 +763,7 @@ impl DynBackendStorage for CpuBackendStorage {
         stride: (usize, usize),
     ) -> Result<Box<dyn DynBackendStorage>> {
         let result = Map1::map(&crate::ops::AvgPool2D(kernel, stride), &self.0, layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn max_pool2d_dyn(
@@ -779,7 +773,7 @@ impl DynBackendStorage for CpuBackendStorage {
         stride: (usize, usize),
     ) -> Result<Box<dyn DynBackendStorage>> {
         let result = Map1::map(&crate::ops::MaxPool2D(kernel, stride), &self.0, layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn upsample_nearest1d_dyn(
@@ -788,7 +782,7 @@ impl DynBackendStorage for CpuBackendStorage {
         target_size: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let result = Map1::map(&crate::ops::UpsampleNearest1D(target_size), &self.0, layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn upsample_nearest2d_dyn(
@@ -798,7 +792,7 @@ impl DynBackendStorage for CpuBackendStorage {
         target_w: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let result = Map1::map(&crate::ops::UpsampleNearest2D(target_h, target_w), &self.0, layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn upsample_bilinear2d_dyn(
@@ -821,7 +815,7 @@ impl DynBackendStorage for CpuBackendStorage {
             &self.0,
             layout,
         )?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn gather_dyn(
@@ -833,12 +827,12 @@ impl DynBackendStorage for CpuBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids_s = downcast(ids)?;
         let result = match &ids_s.0 {
-            CpuStorage::U8(ids) => Map1::map(&crate::ops::Gather { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
-            CpuStorage::U32(ids) => Map1::map(&crate::ops::Gather { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
-            CpuStorage::I64(ids) => Map1::map(&crate::ops::Gather { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
+            HostBuffer::U8(ids) => Map1::map(&crate::ops::Gather { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
+            HostBuffer::U32(ids) => Map1::map(&crate::ops::Gather { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
+            HostBuffer::I64(ids) => Map1::map(&crate::ops::Gather { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
             _ => return Err(Error::UnsupportedDTypeForOp(ids_s.0.dtype(), "gather").bt()),
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn scatter_set_dyn(
@@ -853,9 +847,9 @@ impl DynBackendStorage for CpuBackendStorage {
         let ids_s = downcast(ids)?;
         let src_s = downcast(src)?;
         match &ids_s.0 {
-            CpuStorage::U8(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Set>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
-            CpuStorage::U32(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Set>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
-            CpuStorage::I64(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Set>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::U8(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Set>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::U32(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Set>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::I64(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Set>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
             _ => return Err(Error::UnsupportedDTypeForOp(ids_s.0.dtype(), "scatter").bt()),
         };
         Ok(())
@@ -873,11 +867,11 @@ impl DynBackendStorage for CpuBackendStorage {
         let ids_s = downcast(ids)?;
         let src_s = downcast(src)?;
         match &ids_s.0 {
-            CpuStorage::U8(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
-            CpuStorage::U32(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
-            CpuStorage::I16(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
-            CpuStorage::I32(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
-            CpuStorage::I64(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::U8(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::U32(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::I16(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::I32(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
+            HostBuffer::I64(ids) => Map2InPlace::map(&crate::ops::Scatter::<_, crate::ops::Add>::new(ids, ids_layout, dim), &mut self.0, self_layout, &src_s.0, src_layout)?,
             _ => return Err(Error::UnsupportedDTypeForOp(ids_s.0.dtype(), "scatter-add").bt()),
         };
         Ok(())
@@ -892,12 +886,12 @@ impl DynBackendStorage for CpuBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids_s = downcast(ids)?;
         let result = match &ids_s.0 {
-            CpuStorage::U8(ids) => Map1::map(&crate::ops::IndexSelect { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
-            CpuStorage::U32(ids) => Map1::map(&crate::ops::IndexSelect { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
-            CpuStorage::I64(ids) => Map1::map(&crate::ops::IndexSelect { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
+            HostBuffer::U8(ids) => Map1::map(&crate::ops::IndexSelect { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
+            HostBuffer::U32(ids) => Map1::map(&crate::ops::IndexSelect { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
+            HostBuffer::I64(ids) => Map1::map(&crate::ops::IndexSelect { ids, ids_l: ids_layout, dim }, &self.0, src_layout)?,
             _ => return Err(Error::UnsupportedDTypeForOp(ids_s.0.dtype(), "index-select").bt()),
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn index_add_dyn(
@@ -912,35 +906,35 @@ impl DynBackendStorage for CpuBackendStorage {
         let ids_s = downcast(ids)?;
         let src_s = downcast(src)?;
         let result = match &ids_s.0 {
-            CpuStorage::U8(ids) => {
+            HostBuffer::U8(ids) => {
                 let ids = match ids_layout.contiguous_offsets() {
                     Some((a, b)) => &ids[a..b],
                     None => return Err(Error::RequiresContiguous { op: "index-add" }.bt()),
                 };
                 Map2::map(&crate::ops::IndexAdd { ids, dim }, &self.0, self_layout, &src_s.0, src_layout)?
             }
-            CpuStorage::U32(ids) => {
+            HostBuffer::U32(ids) => {
                 let ids = match ids_layout.contiguous_offsets() {
                     Some((a, b)) => &ids[a..b],
                     None => return Err(Error::RequiresContiguous { op: "index-add" }.bt()),
                 };
                 Map2::map(&crate::ops::IndexAdd { ids, dim }, &self.0, self_layout, &src_s.0, src_layout)?
             }
-            CpuStorage::I16(ids) => {
+            HostBuffer::I16(ids) => {
                 let ids = match ids_layout.contiguous_offsets() {
                     Some((a, b)) => &ids[a..b],
                     None => return Err(Error::RequiresContiguous { op: "index-add" }.bt()),
                 };
                 Map2::map(&crate::ops::IndexAdd { ids, dim }, &self.0, self_layout, &src_s.0, src_layout)?
             }
-            CpuStorage::I32(ids) => {
+            HostBuffer::I32(ids) => {
                 let ids = match ids_layout.contiguous_offsets() {
                     Some((a, b)) => &ids[a..b],
                     None => return Err(Error::RequiresContiguous { op: "index-add" }.bt()),
                 };
                 Map2::map(&crate::ops::IndexAdd { ids, dim }, &self.0, self_layout, &src_s.0, src_layout)?
             }
-            CpuStorage::I64(ids) => {
+            HostBuffer::I64(ids) => {
                 let ids = match ids_layout.contiguous_offsets() {
                     Some((a, b)) => &ids[a..b],
                     None => return Err(Error::RequiresContiguous { op: "index-add" }.bt()),
@@ -949,7 +943,7 @@ impl DynBackendStorage for CpuBackendStorage {
             }
             _ => return Err(Error::UnsupportedDTypeForOp(ids_s.0.dtype(), "index-add").bt()),
         };
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn matmul_dyn(
@@ -961,7 +955,7 @@ impl DynBackendStorage for CpuBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let rhs = downcast(rhs)?;
         let result = Map2::map(&crate::ops::MatMul(bmnk), &self.0, lhs_layout, &rhs.0, rhs_layout)?;
-        Ok(Box::new(CpuBackendStorage(result)))
+        Ok(Box::new(CpuStorage(result)))
     }
 
     fn copy_strided_src_dyn(
@@ -1020,7 +1014,7 @@ impl DynBackendDevice for CpuBackendDevice {
         dtype: DType,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let storage = cpu_zeros(shape, dtype)?;
-        Ok(Box::new(CpuBackendStorage(storage)))
+        Ok(Box::new(CpuStorage(storage)))
     }
 
     unsafe fn alloc_uninit_dyn(
@@ -1029,21 +1023,21 @@ impl DynBackendDevice for CpuBackendDevice {
         dtype: DType,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let storage = unsafe { cpu_alloc_uninit(shape, dtype)? };
-        Ok(Box::new(CpuBackendStorage(storage)))
+        Ok(Box::new(CpuStorage(storage)))
     }
 
     fn storage_from_host_buffer_dyn(
         &self,
-        buf: &CpuStorage,
+        buf: &HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        Ok(Box::new(CpuBackendStorage(buf.clone())))
+        Ok(Box::new(CpuStorage(buf.clone())))
     }
 
     fn storage_from_host_buffer_owned_dyn(
         &self,
-        buf: CpuStorage,
+        buf: HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        Ok(Box::new(CpuBackendStorage(buf)))
+        Ok(Box::new(CpuStorage(buf)))
     }
 
     fn rand_uniform_dyn(
@@ -1054,7 +1048,7 @@ impl DynBackendDevice for CpuBackendDevice {
         hi: f64,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let storage = cpu_rand_uniform(shape, dtype, lo, hi)?;
-        Ok(Box::new(CpuBackendStorage(storage)))
+        Ok(Box::new(CpuStorage(storage)))
     }
 
     fn rand_normal_dyn(
@@ -1065,7 +1059,7 @@ impl DynBackendDevice for CpuBackendDevice {
         std: f64,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let storage = cpu_rand_normal(shape, dtype, mean, std)?;
-        Ok(Box::new(CpuBackendStorage(storage)))
+        Ok(Box::new(CpuStorage(storage)))
     }
 
     fn set_seed_dyn(&self, _seed: u64) -> Result<()> {
@@ -1089,19 +1083,19 @@ impl DynBackendDevice for CpuBackendDevice {
 // Device helper implementations
 // ---------------------------------------------------------------------------
 
-fn cpu_zeros(shape: &Shape, dtype: DType) -> Result<CpuStorage> {
+fn cpu_zeros(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
     let elem_count = shape.elem_count();
     let storage = match dtype {
-        DType::U8 => CpuStorage::U8(vec![0u8; elem_count]),
-        DType::U32 => CpuStorage::U32(vec![0u32; elem_count]),
-        DType::I16 => CpuStorage::I16(vec![0i16; elem_count]),
-        DType::I32 => CpuStorage::I32(vec![0i32; elem_count]),
-        DType::I64 => CpuStorage::I64(vec![0i64; elem_count]),
-        DType::BF16 => CpuStorage::BF16(vec![bf16::ZERO; elem_count]),
-        DType::F16 => CpuStorage::F16(vec![f16::ZERO; elem_count]),
-        DType::F32 => CpuStorage::F32(vec![0f32; elem_count]),
-        DType::F64 => CpuStorage::F64(vec![0f64; elem_count]),
-        DType::F8E4M3 => CpuStorage::F8E4M3(vec![F8E4M3::ZERO; elem_count]),
+        DType::U8 => HostBuffer::U8(vec![0u8; elem_count]),
+        DType::U32 => HostBuffer::U32(vec![0u32; elem_count]),
+        DType::I16 => HostBuffer::I16(vec![0i16; elem_count]),
+        DType::I32 => HostBuffer::I32(vec![0i32; elem_count]),
+        DType::I64 => HostBuffer::I64(vec![0i64; elem_count]),
+        DType::BF16 => HostBuffer::BF16(vec![bf16::ZERO; elem_count]),
+        DType::F16 => HostBuffer::F16(vec![f16::ZERO; elem_count]),
+        DType::F32 => HostBuffer::F32(vec![0f32; elem_count]),
+        DType::F64 => HostBuffer::F64(vec![0f64; elem_count]),
+        DType::F8E4M3 => HostBuffer::F8E4M3(vec![F8E4M3::ZERO; elem_count]),
         DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
             return Err(Error::UnsupportedDTypeForOp(dtype, "zeros").bt())
         }
@@ -1110,19 +1104,19 @@ fn cpu_zeros(shape: &Shape, dtype: DType) -> Result<CpuStorage> {
 }
 
 #[allow(clippy::uninit_vec)]
-unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<CpuStorage> {
+unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
     let elem_count = shape.elem_count();
     let storage = match dtype {
-        DType::U8 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::U8(v) }
-        DType::U32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::U32(v) }
-        DType::I16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::I16(v) }
-        DType::I32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::I32(v) }
-        DType::I64 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::I64(v) }
-        DType::BF16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::BF16(v) }
-        DType::F16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::F16(v) }
-        DType::F32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::F32(v) }
-        DType::F64 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::F64(v) }
-        DType::F8E4M3 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; CpuStorage::F8E4M3(v) }
+        DType::U8 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::U8(v) }
+        DType::U32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::U32(v) }
+        DType::I16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::I16(v) }
+        DType::I32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::I32(v) }
+        DType::I64 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::I64(v) }
+        DType::BF16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::BF16(v) }
+        DType::F16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F16(v) }
+        DType::F32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F32(v) }
+        DType::F64 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F64(v) }
+        DType::F8E4M3 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::F8E4M3(v) }
         DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
             return Err(Error::UnsupportedDTypeForOp(dtype, "alloc_uninit").bt())
         }
@@ -1130,7 +1124,7 @@ unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<CpuStorage> {
     Ok(storage)
 }
 
-fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<CpuStorage> {
+fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<HostBuffer> {
     use rand::prelude::*;
     let elem_count = shape.elem_count();
     let mut rng = rand::rng();
@@ -1139,37 +1133,37 @@ fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<C
             let uniform = rand::distr::Uniform::new(bf16::from_f64(min), bf16::from_f64(max))
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<bf16, _>(uniform)).collect();
-            Ok(CpuStorage::BF16(data))
+            Ok(HostBuffer::BF16(data))
         }
         DType::F16 => {
             let uniform = rand::distr::Uniform::new(f16::from_f64(min), f16::from_f64(max))
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<f16, _>(uniform)).collect();
-            Ok(CpuStorage::F16(data))
+            Ok(HostBuffer::F16(data))
         }
         DType::F8E4M3 => {
             let uniform = rand::distr::Uniform::new(F8E4M3::from_f64(min), F8E4M3::from_f64(max))
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<F8E4M3, _>(uniform)).collect();
-            Ok(CpuStorage::F8E4M3(data))
+            Ok(HostBuffer::F8E4M3(data))
         }
         DType::F32 => {
             let uniform = rand::distr::Uniform::new(min as f32, max as f32)
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<f32, _>(uniform)).collect();
-            Ok(CpuStorage::F32(data))
+            Ok(HostBuffer::F32(data))
         }
         DType::F64 => {
             let uniform = rand::distr::Uniform::new(min, max)
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<f64, _>(uniform)).collect();
-            Ok(CpuStorage::F64(data))
+            Ok(HostBuffer::F64(data))
         }
         _ => Err(Error::UnsupportedDTypeForOp(dtype, "rand_uniform").bt()),
     }
 }
 
-fn cpu_rand_normal(shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<CpuStorage> {
+fn cpu_rand_normal(shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<HostBuffer> {
     use rand::prelude::*;
     let elem_count = shape.elem_count();
     let mut rng = rand::rng();
@@ -1178,31 +1172,31 @@ fn cpu_rand_normal(shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<C
             let normal = rand_distr::Normal::new(bf16::from_f64(mean), bf16::from_f64(std))
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
-            Ok(CpuStorage::BF16(data))
+            Ok(HostBuffer::BF16(data))
         }
         DType::F16 => {
             let normal = rand_distr::Normal::new(f16::from_f64(mean), f16::from_f64(std))
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
-            Ok(CpuStorage::F16(data))
+            Ok(HostBuffer::F16(data))
         }
         DType::F8E4M3 => {
             let normal = rand_distr::Normal::new(F8E4M3::from_f64(mean), F8E4M3::from_f64(std))
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
-            Ok(CpuStorage::F8E4M3(data))
+            Ok(HostBuffer::F8E4M3(data))
         }
         DType::F32 => {
             let normal = rand_distr::Normal::new(mean as f32, std as f32)
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
-            Ok(CpuStorage::F32(data))
+            Ok(HostBuffer::F32(data))
         }
         DType::F64 => {
             let normal = rand_distr::Normal::new(mean, std)
                 .map_err(fuel_core_types::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
-            Ok(CpuStorage::F64(data))
+            Ok(HostBuffer::F64(data))
         }
         _ => Err(Error::UnsupportedDTypeForOp(dtype, "rand_normal").bt()),
     }
@@ -1213,22 +1207,22 @@ fn cpu_rand_normal(shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<C
 // ---------------------------------------------------------------------------
 
 fn cpu_copy_strided_src(
-    src: &CpuStorage,
-    dst: &mut CpuStorage,
+    src: &HostBuffer,
+    dst: &mut HostBuffer,
     dst_offset: usize,
     src_l: &Layout,
 ) -> Result<()> {
     match (src, dst) {
-        (CpuStorage::U8(s), CpuStorage::U8(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::U32(s), CpuStorage::U32(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::I16(s), CpuStorage::I16(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::I32(s), CpuStorage::I32(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::I64(s), CpuStorage::I64(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::BF16(s), CpuStorage::BF16(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::F16(s), CpuStorage::F16(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::F32(s), CpuStorage::F32(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::F64(s), CpuStorage::F64(d)) => copy_strided_src_(s, d, dst_offset, src_l),
-        (CpuStorage::F8E4M3(s), CpuStorage::F8E4M3(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::U8(s), HostBuffer::U8(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::U32(s), HostBuffer::U32(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::I16(s), HostBuffer::I16(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::I32(s), HostBuffer::I32(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::I64(s), HostBuffer::I64(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::BF16(s), HostBuffer::BF16(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::F16(s), HostBuffer::F16(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::F32(s), HostBuffer::F32(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::F64(s), HostBuffer::F64(d)) => copy_strided_src_(s, d, dst_offset, src_l),
+        (HostBuffer::F8E4M3(s), HostBuffer::F8E4M3(d)) => copy_strided_src_(s, d, dst_offset, src_l),
         (_, d) => {
             return Err(Error::DTypeMismatchBinaryOp {
                 lhs: src.dtype(),
@@ -1241,8 +1235,8 @@ fn cpu_copy_strided_src(
 }
 
 fn cpu_copy2d(
-    src: &CpuStorage,
-    dst: &mut CpuStorage,
+    src: &HostBuffer,
+    dst: &mut HostBuffer,
     d1: usize,
     d2: usize,
     src_s: usize,
@@ -1251,16 +1245,16 @@ fn cpu_copy2d(
     dst_o: usize,
 ) -> Result<()> {
     match (src, dst) {
-        (CpuStorage::U8(s), CpuStorage::U8(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::U32(s), CpuStorage::U32(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::I16(s), CpuStorage::I16(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::I32(s), CpuStorage::I32(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::I64(s), CpuStorage::I64(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::BF16(s), CpuStorage::BF16(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::F16(s), CpuStorage::F16(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::F32(s), CpuStorage::F32(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::F64(s), CpuStorage::F64(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
-        (CpuStorage::F8E4M3(s), CpuStorage::F8E4M3(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::U8(s), HostBuffer::U8(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::U32(s), HostBuffer::U32(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::I16(s), HostBuffer::I16(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::I32(s), HostBuffer::I32(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::I64(s), HostBuffer::I64(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::BF16(s), HostBuffer::BF16(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::F16(s), HostBuffer::F16(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::F32(s), HostBuffer::F32(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::F64(s), HostBuffer::F64(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
+        (HostBuffer::F8E4M3(s), HostBuffer::F8E4M3(d)) => copy2d_(s, d, d1, d2, src_s, dst_s, src_o, dst_o),
         (_, d) => {
             return Err(Error::DTypeMismatchBinaryOp {
                 lhs: src.dtype(),
@@ -1272,7 +1266,7 @@ fn cpu_copy2d(
     Ok(())
 }
 
-fn cpu_const_set(storage: &mut CpuStorage, s: Scalar, l: &Layout) -> Result<()> {
+fn cpu_const_set(storage: &mut HostBuffer, s: Scalar, l: &Layout) -> Result<()> {
     use fuel_core_types::Scalar as S;
     fn set<T: fuel_core_types::WithDType + Copy>(src: &mut [T], l: &Layout, s: T) {
         match l.strided_blocks() {
@@ -1292,16 +1286,16 @@ fn cpu_const_set(storage: &mut CpuStorage, s: Scalar, l: &Layout) -> Result<()> 
         }
     }
     match (storage, s) {
-        (CpuStorage::BF16(d), S::BF16(v)) => set(d, l, v),
-        (CpuStorage::F16(d), S::F16(v)) => set(d, l, v),
-        (CpuStorage::F32(d), S::F32(v)) => set(d, l, v),
-        (CpuStorage::F64(d), S::F64(v)) => set(d, l, v),
-        (CpuStorage::U8(d), S::U8(v)) => set(d, l, v),
-        (CpuStorage::U32(d), S::U32(v)) => set(d, l, v),
-        (CpuStorage::I16(d), S::I16(v)) => set(d, l, v),
-        (CpuStorage::I32(d), S::I32(v)) => set(d, l, v),
-        (CpuStorage::I64(d), S::I64(v)) => set(d, l, v),
-        (CpuStorage::F8E4M3(d), S::F8E4M3(v)) => set(d, l, v),
+        (HostBuffer::BF16(d), S::BF16(v)) => set(d, l, v),
+        (HostBuffer::F16(d), S::F16(v)) => set(d, l, v),
+        (HostBuffer::F32(d), S::F32(v)) => set(d, l, v),
+        (HostBuffer::F64(d), S::F64(v)) => set(d, l, v),
+        (HostBuffer::U8(d), S::U8(v)) => set(d, l, v),
+        (HostBuffer::U32(d), S::U32(v)) => set(d, l, v),
+        (HostBuffer::I16(d), S::I16(v)) => set(d, l, v),
+        (HostBuffer::I32(d), S::I32(v)) => set(d, l, v),
+        (HostBuffer::I64(d), S::I64(v)) => set(d, l, v),
+        (HostBuffer::F8E4M3(d), S::F8E4M3(v)) => set(d, l, v),
         (st, s) => return Err(Error::Msg(format!(
             "const_set dtype mismatch, expected {:?} but got {:?}",
             st.dtype(), s
@@ -1312,21 +1306,21 @@ fn cpu_const_set(storage: &mut CpuStorage, s: Scalar, l: &Layout) -> Result<()> 
 
 /// Dtype conversion.  This has O(dtypes²) match arms — mirrors
 /// `BackendStorage::to_dtype` from fuel-core's cpu_backend.
-fn cpu_to_dtype(src: &CpuStorage, layout: &Layout, dtype: DType) -> Result<CpuStorage> {
+fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostBuffer> {
     // Short-circuit: if source dtype matches target, just copy via layout.
     if src.dtype() == dtype {
         // Clone elements described by layout.
         return match src {
-            CpuStorage::U8(d) => Ok(CpuStorage::U8(unary_map(d, layout, |v: u8| v))),
-            CpuStorage::U32(d) => Ok(CpuStorage::U32(unary_map(d, layout, |v: u32| v))),
-            CpuStorage::I16(d) => Ok(CpuStorage::I16(unary_map(d, layout, |v: i16| v))),
-            CpuStorage::I32(d) => Ok(CpuStorage::I32(unary_map(d, layout, |v: i32| v))),
-            CpuStorage::I64(d) => Ok(CpuStorage::I64(unary_map(d, layout, |v: i64| v))),
-            CpuStorage::BF16(d) => Ok(CpuStorage::BF16(unary_map(d, layout, |v: bf16| v))),
-            CpuStorage::F16(d) => Ok(CpuStorage::F16(unary_map(d, layout, |v: f16| v))),
-            CpuStorage::F32(d) => Ok(CpuStorage::F32(unary_map(d, layout, |v: f32| v))),
-            CpuStorage::F64(d) => Ok(CpuStorage::F64(unary_map(d, layout, |v: f64| v))),
-            CpuStorage::F8E4M3(d) => Ok(CpuStorage::F8E4M3(unary_map(d, layout, |v: F8E4M3| v))),
+            HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v))),
+            HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v: u32| v))),
+            HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v))),
+            HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v))),
+            HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v))),
+            HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| v))),
+            HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| v))),
+            HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v))),
+            HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v))),
+            HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v))),
             _ => Err(Error::UnsupportedDTypeForOp(src.dtype(), "to_dtype").bt()),
         };
     }
@@ -1334,30 +1328,30 @@ fn cpu_to_dtype(src: &CpuStorage, layout: &Layout, dtype: DType) -> Result<CpuSt
     // Generic conversion: go through f64 as intermediate.
     // This handles all non-dummy dtype pairs.
     let as_f64: Vec<f64> = match src {
-        CpuStorage::U8(d) => unary_map(d, layout, |v: u8| v as f64),
-        CpuStorage::U32(d) => unary_map(d, layout, |v: u32| v as f64),
-        CpuStorage::I16(d) => unary_map(d, layout, |v: i16| v as f64),
-        CpuStorage::I32(d) => unary_map(d, layout, |v: i32| v as f64),
-        CpuStorage::I64(d) => unary_map(d, layout, |v: i64| v as f64),
-        CpuStorage::BF16(d) => unary_map(d, layout, |v: bf16| v.to_f64()),
-        CpuStorage::F16(d) => unary_map(d, layout, |v: f16| v.to_f64()),
-        CpuStorage::F32(d) => unary_map(d, layout, |v: f32| v as f64),
-        CpuStorage::F64(d) => unary_map(d, layout, |v: f64| v),
-        CpuStorage::F8E4M3(d) => unary_map(d, layout, |v: F8E4M3| v.to_f64()),
+        HostBuffer::U8(d) => unary_map(d, layout, |v: u8| v as f64),
+        HostBuffer::U32(d) => unary_map(d, layout, |v: u32| v as f64),
+        HostBuffer::I16(d) => unary_map(d, layout, |v: i16| v as f64),
+        HostBuffer::I32(d) => unary_map(d, layout, |v: i32| v as f64),
+        HostBuffer::I64(d) => unary_map(d, layout, |v: i64| v as f64),
+        HostBuffer::BF16(d) => unary_map(d, layout, |v: bf16| v.to_f64()),
+        HostBuffer::F16(d) => unary_map(d, layout, |v: f16| v.to_f64()),
+        HostBuffer::F32(d) => unary_map(d, layout, |v: f32| v as f64),
+        HostBuffer::F64(d) => unary_map(d, layout, |v: f64| v),
+        HostBuffer::F8E4M3(d) => unary_map(d, layout, |v: F8E4M3| v.to_f64()),
         _ => return Err(Error::UnsupportedDTypeForOp(src.dtype(), "to_dtype").bt()),
     };
 
     match dtype {
-        DType::U8 => Ok(CpuStorage::U8(as_f64.into_iter().map(|v| v as u8).collect())),
-        DType::U32 => Ok(CpuStorage::U32(as_f64.into_iter().map(|v| v as u32).collect())),
-        DType::I16 => Ok(CpuStorage::I16(as_f64.into_iter().map(|v| v as i16).collect())),
-        DType::I32 => Ok(CpuStorage::I32(as_f64.into_iter().map(|v| v as i32).collect())),
-        DType::I64 => Ok(CpuStorage::I64(as_f64.into_iter().map(|v| v as i64).collect())),
-        DType::BF16 => Ok(CpuStorage::BF16(as_f64.into_iter().map(bf16::from_f64).collect())),
-        DType::F16 => Ok(CpuStorage::F16(as_f64.into_iter().map(f16::from_f64).collect())),
-        DType::F32 => Ok(CpuStorage::F32(as_f64.into_iter().map(|v| v as f32).collect())),
-        DType::F64 => Ok(CpuStorage::F64(as_f64)),
-        DType::F8E4M3 => Ok(CpuStorage::F8E4M3(as_f64.into_iter().map(F8E4M3::from_f64).collect())),
+        DType::U8 => Ok(HostBuffer::U8(as_f64.into_iter().map(|v| v as u8).collect())),
+        DType::U32 => Ok(HostBuffer::U32(as_f64.into_iter().map(|v| v as u32).collect())),
+        DType::I16 => Ok(HostBuffer::I16(as_f64.into_iter().map(|v| v as i16).collect())),
+        DType::I32 => Ok(HostBuffer::I32(as_f64.into_iter().map(|v| v as i32).collect())),
+        DType::I64 => Ok(HostBuffer::I64(as_f64.into_iter().map(|v| v as i64).collect())),
+        DType::BF16 => Ok(HostBuffer::BF16(as_f64.into_iter().map(bf16::from_f64).collect())),
+        DType::F16 => Ok(HostBuffer::F16(as_f64.into_iter().map(f16::from_f64).collect())),
+        DType::F32 => Ok(HostBuffer::F32(as_f64.into_iter().map(|v| v as f32).collect())),
+        DType::F64 => Ok(HostBuffer::F64(as_f64)),
+        DType::F8E4M3 => Ok(HostBuffer::F8E4M3(as_f64.into_iter().map(F8E4M3::from_f64).collect())),
         _ => Err(Error::UnsupportedDTypeForOp(dtype, "to_dtype").bt()),
     }
 }
