@@ -4,7 +4,7 @@
     edition.workspace    = true
     keywords.workspace   = true
     license.workspace    = true
-    name                 = "fuel-graph-cuda"
+    name                 = "fuel-cuda-backend"
     repository.workspace = true
     version.workspace    = true
 

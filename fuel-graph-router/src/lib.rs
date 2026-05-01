@@ -62,9 +62,9 @@ use fuel_mkl_cpu_backend::MklBackend;
 use fuel_graph_vulkan::{VulkanBackend, VulkanStorage};
 
 #[cfg(feature = "cuda")]
-use fuel_graph_cuda::CudaBackend;
+use fuel_cuda_backend::CudaBackend;
 #[cfg(feature = "cuda")]
-use fuel_graph_cuda::CudaStorage;
+use fuel_cuda_backend::CudaStorage;
 
 // -- AnyStorage ------------------------------------------------------------
 
@@ -814,7 +814,7 @@ impl Router {
             }
         }
         // CUDA autodetection requires an enumeration entry point on
-        // fuel-graph-cuda that doesn't exist yet; skip for now.
+        // fuel-cuda-backend that doesn't exist yet; skip for now.
         r
     }
 

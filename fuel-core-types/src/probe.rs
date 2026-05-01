@@ -69,7 +69,7 @@ pub enum BackendId {
     /// One descriptor per physical CPU in the current scope; NUMA
     /// splits are Phase 7b territory.
     Cpu,
-    /// `fuel-graph-cuda` via baracuda.
+    /// `fuel-cuda-backend` via baracuda.
     Cuda,
     /// `fuel-graph-vulkan` via vulkane.
     Vulkan,

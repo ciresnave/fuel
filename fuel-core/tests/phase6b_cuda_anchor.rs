@@ -13,7 +13,7 @@
 //!   warp reduce reads were uninitialized for warp lanes >= n_warps,
 //!   producing scale-shrunk outputs (~4.31× off when shared memory
 //!   wasn't zero from a prior kernel). Fixed by clamping the read.
-//! - `fuel-graph-cuda::gemm_config`: the matmul stride-pattern matcher
+//! - `fuel-cuda-backend::gemm_config`: the matmul stride-pattern matcher
 //!   only accepted natural row-major-contig and col-major-contig
 //!   layouts. Extended to accept strided variants (lda > row size,
 //!   the BERT-style K^T pattern), unblocking BERT, SD CLIP, and
@@ -41,10 +41,10 @@ use std::sync::Arc;
 
 /// Construct a fresh CUDA executor on device 0. Asserts presence —
 /// only call from inside a `cuda_present()` guard.
-fn cuda_executor() -> GraphExecutor<fuel_graph_cuda::CudaBackend> {
-    let dev = fuel_graph_cuda::CudaDevice::new(0)
+fn cuda_executor() -> GraphExecutor<fuel_cuda_backend::CudaBackend> {
+    let dev = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
-    GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(dev))
+    GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(dev))
 }
 
 /// Realize `t` on both reference and CUDA backends, assert allclose.
@@ -78,10 +78,10 @@ fn single_matmul_cuda_matches_reference_within_tolerance() {
 
     let reference = c.realize_f32_reference();
 
-    let cuda_device = fuel_graph_cuda::CudaDevice::new(0)
+    let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
     let mut cuda_exe = GraphExecutor::new(
-        fuel_graph_cuda::CudaBackend::new(cuda_device),
+        fuel_cuda_backend::CudaBackend::new(cuda_device),
     );
     let cuda_out = c.realize_f32_cuda(&mut cuda_exe);
 
@@ -157,10 +157,10 @@ fn llama_2layer_cuda_matches_reference() {
 
     let reference = logits.realize_f32_reference();
 
-    let cuda_device = fuel_graph_cuda::CudaDevice::new(0)
+    let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
     let mut cuda_exe = GraphExecutor::new(
-        fuel_graph_cuda::CudaBackend::new(cuda_device),
+        fuel_cuda_backend::CudaBackend::new(cuda_device),
     );
     let cuda_out = logits.realize_f32_cuda(&mut cuda_exe);
 
@@ -177,7 +177,7 @@ fn llama_2layer_cuda_matches_reference() {
 /// BERT's attention computes `q @ k^T` with K reshaped to
 /// `[B, H, head_dim, seq]` (stride `[..., 1, seq]` — the transpose
 /// pattern). cuBLAS supports this natively as `Op::T` with
-/// `lda = seq`; the gemm_config matcher in fuel-graph-cuda was
+/// `lda = seq`; the gemm_config matcher in fuel-cuda-backend was
 /// extended to accept the strided variant alongside the natural
 /// row/col-major contiguous cases.
 #[test]

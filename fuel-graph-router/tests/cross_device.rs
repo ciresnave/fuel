@@ -273,8 +273,8 @@ fn vulkan_capabilities_match_impl() {
 #[test]
 #[ignore] // Requires a CUDA device.
 fn cuda_capabilities_match_impl() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     let dev = match CudaDevice::new(0) {
         Ok(d) => d,
         Err(e) => { eprintln!("no CUDA device; skipping: {e:?}"); return; }
@@ -891,8 +891,8 @@ fn residency_planner_analyzes_vulkan_graph_against_vram_budget() {
 #[test]
 #[ignore]
 fn cuda_router_default_realizes_graph() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
 
     let dev = match CudaDevice::new(0) {
         Ok(d) => d,
@@ -924,8 +924,8 @@ fn cuda_router_default_realizes_graph() {
 #[test]
 #[ignore]
 fn cuda_residency_eviction_rule_preserves_correctness() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     use fuel_graph_executor::GraphExecutor;
     use fuel_graph_router::ResidencyEvictionRule;
 
@@ -1001,8 +1001,8 @@ fn cuda_residency_eviction_rule_preserves_correctness() {
 #[test]
 #[ignore]
 fn cuda_rope_matches_cpu_reference() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     use fuel_graph_executor::{GraphBackend, GraphExecutor};
     use fuel_core_types::HostBuffer;
 
@@ -1083,8 +1083,8 @@ fn cuda_rope_matches_cpu_reference() {
 #[test]
 #[ignore]
 fn cuda_matmul_q4_0_matches_cpu_reference() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     use fuel_graph_executor::GraphBackend;
     use fuel_core_types::HostBuffer;
     use half::f16;
@@ -1176,8 +1176,8 @@ fn cuda_matmul_q4_0_matches_cpu_reference() {
 #[test]
 #[ignore]
 fn cuda_matmul_q4_km_matches_cpu_reference() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     use fuel_graph_executor::GraphBackend;
     use fuel_core_types::HostBuffer;
     use half::f16;
@@ -1261,8 +1261,8 @@ fn cuda_matmul_q4_km_matches_cpu_reference() {
 #[test]
 #[ignore]
 fn cuda_rms_norm_last_dim_matches_cpu_reference() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     use fuel_graph_executor::{GraphBackend, GraphExecutor};
     use fuel_core_types::HostBuffer;
 
@@ -1319,8 +1319,8 @@ fn cuda_rms_norm_last_dim_matches_cpu_reference() {
 #[test]
 #[ignore]
 fn router_cpu_plus_vulkan_plus_cuda_routes_per_placement() {
-    use fuel_graph_cuda::CudaDevice;
-    use fuel_graph_cuda::CudaBackend;
+    use fuel_cuda_backend::CudaDevice;
+    use fuel_cuda_backend::CudaBackend;
     use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {

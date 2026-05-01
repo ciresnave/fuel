@@ -3,7 +3,7 @@ name = "fuel-flash-attn-v3-cuda-sys"
 version = "0.10.2"
 edition = "2021"
 
-description = "Raw FFI bindings + nvcc-built kernels for Dao-AILab FlashAttention v3 (sm90 / Hopper). Used by both fuel-flash-attn-v3-cuda (eager Tensor wrapper) and fuel-graph-cuda::CudaBackend::flash_attn (lazy graph dispatch via the `flash-attn-v3` feature). C symbol is `run_mha_v3` to coexist with sm80's `run_mha`."
+description = "Raw FFI bindings + nvcc-built kernels for Dao-AILab FlashAttention v3 (sm90 / Hopper). Used by both fuel-flash-attn-v3-cuda (eager Tensor wrapper) and fuel-cuda-backend::CudaBackend::flash_attn (lazy graph dispatch via the `flash-attn-v3` feature). C symbol is `run_mha_v3` to coexist with sm80's `run_mha`."
 repository = "https://github.com/huggingface/fuel"
 keywords = ["cuda", "ffi", "flash-attention", "hopper"]
 categories = ["external-ffi-bindings", "science"]

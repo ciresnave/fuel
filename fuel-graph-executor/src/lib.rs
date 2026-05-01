@@ -8,7 +8,7 @@
 //! layout ops (reshape, permute, broadcast, concat, slice) — is
 //! written once here and automatically benefits every backend.
 //!
-//! Backend crates (`fuel-graph-cpu`, `fuel-graph-cuda`, future
+//! Backend crates (`fuel-graph-cpu`, `fuel-cuda-backend`, future
 //! `fuel-graph-metal`) implement `GraphBackend` in ~200 lines each,
 //! providing only the device-specific pieces: memory allocation,
 //! matmul, unary/binary kernels, reductions, and softmax.

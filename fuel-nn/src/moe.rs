@@ -31,7 +31,7 @@ pub fn moe_gemm(
     use half::{bf16, f16};
 
     fn cuda_inner<
-        T: fuel_graph_cuda::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
+        T: fuel_cuda_backend::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
     >(
         input: &Tensor,
         weights: &Tensor,

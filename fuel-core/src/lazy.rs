@@ -569,7 +569,7 @@ impl LazyTensor {
     #[cfg(feature = "cuda")]
     pub fn realize_f32_cuda(
         &self,
-        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
     ) -> Vec<f32> {
         executor.realize_f32(&self.inner).into_vec()
     }
@@ -622,7 +622,7 @@ pub fn realize_many_f32(tensors: &[&LazyTensor]) -> Vec<Vec<f32>> {
 #[cfg(feature = "cuda")]
 pub fn realize_many_f32_cuda(
     tensors: &[&LazyTensor],
-    executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+    executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
 ) -> Vec<Vec<f32>> {
     let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
     executor
@@ -776,7 +776,7 @@ mod tests {
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a);
         let cpu_result = c.realize_f32();
-        let mut executor = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut executor = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda_result = c.realize_f32_cuda(&mut executor);
         assert_eq!(cpu_result, cuda_result);
     }
@@ -794,7 +794,7 @@ mod tests {
         );
         let c = a.matmul(&b);
         let cpu = c.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda = c.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (a, b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -820,7 +820,7 @@ mod tests {
         );
         let y = x.matmul(&w);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -837,7 +837,7 @@ mod tests {
         );
         let y = x.permute(&[0, 2, 1, 3]);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu, cuda, "permute mismatch");
     }
@@ -851,7 +851,7 @@ mod tests {
         );
         let y = x.softmax_last_dim();
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -867,7 +867,7 @@ mod tests {
         let cat = a.concat(&b, 1); // [2, 4]
         let sliced = cat.slice(1, 1, 2); // [2, 2]
         let cpu = sliced.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda = sliced.realize_f32_cuda(&mut exe);
         assert_eq!(cpu, cuda, "concat+slice mismatch");
     }
@@ -881,7 +881,7 @@ mod tests {
         );
         let y = x.rms_norm_last_dim(1e-5);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(fuel_graph_cuda::CudaDevice::new(0).unwrap()));
+        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
         let cuda = y.realize_f32_cuda(&mut exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
@@ -2130,7 +2130,7 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         cache: &mut LlamaKVCache,
-        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
     ) -> Vec<f32> {
         self.forward_with_cache_on(tokens, cache, executor)
     }
@@ -2911,7 +2911,7 @@ fn truncate_kv_seq<B: fuel_graph_executor::GraphBackend>(
 /// CUDA-only alias kept for backward compatibility with existing
 /// callers. Prefer `KVCache<CudaBackend>` directly in new code.
 #[cfg(feature = "cuda")]
-pub type GpuKVCache = KVCache<fuel_graph_cuda::CudaBackend>;
+pub type GpuKVCache = KVCache<fuel_cuda_backend::CudaBackend>;
 
 // ---- Tiered residency: KVCache park / unpark (Vulkan-only) ------------
 //
@@ -3331,7 +3331,7 @@ impl LlamaModel {
         max_new_tokens: usize,
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
-        executor: &mut GraphExecutor<fuel_graph_cuda::CudaBackend>,
+        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
         on_token: impl FnMut(u32),
     ) -> crate::Result<Vec<u32>> {
         self.generate_streaming_gpu_on(

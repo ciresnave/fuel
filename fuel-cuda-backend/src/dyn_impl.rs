@@ -2,7 +2,7 @@
 //!
 //! `DynBackendStorage` is implemented directly on `CudaStorage`, and
 //! `DynBackendDevice` directly on `CudaDevice`. No newtype wrappers are needed:
-//! both the trait (`fuel-core-types`) and the concrete type (`fuel-graph-cuda`)
+//! both the trait (`fuel-core-types`) and the concrete type (`fuel-cuda-backend`)
 //! live in crates we own, so the orphan rule is satisfied.
 //!
 //! `CudaBackendStorage` and `CudaBackendDevice` are kept as type aliases so

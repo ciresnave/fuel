@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use fuel_graph_cuda::{CudaDevice, PinnedHostStorage};
+//! use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
 //! use fuel_core_types::backend::HostStorage;
 //!
 //! let dev = CudaDevice::new(0)?;

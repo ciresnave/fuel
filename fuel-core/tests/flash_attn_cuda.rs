@@ -3,7 +3,7 @@
 //! reference attention_naive within F16 precision.
 //!
 //! Only runs when the `flash-attn` feature is enabled on fuel-core +
-//! fuel-graph-cuda — gates the heavy nvcc build behind an explicit opt-in.
+//! fuel-cuda-backend — gates the heavy nvcc build behind an explicit opt-in.
 
 #![cfg(all(feature = "cuda", feature = "flash-attn"))]
 
@@ -30,9 +30,9 @@ fn cuda_present() -> bool {
         .any(|d| d.backend == BackendId::Cuda)
 }
 
-fn cuda_executor() -> GraphExecutor<fuel_graph_cuda::CudaBackend> {
-    let dev = fuel_graph_cuda::CudaDevice::new(0).expect("cuda device 0");
-    GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(dev))
+fn cuda_executor() -> GraphExecutor<fuel_cuda_backend::CudaBackend> {
+    let dev = fuel_cuda_backend::CudaDevice::new(0).expect("cuda device 0");
+    GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(dev))
 }
 
 fn assert_close_f16(label: &str, vk: &[f32], reference: &[f32], atol: f32, rtol: f32) {

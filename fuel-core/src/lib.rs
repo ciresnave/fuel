@@ -136,7 +136,7 @@ pub use cuda_backend as cuda;
 pub use cuda_backend::{CudaDevice, CudaStorage};
 
 #[cfg(feature = "cuda")]
-pub use fuel_graph_cuda::builder_arg;
+pub use fuel_cuda_backend::builder_arg;
 
 #[cfg(feature = "metal")]
 pub use metal_backend::{MetalDevice, MetalError, MetalStorage};

@@ -35,7 +35,7 @@ pub struct FlashAttn {
 
 impl FlashAttn {
     fn cuda_fwd_t<
-        T: fuel_graph_cuda::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
+        T: fuel_cuda_backend::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
     >(
         &self,
         q: &fuel::CudaStorage,
@@ -444,7 +444,7 @@ struct FlashAttnVarLen {
 
 impl FlashAttnVarLen {
     fn cuda_fwd_t<
-        T: fuel_graph_cuda::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
+        T: fuel_cuda_backend::storage::CudaDType + baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits,
     >(
         &self,
         q: &fuel::CudaStorage,
