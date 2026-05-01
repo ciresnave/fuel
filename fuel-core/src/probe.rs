@@ -57,23 +57,16 @@ impl ProbeReport {
     pub fn probe_all() -> Self {
         let mut devices = Vec::new();
 
-        Self::collect(&mut devices, "reference",
-            || fuel_reference_backend::probe::enumerate_devices());
-        Self::collect(&mut devices, "cpu",
-            || fuel_cpu_backend::probe::enumerate_devices());
-
-        #[cfg(feature = "aocl")]
-        Self::collect(&mut devices, "aocl",
-            || fuel_aocl_cpu_backend::probe::enumerate_devices());
-        #[cfg(feature = "onemkl")]
-        Self::collect(&mut devices, "mkl",
-            || fuel_mkl_cpu_backend::probe::enumerate_devices());
-        #[cfg(feature = "cuda")]
-        Self::collect(&mut devices, "cuda",
-            || fuel_graph_cuda::probe::enumerate_devices());
-        #[cfg(feature = "vulkan")]
-        Self::collect(&mut devices, "vulkan",
-            || fuel_graph_vulkan::probe::enumerate_devices());
+        // Walk the BackendFactory registry — each compiled-in backend
+        // contributes one entry. New backends register themselves in
+        // `crate::factories` and show up here automatically.
+        for factory in crate::factories::registry() {
+            Self::collect(
+                &mut devices,
+                factory.id().as_str(),
+                || factory.enumerate_devices(),
+            );
+        }
 
         devices.sort_by(|a, b| {
             a.backend.as_str().cmp(b.backend.as_str())

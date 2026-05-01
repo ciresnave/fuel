@@ -161,8 +161,8 @@ impl Judge {
     }
 
     /// Measure one (op, dtype, size) cell on one representative
-    /// device. Returns `None` if the backend isn't wired into the
-    /// Judge yet (Vulkan, Metal).
+    /// device. Returns `None` if the backend isn't compiled in or
+    /// if its constructor errors out.
     fn measure_on_device(
         &self,
         op: OpKind,
@@ -174,159 +174,33 @@ impl Judge {
 
         let size_class = SizeClass::from_elem_count(size.total_elements());
 
-        // Backend-specific realize closure. Returns the realized f32
-        // vector so downstream precision measurement can compare it
-        // against the reference.
-        #[cfg(feature = "cuda")]
-        let mut cuda_executor: Option<fuel_graph_executor::GraphExecutor<fuel_graph_cuda::CudaBackend>> =
-            None;
-        #[cfg(feature = "vulkan")]
-        let mut vulkan_executor: Option<fuel_graph_executor::GraphExecutor<fuel_graph_vulkan::VulkanBackend>> =
-            None;
-        #[cfg(feature = "aocl")]
-        let mut aocl_executor: Option<fuel_graph_executor::GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>> =
-            None;
-        #[cfg(feature = "onemkl")]
-        let mut mkl_executor: Option<fuel_graph_executor::GraphExecutor<fuel_mkl_cpu_backend::MklBackend>> =
-            None;
-
-        let realize: Box<dyn FnMut(&crate::lazy::LazyTensor) -> Vec<f32>> = match device.backend {
-            BackendId::Reference => Box::new(|t| t.realize_f32_reference()),
-            BackendId::Cpu       => Box::new(|t| t.realize_f32()),
-            #[cfg(feature = "onemkl")]
-            BackendId::Mkl => {
-                let backend = match fuel_mkl_cpu_backend::MklBackend::try_new() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!(
-                            "judge: skipping mkl:{} — MklBackend::try_new failed: {e}",
-                            device.device_index,
-                        );
-                        return None;
-                    }
-                };
-                mkl_executor = Some(fuel_graph_executor::GraphExecutor::new(backend));
-                let exe = mkl_executor.as_mut().unwrap();
-                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_mkl_cpu_backend::MklBackend>
-                    = exe;
-                // SAFETY: same shape as AOCL/CUDA/Vulkan arms — exe
-                // lives in the Option on the stack frame that outlives
-                // the closure's lifetime.
-                Box::new(move |t| t.realize_f32_mkl(unsafe { &mut *exe_ptr }))
-            }
-            #[cfg(not(feature = "onemkl"))]
-            BackendId::Mkl => {
+        // Walk the factory registry instead of naming each backend.
+        // A backend that isn't compiled in simply doesn't appear in
+        // the registry; one whose constructor fails is logged and
+        // skipped per-device.
+        let factory = match crate::factories::factory_for(device.backend) {
+            Some(f) => f,
+            None => {
                 eprintln!(
-                    "judge: skipping mkl:{} — onemkl feature not enabled",
-                    device.device_index,
+                    "judge: skipping {}:{} — backend not compiled in",
+                    device.backend, device.device_index,
                 );
                 return None;
             }
-            #[cfg(feature = "aocl")]
-            BackendId::Aocl => {
-                let backend = match fuel_aocl_cpu_backend::AoclBackend::try_new() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!(
-                            "judge: skipping aocl:{} — AoclBackend::try_new failed: {e}",
-                            device.device_index,
-                        );
-                        return None;
-                    }
-                };
-                aocl_executor = Some(fuel_graph_executor::GraphExecutor::new(backend));
-                let exe = aocl_executor.as_mut().unwrap();
-                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>
-                    = exe;
-                // SAFETY: same shape as the CUDA / Vulkan arms — exe
-                // lives in the Option on the stack frame that outlives
-                // the closure's lifetime.
-                Box::new(move |t| t.realize_f32_aocl(unsafe { &mut *exe_ptr }))
-            }
-            #[cfg(not(feature = "aocl"))]
-            BackendId::Aocl => {
+        };
+        let mut realizer = match factory.try_make_realizer(device.device_index) {
+            Ok(r) => r,
+            Err(e) => {
                 eprintln!(
-                    "judge: skipping aocl:{} — aocl feature not enabled",
-                    device.device_index,
-                );
-                return None;
-            }
-            #[cfg(feature = "cuda")]
-            BackendId::Cuda => {
-                // One executor per device for the whole measurement
-                // run; avoids re-creating CUDA contexts per iteration.
-                let dev = match fuel_graph_cuda::CudaDevice::new(device.device_index as usize) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!(
-                            "judge: skipping cuda:{} — CudaDevice::new failed: {e}",
-                            device.device_index,
-                        );
-                        return None;
-                    }
-                };
-                cuda_executor = Some(fuel_graph_executor::GraphExecutor::new(
-                    fuel_graph_cuda::CudaBackend::new(dev),
-                ));
-                let exe = cuda_executor.as_mut().unwrap();
-                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_graph_cuda::CudaBackend> = exe;
-                // SAFETY: we hold the executor in an Option on the stack
-                // that outlives the returned closure (lifetime-bounded
-                // to this function's body). The raw pointer avoids the
-                // borrow-checker's inability to see that.
-                Box::new(move |t| t.realize_f32_cuda(unsafe { &mut *exe_ptr }))
-            }
-            #[cfg(feature = "vulkan")]
-            BackendId::Vulkan => {
-                let backend = match fuel_graph_vulkan::VulkanBackend::with_selection(
-                    fuel_graph_vulkan::DeviceSelection::Index(device.device_index as usize),
-                ) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!(
-                            "judge: skipping vulkan:{} — VulkanBackend init failed: {e}",
-                            device.device_index,
-                        );
-                        return None;
-                    }
-                };
-                vulkan_executor = Some(fuel_graph_executor::GraphExecutor::new(backend));
-                let exe = vulkan_executor.as_mut().unwrap();
-                let exe_ptr: *mut fuel_graph_executor::GraphExecutor<fuel_graph_vulkan::VulkanBackend>
-                    = exe;
-                // SAFETY: same shape as the CUDA arm — exe lives in
-                // the Option on the stack frame that outlives the
-                // closure's lifetime.
-                Box::new(move |t| t.realize_f32_vulkan(unsafe { &mut *exe_ptr }))
-            }
-            #[cfg(not(feature = "vulkan"))]
-            BackendId::Vulkan => {
-                eprintln!(
-                    "judge: skipping vulkan:{} — vulkan feature not enabled",
-                    device.device_index,
-                );
-                return None;
-            }
-            other => {
-                eprintln!(
-                    "judge: skipping backend {other} device:{} — not yet wired",
-                    device.device_index,
+                    "judge: skipping {}:{} — factory failed: {e}",
+                    device.backend, device.device_index,
                 );
                 return None;
             }
         };
 
-        let entry = self.time_op(op, size, device, size_class, realize);
-        // Drop the per-device executors here, tearing down their
-        // contexts before we move on to the next device.
-        #[cfg(feature = "cuda")]
-        drop(cuda_executor);
-        #[cfg(feature = "vulkan")]
-        drop(vulkan_executor);
-        #[cfg(feature = "aocl")]
-        drop(aocl_executor);
-        #[cfg(feature = "onemkl")]
-        drop(mkl_executor);
+        let entry = self.time_op(op, size, device, size_class, realizer.as_mut());
+        drop(realizer);
         entry
     }
 
@@ -338,7 +212,7 @@ impl Judge {
         size: &OpSize,
         device: &DeviceDescriptor,
         size_class: SizeClass,
-        mut realize: Box<dyn FnMut(&crate::lazy::LazyTensor) -> Vec<f32>>,
+        realizer: &mut dyn crate::factories::LazyRealizer,
     ) -> Option<ProfileEntry> {
         let tensor = build_input_graph(op, size);
 
@@ -350,7 +224,7 @@ impl Judge {
         // Warmup — discard timings; stabilize kernel caches, warm up
         // any BLAS internal state, fault-in heap.
         for _ in 0..self.warmup {
-            let _ = realize(&tensor);
+            let _ = realizer.realize_f32(&tensor);
         }
 
         // Timed iterations — record each and take the median so one
@@ -359,7 +233,7 @@ impl Judge {
         let mut max_rel_error: f32 = 0.0;
         for _ in 0..self.iterations {
             let t0 = Instant::now();
-            let out = realize(&tensor);
+            let out = realizer.realize_f32(&tensor);
             let elapsed_ns = t0.elapsed().as_nanos() as u64;
             timings_ns.push(elapsed_ns);
 
