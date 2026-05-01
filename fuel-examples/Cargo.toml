@@ -13,7 +13,7 @@ readme = "README.md"
 accelerate-src = { workspace = true, optional = true }
 fuel = { workspace = true }
 fuel-cpu-backend = { workspace = true }
-fuel-graph-cuda = { workspace = true, optional = true }
+fuel-cuda-backend = { workspace = true, optional = true }
 fuel-datasets = { workspace = true, optional = true }
 fuel-nn = { workspace = true }
 fuel-transformers = { workspace = true }
@@ -80,7 +80,7 @@ cuda = [
     "fuel-transformers/cuda",
     "dep:cudaforge",
     "dep:baracuda-driver",
-    "dep:fuel-graph-cuda",
+    "dep:fuel-cuda-backend",
 ]
 cudnn = ["fuel/cudnn", "fuel-nn/cudnn", "fuel-transformers/cudnn"]
 flash-attn = ["cuda", "fuel-transformers/flash-attn", "dep:fuel-flash-attn-cuda"]

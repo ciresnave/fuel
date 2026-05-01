@@ -95,10 +95,10 @@ impl fuel::CustomOp3 for RotaryEmbI {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>() {
-            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
+            let cuda3 = s3.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
             let (out, shape) = self.cuda_inner(cuda1, l1, cuda2, l2, cuda3, l3)?;
             return Ok((Box::new(out), shape));
@@ -437,10 +437,10 @@ impl fuel::CustomOp3 for RotaryEmb {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>() {
-            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
+            let cuda3 = s3.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
             let (out, shape) = self.cuda_inner(cuda1, l1, cuda2, l2, cuda3, l3)?;
             return Ok((Box::new(out), shape));
@@ -765,10 +765,10 @@ impl fuel::CustomOp3 for RotaryEmbThd {
         }
 
         #[cfg(feature = "cuda")]
-        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>() {
-            let cuda2 = s2.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
+        if let Some(cuda1) = s1.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>() {
+            let cuda2 = s2.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
-            let cuda3 = s3.as_any().downcast_ref::<fuel_graph_cuda::CudaStorage>()
+            let cuda3 = s3.as_any().downcast_ref::<fuel_cuda_backend::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg(format!("{}: expected CUDA storage", self.name())))?;
             let (out, shape) = self.cuda_inner(cuda1, l1, cuda2, l2, cuda3, l3)?;
             return Ok((Box::new(out), shape));

@@ -297,6 +297,6 @@ impl Tensor {
 
 // `UgIOp1` was split into per-backend types and moved out of fuel-core in
 // step B2 of the backend extraction:
-//   - CUDA: `fuel_graph_cuda::ug::CudaUgIOp1`
+//   - CUDA: `fuel_cuda_backend::ug::CudaUgIOp1`
 //   - Metal: `fuel_metal::ug::MetalUgIOp1`
 // Both impl `InplaceOp1` (re-exported above from `fuel-core-types`).

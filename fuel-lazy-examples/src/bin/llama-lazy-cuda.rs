@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
     let cuda_device = fuel::CudaDevice::new(0)?;
-    let backend = fuel_graph_cuda::CudaBackend::new(cuda_device);
+    let backend = fuel_cuda_backend::CudaBackend::new(cuda_device);
     let mut executor = fuel_graph_executor::GraphExecutor::new(backend);
     eprintln!("done in {:.2?}", t0.elapsed());
 

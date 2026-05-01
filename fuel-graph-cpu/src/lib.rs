@@ -22,7 +22,7 @@
 //! from "minutes per token" to "a few seconds per token."
 //!
 //! This is still the CPU executor. Production GPU execution through
-//! CUDA or Metal is a separate future crate (`fuel-graph-cuda`,
+//! CUDA or Metal is a separate future crate (`fuel-cuda-backend`,
 //! `fuel-graph-metal`) with the same public API.
 //!
 //! # Public API

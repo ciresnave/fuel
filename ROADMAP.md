@@ -1111,7 +1111,7 @@ on a single piece of hardware.*
 - [x] Add CUDA and (future) Metal as selectable backends in the planner.
       CUDA + Vulkan already selectable via `fuel-graph-router`'s
       `DynBackend` (shipped in Router Phase 2/3). Metal remains future
-      work — needs a `fuel-graph-metal` mirror of `fuel-graph-cuda`.
+      work — needs a `fuel-graph-metal` mirror of `fuel-cuda-backend`.
 - [x] ~~Probe-score-init lifecycle~~ → **Probe lifecycle**. Dropped the
       self-reported 0-100 score — per design discussion (user call), the
       Judge's empirical numbers are strictly more informative than any
@@ -1474,7 +1474,7 @@ happened alongside the baracuda migration.*
 
 Historical state: CUDA was split across `fuel-cuda` (cudarc wrapper
 plus ML-layer dispatch code inherited from candle-cuda) and
-`fuel-graph-cuda` (lazy-graph integration on top of it). Vulkan
+`fuel-cuda-backend` (lazy-graph integration on top of it). Vulkan
 parallel already looked different — `vulkane` (external FFI) feeding
 `fuel-graph-vulkan` (ML-layer + graph) directly with no intermediate
 wrapper crate.
@@ -1483,16 +1483,16 @@ With the cudarc → baracuda migration in flight, the two sides were
 unified. `fuel-cuda`'s ML-layer content (`CudaStorage` /
 `CudaStorageSlice`, `Map1`/`Map2`/`Map3` dispatch traits, kernel
 launch scaffolding, cuBLAS / cuDNN / curand wiring, module cache for
-`fuel-cuda-kernels`) moved into `fuel-graph-cuda` as internal
+`fuel-cuda-kernels`) moved into `fuel-cuda-backend` as internal
 modules. `fuel-cuda` was deleted. Final stack:
 
 ```text
 baracuda-*           (external, CUDA FFI)
    │
-fuel-graph-cuda      (ML-layer + graph integration)
+fuel-cuda-backend      (ML-layer + graph integration)
 fuel-cuda-kernels    (PTX bundle)
    │
-fuel-core cuda_backend (thin delegation to fuel-graph-cuda)
+fuel-core cuda_backend (thin delegation to fuel-cuda-backend)
 ```
 
 Parallel to:

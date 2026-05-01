@@ -2,7 +2,7 @@
 //!
 //! Per-backend kernels live in their own crates:
 //! - CPU: `fuel-cpu-backend::quantized::CpuQStorage`
-//! - CUDA: `fuel-graph-cuda::quantized::QCudaStorage`
+//! - CUDA: `fuel-cuda-backend::quantized::QCudaStorage`
 //! - Metal: `fuel-metal::quantized::QMetalStorage`
 //!
 //! fuel-core holds the polymorphic [`QTensor`] / [`QMatMul`] front-end and

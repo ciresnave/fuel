@@ -3,7 +3,7 @@ name = "fuel-flash-attn-v3-cuda"
 version = "0.10.2"
 edition = "2021"
 
-description = "CUDA sm90 (Hopper) port of Dao-AILab FlashAttention v3 for the fuel ML framework. Eager-mode Tensor API only; lazy-graph callers go through the `flash-attn` feature on `fuel-graph-cuda`."
+description = "CUDA sm90 (Hopper) port of Dao-AILab FlashAttention v3 for the fuel ML framework. Eager-mode Tensor API only; lazy-graph callers go through the `flash-attn` feature on `fuel-cuda-backend`."
 repository = "https://github.com/huggingface/fuel"
 keywords = ["blas", "tensor", "machine-learning"]
 categories = ["science"]
@@ -17,7 +17,7 @@ exclude = ["cutlass/docs/**", "cutlass/test/**", "cutlass/examples/**", "cutlass
 # creating a dep cycle.
 fuel-flash-attn-v3-cuda-sys = { workspace = true }
 fuel             = { workspace = true, features = ["cuda"] }
-fuel-graph-cuda  = { workspace = true }
+fuel-cuda-backend  = { workspace = true }
 fuel-core-types  = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 baracuda-types   = { workspace = true }

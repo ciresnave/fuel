@@ -26,7 +26,7 @@ hf-hub = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 fuel-cuda-kernels = { workspace = true, optional = true }
-fuel-graph-cuda = { workspace = true, optional = true }
+fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph-vulkan = { workspace = true, optional = true }
 fuel-metal = { workspace = true, optional = true }
 fuel-metal-kernels = { workspace = true, optional = true }
@@ -78,7 +78,7 @@ default = []
 # Use: cargo build --features cuda
 cuda = [
     "dep:fuel-cuda-kernels",
-    "dep:fuel-graph-cuda",
+    "dep:fuel-cuda-backend",
     "dep:baracuda-types",
     "dep:baracuda-core",
     "dep:baracuda-driver",
@@ -86,22 +86,22 @@ cuda = [
 ]
 
 # Enables cuda + cuDNN accelerated convolution and normalization.
-cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-graph-cuda?/cudnn"]
+cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-cuda-backend?/cudnn"]
 
 # Enables CUDA FlashAttention v2 (sm80) via fuel-flash-attn-cuda-sys.
 # Implies `cuda`. Adds a substantial nvcc build (~30 min for 37 .cu
 # kernels + CUTLASS headers); only opt in if you actually need it.
-flash-attn = ["cuda", "fuel-graph-cuda?/flash-attn"]
+flash-attn = ["cuda", "fuel-cuda-backend?/flash-attn"]
 
 # Enables CUDA FlashAttention v3 (sm90 / Hopper) via
 # fuel-flash-attn-v3-cuda-sys. Implies `cuda`. Even larger nvcc build
 # than v2 (67 kernels). When both `flash-attn` and `flash-attn-v3`
 # are enabled, dispatch tries v3 first and falls back to v2 on Err
 # (e.g. softcap requested or unsupported head_dim).
-flash-attn-v3 = ["cuda", "fuel-graph-cuda?/flash-attn-v3"]
+flash-attn-v3 = ["cuda", "fuel-cuda-backend?/flash-attn-v3"]
 
 # Multi-GPU communication via NVIDIA NCCL.
-nccl = ["cuda", "dep:baracuda-nccl", "fuel-graph-cuda?/nccl"]
+nccl = ["cuda", "dep:baracuda-nccl", "fuel-cuda-backend?/nccl"]
 
 # Intel MKL BLAS for CPU (Linux/Windows). Faster matmul on Intel hardware.
 mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl"]
@@ -139,10 +139,10 @@ metal = [
 vulkan = ["dep:fuel-graph-vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
-# Pipes the `ug` feature through to fuel-graph-cuda and fuel-metal so the
+# Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal so the
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available
 # whenever `cuda`/`metal` is also enabled.
-ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-graph-cuda?/ug", "fuel-metal?/ug"]
+ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-cuda-backend?/ug", "fuel-metal?/ug"]
 
 [[bench]]
 name = "bench_main"

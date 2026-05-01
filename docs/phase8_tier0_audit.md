@@ -159,7 +159,7 @@ glue gets replaced to plug into the new `Op::FlashAttn` →
    method with default-bail.
 4. Add the executor arm calling `self.backend.flash_attn(...)` and
    falling back to naive attention on Err.
-5. `fuel-graph-cuda::CudaBackend::flash_attn` becomes the override that
+5. `fuel-cuda-backend::CudaBackend::flash_attn` becomes the override that
    calls the existing `flash-attn` FFI — but goes through
    `CudaStorage` / `&CudaSlice<T>` (lazy storage), not eager
    `fuel::CudaStorage`. The `cuda_fwd_t<T>` body in the existing crate

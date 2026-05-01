@@ -111,9 +111,9 @@ pub fn assert_cuda_matches_reference(
         return;
     }
     let reference = t.realize_f32_reference();
-    let dev = fuel_graph_cuda::CudaDevice::new(0)
+    let dev = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 available since probe found one");
-    let mut exe = GraphExecutor::new(fuel_graph_cuda::CudaBackend::new(dev));
+    let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(dev));
     let cuda = t.realize_f32_cuda(&mut exe);
     assert_allclose_f32(&cuda, &reference, atol, rtol);
 }

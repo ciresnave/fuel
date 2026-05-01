@@ -5,7 +5,7 @@
 
 use fuel_core_types::backend::HostStorage;
 use fuel_core_types::{DType, HostBufferRef};
-use fuel_graph_cuda::{CudaDevice, PinnedHostStorage};
+use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {

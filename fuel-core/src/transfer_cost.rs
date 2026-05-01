@@ -250,8 +250,8 @@ fn measure_h2d_d2h(
         #[cfg(feature = "cuda")]
         BackendId::Cuda => {
             use fuel_graph_executor::GraphBackend;
-            let dev = fuel_graph_cuda::CudaDevice::new(device.device_index as usize).ok()?;
-            let backend = fuel_graph_cuda::CudaBackend::new(dev);
+            let dev = fuel_cuda_backend::CudaDevice::new(device.device_index as usize).ok()?;
+            let backend = fuel_cuda_backend::CudaBackend::new(dev);
             measure_round_trip_via_backend(&backend, &host_buf, &shape, bytes, iters)
         }
         #[cfg(feature = "vulkan")]

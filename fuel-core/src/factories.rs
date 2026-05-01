@@ -5,7 +5,7 @@
 //! returns the cfg-gated subset that's actually compiled in, and
 //! consumers — currently the [`crate::probe`] enumerator and the
 //! [`crate::judge`] profiler — walk that registry instead of naming
-//! `fuel_graph_cuda::CudaBackend`/`fuel_aocl_cpu_backend::AoclBackend`/...
+//! `fuel_cuda_backend::CudaBackend`/`fuel_aocl_cpu_backend::AoclBackend`/...
 //! by hand.
 //!
 //! # Why a fuel-core-local trait
@@ -195,14 +195,14 @@ pub struct CudaFactory;
 impl BackendFactory for CudaFactory {
     fn id(&self) -> BackendId { BackendId::Cuda }
     fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_graph_cuda::probe::enumerate_devices()
+        fuel_cuda_backend::probe::enumerate_devices()
     }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
-        let dev = fuel_graph_cuda::CudaDevice::new(device_index as usize)
+        let dev = fuel_cuda_backend::CudaDevice::new(device_index as usize)
             .map_err(|e| fuel_core_types::Error::Msg(
                 format!("CudaDevice::new({device_index}) failed: {e}")
             ))?;
-        let backend = fuel_graph_cuda::CudaBackend::new(dev);
+        let backend = fuel_cuda_backend::CudaBackend::new(dev);
         Ok(Box::new(Realizer { exe: GraphExecutor::new(backend) }))
     }
 }

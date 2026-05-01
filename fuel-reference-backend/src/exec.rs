@@ -292,7 +292,7 @@ macro_rules! binary {
 }
 
 /// Evaluate a single op given its cached inputs. Exposed publicly so
-/// other executors (e.g. fuel-graph-cuda) can fall back to the reference
+/// other executors (e.g. fuel-cuda-backend) can fall back to the reference
 /// implementation for ops they don't handle natively.
 pub fn eval_node_with_op(
     op: &Op,

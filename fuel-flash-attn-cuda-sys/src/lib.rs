@@ -4,7 +4,7 @@
 //! This crate has no Rust API beyond the FFI declaration and the
 //! kernels-as-static-lib that ships with it. It exists so that both
 //! the eager-mode `fuel-flash-attn-cuda` wrapper AND the lazy-graph
-//! `fuel-graph-cuda` backend can call the same kernels without
+//! `fuel-cuda-backend` backend can call the same kernels without
 //! creating a circular dependency between those two crates.
 //!
 //! Callers must hand in raw `CUdeviceptr` values + dimensions + a

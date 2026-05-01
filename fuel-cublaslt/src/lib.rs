@@ -26,7 +26,7 @@ use std::sync::Arc;
 // LtHandle wrapper + Sync/Send
 // ---------------------------------------------------------------------------
 //
-// Matches fuel-graph-cuda's `CublasHandle` shim: baracuda marks cuBLASLt
+// Matches fuel-cuda-backend's `CublasHandle` shim: baracuda marks cuBLASLt
 // handles `Send` but `!Sync` (per-handle single-thread use). Fuel's graph
 // executor serialises GPU dispatch onto one thread, so the promise holds at
 // the application level; unsafe-impl Sync to let the handle flow through
@@ -69,7 +69,7 @@ impl CublasLt {
 // ---------------------------------------------------------------------------
 
 trait LtDType:
-    baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits + fuel_graph_cuda::storage::CudaDType + Copy
+    baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits + fuel_cuda_backend::storage::CudaDType + Copy
 {
     const CUDA_DATA_TYPE: cudaDataType_t;
 }

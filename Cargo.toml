@@ -23,7 +23,7 @@ members = [
     "fuel-flash-attn-v3-cuda-sys",
     "fuel-graph",
     "fuel-graph-cpu",
-    "fuel-graph-cuda",
+    "fuel-cuda-backend",
     "fuel-graph-executor",
     "fuel-graph-router",
     "fuel-graph-vulkan",
@@ -57,7 +57,7 @@ default-members = [
     "fuel-cpu-backend",
     "fuel-graph",
     "fuel-graph-cpu",
-    "fuel-graph-cuda",
+    "fuel-cuda-backend",
     "fuel-graph-executor",
     "fuel-graph-router",
     "fuel-graph-vulkan",
@@ -113,7 +113,7 @@ fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
 fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
-fuel-graph-cuda = { path = "./fuel-graph-cuda", version = "0.10.2" }
+fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.2" }
 fuel-graph-executor = { path = "./fuel-graph-executor", version = "0.10.2" }
 fuel-graph-router = { path = "./fuel-graph-router", version = "0.10.2" }
 fuel-graph-vulkan = { path = "./fuel-graph-vulkan", version = "0.10.2" }
@@ -145,7 +145,7 @@ criterion = { version = "0.8", default-features = false }
 #
 # alpha.4 added the `half-crate` feature on baracuda-cudnn (CudnnDataType
 # impls for half::f16 / half::bf16), unblocking the f16/bf16 conv2d/conv1d
-# paths in fuel-graph-cuda.
+# paths in fuel-cuda-backend.
 #
 # alpha.5 fixes multi-CUDA cuDNN search-dir selection on Windows: with both
 # CUDA 12.x and 13.x cuDNN bundles installed under
