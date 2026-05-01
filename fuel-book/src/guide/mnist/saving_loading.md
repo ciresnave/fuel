@@ -12,7 +12,7 @@ Let's modify our `training_loop` function to include functionality for saving we
 fn training_loop(
     m: fuel_datasets::vision::Dataset,
 ) -> anyhow::Result<()> {
-    let dev = Device::cuda_if_available(0)?;
+    let dev = fuel::cuda_backend::device_if_available(0)?;
 
     let train_labels = m.train_labels;
     let train_images = m.train_images.to_device(&dev)?;
@@ -86,7 +86,7 @@ Now that we have saved our model parameters, we can modify the code to load them
 fn training_loop(
     m: fuel_datasets::vision::Dataset,
 ) -> anyhow::Result<()> {
-    let dev = Device::cuda_if_available(0)?;
+    let dev = fuel::cuda_backend::device_if_available(0)?;
 
     let train_labels = m.train_labels;
     let train_images = m.train_images.to_device(&dev)?;

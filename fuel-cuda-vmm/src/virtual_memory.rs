@@ -35,10 +35,9 @@ enum PageState {
 /// # Example
 /// ```no_run
 /// use fuel_cuda_vmm::VirtualMemoryPool;
-/// use fuel::Device;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let device = Device::new_cuda(0)?;
+/// let device = fuel::cuda_backend::new_device(0)?;
 /// let mut pool = VirtualMemoryPool::new(
 ///     128 * 1024 * 1024 * 1024, // 128GB virtual capacity
 ///     2 * 1024 * 1024,          // 2MB page size
@@ -157,7 +156,7 @@ impl VirtualMemoryPool {
         // Allocate and map each page
         for page_idx in start_page..end_page {
             // Allocate physical memory for this page
-            let device = Device::new_cuda(self.device_ordinal as usize)?;
+            let device = fuel::cuda_backend::new_device(self.device_ordinal as usize)?;
             let physical_handle = PhysicalMemoryHandle::new(self.page_size, &device)?;
 
             // Map physical memory to virtual address
@@ -334,10 +333,9 @@ pub struct MemoryStats {
 /// # Example
 /// ```no_run
 /// use fuel_cuda_vmm::SharedMemoryPool;
-/// use fuel::Device;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let device = Device::new_cuda(0)?;
+/// let device = fuel::cuda_backend::new_device(0)?;
 /// let mut shared_pool = SharedMemoryPool::new(
 ///     32 * 1024 * 1024 * 1024, // 32GB global physical limit
 ///     device,
@@ -402,7 +400,7 @@ impl SharedMemoryPool {
             return Err(VmmError::ModelAlreadyExists(model_id.to_string()));
         }
 
-        let device = Device::new_cuda(self.device_ordinal as usize)?;
+        let device = fuel::cuda_backend::new_device(self.device_ordinal as usize)?;
         let pool = VirtualMemoryPool::new(virtual_capacity, self.default_page_size, device)?;
 
         self.pools.insert(model_id.to_string(), pool);

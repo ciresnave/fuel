@@ -413,13 +413,13 @@ impl UgIOp1 {
     ) -> Result<Self> {
         #[cfg(feature = "cuda")]
         {
-            let device = device.as_cuda_device()?;
+            let device = crate::cuda_backend::as_device(device)?;
             let func = device.compile(name, kernel)?;
             Ok(Self { name, func })
         }
         #[cfg(feature = "metal")]
         {
-            let device = device.as_metal_device()?;
+            let device = crate::metal_backend::as_device(device)?;
             let func = device.compile(name, kernel)?;
             Ok(Self { name, func })
         }

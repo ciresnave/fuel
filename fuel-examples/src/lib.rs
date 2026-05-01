@@ -12,9 +12,9 @@ pub fn device(cpu: bool) -> Result<Device> {
     if cpu {
         Ok(Device::cpu())
     } else if cuda_is_available() {
-        Ok(Device::new_cuda(0)?)
+        fuel::cuda_backend::new_device(0)
     } else if metal_is_available() {
-        Ok(Device::new_metal(0)?)
+        fuel::metal_backend::new_device(0)
     } else {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {

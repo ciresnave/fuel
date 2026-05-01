@@ -43,7 +43,7 @@ fn fa_acausal_softcap(q: &Tensor, k: &Tensor, v: &Tensor, softcap: f32) -> Resul
 
 #[test]
 fn flash_attn_acausal() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
     let q = Tensor::arange(0u32, 48, &device)?
         .to_dtype(DType::F16)?
         .reshape((1, 3, 2, 8))?;
@@ -105,7 +105,7 @@ fn flash_attn_acausal() -> Result<()> {
 
 #[test]
 fn flash_attn_acausal_softcap() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
     let q = Tensor::arange(0u32, 3 * 5 * 8, &device)?
         .to_dtype(DType::F16)?
         .reshape((1, 3, 5, 8))?;
@@ -143,7 +143,7 @@ fn flash_attn_acausal_softcap() -> Result<()> {
 
 #[test]
 fn flash_attn_varlen() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
     let q = Tensor::arange(0u32, 48, &device)?
         .to_dtype(DType::F16)?
         .reshape((3, 2, 8))?;

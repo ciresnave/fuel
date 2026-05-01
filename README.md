@@ -41,8 +41,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Having installed `fuel` with Cuda support, simply define the `device` to be on GPU:
 
 ```diff
-- let device = Device::Cpu;
-+ let device = Device::new_cuda(0)?;
+- let device = Device::cpu();
++ let device = fuel_core::cuda_backend::new_device(0)?;
 ```
 
 For more advanced examples, please have a look at the following section.
@@ -434,7 +434,7 @@ Cheatsheet:
 | Operations | `tensor.view((2, 2))`                    | `tensor.reshape((2, 2))?`                                        |
 | Operations | `a.matmul(b)`                            | `a.matmul(&b)?`                                                  |
 | Arithmetic | `a + b`                                  | `&a + &b`                                                        |
-| Device     | `tensor.to(device="cuda")`               | `tensor.to_device(&Device::new_cuda(0)?)?`                            |
+| Device     | `tensor.to(device="cuda")`               | `tensor.to_device(&fuel_core::cuda_backend::new_device(0)?)?`         |
 | Dtype      | `tensor.to(dtype=torch.float16)`         | `tensor.to_dtype(&DType::F16)?`                                  |
 | Saving     | `torch.save({"A": A}, "model.bin")`      | `fuel::safetensors::save(&HashMap::from([("A", A)]), "model.safetensors")?` |
 | Loading    | `weights = torch.load("model.bin")`      | `fuel::safetensors::load("model.safetensors", &device)`        |

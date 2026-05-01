@@ -13,13 +13,13 @@ macro_rules! test_device {
         #[cfg(feature = "cuda")]
         #[test]
         fn $test_cuda() -> Result<()> {
-            $fn_name(&Device::new_cuda(0)?)
+            $fn_name(&$crate::cuda_backend::new_device(0)?)
         }
 
         #[cfg(feature = "metal")]
         #[test]
         fn $test_metal() -> Result<()> {
-            $fn_name(&Device::new_metal(0)?)
+            $fn_name(&$crate::metal_backend::new_device(0)?)
         }
     };
 }

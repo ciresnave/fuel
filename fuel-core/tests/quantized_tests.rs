@@ -57,7 +57,7 @@ fn test_matmul(
 #[test]
 fn test_matmul_mm() -> Result<()> {
     let dtype = GgmlDType::Q8_0;
-    let device = Device::new_metal(0)?;
+    let device = fuel_core::metal_backend::new_device(0)?;
 
     let m = 32;
     let n = 32;

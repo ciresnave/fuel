@@ -65,9 +65,9 @@ impl BenchDeviceHandler {
     pub fn new() -> Result<Self> {
         let mut devices = Vec::new();
         if cfg!(feature = "metal") {
-            devices.push(Device::new_metal(0)?);
+            devices.push(fuel_core::metal_backend::new_device(0)?);
         } else if cfg!(feature = "cuda") {
-            devices.push(Device::new_cuda(0)?);
+            devices.push(fuel_core::cuda_backend::new_device(0)?);
         } else {
             devices.push(Device::Cpu);
         }

@@ -295,7 +295,7 @@ fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Resul
         DeviceLocation::Cpu => Ok(Storage::new(fuel_cpu_backend::CpuStorage(make_cpu()))),
         #[cfg(feature = "cuda")]
         DeviceLocation::Cuda { .. } => {
-            let cuda_dev = device.as_cuda_device().unwrap();
+            let cuda_dev = crate::cuda_backend::as_device(device).unwrap();
             let mut slice = unsafe { cuda_dev.alloc::<u8>(data.len())? };
             cuda_dev.memcpy_htod(data, &mut slice.as_slice_mut())?;
             let slice = match dtype {
@@ -318,7 +318,7 @@ fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Resul
         }
         #[cfg(feature = "metal")]
         DeviceLocation::Metal { .. } => {
-            let metal_dev = device.as_metal_device().unwrap();
+            let metal_dev = crate::metal_backend::as_device(device).unwrap();
             let buffer = metal_dev.new_buffer_with_data(data)?;
             let storage =
                 crate::metal_backend::MetalStorage::new(buffer, metal_dev.clone(), data.len(), dtype);

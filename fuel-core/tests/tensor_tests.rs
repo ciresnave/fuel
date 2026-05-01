@@ -939,7 +939,7 @@ fn index_select_fail() -> Result<()> {
 // #[should_panic]
 // fn index_select_fail_gpu() {
 //     // Check that a panic happens for out of bounds in cuda
-//     if let Ok(device) = Device::new_cuda(0) {
+//     if let Ok(device) = fuel_core::cuda_backend::new_device(0) {
 //         if let Ok(ids) = Tensor::new(&[4u32, 2u32, 1u32], &device) {
 //             if let Ok(t) = Tensor::new(&[[0f32, 1f32], [2f32, 3f32], [4f32, 5f32]], &device) {
 //                 let _ = t.index_select(&ids, 0);
@@ -2009,19 +2009,19 @@ fn transfers_cuda_to_device() -> Result<()> {
     if devices < 2 {
         return Ok(());
     }
-    let first = Device::new_cuda(0)?;
+    let first = fuel_core::cuda_backend::new_device(0)?;
 
     let mut data: Vec<u32> = (0..262144).collect();
     let mut rng = rand::rng();
     data.shuffle(&mut rng);
 
     let t1 = Tensor::from_vec(data, (512, 512), &first)?;
-    let second = Device::new_cuda(1)?;
+    let second = fuel_core::cuda_backend::new_device(1)?;
     let t2 = t1.to_device(&second)?;
 
     assert_ne!(
-        t1.device().as_cuda_device()?.id(),
-        t2.device().as_cuda_device()?.id()
+        fuel_core::cuda_backend::as_device(t1.device())?.id(),
+        fuel_core::cuda_backend::as_device(t2.device())?.id()
     );
     Ok(())
 }
@@ -2034,8 +2034,8 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
     use fuel_core::Storage;
     use rand::seq::SliceRandom;
 
-    let first = Device::new_cuda(0)?;
-    let second = Device::new_cuda(0)?;
+    let first = fuel_core::cuda_backend::new_device(0)?;
+    let second = fuel_core::cuda_backend::new_device(0)?;
 
     let mut data: Vec<u32> = (0..262144).collect();
     let mut rng = rand::rng();

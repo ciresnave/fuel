@@ -52,7 +52,7 @@ pub fn moe_gemm(
             size_k1,
             size_k
         );
-        let dev = input.device().as_cuda_device()?;
+        let dev = fuel::cuda_backend::as_device(input.device())?;
         let data_type = match input.dtype() {
             DType::F16 => 0,
             DType::BF16 => 1,
@@ -221,7 +221,7 @@ pub fn moe_gemm_gguf(
             size_k,
             size_k1,
         );
-        let dev = input.device().as_cuda_device()?;
+        let dev = fuel::cuda_backend::as_device(input.device())?;
 
         // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5
         let gguf_dtype = match weights.dtype() {

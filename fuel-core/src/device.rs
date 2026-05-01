@@ -7,7 +7,7 @@
 //! assert_eq!(dev.location(), fuel_core::DeviceLocation::Cpu);
 //! ```
 use crate::dyn_backend::DynBackendDevice;
-use crate::{HostBuffer, DType, Error, Result, Shape, Storage, WithDType};
+use crate::{HostBuffer, DType, Result, Shape, Storage, WithDType};
 use fuel_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
 
@@ -281,105 +281,12 @@ impl Device {
         }
     }
 
-    /// Creates a new CUDA device with the given GPU ordinal.
-    ///
-    /// Requires CUDA support compiled in and a compatible GPU.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use fuel_core::Device;
-    /// let dev = Device::new_cuda(0)?;
-    /// assert!(dev.is_cuda());
-    /// # Ok::<(), fuel_core::Error>(())
-    /// ```
-    pub fn new_cuda(ordinal: usize) -> Result<Self> {
-        #[cfg(feature = "cuda")]
-        {
-            let dev = crate::CudaDevice::new(ordinal)?;
-            Ok(Device {
-                inner: Arc::new(dev),
-            })
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = ordinal;
-            Err(Error::NotCompiledWithCudaSupport.bt())
-        }
-    }
-
-    /// Returns the underlying CUDA device, or an error if this is not a CUDA device.
-    #[cfg(feature = "cuda")]
-    pub fn as_cuda_device(&self) -> Result<&crate::CudaDevice> {
-        self.inner
-            .as_any()
-            .downcast_ref::<crate::CudaDevice>()
-            .ok_or_else(|| Error::Msg("expected a cuda device".into()).bt())
-    }
-
-    /// Returns the underlying Metal device, or an error if this is not a Metal device.
-    #[cfg(feature = "metal")]
-    pub fn as_metal_device(&self) -> Result<&crate::MetalDevice> {
-        self.inner
-            .as_any()
-            .downcast_ref::<crate::MetalDevice>()
-            .ok_or_else(|| Error::Msg("expected a metal device".into()).bt())
-    }
-
-    /// Creates a new CUDA device with a dedicated stream.
-    pub fn new_cuda_with_stream(ordinal: usize) -> Result<Self> {
-        #[cfg(feature = "cuda")]
-        {
-            let dev = crate::CudaDevice::new_with_stream(ordinal)?;
-            Ok(Device {
-                inner: Arc::new(dev),
-            })
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = ordinal;
-            Err(Error::NotCompiledWithCudaSupport.bt())
-        }
-    }
-
-    /// Creates a new Metal device with the given ordinal.
-    pub fn new_metal(ordinal: usize) -> Result<Self> {
-        #[cfg(feature = "metal")]
-        {
-            let dev = crate::MetalDevice::new(ordinal)?;
-            Ok(Device {
-                inner: Arc::new(dev),
-            })
-        }
-        #[cfg(not(feature = "metal"))]
-        {
-            let _ = ordinal;
-            Err(Error::NotCompiledWithMetalSupport.bt())
-        }
-    }
-
     /// Creates a device backed by a custom [`DynBackendDevice`].
     ///
     /// The device uses dynamic dispatch for all operations, enabling
     /// third-party backends without modifying `fuel-core`.
     pub fn custom(device: Arc<dyn DynBackendDevice>) -> Self {
         Device { inner: device }
-    }
-
-    /// Wraps an existing [`CudaDevice`](crate::CudaDevice) into a `Device`.
-    #[cfg(feature = "cuda")]
-    pub(crate) fn from_cuda_device(dev: crate::CudaDevice) -> Self {
-        Device {
-            inner: Arc::new(dev),
-        }
-    }
-
-    /// Wraps an existing [`MetalDevice`](crate::MetalDevice) into a `Device`.
-    #[cfg(feature = "metal")]
-    pub(crate) fn from_metal_device(dev: crate::MetalDevice) -> Self {
-        Device {
-            inner: Arc::new(dev),
-        }
     }
 
     /// Returns `true` if this is a custom (third-party) device.
@@ -483,24 +390,6 @@ impl Device {
             DType::BF16
         } else {
             DType::F32
-        }
-    }
-
-    /// Returns a CUDA device if available, otherwise falls back to CPU.
-    pub fn cuda_if_available(ordinal: usize) -> Result<Self> {
-        if crate::utils::cuda_is_available() {
-            Self::new_cuda(ordinal)
-        } else {
-            Ok(Self::cpu())
-        }
-    }
-
-    /// Returns a Metal device if available, otherwise falls back to CPU.
-    pub fn metal_if_available(ordinal: usize) -> Result<Self> {
-        if crate::utils::metal_is_available() {
-            Self::new_metal(ordinal)
-        } else {
-            Ok(Self::cpu())
         }
     }
 

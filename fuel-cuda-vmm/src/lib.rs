@@ -28,10 +28,9 @@
 //!
 //! ```no_run
 //! use fuel_cuda_vmm::{VirtualMemoryPool, Result};
-//! use fuel::Device;
 //!
 //! fn main() -> Result<()> {
-//!     let device = Device::new_cuda(0)?;
+//!     let device = fuel::cuda_backend::new_device(0)?;
 //!     
 //!     // Create a pool with 128GB virtual capacity, 2MB pages
 //!     let mut pool = VirtualMemoryPool::new(
@@ -58,10 +57,9 @@
 //!
 //! ```no_run
 //! use fuel_cuda_vmm::{SharedMemoryPool, Result};
-//! use fuel::Device;
 //!
 //! fn main() -> Result<()> {
-//!     let device = Device::new_cuda(0)?;
+//!     let device = fuel::cuda_backend::new_device(0)?;
 //!     let mut shared_pool = SharedMemoryPool::new(
 //!         32 * 1024 * 1024 * 1024, // 32GB global physical limit
 //!         device,

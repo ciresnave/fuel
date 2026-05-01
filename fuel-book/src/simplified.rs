@@ -67,7 +67,7 @@ impl MultiLevelPerceptron {
 #[tokio::test]
 async fn simplified() -> anyhow::Result<()> {
 
-    let dev = Device::cuda_if_available(0)?;
+    let dev = fuel::cuda_backend::device_if_available(0)?;
 
     let train_votes_vec: Vec<u32> = vec![
         15, 10,

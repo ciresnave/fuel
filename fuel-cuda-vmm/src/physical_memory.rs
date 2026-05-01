@@ -20,10 +20,9 @@ fn get_device_ordinal(device: &Device) -> Result<i32> {
 /// # Example
 /// ```no_run
 /// use fuel_cuda_vmm::PhysicalMemoryHandle;
-/// use fuel::Device;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let device = Device::new_cuda(0)?;
+/// let device = fuel::cuda_backend::new_device(0)?;
 /// let handle = PhysicalMemoryHandle::new(2 * 1024 * 1024, &device)?; // 2MB
 /// println!("Allocated {} bytes", handle.size());
 /// // Memory automatically released when handle goes out of scope

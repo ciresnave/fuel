@@ -8,7 +8,7 @@ use anyhow::Result;
 use fuel_core::{Device, Tensor};
 // xs: [1024, 64, 1924], c Tensor[dims 128, 64, 8; f32, cuda:0] Conv1dConfig { padding: 0, stride: 4, dilation: 1, groups: 1 }
 fn main() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel_core::cuda_backend::new_device(0)?;
     let x = Tensor::randn(0f32, 1.0, (1024, 64, 1924), &device)?;
     let c = Tensor::randn(0f32, 1.0, (128, 64, 8), &device)?;
     let _x1 = x.conv1d(&c, 0, 4, 1, 1)?;
