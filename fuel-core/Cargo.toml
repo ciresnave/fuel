@@ -28,7 +28,7 @@ serde_json = { workspace = true }
 fuel-cuda-kernels = { workspace = true, optional = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph-vulkan = { workspace = true, optional = true }
-fuel-metal = { workspace = true, optional = true }
+fuel-metal-backend = { workspace = true, optional = true }
 fuel-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
@@ -126,7 +126,7 @@ accelerate = ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate"]
 # Apple Metal GPU backend (macOS 13+, Apple Silicon or AMD GPU on Intel Mac).
 # Use: cargo build --features metal
 metal = [
-    "dep:fuel-metal",
+    "dep:fuel-metal-backend",
     "dep:objc2-metal",
     "dep:objc2-foundation",
     "dep:fuel-metal-kernels",
@@ -139,10 +139,10 @@ metal = [
 vulkan = ["dep:fuel-graph-vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
-# Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal so the
+# Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available
 # whenever `cuda`/`metal` is also enabled.
-ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-cuda-backend?/ug", "fuel-metal?/ug"]
+ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
 
 [[bench]]
 name = "bench_main"

@@ -2,7 +2,7 @@
 //!
 //! `DynBackendStorage` is implemented directly on `MetalStorage`, and
 //! `DynBackendDevice` directly on `MetalDevice`. No newtype wrappers are needed:
-//! both the trait (`fuel-core-types`) and the concrete type (`fuel-metal`) live
+//! both the trait (`fuel-core-types`) and the concrete type (`fuel-metal-backend`) live
 //! in crates we own, so the orphan rule is satisfied.
 //!
 //! `MetalBackendStorage` and `MetalBackendDevice` are kept as type aliases so

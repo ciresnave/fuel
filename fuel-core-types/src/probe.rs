@@ -73,7 +73,7 @@ pub enum BackendId {
     Cuda,
     /// `fuel-graph-vulkan` via vulkane.
     Vulkan,
-    /// `fuel-metal` (future — not yet probe-wired).
+    /// `fuel-metal-backend` (future — not yet probe-wired).
     Metal,
     /// `fuel-mkl-cpu-backend` (Phase 7b, Intel CPU variant).
     Mkl,

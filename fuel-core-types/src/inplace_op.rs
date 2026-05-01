@@ -7,7 +7,7 @@
 //! a backward pass.
 //!
 //! These traits live here (and not in `fuel-core`) so that backend crates
-//! such as `fuel-cuda-backend` and `fuel-metal` can implement them on
+//! such as `fuel-cuda-backend` and `fuel-metal-backend` can implement them on
 //! backend-specific bridge types (e.g. `CudaUgIOp1`) without depending on
 //! `fuel-core` — that would form a cycle, since `fuel-core` already depends
 //! on the backend crates.
