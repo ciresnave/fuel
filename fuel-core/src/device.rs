@@ -309,33 +309,21 @@ impl Device {
     }
 
     /// Returns the underlying CUDA device, or an error if this is not a CUDA device.
+    #[cfg(feature = "cuda")]
     pub fn as_cuda_device(&self) -> Result<&crate::CudaDevice> {
-        #[cfg(feature = "cuda")]
-        {
-            self.inner
-                .as_any()
-                .downcast_ref::<crate::CudaDevice>()
-                .ok_or_else(|| Error::Msg("expected a cuda device".into()).bt())
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            Err(Error::NotCompiledWithCudaSupport.bt())
-        }
+        self.inner
+            .as_any()
+            .downcast_ref::<crate::CudaDevice>()
+            .ok_or_else(|| Error::Msg("expected a cuda device".into()).bt())
     }
 
     /// Returns the underlying Metal device, or an error if this is not a Metal device.
+    #[cfg(feature = "metal")]
     pub fn as_metal_device(&self) -> Result<&crate::MetalDevice> {
-        #[cfg(feature = "metal")]
-        {
-            self.inner
-                .as_any()
-                .downcast_ref::<crate::MetalDevice>()
-                .ok_or_else(|| Error::Msg("expected a metal device".into()).bt())
-        }
-        #[cfg(not(feature = "metal"))]
-        {
-            Err(Error::NotCompiledWithMetalSupport.bt())
-        }
+        self.inner
+            .as_any()
+            .downcast_ref::<crate::MetalDevice>()
+            .ok_or_else(|| Error::Msg("expected a metal device".into()).bt())
     }
 
     /// Creates a new CUDA device with a dedicated stream.

@@ -65,9 +65,7 @@ mod device;
 pub mod display;
 pub mod dyn_backend;
 mod dtype;
-pub mod dummy_cuda_backend;
 pub mod dummy_dtype;
-mod dummy_metal_backend;
 pub mod error;
 mod indexer;
 pub mod kv_cache;
@@ -139,18 +137,13 @@ pub use variable::Var;
 pub use cuda_backend as cuda;
 
 #[cfg(feature = "cuda")]
+pub use cuda_backend::{CudaDevice, CudaStorage};
+
+#[cfg(feature = "cuda")]
 pub use fuel_graph_cuda::builder_arg;
-
-#[cfg(not(feature = "cuda"))]
-pub use dummy_cuda_backend as cuda;
-
-pub use cuda::{CudaDevice, CudaStorage};
 
 #[cfg(feature = "metal")]
 pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
-
-#[cfg(not(feature = "metal"))]
-pub use dummy_metal_backend::{MetalDevice, MetalError, MetalStorage};
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;

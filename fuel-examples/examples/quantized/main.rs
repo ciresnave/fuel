@@ -442,7 +442,9 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "cuda")]
     fuel::quantized::cuda::set_force_dmmv(args.force_dmmv);
 
+    #[cfg(feature = "cuda")]
     fuel::cuda::set_gemm_reduced_precision_f16(true);
+    #[cfg(feature = "cuda")]
     fuel::cuda::set_gemm_reduced_precision_bf16(true);
 
     let _guard = if args.tracing {
