@@ -25,7 +25,6 @@ impl BenchDevice for Device {
             Device::Cuda(device) => {
                 #[cfg(feature = "cuda")]
                 {
-                    use fuel_core::backend::BackendDevice;
                     return Ok(device.synchronize()?);
                 }
                 #[cfg(not(feature = "cuda"))]

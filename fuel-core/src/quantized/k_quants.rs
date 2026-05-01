@@ -2388,7 +2388,7 @@ impl GgmlType for f32 {
         debug_assert!(xs.len() >= n, "size mismatch xs {} < {n}", xs.len());
         debug_assert!(ys.len() >= n, "size mismatch ys {} < {n}", ys.len());
         let mut res = 0f32;
-        unsafe { crate::cpu::vec_dot_f32(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
+        unsafe { fuel_core_types::cpu::vec_dot_f32(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
         res
     }
 
@@ -2433,7 +2433,7 @@ impl GgmlType for f16 {
         debug_assert!(xs.len() >= n, "size mismatch xs {} < {n}", xs.len());
         debug_assert!(ys.len() >= n, "size mismatch ys {} < {n}", ys.len());
         let mut res = 0f32;
-        unsafe { crate::cpu::vec_dot_f16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
+        unsafe { fuel_core_types::cpu::vec_dot_f16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
         res
     }
 
@@ -2478,7 +2478,7 @@ impl GgmlType for bf16 {
         debug_assert!(xs.len() >= n, "size mismatch xs {} < {n}", xs.len());
         debug_assert!(ys.len() >= n, "size mismatch ys {} < {n}", ys.len());
         let mut res = 0f32;
-        unsafe { crate::cpu::vec_dot_bf16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
+        unsafe { fuel_core_types::cpu::vec_dot_bf16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
         res
     }
 

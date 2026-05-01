@@ -99,20 +99,25 @@ where
     T: WithDType + Sum + num_traits::real::Real,
 {
     // Inline CPU slice extraction for q, k, v, and optional mask
+    fn cpu_buf<'a>(s: &'a fuel::Storage) -> Result<&'a fuel::HostBuffer> {
+        s.downcast_ref::<fuel_cpu_backend::CpuStorage>()
+            .map(|s| &s.0)
+            .ok_or_else(|| fuel::Error::Msg("expected cpu storage".into()).bt())
+    }
     let (q_guard, q_layout) = q.storage_and_layout();
-    let q_cpu = q_guard.as_cpu_storage()?;
+    let q_cpu = cpu_buf(&q_guard)?;
     let q_data: &[T] = {
         let data = q_cpu.as_slice::<T>()?;
         &data[q_layout.start_offset()..]
     };
     let (k_guard, k_layout) = k.storage_and_layout();
-    let k_cpu = k_guard.as_cpu_storage()?;
+    let k_cpu = cpu_buf(&k_guard)?;
     let k_data: &[T] = {
         let data = k_cpu.as_slice::<T>()?;
         &data[k_layout.start_offset()..]
     };
     let (v_guard, v_layout) = v.storage_and_layout();
-    let v_cpu = v_guard.as_cpu_storage()?;
+    let v_cpu = cpu_buf(&v_guard)?;
     let v_data: &[T] = {
         let data = v_cpu.as_slice::<T>()?;
         &data[v_layout.start_offset()..]
@@ -120,7 +125,7 @@ where
     let mask_guard = mask.map(|mask| mask.storage_and_layout().0);
     let mask_data: Option<&[T]> = if let Some(mask_guard) = &mask_guard {
         let mask = mask.as_ref().unwrap();
-        let cpu = mask_guard.as_cpu_storage()?;
+        let cpu = cpu_buf(mask_guard)?;
         let data = cpu.as_slice::<T>()?;
         Some(&data[mask.layout().start_offset()..])
     } else {

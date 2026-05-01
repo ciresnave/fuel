@@ -7,7 +7,7 @@ use crate::utils::{
     Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, binary_map_vec, unary_map, unary_map_vec,
 };
 use fuel_core_types::op::{BinaryOpT, CmpOp, UnaryOpT};
-use fuel_core_types::{CpuStorage, DType, Error, IntDType, Layout, Result, Shape, WithDType};
+use fuel_core_types::{HostBuffer, DType, Error, IntDType, Layout, Result, Shape, WithDType};
 use rayon::prelude::*;
 
 /// Get the number of threads to use for parallelism.
@@ -163,12 +163,12 @@ impl ReduceIndex {
 
 impl Map1Any for ReduceIndex {
     #[inline(always)]
-    fn f<T: WithDType, W: Fn(Vec<T>) -> CpuStorage>(
+    fn f<T: WithDType, W: Fn(Vec<T>) -> HostBuffer>(
         &self,
         src: &[T],
         src_l: &Layout,
         wrap: W,
-    ) -> Result<CpuStorage> {
+    ) -> Result<HostBuffer> {
         if src_l.shape().elem_count() == 0 {
             Err(Error::EmptyTensor { op: "reduce" }.bt())?
         }
@@ -176,10 +176,10 @@ impl Map1Any for ReduceIndex {
             (false, true) => wrap(self.fold_impl(src, src_l, |x, y| x > y, |v, _i| v)?),
             (false, false) => wrap(self.fold_impl(src, src_l, |x, y| x < y, |v, _i| v)?),
             (true, true) => {
-                CpuStorage::U32(self.fold_impl(src, src_l, |x, y| x > y, |_v, i| i as u32)?)
+                HostBuffer::U32(self.fold_impl(src, src_l, |x, y| x > y, |_v, i| i as u32)?)
             }
             (true, false) => {
-                CpuStorage::U32(self.fold_impl(src, src_l, |x, y| x < y, |_v, i| i as u32)?)
+                HostBuffer::U32(self.fold_impl(src, src_l, |x, y| x < y, |_v, i| i as u32)?)
             }
         };
         Ok(dst)
@@ -1767,101 +1767,101 @@ pub fn elu<T: num_traits::Float>(v: T, alpha: T) -> T {
 }
 
 // ---------------------------------------------------------------------------
-// Generic unary/binary dispatch over CpuStorage
+// Generic unary/binary dispatch over HostBuffer
 // ---------------------------------------------------------------------------
 // These functions centralise the per-dtype method selection from UnaryOpT /
 // BinaryOpT so that callers only need a single call instead of a 14-arm match.
 
-/// Apply a [`UnaryOpT`] element-wise to a [`CpuStorage`] buffer, respecting
+/// Apply a [`UnaryOpT`] element-wise to a [`HostBuffer`] buffer, respecting
 /// the given [`Layout`].  Vectorised code-paths are used when the operator
 /// advertises them (`B::F32_VEC`, etc.).
-pub fn unary_dispatch<B: UnaryOpT>(storage: &CpuStorage, layout: &Layout) -> Result<CpuStorage> {
+pub fn unary_dispatch<B: UnaryOpT>(storage: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match storage {
-        CpuStorage::BF16(s) => Ok(CpuStorage::BF16(if B::BF16_VEC {
+        HostBuffer::BF16(s) => Ok(HostBuffer::BF16(if B::BF16_VEC {
             unary_map_vec(s, layout, B::bf16, B::bf16_vec)
         } else {
             unary_map(s, layout, B::bf16)
         })),
-        CpuStorage::F16(s) => Ok(CpuStorage::F16(if B::F16_VEC {
+        HostBuffer::F16(s) => Ok(HostBuffer::F16(if B::F16_VEC {
             unary_map_vec(s, layout, B::f16, B::f16_vec)
         } else {
             unary_map(s, layout, B::f16)
         })),
-        CpuStorage::F32(s) => Ok(CpuStorage::F32(if B::F32_VEC {
+        HostBuffer::F32(s) => Ok(HostBuffer::F32(if B::F32_VEC {
             unary_map_vec(s, layout, B::f32, B::f32_vec)
         } else {
             unary_map(s, layout, B::f32)
         })),
-        CpuStorage::F64(s) => Ok(CpuStorage::F64(if B::F64_VEC {
+        HostBuffer::F64(s) => Ok(HostBuffer::F64(if B::F64_VEC {
             unary_map_vec(s, layout, B::f64, B::f64_vec)
         } else {
             unary_map(s, layout, B::f64)
         })),
-        CpuStorage::U8(s) => Ok(CpuStorage::U8(unary_map(s, layout, B::u8))),
-        CpuStorage::U32(s) => Ok(CpuStorage::U32(unary_map(s, layout, B::u32))),
-        CpuStorage::I16(s) => Ok(CpuStorage::I16(unary_map(s, layout, B::i16))),
-        CpuStorage::I32(s) => Ok(CpuStorage::I32(unary_map(s, layout, B::i32))),
-        CpuStorage::I64(s) => Ok(CpuStorage::I64(unary_map(s, layout, B::i64))),
-        CpuStorage::F8E4M3(s) => Ok(CpuStorage::F8E4M3(unary_map(s, layout, B::f8e4m3))),
-        CpuStorage::F6E2M3(_) => Err(Error::UnsupportedDTypeForOp(DType::F6E2M3, "unary").bt()),
-        CpuStorage::F6E3M2(_) => Err(Error::UnsupportedDTypeForOp(DType::F6E3M2, "unary").bt()),
-        CpuStorage::F4(_) => Err(Error::UnsupportedDTypeForOp(DType::F4, "unary").bt()),
-        CpuStorage::F8E8M0(_) => Err(Error::UnsupportedDTypeForOp(DType::F8E8M0, "unary").bt()),
+        HostBuffer::U8(s) => Ok(HostBuffer::U8(unary_map(s, layout, B::u8))),
+        HostBuffer::U32(s) => Ok(HostBuffer::U32(unary_map(s, layout, B::u32))),
+        HostBuffer::I16(s) => Ok(HostBuffer::I16(unary_map(s, layout, B::i16))),
+        HostBuffer::I32(s) => Ok(HostBuffer::I32(unary_map(s, layout, B::i32))),
+        HostBuffer::I64(s) => Ok(HostBuffer::I64(unary_map(s, layout, B::i64))),
+        HostBuffer::F8E4M3(s) => Ok(HostBuffer::F8E4M3(unary_map(s, layout, B::f8e4m3))),
+        HostBuffer::F6E2M3(_) => Err(Error::UnsupportedDTypeForOp(DType::F6E2M3, "unary").bt()),
+        HostBuffer::F6E3M2(_) => Err(Error::UnsupportedDTypeForOp(DType::F6E3M2, "unary").bt()),
+        HostBuffer::F4(_) => Err(Error::UnsupportedDTypeForOp(DType::F4, "unary").bt()),
+        HostBuffer::F8E8M0(_) => Err(Error::UnsupportedDTypeForOp(DType::F8E8M0, "unary").bt()),
     }
 }
 
-/// Apply a [`BinaryOpT`] element-wise to two [`CpuStorage`] buffers.
+/// Apply a [`BinaryOpT`] element-wise to two [`HostBuffer`] buffers.
 /// Both buffers must have the same dtype; returns [`Error::DTypeMismatchBinaryOp`]
 /// otherwise.  Vectorised code-paths are used when advertised.
 pub fn binary_dispatch<B: BinaryOpT>(
-    lhs: &CpuStorage,
-    rhs: &CpuStorage,
+    lhs: &HostBuffer,
+    rhs: &HostBuffer,
     lhs_l: &Layout,
     rhs_l: &Layout,
-) -> Result<CpuStorage> {
+) -> Result<HostBuffer> {
     match (lhs, rhs) {
-        (CpuStorage::BF16(l), CpuStorage::BF16(r)) => Ok(CpuStorage::BF16(if B::BF16_VEC {
+        (HostBuffer::BF16(l), HostBuffer::BF16(r)) => Ok(HostBuffer::BF16(if B::BF16_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::bf16, B::bf16_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::bf16)
         })),
-        (CpuStorage::F16(l), CpuStorage::F16(r)) => Ok(CpuStorage::F16(if B::F16_VEC {
+        (HostBuffer::F16(l), HostBuffer::F16(r)) => Ok(HostBuffer::F16(if B::F16_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::f16, B::f16_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::f16)
         })),
-        (CpuStorage::F32(l), CpuStorage::F32(r)) => Ok(CpuStorage::F32(if B::F32_VEC {
+        (HostBuffer::F32(l), HostBuffer::F32(r)) => Ok(HostBuffer::F32(if B::F32_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::f32, B::f32_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::f32)
         })),
-        (CpuStorage::F64(l), CpuStorage::F64(r)) => Ok(CpuStorage::F64(if B::F64_VEC {
+        (HostBuffer::F64(l), HostBuffer::F64(r)) => Ok(HostBuffer::F64(if B::F64_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::f64, B::f64_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::f64)
         })),
-        (CpuStorage::U32(l), CpuStorage::U32(r)) => Ok(CpuStorage::U32(if B::U32_VEC {
+        (HostBuffer::U32(l), HostBuffer::U32(r)) => Ok(HostBuffer::U32(if B::U32_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::u32, B::u32_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::u32)
         })),
-        (CpuStorage::I16(l), CpuStorage::I16(r)) => {
-            Ok(CpuStorage::I16(binary_map(lhs_l, rhs_l, l, r, B::i16)))
+        (HostBuffer::I16(l), HostBuffer::I16(r)) => {
+            Ok(HostBuffer::I16(binary_map(lhs_l, rhs_l, l, r, B::i16)))
         }
-        (CpuStorage::I32(l), CpuStorage::I32(r)) => {
-            Ok(CpuStorage::I32(binary_map(lhs_l, rhs_l, l, r, B::i32)))
+        (HostBuffer::I32(l), HostBuffer::I32(r)) => {
+            Ok(HostBuffer::I32(binary_map(lhs_l, rhs_l, l, r, B::i32)))
         }
-        (CpuStorage::I64(l), CpuStorage::I64(r)) => Ok(CpuStorage::I64(if B::I64_VEC {
+        (HostBuffer::I64(l), HostBuffer::I64(r)) => Ok(HostBuffer::I64(if B::I64_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::i64, B::i64_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::i64)
         })),
-        (CpuStorage::U8(l), CpuStorage::U8(r)) => Ok(CpuStorage::U8(if B::U8_VEC {
+        (HostBuffer::U8(l), HostBuffer::U8(r)) => Ok(HostBuffer::U8(if B::U8_VEC {
             binary_map_vec(lhs_l, rhs_l, l, r, B::u8, B::u8_vec)
         } else {
             binary_map(lhs_l, rhs_l, l, r, B::u8)
         })),
-        (CpuStorage::F8E4M3(l), CpuStorage::F8E4M3(r)) => Ok(CpuStorage::F8E4M3(binary_map(
+        (HostBuffer::F8E4M3(l), HostBuffer::F8E4M3(r)) => Ok(HostBuffer::F8E4M3(binary_map(
             lhs_l,
             rhs_l,
             l,

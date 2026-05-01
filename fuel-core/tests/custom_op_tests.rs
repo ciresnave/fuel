@@ -10,8 +10,8 @@
 
 use fuel_core::dyn_backend::DynBackendStorage;
 use fuel_core::test_utils::to_vec1_round;
-use fuel_core::{CpuStorage, CustomOp1, DType, Device, Error, InplaceOp1, Layout, Result, Shape, Tensor};
-use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
+use fuel_core::{HostBuffer, CustomOp1, DType, Device, Error, InplaceOp1, Layout, Result, Shape, Tensor};
+use fuel_cpu_backend::dyn_impl::CpuStorage as CpuBackendStorage;
 
 fn fwd<T: num_traits::Float>(v: T, alpha: f64) -> T {
     if v.is_sign_positive() {
@@ -42,19 +42,19 @@ impl CustomOp1 for Elu {
             .ok_or_else(|| Error::Msg(format!("{}: CPU storage required", CustomOp1::name(self))).bt())?;
         let alpha = self.alpha;
         let out = match &cpu.0 {
-            CpuStorage::F8E4M3(s) => CpuStorage::F8E4M3(
+            HostBuffer::F8E4M3(s) => HostBuffer::F8E4M3(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
             ),
-            CpuStorage::BF16(s) => CpuStorage::BF16(
+            HostBuffer::BF16(s) => HostBuffer::BF16(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
             ),
-            CpuStorage::F16(s) => CpuStorage::F16(
+            HostBuffer::F16(s) => HostBuffer::F16(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
             ),
-            CpuStorage::F32(s) => CpuStorage::F32(
+            HostBuffer::F32(s) => HostBuffer::F32(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
             ),
-            CpuStorage::F64(s) => CpuStorage::F64(
+            HostBuffer::F64(s) => HostBuffer::F64(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| fwd(v, alpha)),
             ),
             s => return Err(Error::UnsupportedDTypeForOp(s.dtype(), CustomOp1::name(self)).bt()),
@@ -108,19 +108,19 @@ impl CustomOp1 for EluBackward {
             .ok_or_else(|| Error::Msg(format!("{}: CPU storage required", self.name())).bt())?;
         let alpha = self.alpha;
         let out = match &cpu.0 {
-            CpuStorage::F8E4M3(s) => CpuStorage::F8E4M3(
+            HostBuffer::F8E4M3(s) => HostBuffer::F8E4M3(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
             ),
-            CpuStorage::BF16(s) => CpuStorage::BF16(
+            HostBuffer::BF16(s) => HostBuffer::BF16(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
             ),
-            CpuStorage::F16(s) => CpuStorage::F16(
+            HostBuffer::F16(s) => HostBuffer::F16(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
             ),
-            CpuStorage::F32(s) => CpuStorage::F32(
+            HostBuffer::F32(s) => HostBuffer::F32(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
             ),
-            CpuStorage::F64(s) => CpuStorage::F64(
+            HostBuffer::F64(s) => HostBuffer::F64(
                 fuel_cpu_backend::utils::unary_map(s, layout, |v| bwd(v, alpha)),
             ),
             s => return Err(Error::UnsupportedDTypeForOp(s.dtype(), self.name()).bt()),
@@ -183,11 +183,11 @@ impl InplaceOp1 for Elu {
             .ok_or_else(|| Error::Msg(format!("{}: CPU storage required", <Self as InplaceOp1>::name(self))).bt())?;
         let alpha = self.alpha;
         match &mut cpu.0 {
-            CpuStorage::F8E4M3(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
-            CpuStorage::BF16(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
-            CpuStorage::F16(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
-            CpuStorage::F32(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
-            CpuStorage::F64(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
+            HostBuffer::F8E4M3(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
+            HostBuffer::BF16(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
+            HostBuffer::F16(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
+            HostBuffer::F32(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
+            HostBuffer::F64(s) => s.iter_mut().for_each(|v| *v = fwd(*v, alpha)),
             s => fuel_core::bail!("unsupported dtype {:?} for inplace elu", s.dtype()),
         }
         Ok(())

@@ -1,4 +1,4 @@
-﻿use crate::{CpuStorage, DType, Device, Result, Shape, Storage, Tensor, D};
+﻿use crate::{HostBuffer, DType, Device, Result, Shape, Storage, Tensor, D};
 use k_quants::*;
 use std::borrow::Cow;
 
@@ -36,6 +36,29 @@ pub mod utils;
 use half::{bf16, f16};
 
 pub use k_quants::GgmlType;
+
+// ---------------------------------------------------------------------------
+// Internal downcast helpers (replace the deleted public Storage::as_*_storage
+// accessors). These are file-local; quantized/mod.rs is the only legacy
+// fuel-core consumer that still needs to peel back to concrete backend
+// storage types.
+// ---------------------------------------------------------------------------
+
+fn as_cpu(s: &Storage) -> Result<&HostBuffer> {
+    s.downcast_ref::<fuel_cpu_backend::CpuStorage>()
+        .map(|s| &s.0)
+        .ok_or_else(|| crate::Error::Msg("expected cpu storage".into()).bt())
+}
+
+#[cfg(feature = "cuda")]
+fn as_cuda(s: &Storage) -> Option<&crate::CudaStorage> {
+    s.downcast_ref::<crate::CudaStorage>()
+}
+
+#[cfg(feature = "metal")]
+fn as_metal(s: &Storage) -> Option<&crate::MetalStorage> {
+    s.downcast_ref::<crate::MetalStorage>()
+}
 
 fn as_t_slice<T>(data: Cow<'_, [u8]>) -> &[T] {
     let size = std::mem::size_of::<T>();
@@ -181,13 +204,13 @@ impl QStorage {
     fn quantize(&mut self, src: &Storage) -> Result<()> {
         match self {
             QStorage::Cpu(storage) => {
-                let src = src.as_cpu_storage()?;
+                let src = as_cpu(src)?;
                 storage.from_float(src.as_slice::<f32>()?);
             }
             QStorage::Metal(storage) => {
                 #[cfg(feature = "metal")]
                 {
-                    let metal_src = src.as_metal_storage()
+                    let metal_src = as_metal(src)
                         .ok_or_else(|| crate::Error::Msg("quantize: expected metal storage".into()))?;
                     storage.quantize(metal_src)?;
                 }
@@ -197,7 +220,7 @@ impl QStorage {
             QStorage::Cuda(storage) => {
                 #[cfg(feature = "cuda")]
                 {
-                    let cuda_src = src.as_cuda_storage()
+                    let cuda_src = as_cuda(src)
                         .ok_or_else(|| crate::Error::Msg("quantize: expected cuda storage".into()))?;
                     storage.quantize(cuda_src)?;
                 }
@@ -216,13 +239,13 @@ impl QStorage {
     ) -> Result<()> {
         match self {
             QStorage::Cpu(storage) => {
-                let src = src.as_cpu_storage()?;
+                let src = as_cpu(src)?;
                 storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
             }
             QStorage::Metal(storage) => {
                 #[cfg(feature = "metal")]
                 {
-                    let metal_src = src.as_metal_storage()
+                    let metal_src = as_metal(src)
                         .ok_or_else(|| crate::Error::Msg("quantize_imatrix: expected metal storage".into()))?;
                     storage.quantize_imatrix(metal_src, imatrix_weights, n_per_row)?;
                 }
@@ -232,7 +255,7 @@ impl QStorage {
             QStorage::Cuda(storage) => {
                 #[cfg(feature = "cuda")]
                 {
-                    let cuda_src = src.as_cuda_storage()
+                    let cuda_src = as_cuda(src)
                         .ok_or_else(|| crate::Error::Msg("quantize_imatrix: expected cuda storage".into()))?;
                     storage.quantize_imatrix(cuda_src, imatrix_weights, n_per_row)?;
                 }
@@ -244,7 +267,7 @@ impl QStorage {
     }
 
     fn quantize_onto(&mut self, src: &Storage) -> Result<()> {
-        let cpu_src = src.as_cpu_storage()?;
+        let cpu_src = as_cpu(src)?;
         match self {
             QStorage::Cpu(storage) => {
                 storage.from_float(cpu_src.as_slice::<f32>()?);
@@ -271,7 +294,7 @@ impl QStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        let cpu_src = src.as_cpu_storage()?;
+        let cpu_src = as_cpu(src)?;
         match self {
             QStorage::Cpu(storage) => {
                 storage.from_float_imatrix(cpu_src.as_slice::<f32>()?, imatrix_weights, n_per_row);
@@ -294,16 +317,16 @@ impl QStorage {
 
     fn dequantize(&self, elem_count: usize) -> Result<Storage> {
         match self {
-            QStorage::Cpu(storage) => Ok(Storage::from_cpu(storage.dequantize(elem_count)?)),
+            QStorage::Cpu(storage) => Ok(Storage::new(fuel_cpu_backend::CpuStorage(storage.dequantize(elem_count)?))),
             QStorage::Metal(storage) => {
                 #[cfg(feature = "metal")]
-                { Ok(Storage::from_metal(storage.dequantize(elem_count)?)) }
+                { Ok(Storage::new(storage.dequantize(elem_count)?)) }
                 #[cfg(not(feature = "metal"))]
                 { let _ = (storage, elem_count); unreachable!() }
             }
             QStorage::Cuda(storage) => {
                 #[cfg(feature = "cuda")]
-                { Ok(Storage::from_cuda(storage.dequantize(elem_count)?)) }
+                { Ok(Storage::new(storage.dequantize(elem_count)?)) }
                 #[cfg(not(feature = "cuda"))]
                 { let _ = (storage, elem_count); unreachable!() }
             }
@@ -481,7 +504,7 @@ pub trait QuantizedType: Send + Sync {
     fn dtype(&self) -> GgmlDType;
     fn matmul_t(&self, mkn: (usize, usize, usize), lhs: &[f32], dst: &mut [f32]) -> Result<()>;
     fn matmul_t_f16(&self, mkn: (usize, usize, usize), lhs: &[f16], dst: &mut [f16]) -> Result<()>;
-    fn dequantize(&self, elem_count: usize) -> Result<CpuStorage>;
+    fn dequantize(&self, elem_count: usize) -> Result<HostBuffer>;
     fn storage_size_in_bytes(&self) -> usize;
     fn as_ptr(&self) -> *const u8;
     fn block_size(&self) -> usize;
@@ -520,10 +543,10 @@ impl<T: k_quants::GgmlType + Send + Sync> QuantizedType for Vec<T> {
         T::BLCK_SIZE
     }
 
-    fn dequantize(&self, elem_count: usize) -> Result<CpuStorage> {
+    fn dequantize(&self, elem_count: usize) -> Result<HostBuffer> {
         let mut ys = vec![0.0f32; elem_count];
         T::to_float(self.as_slice(), &mut ys);
-        Ok(CpuStorage::F32(ys))
+        Ok(HostBuffer::F32(ys))
     }
 
     fn storage_size_in_bytes(&self) -> usize {
@@ -720,7 +743,7 @@ impl QTensor {
                 #[cfg(feature = "cuda")]
                 {
                     crate::tensor::from_storage(
-                        Storage::from_cuda(s),
+                        Storage::new(s),
                         self.shape.clone(),
                         none,
                         false,
@@ -755,9 +778,9 @@ impl QTensor {
                 {
                     let x_guard = x.storage();
                     let ids_guard = ids.storage();
-                    let x_storage = x_guard.as_cuda_storage()
+                    let x_storage = as_cuda(&*x_guard)
                         .ok_or_else(|| crate::Error::Msg("indexed_moe_forward: x must be on CUDA".into()))?;
-                    let ids_storage = ids_guard.as_cuda_storage()
+                    let ids_storage = as_cuda(&*ids_guard)
                         .ok_or_else(|| crate::Error::Msg("indexed_moe_forward: ids must be on CUDA".into()))?;
                     let (storage, out_shape) = s.indexed_moe_forward(
                         self.shape(),
@@ -767,7 +790,7 @@ impl QTensor {
                         ids.layout(),
                     )?;
                     Ok(crate::tensor::from_storage(
-                        Storage::from_cuda(storage),
+                        Storage::new(storage),
                         out_shape,
                         crate::op::BackpropOp::none(),
                         false,
@@ -887,7 +910,7 @@ impl crate::CustomOp1 for QTensor {
     ) -> Result<(Box<dyn crate::dyn_backend::DynBackendStorage>, Shape)> {
         if let Some(cpu) = storage
             .as_any()
-            .downcast_ref::<fuel_cpu_backend::dyn_impl::CpuBackendStorage>()
+            .downcast_ref::<fuel_cpu_backend::dyn_impl::CpuStorage>()
         {
             let storage = &cpu.0;
             if !layout.is_contiguous() {
@@ -922,7 +945,7 @@ impl crate::CustomOp1 for QTensor {
                         slice,
                         &mut dst_storage,
                     )?;
-                    crate::CpuStorage::F32(dst_storage)
+                    crate::HostBuffer::F32(dst_storage)
                 }
                 DType::F16 => {
                     let slice = storage.as_slice::<f16>()?;
@@ -934,12 +957,12 @@ impl crate::CustomOp1 for QTensor {
                         slice,
                         &mut dst_storage,
                     )?;
-                    crate::CpuStorage::F16(dst_storage)
+                    crate::HostBuffer::F16(dst_storage)
                 }
                 _ => crate::bail!("Expected f32/f16"),
             };
             return Ok((
-                Box::new(fuel_cpu_backend::dyn_impl::CpuBackendStorage(out)),
+                Box::new(fuel_cpu_backend::dyn_impl::CpuStorage(out)),
                 dst_shape,
             ));
         }
@@ -947,27 +970,27 @@ impl crate::CustomOp1 for QTensor {
         #[cfg(feature = "metal")]
         if let Some(metal) = storage
             .as_any()
-            .downcast_ref::<fuel_metal::MetalBackendStorage>()
+            .downcast_ref::<fuel_metal::MetalStorage>()
         {
             let self_storage = match &self.storage {
                 QStorage::Metal(metal) => metal,
                 _ => unreachable!("Cannot call metal matmul on non metal QTensor"),
             };
-            let (dst, shape) = self_storage.fwd(&self.shape, metal.inner(), layout)?;
-            return Ok((Box::new(fuel_metal::MetalBackendStorage::new(dst)), shape));
+            let (dst, shape) = self_storage.fwd(&self.shape, metal, layout)?;
+            return Ok((Box::new(dst), shape));
         }
 
         #[cfg(feature = "cuda")]
         if let Some(cuda) = storage
             .as_any()
-            .downcast_ref::<fuel_graph_cuda::CudaBackendStorage>()
+            .downcast_ref::<fuel_graph_cuda::CudaStorage>()
         {
             let self_storage = match &self.storage {
                 QStorage::Cuda(cuda) => cuda,
                 _ => unreachable!("Cannot call cuda matmul on non cuda QTensor"),
             };
-            let (dst, shape) = self_storage.fwd(&self.shape, cuda.inner(), layout)?;
-            return Ok((Box::new(fuel_graph_cuda::CudaBackendStorage::new(dst)), shape));
+            let (dst, shape) = self_storage.fwd(&self.shape, cuda, layout)?;
+            return Ok((Box::new(dst), shape));
         }
 
         crate::bail!("qmatmul: unsupported backend")

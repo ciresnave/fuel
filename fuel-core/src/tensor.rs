@@ -1355,7 +1355,7 @@ impl Tensor {
             }
             .bt())?
         }
-        let from_cpu_storage = |cpu_storage: &crate::CpuStorage| {
+        let from_cpu_storage = |cpu_storage: &crate::HostBuffer| {
             let data = S::cpu_storage_as_slice(cpu_storage)?;
             Ok::<_, Error>(data[self.layout().start_offset()])
         };
@@ -3181,7 +3181,7 @@ impl Tensor {
             }
             .bt())?
         }
-        let from_cpu_storage = |cpu_storage: &crate::CpuStorage| {
+        let from_cpu_storage = |cpu_storage: &crate::HostBuffer| {
             let data = S::cpu_storage_as_slice(cpu_storage)?;
             let data = match self.layout.contiguous_offsets() {
                 Some((o1, o2)) => data[o1..o2].to_vec(),
@@ -3207,7 +3207,7 @@ impl Tensor {
     /// ```
     pub fn to_vec2<S: crate::WithDType>(&self) -> Result<Vec<Vec<S>>> {
         let (dim1, dim2) = self.dims2()?;
-        let from_cpu_storage = |cpu_storage: &crate::CpuStorage| {
+        let from_cpu_storage = |cpu_storage: &crate::HostBuffer| {
             let data = S::cpu_storage_as_slice(cpu_storage)?;
             let mut rows = vec![];
             match self.layout.contiguous_offsets() {
@@ -3249,7 +3249,7 @@ impl Tensor {
     /// ```
     pub fn to_vec3<S: crate::WithDType>(&self) -> Result<Vec<Vec<Vec<S>>>> {
         let (dim1, dim2, dim3) = self.dims3()?;
-        let from_cpu_storage = |cpu_storage: &crate::CpuStorage| {
+        let from_cpu_storage = |cpu_storage: &crate::HostBuffer| {
             let data = S::cpu_storage_as_slice(cpu_storage)?;
             let mut top_rows = vec![];
             match self.layout.contiguous_offsets() {

@@ -57,7 +57,6 @@ pub mod backend;
 pub mod backprop;
 pub mod conv;
 mod convert;
-pub mod cpu;
 pub mod cpu_backend;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
@@ -118,7 +117,7 @@ mod variable;
 #[cfg(feature = "cudnn")]
 pub use cuda_backend::cudnn;
 
-pub use cpu_backend::{CpuStorage, CpuStorageRef};
+pub use cpu_backend::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 #[cfg(feature = "ug")]
 pub use custom_op::UgIOp1;
 pub use custom_op::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};

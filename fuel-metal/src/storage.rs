@@ -4,7 +4,7 @@ use fuel_core_types::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
 use fuel_core_types::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use fuel_core_types::{CpuStorage, CpuStorageRef, DType, Error, Layout, Result, Shape};
+use fuel_core_types::{HostBuffer, HostBufferRef, DType, Error, Layout, Result, Shape};
 use fuel_metal_kernels::{
     BufferOffset, CallConvTranspose2dCfg, Kernels, RESOURCE_OPTIONS,
     metal::{Buffer, Commands, Device},
@@ -101,18 +101,18 @@ impl MetalStorage {
         &self.device
     }
 
-    pub fn to_cpu_storage(&self) -> Result<CpuStorage> {
+    pub fn to_cpu_storage(&self) -> Result<HostBuffer> {
         match self.dtype {
-            DType::U8 => Ok(CpuStorage::U8(self.to_cpu()?)),
-            DType::U32 => Ok(CpuStorage::U32(self.to_cpu()?)),
-            DType::I16 => Ok(CpuStorage::I16(self.to_cpu()?)),
-            DType::I32 => Ok(CpuStorage::I32(self.to_cpu()?)),
-            DType::I64 => Ok(CpuStorage::I64(self.to_cpu()?)),
-            DType::F16 => Ok(CpuStorage::F16(self.to_cpu()?)),
-            DType::BF16 => Ok(CpuStorage::BF16(self.to_cpu()?)),
-            DType::F32 => Ok(CpuStorage::F32(self.to_cpu()?)),
-            DType::F64 => Ok(CpuStorage::F64(self.to_cpu()?)),
-            DType::F8E4M3 => Ok(CpuStorage::F8E4M3(self.to_cpu()?)),
+            DType::U8 => Ok(HostBuffer::U8(self.to_cpu()?)),
+            DType::U32 => Ok(HostBuffer::U32(self.to_cpu()?)),
+            DType::I16 => Ok(HostBuffer::I16(self.to_cpu()?)),
+            DType::I32 => Ok(HostBuffer::I32(self.to_cpu()?)),
+            DType::I64 => Ok(HostBuffer::I64(self.to_cpu()?)),
+            DType::F16 => Ok(HostBuffer::F16(self.to_cpu()?)),
+            DType::BF16 => Ok(HostBuffer::BF16(self.to_cpu()?)),
+            DType::F32 => Ok(HostBuffer::F32(self.to_cpu()?)),
+            DType::F64 => Ok(HostBuffer::F64(self.to_cpu()?)),
+            DType::F8E4M3 => Ok(HostBuffer::F8E4M3(self.to_cpu()?)),
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => Err(
                 fuel_core_types::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt(),
             ),
@@ -2033,42 +2033,42 @@ impl MetalDevice {
         s: &[T],
     ) -> Result<MetalStorage> {
         let (count, buffer) = match T::cpu_storage_ref(s) {
-            CpuStorageRef::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::I16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::I32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::F8E4M3(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorageRef::F6E2M3(_)
-            | CpuStorageRef::F6E3M2(_)
-            | CpuStorageRef::F4(_)
-            | CpuStorageRef::F8E8M0(_) => {
+            HostBufferRef::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::I16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::I32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::F8E4M3(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBufferRef::F6E2M3(_)
+            | HostBufferRef::F6E3M2(_)
+            | HostBufferRef::F4(_)
+            | HostBufferRef::F8E8M0(_) => {
                 return Err(Error::UnsupportedDTypeForOp(T::DTYPE, "to_dtype").bt());
             }
         };
         Ok(MetalStorage::new(buffer?, self.clone(), count, T::DTYPE))
     }
 
-    pub fn storage_from_cpu_storage(&self, storage: &CpuStorage) -> Result<MetalStorage> {
+    pub fn storage_from_cpu_storage(&self, storage: &HostBuffer) -> Result<MetalStorage> {
         let (count, buffer) = match storage {
-            CpuStorage::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::I16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::I32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F8E4M3(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F6E2M3(_)
-            | CpuStorage::F6E3M2(_)
-            | CpuStorage::F4(_)
-            | CpuStorage::F8E8M0(_) => {
+            HostBuffer::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::I16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::I32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::F8E4M3(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            HostBuffer::F6E2M3(_)
+            | HostBuffer::F6E3M2(_)
+            | HostBuffer::F4(_)
+            | HostBuffer::F8E8M0(_) => {
                 return Err(Error::UnsupportedDTypeForOp(storage.dtype(), "to_dtype").bt());
             }
         };
@@ -2080,7 +2080,7 @@ impl MetalDevice {
         ))
     }
 
-    pub fn storage_from_cpu_storage_owned(&self, storage: CpuStorage) -> Result<MetalStorage> {
+    pub fn storage_from_cpu_storage_owned(&self, storage: HostBuffer) -> Result<MetalStorage> {
         self.storage_from_cpu_storage(&storage)
     }
 

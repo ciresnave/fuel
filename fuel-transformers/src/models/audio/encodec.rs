@@ -304,7 +304,7 @@ impl fuel::CustomOp2 for CodebookEncode {
                 where_min as u32
             })
             .collect();
-        let storage = fuel::CpuStorage::U32(dst);
+        let storage = fuel::HostBuffer::U32(dst);
         Ok((Box::new(CpuBackendStorage::from(storage)), (lhs_dim1,).into()))
     }
 }

@@ -1,8 +1,6 @@
-﻿use fuel::backend::BackendStorage;
 use fuel::dyn_backend::DynBackendStorage;
 use fuel::{CustomOp1, DType, Device, IndexOp, Layout, Result, Shape, Tensor, D};
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
-use fuel_graph_cuda::CudaBackendStorage;
 use fuel_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use fuel_nn::{Embedding, Linear, Module, RmsNorm};
 use baracuda_nccl::{Communicator as Comm, RedOp};
@@ -56,11 +54,10 @@ impl CustomOp1 for AllReduce {
 
         #[cfg(feature = "cuda")]
         {
-            let cuda = storage
+            let s = storage
                 .as_any()
-                .downcast_ref::<CudaBackendStorage>()
+                .downcast_ref::<fuel::CudaStorage>()
                 .ok_or_else(|| fuel::Error::Msg("AllReduce requires CUDA storage".into()).bt())?;
-            let s = cuda.inner();
             use half::{bf16, f16};
 
             let elem_count = l.shape().elem_count();
@@ -122,7 +119,7 @@ impl CustomOp1 for AllReduce {
                 }
                 dtype => fuel::bail!("unsupported dtype {dtype:?}"),
             };
-            return Ok((Box::new(CudaBackendStorage::new(dst)), l.shape().clone()));
+            return Ok((Box::new(dst), l.shape().clone()));
         }
 
         #[cfg(not(feature = "cuda"))]

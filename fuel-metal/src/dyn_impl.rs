@@ -1,11 +1,12 @@
-﻿//! `DynBackendStorage` and `DynBackendDevice` implementations for the Metal backend.
+//! `DynBackendStorage` and `DynBackendDevice` implementations for the Metal backend.
 //!
-//! This module defines newtype wrappers `MetalBackendStorage` and `MetalBackendDevice`
-//! that implement the object-safe `DynBackend*` traits from `fuel-core-types`.
+//! `DynBackendStorage` is implemented directly on `MetalStorage`, and
+//! `DynBackendDevice` directly on `MetalDevice`. No newtype wrappers are needed:
+//! both the trait (`fuel-core-types`) and the concrete type (`fuel-metal`) live
+//! in crates we own, so the orphan rule is satisfied.
 //!
-//! Same orphan-rule motivation as `fuel-cuda`'s `CudaBackendStorage`:
-//! both the traits and inner types live in `fuel-core-types`, so the impl must
-//! use newtypes defined in *this* crate.
+//! `MetalBackendStorage` and `MetalBackendDevice` are kept as type aliases so
+//! existing `use` statements compile unchanged.
 //!
 //! For unary/binary ops, Metal dispatch is purely kernel-name-driven. We map
 //! `UnaryOp`/`BinaryOp` enum variants to kernel name strings and call the
@@ -16,7 +17,7 @@ use fuel_core_types::conv::{
 };
 use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use fuel_core_types::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_core_types::{CpuStorage, DType, DeviceLocation, Layout, Result, Scalar, Shape};
+use fuel_core_types::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -24,77 +25,26 @@ use crate::device::MetalDevice;
 use crate::storage::MetalStorage;
 
 // ---------------------------------------------------------------------------
-// MetalBackendStorage — newtype wrapper
+// Backward-compat type aliases — downstream code can keep using these names.
 // ---------------------------------------------------------------------------
 
-/// Newtype wrapper around [`MetalStorage`] implementing [`DynBackendStorage`].
-#[derive(Debug)]
-pub struct MetalBackendStorage {
-    pub storage: MetalStorage,
-    device_wrapper: MetalBackendDevice,
-}
+/// Type alias for backward compatibility. `MetalStorage` now implements
+/// `DynBackendStorage` directly; this alias lets existing `use` statements
+/// compile unchanged.
+pub type MetalBackendStorage = MetalStorage;
 
-impl MetalBackendStorage {
-    pub fn new(storage: MetalStorage) -> Self {
-        let device_wrapper = MetalBackendDevice(storage.device().clone());
-        Self {
-            storage,
-            device_wrapper,
-        }
-    }
-
-    pub fn into_inner(self) -> MetalStorage {
-        self.storage
-    }
-
-    pub fn inner(&self) -> &MetalStorage {
-        &self.storage
-    }
-
-    pub fn inner_mut(&mut self) -> &mut MetalStorage {
-        &mut self.storage
-    }
-}
-
-impl From<MetalStorage> for MetalBackendStorage {
-    fn from(s: MetalStorage) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<MetalBackendStorage> for MetalStorage {
-    fn from(s: MetalBackendStorage) -> Self {
-        s.storage
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MetalBackendDevice — newtype wrapper
-// ---------------------------------------------------------------------------
-
-/// Newtype wrapper around [`MetalDevice`] implementing [`DynBackendDevice`].
-#[derive(Debug, Clone)]
-pub struct MetalBackendDevice(pub MetalDevice);
-
-impl From<MetalDevice> for MetalBackendDevice {
-    fn from(d: MetalDevice) -> Self {
-        Self(d)
-    }
-}
-
-impl From<MetalBackendDevice> for MetalDevice {
-    fn from(d: MetalBackendDevice) -> Self {
-        d.0
-    }
-}
+/// Type alias for backward compatibility. `MetalDevice` now implements
+/// `DynBackendDevice` directly; this alias lets existing `use` statements
+/// compile unchanged.
+pub type MetalBackendDevice = MetalDevice;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn downcast(s: &dyn DynBackendStorage) -> Result<&MetalBackendStorage> {
+fn downcast(s: &dyn DynBackendStorage) -> Result<&MetalStorage> {
     s.as_any()
-        .downcast_ref::<MetalBackendStorage>()
+        .downcast_ref::<MetalStorage>()
         .ok_or_else(|| {
             fuel_core_types::Error::DeviceMismatchBinaryOp {
                 lhs: DeviceLocation::Metal { gpu_id: 0 },
@@ -105,10 +55,10 @@ fn downcast(s: &dyn DynBackendStorage) -> Result<&MetalBackendStorage> {
         })
 }
 
-fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut MetalBackendStorage> {
+fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut MetalStorage> {
     let loc = s.device_dyn().location_dyn();
     s.as_any_mut()
-        .downcast_mut::<MetalBackendStorage>()
+        .downcast_mut::<MetalStorage>()
         .ok_or_else(|| {
             fuel_core_types::Error::DeviceMismatchBinaryOp {
                 lhs: DeviceLocation::Metal { gpu_id: 0 },
@@ -120,7 +70,7 @@ fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut MetalBackendStorag
 }
 
 fn wrap(s: MetalStorage) -> Box<dyn DynBackendStorage> {
-    Box::new(MetalBackendStorage::new(s))
+    Box::new(s)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,28 +115,28 @@ fn binary_kernel_name(op: BinaryOp) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// impl DynBackendStorage for MetalBackendStorage
+// impl DynBackendStorage for MetalStorage
 // ---------------------------------------------------------------------------
 
-impl DynBackendStorage for MetalBackendStorage {
+impl DynBackendStorage for MetalStorage {
     fn try_clone_dyn(&self, layout: &Layout) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.try_clone(layout).map(wrap)
+        self.try_clone(layout).map(wrap)
     }
 
     fn dtype_dyn(&self) -> DType {
-        self.storage.dtype()
+        self.dtype()
     }
 
     fn device_dyn(&self) -> &dyn DynBackendDevice {
-        &self.device_wrapper
+        self.device()
     }
 
     fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice> {
-        Arc::new(self.device_wrapper.clone())
+        Arc::new(self.device().clone())
     }
 
-    fn to_cpu_storage_dyn(&self) -> Result<CpuStorage> {
-        self.storage.to_cpu_storage()
+    fn to_host_buffer_dyn(&self) -> Result<HostBuffer> {
+        self.to_cpu_storage()
     }
 
     fn affine_dyn(
@@ -195,15 +145,15 @@ impl DynBackendStorage for MetalBackendStorage {
         mul: f64,
         add: f64,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.affine(layout, mul, add).map(wrap)
+        self.affine(layout, mul, add).map(wrap)
     }
 
     fn powf_dyn(&self, layout: &Layout, e: f64) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.powf(layout, e).map(wrap)
+        self.powf(layout, e).map(wrap)
     }
 
     fn elu_dyn(&self, layout: &Layout, alpha: f64) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.elu(layout, alpha).map(wrap)
+        self.elu(layout, alpha).map(wrap)
     }
 
     fn reduce_op_dyn(
@@ -212,7 +162,7 @@ impl DynBackendStorage for MetalBackendStorage {
         layout: &Layout,
         axes: &[usize],
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.reduce_op(op, layout, axes).map(wrap)
+        self.reduce_op(op, layout, axes).map(wrap)
     }
 
     fn cmp_dyn(
@@ -223,18 +173,15 @@ impl DynBackendStorage for MetalBackendStorage {
         rhs_layout: &Layout,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let rhs = downcast(rhs)?;
-        self.storage
-            .cmp(op, &rhs.storage, lhs_layout, rhs_layout)
-            .map(wrap)
+        self.cmp(op, rhs, lhs_layout, rhs_layout).map(wrap)
     }
 
     fn to_dtype_dyn(&self, layout: &Layout, dtype: DType) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.to_dtype(layout, dtype).map(wrap)
+        self.to_dtype(layout, dtype).map(wrap)
     }
 
     fn unary_op_dyn(&self, layout: &Layout, op: UnaryOp) -> Result<Box<dyn DynBackendStorage>> {
-        let kname = unary_kernel_name(op);
-        self.storage.unary(kname, layout).map(wrap)
+        self.unary(unary_kernel_name(op), layout).map(wrap)
     }
 
     fn binary_op_dyn(
@@ -245,9 +192,7 @@ impl DynBackendStorage for MetalBackendStorage {
         op: BinaryOp,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let rhs = downcast(rhs)?;
-        let kname = binary_kernel_name(op);
-        self.storage
-            .binary(kname, &rhs.storage, lhs_layout, rhs_layout)
+        self.binary(binary_kernel_name(op), rhs, lhs_layout, rhs_layout)
             .map(wrap)
     }
 
@@ -261,14 +206,7 @@ impl DynBackendStorage for MetalBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let t = downcast(on_true)?;
         let f = downcast(on_false)?;
-        self.storage
-            .where_cond(
-                cond_layout,
-                &t.storage,
-                on_true_layout,
-                &f.storage,
-                on_false_layout,
-            )
+        self.where_cond(cond_layout, t, on_true_layout, f, on_false_layout)
             .map(wrap)
     }
 
@@ -280,9 +218,7 @@ impl DynBackendStorage for MetalBackendStorage {
         params: &ParamsConv1D,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let kernel = downcast(kernel)?;
-        self.storage
-            .conv1d(l, &kernel.storage, kernel_l, params)
-            .map(wrap)
+        self.conv1d(l, kernel, kernel_l, params).map(wrap)
     }
 
     fn conv_transpose1d_dyn(
@@ -293,9 +229,7 @@ impl DynBackendStorage for MetalBackendStorage {
         params: &ParamsConvTranspose1D,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let kernel = downcast(kernel)?;
-        self.storage
-            .conv_transpose1d(l, &kernel.storage, kernel_l, params)
-            .map(wrap)
+        self.conv_transpose1d(l, kernel, kernel_l, params).map(wrap)
     }
 
     fn conv2d_dyn(
@@ -306,9 +240,7 @@ impl DynBackendStorage for MetalBackendStorage {
         params: &ParamsConv2D,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let kernel = downcast(kernel)?;
-        self.storage
-            .conv2d(l, &kernel.storage, kernel_l, params)
-            .map(wrap)
+        self.conv2d(l, kernel, kernel_l, params).map(wrap)
     }
 
     fn conv_transpose2d_dyn(
@@ -319,9 +251,7 @@ impl DynBackendStorage for MetalBackendStorage {
         params: &ParamsConvTranspose2D,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let kernel = downcast(kernel)?;
-        self.storage
-            .conv_transpose2d(l, &kernel.storage, kernel_l, params)
-            .map(wrap)
+        self.conv_transpose2d(l, kernel, kernel_l, params).map(wrap)
     }
 
     fn avg_pool2d_dyn(
@@ -330,7 +260,7 @@ impl DynBackendStorage for MetalBackendStorage {
         kernel: (usize, usize),
         stride: (usize, usize),
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.avg_pool2d(layout, kernel, stride).map(wrap)
+        self.avg_pool2d(layout, kernel, stride).map(wrap)
     }
 
     fn max_pool2d_dyn(
@@ -339,7 +269,7 @@ impl DynBackendStorage for MetalBackendStorage {
         kernel: (usize, usize),
         stride: (usize, usize),
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage.max_pool2d(layout, kernel, stride).map(wrap)
+        self.max_pool2d(layout, kernel, stride).map(wrap)
     }
 
     fn upsample_nearest1d_dyn(
@@ -347,9 +277,7 @@ impl DynBackendStorage for MetalBackendStorage {
         layout: &Layout,
         target_size: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage
-            .upsample_nearest1d(layout, target_size)
-            .map(wrap)
+        self.upsample_nearest1d(layout, target_size).map(wrap)
     }
 
     fn upsample_nearest2d_dyn(
@@ -358,9 +286,7 @@ impl DynBackendStorage for MetalBackendStorage {
         target_h: usize,
         target_w: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage
-            .upsample_nearest2d(layout, target_h, target_w)
-            .map(wrap)
+        self.upsample_nearest2d(layout, target_h, target_w).map(wrap)
     }
 
     fn upsample_bilinear2d_dyn(
@@ -372,8 +298,7 @@ impl DynBackendStorage for MetalBackendStorage {
         scale_h: Option<f64>,
         scale_w: Option<f64>,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.storage
-            .upsample_bilinear2d(layout, target_h, target_w, align_corners, scale_h, scale_w)
+        self.upsample_bilinear2d(layout, target_h, target_w, align_corners, scale_h, scale_w)
             .map(wrap)
     }
 
@@ -385,9 +310,7 @@ impl DynBackendStorage for MetalBackendStorage {
         dim: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids = downcast(ids)?;
-        self.storage
-            .gather(src_layout, &ids.storage, ids_layout, dim)
-            .map(wrap)
+        self.gather(src_layout, ids, ids_layout, dim).map(wrap)
     }
 
     fn scatter_set_dyn(
@@ -402,14 +325,7 @@ impl DynBackendStorage for MetalBackendStorage {
         let src = downcast(src)?;
         let ids = downcast(ids)?;
         // MetalStorage::scatter_set takes (l, ids, ids_l, src, src_l, dim)
-        self.storage.scatter_set(
-            self_layout,
-            &ids.storage,
-            ids_layout,
-            &src.storage,
-            src_layout,
-            dim,
-        )
+        self.scatter_set(self_layout, ids, ids_layout, src, src_layout, dim)
     }
 
     fn scatter_add_set_dyn(
@@ -423,14 +339,7 @@ impl DynBackendStorage for MetalBackendStorage {
     ) -> Result<()> {
         let src = downcast(src)?;
         let ids = downcast(ids)?;
-        self.storage.scatter_add_set(
-            self_layout,
-            &ids.storage,
-            ids_layout,
-            &src.storage,
-            src_layout,
-            dim,
-        )
+        self.scatter_add_set(self_layout, ids, ids_layout, src, src_layout, dim)
     }
 
     fn index_select_dyn(
@@ -441,9 +350,7 @@ impl DynBackendStorage for MetalBackendStorage {
         dim: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids = downcast(ids)?;
-        self.storage
-            .index_select(&ids.storage, src_layout, ids_layout, dim)
-            .map(wrap)
+        self.index_select(ids, src_layout, ids_layout, dim).map(wrap)
     }
 
     fn index_add_dyn(
@@ -457,15 +364,7 @@ impl DynBackendStorage for MetalBackendStorage {
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids = downcast(ids)?;
         let src = downcast(src)?;
-        self.storage
-            .index_add(
-                self_layout,
-                &ids.storage,
-                ids_layout,
-                &src.storage,
-                src_layout,
-                dim,
-            )
+        self.index_add(self_layout, ids, ids_layout, src, src_layout, dim)
             .map(wrap)
     }
 
@@ -477,9 +376,7 @@ impl DynBackendStorage for MetalBackendStorage {
         rhs_layout: &Layout,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let rhs = downcast(rhs)?;
-        self.storage
-            .matmul(&rhs.storage, bmnk, lhs_layout, rhs_layout)
-            .map(wrap)
+        self.matmul(rhs, bmnk, lhs_layout, rhs_layout).map(wrap)
     }
 
     fn copy_strided_src_dyn(
@@ -489,8 +386,7 @@ impl DynBackendStorage for MetalBackendStorage {
         src_layout: &Layout,
     ) -> Result<()> {
         let dst = downcast_mut(dst)?;
-        self.storage
-            .copy_strided_src(&mut dst.storage, dst_offset, src_layout)
+        self.copy_strided_src(dst, dst_offset, src_layout)
     }
 
     fn copy2d_dyn(
@@ -504,19 +400,11 @@ impl DynBackendStorage for MetalBackendStorage {
         dst_offset: usize,
     ) -> Result<()> {
         let dst = downcast_mut(dst)?;
-        self.storage.copy2d(
-            &mut dst.storage,
-            d1,
-            d2,
-            src_stride1,
-            dst_stride1,
-            src_offset,
-            dst_offset,
-        )
+        self.copy2d(dst, d1, d2, src_stride1, dst_stride1, src_offset, dst_offset)
     }
 
     fn const_set_dyn(&mut self, value: Scalar, layout: &Layout) -> Result<()> {
-        self.storage.const_set(value, layout)
+        self.const_set(value, layout)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -529,19 +417,19 @@ impl DynBackendStorage for MetalBackendStorage {
 }
 
 // ---------------------------------------------------------------------------
-// impl DynBackendDevice for MetalBackendDevice
+// impl DynBackendDevice for MetalDevice
 // ---------------------------------------------------------------------------
 
-impl DynBackendDevice for MetalBackendDevice {
+impl DynBackendDevice for MetalDevice {
     fn location_dyn(&self) -> DeviceLocation {
-        self.0.location()
+        self.location()
     }
 
     fn same_device_dyn(&self, other: &dyn DynBackendDevice) -> bool {
         other
             .as_any()
-            .downcast_ref::<MetalBackendDevice>()
-            .is_some_and(|o| self.0.same_device(&o.0))
+            .downcast_ref::<MetalDevice>()
+            .is_some_and(|o| self.same_device(o))
     }
 
     fn supports_bf16(&self) -> bool {
@@ -549,7 +437,7 @@ impl DynBackendDevice for MetalBackendDevice {
     }
 
     fn zeros_impl_dyn(&self, shape: &Shape, dtype: DType) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.zeros_impl(shape, dtype).map(wrap)
+        self.zeros_impl(shape, dtype).map(wrap)
     }
 
     unsafe fn alloc_uninit_dyn(
@@ -557,18 +445,18 @@ impl DynBackendDevice for MetalBackendDevice {
         shape: &Shape,
         dtype: DType,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        unsafe { self.0.alloc_uninit(shape, dtype) }.map(wrap)
+        unsafe { self.alloc_uninit(shape, dtype) }.map(wrap)
     }
 
-    fn storage_from_cpu_storage_dyn(&self, cpu: &CpuStorage) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.storage_from_cpu_storage(cpu).map(wrap)
+    fn storage_from_host_buffer_dyn(&self, buf: &HostBuffer) -> Result<Box<dyn DynBackendStorage>> {
+        self.storage_from_cpu_storage(buf).map(wrap)
     }
 
-    fn storage_from_cpu_storage_owned_dyn(
+    fn storage_from_host_buffer_owned_dyn(
         &self,
-        cpu: CpuStorage,
+        buf: HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.storage_from_cpu_storage_owned(cpu).map(wrap)
+        self.storage_from_cpu_storage_owned(buf).map(wrap)
     }
 
     fn rand_uniform_dyn(
@@ -578,7 +466,7 @@ impl DynBackendDevice for MetalBackendDevice {
         lo: f64,
         hi: f64,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.rand_uniform(shape, dtype, lo, hi).map(wrap)
+        self.rand_uniform(shape, dtype, lo, hi).map(wrap)
     }
 
     fn rand_normal_dyn(
@@ -588,19 +476,19 @@ impl DynBackendDevice for MetalBackendDevice {
         mean: f64,
         std: f64,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.0.rand_normal(shape, dtype, mean, std).map(wrap)
+        self.rand_normal(shape, dtype, mean, std).map(wrap)
     }
 
     fn set_seed_dyn(&self, seed: u64) -> Result<()> {
-        self.0.set_seed(seed)
+        self.set_seed(seed)
     }
 
     fn get_current_seed_dyn(&self) -> Result<u64> {
-        self.0.get_current_seed()
+        self.get_current_seed()
     }
 
     fn synchronize_dyn(&self) -> Result<()> {
-        self.0.synchronize()
+        self.synchronize()
     }
 
     fn as_any(&self) -> &dyn Any {

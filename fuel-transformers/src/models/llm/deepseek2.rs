@@ -4,7 +4,7 @@ use std::{collections::HashMap, f32::consts::PI, sync::Arc};
 
 use crate::utils::masked_fill;
 use fuel::{
-    shape::Dim, CpuStorage, CustomOp1, DType, Device, Error, IndexOp, Layout, Result, Shape,
+    shape::Dim, HostBuffer, CustomOp1, DType, Device, Error, IndexOp, Layout, Result, Shape,
     Tensor, WithDType, D,
 };
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
@@ -48,31 +48,31 @@ impl CustomOp1 for NonZero {
             return Err(Error::RequiresContiguous { op: "nonzero" });
         }
         let result = match storage {
-            fuel::CpuStorage::U8(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::U32(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::I16(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::I32(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::I64(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::BF16(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::F16(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::F32(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::F64(vs) => self.nonzero(vs, layout),
-            fuel::CpuStorage::F8E4M3(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::U8(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::U32(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::I16(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::I32(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::I64(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::BF16(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::F16(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::F32(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::F64(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::F8E4M3(vs) => self.nonzero(vs, layout),
             // Dummy types don't support nonzero operation
-            fuel::CpuStorage::F6E2M3(_) => {
+            fuel::HostBuffer::F6E2M3(_) => {
                 return Err(
                     fuel::Error::UnsupportedDTypeForOp(fuel::DType::F6E2M3, "nonzero").bt(),
                 )
             }
-            fuel::CpuStorage::F6E3M2(_) => {
+            fuel::HostBuffer::F6E3M2(_) => {
                 return Err(
                     fuel::Error::UnsupportedDTypeForOp(fuel::DType::F6E3M2, "nonzero").bt(),
                 )
             }
-            fuel::CpuStorage::F4(_) => {
+            fuel::HostBuffer::F4(_) => {
                 return Err(fuel::Error::UnsupportedDTypeForOp(fuel::DType::F4, "nonzero").bt())
             }
-            fuel::CpuStorage::F8E8M0(_) => {
+            fuel::HostBuffer::F8E8M0(_) => {
                 return Err(
                     fuel::Error::UnsupportedDTypeForOp(fuel::DType::F8E8M0, "nonzero").bt(),
                 )
@@ -80,7 +80,7 @@ impl CustomOp1 for NonZero {
         };
         let index_len = layout.dims().len();
         let result_len = result.len() / index_len;
-        let result = CpuStorage::U32(result);
+        let result = HostBuffer::U32(result);
         let shape = Shape::from_dims(&[result_len, index_len]);
         Ok((Box::new(CpuBackendStorage::from(result)), shape))
     }

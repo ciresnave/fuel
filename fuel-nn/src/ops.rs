@@ -11,7 +11,7 @@
 //! # Ok::<(), fuel::Error>(())
 //! ```
 
-use fuel::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor, D};
+use fuel::{HostBuffer, DType, Layout, Module, Result, Shape, Tensor, D};
 use fuel_cpu_backend::dyn_impl::CpuBackendStorage;
 use rayon::prelude::*;
 
@@ -122,17 +122,17 @@ impl fuel::CustomOp1 for Sigmoid {
 
         // FIXME: using `fuel::map_dtype` causes compilation errors.
         let result = match storage {
-            CpuStorage::BF16(slice) => {
-                CpuStorage::BF16(fuel::cpu_backend::unary_map(slice, layout, fwd))
+            HostBuffer::BF16(slice) => {
+                HostBuffer::BF16(fuel::cpu_backend::unary_map(slice, layout, fwd))
             }
-            CpuStorage::F16(slice) => {
-                CpuStorage::F16(fuel::cpu_backend::unary_map(slice, layout, fwd))
+            HostBuffer::F16(slice) => {
+                HostBuffer::F16(fuel::cpu_backend::unary_map(slice, layout, fwd))
             }
-            CpuStorage::F32(slice) => {
-                CpuStorage::F32(fuel::cpu_backend::unary_map(slice, layout, fwd))
+            HostBuffer::F32(slice) => {
+                HostBuffer::F32(fuel::cpu_backend::unary_map(slice, layout, fwd))
             }
-            CpuStorage::F64(slice) => {
-                CpuStorage::F64(fuel::cpu_backend::unary_map(slice, layout, fwd))
+            HostBuffer::F64(slice) => {
+                HostBuffer::F64(fuel::cpu_backend::unary_map(slice, layout, fwd))
             }
             _ => Err(fuel::Error::UnsupportedDTypeForOp(
                 storage.dtype(),
@@ -151,7 +151,6 @@ impl Sigmoid {
         storage: &fuel::CudaStorage,
         layout: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         use baracuda_driver::DeviceBuffer as CudaSlice;
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::LaunchConfig;
@@ -204,7 +203,6 @@ impl Sigmoid {
         storage: &fuel::MetalStorage,
         layout: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         use fuel::MetalError;
         let device = storage.device();
         let dtype = storage.dtype();
@@ -450,7 +448,7 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
         fn softmax<T: fuel::WithDType + num_traits::Float>(
             src: &[T],
             layout: &Layout,
-        ) -> Result<(CpuStorage, Shape)> {
+        ) -> Result<(HostBuffer, Shape)> {
             let src = match layout.contiguous_offsets() {
                 None => fuel::bail!("input has to be contiguous"),
                 Some((o1, o2)) => &src[o1..o2],
@@ -478,10 +476,10 @@ impl fuel::CustomOp1 for SoftmaxLastDim {
         }
 
         let (result, shape) = match storage {
-            CpuStorage::BF16(slice) => softmax::<half::bf16>(slice, layout),
-            CpuStorage::F16(slice) => softmax::<half::f16>(slice, layout),
-            CpuStorage::F32(slice) => softmax::<f32>(slice, layout),
-            CpuStorage::F64(slice) => softmax::<f64>(slice, layout),
+            HostBuffer::BF16(slice) => softmax::<half::bf16>(slice, layout),
+            HostBuffer::F16(slice) => softmax::<half::f16>(slice, layout),
+            HostBuffer::F32(slice) => softmax::<f32>(slice, layout),
+            HostBuffer::F64(slice) => softmax::<f64>(slice, layout),
             _ => fuel::bail!("unsupported dtype for softmax {:?}", storage),
         }?;
         Ok((Box::new(CpuBackendStorage::from(result)), shape))
@@ -538,7 +536,6 @@ impl SoftmaxLastDim {
             }
         }
 
-        use fuel::backend::BackendStorage;
         let dev = storage.device();
         let slice = S.map(&storage.slice, dev, layout)?;
         let dst = fuel::cuda_backend::CudaStorage {
@@ -554,7 +551,6 @@ impl SoftmaxLastDim {
         storage: &fuel::MetalStorage,
         layout: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         let device = storage.device();
         let encoder = device.command_encoder()?;
         encoder.set_label("softmax");
@@ -651,7 +647,7 @@ impl fuel::CustomOp2 for RmsNorm {
             alpha: &[T],
             alpha_layout: &Layout,
             eps: f32,
-        ) -> Result<(CpuStorage, Shape)> {
+        ) -> Result<(HostBuffer, Shape)> {
             let src = match layout.contiguous_offsets() {
                 None => fuel::bail!("input has to be contiguous"),
                 Some((o1, o2)) => &src[o1..o2],
@@ -684,7 +680,7 @@ impl fuel::CustomOp2 for RmsNorm {
             Ok((storage, Shape::from_dims(dims)))
         }
 
-        use CpuStorage as C;
+        use HostBuffer as C;
         let (result, shape) = match (s1, s2) {
             (C::BF16(s1), C::BF16(s2)) => inner::<half::bf16>(s1.as_slice(), l1, s2.as_slice(), l2, eps),
             (C::F16(s1), C::F16(s2)) => inner::<half::f16>(s1.as_slice(), l1, s2.as_slice(), l2, eps),
@@ -757,7 +753,6 @@ impl RmsNorm {
             }
         }
 
-        use fuel::backend::BackendStorage;
         let dev = s1.device();
         let slice = S { eps: self.eps }.map(&s1.slice, l1, &s2.slice, l2, dev)?;
         let dst = fuel::cuda_backend::CudaStorage {
@@ -775,7 +770,6 @@ impl RmsNorm {
         s2: &fuel::MetalStorage,
         l2: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         let device = s1.device();
         let encoder = device.command_encoder()?;
         encoder.set_label("rmsnorm");
@@ -914,7 +908,7 @@ impl fuel::CustomOp3 for LayerNorm {
             beta: &[T],
             beta_layout: &Layout,
             eps: f32,
-        ) -> Result<(CpuStorage, Shape)> {
+        ) -> Result<(HostBuffer, Shape)> {
             let src = match layout.contiguous_offsets() {
                 None => fuel::bail!("input has to be contiguous"),
                 Some((o1, o2)) => &src[o1..o2],
@@ -957,7 +951,7 @@ impl fuel::CustomOp3 for LayerNorm {
             Ok((storage, Shape::from_dims(dims)))
         }
 
-        use CpuStorage as C;
+        use HostBuffer as C;
         let (result, shape) = match (s1, s2, s3) {
             (C::BF16(s1), C::BF16(s2), C::BF16(s3)) => {
                 inner::<half::bf16>(s1, l1, s2, l2, s3, l3, eps)
@@ -1042,7 +1036,6 @@ impl LayerNorm {
             }
         }
 
-        use fuel::backend::BackendStorage;
         let dev = s1.device();
         let slice = S { eps: self.eps }.map(&s1.slice, l1, &s2.slice, l2, &s3.slice, l3, dev)?;
         let dst = fuel::cuda_backend::CudaStorage {
@@ -1062,7 +1055,6 @@ impl LayerNorm {
         s3: &fuel::MetalStorage,
         l3: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         let device = s1.device();
         let encoder = device.command_encoder()?;
         encoder.set_label("layernorm");
@@ -1329,7 +1321,6 @@ impl fuel::CustomOp3 for Sdpa {
         v: &fuel::MetalStorage,
         v_l: &Layout,
     ) -> Result<(fuel::MetalStorage, Shape)> {
-        use fuel::backend::BackendStorage;
         use fuel_metal_kernels::SdpaDType;
 
         let device = q.device();

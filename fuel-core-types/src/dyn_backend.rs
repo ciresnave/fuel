@@ -26,7 +26,7 @@
 //! ```
 use crate::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
 use crate::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use crate::{CpuStorage, DType, DeviceLocation, Layout, Result, Scalar, Shape};
+use crate::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -54,10 +54,10 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice>;
 
     /// Copy the entire storage to a [`HostBuffer`](crate::HostBuffer).
-    fn to_host_buffer_dyn(&self) -> Result<CpuStorage>;
+    fn to_host_buffer_dyn(&self) -> Result<HostBuffer>;
 
     /// Deprecated alias for [`to_host_buffer_dyn`].
-    fn to_cpu_storage_dyn(&self) -> Result<CpuStorage> {
+    fn to_cpu_storage_dyn(&self) -> Result<HostBuffer> {
         self.to_host_buffer_dyn()
     }
 
@@ -288,7 +288,7 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
 /// All factory methods return `Box<dyn DynBackendStorage>` instead of
 /// `Self::Storage`, and there is no `storage_from_slice` (use
 /// [`storage_from_cpu_storage`](DynBackendDevice::storage_from_cpu_storage_dyn)
-/// after constructing a [`CpuStorage`] on the host side).
+/// after constructing a [`HostBuffer`] on the host side).
 pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     /// Canonical device location.
     fn location_dyn(&self) -> DeviceLocation;
@@ -320,19 +320,19 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     /// Create storage from a host buffer (borrowed).
     fn storage_from_host_buffer_dyn(
         &self,
-        buf: &CpuStorage,
+        buf: &HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>>;
 
     /// Create storage from a host buffer (owned).
     fn storage_from_host_buffer_owned_dyn(
         &self,
-        buf: CpuStorage,
+        buf: HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>>;
 
     /// Deprecated alias for [`storage_from_host_buffer_dyn`].
     fn storage_from_cpu_storage_dyn(
         &self,
-        cpu: &CpuStorage,
+        cpu: &HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>> {
         self.storage_from_host_buffer_dyn(cpu)
     }
@@ -340,7 +340,7 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     /// Deprecated alias for [`storage_from_host_buffer_owned_dyn`].
     fn storage_from_cpu_storage_owned_dyn(
         &self,
-        cpu: CpuStorage,
+        cpu: HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>> {
         self.storage_from_host_buffer_owned_dyn(cpu)
     }

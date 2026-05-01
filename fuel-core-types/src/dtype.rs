@@ -3,7 +3,7 @@
 //! The [`DType`] enum represents the element type of a tensor, and the [`WithDType`] trait
 //! allows Rust native types to be used with tensors.
 #![allow(clippy::redundant_closure_call)]
-use crate::{CpuStorage, CpuStorageRef, Error, Result};
+use crate::{HostBuffer, HostBufferRef, Error, Result};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -174,15 +174,15 @@ pub trait WithDType:
     fn from_f64(v: f64) -> Self;
     fn to_f64(self) -> f64;
     fn to_scalar(self) -> crate::scalar::Scalar;
-    fn cpu_storage_ref(data: &[Self]) -> CpuStorageRef<'_>;
-    fn to_cpu_storage_owned(data: Vec<Self>) -> CpuStorage;
+    fn cpu_storage_ref(data: &[Self]) -> HostBufferRef<'_>;
+    fn to_cpu_storage_owned(data: Vec<Self>) -> HostBuffer;
 
-    fn to_cpu_storage(data: &[Self]) -> CpuStorage {
+    fn to_cpu_storage(data: &[Self]) -> HostBuffer {
         Self::to_cpu_storage_owned(data.to_vec())
     }
 
-    fn cpu_storage_as_slice(s: &CpuStorage) -> Result<&[Self]>;
-    fn cpu_storage_data(s: CpuStorage) -> Result<Vec<Self>>;
+    fn cpu_storage_as_slice(s: &HostBuffer) -> Result<&[Self]>;
+    fn cpu_storage_data(s: HostBuffer) -> Result<Vec<Self>>;
 }
 
 macro_rules! with_dtype {
@@ -202,17 +202,17 @@ macro_rules! with_dtype {
                 crate::scalar::Scalar::$dtype(self)
             }
 
-            fn cpu_storage_ref(data: &[Self]) -> CpuStorageRef<'_> {
-                CpuStorageRef::$dtype(data)
+            fn cpu_storage_ref(data: &[Self]) -> HostBufferRef<'_> {
+                HostBufferRef::$dtype(data)
             }
 
-            fn to_cpu_storage_owned(data: Vec<Self>) -> CpuStorage {
-                CpuStorage::$dtype(data)
+            fn to_cpu_storage_owned(data: Vec<Self>) -> HostBuffer {
+                HostBuffer::$dtype(data)
             }
 
-            fn cpu_storage_data(s: CpuStorage) -> Result<Vec<Self>> {
+            fn cpu_storage_data(s: HostBuffer) -> Result<Vec<Self>> {
                 match s {
-                    CpuStorage::$dtype(data) => Ok(data),
+                    HostBuffer::$dtype(data) => Ok(data),
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$dtype,
                         got: s.dtype(),
@@ -222,9 +222,9 @@ macro_rules! with_dtype {
                 }
             }
 
-            fn cpu_storage_as_slice(s: &CpuStorage) -> Result<&[Self]> {
+            fn cpu_storage_as_slice(s: &HostBuffer) -> Result<&[Self]> {
                 match s {
-                    CpuStorage::$dtype(data) => Ok(data),
+                    HostBuffer::$dtype(data) => Ok(data),
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$dtype,
                         got: s.dtype(),

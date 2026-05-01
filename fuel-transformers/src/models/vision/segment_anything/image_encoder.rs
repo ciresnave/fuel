@@ -103,7 +103,7 @@ impl fuel::CustomOp3 for Add3 {
                     }
                 }
             });
-        let dst = fuel::CpuStorage::F32(dst);
+        let dst = fuel::HostBuffer::F32(dst);
         Ok((Box::new(CpuBackendStorage::from(dst)), (b, q_h * q_w, k_h * k_w).into()))
     }
 }

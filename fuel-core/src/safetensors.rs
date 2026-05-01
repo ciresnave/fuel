@@ -32,7 +32,7 @@ use crate::op::BackpropOp;
 use crate::storage::Storage;
 use crate::tensor::from_storage;
 use crate::{DType, Device, Error, Result, Tensor, WithDType};
-use crate::cpu_backend::CpuStorage;
+use crate::HostBuffer;
 use safetensors::tensor as st;
 use safetensors::tensor::SafeTensors;
 use std::borrow::Cow;
@@ -281,18 +281,18 @@ fn convert(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
 fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Result<Storage> {
     use fuel_core_types::DeviceLocation;
 
-    let make_cpu = || -> CpuStorage {
+    let make_cpu = || -> HostBuffer {
         match dtype {
-            DType::F6E2M3 => CpuStorage::F6E2M3(data.to_vec()),
-            DType::F6E3M2 => CpuStorage::F6E3M2(data.to_vec()),
-            DType::F4 => CpuStorage::F4(data.to_vec()),
-            DType::F8E8M0 => CpuStorage::F8E8M0(data.to_vec()),
+            DType::F6E2M3 => HostBuffer::F6E2M3(data.to_vec()),
+            DType::F6E3M2 => HostBuffer::F6E3M2(data.to_vec()),
+            DType::F4 => HostBuffer::F4(data.to_vec()),
+            DType::F8E8M0 => HostBuffer::F8E8M0(data.to_vec()),
             _ => unreachable!(),
         }
     };
 
     match device.location() {
-        DeviceLocation::Cpu => Ok(Storage::from_cpu(make_cpu())),
+        DeviceLocation::Cpu => Ok(Storage::new(fuel_cpu_backend::CpuStorage(make_cpu()))),
         #[cfg(feature = "cuda")]
         DeviceLocation::Cuda { .. } => {
             let cuda_dev = device.as_cuda_device().unwrap();
@@ -309,7 +309,7 @@ fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Resul
                 slice,
                 device: cuda_dev.clone(),
             };
-            Ok(Storage::from_cuda(storage))
+            Ok(Storage::new(storage))
         }
         #[cfg(not(feature = "cuda"))]
 
@@ -322,7 +322,7 @@ fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Resul
             let buffer = metal_dev.new_buffer_with_data(data)?;
             let storage =
                 crate::metal_backend::MetalStorage::new(buffer, metal_dev.clone(), data.len(), dtype);
-            Ok(Storage::from_metal(storage))
+            Ok(Storage::new(storage))
         }
         #[cfg(not(feature = "metal"))]
 
