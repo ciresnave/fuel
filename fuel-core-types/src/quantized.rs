@@ -191,6 +191,10 @@ pub trait DynQuantizedStorage: Send + Sync + std::fmt::Debug {
 
     /// Identity returns the host device tag this storage is on.
     fn as_any(&self) -> &dyn Any;
+
+    /// Owning device handle. Lets fuel-core recover a `Device` from a
+    /// `QTensor` without keeping a parallel `device` field on QTensor.
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn DynBackendDevice>;
 }
 
 /// Backend device → quantized-kernel constructors. fuel-core looks this up

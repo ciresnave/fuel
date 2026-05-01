@@ -5036,11 +5036,11 @@ fn dequant_gguf_bytes_to_f32(
         }
         GgmlDType::Q8_0 => Ok(cpu_dequant_q8_0_bytes(bytes)),
         // k-quants: dequant via the reference-CPU GgmlType trait impls.
-        GgmlDType::Q6K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ6K>(bytes)),
-        GgmlDType::Q5K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ5K>(bytes)),
-        GgmlDType::Q4K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ4K>(bytes)),
-        GgmlDType::Q3K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ3K>(bytes)),
-        GgmlDType::Q2K => Ok(cpu_dequant_via_trait::<crate::quantized::k_quants::BlockQ2K>(bytes)),
+        GgmlDType::Q6K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ6K>(bytes)),
+        GgmlDType::Q5K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ5K>(bytes)),
+        GgmlDType::Q4K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ4K>(bytes)),
+        GgmlDType::Q3K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ3K>(bytes)),
+        GgmlDType::Q2K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ2K>(bytes)),
         other => crate::bail!("gguf {name}: dequant-to-f32 for dtype {other:?} not implemented in lazy loader"),
     }
 }
@@ -5050,7 +5050,7 @@ fn dequant_gguf_bytes_to_f32(
 /// block type `T` (e.g. `BlockQ6K`); the function reinterprets the
 /// byte slice as `&[T]` and calls the impl. Used for dtypes that
 /// don't have a fused on-device dequant kernel (yet).
-fn cpu_dequant_via_trait<T: crate::quantized::k_quants::GgmlType>(bytes: &[u8]) -> Vec<f32> {
+fn cpu_dequant_via_trait<T: fuel_quantized::GgmlType>(bytes: &[u8]) -> Vec<f32> {
     let block_bytes = std::mem::size_of::<T>();
     assert!(bytes.len() % block_bytes == 0,
         "cpu_dequant_via_trait: bytes {} not multiple of block_bytes {}",

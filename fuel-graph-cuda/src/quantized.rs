@@ -1,8 +1,11 @@
-﻿use super::{GgmlDType, QStorage};
-use crate::quantized::k_quants::GgmlType;
-use crate::cuda_backend::WrapErr;
+﻿use crate::WrapErr;
 use crate::{builder_arg as barg, CudaDevice, CudaStorage, Result};
+use fuel_core_types::dyn_backend::DynBackendStorage;
+use fuel_core_types::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_quantized::GgmlType;
 use half::f16;
+use std::any::Any;
+use std::borrow::Cow;
 
 use baracuda_driver::{DeviceBuffer as CudaSlice, DeviceSlice as CudaView};
 
@@ -82,7 +85,7 @@ fn quantize_q8_1(
         let dst_num_bytes = rows_in_chunk * dst_row_size_bytes;
         let dst_chunk = dst.slice(dst_start_byte..(dst_start_byte + dst_num_bytes));
 
-        let cfg = crate::cuda_backend::LaunchConfig {
+        let cfg = crate::LaunchConfig {
             grid_dim: (num_blocks as u32, rows_in_chunk as u32, 1),
             block_dim: (CUDA_QUANTIZE_BLOCK_SIZE as u32, 1, 1),
             shared_mem_bytes: 0,
@@ -129,13 +132,13 @@ fn dequantize_f32(
         GgmlDType::Q5K => ("dequantize_block_q5_K_f32", true, 64, nb),
         GgmlDType::Q6K => ("dequantize_block_q6_K_f32", true, 64, nb),
         GgmlDType::Q8K => ("dequantize_block_q8_K_f32", true, 32, nb),
-        _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
+        _ => fuel_core_types::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
     let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f32>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
-    let cfg = crate::cuda_backend::LaunchConfig {
+    let cfg = crate::LaunchConfig {
         grid_dim: (num_blocks as u32, 1, 1),
         block_dim: (block_dim as u32, 1, 1),
         shared_mem_bytes: 0,
@@ -189,13 +192,13 @@ fn dequantize_f16(
         GgmlDType::Q5K => ("dequantize_block_q5_K_f16", true, 64, nb),
         GgmlDType::Q6K => ("dequantize_block_q6_K_f16", true, 64, nb),
         GgmlDType::Q8K => ("dequantize_block_q8_K_f16", true, 32, nb),
-        _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
+        _ => fuel_core_types::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
     let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f16>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
-    let cfg = crate::cuda_backend::LaunchConfig {
+    let cfg = crate::LaunchConfig {
         grid_dim: (num_blocks as u32, 1, 1),
         block_dim: (block_dim as u32, 1, 1),
         shared_mem_bytes: 0,
@@ -230,10 +233,10 @@ fn dequantize_mul_mat_vec(
 ) -> Result<CudaStorage> {
     let data_elems = data.len / dtype.type_size() * dtype.block_size();
     if data_elems < ncols * nrows {
-        crate::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
+        fuel_core_types::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
     }
     if y.len() != ncols {
-        crate::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
+        fuel_core_types::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
     }
     let kernel_name = match dtype {
         GgmlDType::Q4_0 => "dequantize_mul_mat_vec_q4_0_cuda",
@@ -246,12 +249,12 @@ fn dequantize_mul_mat_vec(
         GgmlDType::Q4K => "dequantize_mul_mat_vec_q4_k",
         GgmlDType::Q5K => "dequantize_mul_mat_vec_q5_k",
         GgmlDType::Q6K => "dequantize_mul_mat_vec_q6_k",
-        _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
+        _ => fuel_core_types::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
     let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f32>(nrows)? };
     let block_num_y = ceil_div(nrows, GGML_CUDA_MMV_Y);
-    let cfg = crate::cuda_backend::LaunchConfig {
+    let cfg = crate::LaunchConfig {
         grid_dim: (block_num_y as u32, 1, 1),
         block_dim: (WARP_SIZE as u32, GGML_CUDA_MMV_Y as u32, 1),
         shared_mem_bytes: 0,
@@ -277,13 +280,13 @@ fn mul_mat_vec_via_q8_1(
 ) -> Result<CudaStorage> {
     let data_elems = data.len / dtype.type_size() * dtype.block_size();
     if data_elems < ncols * nrows {
-        crate::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
+        fuel_core_types::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
     }
     if y.len() != ncols * b_size {
-        crate::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
+        fuel_core_types::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
     }
     if b_size == 0 || b_size > 8 {
-        crate::bail!("only bsize between 1 and 8 are supported, got {b_size}")
+        fuel_core_types::bail!("only bsize between 1 and 8 are supported, got {b_size}")
     }
     // Start by quantizing y
     let ncols_padded = pad(ncols, MATRIX_ROW_PADDING);
@@ -303,7 +306,7 @@ fn mul_mat_vec_via_q8_1(
         GgmlDType::Q4K => "mul_mat_vec_q4_K_q8_1_cuda",
         GgmlDType::Q5K => "mul_mat_vec_q5_K_q8_1_cuda",
         GgmlDType::Q6K => "mul_mat_vec_q6_K_q8_1_cuda",
-        _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
+        _ => fuel_core_types::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
     let kernel_name = format!("{kernel_name}{b_size}");
     let func = dev.get_or_load_func(&kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
@@ -313,9 +316,9 @@ fn mul_mat_vec_via_q8_1(
         1 => (nrows as u32, 4),
         2..=4 => ((nrows as u32).div_ceil(2), 4),
         5..=8 => ((nrows as u32).div_ceil(2), 2),
-        _ => crate::bail!("unexpected bsize {b_size}"),
+        _ => fuel_core_types::bail!("unexpected bsize {b_size}"),
     };
-    let cfg = crate::cuda_backend::LaunchConfig {
+    let cfg = crate::LaunchConfig {
         grid_dim: (nblocks, 1, 1),
         block_dim: (WARP_SIZE as u32, nwarps, 1),
         shared_mem_bytes: 0,
@@ -349,13 +352,13 @@ fn mul_mat_via_q8_1(
 ) -> Result<CudaStorage> {
     let data_elems = data.len / dtype.type_size() * dtype.block_size();
     if data_elems < x_rows * x_cols {
-        crate::bail!("unexpected lhs size {}, {x_rows} {x_cols}", data_elems)
+        fuel_core_types::bail!("unexpected lhs size {}, {x_rows} {x_cols}", data_elems)
     }
     if y.len() != y_rows * y_cols {
-        crate::bail!("unexpected y size {}, {y_rows} {y_cols}", y.len())
+        fuel_core_types::bail!("unexpected y size {}, {y_rows} {y_cols}", y.len())
     }
     if x_cols != y_rows {
-        crate::bail!("unexpected x/y size {x_rows} {x_cols} {y_rows} {y_cols}")
+        fuel_core_types::bail!("unexpected x/y size {x_rows} {x_cols} {y_rows} {y_cols}")
     }
     let k = x_cols;
     // Start by quantizing y
@@ -376,11 +379,11 @@ fn mul_mat_via_q8_1(
         GgmlDType::Q4K => ("mul_mat_q4_K", 64, 128),
         GgmlDType::Q5K => ("mul_mat_q5_K", 64, 128),
         GgmlDType::Q6K => ("mul_mat_q6_K", 64, 64),
-        _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
+        _ => fuel_core_types::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
     let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let dst = dev.alloc_zeros::<f32>(x_rows * y_cols)?;
-    let cfg = crate::cuda_backend::LaunchConfig {
+    let cfg = crate::LaunchConfig {
         grid_dim: (
             ceil_div(x_rows, mmq_y) as u32,
             ceil_div(y_cols, mmq_x) as u32,
@@ -451,11 +454,11 @@ fn indexed_moe_forward_fused_q8_1_input(
         GgmlDType::Q5K => "indexed_moe_forward_q5k_q8_1",
         GgmlDType::Q6K => "indexed_moe_forward_q6k_q8_1",
         GgmlDType::Q8_0 => "indexed_moe_forward_q8_0_q8_1",
-        _ => crate::bail!("unsupported dtype for indexed_moe_forward {w_dtype:?}"),
+        _ => fuel_core_types::bail!("unsupported dtype for indexed_moe_forward {w_dtype:?}"),
     };
     let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
     let (nblocks, nwarps) = (n as u32, 4);
-    let cfg = crate::cuda_backend::LaunchConfig {
+    let cfg = crate::LaunchConfig {
         grid_dim: (nblocks, batch as u32, topk as u32),
         block_dim: (WARP_SIZE as u32, nwarps, 1),
         shared_mem_bytes: 0,
@@ -519,7 +522,7 @@ impl QCudaStorage {
                 &self.device,
             )
         } else {
-            crate::bail!(
+            fuel_core_types::bail!(
                 "The given quantized dtype {:?} is not supported for indexed_moe_forward!",
                 self.dtype()
             );
@@ -584,49 +587,61 @@ impl QCudaStorage {
             GgmlDType::F32 => deq::<f32>(&buffer, block_len, &mut out),
             GgmlDType::F16 => deq::<half::f16>(&buffer, block_len, &mut out),
             GgmlDType::BF16 => deq::<half::bf16>(&buffer, block_len, &mut out),
-            GgmlDType::Q4_0 => deq::<crate::quantized::BlockQ4_0>(&buffer, block_len, &mut out),
-            GgmlDType::Q4_1 => deq::<crate::quantized::BlockQ4_1>(&buffer, block_len, &mut out),
-            GgmlDType::Q5_0 => deq::<crate::quantized::BlockQ5_0>(&buffer, block_len, &mut out),
-            GgmlDType::Q5_1 => deq::<crate::quantized::BlockQ5_1>(&buffer, block_len, &mut out),
-            GgmlDType::Q8_0 => deq::<crate::quantized::BlockQ8_0>(&buffer, block_len, &mut out),
-            GgmlDType::Q8_1 => deq::<crate::quantized::BlockQ8_1>(&buffer, block_len, &mut out),
-            GgmlDType::Q2K => deq::<crate::quantized::BlockQ2K>(&buffer, block_len, &mut out),
-            GgmlDType::Q3K => deq::<crate::quantized::BlockQ3K>(&buffer, block_len, &mut out),
-            GgmlDType::Q4K => deq::<crate::quantized::BlockQ4K>(&buffer, block_len, &mut out),
-            GgmlDType::Q5K => deq::<crate::quantized::BlockQ5K>(&buffer, block_len, &mut out),
-            GgmlDType::Q6K => deq::<crate::quantized::BlockQ6K>(&buffer, block_len, &mut out),
-            GgmlDType::Q8K => deq::<crate::quantized::BlockQ8K>(&buffer, block_len, &mut out),
+            GgmlDType::Q4_0 => deq::<fuel_quantized::BlockQ4_0>(&buffer, block_len, &mut out),
+            GgmlDType::Q4_1 => deq::<fuel_quantized::BlockQ4_1>(&buffer, block_len, &mut out),
+            GgmlDType::Q5_0 => deq::<fuel_quantized::BlockQ5_0>(&buffer, block_len, &mut out),
+            GgmlDType::Q5_1 => deq::<fuel_quantized::BlockQ5_1>(&buffer, block_len, &mut out),
+            GgmlDType::Q8_0 => deq::<fuel_quantized::BlockQ8_0>(&buffer, block_len, &mut out),
+            GgmlDType::Q8_1 => deq::<fuel_quantized::BlockQ8_1>(&buffer, block_len, &mut out),
+            GgmlDType::Q2K => deq::<fuel_quantized::BlockQ2K>(&buffer, block_len, &mut out),
+            GgmlDType::Q3K => deq::<fuel_quantized::BlockQ3K>(&buffer, block_len, &mut out),
+            GgmlDType::Q4K => deq::<fuel_quantized::BlockQ4K>(&buffer, block_len, &mut out),
+            GgmlDType::Q5K => deq::<fuel_quantized::BlockQ5K>(&buffer, block_len, &mut out),
+            GgmlDType::Q6K => deq::<fuel_quantized::BlockQ6K>(&buffer, block_len, &mut out),
+            GgmlDType::Q8K => deq::<fuel_quantized::BlockQ8K>(&buffer, block_len, &mut out),
         }
 
         self.device
-            .storage_from_cpu_storage(&crate::HostBuffer::F32(out))
+            .storage_from_cpu_storage(&fuel_core_types::HostBuffer::F32(out))
     }
 
     pub fn dequantize_f16(&self, elem_count: usize) -> Result<CudaStorage> {
         dequantize_f16(&self.data, self.dtype, elem_count, self.device())
     }
 
-    pub fn quantize(&mut self, src: &CudaStorage) -> Result<()> {
-        // Run the quantization on cpu.
-        let src = match &src.slice {
-            crate::cuda_backend::CudaStorageSlice::F32(data) => self.device.clone_dtoh(&data.as_slice())?,
-            _ => crate::bail!("only f32 can be quantized"),
-        };
-        let src_len = src.len();
-        let src = crate::Device::cpu().storage_owned(src)?;
-        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
-        qcpu_storage.quantize(&src)?;
-        let data = qcpu_storage.data()?;
+    /// Quantize host-resident f32 src onto self by running the scalar CPU
+    /// quantizer in fuel-quantized then htod-copying the resulting bytes.
+    fn quantize_from_f32(
+        &mut self,
+        src: &[f32],
+        imatrix: Option<(&[f32], usize)>,
+    ) -> Result<()> {
+        let mut qcpu = fuel_quantized::cpu_zeros(self.dtype, src.len());
+        match imatrix {
+            None => qcpu.from_float(src),
+            Some((iw, n_per_row)) => qcpu.from_float_imatrix(src, iw, n_per_row),
+        }
+        let data_ptr = qcpu.as_ptr();
+        let data_len = qcpu.storage_size_in_bytes();
+        let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let padded_len =
             data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
         let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
         self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(0..data.len()))?;
+            .memcpy_htod(data, &mut inner.slice_mut(0..data.len()))?;
         self.data = PaddedCudaSlice {
             inner,
             len: data.len(),
         };
         Ok(())
+    }
+
+    pub fn quantize(&mut self, src: &CudaStorage) -> Result<()> {
+        let src_vec = match &src.slice {
+            crate::CudaStorageSlice::F32(data) => self.device.clone_dtoh(&data.as_slice())?,
+            _ => fuel_core_types::bail!("only f32 can be quantized"),
+        };
+        self.quantize_from_f32(&src_vec, None)
     }
 
     pub fn quantize_imatrix(
@@ -635,79 +650,24 @@ impl QCudaStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        // Run the quantization on cpu.
-        let src = match &src.slice {
-            crate::cuda_backend::CudaStorageSlice::F32(data) => self.device.clone_dtoh(&data.as_slice())?,
-            _ => crate::bail!("only f32 can be quantized"),
+        let src_vec = match &src.slice {
+            crate::CudaStorageSlice::F32(data) => self.device.clone_dtoh(&data.as_slice())?,
+            _ => fuel_core_types::bail!("only f32 can be quantized"),
         };
-        let src_len = src.len();
-        let src = crate::Device::cpu().storage_owned(src)?;
-        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
-        qcpu_storage.quantize_imatrix(&src, imatrix_weights, n_per_row)?;
-        let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(0..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
-        Ok(())
+        self.quantize_from_f32(&src_vec, Some((imatrix_weights, n_per_row)))
     }
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        src: &crate::HostBuffer,
+        src: &fuel_core_types::HostBuffer,
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        // Run the quantization on cpu.
-        let src_len = src.as_slice::<f32>()?.len();
-        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
-
-        if let QStorage::Cpu(storage) = &mut qcpu_storage {
-            storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
-        } else {
-            unreachable!()
-        }
-
-        let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(0..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
-        Ok(())
+        self.quantize_from_f32(src.as_slice::<f32>()?, Some((imatrix_weights, n_per_row)))
     }
 
-    pub fn quantize_onto(&mut self, src: &crate::HostBuffer) -> Result<()> {
-        // Run the quantization on cpu.
-        let src_len = src.as_slice::<f32>()?.len();
-        let mut qcpu_storage = crate::Device::cpu().qzeros(src_len, self.dtype)?;
-
-        if let QStorage::Cpu(storage) = &mut qcpu_storage {
-            storage.from_float(src.as_slice::<f32>()?);
-        } else {
-            unreachable!()
-        }
-
-        let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(0..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
-        Ok(())
+    pub fn quantize_onto(&mut self, src: &fuel_core_types::HostBuffer) -> Result<()> {
+        self.quantize_from_f32(src.as_slice::<f32>()?, None)
     }
 
     pub fn storage_size_in_bytes(&self) -> usize {
@@ -765,10 +725,10 @@ impl QCudaStorage {
         let (b_size, k) = match rhs_l.shape().dims() {
             [b, m, k] => (b * m, *k),
             [b, k] => (*b, *k),
-            _ => crate::bail!("unexpected rhs shape in dmmv {:?}", rhs_l.shape()),
+            _ => fuel_core_types::bail!("unexpected rhs shape in dmmv {:?}", rhs_l.shape()),
         };
         if ncols != k {
-            crate::bail!("mismatch on matmul dim {self_shape:?} {:?}", rhs_l.shape())
+            fuel_core_types::bail!("mismatch on matmul dim {self_shape:?} {:?}", rhs_l.shape())
         }
 
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
@@ -800,10 +760,10 @@ impl QCudaStorage {
         let (b, m, k2) = match layout.shape().dims() {
             &[b, m, k2] => (b, m, k2),
             &[m, k2] => (1, m, k2),
-            s => crate::bail!("unexpected shape for input {s:?}"),
+            s => fuel_core_types::bail!("unexpected shape for input {s:?}"),
         };
         if k2 != k {
-            crate::bail!("mismatch on matmul dim {self_shape:?} {:?}", layout.shape())
+            fuel_core_types::bail!("mismatch on matmul dim {self_shape:?} {:?}", layout.shape())
         }
 
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
@@ -837,18 +797,18 @@ impl QCudaStorage {
     }
 }
 
-pub fn load_quantized<T: super::GgmlType + Send + Sync + 'static>(
+/// Build a `QCudaStorage` from raw block-format bytes already laid out for
+/// `dtype`. Returned as a typed `Box<dyn DynQuantizedStorage>` so fuel-core
+/// can hold it polymorphically alongside CPU/Metal variants.
+pub fn load_quantized_bytes(
     device: &CudaDevice,
-    data: &[T],
-) -> Result<super::QStorage> {
-    let data = unsafe {
-        std::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
-    };
-    let dtype = T::DTYPE;
+    dtype: GgmlDType,
+    data: &[u8],
+) -> Result<Box<dyn DynQuantizedStorage>> {
     let padded_len = data.len() + MATRIX_ROW_PADDING * dtype.type_size() / dtype.block_size();
     let mut inner = device.alloc_zeros::<u8>(padded_len)?;
     device.memcpy_htod(data, &mut inner.slice_mut(0..data.len()))?;
-    Ok(QStorage::Cuda(QCudaStorage {
+    Ok(Box::new(QCudaStorage {
         data: PaddedCudaSlice {
             inner,
             len: data.len(),
@@ -856,6 +816,126 @@ pub fn load_quantized<T: super::GgmlType + Send + Sync + 'static>(
         device: device.clone(),
         dtype,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// DynQuantizedStorage / QuantizedDeviceKernels — backend-agnostic dispatch
+// ---------------------------------------------------------------------------
+
+impl DynQuantizedStorage for QCudaStorage {
+    fn dtype(&self) -> GgmlDType {
+        self.dtype
+    }
+    fn block_size(&self) -> usize {
+        self.dtype.block_size()
+    }
+    fn storage_size_in_bytes(&self) -> usize {
+        QCudaStorage::storage_size_in_bytes(self)
+    }
+    fn quantize(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
+        let cuda = src
+            .as_any()
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| crate::Error::Msg("quantize: expected cuda storage".into()).bt())?;
+        QCudaStorage::quantize(self, cuda)
+    }
+    fn quantize_imatrix(
+        &mut self,
+        src: &dyn DynBackendStorage,
+        imatrix_weights: &[f32],
+        n_per_row: usize,
+    ) -> Result<()> {
+        let cuda = src.as_any().downcast_ref::<CudaStorage>().ok_or_else(|| {
+            crate::Error::Msg("quantize_imatrix: expected cuda storage".into()).bt()
+        })?;
+        QCudaStorage::quantize_imatrix(self, cuda, imatrix_weights, n_per_row)
+    }
+    fn quantize_onto(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
+        let cpu = src
+            .as_any()
+            .downcast_ref::<fuel_cpu_backend::CpuStorage>()
+            .ok_or_else(|| crate::Error::Msg("quantize_onto: expected cpu storage".into()).bt())?;
+        QCudaStorage::quantize_onto(self, &cpu.0)
+    }
+    fn quantize_imatrix_onto(
+        &mut self,
+        src: &dyn DynBackendStorage,
+        imatrix_weights: &[f32],
+        n_per_row: usize,
+    ) -> Result<()> {
+        let cpu = src.as_any().downcast_ref::<fuel_cpu_backend::CpuStorage>().ok_or_else(|| {
+            crate::Error::Msg("quantize_imatrix_onto: expected cpu storage".into()).bt()
+        })?;
+        QCudaStorage::quantize_imatrix_onto(self, &cpu.0, imatrix_weights, n_per_row)
+    }
+    fn dequantize(&self, elem_count: usize) -> Result<Box<dyn DynBackendStorage>> {
+        Ok(Box::new(QCudaStorage::dequantize(self, elem_count)?))
+    }
+    fn dequantize_f16(&self, elem_count: usize) -> Result<Box<dyn DynBackendStorage>> {
+        Ok(Box::new(QCudaStorage::dequantize_f16(self, elem_count)?))
+    }
+    fn data(&self) -> Result<Cow<'_, [u8]>> {
+        Ok(Cow::Owned(QCudaStorage::data(self)?))
+    }
+    fn device_ptr(&self) -> Result<*const u8> {
+        QCudaStorage::device_ptr(self)
+    }
+    fn fwd(
+        &self,
+        self_shape: &crate::Shape,
+        input: &dyn DynBackendStorage,
+        layout: &crate::Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, crate::Shape)> {
+        let cuda = input
+            .as_any()
+            .downcast_ref::<CudaStorage>()
+            .ok_or_else(|| crate::Error::Msg("qmatmul: expected cuda storage".into()).bt())?;
+        let (s, sh) = QCudaStorage::fwd(self, self_shape, cuda, layout)?;
+        Ok((Box::new(s), sh))
+    }
+    fn indexed_moe_forward(
+        &self,
+        self_shape: &crate::Shape,
+        input: &dyn DynBackendStorage,
+        input_layout: &crate::Layout,
+        ids: &dyn DynBackendStorage,
+        ids_layout: &crate::Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, crate::Shape)> {
+        let input_cuda = input.as_any().downcast_ref::<CudaStorage>().ok_or_else(|| {
+            crate::Error::Msg("indexed_moe_forward: expected cuda input".into()).bt()
+        })?;
+        let ids_cuda = ids.as_any().downcast_ref::<CudaStorage>().ok_or_else(|| {
+            crate::Error::Msg("indexed_moe_forward: expected cuda ids".into()).bt()
+        })?;
+        let (s, sh) = QCudaStorage::indexed_moe_forward(
+            self,
+            self_shape,
+            input_cuda,
+            input_layout,
+            ids_cuda,
+            ids_layout,
+        )?;
+        Ok((Box::new(s), sh))
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_core_types::dyn_backend::DynBackendDevice> {
+        std::sync::Arc::new(self.device.clone())
+    }
+}
+
+impl QuantizedDeviceKernels for CudaDevice {
+    fn qzeros(&self, elem_count: usize, dtype: GgmlDType) -> Result<Box<dyn DynQuantizedStorage>> {
+        Ok(Box::new(QCudaStorage::zeros(self, elem_count, dtype)?))
+    }
+    fn load_quantized(
+        &self,
+        dtype: GgmlDType,
+        data: Cow<'_, [u8]>,
+    ) -> Result<Box<dyn DynQuantizedStorage>> {
+        load_quantized_bytes(self, dtype, &data)
+    }
 }
 
 #[cfg(test)]

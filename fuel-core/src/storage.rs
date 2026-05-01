@@ -20,6 +20,13 @@ impl Storage {
         Storage(Box::new(b))
     }
 
+    /// Wrap an already-boxed `dyn DynBackendStorage`. Used by callers
+    /// (notably the quantized fast-paths) that produce a `Box<dyn ..>`
+    /// directly from trait dispatch.
+    pub fn from_dyn(b: Box<dyn DynBackendStorage>) -> Self {
+        Storage(b)
+    }
+
     /// Borrow the inner storage as a `DynBackendStorage` trait object.
     ///
     /// Backends that need to peel back to their concrete storage type can

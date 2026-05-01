@@ -10,6 +10,7 @@
 
 [dependencies]
     fuel-core-types = { workspace = true }
+    fuel-quantized  = { workspace = true }
     float8            = { workspace = true }
     gemm              = { workspace = true }
     half              = { workspace = true }

@@ -1,6 +1,6 @@
 //! Support for the GGML file format.
 
-use super::{k_quants, GgmlDType, QStorage};
+use super::GgmlDType;
 use crate::{Device, Result};
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
@@ -117,33 +117,6 @@ impl Vocab {
     }
 }
 
-fn from_raw_data<T: super::GgmlType + Send + Sync + 'static>(
-    raw_data: &[u8],
-    size_in_bytes: usize,
-    dims: Vec<usize>,
-    device: &Device,
-) -> Result<super::QTensor> {
-    let raw_data_ptr = raw_data.as_ptr();
-    let n_blocks = size_in_bytes / std::mem::size_of::<T>();
-    let data = unsafe { std::slice::from_raw_parts(raw_data_ptr as *const T, n_blocks) };
-    let data: QStorage = if device.is_cpu() {
-        QStorage::Cpu(Box::new(data.to_vec()))
-    } else {
-        #[cfg(feature = "metal")]
-        if let Ok(metal) = device.as_metal_device() {
-            return super::QTensor::new(super::metal::load_quantized(metal, data)?, dims);
-        }
-        #[cfg(feature = "cuda")]
-        if let Ok(cuda) = device.as_cuda_device() {
-            return super::QTensor::new(super::cuda::load_quantized(cuda, data)?, dims);
-        }
-        return Err(crate::Error::Msg(
-            "quantized tensors are not supported on this backend".to_string(),
-        ));
-    };
-    super::QTensor::new(data, dims)
-}
-
 /// Creates a [`super::QTensor`] from a raw GGML tensor.
 pub fn qtensor_from_ggml(
     ggml_dtype: GgmlDType,
@@ -159,43 +132,9 @@ pub fn qtensor_from_ggml(
         )
     }
     let size_in_bytes = tensor_elems / block_size * ggml_dtype.type_size();
-
-    match ggml_dtype {
-        GgmlDType::F32 => from_raw_data::<f32>(raw_data, size_in_bytes, dims, device),
-        GgmlDType::F16 => from_raw_data::<half::f16>(raw_data, size_in_bytes, dims, device),
-        GgmlDType::BF16 => from_raw_data::<half::bf16>(raw_data, size_in_bytes, dims, device),
-        GgmlDType::Q4_0 => {
-            from_raw_data::<k_quants::BlockQ4_0>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q4_1 => {
-            from_raw_data::<k_quants::BlockQ4_1>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q5_0 => {
-            from_raw_data::<k_quants::BlockQ5_0>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q5_1 => {
-            from_raw_data::<k_quants::BlockQ5_1>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q8_0 => {
-            from_raw_data::<k_quants::BlockQ8_0>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q2K => {
-            from_raw_data::<k_quants::BlockQ2K>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q3K => {
-            from_raw_data::<k_quants::BlockQ3K>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q4K => {
-            from_raw_data::<k_quants::BlockQ4K>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q5K => {
-            from_raw_data::<k_quants::BlockQ5K>(raw_data, size_in_bytes, dims, device)
-        }
-        GgmlDType::Q6K => {
-            from_raw_data::<k_quants::BlockQ6K>(raw_data, size_in_bytes, dims, device)
-        }
-        _ => crate::bail!("quantized type {ggml_dtype:?} is not supported yet"),
-    }
+    let bytes = &raw_data[..size_in_bytes];
+    let storage = super::load_quantized(std::borrow::Cow::Borrowed(bytes), device, ggml_dtype)?;
+    super::QTensor::new(storage, dims)
 }
 
 fn read_one_tensor<R: std::io::Seek + std::io::Read>(

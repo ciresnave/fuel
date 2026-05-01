@@ -1,6 +1,10 @@
-﻿use super::{GgmlDType, QStorage};
-use crate::{DType, MetalDevice, MetalStorage, Result, Shape, D};
+﻿use crate::{DType, MetalDevice, MetalStorage, Result, Shape, D};
+use fuel_core_types::dyn_backend::DynBackendStorage;
+use fuel_core_types::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_quantized::GgmlType;
 use fuel_metal_kernels::metal::Buffer;
+use std::any::Any;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 pub struct QMetalStorage {
@@ -33,7 +37,7 @@ impl QMetalStorage {
     }
 
     pub fn dequantize(&self, elem_count: usize) -> Result<MetalStorage> {
-        use crate::quantized::k_quants::GgmlType;
+        use fuel_quantized::GgmlType;
 
         let buffer = self.device.allocate_buffer(self.buffer.length())?;
         let blit = self.device.blit_command_encoder()?;
@@ -57,52 +61,52 @@ impl QMetalStorage {
                 half::bf16::to_float(&vec, &mut out);
             }
             GgmlDType::Q4_0 => {
-                let vec: Vec<crate::quantized::BlockQ4_0> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ4_0::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ4_0> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ4_0::to_float(&vec, &mut out);
             }
             GgmlDType::Q4_1 => {
-                let vec: Vec<crate::quantized::BlockQ4_1> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ4_1::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ4_1> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ4_1::to_float(&vec, &mut out);
             }
             GgmlDType::Q5_0 => {
-                let vec: Vec<crate::quantized::BlockQ5_0> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ5_0::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ5_0> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ5_0::to_float(&vec, &mut out);
             }
             GgmlDType::Q5_1 => {
-                let vec: Vec<crate::quantized::BlockQ5_1> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ5_1::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ5_1> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ5_1::to_float(&vec, &mut out);
             }
             GgmlDType::Q8_0 => {
-                let vec: Vec<crate::quantized::BlockQ8_0> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ8_0::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ8_0> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ8_0::to_float(&vec, &mut out);
             }
             GgmlDType::Q8_1 => {
-                let vec: Vec<crate::quantized::BlockQ8_1> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ8_1::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ8_1> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ8_1::to_float(&vec, &mut out);
             }
             GgmlDType::Q2K => {
-                let vec: Vec<crate::quantized::BlockQ2K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ2K::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ2K> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ2K::to_float(&vec, &mut out);
             }
             GgmlDType::Q3K => {
-                let vec: Vec<crate::quantized::BlockQ3K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ3K::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ3K> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ3K::to_float(&vec, &mut out);
             }
             GgmlDType::Q4K => {
-                let vec: Vec<crate::quantized::BlockQ4K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ4K::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ4K> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ4K::to_float(&vec, &mut out);
             }
             GgmlDType::Q5K => {
-                let vec: Vec<crate::quantized::BlockQ5K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ5K::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ5K> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ5K::to_float(&vec, &mut out);
             }
             GgmlDType::Q6K => {
-                let vec: Vec<crate::quantized::BlockQ6K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ6K::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ6K> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ6K::to_float(&vec, &mut out);
             }
             GgmlDType::Q8K => {
-                let vec: Vec<crate::quantized::BlockQ8K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ8K::to_float(&vec, &mut out);
+                let vec: Vec<fuel_quantized::BlockQ8K> = read_to_vec(&buffer, block_len);
+                fuel_quantized::BlockQ8K::to_float(&vec, &mut out);
             }
         }
 
@@ -115,16 +119,27 @@ impl QMetalStorage {
         ))
     }
 
-    pub fn quantize(&mut self, src: &MetalStorage) -> Result<()> {
-        // Quantization only happens on CPU for now.
-        let src = src.to_cpu::<f32>()?;
-        let elem_count = src.len();
-        let src = crate::Storage::Cpu(crate::HostBuffer::F32(src));
-        let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;
-        qcpu_storage.quantize(&src)?;
-        let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
+    fn quantize_from_f32(
+        &mut self,
+        src: &[f32],
+        imatrix: Option<(&[f32], usize)>,
+    ) -> Result<()> {
+        let mut qcpu = fuel_quantized::cpu_zeros(self.dtype, src.len());
+        match imatrix {
+            None => qcpu.from_float(src),
+            Some((iw, n_per_row)) => qcpu.from_float_imatrix(src, iw, n_per_row),
+        }
+        let bytes = unsafe {
+            std::slice::from_raw_parts(qcpu.as_ptr(), qcpu.storage_size_in_bytes())
+        };
+        let buffer = self.device.new_buffer_with_data(bytes)?;
         self.buffer = buffer;
         Ok(())
+    }
+
+    pub fn quantize(&mut self, src: &MetalStorage) -> Result<()> {
+        let src = src.to_cpu::<f32>()?;
+        self.quantize_from_f32(&src, None)
     }
 
     pub fn quantize_imatrix(
@@ -133,52 +148,21 @@ impl QMetalStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        // Quantization only happens on CPU for now.
         let src = src.to_cpu::<f32>()?;
-        let elem_count = src.len();
-        let src = crate::Storage::Cpu(crate::HostBuffer::F32(src));
-        let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;
-        qcpu_storage.quantize_imatrix(&src, imatrix_weights, n_per_row)?;
-        let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
-        self.buffer = buffer;
-        Ok(())
+        self.quantize_from_f32(&src, Some((imatrix_weights, n_per_row)))
     }
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        src: &crate::HostBuffer,
+        src: &fuel_core_types::HostBuffer,
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
-        // Quantization only happens on CPU for now.
-        let elem_count = src.as_slice::<f32>()?.len();
-        let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;
-
-        if let QStorage::Cpu(storage) = &mut qcpu_storage {
-            storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
-        } else {
-            unreachable!()
-        }
-
-        let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
-        self.buffer = buffer;
-        Ok(())
+        self.quantize_from_f32(src.as_slice::<f32>()?, Some((imatrix_weights, n_per_row)))
     }
 
-    pub fn quantize_onto(&mut self, src: &crate::HostBuffer) -> Result<()> {
-        // Quantization only happens on CPU for now.
-        let elem_count = src.as_slice::<f32>()?.len();
-        let mut qcpu_storage = crate::Device::cpu().qzeros(elem_count, self.dtype)?;
-
-        if let QStorage::Cpu(storage) = &mut qcpu_storage {
-            storage.from_float(src.as_slice::<f32>()?);
-        } else {
-            unreachable!()
-        }
-
-        let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
-        self.buffer = buffer;
-        Ok(())
+    pub fn quantize_onto(&mut self, src: &fuel_core_types::HostBuffer) -> Result<()> {
+        self.quantize_from_f32(src.as_slice::<f32>()?, None)
     }
 
     pub fn storage_size_in_bytes(&self) -> usize {
@@ -194,12 +178,12 @@ impl QMetalStorage {
         use crate::MetalError;
 
         if !layout.is_contiguous() {
-            crate::bail!("input tensor is not contiguous {layout:?}")
+            fuel_core_types::bail!("input tensor is not contiguous {layout:?}")
         }
         let src_shape = layout.shape();
         // self is transposed so n is first then k.
         if src_shape.rank() < 2 {
-            crate::bail!("input tensor has only one dimension {layout:?}")
+            fuel_core_types::bail!("input tensor has only one dimension {layout:?}")
         }
         let (n, k) = self_shape.dims2()?;
         let mut dst_shape = src_shape.dims().to_vec();
@@ -210,11 +194,11 @@ impl QMetalStorage {
         let m = match dst_shape.len() {
             3 => dst_shape[0] * dst_shape[1],
             2 => dst_shape[0],
-            n => crate::bail!("Invalid rank {n} for quantized matmul metal"),
+            n => fuel_core_types::bail!("Invalid rank {n} for quantized matmul metal"),
         };
         let last_k = dst_shape.pop().unwrap();
         if last_k != k {
-            crate::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
+            fuel_core_types::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
         }
         dst_shape.push(n);
         let dst_shape = Shape::from(dst_shape);
@@ -251,19 +235,19 @@ impl QMetalStorage {
         use crate::MetalError;
 
         if !layout.is_contiguous() {
-            crate::bail!("input tensor is not contiguous {layout:?}")
+            fuel_core_types::bail!("input tensor is not contiguous {layout:?}")
         }
         let src_shape = layout.shape();
         // self is transposed so n is first then k.
         if src_shape.rank() < 2 {
-            crate::bail!("input tensor has only one dimension {layout:?}")
+            fuel_core_types::bail!("input tensor has only one dimension {layout:?}")
         }
         let n = self_shape.dim(D::Minus2)?;
         let k = self_shape.dim(D::Minus1)?;
         let mut dst_shape = src_shape.dims().to_vec();
 
         if src_shape.rank() < self_shape.rank() {
-            crate::bail!(
+            fuel_core_types::bail!(
                 "input rank ({}) must be >= weight rank ({})",
                 src_shape.rank(),
                 self_shape.rank()
@@ -276,7 +260,7 @@ impl QMetalStorage {
 
         let last_k = dst_shape.pop().unwrap();
         if last_k != k {
-            crate::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
+            fuel_core_types::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
         }
         dst_shape.push(n);
         let dst_shape = Shape::from(dst_shape);
@@ -287,7 +271,7 @@ impl QMetalStorage {
         assert_eq!(storage.dtype(), DType::F32);
 
         if self_shape.rank() > 4 {
-            crate::bail!("weight rank ({}) must be <= 4", self_shape.rank())
+            fuel_core_types::bail!("weight rank ({}) must be <= 4", self_shape.rank())
         }
         let src0_l = crate::Layout::contiguous(
             [vec![1; 4 - self_shape.rank()], self_shape.dims().to_vec()].concat(),
@@ -302,7 +286,7 @@ impl QMetalStorage {
             .collect::<Vec<_>>();
 
         if src_shape.rank() > 4 {
-            crate::bail!("weight rank ({}) must be <= 4", src_shape.rank())
+            fuel_core_types::bail!("weight rank ({}) must be <= 4", src_shape.rank())
         }
         let src1_l = crate::Layout::contiguous(
             [vec![1; 4 - src_shape.rank()], src_shape.dims().to_vec()].concat(),
@@ -347,17 +331,119 @@ impl QMetalStorage {
     }
 }
 
-pub fn load_quantized<T: super::GgmlType + Send + Sync + 'static>(
+/// Build a `QMetalStorage` from raw block-format bytes already laid out for
+/// `dtype`. Returned as a typed `Box<dyn DynQuantizedStorage>`.
+pub fn load_quantized_bytes(
     device: &MetalDevice,
-    data: &[T],
-) -> Result<QStorage> {
+    dtype: GgmlDType,
+    data: &[u8],
+) -> Result<Box<dyn DynQuantizedStorage>> {
     let buffer = device.new_buffer_with_data(data)?;
-    let device = device.clone();
-    Ok(QStorage::Metal(QMetalStorage {
-        dtype: T::DTYPE,
-        device,
+    Ok(Box::new(QMetalStorage {
+        dtype,
+        device: device.clone(),
         buffer,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// DynQuantizedStorage / QuantizedDeviceKernels
+// ---------------------------------------------------------------------------
+
+impl std::fmt::Debug for QMetalStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "QMetalStorage[{:?}]", self.dtype)
+    }
+}
+
+impl DynQuantizedStorage for QMetalStorage {
+    fn dtype(&self) -> GgmlDType {
+        self.dtype
+    }
+    fn block_size(&self) -> usize {
+        self.dtype.block_size()
+    }
+    fn storage_size_in_bytes(&self) -> usize {
+        QMetalStorage::storage_size_in_bytes(self)
+    }
+    fn quantize(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
+        let metal = src.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
+            fuel_core_types::Error::Msg("quantize: expected metal storage".into()).bt()
+        })?;
+        QMetalStorage::quantize(self, metal)
+    }
+    fn quantize_imatrix(
+        &mut self,
+        src: &dyn DynBackendStorage,
+        imatrix_weights: &[f32],
+        n_per_row: usize,
+    ) -> Result<()> {
+        let metal = src.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
+            fuel_core_types::Error::Msg("quantize_imatrix: expected metal storage".into()).bt()
+        })?;
+        QMetalStorage::quantize_imatrix(self, metal, imatrix_weights, n_per_row)
+    }
+    fn quantize_onto(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
+        let cpu = src
+            .as_any()
+            .downcast_ref::<fuel_cpu_backend::CpuStorage>()
+            .ok_or_else(|| {
+                fuel_core_types::Error::Msg("quantize_onto: expected cpu storage".into()).bt()
+            })?;
+        QMetalStorage::quantize_onto(self, &cpu.0)
+    }
+    fn quantize_imatrix_onto(
+        &mut self,
+        src: &dyn DynBackendStorage,
+        imatrix_weights: &[f32],
+        n_per_row: usize,
+    ) -> Result<()> {
+        let cpu = src
+            .as_any()
+            .downcast_ref::<fuel_cpu_backend::CpuStorage>()
+            .ok_or_else(|| {
+                fuel_core_types::Error::Msg("quantize_imatrix_onto: expected cpu storage".into())
+                    .bt()
+            })?;
+        QMetalStorage::quantize_imatrix_onto(self, &cpu.0, imatrix_weights, n_per_row)
+    }
+    fn dequantize(&self, elem_count: usize) -> Result<Box<dyn DynBackendStorage>> {
+        Ok(Box::new(QMetalStorage::dequantize(self, elem_count)?))
+    }
+    fn data(&self) -> Result<Cow<'_, [u8]>> {
+        Ok(Cow::Owned(QMetalStorage::data(self)?))
+    }
+    fn fwd(
+        &self,
+        self_shape: &Shape,
+        input: &dyn DynBackendStorage,
+        layout: &crate::Layout,
+    ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
+        let metal = input.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
+            fuel_core_types::Error::Msg("qmatmul: expected metal storage".into()).bt()
+        })?;
+        let (s, sh) = QMetalStorage::fwd(self, self_shape, metal, layout)?;
+        Ok((Box::new(s), sh))
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_core_types::dyn_backend::DynBackendDevice> {
+        std::sync::Arc::new(self.device.clone())
+    }
+}
+
+impl QuantizedDeviceKernels for MetalDevice {
+    fn qzeros(&self, elem_count: usize, dtype: GgmlDType) -> Result<Box<dyn DynQuantizedStorage>> {
+        Ok(Box::new(QMetalStorage::zeros(self, elem_count, dtype)?))
+    }
+    fn load_quantized(
+        &self,
+        dtype: GgmlDType,
+        data: Cow<'_, [u8]>,
+    ) -> Result<Box<dyn DynQuantizedStorage>> {
+        load_quantized_bytes(self, dtype, &data)
+    }
 }
 
 fn read_to_vec<T: Clone>(buffer: &Buffer, n: usize) -> Vec<T> {

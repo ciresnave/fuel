@@ -45,6 +45,7 @@ pub mod dyn_impl;
 pub mod error;
 pub mod pinned;
 pub mod probe;
+pub mod quantized;
 pub mod storage;
 pub mod utils;
 
