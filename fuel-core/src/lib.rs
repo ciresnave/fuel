@@ -91,6 +91,7 @@ pub mod model_progress;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod dispatch;
+pub mod factories;
 pub mod judge;
 pub mod npy;
 pub mod probe;
