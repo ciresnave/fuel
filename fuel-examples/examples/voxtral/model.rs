@@ -39,7 +39,7 @@ impl VoxtralModel {
     pub fn new(model_id: &str, use_cpu: bool) -> Result<Self> {
         // Determine device
         let device = if !use_cpu && utils::cuda_is_available() {
-            Device::new_cuda(0).context("Failed to create CUDA device")?
+            fuel::cuda_backend::new_device(0).context("Failed to create CUDA device")?
         } else {
             Device::cpu()
         };

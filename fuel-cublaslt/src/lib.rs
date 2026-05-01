@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_fused_matmul() -> Result<()> {
-        let device = Device::new_cuda(0)?;
+        let device = fuel::cuda_backend::new_device(0)?;
 
         let a = Tensor::randn(0., 1., (8, 4), &device)?.to_dtype(DType::F32)?;
         let b = Tensor::randn(0., 1., (2, 4), &device)?.to_dtype(DType::F32)?;
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_fused_batch_matmul() -> Result<()> {
-        let device = Device::new_cuda(0)?;
+        let device = fuel::cuda_backend::new_device(0)?;
 
         let a = Tensor::randn(0., 1., (3, 8, 4), &device)?.to_dtype(DType::F32)?;
         let b = Tensor::randn(0., 1., (3, 2, 4), &device)?.to_dtype(DType::F32)?;

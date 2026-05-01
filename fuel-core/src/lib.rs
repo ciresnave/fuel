@@ -58,7 +58,6 @@ pub mod backprop;
 pub mod conv;
 mod convert;
 pub mod cpu_backend;
-#[cfg(feature = "cuda")]
 pub mod cuda_backend;
 mod custom_op;
 mod device;
@@ -83,7 +82,6 @@ pub mod layout;
 // `Op::PagedAttn` (and `LazyTensor::paged_attn`) supersedes the
 // bucket-and-pad approach. Variable-length decode is now expressed
 // directly via per-sequence `context_lens`.
-#[cfg(feature = "metal")]
 pub mod metal_backend;
 pub mod model_progress;
 #[cfg(feature = "mkl")]

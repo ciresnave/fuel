@@ -49,7 +49,7 @@ elsewhere — those carry forward as Tier 3 CUDA assets.
   FFI. There is no lazy-graph `Op::FlashAttn` — these can't be plugged
   into a `fuel-graph` realize call without an adapter.
 - **Tests**: 3 `#[test]`s in `tests/flash_attn_tests.rs`, all gated on
-  `device = Device::new_cuda(0)`. They build small tensors via the eager
+  `device = fuel::cuda_backend::new_device(0)`. They build small tensors via the eager
   API, run a Rust-side reference attention (`fa_acausal` /
   `fa_acausal_softcap`) and compare to the FFI output. No CI runner
   picks these up unless someone adds CUDA-aware test infrastructure

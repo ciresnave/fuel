@@ -91,13 +91,13 @@ impl PyDevice {
 
     fn as_device(&self) -> PyResult<Device> {
         match self {
-            Self::Cpu => Ok(Device::Cpu),
+            Self::Cpu => Ok(Device::cpu()),
             Self::Cuda => {
                 let mut device = CUDA_DEVICE.lock().unwrap();
                 if let Some(device) = device.as_ref() {
                     return Ok(device.clone());
                 };
-                let d = Device::new_cuda(0).map_err(wrap_err)?;
+                let d = ::fuel::cuda_backend::new_device(0).map_err(wrap_err)?;
                 *device = Some(d.clone());
                 Ok(d)
             }
@@ -106,7 +106,7 @@ impl PyDevice {
                 if let Some(device) = device.as_ref() {
                     return Ok(device.clone());
                 };
-                let d = Device::new_metal(0).map_err(wrap_err)?;
+                let d = ::fuel::metal_backend::new_device(0).map_err(wrap_err)?;
                 *device = Some(d.clone());
                 Ok(d)
             }

@@ -31,7 +31,7 @@ fn fa_acausal(q: &Tensor, k: &Tensor, v: &Tensor, softmax_scale: f32) -> Result<
 
 #[test]
 fn flash_attn_acausal() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
     let q = Tensor::arange(0u32, 3 * 2 * 64, &device)?
         .to_dtype(DType::F16)?
         .reshape((1, 3, 2, 64))?;
@@ -122,7 +122,7 @@ fn flash_attn_acausal() -> Result<()> {
 
 #[test]
 fn flash_attn_acausal_gqa() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
     let n_h = 4usize;
     let n_h_k = 1usize;
 
@@ -244,7 +244,7 @@ fn flash_attn_acausal_gqa() -> Result<()> {
 
 #[test]
 fn flash_attn_varlen() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
     let q = Tensor::arange(0u32, 3 * 2 * 64, &device)?
         .to_dtype(DType::F16)?
         .reshape((3, 2, 64))?;
@@ -341,7 +341,7 @@ fn flash_attn_varlen() -> Result<()> {
     use_gqa_packing => [false], // true does not make sense, as its reset to falser in the function
 )]
 fn flash_attn_varlen_param(head_dim: usize, seq_len: usize, use_gqa_packing: bool) -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel::cuda_backend::new_device(0)?;
 
     // Adjust the shape so it reflects seq_len.
     // Here, we make q of shape (3, seq_len, head_dim).

@@ -20,7 +20,7 @@ fn cos_sin(n: usize, device: &Device) -> Result<Tensor> {
 }
 
 fn main() -> Result<()> {
-    let device = Device::new_cuda(0)?;
+    let device = fuel_core::cuda_backend::new_device(0)?;
     let args = std::env::args().collect::<Vec<String>>();
     let n = if args.len() < 2 {
         2000usize

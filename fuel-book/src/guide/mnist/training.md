@@ -65,7 +65,7 @@ use fuel_nn::{loss, ops, Linear, Module, Optimizer, VarBuilder, VarMap};
 fn training_loop(
     m: fuel_datasets::vision::Dataset,
 ) -> anyhow::Result<()> {
-    let dev = Device::cuda_if_available(0)?;
+    let dev = fuel::cuda_backend::device_if_available(0)?;
 
     let train_labels = m.train_labels;
     let train_images = m.train_images.to_device(&dev)?;

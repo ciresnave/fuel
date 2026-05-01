@@ -224,9 +224,9 @@ fn ug_op() -> Result<()> {
         kernel.lower(&opts)?
     };
     let device = if fuel_core::utils::cuda_is_available() {
-        Device::new_cuda(0)?
+        fuel_core::cuda_backend::new_device(0)?
     } else if fuel_core::utils::metal_is_available() {
-        Device::new_metal(0)?
+        fuel_core::metal_backend::new_device(0)?
     } else {
         fuel_core::bail!("metal/cuda is mandatory for this test")
     };

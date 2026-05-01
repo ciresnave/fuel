@@ -167,7 +167,7 @@ fn main() -> Result<()> {
     }
     println!("Rank {rank:?} spawned");
 
-    let device = Device::new_cuda(rank)?;
+    let device = fuel::cuda_backend::new_device(rank)?;
     let cache = model::Cache::new(dtype, &config, &device)?;
 
     println!("building the model");

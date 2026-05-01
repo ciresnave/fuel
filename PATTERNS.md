@@ -125,7 +125,7 @@ use fuel_nn::{VarBuilder};
 // use fuel_transformers::models::llama::{Llama, Config};
 
 fn main() -> fuel_core::Result<()> {
-    let device = Device::Cpu;  // swap for Device::new_cuda(0)? on GPU
+    let device = Device::cpu();  // swap for fuel_core::cuda_backend::new_device(0)? on GPU
 
     // Load weights from a local safetensors file.
     // For multi-shard checkpoints pass a Vec of paths.

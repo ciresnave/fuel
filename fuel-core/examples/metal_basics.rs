@@ -9,11 +9,8 @@ use fuel_core::{Device, Tensor};
 
 fn main() -> Result<()> {
     // This requires the code to be run with MTL_CAPTURE_ENABLED=1
-    let device = Device::new_metal(0)?;
-    let metal_device = match &device {
-        Device::Metal(m) => m,
-        _ => anyhow::bail!("unexpected device"),
-    };
+    let device = fuel_core::metal_backend::new_device(0)?;
+    let metal_device = fuel_core::metal_backend::as_device(&device)?;
     metal_device.capture("/tmp/fuel.gputrace")?;
     // This first synchronize ensures that a new command buffer gets created after setting up the
     // capture scope.

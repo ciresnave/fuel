@@ -27,7 +27,7 @@ mod metal_sdpa_tests {
         const H: usize = 3;
 
         let scale: f64 = f64::from(DK as u32).sqrt().recip();
-        let device = Device::new_metal(0)?;
+        let device = fuel::metal_backend::new_device(0)?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let q = randn(&mut rng, (BS, H, R, DK), &device)?;
         let k = randn(&mut rng, (BS, H, L, DK), &device)?;
@@ -58,7 +58,7 @@ mod metal_sdpa_tests {
         const H: usize = 3;
 
         let scale: f64 = f64::from(DK as u32).sqrt().recip();
-        let device = Device::new_metal(0)?;
+        let device = fuel::metal_backend::new_device(0)?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(4242);
         let q = randn(&mut rng, (BS, H, R, DK), &device)?;
         let k = randn(&mut rng, (BS, H, L, DK), &device)?;
@@ -91,7 +91,7 @@ mod metal_sdpa_tests {
         const SOFTCAP: f64 = 50.;
 
         let scale: f64 = f64::from(DK as u32).sqrt().recip();
-        let device = Device::new_metal(0)?;
+        let device = fuel::metal_backend::new_device(0)?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(424242);
         let q = randn(&mut rng, (BS, H, R, DK), &device)?;
         let k = randn(&mut rng, (BS, H, L, DK), &device)?;
@@ -129,7 +129,7 @@ mod metal_sdpa_tests {
         const SOFTCAP: f64 = 50.;
 
         let scale: f64 = f64::from(DK as u32).sqrt().recip();
-        let device = Device::new_metal(0)?;
+        let device = fuel::metal_backend::new_device(0)?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(42424242);
         let q = randn(&mut rng, (BS, H, R, DK), &device)?;
         let k = randn(&mut rng, (BS, H, L, DK), &device)?;
@@ -165,7 +165,7 @@ mod metal_sdpa_tests {
         const H: usize = 3;
 
         let scale: f64 = f64::from(DK as u32).sqrt().recip();
-        let device = Device::new_metal(0)?;
+        let device = fuel::metal_backend::new_device(0)?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(4242424242);
         let q = randn(&mut rng, (BS, H, R, DK), &device)?;
         let k = randn(&mut rng, (BS, H, L, DK), &device)?;
