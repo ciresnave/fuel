@@ -776,18 +776,28 @@ the universal exchange type. That was corrected: `CpuStorage` as a *data type*
 (the code that executes BLAS, matmul, etc.). The data type belongs in a shared
 foundation crate; the backend implementation is separable.
 
-**Three-layer architecture** (in progress):
+**Three-layer architecture** ✅ COMPLETE (2026-05-01):
 
 ```text
-fuel-core-types       ← Shape, DType, Layout, Error, CpuStorage (enum def),
-                          BackendStorage/BackendDevice traits, WithDType, VecOps,
-                          SIMD kernels, conv params, op traits
+fuel-core-types       ← Shape, DType, Layout, Error, HostBuffer,
+                          DynBackendStorage/DynBackendDevice traits,
+                          InplaceOp1/2/3 traits, WithDType, SIMD kernels,
+                          conv params, dispatch + capability + probe types
         ↑
-fuel-cpu-backend      ← impl BackendStorage for CpuStorage, impl BackendDevice
-        ↑                 for CpuDevice (matmul, binary ops, reductions, etc.)
-fuel-core             ← Device/Storage enums, Tensor, Var, backprop,
-                          custom_op, quantized, re-exports everything
+fuel-cpu-backend      ← CpuStorage (newtype on HostBuffer),
+fuel-cuda-backend       impl DynBackendStorage / DynBackendDevice on
+fuel-metal-backend      concrete storage/device types directly
+        ↑
+fuel-core             ← Device/Storage backend-agnostic newtypes, Tensor,
+                          Var, backprop, custom_op, lazy graph, factories
+                          registry, thin re-export bridges in cuda_backend/
+                          and metal_backend/
 ```
+
+Static `BackendStorage`/`BackendDevice` traits dropped entirely;
+polymorphism is `Box<dyn DynBackendStorage>` / `Arc<dyn DynBackendDevice>`.
+Adding a backend = new crate impl-ing the dyn traits + a `BackendFactory`
+entry in `fuel-core/src/factories.rs`.
 
 Progress:
 
@@ -796,16 +806,18 @@ Progress:
   Compiles standalone. Added to workspace members.
 - [x] Verified full workspace builds with `fuel-core-types` present
   (`cargo check --workspace` passes).
-- [x] Wire `fuel-core` to re-export from `fuel-core-types` — **partial**:
-  - ✅ Wired: `shape.rs`, `layout.rs`, `strided_index.rs`, `dummy_dtype.rs`
-    (fuel-core re-exports these entirely from fuel-core-types)
-  - ❌ Blocked: `dtype.rs` (orphan rule: `TryFrom<safetensors::Dtype> for DType`),
-    `backend.rs` (BackendStorage methods return fuel-core-types `Result`, but
-    implementations use fuel-core `Result`), `error.rs` (MetalError conflict)
-  - ❌ Blocked: `convert.rs` blanket impls `impl<T: WithDType> TryFrom<&Tensor> for Vec<T>`
-    cause coherence errors when `WithDType` comes from upstream crate
-  - Note: `From<fuel_core_types::Error> for fuel_core::Error` bridge enables
-    `?` operator across crate boundary for re-exported shape/layout methods
+- [x] Wire `fuel-core` to re-export from `fuel-core-types` — DONE.
+  All foundational types now live in `fuel-core-types`: `shape`, `layout`,
+  `strided_index`, `dummy_dtype`, `dtype` (with `DType`/`WithDType`/
+  `IntDType`/`FloatDType`), `error` (with `Error`/`Result`/`Context`),
+  `cpu_storage` (with `HostBuffer`/`HostBufferRef`/`CpuDevice`/
+  `CpuStorage` alias), `dyn_backend`, `op`, `conv`, `quantized`,
+  `inplace_op`, `capability`, `probe`, `dispatch`, `scalar`, `backend`
+  (with `HostStorage`). The orphan-rule blockers got resolved when the
+  static `BackendStorage`/`BackendDevice` traits were dropped (step 8 of
+  the 15-step refactor): the impls that needed `fuel-core` types
+  disappeared along with the traits. `MetalError` lives in
+  `fuel-metal-backend` and is re-exported through the bridge module.
 - [x] Create `fuel-cpu-backend` crate (extract cpu_backend module from
   fuel-core). Created with 6 source files: `lib.rs`, `ops.rs` (~1770 lines of
   CPU computation kernels — MatMul, pooling, convolution, reductions, index ops),
@@ -837,7 +849,38 @@ Progress:
   dispatch calling fuel-cpu-backend's `unary_map`/`binary_map` helpers
   (full delegation blocked until CpuStorage is re-exported from fuel-core-types,
   which requires resolving dtype.rs/convert.rs orphan rule issues).
-- [ ] Extract cuda/metal backends into separate crates (already behind feature flags with separate kernel crates).
+- [x] Extract cuda/metal backends into separate crates (DONE 2026-05-01).
+  The 15-step backend-agnostic refactor (082d7ffa→f0c00233) moved all
+  CUDA logic to `fuel-cuda-backend` (originally named `fuel-graph-cuda`)
+  and all Metal logic to `fuel-metal-backend` (originally `fuel-metal`).
+  fuel-core's `cuda_backend/`/`metal_backend/` modules collapsed to thin
+  re-export shells. Static `BackendStorage`/`BackendDevice` traits dropped
+  entirely; backends impl `DynBackendStorage`/`DynBackendDevice` (in
+  `fuel-core-types`) directly on their concrete storage/device types.
+  `BackendFactory` registry in `fuel-core/src/factories.rs` makes
+  `judge.rs`/`probe.rs` backend-agnostic.
+
+  **Phase B follow-on (2026-05-01)** — finished the symmetry pass that
+  the 15-step plan deliberately deferred:
+  - B1: deleted `Device::new_cuda`/`new_cuda_with_stream`/`new_metal`/
+    `cuda_if_available`/`metal_if_available`/`as_cuda_device`/
+    `as_metal_device`/`from_cuda_device`/`from_metal_device` from
+    `fuel-core/src/device.rs`. Replacements (`cuda_backend::new_device`,
+    `From<CudaDevice> for Device`, etc.) live in the bridge modules.
+    71 caller sites migrated.
+  - B2: split `UgIOp1` (the fuel-ug compiled-kernel bridge) into
+    `fuel_cuda_backend::ug::CudaUgIOp1` + `fuel_metal_backend::ug::MetalUgIOp1`;
+    moved `InplaceOp1/2/3` traits to `fuel-core-types` so backend crates
+    can implement them without a cycle.
+  - B3: renamed crates `fuel-graph-cuda` → `fuel-cuda-backend` and
+    `fuel-metal` → `fuel-metal-backend` for naming consistency with
+    `fuel-cpu-backend`.
+
+  End state: fuel-core's CUDA/Metal awareness is confined to two places
+  — the `BackendFactory` registry entries in `factories.rs`, and the
+  thin bridge shells in `cuda_backend/`/`metal_backend/` (`From<XxxDevice>
+  for Device` + a few free fns). `device.rs`/`custom_op.rs` no longer
+  name any backend-specific types.
 
 #### Tier 3 — Open Device for third-party backends ✅ COMPLETE
 
