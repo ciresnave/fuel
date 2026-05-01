@@ -16,8 +16,10 @@ pub mod dyn_impl;
 pub mod host_storage;
 pub mod ops;
 pub mod probe;
+pub mod quantized;
 pub mod utils;
 
 pub use dyn_impl::CpuStorage;
 pub use ops::*;
+pub use quantized::CpuQStorage;
 pub use utils::*;

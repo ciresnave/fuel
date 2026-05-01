@@ -374,4 +374,12 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
 
     /// Downcast to the concrete device type.
     fn as_any(&self) -> &dyn Any;
+
+    /// Optional quantized-kernel adapter for backends that support GGUF/ggml
+    /// block formats. fuel-core walks this to allocate `qzeros` storage and
+    /// load pre-quantized blocks without naming concrete backend types.
+    /// Backends that don't support quantization return `None` (the default).
+    fn as_quantized_kernels(&self) -> Option<&dyn crate::quantized::QuantizedDeviceKernels> {
+        None
+    }
 }

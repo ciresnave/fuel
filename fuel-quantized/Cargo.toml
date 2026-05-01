@@ -1,0 +1,15 @@
+[package]
+    categories.workspace = true
+    description          = "Backend-agnostic quantized (ggml/gguf block) numerics for fuel: BlockQX types, GgmlType trait, scalar + SIMD reference impls, CPU DynQuantizedStorage adapter."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-quantized"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types  = { workspace = true }
+    byteorder        = { workspace = true }
+    half             = { workspace = true }
+    rayon            = { workspace = true }

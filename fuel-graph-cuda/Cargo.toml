@@ -13,6 +13,8 @@
     fuel-graph             = { workspace = true }
     fuel-graph-executor    = { workspace = true }
     fuel-cuda-kernels      = { workspace = true }
+    fuel-cpu-backend       = { workspace = true }
+    fuel-quantized         = { workspace = true }
     fuel-reference-backend = { workspace = true }
     # baracuda CUDA FFI: split into sub-crates for a precise feature graph.
     baracuda-types      = { workspace = true }

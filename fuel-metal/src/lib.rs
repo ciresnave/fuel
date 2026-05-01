@@ -12,6 +12,8 @@ pub mod device;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod dyn_impl;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod quantized;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod storage;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]

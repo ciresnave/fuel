@@ -494,4 +494,10 @@ impl DynBackendDevice for MetalDevice {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_quantized_kernels(
+        &self,
+    ) -> Option<&dyn fuel_core_types::quantized::QuantizedDeviceKernels> {
+        Some(self)
+    }
 }

@@ -5,7 +5,8 @@
     test_utils::to_vec2_round,
     DType, Device, IndexOp, Module, Result, Tensor, Var,
 };
-use quantized::{k_quants, GgmlType};
+use fuel_quantized as k_quants;
+use fuel_quantized::GgmlType;
 use rand::prelude::*;
 
 const GGML_TEST_SIZE: usize = 32 * 128;
@@ -397,9 +398,9 @@ fn quantize_q5_1(device: &Device) -> Result<()> {
 
 fn get_test_vector2(bound: f32, size: usize, device: &Device) -> Result<Tensor> {
     assert!(
-        size.is_multiple_of(crate::quantized::k_quants::QK_K),
+        size.is_multiple_of(k_quants::QK_K),
         "size must be a multiple of {}",
-        crate::quantized::k_quants::QK_K
+        k_quants::QK_K
     );
 
     let src = (0..size)

@@ -1,11 +1,10 @@
-use super::utils::{
+use crate::utils::{
     get_scale_min_k4, group_for_dequantization, group_for_quantization, make_q3_quants,
-    make_qkx1_quants, make_qx_quants, nearest_int,
+    make_qkx1_quants, make_qkx3_quants, make_qp_quants, make_qx_quants, nearest_int,
 };
-use super::GgmlDType;
-use crate::quantized::utils::{make_qkx3_quants, make_qp_quants};
-use crate::Result;
 use byteorder::{ByteOrder, LittleEndian};
+use fuel_core_types::Result;
+use fuel_core_types::quantized::GgmlDType;
 use half::{bf16, f16, slice::HalfFloatSliceExt};
 use rayon::prelude::*;
 
@@ -2339,7 +2338,7 @@ pub fn matmul_f16<T: GgmlType>(
 ) -> Result<()> {
     let (m, k, n) = mkn;
     if m * k != lhs.len() {
-        crate::bail!("unexpected lhs length {} {mkn:?}", lhs.len());
+        fuel_core_types::bail!("unexpected lhs length {} {mkn:?}", lhs.len());
     }
 
     let k_in_lhs_blocks = k.div_ceil(T::BLCK_SIZE);

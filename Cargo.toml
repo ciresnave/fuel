@@ -37,6 +37,7 @@ members = [
     "fuel-onnx",
     "fuel-parallel",
     "fuel-pyo3",
+    "fuel-quantized",
     "fuel-reference-backend",
     "fuel-training",
     "fuel-transformers",
@@ -71,6 +72,7 @@ default-members = [
     "fuel-nn",
     "fuel-parallel",
     "fuel-pyo3",
+    "fuel-quantized",
     "fuel-transformers",
     "fuel-training",
     "fuel-ug",
@@ -129,6 +131,7 @@ fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.10.2" }
 fuel-nn = { path = "./fuel-nn", version = "0.10.2" }
 fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }
 fuel-parallel = { path = "./fuel-parallel", version = "0.10.2" }
+fuel-quantized = { path = "./fuel-quantized", version = "0.10.2" }
 fuel-reference-backend = { path = "./fuel-reference-backend", version = "0.10.2" }
 fuel-training = { path = "./fuel-training", version = "0.10.2" }
 fuel-transformers = { path = "./fuel-transformers", version = "0.10.2" }
