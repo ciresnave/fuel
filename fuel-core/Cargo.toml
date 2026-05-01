@@ -139,10 +139,10 @@ metal = [
 vulkan = ["dep:fuel-graph-vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
-# When combined with `cuda`, fuel-graph-cuda's `compile()` method that turns
-# an SSA kernel into a CudaFunc is itself gated on `ug` — pipe the feature
-# through so `UgIOp1::new(..., device)` can build the kernel.
-ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-graph-cuda?/ug"]
+# Pipes the `ug` feature through to fuel-graph-cuda and fuel-metal so the
+# per-backend `XxxUgIOp1::new(..., device)` constructors are available
+# whenever `cuda`/`metal` is also enabled.
+ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-graph-cuda?/ug", "fuel-metal?/ug"]
 
 [[bench]]
 name = "bench_main"

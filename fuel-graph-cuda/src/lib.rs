@@ -47,6 +47,8 @@ pub mod pinned;
 pub mod probe;
 pub mod quantized;
 pub mod storage;
+#[cfg(feature = "ug")]
+pub mod ug;
 pub mod utils;
 
 pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};

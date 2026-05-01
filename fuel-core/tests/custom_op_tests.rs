@@ -223,14 +223,30 @@ fn ug_op() -> Result<()> {
         let opts: fuel_ug::lower_op::Opts = Default::default();
         kernel.lower(&opts)?
     };
-    let device = if fuel_core::utils::cuda_is_available() {
-        fuel_core::cuda_backend::new_device(0)?
-    } else if fuel_core::utils::metal_is_available() {
-        fuel_core::metal_backend::new_device(0)?
-    } else {
-        fuel_core::bail!("metal/cuda is mandatory for this test")
-    };
-    let op = fuel_core::UgIOp1::new("test", kernel, &device)?;
+    let (device, op): (fuel_core::Device, Box<dyn fuel_core::InplaceOp1>) =
+        if fuel_core::utils::cuda_is_available() {
+            #[cfg(feature = "cuda")]
+            {
+                let device = fuel_core::cuda_backend::new_device(0)?;
+                let cuda_dev = fuel_core::cuda_backend::as_device(&device)?;
+                let op = fuel_graph_cuda::ug::CudaUgIOp1::new("test", kernel, cuda_dev)?;
+                (device, Box::new(op))
+            }
+            #[cfg(not(feature = "cuda"))]
+            unreachable!()
+        } else if fuel_core::utils::metal_is_available() {
+            #[cfg(feature = "metal")]
+            {
+                let device = fuel_core::metal_backend::new_device(0)?;
+                let metal_dev = fuel_core::metal_backend::as_device(&device)?;
+                let op = fuel_metal::ug::MetalUgIOp1::new("test", kernel, metal_dev)?;
+                (device, Box::new(op))
+            }
+            #[cfg(not(feature = "metal"))]
+            unreachable!()
+        } else {
+            fuel_core::bail!("metal/cuda is mandatory for this test")
+        };
     let t = Tensor::arange(0u32, 12u32, &device)?.to_dtype(DType::F32)?;
     t.inplace_op1(&op)?;
     assert_eq!(
