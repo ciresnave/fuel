@@ -61,7 +61,7 @@ pub struct SimpleScheduler;
 impl Scheduler for SimpleScheduler {
     fn plan(&self, graph: &SharedGraph, roots: &[NodeId], router: &Router) -> Placement {
         let default_device = router.default_device();
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         let order = topo_order_multi(&g, roots);
         let mut out = Placement::with_capacity(order.len());
         for id in order {
@@ -80,7 +80,7 @@ impl Scheduler for SimpleScheduler {
 /// visible to the subsequent `lower_const_placement` + `insert_copies`
 /// passes.
 pub fn apply_placement(graph: &SharedGraph, placement: &Placement) {
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     for (&id, &device) in placement {
         g.set_placement(id, device);
     }
@@ -212,7 +212,7 @@ impl SchedulerRule for BaselineRule {
         placement: &mut Placement,
     ) {
         let default_device = router.default_device();
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         for id in fuel_graph::topo_order_multi(&g, roots) {
             let d = g.placement(id).unwrap_or(default_device);
             placement.insert(id, d);
@@ -240,7 +240,7 @@ impl SchedulerRule for ConstLoweringRule {
     ) {
         // Build consumer index: for each node, the set of nodes that
         // consume it.
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         let order = fuel_graph::topo_order_multi(&g, roots);
         let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for &nid in &order {

@@ -137,7 +137,7 @@ fn find_gap_consumers(
     graph: &SharedGraph,
     candidate: NodeId,
 ) -> Option<(NodeId, Vec<NodeId>)> {
-    let g = graph.borrow();
+    let g = graph.read().unwrap();
     let order = topo_order_multi(&g, &collect_roots(&g));
 
     // Positions of candidate's consumers in topo order.
@@ -188,14 +188,14 @@ mod tests {
 
     /// Helper: count how many Op::Release nodes are in the graph.
     fn count_releases(graph: &SharedGraph) -> usize {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         (0..g.len())
             .filter(|i| matches!(g.node(NodeId(*i)).op, Op::Release))
             .count()
     }
 
     fn count_copies(graph: &SharedGraph) -> usize {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         (0..g.len())
             .filter(|i| matches!(g.node(NodeId(*i)).op, Op::Copy { .. }))
             .count()

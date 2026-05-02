@@ -243,7 +243,7 @@ pub fn apply_placement_plan(
     graph: &fuel_graph::SharedGraph,
     plan: &HashMap<NodeId, DeviceLocation>,
 ) {
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     for (&id, &loc) in plan {
         if g.placement(id).is_none() {
             g.set_placement(id, loc);
@@ -259,7 +259,7 @@ pub fn force_apply_placement_plan(
     graph: &fuel_graph::SharedGraph,
     plan: &HashMap<NodeId, DeviceLocation>,
 ) {
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     for (&id, &loc) in plan {
         g.set_placement(id, loc);
     }
@@ -283,7 +283,7 @@ pub fn auto_place_and_route(
     fallback_device: DeviceLocation,
 ) -> Vec<NodeId> {
     let plan = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         recommend_placement(&g, table, criterion, fallback_device)
     };
     apply_placement_plan(graph, &plan);
@@ -402,7 +402,7 @@ pub fn auto_place_and_route_with_transfer_cost(
         }
     }
     let plan = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         dp_plan(&g, roots, &profile, &bandwidth, &available_backends, fallback_device)
     };
     apply_placement_plan(graph, &plan);
@@ -839,7 +839,7 @@ mod tests {
         // The graph for the recommender is whichever one any of our
         // tensors point into; they all share the same graph since
         // they were built from the same `from_f32` root.
-        let graph = small_a.graph().borrow();
+        let graph = small_a.graph().read().unwrap();
 
         let plan = recommend_placement(
             &graph,
@@ -880,10 +880,10 @@ mod tests {
         let mm = a.matmul(&b);  // dispatch table would pick CUDA
 
         // User pins it to CPU explicitly.
-        a.graph().borrow_mut().set_placement(mm.id(), DeviceLocation::Cpu);
+        a.graph().write().unwrap().set_placement(mm.id(), DeviceLocation::Cpu);
 
         let plan = recommend_placement(
-            &a.graph().borrow(),
+            &a.graph().read().unwrap(),
             &table,
             Criterion::Fastest,
             DeviceLocation::Cpu,
@@ -892,7 +892,7 @@ mod tests {
         assert_eq!(plan[&mm.id()], DeviceLocation::Cuda { gpu_id: 0 });
         apply_placement_plan(a.graph(), &plan);
         assert_eq!(
-            a.graph().borrow().placement(mm.id()),
+            a.graph().read().unwrap().placement(mm.id()),
             Some(DeviceLocation::Cpu),
             "user's explicit hint must not be overwritten by recommend_placement",
         );
@@ -993,7 +993,7 @@ mod tests {
         let mm = small_a.matmul(&small_b);
 
         let plan = dp_plan(
-            &small_a.graph().borrow(),
+            &small_a.graph().read().unwrap(),
             &[mm.id()],
             &report,
             &bandwidth,
@@ -1041,7 +1041,7 @@ mod tests {
         let mm = big_a.matmul(&big_b);
 
         let plan = dp_plan(
-            &big_a.graph().borrow(),
+            &big_a.graph().read().unwrap(),
             &[mm.id()],
             &report,
             &bandwidth,
@@ -1088,7 +1088,7 @@ mod tests {
         );
         let big_mm = big_a.matmul(&big_b);  // → CUDA
 
-        let n_before = small_a.graph().borrow().len();
+        let n_before = small_a.graph().read().unwrap().len();
         let _new_roots = auto_place_and_route(
             small_a.graph(),
             &[small_mm.id(), big_mm.id()],
@@ -1096,12 +1096,12 @@ mod tests {
             Criterion::Fastest,
             DeviceLocation::Cpu,
         );
-        let n_after = small_a.graph().borrow().len();
+        let n_after = small_a.graph().read().unwrap().len();
 
         // Same expectation as the manual-pipeline test: ≥2 Copy nodes
         // targeting CUDA appeared at the boundary between the
         // CPU-placed sub-graph and the CUDA-placed sub-graph.
-        let g = small_a.graph().borrow();
+        let g = small_a.graph().read().unwrap();
         let mut cuda_copies = 0;
         for i in n_before..n_after {
             if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op {
@@ -1153,10 +1153,10 @@ mod tests {
         );
         let big_mm = big_a.matmul(&big_b);  // size 20 → CUDA
 
-        let n_before = small_a.graph().borrow().len();
+        let n_before = small_a.graph().read().unwrap().len();
 
         let plan = recommend_placement(
-            &small_a.graph().borrow(),
+            &small_a.graph().read().unwrap(),
             &table,
             Criterion::Fastest,
             DeviceLocation::Cpu,
@@ -1166,7 +1166,7 @@ mod tests {
         let roots = vec![small_mm.id(), big_mm.id()];
         let _new_roots = fuel_graph::opt::insert_copies(small_a.graph(), &roots);
 
-        let g = small_a.graph().borrow();
+        let g = small_a.graph().read().unwrap();
         let n_after = g.len();
 
         // big_a + big_b are placeless Const inputs feeding into big_mm

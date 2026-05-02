@@ -107,7 +107,7 @@ impl AnyRefTensor {
 /// walking its graph. The returned variant's dtype matches the root
 /// tensor's dtype.
 pub fn realize(tensor: &Tensor) -> AnyRefTensor {
-    let graph = tensor.graph().borrow();
+    let graph = tensor.graph().read().unwrap();
     let order = topo_order(&graph, tensor.id());
     let mut cache: HashMap<NodeId, AnyRefTensor> = HashMap::new();
 
@@ -198,11 +198,11 @@ pub fn realize_many(tensors: &[&Tensor]) -> Vec<AnyRefTensor> {
     let graph_rc = tensors[0].graph();
     for t in &tensors[1..] {
         assert!(
-            std::rc::Rc::ptr_eq(graph_rc, t.graph()),
+            std::sync::Arc::ptr_eq(graph_rc, t.graph()),
             "realize_many: all tensors must belong to the same graph",
         );
     }
-    let graph = graph_rc.borrow();
+    let graph = graph_rc.read().unwrap();
     let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
     let order = topo_order_multi(&graph, &roots);
     let mut cache: HashMap<NodeId, AnyRefTensor> = HashMap::new();

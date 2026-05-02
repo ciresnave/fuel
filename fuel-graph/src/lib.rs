@@ -36,19 +36,18 @@
 //!   nodes for the gradient of every leaf. Fused backward and symbolic
 //!   graph rewriting are deferred to Phase 6d.
 //! - No fusion, no planner. Those belong to later sub-phases of Phase 6.
-//! - Single-threaded. The graph is wrapped in `Rc<RefCell<_>>` because the
-//!   MVP needs no cross-thread sharing. Moving to `Arc<Mutex<_>>` is a
-//!   one-line change when multi-threaded building becomes relevant.
+//! - Thread-safe. The graph is wrapped in `Arc<RwLock<_>>` so that
+//!   `fuel_graph::Tensor` (and any handle that embeds it, including
+//!   `fuel_core::Tensor` post Phase 7.5 work item G) is `Send + Sync`.
+//!   Borrow access goes through `read().unwrap()` / `write().unwrap()`.
 
 pub mod grad;
 pub mod opt;
 
 use fuel_core_types::{DeviceLocation, DType, Shape};
 use half::{bf16, f16};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Compute the topological order of every node reachable from `root`.
 ///
@@ -862,7 +861,7 @@ impl Graph {
 /// A shared, mutable graph. Builders clone this cheaply and hand it to
 /// every derived tensor so that all tensors in one computation point to
 /// the same arena.
-pub type SharedGraph = Rc<RefCell<Graph>>;
+pub type SharedGraph = Arc<RwLock<Graph>>;
 
 /// A handle to a node in a shared graph. Cheap to clone. Carries the
 /// graph reference so builder methods have everything they need to append
@@ -895,18 +894,18 @@ impl Tensor {
 
     /// The shape of this tensor, read from the underlying node.
     pub fn shape(&self) -> Shape {
-        self.graph.borrow().node(self.id).shape.clone()
+        self.graph.read().unwrap().node(self.id).shape.clone()
     }
 
     /// The dtype of this tensor, read from the underlying node.
     pub fn dtype(&self) -> DType {
-        self.graph.borrow().node(self.id).dtype
+        self.graph.read().unwrap().node(self.id).dtype
     }
 
     /// The placement hint for this tensor's node, if one was set. `None`
     /// means "inherit from the executor's default device."
     pub fn placement(&self) -> Option<DeviceLocation> {
-        self.graph.borrow().placement(self.id)
+        self.graph.read().unwrap().placement(self.id)
     }
 
     /// Tag this tensor's node with a target device. The executor will
@@ -918,7 +917,7 @@ impl Tensor {
     /// let y = a.matmul(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
     /// ```
     pub fn on_device(self, loc: DeviceLocation) -> Self {
-        self.graph.borrow_mut().set_placement(self.id, loc);
+        self.graph.write().unwrap().set_placement(self.id, loc);
         self
     }
 
@@ -935,13 +934,13 @@ impl Tensor {
     /// mechanism to stop them running in the wrong order.
     pub fn release(&self) -> Self {
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op:     Op::Release,
             inputs: vec![self.id],
             shape:  Shape::from_dims(&[0]),
             dtype,
         });
-        Tensor { graph: Rc::clone(&self.graph), id }
+        Tensor { graph: Arc::clone(&self.graph), id }
     }
 
     /// Move this tensor's data to `target` device — destroying the
@@ -968,13 +967,13 @@ impl Tensor {
     pub fn move_to_device(&self, target: DeviceLocation) -> Self {
         let shape = self.shape();
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op:     Op::Move { target },
             inputs: vec![self.id],
             shape,
             dtype,
         });
-        Tensor { graph: Rc::clone(&self.graph), id }
+        Tensor { graph: Arc::clone(&self.graph), id }
     }
 
     /// Copy this tensor's data to `target` device. Source stays
@@ -991,13 +990,13 @@ impl Tensor {
     pub fn copy_to_device(&self, target: DeviceLocation) -> Self {
         let shape = self.shape();
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op:     Op::Copy { target },
             inputs: vec![self.id],
             shape,
             dtype,
         });
-        Tensor { graph: Rc::clone(&self.graph), id }
+        Tensor { graph: Arc::clone(&self.graph), id }
     }
 
     /// Build a `Const` tensor from an `f32` slice and shape on a fresh
@@ -1048,8 +1047,8 @@ impl Tensor {
             shape.elem_count(),
         );
         let dtype = data.dtype();
-        let graph = Rc::new(RefCell::new(Graph::new()));
-        let id = graph.borrow_mut().push(Node {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let id = graph.write().unwrap().push(Node {
             op:     Op::Const(data),
             inputs: vec![],
             shape,
@@ -1100,7 +1099,7 @@ impl Tensor {
             shape.elem_count(),
         );
         let dtype = data.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op:     Op::Const(data),
             inputs: vec![],
             shape,
@@ -1142,7 +1141,7 @@ impl Tensor {
     /// - `[k, n]` @ `[batch, n, m]` → `[batch, k, m]` (lhs auto-broadcast)
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &other.graph),
+            Arc::ptr_eq(&self.graph, &other.graph),
             "matmul: tensors must live on the same graph",
         );
         // Mixed-precision matmul: activations stay in their native
@@ -1221,7 +1220,7 @@ impl Tensor {
         out_dims.push(m);
         out_dims.push(n);
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op:     Op::MatMul,
             inputs: vec![lhs.id, rhs.id],
             shape:  Shape::from_dims(&out_dims),
@@ -1249,7 +1248,7 @@ impl Tensor {
         n: usize,
     ) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &weight_bytes.graph),
+            Arc::ptr_eq(&self.graph, &weight_bytes.graph),
             "qmatmul: tensors must live on the same graph",
         );
         assert_eq!(
@@ -1291,7 +1290,7 @@ impl Tensor {
         );
         let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
         out_dims.push(n);
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op:     Op::QMatMul { quant_type, k, n },
             inputs: vec![self.id, weight_bytes.id],
             shape:  Shape::from_dims(&out_dims),
@@ -1321,12 +1320,12 @@ impl Tensor {
         groups: usize,
     ) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &weight.graph),
+            Arc::ptr_eq(&self.graph, &weight.graph),
             "conv2d: x and weight must live on the same graph",
         );
         if let Some(b) = bias {
             assert!(
-                Rc::ptr_eq(&self.graph, &b.graph),
+                Arc::ptr_eq(&self.graph, &b.graph),
                 "conv2d: bias must live on the same graph",
             );
         }
@@ -1379,7 +1378,7 @@ impl Tensor {
         if let Some(b) = bias {
             inputs.push(b.id);
         }
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Conv2D { stride, padding, groups },
             inputs,
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
@@ -1412,11 +1411,11 @@ impl Tensor {
         softcap:       Option<f32>,
     ) -> Tensor {
         let g = &self.graph;
-        assert!(Rc::ptr_eq(g, &k_cache.graph), "paged_attn: q + k_cache must share graph");
-        assert!(Rc::ptr_eq(g, &v_cache.graph), "paged_attn: q + v_cache must share graph");
-        assert!(Rc::ptr_eq(g, &block_table.graph), "paged_attn: q + block_table must share graph");
-        assert!(Rc::ptr_eq(g, &context_lens.graph), "paged_attn: q + context_lens must share graph");
-        if let Some(a) = alibi_slopes { assert!(Rc::ptr_eq(g, &a.graph), "paged_attn: alibi_slopes must share graph"); }
+        assert!(Arc::ptr_eq(g, &k_cache.graph), "paged_attn: q + k_cache must share graph");
+        assert!(Arc::ptr_eq(g, &v_cache.graph), "paged_attn: q + v_cache must share graph");
+        assert!(Arc::ptr_eq(g, &block_table.graph), "paged_attn: q + block_table must share graph");
+        assert!(Arc::ptr_eq(g, &context_lens.graph), "paged_attn: q + context_lens must share graph");
+        if let Some(a) = alibi_slopes { assert!(Arc::ptr_eq(g, &a.graph), "paged_attn: alibi_slopes must share graph"); }
         assert!(block_size >= 1, "paged_attn: block_size must be ≥ 1");
 
         let q_dims = self.shape();
@@ -1455,7 +1454,7 @@ impl Tensor {
         let dtype = self.dtype();
         let mut inputs = vec![self.id, k_cache.id, v_cache.id, block_table.id, context_lens.id];
         if let Some(a) = alibi_slopes { inputs.push(a.id); }
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::PagedAttn { softmax_scale, block_size, softcap },
             inputs,
             shape: Shape::from_dims(q_dims),
@@ -1484,7 +1483,7 @@ impl Tensor {
         groups: usize,
     ) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &weight.graph),
+            Arc::ptr_eq(&self.graph, &weight.graph),
             "conv_transpose2d: x and weight must live on the same graph",
         );
         assert!(groups >= 1, "conv_transpose2d: groups must be ≥ 1, got {groups}");
@@ -1529,7 +1528,7 @@ impl Tensor {
         let h_out = h_out - 2 * pad_h;
         let w_out = w_out - 2 * pad_w;
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups },
             inputs: vec![self.id, weight.id],
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
@@ -1556,10 +1555,10 @@ impl Tensor {
         window_size_right: Option<usize>,
         softcap: Option<f32>,
     ) -> Tensor {
-        assert!(Rc::ptr_eq(&self.graph, &k.graph), "flash_attn: q + k must live on the same graph");
-        assert!(Rc::ptr_eq(&self.graph, &v.graph), "flash_attn: q + v must live on the same graph");
+        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn: q + k must live on the same graph");
+        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn: q + v must live on the same graph");
         if let Some(a) = alibi_slopes {
-            assert!(Rc::ptr_eq(&self.graph, &a.graph), "flash_attn: alibi_slopes must live on the same graph");
+            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn: alibi_slopes must live on the same graph");
         }
         let q_dims = self.shape();
         let q_dims = q_dims.dims();
@@ -1590,7 +1589,7 @@ impl Tensor {
         if let Some(a) = alibi_slopes {
             inputs.push(a.id);
         }
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap },
             inputs,
             shape: Shape::from_dims(&[b, hq, sq, d]),
@@ -1641,7 +1640,7 @@ impl Tensor {
         }
         let out_dims: Vec<usize> = axes.iter().map(|&ax| in_dims[ax]).collect();
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Permute(axes.to_vec()),
             inputs: vec![self.id],
             shape: Shape::from_dims(&out_dims),
@@ -1669,7 +1668,7 @@ impl Tensor {
         out.swap(rank - 2, rank - 1);
         let out_shape = Shape::from_dims(&out);
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Transpose,
             inputs: vec![self.id],
             shape: out_shape,
@@ -1751,7 +1750,7 @@ impl Tensor {
     /// `target`. Shape is preserved.
     pub fn cast(&self, target: DType) -> Tensor {
         let shape = self.shape();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Cast(target),
             inputs: vec![self.id],
             shape,
@@ -1774,7 +1773,7 @@ impl Tensor {
         // bad target shapes at build time, not realize time.
         check_broadcast_compatible(src_dims.dims(), target.dims());
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::BroadcastTo(target.clone()),
             inputs: vec![self.id],
             shape: target,
@@ -1799,7 +1798,7 @@ impl Tensor {
             target.elem_count(),
         );
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Reshape(target.clone()),
             inputs: vec![self.id],
             shape: target,
@@ -1822,7 +1821,7 @@ impl Tensor {
         // self.shape().
         check_broadcast_compatible(target.dims(), self.shape().dims());
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::ReduceSumTo(target.clone()),
             inputs: vec![self.id],
             shape: target,
@@ -1909,7 +1908,7 @@ impl Tensor {
             .filter(|(i, _)| *i != dim)
             .map(|(_, &d)| d)
             .collect();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
             shape: Shape::from_dims(&out_dims),
@@ -2027,7 +2026,7 @@ impl Tensor {
         // host loop. Fused path dispatches once.
         let out_shape = in_shape.clone();
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Rope,
             inputs: vec![self.id, cos.id, sin.id],
             shape: out_shape,
@@ -2125,7 +2124,7 @@ impl Tensor {
     /// `indices.shape()[0]`.
     pub fn index_select(&self, dim: usize, indices: &Tensor) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &indices.graph),
+            Arc::ptr_eq(&self.graph, &indices.graph),
             "index_select: data and index tensors must live on the same graph",
         );
         assert_eq!(
@@ -2150,7 +2149,7 @@ impl Tensor {
         let mut out_dims: Vec<usize> = data_dims.dims().to_vec();
         out_dims[dim] = idx_dims.dims()[0];
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::IndexSelect { dim },
             inputs: vec![self.id, indices.id],
             shape: Shape::from_dims(&out_dims),
@@ -2167,7 +2166,7 @@ impl Tensor {
     /// `self`. Output shape equals `indices.shape()`.
     pub fn gather(&self, dim: usize, indices: &Tensor) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &indices.graph),
+            Arc::ptr_eq(&self.graph, &indices.graph),
             "gather: data and index tensors must live on the same graph",
         );
         assert_eq!(
@@ -2188,7 +2187,7 @@ impl Tensor {
         );
         let dtype = self.dtype();
         let out_shape = indices.shape();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Gather { dim },
             inputs: vec![self.id, indices.id],
             shape: out_shape,
@@ -2203,7 +2202,7 @@ impl Tensor {
     /// Append a `Concat` node joining `self` and `other` along `dim`.
     pub fn concat(&self, other: &Tensor, dim: usize) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &other.graph),
+            Arc::ptr_eq(&self.graph, &other.graph),
             "concat: tensors must live on the same graph",
         );
         assert_eq!(
@@ -2231,7 +2230,7 @@ impl Tensor {
         let mut out_dims: Vec<usize> = ad.to_vec();
         out_dims[dim] = ad[dim] + bd[dim];
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Concat { dim },
             inputs: vec![self.id, other.id],
             shape: Shape::from_dims(&out_dims),
@@ -2257,7 +2256,7 @@ impl Tensor {
         let mut out_dims: Vec<usize> = in_dims.to_vec();
         out_dims[dim] = len;
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::Slice { dim, start, len },
             inputs: vec![self.id],
             shape: Shape::from_dims(&out_dims),
@@ -2341,7 +2340,7 @@ impl Tensor {
     /// unchanged if already at the target shape.
     fn auto_broadcast_pair(&self, op: &'static str, other: &Tensor) -> (Tensor, Tensor) {
         assert!(
-            Rc::ptr_eq(&self.graph, &other.graph),
+            Arc::ptr_eq(&self.graph, &other.graph),
             "{op}: tensors must live on the same graph",
         );
         assert_eq!(
@@ -2373,7 +2372,7 @@ impl Tensor {
     /// by `indices` along `dim`.
     pub fn index_add(&self, dim: usize, indices: &Tensor, src: &Tensor) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &indices.graph) && Rc::ptr_eq(&self.graph, &src.graph),
+            Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
             "index_add: all tensors must live on the same graph",
         );
         assert_eq!(indices.dtype(), DType::U32, "index_add: index must be U32");
@@ -2399,7 +2398,7 @@ impl Tensor {
         );
         let dtype = self.dtype();
         let out_shape = base_dims;
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::IndexAdd { dim },
             inputs: vec![self.id, indices.id, src.id],
             shape: out_shape,
@@ -2416,7 +2415,7 @@ impl Tensor {
     /// given by `indices` (with `indices[p]` substituted at `dim`).
     pub fn scatter_add(&self, dim: usize, indices: &Tensor, src: &Tensor) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &indices.graph) && Rc::ptr_eq(&self.graph, &src.graph),
+            Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
             "scatter_add: all tensors must live on the same graph",
         );
         assert_eq!(indices.dtype(), DType::U32, "scatter_add: index must be U32");
@@ -2428,7 +2427,7 @@ impl Tensor {
         );
         let dtype = self.dtype();
         let out_shape = self.shape();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op: Op::ScatterAdd { dim },
             inputs: vec![self.id, indices.id, src.id],
             shape: out_shape,
@@ -2444,7 +2443,7 @@ impl Tensor {
 
     fn scalar_reduction(&self, op: Op) -> Tensor {
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
             shape: Shape::from_dims(&[]),
@@ -2470,7 +2469,7 @@ impl Tensor {
             .map(|(_, &d)| d)
             .collect();
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
             shape: Shape::from_dims(&out_dims),
@@ -2486,7 +2485,7 @@ impl Tensor {
 
     fn binary_op(&self, name: &'static str, op: Op, other: &Tensor, out_shape: Shape) -> Tensor {
         assert!(
-            Rc::ptr_eq(&self.graph, &other.graph),
+            Arc::ptr_eq(&self.graph, &other.graph),
             "{name}: tensors must live on the same graph",
         );
         assert_eq!(
@@ -2504,7 +2503,7 @@ impl Tensor {
             other.shape().dims(),
         );
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id, other.id],
             shape: out_shape,
@@ -2519,7 +2518,7 @@ impl Tensor {
     fn unary_op(&self, op: Op) -> Tensor {
         let shape = self.shape();
         let dtype = self.dtype();
-        let id = self.graph.borrow_mut().push(Node {
+        let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
             shape,
@@ -2565,14 +2564,14 @@ impl Tensor {
 
         // Compute topological order of reachable nodes, then reverse it
         // so we walk from the root (output) toward the leaves (inputs).
-        let mut order = topo_order(&graph_handle.borrow(), self.id);
+        let mut order = topo_order(&graph_handle.read().unwrap(), self.id);
         order.reverse();
 
         // Initial upstream gradient for the root: ones tensor of matching
         // shape and dtype. For a scalar loss this is [1.0]; for vector
         // outputs it seeds each element with weight 1.
         let (root_shape, root_dtype) = {
-            let g = graph_handle.borrow();
+            let g = graph_handle.read().unwrap();
             let n = g.node(self.id);
             (n.shape.clone(), n.dtype)
         };
@@ -2589,7 +2588,7 @@ impl Tensor {
             // Snapshot the op and its input IDs so we can drop the read
             // borrow before taking a mutable borrow to append new nodes.
             let (op, inputs) = {
-                let g = graph_handle.borrow();
+                let g = graph_handle.read().unwrap();
                 let node = g.node(id);
                 (node.op.clone(), node.inputs.clone())
             };
@@ -3666,12 +3665,12 @@ impl Tensor {
                     // Fold concat-left-to-right.
                     let mut current = pieces[0];
                     let mut current_dims: Vec<usize> = {
-                        let n = graph_handle.borrow();
+                        let n = graph_handle.read().unwrap();
                         n.node(current).shape.dims().to_vec()
                     };
                     for &next in &pieces[1..] {
                         let next_dims: Vec<usize> = {
-                            let n = graph_handle.borrow();
+                            let n = graph_handle.read().unwrap();
                             n.node(next).shape.dims().to_vec()
                         };
                         let mut combined = current_dims.clone();
@@ -4232,7 +4231,7 @@ impl GradMap {
     /// differentiated).
     pub fn get(&self, forward: &Tensor) -> Option<Tensor> {
         assert!(
-            Rc::ptr_eq(&self.graph, &forward.graph),
+            Arc::ptr_eq(&self.graph, &forward.graph),
             "GradMap::get: tensor is from a different graph",
         );
         let &grad_id = self.forward_to_grad.get(&forward.id)?;
@@ -4257,12 +4256,12 @@ impl GradMap {
 
 /// Read a node's shape without holding the borrow past the call site.
 fn node_shape(graph: &SharedGraph, id: NodeId) -> Shape {
-    graph.borrow().node(id).shape.clone()
+    graph.read().unwrap().node(id).shape.clone()
 }
 
 /// Read a node's dtype without holding the borrow past the call site.
 fn node_dtype(graph: &SharedGraph, id: NodeId) -> DType {
-    graph.borrow().node(id).dtype
+    graph.read().unwrap().node(id).dtype
 }
 
 /// Shape with its last two dims swapped. Used by MatMul's backward rule
@@ -4352,7 +4351,7 @@ fn push_node(
     shape: Shape,
     dtype: DType,
 ) -> NodeId {
-    graph.borrow_mut().push(Node {
+    graph.write().unwrap().push(Node {
         op,
         inputs,
         shape,
@@ -4548,7 +4547,7 @@ mod tests {
     fn move_to_device_emits_op_move_node() {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let moved = a.move_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
-        let g = moved.graph().borrow();
+        let g = moved.graph().read().unwrap();
         match &g.node(moved.id()).op {
             Op::Move { target } => {
                 assert_eq!(*target, DeviceLocation::Vulkan { gpu_id: 0 });
@@ -4564,7 +4563,7 @@ mod tests {
     fn copy_to_device_emits_op_copy_node() {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let b = a.copy_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
-        let g = b.graph().borrow();
+        let g = b.graph().read().unwrap();
         match &g.node(b.id()).op {
             Op::Copy { target } => {
                 assert_eq!(*target, DeviceLocation::Vulkan { gpu_id: 0 });
@@ -4580,7 +4579,7 @@ mod tests {
     fn release_builder_emits_op_release_node() {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let released = a.release();
-        let g = released.graph().borrow();
+        let g = released.graph().read().unwrap();
         assert!(matches!(g.node(released.id()).op, Op::Release));
         assert_eq!(g.node(released.id()).inputs, vec![a.id()]);
         // Output is a zero-element marker.
@@ -4609,16 +4608,16 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]));
         let tagged = a.clone().on_device(DeviceLocation::Cpu);
         // Re-read from a fresh borrow — round-trips through the side-table.
-        assert_eq!(tagged.graph().borrow().placement(tagged.id()), Some(DeviceLocation::Cpu));
+        assert_eq!(tagged.graph().read().unwrap().placement(tagged.id()), Some(DeviceLocation::Cpu));
     }
 
     #[test]
     fn from_f32_creates_single_const_node() {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
-        assert_eq!(a.graph().borrow().len(), 1);
+        assert_eq!(a.graph().read().unwrap().len(), 1);
         assert_eq!(a.shape().dims(), &[3]);
         assert_eq!(a.dtype(), DType::F32);
-        let node = a.graph().borrow().node(a.id()).clone();
+        let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const(ConstData::F32(_))));
         assert!(node.inputs.is_empty());
     }
@@ -4628,8 +4627,8 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
-        assert_eq!(c.graph().borrow().len(), 3); // const, const, add
-        let node = c.graph().borrow().node(c.id()).clone();
+        assert_eq!(c.graph().read().unwrap().len(), 3); // const, const, add
+        let node = c.graph().read().unwrap().node(c.id()).clone();
         assert!(matches!(node.op, Op::Add));
         assert_eq!(node.inputs.len(), 2);
         assert_eq!(node.inputs[0], a.id());
@@ -4642,7 +4641,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a).sqr().relu();
-        assert_eq!(c.graph().borrow().len(), 6); // 2 consts + add + mul + sqr + relu
+        assert_eq!(c.graph().read().unwrap().len(), 6); // 2 consts + add + mul + sqr + relu
         assert_eq!(c.shape().dims(), &[3]);
     }
 
@@ -4684,7 +4683,7 @@ mod tests {
     fn from_f64_tags_node_with_f64_dtype() {
         let a = Tensor::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         assert_eq!(a.dtype(), DType::F64);
-        let node = a.graph().borrow().node(a.id()).clone();
+        let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const(ConstData::F64(_))));
     }
 
@@ -4695,7 +4694,7 @@ mod tests {
             Shape::from_dims(&[2]),
         );
         assert_eq!(a.dtype(), DType::BF16);
-        let node = a.graph().borrow().node(a.id()).clone();
+        let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const(ConstData::BF16(_))));
     }
 
@@ -4706,7 +4705,7 @@ mod tests {
             Shape::from_dims(&[2]),
         );
         assert_eq!(a.dtype(), DType::F16);
-        let node = a.graph().borrow().node(a.id()).clone();
+        let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const(ConstData::F16(_))));
     }
 
@@ -4725,7 +4724,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[3, 2]);
-        let node = t.graph().borrow().node(t.id()).clone();
+        let node = t.graph().read().unwrap().node(t.id()).clone();
         assert!(matches!(node.op, Op::Transpose));
         assert_eq!(node.inputs, vec![a.id()]);
     }
@@ -4974,7 +4973,7 @@ mod tests {
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let sum = a.add(&b);
         let c = sum.mul(&a);
-        let order = topo_order(&c.graph().borrow(), c.id());
+        let order = topo_order(&c.graph().read().unwrap(), c.id());
         // The order should contain exactly 4 nodes (a, b, sum, c) and
         // place each input strictly before its dependents.
         assert_eq!(order.len(), 4);
@@ -4991,7 +4990,7 @@ mod tests {
         // pass should still visit it exactly once.
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let double = a.add(&a);
-        let order = topo_order(&double.graph().borrow(), double.id());
+        let order = topo_order(&double.graph().read().unwrap(), double.id());
         assert_eq!(order.len(), 2);
         assert_eq!(order[0], a.id());
         assert_eq!(order[1], double.id());
@@ -5015,7 +5014,7 @@ mod tests {
         let add1 = a.add(&b);
         let add2 = a.add(&c);
         let order = topo_order_multi(
-            &add1.graph().borrow(),
+            &add1.graph().read().unwrap(),
             &[add1.id(), add2.id()],
         );
         assert_eq!(order.len(), 5);
@@ -5036,7 +5035,7 @@ mod tests {
         let grads = a.backward();
         let g_a = grads.get(&a).expect("root gets a seed gradient");
         // The seed is a Const ones node of matching shape.
-        let node = g_a.graph().borrow().node(g_a.id()).clone();
+        let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
         assert!(matches!(node.op, Op::Const(ConstData::F32(_))));
         assert_eq!(g_a.shape().dims(), &[3]);
     }
@@ -5064,16 +5063,16 @@ mod tests {
         let a = Tensor::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]));
         let b = a.const_f32_like(vec![5.0, 7.0], Shape::from_dims(&[2]));
         let c = a.mul(&b);
-        let nodes_before = c.graph().borrow().len();
+        let nodes_before = c.graph().read().unwrap().len();
         let grads = c.backward();
-        let nodes_after = grads.graph.borrow().len();
+        let nodes_after = grads.graph.read().unwrap().len();
         // Backward adds: one ones const + two Mul nodes = 3 new nodes.
         assert_eq!(nodes_after - nodes_before, 3);
         let g_a = grads.get(&a).unwrap();
         let g_b = grads.get(&b).unwrap();
         // Both gradient nodes should be Mul nodes.
-        let node_a = g_a.graph().borrow().node(g_a.id()).clone();
-        let node_b = g_b.graph().borrow().node(g_b.id()).clone();
+        let node_a = g_a.graph().read().unwrap().node(g_a.id()).clone();
+        let node_b = g_b.graph().read().unwrap().node(g_b.id()).clone();
         assert!(matches!(node_a.op, Op::Mul));
         assert!(matches!(node_b.op, Op::Mul));
     }
@@ -5088,7 +5087,7 @@ mod tests {
         let c = a.mul(&a);
         let grads = c.backward();
         let g_a = grads.get(&a).unwrap();
-        let node = g_a.graph().borrow().node(g_a.id()).clone();
+        let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
         // The final gradient for `a` is an Add combining the two
         // upstream-times-other-input contributions.
         assert!(
@@ -5112,8 +5111,8 @@ mod tests {
         assert_eq!(g_a.shape().dims(), &[2, 3]);
         assert_eq!(g_b.shape().dims(), &[3, 4]);
         // Both should be MatMul nodes (the outermost op of each gradient).
-        let node_a = g_a.graph().borrow().node(g_a.id()).clone();
-        let node_b = g_b.graph().borrow().node(g_b.id()).clone();
+        let node_a = g_a.graph().read().unwrap().node(g_a.id()).clone();
+        let node_b = g_b.graph().read().unwrap().node(g_b.id()).clone();
         assert!(matches!(node_a.op, Op::MatMul));
         assert!(matches!(node_b.op, Op::MatMul));
     }
@@ -5126,7 +5125,7 @@ mod tests {
         let b = a.cast(DType::F64);
         assert_eq!(b.dtype(), DType::F64);
         assert_eq!(b.shape().dims(), &[2]);
-        let node = b.graph().borrow().node(b.id()).clone();
+        let node = b.graph().read().unwrap().node(b.id()).clone();
         assert!(matches!(node.op, Op::Cast(DType::F64)));
     }
 
@@ -5212,7 +5211,7 @@ mod tests {
     fn from_u32_tags_node_with_u32_dtype() {
         let a = Tensor::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]));
         assert_eq!(a.dtype(), DType::U32);
-        let node = a.graph().borrow().node(a.id()).clone();
+        let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const(ConstData::U32(_))));
     }
 
@@ -5268,12 +5267,12 @@ mod tests {
         let y = a.relu();
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
-        let node = g_a.graph().borrow().node(g_a.id()).clone();
+        let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
         assert!(matches!(node.op, Op::Mul));
         // Find a Step node somewhere in the node's inputs.
         let any_step = node.inputs.iter().any(|&id| {
             matches!(
-                g_a.graph().borrow().node(id).op,
+                g_a.graph().read().unwrap().node(id).op,
                 Op::Step,
             )
         });
@@ -5290,7 +5289,7 @@ mod tests {
         let exp_forward_id = e.id();
         let grads = e.backward();
         let g_a = grads.get(&a).unwrap();
-        let node = g_a.graph().borrow().node(g_a.id()).clone();
+        let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
         assert!(matches!(node.op, Op::Mul));
         // One of the Mul's inputs should be the original forward Exp node.
         assert!(

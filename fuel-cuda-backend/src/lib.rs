@@ -124,7 +124,7 @@ impl CudaGraphExecutor {
 
     pub fn realize_f32(&mut self, tensor: &Tensor) -> RefTensor<f32> {
         let _span = info_span!("realize_f32").entered();
-        let graph = tensor.graph().borrow();
+        let graph = tensor.graph().read().unwrap();
         let order = topo_order(&graph, tensor.id());
         let num_nodes = order.len();
         let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
@@ -149,7 +149,7 @@ impl CudaGraphExecutor {
             return Vec::new();
         }
         let graph_rc = tensors[0].graph();
-        let graph = graph_rc.borrow();
+        let graph = graph_rc.read().unwrap();
         let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
         let order = topo_order_multi(&graph, &roots);
         let num_nodes = order.len();
@@ -199,7 +199,7 @@ impl CudaGraphExecutor {
             return (Vec::new(), Vec::new());
         }
         let graph_rc = tensors[0].graph();
-        let graph = graph_rc.borrow();
+        let graph = graph_rc.read().unwrap();
         let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
         let order = topo_order_multi(&graph, &roots);
         let num_nodes = order.len();

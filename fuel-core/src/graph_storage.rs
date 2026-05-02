@@ -31,9 +31,7 @@
 
 use crate::Storage;
 use fuel_graph::NodeId;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 /// One realized storage slot, keyed by `NodeId` in a `GraphStorage`.
@@ -124,14 +122,16 @@ impl GraphStorage {
     }
 }
 
-/// Cheap-to-clone shared handle to a `GraphStorage`. Mirrors
-/// `fuel_graph::SharedGraph`'s `Rc<RefCell<>>` shape — graph and sidecar
-/// always travel together.
-pub type SharedGraphStorage = Rc<RefCell<GraphStorage>>;
+/// Cheap-to-clone shared handle to a `GraphStorage`. Uses
+/// `Arc<RwLock<>>` (matching `fuel_graph::SharedGraph` post-G) so the
+/// pair `(graph, storage)` carried by `GraphLink` is `Send + Sync` and
+/// every fuel-core `Tensor` (graph-mode included) inherits Send+Sync
+/// auto-derive.
+pub type SharedGraphStorage = Arc<RwLock<GraphStorage>>;
 
 /// Construct a fresh empty `SharedGraphStorage`.
 pub fn new_shared_graph_storage() -> SharedGraphStorage {
-    Rc::new(RefCell::new(GraphStorage::new()))
+    Arc::new(RwLock::new(GraphStorage::new()))
 }
 
 /// A graph-mode Tensor's reference into a graph + its sidecar storage
@@ -160,7 +160,7 @@ impl GraphLink {
     /// been registered yet — the caller should treat this as
     /// "needs realize" rather than as an error.
     pub fn storage_slot(&self) -> Option<Arc<RwLock<Storage>>> {
-        self.storage.borrow().get(self.id).map(|s| s.storage.clone())
+        self.storage.read().unwrap().get(self.id).map(|s| s.storage.clone())
     }
 }
 
@@ -248,7 +248,7 @@ mod tests {
         // Register a slot, look it up via the link.
         let device = crate::Device::cpu();
         let s = device.zeros(&Shape::from_dims(&[2, 2]), crate::DType::F32).unwrap();
-        storage_map.borrow_mut().set_storage(node_id, s);
+        storage_map.write().unwrap().set_storage(node_id, s);
         assert!(link.storage_slot().is_some());
     }
 
@@ -257,9 +257,9 @@ mod tests {
         let storage = new_shared_graph_storage();
         let device = crate::Device::cpu();
         let s = device.zeros(&Shape::from_dims(&[1]), crate::DType::F32).unwrap();
-        storage.borrow_mut().set_storage(NodeId(0), s);
+        storage.write().unwrap().set_storage(NodeId(0), s);
 
         let storage2 = storage.clone();
-        assert_eq!(storage2.borrow().len(), 1);
+        assert_eq!(storage2.read().unwrap().len(), 1);
     }
 }
