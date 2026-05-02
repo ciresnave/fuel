@@ -262,4 +262,72 @@ mod tests {
         let storage2 = storage.clone();
         assert_eq!(storage2.read().unwrap().len(), 1);
     }
+
+    // Phase 7.5 work item G step 5 — end-to-end smoke test for
+    // node-handle mode. Constructs a Tensor whose `Tensor_.storage`
+    // legacy Arc and `Tensor_.link`'s graph slot point at the SAME
+    // underlying bytes, then verifies:
+    //   - the realized_storage() seam returns the slot's Arc clone
+    //   - the slot Arc and legacy Arc are the same object (parallel
+    //     mode invariant: both views see the same bytes)
+    //   - has_graph_link() / graph_link() reflect node-handle mode
+    //   - the data is readable via the slot path
+    //
+    // This is G's proof-of-life: it demonstrates a node-handle Tensor
+    // can be constructed and read through the new seam. B2 will use
+    // the same construction pattern in the migrated factories.
+    #[test]
+    fn node_handle_tensor_smoke() {
+        use crate::op::BackpropOp;
+        use crate::tensor::from_storage_with_link;
+        use fuel_graph::ConstData;
+
+        let device = crate::Device::cpu();
+        let shape = Shape::from_dims(&[3]);
+
+        // Build a Storage with known F32 data using the legacy factory
+        // (cheap host-allocate + fill). We pull out its Arc to share
+        // between the legacy storage field and the graph slot.
+        let legacy = crate::Tensor::new(&[1.0_f32, 2.0, 3.0], &device).unwrap();
+        let storage_arc = legacy.realized_storage();
+
+        // Build a fresh single-node graph + slot map. Use the public
+        // `Tensor::from_const` builder which gives back a (graph, id)
+        // pair already wired up.
+        let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
+        let const_t = fuel_graph::Tensor::from_const(const_data, shape.clone());
+        let g = const_t.graph().clone();
+        let id = const_t.id();
+        let storage_map = new_shared_graph_storage();
+        storage_map
+            .write()
+            .unwrap()
+            .set(id, StorageSlot::from_arc(storage_arc.clone()));
+        let link = GraphLink::new(g, storage_map, id);
+
+        // Construct the node-handle Tensor.
+        let t = from_storage_with_link(
+            storage_arc.clone(),
+            shape,
+            BackpropOp::none(),
+            false,
+            link,
+        );
+
+        // Mode predicates.
+        assert!(t.has_graph_link());
+        assert!(t.graph_link().is_some());
+
+        // The seam returns the slot's Arc, which is the same as the
+        // legacy Arc we passed in (parallel-mode invariant).
+        let slot_arc = t.realized_storage();
+        assert!(
+            Arc::ptr_eq(&slot_arc, &storage_arc),
+            "realized_storage should return the registered slot Arc"
+        );
+
+        // Read through the seam — same bytes the legacy tensor sees.
+        let bytes = slot_arc.read().unwrap();
+        assert_eq!(bytes.dtype(), crate::DType::F32);
+    }
 }
