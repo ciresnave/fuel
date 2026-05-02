@@ -1,0 +1,23 @@
+[package]
+    categories.workspace = true
+    description          = "Transport-independent parsers for tensor wire formats (safetensors, pickle, GGUF, GGML, imatrix). Operates on impl Read / &[u8] / Cow<[u8]>; knows nothing about Tensor, Storage, or Device. Consumers: fuel-loaders (file/mmap), future fuel-net (HTTP/streaming), future fuel-ipc (Unix socket / shared-mem) — anywhere a tensor wire format needs to be read or written without coupling to a specific transport."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-formats"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types = { workspace = true }
+    byteorder       = { workspace = true }
+    bytemuck        = { workspace = true }
+    half            = { workspace = true }
+    safetensors     = { workspace = true }
+    serde           = { workspace = true }
+    serde_json      = { workspace = true }
+    thiserror       = { workspace = true }
+    memmap2         = { workspace = true }
+
+[features]
+    default = []

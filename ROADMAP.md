@@ -1717,11 +1717,31 @@ the other:
   (Lightbulb, embedding/retrieval pipelines, oracle runners).
 - `fuel-autograd`: tape-as-graph-rewrite + backward registration
   machinery + `.backward()` API. Consumer: training pipelines.
-- `fuel-loaders` (or `fuel-pickle` / `fuel-safetensors` /
-  `fuel-gguf` separately): file-format adapters with their heavy
-  serde / file-IO deps. Consumer: model-conversion tools and the
-  initial-load path; not needed by inference-with-pre-loaded
-  weights.
+- `fuel-formats`: pure parsers for safetensors, pickle, GGUF,
+  GGML, and imatrix wire formats. Operate on `impl Read` /
+  `&[u8]` / `Cow<[u8]>` — knows about format structure, knows
+  nothing about `Tensor`, `Device`, or `Storage`. Depends only
+  on `fuel-core-types` (`DType`, `Shape`, `GgmlDType`).
+  Consumer surface: anyone who needs to read or write these
+  formats over *any* transport — file, mmap, HTTP, S3, Unix
+  socket, shared-memory, network IPC. Splitting parsers from
+  transport is the structural prerequisite for streaming weight
+  load, inter-process tensor exchange (Fuel ↔ Lightbulb ↔ mlmf
+  using safetensors as the wire schema), `RemoteHostStorage`
+  (Phase 7c), and HF-ecosystem interop without bolting on
+  adapters.
+- `fuel-loaders`: file-transport adapters built on `fuel-formats`
+  — `from_path`, `from_mmap`, `MmapedSafetensors`, etc. Builds
+  `Tensor` / `QTensor` from parsed format output. Depends on
+  `fuel-tensor` (post-E) and `fuel-formats`. Consumer: model-
+  conversion tools and the initial-load path; not needed by
+  inference-with-pre-loaded-weights or by network/IPC consumers
+  that go directly through `fuel-formats`.
+- `fuel-net` / `fuel-ipc` (out of scope for 7.5, natural
+  follow-ons): same shape as `fuel-loaders` but over network /
+  IPC transports respectively. Mentioned only to make clear that
+  the `fuel-formats` / transport split is doing real work
+  beyond breaking a circular dependency.
 - `fuel-core` retains the umbrella facade role — re-exports the
   common API for ergonomics, like `tokio` re-exporting from
   `tokio-*`. Most users keep depending on `fuel-core` directly;
@@ -1734,14 +1754,64 @@ without `Tensor`, so they stay folded into `fuel-tensor`.
 
 #### Work items
 
-**A. Loaders and custom_op fissioning** (cheap, additive,
-no architectural choices to resolve).
+**A. `fuel-formats` extraction — transport-independent format
+parser layer** (ships first, has zero `Tensor` coupling, unlocks
+streaming / IPC / network use cases independent of the rest of
+7.5).
 
-- [ ] Move `fuel-core/src/safetensors.rs`, `pickle.rs`, and the
-      GGUF/ggml file readers under `quantized/` (`gguf_file.rs`,
-      `gguf_mmap.rs`, `ggml_file.rs`, `imatrix_file.rs`) into a
-      new `fuel-loaders` crate. Re-export from `fuel-core` for
-      backward compatibility.
+The original framing here was "fission loaders for compile-time
+leanness." Inspection in 2026-05-02 revealed the bigger seam:
+loader files today couple format-parsing (header layout, block
+decode, opcode interpretation) to transport (file path, mmap,
+`Read`) to construction (`Tensor` / `QTensor` from parsed
+metadata). Cutting only the construction join — what work item
+A originally described as a `fuel-loaders` crate — would create
+a circular dependency on `fuel-core` (loaders need `Tensor`;
+`fuel-core` would re-export loaders for back-compat). Cutting
+the parse-vs-construct join instead lifts a transport-agnostic
+parser layer that has standalone value. See "Fissioning
+fuel-core" above.
+
+- [ ] Create `fuel-formats` crate. Pure-Rust parsers for
+      safetensors, pickle, GGUF (file + mmap), GGML, imatrix.
+      API operates on `impl Read` / `impl Seek` / `&[u8]` /
+      `Cow<[u8]>` and returns format-typed structs (e.g.,
+      `safetensors::Header { tensors: HashMap<String, TensorMeta> }`,
+      `gguf::Content { metadata, tensor_infos, ... }`,
+      `pickle::Stack`, `imatrix::Records`). Depends only on
+      `fuel-core-types` (`DType`, `Shape`, `GgmlDType`).
+- [ ] Migrate the parser bodies out of
+      `fuel-core/src/safetensors.rs`, `pickle.rs`,
+      `quantized/gguf_file.rs`, `gguf_mmap.rs`, `ggml_file.rs`,
+      `imatrix_file.rs`. Leave thin Tensor-construction wrappers
+      in `fuel-core` (today's `safetensors::load(path, device)`,
+      `pickle::read_all(path)`, etc.) that call `fuel-formats`
+      to parse and then build Tensors. Public API of `fuel-core`
+      unchanged.
+- [ ] Add `fuel-formats` to the workspace. Verify the parser
+      surface is complete by removing every byte-level read
+      from `fuel-core` and confirming the wrappers don't
+      reach for `byteorder` / `safetensors-rs` / etc. directly.
+- [ ] Round-trip test against the Phase 6 anchor weight set
+      (BERT, ConvNeXt, Whisper, SD CLIP, SD VAE, Qwen2-MoE,
+      YOLOv8) — same loaded tensors, byte-equivalent buffers,
+      across both file and `Cursor<&[u8]>` paths.
+- [ ] Document the streaming / IPC / network use cases in
+      `fuel-formats/README.md` so consumers know the parser
+      surface is *the* public seam (file path is just one
+      transport).
+
+**A2. `fuel-loaders` finalization (post-E).** Once `Tensor`
+lives in `fuel-tensor` (work item E below), the file-transport
+wrappers currently in `fuel-core` migrate into a small
+`fuel-loaders` crate that depends on `fuel-tensor` +
+`fuel-formats`. `fuel-core` re-exports for back-compat. This
+becomes ~one afternoon of mechanical extraction.
+
+- [ ] Move `safetensors.rs` / `pickle.rs` Tensor-construction
+      wrappers + `quantized/{gguf_file,gguf_mmap,ggml_file,
+      imatrix_file}.rs` (now thin Tensor builders calling
+      `fuel-formats`) into `fuel-loaders`.
 - [ ] Decide whether `custom_op` extension hook stays with
       `fuel-tensor` (likely) or splits separately. If split,
       move to `fuel-custom-op`.
@@ -1834,25 +1904,63 @@ backward to `fuel-autograd`.**
 
 #### Sequencing
 
-A is the cheapest; can ship first, in any order relative to the
-others. B and C are coupled: dropping eager makes C's job
-significantly cleaner because there's only one execution path
-to teach autograd about. D depends on C (needs the unified
-forward+backward graph to do liveness on). E depends on B and
-C (the Tensor type's surface stabilises only after eager is
-gone and BackpropOp is dropped). So: A in parallel with B → C
-→ D → E.
+Revised after the 2026-05-02 design pass (see work item A
+preamble for context). The original sequence put A first as a
+cheap independent ship; closer inspection showed A's "loaders
+fissioning" framing required a parse/construct seam workaround
+because of the Tensor-coupling cycle. Re-framing A as
+`fuel-formats` (parser layer) plus A2 (loaders finalization
+after E) lets the parser layer ship now without compromise and
+defers the Tensor-coupled file-transport extraction to where it
+is mechanical.
 
-Total estimated scope: A is a week, B is two-to-three weeks
-including downstream migration, C is the largest at four-to-six
-weeks (every op constructor touched), D is one-to-two weeks of
-optimizer-pass work, E is one week of mechanical extraction.
-Roughly two months end-to-end.
+Order:
+
+1. **A (`fuel-formats`)** — ships now, parallel-safe with B
+   because it touches the byte-decode bodies of loader files,
+   not the Tensor construction call sites B is rewriting. No
+   `Tensor` / `Storage` / `Device` coupling.
+2. **B (drop eager + `.realize()`)** — the largest semantic
+   change. Once eager is gone, `Storage` shrinks to a thin enum
+   and `Tensor` op methods are pure graph builders. Most
+   downstream cleanup is gated on this.
+3. **C and E together** — once `Tensor_`'s `op: BackpropOp` and
+   `is_variable` come out (C), `Tensor` is small enough that
+   extracting it to `fuel-tensor` (E) is the same motion. The
+   ROADMAP's original split treated C and E as separate phases;
+   in practice C cannot finish without touching every site E
+   needs to touch, and doing them together avoids a
+   transitional state where `Tensor_` is half-shrunken.
+4. **A2 (`fuel-loaders` finalization)** — afternoon of work
+   once E lands. File-transport wrappers move from `fuel-core`
+   to `fuel-loaders`; `fuel-core` re-exports for back-compat;
+   no parse/construct seam to maintain.
+5. **D (inplace-rewrite optimizer)** — depends on C+E producing
+   the unified forward+backward graph to do liveness on.
+
+B and C/E are tightly coupled but should ship as separate
+landings rather than one mega-PR — B first (so the eager-vs-
+lazy duality is collapsed before autograd refactor), then CE.
+
+Total estimated scope: A is one week (parser extraction is
+self-contained); B is two-to-three weeks including downstream
+migration; CE together is six-to-eight weeks (every op
+constructor touched, plus mechanical Tensor extraction); A2 is
+half a day; D is one-to-two weeks of optimizer-pass work.
+Roughly two-to-three months end-to-end.
 
 #### Success criteria
 
-- `fuel-core` no longer carries pickle/safetensors/GGUF loader
-  code; consumers needing them depend on `fuel-loaders`.
+- `fuel-core` no longer carries byte-level format-parsing code;
+  parser surface lives in `fuel-formats` and operates on
+  arbitrary `Read` / `&[u8]` sources. File-transport wrappers
+  live in `fuel-loaders` (post-E); `fuel-core` re-exports
+  remain for back-compat.
+- A streaming weight-load smoke test reads a safetensors file
+  through `fuel-formats` directly off a network-style
+  `impl Read` (e.g., `Cursor<&[u8]>`) without touching the
+  filesystem — proves the parser surface is genuinely
+  transport-independent.
 - A new `fuel-tensor`-only program (no autograd, no loaders)
   builds and runs a forward pass with measurably smaller compile
   times than the current `fuel-core`-equivalent.
