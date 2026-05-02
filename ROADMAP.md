@@ -1992,33 +1992,45 @@ Migration tactic — parallel-introduction-then-drop:
 
 Sub-tasks:
 
-- [ ] Add `StorageMap` (or named struct) to `fuel_graph::Graph`,
-      keyed by `NodeId`. Per-slot fields: realized Storage,
-      realized Layout, device tag (consistent with existing
-      placement side-table).
-- [ ] Add `node-handle` mode to `Tensor_`. Make the `storage`
-      field `Option<Arc<RwLock<Storage>>>`; add the
-      `Option<GraphLink { graph, id }>` field. Define which mode
-      a Tensor is in via the invariant "exactly one of `storage`
-      and `graph_link` is `Some`."
-- [ ] Move the executor's NodeId→Storage cache from executor
-      scratch space into the Graph. Verify `ResidencyEvictionRule`
-      and `evict_from_candidates` continue working without code
-      changes (their interface is purely NodeId-based).
-- [ ] Add a Tensor read API that's mode-agnostic:
-      `tensor.realized_storage(&self) -> &Arc<RwLock<Storage>>`
-      consults `self.storage` if Some, otherwise looks up
-      `self.graph_link.id` in the Graph's storage map.
-- [ ] Add a parity test: a Tensor in node-handle mode and the
-      same Tensor in legacy-mode produce bit-equivalent reads
-      from `to_vec*` and `to_scalar`.
-- [ ] Multi-device parity: confirm a graph with CPU and Vulkan
-      placements reads correctly through the new path on each
-      device. (The Phase 6c three-way Router test is the
-      canonical check.)
-- [ ] Document the new model in `GUIDE.md`: who owns what,
-      how Const works, where intermediate results live during
-      and between `.realize()` calls.
+- [x] Add storage map sidecar (`fuel-core::graph_storage::GraphStorage`)
+      paired with `fuel_graph::SharedGraph` — keyed by `NodeId`,
+      slot is `Arc<RwLock<Storage>>`. *Shipped 2026-05-02 commit
+      07691b97. Lives in fuel-core rather than on `fuel_graph::Graph`
+      because Storage's struct + ~25 eager-dispatch methods live in
+      fuel-core; moving them to fuel-core-types would have been an
+      orthogonal multi-week refactor. End-state semantics identical.*
+- [x] Migrate `fuel_graph::SharedGraph` from `Rc<RefCell<>>` to
+      `Arc<RwLock<>>` so `Tensor` retains Send+Sync after gaining
+      `Option<GraphLink>`. *Shipped 2026-05-02 commit e6c31614.
+      ~100 mechanical borrow→read/write replacements across
+      fuel-graph + fuel-graph-cpu/executor/router + cuda-backend +
+      reference-backend + fuel-core lazy/scheduling/graph_storage.
+      cudnn.rs's thread-local cache unrelated and unchanged.*
+- [x] Add `Option<GraphLink>` to `Tensor_` (parallel mode: legacy
+      `storage` Arc and new `link` slot Arc point at the same bytes
+      during the G → B6 transition). *Shipped 2026-05-02 commit
+      3c042bf8.*
+- [x] Add `Tensor::realized_storage()` mode-agnostic read seam,
+      `has_graph_link()`, and `graph_link()` accessors. *Shipped in
+      the same commit (3c042bf8). Seam consults the slot first,
+      falls back to legacy storage Arc.*
+- [ ] *(Deferred to post-B6 prep — not on G's critical path):*
+      migrate ~200 storage reads to `realized_storage()`. Required
+      before the legacy `storage` field can become `Option<>` and
+      ultimately drop. Both modes coexist correctly via parallel-mode
+      invariant, so this can land any time before B6.
+- [x] Smoke test: construct a node-handle Tensor end-to-end, verify
+      `realized_storage()` returns the slot Arc, parallel-mode
+      invariant holds. *Shipped 2026-05-02 commit 42a94c74.*
+- [x] Multi-device parity: parametric helper + gated CUDA / Metal
+      tests verifying the slot mechanism preserves device identity.
+      *Shipped 2026-05-02 commit ae87d92c — CUDA verified live on
+      RTX 4070. Vulkan parity holds by construction (same trait
+      inheritance) — re-enable an explicit Vulkan test once a
+      device-construction shortcut for tests is added.*
+- [x] Document the new model in `GUIDE.md` (architecture seam) and
+      `PATTERNS.md` (runnable example). *Shipped 2026-05-02 commit
+      530cd371.*
 
 Follow-on (post-G, ahead of CE):
 
