@@ -1990,47 +1990,66 @@ Migration tactic — parallel-introduction-then-drop:
 4. Once nothing produces old-mode Tensors, drop the `Option`
    wrapper and the legacy field. Tree compiles green throughout.
 
-Sub-tasks:
+Sub-tasks (initial substrate 2026-05-02 + 5-commit fix-up sequence
+that brought G into alignment with what was originally agreed):
 
-- [x] Add storage map sidecar (`fuel-core::graph_storage::GraphStorage`)
-      paired with `fuel_graph::SharedGraph` — keyed by `NodeId`,
-      slot is `Arc<RwLock<Storage>>`. *Shipped 2026-05-02 commit
-      07691b97. Lives in fuel-core rather than on `fuel_graph::Graph`
-      because Storage's struct + ~25 eager-dispatch methods live in
-      fuel-core; moving them to fuel-core-types would have been an
-      orthogonal multi-week refactor. End-state semantics identical.*
+- [x] Move `Storage` struct to `fuel-core-types`. *Shipped fix-up
+      1/5 commit ffa9076e. Eager-dispatch methods that need
+      `CustomOp1/2/3` (which transitively reference `Tensor`) stay
+      in fuel-core via the `StorageApplyOps` trait extension; all
+      other inherent methods moved with the struct. `Storage::device()`
+      now returns `Arc<dyn DynBackendDevice>`; fuel-core wraps as
+      `Device { inner: ... }` at use sites.*
+- [x] `fuel_graph::Graph` owns the storage map directly:
+      `HashMap<NodeId, Arc<RwLock<Storage>>>`. Sidecar
+      (`fuel-core::graph_storage`) deleted. *Initial sidecar
+      shipped 2026-05-02 commit 07691b97; fix-up 2/5 commit
+      8c32b535 moved the map onto `fuel_graph::Graph` and dropped
+      the fuel-core module entirely.*
 - [x] Migrate `fuel_graph::SharedGraph` from `Rc<RefCell<>>` to
-      `Arc<RwLock<>>` so `Tensor` retains Send+Sync after gaining
-      `Option<GraphLink>`. *Shipped 2026-05-02 commit e6c31614.
-      ~100 mechanical borrow→read/write replacements across
-      fuel-graph + fuel-graph-cpu/executor/router + cuda-backend +
-      reference-backend + fuel-core lazy/scheduling/graph_storage.
-      cudnn.rs's thread-local cache unrelated and unchanged.*
-- [x] Add `Option<GraphLink>` to `Tensor_` (parallel mode: legacy
-      `storage` Arc and new `link` slot Arc point at the same bytes
-      during the G → B6 transition). *Shipped 2026-05-02 commit
-      3c042bf8.*
-- [x] Add `Tensor::realized_storage()` mode-agnostic read seam,
-      `has_graph_link()`, and `graph_link()` accessors. *Shipped in
-      the same commit (3c042bf8). Seam consults the slot first,
-      falls back to legacy storage Arc.*
-- [ ] *(Deferred to post-B6 prep — not on G's critical path):*
-      migrate ~200 storage reads to `realized_storage()`. Required
-      before the legacy `storage` field can become `Option<>` and
-      ultimately drop. Both modes coexist correctly via parallel-mode
-      invariant, so this can land any time before B6.
-- [x] Smoke test: construct a node-handle Tensor end-to-end, verify
-      `realized_storage()` returns the slot Arc, parallel-mode
-      invariant holds. *Shipped 2026-05-02 commit 42a94c74.*
-- [x] Multi-device parity: parametric helper + gated CUDA / Metal
-      tests verifying the slot mechanism preserves device identity.
-      *Shipped 2026-05-02 commit ae87d92c — CUDA verified live on
-      RTX 4070. Vulkan parity holds by construction (same trait
-      inheritance) — re-enable an explicit Vulkan test once a
-      device-construction shortcut for tests is added.*
-- [x] Document the new model in `GUIDE.md` (architecture seam) and
-      `PATTERNS.md` (runnable example). *Shipped 2026-05-02 commit
-      530cd371.*
+      `Arc<RwLock<>>` so `fuel_core::Tensor` retains Send+Sync
+      after gaining `Option<fuel_graph::Tensor>`. *Shipped 2026-05-02
+      commit e6c31614. ~100 mechanical borrow→read/write
+      replacements across fuel-graph + fuel-graph-cpu/executor/router
+      + cuda-backend + reference-backend + fuel-core
+      lazy/scheduling. cudnn.rs's thread-local cache unrelated and
+      unchanged.*
+- [x] `Tensor_::link: Option<fuel_graph::Tensor>` — reuses the
+      existing graph handle as the link payload (no separate
+      `GraphLink` wrapper). *Initial commit 3c042bf8 introduced
+      a separate `GraphLink`; fix-up 2/5 commit 8c32b535 dropped
+      it in favor of `fuel_graph::Tensor` directly.*
+- [x] `Tensor::realized_storage()` mode-agnostic read seam plus
+      `has_graph_link()` / `graph_link()` accessors. *Initial commit
+      3c042bf8; fix-up 4/5 commit f0f0df1d revised the seam to
+      enforce the `(storage, link)` exactly-one-of invariant.*
+- [x] Migrate every storage read in fuel-core + downstream
+      (fuel-nn, fuel-flash-attn-cuda, …) through
+      `realized_storage()`. ~85 sites bound the returned Arc into
+      a named local + take `.read().unwrap()` /
+      `.write().unwrap()`. *Shipped fix-up 3/5 commit 6e1e10db.*
+- [x] `Tensor_::storage` becomes `Option<Arc<RwLock<Storage>>>`;
+      "exactly one of `storage`, `link` is `Some`" invariant
+      enforced at construction. `from_storage` produces
+      legacy-mode tensors; new `from_link` constructor produces
+      node-handle tensors (reads dtype/device/shape from the
+      slot, errors cleanly when the slot is unpopulated). *Shipped
+      fix-up 4/5 commit f0f0df1d.*
+- [x] Smoke test: construct a node-handle Tensor end-to-end and
+      verify `realized_storage()` returns the slot Arc.
+      *Shipped 2026-05-02 commit 42a94c74; rewritten in fix-up 4/5
+      to use the `from_link` constructor.*
+- [x] Multi-device parity: parametric helper + gated CUDA/Metal
+      tests verifying the slot mechanism preserves device
+      identity. *Shipped 2026-05-02 commit ae87d92c — CUDA
+      verified live on RTX 4070. Vulkan parity holds by
+      construction (same trait inheritance) — re-enable an
+      explicit Vulkan test once a device-construction shortcut
+      for tests is added.*
+- [x] Document the new model in `GUIDE.md` (architecture seam)
+      and `PATTERNS.md` (runnable example). *Initial commit
+      530cd371; fix-up 5/5 commit 56e109ca rewrote both to match
+      the corrected architecture.*
 
 Follow-on (post-G, ahead of CE):
 
