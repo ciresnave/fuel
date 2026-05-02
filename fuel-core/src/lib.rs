@@ -66,7 +66,6 @@ pub mod dyn_backend;
 mod dtype;
 pub mod dummy_dtype;
 pub mod error;
-pub mod graph_storage;
 mod indexer;
 pub mod kv_cache;
 pub mod lazy;
