@@ -974,15 +974,22 @@ where they are not earning their maintenance cost.
       it has no end-to-end forward test, building one would triple
       the test runtime, and the UNet uses the same primitives the
       VAE already exercises. Follow-up.)
-- [ ] **Debuggability requirements**, non-negotiable from day one:
-  - `Tensor::realize_eagerly()` — forces immediate execution of any pending
-    graph for a single tensor, for use in debug prints and interactive
-    development. The lazy model must not force developers to fly blind.
-  - Planner "why did I pick this" traces — for any dispatched operation,
-    the planner can emit a human-readable explanation of which backend was
-    selected, which candidates were considered, and the cost-model inputs
-    that drove the decision. Controlled by an environment variable and a
-    per-graph flag.
+- [~] **Debuggability requirements**, non-negotiable from day one:
+  - [x] `Tensor::realize()` (originally drafted as `realize_eagerly()`) —
+    forces immediate execution of any pending graph for a single
+    tensor, for use in debug prints and interactive development.
+    *Shipped as Phase 7.5 B1 (commit a8e192ff). Today it's an Arc-clone
+    identity because every Tensor is eagerly realised at construction;
+    becomes a real executor invocation once Phase 7.5 B3 wires op
+    methods to build graph nodes.*
+  - [~] Planner "why did I pick this" traces — `FUEL_TRACE=1`
+    environment variable produces a Chrome-compatible trace of all
+    realize-time operations (per-node spans, span attributes including
+    op type and shape) via tracing/info_span! instrumentation in both
+    CPU and CUDA executors. *Per-dispatch "candidates considered +
+    cost-model inputs" attribution is not yet exposed; the dispatch
+    table's `pick(op, dtype, size, criterion)` returns only the
+    selection, not the rationale.*
   - [x] Shape mismatch errors report *where in the graph* the mismatch
     occurred. Build-time shape validation in the `Tensor::*` builders
     catches most of these with source locations via Rust panics; the
@@ -1415,10 +1422,14 @@ are `Vec<T>`.
 - [ ] **Relocate `HostBuffer` from `fuel-core-types` to
       `fuel-cpu-backend`.** The alias stays in `fuel-core-types` for
       path compatibility. Deferred until vendor backends land.
-- [ ] **Additional `HostStorage` impls** (unblocked by the trait):
-  - `MmappedHostStorage` for zero-copy safetensors loading.
-  - `PinnedHostStorage` for page-locked GPU DMA memory.
-  - `SharedMemHostStorage` for IPC across processes.
+- [x] **Additional `HostStorage` impls** (unblocked by the trait):
+  - `MmappedHostStorage` for zero-copy safetensors loading. *Shipped in
+    `fuel-cpu-backend::host_storage::mmap` ([fuel-cpu-backend/src/host_storage/mmap.rs](fuel-cpu-backend/src/host_storage/mmap.rs#L53)).*
+  - `PinnedHostStorage` for page-locked GPU DMA memory. *Shipped in
+    `fuel-cuda-backend::PinnedHostStorage`; live tests in
+    `fuel-cuda-backend/tests/pinned_live.rs`.*
+  - `SharedMemHostStorage` for IPC across processes. *Shipped in
+    `fuel-cpu-backend::host_storage::shared_mem` ([fuel-cpu-backend/src/host_storage/shared_mem.rs](fuel-cpu-backend/src/host_storage/shared_mem.rs#L54)).*
 - [x] **Fix `fuel-core/tests/custom_op_tests.rs`** — no longer gated.
       Active integration test against the post-refactor public API
       (`CustomOp1` / `InplaceOp1` / `UgIOp1`), using
