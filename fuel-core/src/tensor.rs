@@ -208,6 +208,47 @@ pub(crate) fn from_storage<S: Into<Shape>>(
     Tensor(Arc::new(tensor_))
 }
 
+/// Phase 7.5 work item G: construct a Tensor in node-handle mode with
+/// both the legacy `storage` Arc AND a graph link populated. This is
+/// the "parallel mode" used during the G → B6 transition: legacy
+/// readers see the storage Arc directly; new readers via
+/// `Tensor::realized_storage()` consult the graph slot first.
+///
+/// The `storage_arc` and the slot referenced by `link.id` should
+/// point at the same bytes — typically callers obtain the Arc by
+/// allocating a `Storage`, wrapping it in `Arc::new(RwLock::new(...))`,
+/// and registering that same Arc into both `Tensor_.storage` and
+/// `link.storage`'s slot map. Identity of the Arcs is the invariant
+/// that lets old readers and new readers see the same bytes.
+///
+/// Public-but-`pub(crate)` for now — once B2 migrates factories to
+/// produce node-handle tensors, this becomes the canonical
+/// constructor and goes public. Until then, only the smoke tests in
+/// this crate build node-handle tensors directly.
+pub(crate) fn from_storage_with_link<S: Into<Shape>>(
+    storage_arc: Arc<RwLock<Storage>>,
+    shape: S,
+    op: BackpropOp,
+    is_variable: bool,
+    link: GraphLink,
+) -> Tensor {
+    let (dtype, device) = {
+        let s = storage_arc.read().unwrap();
+        (s.dtype(), s.device())
+    };
+    let tensor_ = Tensor_ {
+        id: TensorId::new(),
+        storage: storage_arc,
+        layout: Layout::contiguous(shape),
+        op,
+        is_variable,
+        dtype,
+        device,
+        link: Some(link),
+    };
+    Tensor(Arc::new(tensor_))
+}
+
 impl Tensor {
     pub(crate) fn ones_impl<S: Into<Shape>>(
         shape: S,
