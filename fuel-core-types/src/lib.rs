@@ -28,6 +28,7 @@ pub mod probe;
 pub mod quantized;
 pub mod scalar;
 pub mod shape;
+pub mod storage;
 pub mod strided_index;
 
 pub use capability::Capability;
@@ -43,4 +44,5 @@ pub use layout::Layout;
 pub use quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
 pub use scalar::Scalar;
 pub use shape::{D, Dim, Dims, Shape, ShapeWithOneHole};
+pub use storage::Storage;
 pub use strided_index::{StridedBlocks, StridedIndex};
