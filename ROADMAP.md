@@ -1598,6 +1598,303 @@ that cudarc didn't, pitched for later roadmap consideration.
 
 ---
 
+### Phase 7.5 — Core simplification: lazy-only execution, graph-rewrite autograd, and crate fissioning
+
+*Structural cleanup that follows naturally from the now-complete
+backend-agnostic refactor (the 15-step plan, branch tip f0c00233,
+2026-05-01). Not urgent in the sense of blocking other work, but
+high-leverage: each piece removes a tax that every consumer pays
+today and unlocks downstream phases. Best done after Phase 7
+stabilises and before Phase 8 lands new kernel-layer code that
+would otherwise have to absorb the changes mid-flight.*
+
+#### Why Phase 7.5 exists
+
+The backend-agnostic refactor proved the architecture: `fuel-core`
+no longer names any backend, every backend interacts through
+`DynBackendStorage`, and the lazy stack (Phase 6) is the substrate
+for empirical dispatch (Phase 6b), scheduler-driven residency
+(PRs #1–#4), and multi-backend Router (PR #5). Three structural
+debts remain that the previous architecture left in place:
+
+1. **Two execution paths (eager + lazy) that do the same job.**
+   `Tensor::matmul` runs immediately via `Storage::matmul`; the
+   lazy stack builds a graph and dispatches via Router/Executor.
+   The lazy path is strictly more capable (Judge dispatch,
+   ResidencyEvictionRule, ConstLoweringRule, future fusion). Every
+   op currently has to work in both modes — compile-time tax,
+   test-matrix tax, source of subtle drift between paths.
+2. **Autograd entangled with `Tensor` and the `Op` enum.**
+   `Tensor_` carries an `op: BackpropOp` field that every
+   inference path pays for, and `Op` does double duty as forward
+   IR (used by the lazy graph) and backward tape entry (used by
+   `.backward()`). Inference consumers (Lightbulb, embeddings,
+   retrieval, oracle test runners, quantized-only paths) inherit
+   the autograd cost for nothing.
+3. **Inplace ops are a user-facing decision rather than an
+   optimization concern.** `InplaceOp1/2/3` in `fuel-core-types`
+   forces users to choose `relu_inplace` vs `relu` based on a
+   correctness model they have to track manually, and in
+   differentiated regions inplace can silently produce wrong
+   gradients.
+
+These three sit on top of a fourth pressure: `fuel-core` itself is
+becoming a kitchen sink. `fuel-quantized` and `fuel-conv` already
+fissioned out under real consumer pressure; the remaining
+contents (Tensor + autograd + eager dispatch + loaders +
+custom_op extension hook + indexer) split along clean
+consumer-boundary lines.
+
+#### Architectural decisions
+
+**Single execution path: lazy-only + explicit `.realize()`.**
+Drop eager mode. `Tensor::matmul` and every other op build a
+graph node; values are produced when the user calls
+`.realize()` / `.materialize()` / `.item()` / similar. The lazy
+stack already has every capability eager has plus residency,
+empirical dispatch, and (future) fusion. The cost of the change
+is ergonomic — print-debug, dynamic control flow on tensor
+values, and interop with non-Fuel code all need an explicit
+materialisation call. JAX has demonstrated this idiom is
+learnable. Single path also collapses the autograd story to
+"is this graph differentiated?" — no "is autograd active and is
+the op eager?" matrix.
+
+**Option 2 with the lazy graph as the tape.** Autograd becomes a
+graph rewrite over the forward IR, not a separate tape data
+structure. The lazy graph already has every property a tape needs
+(ordered nodes, input dependencies, op metadata). Backward is a
+graph transformation that walks the forward graph in reverse and
+emits backward nodes, then the unified graph is executed via the
+same `fuel-graph-executor`. Backward implementations live in
+`fuel-autograd` (or co-located per-op alongside their forward
+definitions in their owning crate — `fuel-conv`, `fuel-quantized`,
+etc.). `Tensor_` drops the `op: BackpropOp` field and the
+`is_variable` flag. `Op` becomes pure forward IR; the lazy stack
+and autograd both consume it.
+
+This choice has strong synergy with what is already shipped:
+- Phase 6b probe/judge/dispatch — backward ops are ordinary ops,
+  dispatch through the same Judge/DispatchTable. Backward of
+  `matmul(A, B)` is just `matmul(grad, Bᵀ)` and `matmul(Aᵀ, grad)`.
+- PRs #1–#4 scheduler-driven residency — unified forward+backward
+  graph means the scheduler sees full activation lifetimes and
+  computes correct eviction. The destructive-input metadata on
+  `Op::Release` already prevents forward eviction of tensors
+  needed for backward; activation checkpointing falls out almost
+  for free.
+- P5 tiered residency — activations evicted during forward can
+  be `fault_back`'d when backward consumes them; the planner has
+  the dependency visible.
+- ConstLoweringRule — backward graphs are also const-foldable.
+- Higher-order gradients (`grad(grad(f))`) work because the
+  backward graph is itself differentiable.
+
+**Inplace as an optimization concern, not a user concern.** A
+graph optimizer pass runs liveness analysis on the unified
+forward+backward graph and rewrites in both directions:
+- *Inplace-IN*: a non-inplace op whose input has no remaining
+  consumers (no other forward use, no backward dependency) is
+  swapped to its inplace variant. Free buffer reuse.
+- *Inplace-OUT*: an inplace op whose input is needed elsewhere
+  is swapped to its non-inplace variant. The original inplace
+  marker becomes a hint the optimizer is free to ignore.
+
+User consequence: the same source code is correct in inference
+and training. Inplace is a perf hint, not a semantic constraint.
+Inference paths get every inplace win the analysis can find;
+differentiated paths get correctness for free; mixed regions
+handled by the same liveness pass with no special-casing. This
+generalises JAX's `donate_argnums` from a user annotation to an
+optimizer-inferred property.
+
+**Fissioning `fuel-core` along consumer boundaries.** Each split
+is justified by a class of consumer that uses one side and not
+the other:
+- `fuel-tensor`: `Tensor` + eager-dispatch methods (now
+  graph-builder methods) + indexer + custom_op + scalar helpers.
+  Consumer: anyone who wants the tensor surface without autograd
+  (Lightbulb, embedding/retrieval pipelines, oracle runners).
+- `fuel-autograd`: tape-as-graph-rewrite + backward registration
+  machinery + `.backward()` API. Consumer: training pipelines.
+- `fuel-loaders` (or `fuel-pickle` / `fuel-safetensors` /
+  `fuel-gguf` separately): file-format adapters with their heavy
+  serde / file-IO deps. Consumer: model-conversion tools and the
+  initial-load path; not needed by inference-with-pre-loaded
+  weights.
+- `fuel-core` retains the umbrella facade role — re-exports the
+  common API for ergonomics, like `tokio` re-exporting from
+  `tokio-*`. Most users keep depending on `fuel-core` directly;
+  internal consumers depend on the leaf crates.
+
+The stopping rule: a crate boundary is justified only when there
+is a class of consumer that uses one side and not the other.
+Indexer and scalar helpers have no consumer asking for them
+without `Tensor`, so they stay folded into `fuel-tensor`.
+
+#### Work items
+
+**A. Loaders and custom_op fissioning** (cheap, additive,
+no architectural choices to resolve).
+
+- [ ] Move `fuel-core/src/safetensors.rs`, `pickle.rs`, and the
+      GGUF/ggml file readers under `quantized/` (`gguf_file.rs`,
+      `gguf_mmap.rs`, `ggml_file.rs`, `imatrix_file.rs`) into a
+      new `fuel-loaders` crate. Re-export from `fuel-core` for
+      backward compatibility.
+- [ ] Decide whether `custom_op` extension hook stays with
+      `fuel-tensor` (likely) or splits separately. If split,
+      move to `fuel-custom-op`.
+- [ ] Update `fuel-transformers` and `fuel-examples` to depend on
+      `fuel-loaders` directly where weight loading is the only
+      `fuel-core` API in use.
+
+**B. Drop eager mode, introduce `.realize()`.**
+
+- [ ] Add `.realize()` / `.materialize()` to `Tensor`. For tensors
+      backed by an eager-mode storage (current state), it's a
+      no-op; for graph-built tensors (post-step C), it triggers
+      executor dispatch.
+- [ ] Migrate every `Tensor::*` op method to build a graph node
+      instead of calling `Storage::*` directly. The dispatch path
+      becomes the lazy-stack's `realize_*` entry points, with a
+      fast-path for one-node graphs to amortise per-op overhead.
+- [ ] Update `to_vec*`, `to_scalar`, `Display` impls, and any
+      other "force value" entry points to call `.realize()`
+      implicitly so users don't have to.
+- [ ] Migration pass through `fuel-nn`, `fuel-transformers`,
+      `fuel-examples`: most code remains unchanged because op
+      methods retain their signatures; only "inspect a value"
+      sites need `.realize()`.
+- [ ] Document the idiom in `GUIDE.md` and `PATTERNS.md`.
+      Particular care for the `if tensor.item::<f32>() > 0.5`
+      case — this is the most user-visible difference from
+      PyTorch eager.
+
+**C. Sever `Op`-as-IR from `BackpropOp`-as-tape-entry; move
+backward to `fuel-autograd`.**
+
+- [ ] Confirm `Op` lives in `fuel-core-types` with no autograd
+      coupling (already mostly there post-Phase 6).
+- [ ] Drop `BackpropOp` and `is_variable` from `Tensor_`. Add a
+      `Variable` concept that's just "a graph input the autograd
+      pass differentiates with respect to" — data, not a type
+      distinction.
+- [ ] Create `fuel-autograd` crate. Define the
+      `BackwardRule<Op>` registration trait and the
+      `grad(graph, output, wrt)` graph-rewrite entry point.
+- [ ] Move every existing backward closure into a `BackwardRule`
+      impl. Co-locate per-op backward rules with their forward
+      `Op` definitions in the owning crate where possible
+      (`fuel-conv` owns Conv backward, `fuel-quantized` owns
+      QMatMul backward). `fuel-autograd` provides only the
+      traversal/transform machinery and the public API.
+- [ ] Add a compile-time check that every `Op` variant has a
+      registered `BackwardRule` (or is explicitly marked
+      non-differentiable) — closes the "open enum" problem
+      Option 2 normally has.
+- [ ] Validate higher-order gradients work end-to-end on a small
+      test case (`grad(grad(f))` for a simple function).
+
+**D. Inplace-as-optimization graph rewrite.**
+
+- [ ] Add `opt::inplace_rewrite` pass running before executor
+      dispatch. Walks the unified graph, computes per-tensor
+      liveness (forward consumers + backward dependencies),
+      swaps non-inplace → inplace where the input has no
+      remaining consumers, and swaps inplace → non-inplace
+      where the input is needed.
+- [ ] For each op that has both inplace and non-inplace forms,
+      ensure the optimizer can pick freely. This is the
+      shape-stable case; ops where inplace requires a different
+      output shape don't qualify and the optimizer leaves them
+      alone.
+- [ ] Document that `*_inplace` op variants are now perf hints,
+      not correctness primitives. Recommend users write the
+      non-inplace form; the optimizer adds inplace where safe.
+- [ ] Once the optimizer is shown to find every inplace win the
+      hand-written `*_inplace` callers were getting, consider
+      retiring the user-facing `*_inplace` API entirely and let
+      the optimizer be the sole source of inplace decisions.
+
+**E. Crate split: `fuel-tensor` and the umbrella facade.**
+
+- [ ] Extract `Tensor`, eager-API methods (now graph builders),
+      indexer, scalar helpers, and `custom_op` (if not split
+      separately) into `fuel-tensor`.
+- [ ] Reduce `fuel-core` to: re-export facade over
+      `fuel-core-types`, `fuel-tensor`, `fuel-autograd`,
+      `fuel-loaders`, `fuel-graph-*`, and the registered
+      backends. Most public-API surface stays accessible via
+      `fuel-core::*` for back-compat.
+- [ ] Internal callers (`fuel-nn`, `fuel-transformers`,
+      `fuel-examples`) keep depending on `fuel-core`. New
+      lightweight consumers can depend on the smaller leaf
+      crates directly.
+
+#### Sequencing
+
+A is the cheapest; can ship first, in any order relative to the
+others. B and C are coupled: dropping eager makes C's job
+significantly cleaner because there's only one execution path
+to teach autograd about. D depends on C (needs the unified
+forward+backward graph to do liveness on). E depends on B and
+C (the Tensor type's surface stabilises only after eager is
+gone and BackpropOp is dropped). So: A in parallel with B → C
+→ D → E.
+
+Total estimated scope: A is a week, B is two-to-three weeks
+including downstream migration, C is the largest at four-to-six
+weeks (every op constructor touched), D is one-to-two weeks of
+optimizer-pass work, E is one week of mechanical extraction.
+Roughly two months end-to-end.
+
+#### Success criteria
+
+- `fuel-core` no longer carries pickle/safetensors/GGUF loader
+  code; consumers needing them depend on `fuel-loaders`.
+- A new `fuel-tensor`-only program (no autograd, no loaders)
+  builds and runs a forward pass with measurably smaller compile
+  times than the current `fuel-core`-equivalent.
+- `Tensor` has no `op: BackpropOp` field; inference paths show
+  measurable reduction in per-op overhead and per-tensor memory
+  vs. the pre-7.5 baseline.
+- A training program written against `fuel-autograd` produces
+  bit-equivalent gradients to the current in-tree autograd on
+  the regression suite (CPU + at least one accelerator).
+- Higher-order gradient test (`grad(grad(f))`) passes end-to-end.
+- Inplace ops work correctly in differentiated regions without
+  user intervention; benchmark suite shows inference paths
+  picking up inplace wins on at least the activation functions
+  in the Phase 6 anchor suite.
+- Eager mode is removed; `.realize()` is the documented
+  materialisation point; `GUIDE.md` and `PATTERNS.md` reflect
+  the lazy-only idiom.
+
+#### Honest caveats
+
+This is the largest single phase since Phase 6 itself. The
+biggest risk is C (autograd refactor): every op constructor in
+the codebase is touched and any subtle change to gradient
+semantics shows up as a training divergence that's expensive
+to debug. Mitigation: bit-equivalence testing against the
+pre-7.5 autograd at every step, on the CPU reference backend
+where determinism is highest. The second risk is B: dropping
+eager mode is a user-visible API change even if signatures
+remain the same — anyone relying on "matmul executes now"
+semantics has to learn `.realize()`. Mitigation: documentation,
+an opt-in `FUEL_EAGER=1` env-flag during transition that forces
+`.realize()` after every op, and a deprecation cycle before the
+flag is removed.
+
+This phase should not be attempted concurrently with Phase 8
+(FlashAttention) or Phase 8.5 (sparsity); both add new
+kernels/ops and would have to absorb the autograd-rewrite mid-
+flight. Phase 9 (agentic hooks) is gated on a real consumer
+and not in conflict.
+
+---
+
 ### Phase 8 — FlashAttention tiered implementation
 
 *Affects only the Backends/Kernels layer. Gated on two external
