@@ -1,6 +1,5 @@
 ﻿//! Tensors are N-dimensional matrixes of elements using a single data type.
 #![allow(clippy::redundant_closure_call)]
-use crate::graph_storage::GraphLink;
 use crate::op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp};
 use crate::scalar::TensorOrScalar;
 use crate::shape::{Dim, Dims, ShapeWithOneHole};
@@ -56,17 +55,19 @@ pub struct Tensor_ {
     is_variable: bool,
     dtype: DType,
     device: Device,
-    /// Phase 7.5 work item G: optional reference to a `(graph, NodeId)` pair
-    /// plus the graph's `SharedGraphStorage` sidecar. Populated once
-    /// factories (B2) and op methods (B3) start producing graph-rooted
-    /// tensors. While `None`, this tensor is in legacy eager mode and the
-    /// `storage` field above is the sole source of truth. While `Some`,
-    /// `Tensor::realized_storage()` consults the graph's storage map first
-    /// and falls back to `storage` if the slot hasn't been populated yet.
-    /// Once step 4 has migrated every reader to `realized_storage()`, the
-    /// `storage` field becomes `Option<...>` and the invariant "exactly one
-    /// of `storage`, `link` is Some" can be enforced.
-    link: Option<GraphLink>,
+    /// Phase 7.5 work item G: optional reference into a `fuel_graph`
+    /// graph at a particular `NodeId`. Populated once factories (B2)
+    /// and op methods (B3) produce graph-rooted tensors; while `None`,
+    /// this tensor is in legacy eager mode and the `storage` field
+    /// above is the sole source of truth.
+    ///
+    /// `realized_storage()` consults the graph's storage map first
+    /// (via `link.storage_for()`) and falls back to the legacy field
+    /// when the slot hasn't been populated yet. Once every reader is
+    /// migrated to the seam (storage field becomes `Option<...>`),
+    /// the invariant "exactly one of `storage`, `link` is `Some`" is
+    /// enforced at construction.
+    link: Option<fuel_graph::Tensor>,
 }
 
 impl AsRef<Tensor> for Tensor {
@@ -208,29 +209,31 @@ pub(crate) fn from_storage<S: Into<Shape>>(
     Tensor(Arc::new(tensor_))
 }
 
-/// Phase 7.5 work item G: construct a Tensor in node-handle mode with
-/// both the legacy `storage` Arc AND a graph link populated. This is
-/// the "parallel mode" used during the G → B6 transition: legacy
-/// readers see the storage Arc directly; new readers via
-/// `Tensor::realized_storage()` consult the graph slot first.
+/// Phase 7.5 work item G: construct a Tensor in node-handle mode
+/// with both the legacy `storage` Arc AND a `fuel_graph::Tensor`
+/// link populated. This is the "parallel mode" used during the
+/// G → B6 transition: legacy readers see the storage Arc directly;
+/// new readers via `Tensor::realized_storage()` consult the graph
+/// slot first.
 ///
-/// The `storage_arc` and the slot referenced by `link.id` should
-/// point at the same bytes — typically callers obtain the Arc by
-/// allocating a `Storage`, wrapping it in `Arc::new(RwLock::new(...))`,
-/// and registering that same Arc into both `Tensor_.storage` and
-/// `link.storage`'s slot map. Identity of the Arcs is the invariant
-/// that lets old readers and new readers see the same bytes.
+/// The `storage_arc` and the slot in `link.graph()` for `link.id()`
+/// should point at the same bytes — typically callers allocate a
+/// `Storage`, wrap it in `Arc::new(RwLock::new(...))`, and register
+/// that same Arc both as `Tensor_.storage` and via
+/// `graph.set_storage(id, arc.clone())`. Identity of the Arcs is
+/// the invariant that lets old readers and new readers see the
+/// same bytes.
 ///
-/// Public-but-`pub(crate)` for now — once B2 migrates factories to
-/// produce node-handle tensors, this becomes the canonical
-/// constructor and goes public. Until then, only the smoke tests in
-/// this crate build node-handle tensors directly.
+/// `pub(crate)` for now — once B2 migrates factories to produce
+/// node-handle tensors, this becomes the canonical construction
+/// path. Until then, only the smoke tests build node-handle
+/// tensors directly.
 pub(crate) fn from_storage_with_link<S: Into<Shape>>(
     storage_arc: Arc<RwLock<Storage>>,
     shape: S,
     op: BackpropOp,
     is_variable: bool,
-    link: GraphLink,
+    link: fuel_graph::Tensor,
 ) -> Tensor {
     let (dtype, device) = {
         let s = storage_arc.read().unwrap();
@@ -4418,42 +4421,45 @@ impl Tensor {
     }
 
     /// Mode-agnostic read seam for this tensor's realized storage
-    /// (Phase 7.5 work item G step 2).
+    /// (Phase 7.5 work item G).
     ///
-    /// Returns the `Arc<RwLock<Storage>>` that backs this tensor's bytes:
-    /// - If this tensor is in node-handle mode (`link` is `Some`) and the
-    ///   graph's storage map has a slot populated for the linked
-    ///   `NodeId`, returns that slot's Arc clone.
-    /// - Otherwise (legacy eager mode, or node-handle mode where the slot
-    ///   hasn't been realized yet) returns the legacy `storage` field's
-    ///   Arc clone.
+    /// Returns the `Arc<RwLock<Storage>>` that backs this tensor's
+    /// bytes:
+    /// - If this tensor is in node-handle mode (`link` is `Some`) and
+    ///   the graph's storage map has a slot for the linked `NodeId`,
+    ///   returns that slot's Arc clone.
+    /// - Otherwise (legacy eager mode, or node-handle mode where the
+    ///   slot hasn't been populated yet) returns the legacy `storage`
+    ///   field's Arc clone.
     ///
-    /// During the G transition both fields can be populated; this seam
-    /// preferentially honours the graph slot when available so that
-    /// migrations from legacy → node-handle don't need to coordinate
-    /// reader updates atomically. Step 4 will mass-migrate every
-    /// `self.storage.read()` site to consult this seam, after which
-    /// the legacy field can become `Option<...>` and the invariant
-    /// "exactly one of `storage`, `link` is `Some`" can be enforced.
+    /// During the G transition both fields can be populated; this
+    /// seam preferentially honours the graph slot when available so
+    /// migrations from legacy → node-handle don't have to coordinate
+    /// reader updates atomically. Once every reader is migrated, the
+    /// legacy field becomes `Option<...>` and the invariant "exactly
+    /// one of `storage`, `link` is `Some`" is enforced at
+    /// construction.
     pub fn realized_storage(&self) -> Arc<RwLock<Storage>> {
         if let Some(link) = &self.link {
-            if let Some(slot) = link.storage_slot() {
+            if let Some(slot) = link.storage_for() {
                 return slot;
             }
         }
         self.storage.clone()
     }
 
-    /// Whether this tensor is currently in node-handle mode (Phase 7.5 G).
-    /// `true` iff `link` is `Some`. Independent of whether the link's
-    /// storage slot has been populated yet — for the realised-vs-pending
-    /// distinction use [`Tensor::is_realized`].
+    /// Whether this tensor is currently in node-handle mode (Phase
+    /// 7.5 G). `true` iff `link` is `Some`. Independent of whether
+    /// the linked node's storage slot has been populated yet — for
+    /// the realised-vs-pending distinction use [`Tensor::is_realized`].
     pub fn has_graph_link(&self) -> bool {
         self.link.is_some()
     }
 
-    /// Borrow this tensor's [`GraphLink`] if it has one.
-    pub fn graph_link(&self) -> Option<&GraphLink> {
+    /// Borrow this tensor's graph-link if it has one. The returned
+    /// handle is the `fuel_graph::Tensor` (graph + NodeId) reference
+    /// the lazy stack uses for graph-mutating operations.
+    pub fn graph_link(&self) -> Option<&fuel_graph::Tensor> {
         self.link.as_ref()
     }
 
@@ -4841,5 +4847,114 @@ impl std::ops::Div<&Tensor> for f64 {
 impl<S: Into<Shape>> From<(Storage, S)> for Tensor {
     fn from((storage, shape): (Storage, S)) -> Self {
         from_storage(storage, shape, BackpropOp::none(), false)
+    }
+}
+
+#[cfg(test)]
+mod node_handle_tests {
+    //! Phase 7.5 work item G — node-handle Tensor smoke tests. These
+    //! live as unit tests so they can use the pub(crate)
+    //! `from_storage_with_link` constructor.
+
+    use super::*;
+    use fuel_graph::ConstData;
+
+    /// Parametric helper: build a node-handle Tensor on `device`,
+    /// register its storage Arc as the graph slot for the Const node,
+    /// and verify `realized_storage()` returns that exact Arc plus
+    /// device identity survives.
+    fn node_handle_smoke_for_device(device: &Device) {
+        let shape = Shape::from_dims(&[3]);
+        let legacy = Tensor::new(&[1.0_f32, 2.0, 3.0], device).unwrap();
+        let storage_arc = legacy.realized_storage();
+
+        // Build a fresh single-node graph + Const leaf via the public
+        // fuel_graph::Tensor::from_const builder. Register our storage
+        // Arc as the slot for that NodeId.
+        let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
+        let link = fuel_graph::Tensor::from_const(const_data, shape.clone());
+        link.graph()
+            .write()
+            .unwrap()
+            .set_storage(link.id(), storage_arc.clone());
+
+        let t = from_storage_with_link(
+            storage_arc.clone(),
+            shape,
+            BackpropOp::none(),
+            false,
+            link,
+        );
+
+        assert!(t.has_graph_link());
+        assert!(t.graph_link().is_some());
+
+        // The seam returns the slot's Arc, which is the same Arc we
+        // registered — parallel-mode invariant.
+        let slot_arc = t.realized_storage();
+        assert!(
+            Arc::ptr_eq(&slot_arc, &storage_arc),
+            "realized_storage should return the registered slot Arc"
+        );
+
+        // Device identity survives the slot path.
+        let slot_dev = slot_arc.read().unwrap().device();
+        assert_eq!(
+            slot_dev.location_dyn(),
+            device.location(),
+            "slot Storage device must match construction device",
+        );
+    }
+
+    #[test]
+    fn node_handle_tensor_smoke_cpu() {
+        node_handle_smoke_for_device(&Device::cpu());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn node_handle_tensor_smoke_cuda() {
+        let device = crate::cuda_backend::new_device(0)
+            .expect("cuda device 0 expected for cuda-feature test");
+        node_handle_smoke_for_device(&device);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn node_handle_tensor_smoke_metal() {
+        let device = crate::metal_backend::new_device(0)
+            .expect("metal device 0 expected for metal-feature test");
+        node_handle_smoke_for_device(&device);
+    }
+
+    /// Slot Arc and legacy Arc are the same object — both views see
+    /// the same bytes during parallel-mode transition.
+    #[test]
+    fn slot_and_legacy_arcs_are_identical() {
+        let device = Device::cpu();
+        let shape = Shape::from_dims(&[2]);
+        let legacy = Tensor::new(&[5.0_f32, 6.0], &device).unwrap();
+        let storage_arc = legacy.realized_storage();
+
+        let const_data = ConstData::F32(Arc::from(vec![5.0_f32, 6.0]));
+        let link = fuel_graph::Tensor::from_const(const_data, shape.clone());
+        link.graph()
+            .write()
+            .unwrap()
+            .set_storage(link.id(), storage_arc.clone());
+
+        let t = from_storage_with_link(
+            storage_arc.clone(),
+            shape,
+            BackpropOp::none(),
+            false,
+            link.clone(),
+        );
+
+        // Direct legacy read and slot read return the same Arc.
+        let via_seam = t.realized_storage();
+        let via_link = link.storage_for().expect("slot was just registered");
+        assert!(Arc::ptr_eq(&via_seam, &via_link));
+        assert!(Arc::ptr_eq(&via_seam, &storage_arc));
     }
 }

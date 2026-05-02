@@ -44,7 +44,7 @@
 pub mod grad;
 pub mod opt;
 
-use fuel_core_types::{DeviceLocation, DType, Shape};
+use fuel_core_types::{DeviceLocation, DType, Shape, Storage};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -737,12 +737,64 @@ pub struct Graph {
     /// rules that emit side-effecting ops (e.g. `Op::Release` for
     /// residency eviction). See [`Graph::add_side_effect_root`].
     side_effect_roots: Vec<NodeId>,
+    /// Phase 7.5 work item G: graph-owned realized-storage map.
+    /// Slots are populated for `Op::Const` leaves at construction
+    /// time and for non-leaf nodes at realize time. Values are
+    /// `Arc<RwLock<Storage>>` so consumers (Tensor handles, executor
+    /// caches, residency machinery) share Storage cheaply via Arc
+    /// clones. Lifetime is tied to the Graph; when the graph drops,
+    /// any slots not held by external Arc clones are freed.
+    storage_map: HashMap<NodeId, Arc<RwLock<Storage>>>,
 }
 
 impl Graph {
     /// Create an empty graph.
     pub fn new() -> Self {
-        Self { nodes: Vec::new(), placements: HashMap::new(), side_effect_roots: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            placements: HashMap::new(),
+            side_effect_roots: Vec::new(),
+            storage_map: HashMap::new(),
+        }
+    }
+
+    /// Look up the realized storage for a node, if any has been
+    /// registered. Returns an Arc clone — the slot stays in the map
+    /// after this call.
+    pub fn storage_for(&self, id: NodeId) -> Option<Arc<RwLock<Storage>>> {
+        self.storage_map.get(&id).cloned()
+    }
+
+    /// Register a realized-storage slot for `id`. Replaces any
+    /// existing entry (callers responsible for ensuring this is the
+    /// intended semantics — e.g. re-realization after eviction).
+    pub fn set_storage(&mut self, id: NodeId, storage: Arc<RwLock<Storage>>) {
+        assert!(id.0 < self.nodes.len(), "set_storage: id out of bounds");
+        self.storage_map.insert(id, storage);
+    }
+
+    /// Convenience: register an owned `Storage` directly. Wraps in
+    /// `Arc<RwLock<...>>`.
+    pub fn set_storage_owned(&mut self, id: NodeId, storage: Storage) {
+        self.set_storage(id, Arc::new(RwLock::new(storage)));
+    }
+
+    /// Remove a slot. Used by eviction / `Op::Release` paths.
+    /// Returns the Arc if present so callers that want to keep the
+    /// bytes alive can hold it; otherwise drops on the floor and any
+    /// outstanding Arc clones still see the bytes.
+    pub fn remove_storage(&mut self, id: NodeId) -> Option<Arc<RwLock<Storage>>> {
+        self.storage_map.remove(&id)
+    }
+
+    /// Whether a slot is currently registered for `id`.
+    pub fn has_storage(&self, id: NodeId) -> bool {
+        self.storage_map.contains_key(&id)
+    }
+
+    /// Number of registered storage slots.
+    pub fn storage_len(&self) -> usize {
+        self.storage_map.len()
     }
 
     /// Register a NodeId as a side-effect root — a node whose output
@@ -900,6 +952,16 @@ impl Tensor {
     /// The dtype of this tensor, read from the underlying node.
     pub fn dtype(&self) -> DType {
         self.graph.read().unwrap().node(self.id).dtype
+    }
+
+    /// Phase 7.5 work item G: look up the realized-storage slot for
+    /// this tensor's node, if any. Returns an Arc clone so the slot
+    /// stays in the map after this call and the caller's Arc keeps
+    /// the bytes alive even if a later eviction removes the map
+    /// entry. `None` means "not realized yet" — the caller should
+    /// realize the graph first.
+    pub fn storage_for(&self) -> Option<Arc<RwLock<Storage>>> {
+        self.graph.read().unwrap().storage_for(self.id)
     }
 
     /// The placement hint for this tensor's node, if one was set. `None`
@@ -4469,6 +4531,20 @@ mod tests {
     #[test]
     fn destructive_input_release_is_some_zero() {
         assert_eq!(Op::Release.destructive_input(), Some(0));
+    }
+
+    /// Phase 7.5 work item G — empty-map invariants. End-to-end
+    /// tests of the storage map (with real `Storage` values) live in
+    /// fuel-core's `tensor::node_handle_tests`, since constructing a
+    /// real `Storage` requires a `DynBackendStorage` implementation
+    /// from a backend crate, and fuel-graph deliberately depends only
+    /// on fuel-core-types.
+    #[test]
+    fn graph_storage_map_starts_empty() {
+        let g = Graph::new();
+        assert_eq!(g.storage_len(), 0);
+        assert!(!g.has_storage(NodeId(0)));
+        assert!(g.storage_for(NodeId(0)).is_none());
     }
 
     #[test]
