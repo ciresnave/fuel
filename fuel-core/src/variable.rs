@@ -336,12 +336,12 @@ impl Var {
             let msg = "cannot set a variable to a tensor that is derived from its value";
             Err(Error::CannotSetVar { msg }.bt())?
         }
-        let (mut dst, layout) = self.storage_mut_and_layout();
+        let (dst_arc, layout) = self.storage_mut_and_layout();
         if !layout.is_contiguous() {
             let msg = "cannot set a non-contiguous variable";
             Err(Error::CannotSetVar { msg }.bt())?
         }
-        let (src, src_l) = src.storage_and_layout();
+        let (src_arc, src_l) = src.storage_and_layout();
         if layout.shape() != src_l.shape() {
             Err(Error::ShapeMismatchBinaryOp {
                 lhs: layout.shape().clone(),
@@ -350,7 +350,9 @@ impl Var {
             }
             .bt())?
         }
-        src.copy_strided_src(&mut dst, layout.start_offset(), src_l)?;
+        let mut dst = dst_arc.write().unwrap();
+        let src_guard = src_arc.read().unwrap();
+        src_guard.copy_strided_src(&mut dst, layout.start_offset(), src_l)?;
         Ok(())
     }
 }

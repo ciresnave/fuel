@@ -113,7 +113,8 @@ impl QTensor {
         }
         let mut storage = src.device().qzeros(elem_count, dtype)?;
         let src_storage = src.storage();
-        storage.quantize(src_storage.as_dyn())?;
+        let src_guard = src_storage.read().unwrap();
+        storage.quantize(src_guard.as_dyn())?;
         Ok(Self {
             storage,
             shape: shape.clone(),
@@ -146,7 +147,8 @@ impl QTensor {
         }
         let mut storage = src.device().qzeros(elem_count, dtype)?;
         let src_storage = src.storage();
-        storage.quantize_imatrix(src_storage.as_dyn(), imatrix_weights, n_per_row)?;
+        let src_guard = src_storage.read().unwrap();
+        storage.quantize_imatrix(src_guard.as_dyn(), imatrix_weights, n_per_row)?;
         Ok(Self {
             storage,
             shape: shape.clone(),
@@ -187,7 +189,8 @@ impl QTensor {
         }
         let mut storage = dev.qzeros(elem_count, dtype)?;
         let src_storage = src.storage();
-        storage.quantize_imatrix_onto(src_storage.as_dyn(), imatrix_weights, n_per_row)?;
+        let src_guard = src_storage.read().unwrap();
+        storage.quantize_imatrix_onto(src_guard.as_dyn(), imatrix_weights, n_per_row)?;
         Ok(Self {
             storage,
             shape: shape.clone(),
@@ -215,7 +218,8 @@ impl QTensor {
         }
         let mut storage = dev.qzeros(elem_count, dtype)?;
         let src_storage = src.storage();
-        storage.quantize_onto(src_storage.as_dyn())?;
+        let src_guard = src_storage.read().unwrap();
+        storage.quantize_onto(src_guard.as_dyn())?;
         Ok(Self {
             storage,
             shape: shape.clone(),
@@ -281,8 +285,10 @@ impl QTensor {
     }
 
     pub fn indexed_moe_forward(&self, x: &Tensor, ids: &Tensor) -> Result<Tensor> {
-        let x_guard = x.storage();
-        let ids_guard = ids.storage();
+        let x_arc = x.storage();
+        let ids_arc = ids.storage();
+        let x_guard = x_arc.read().unwrap();
+        let ids_guard = ids_arc.read().unwrap();
         let (storage, out_shape) = self.storage.indexed_moe_forward(
             self.shape(),
             x_guard.as_dyn(),

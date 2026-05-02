@@ -142,7 +142,10 @@ impl Tensor {
         let mut storage = unsafe { device.alloc_uninit(&shape, dtype)? };
         for (arg, &offset) in args.iter().zip(offsets.iter()) {
             let arg = arg.as_ref();
-            arg.storage()
+            let arg_arc = arg.storage();
+            arg_arc
+                .read()
+                .unwrap()
                 .copy_strided_src(&mut storage, offset, arg.layout())?;
         }
         Ok(crate::tensor::from_storage(storage, shape, op, false))
@@ -222,7 +225,8 @@ impl Tensor {
             let d2 = block_size * arg_dims[dim];
             let dst_s = block_size * cat_target_dim_len;
             let src_o = arg.layout().start_offset();
-            arg.storage().copy2d(
+            let arg_arc = arg.storage();
+            arg_arc.read().unwrap().copy2d(
                 &mut storage,
                 d1,
                 d2,
@@ -288,8 +292,10 @@ impl Tensor {
         let d2 = block_size * src.dims()[dim];
         let dst_o = self.layout().start_offset() + offset * block_size;
         let src_o = src.layout().start_offset();
-        src.storage().copy2d(
-            &mut self.storage_mut(),
+        let src_arc = src.storage();
+        let self_arc = self.storage_mut();
+        src_arc.read().unwrap().copy2d(
+            &mut self_arc.write().unwrap(),
             d1,
             d2,
             /* src_s */ d2,

@@ -2104,8 +2104,11 @@ fn realized_storage_returns_legacy_arc_today() -> Result<()> {
     let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
     let arc = a.realized_storage();
     // Legacy mode: should match what storage_and_layout reads back.
-    let (legacy, _layout) = a.storage_and_layout();
-    assert_eq!(legacy.dtype(), arc.read().unwrap().dtype());
+    let (legacy_arc, _layout) = a.storage_and_layout();
+    assert_eq!(
+        legacy_arc.read().unwrap().dtype(),
+        arc.read().unwrap().dtype(),
+    );
     Ok(())
 }
 
