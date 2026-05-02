@@ -2058,3 +2058,37 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
     assert_ne!(id1, id2);
     Ok(())
 }
+
+// Phase 7.5 work item B1 — `.realize()` / `.materialize()` /
+// `.is_realized()` API. Today every Tensor is eagerly realised at
+// construction; these methods exist so downstream code can opt into
+// the lazy idiom now and be unaffected when B3 wires real semantics.
+#[test]
+fn realize_is_identity_today() -> Result<()> {
+    let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    assert!(a.is_realized());
+    let b = a.realize()?;
+    assert_eq!(a.id(), b.id(), "realize today is an Arc-clone identity");
+    assert_eq!(b.to_vec1::<f32>()?, vec![1., 2., 3.]);
+    Ok(())
+}
+
+#[test]
+fn materialize_is_alias_for_realize() -> Result<()> {
+    let a = Tensor::new(&[4f32, 5., 6.], &Device::cpu())?;
+    let m = a.materialize()?;
+    assert_eq!(a.id(), m.id());
+    assert_eq!(m.to_vec1::<f32>()?, vec![4., 5., 6.]);
+    Ok(())
+}
+
+#[test]
+fn realize_after_op_chain() -> Result<()> {
+    // Chain a few ops and confirm `.realize()` doesn't disturb values.
+    // Pre-B3 it's identity; post-B3 it'll trigger graph execution.
+    let a = Tensor::new(&[1f32, 2., 3., 4.], &Device::cpu())?;
+    let b = a.affine(2.0, 1.0)?;
+    let c = b.realize()?;
+    assert_eq!(c.to_vec1::<f32>()?, vec![3., 5., 7., 9.]);
+    Ok(())
+}

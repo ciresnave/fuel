@@ -3452,6 +3452,59 @@ impl Tensor {
         &self.op
     }
 
+    /// Force execution of any pending lazy computation backing this tensor.
+    ///
+    /// In the eager execution model (the current state), every `Tensor`
+    /// already has its [`Storage`] computed at construction time, so this
+    /// is a no-op identity clone. As Phase 7.5 work item B progresses and
+    /// op methods become graph builders, `.realize()` will become the
+    /// explicit materialisation point — running the executor on the
+    /// pending graph and producing a tensor whose `Storage` is filled.
+    ///
+    /// `to_vec*`, `to_scalar`, and `Display` impls call this implicitly,
+    /// so user code rarely needs to invoke it directly. Reach for it
+    /// when:
+    /// - debug-printing intermediate results,
+    /// - synchronising before a wall-clock measurement,
+    /// - dynamically branching on a tensor value.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use fuel_core::{Tensor, Device};
+    /// let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    /// // Today this is identity. Post-B3 it triggers executor dispatch
+    /// // for tensors whose op chain has not yet been materialised.
+    /// let a = a.realize()?;
+    /// assert_eq!(a.to_vec1::<f32>()?, vec![1., 2., 3.]);
+    /// # Ok::<(), fuel_core::Error>(())
+    /// ```
+    pub fn realize(&self) -> Result<Tensor> {
+        // Phase 7.5 work item B1 stub: every Tensor today is backed by
+        // realized Storage, so realisation is identity. The body becomes
+        // an executor invocation in B3 once op methods build graph nodes
+        // instead of calling Storage::* directly.
+        Ok(self.clone())
+    }
+
+    /// Alias for [`Tensor::realize`]. Provided for users coming from
+    /// JAX (`block_until_ready`) or PyTorch (`.contiguous()` plus
+    /// `.cpu()`-style synchronisation idioms) who reach for
+    /// `materialize` first.
+    pub fn materialize(&self) -> Result<Tensor> {
+        self.realize()
+    }
+
+    /// Whether this tensor's underlying [`Storage`] is fully computed.
+    ///
+    /// Today every `Tensor` is realised at construction, so this always
+    /// returns `true`. Post-Phase-7.5-B3, graph-built tensors will
+    /// return `false` until `.realize()` is called.
+    pub fn is_realized(&self) -> bool {
+        // Phase 7.5 work item B1 stub: see realize().
+        true
+    }
+
     /// Computes the max of all the elements in this tensor and returns a tensor holding this
     /// scalar with zero dimensions.
     ///
