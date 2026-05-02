@@ -234,36 +234,42 @@ A `Tensor` is a **handle**, not the data. It holds:
 
 - A shape and dtype (what kind of array this is).
 - A `Layout` (shape + strides + offset — a *view* over bytes).
-- A reference to those bytes — historically an `Arc<RwLock<Storage>>`,
-  and post-Phase-7.5-G also an optional `GraphLink` into the lazy
-  graph and its sidecar storage map.
+- A reference to those bytes — either an `Arc<RwLock<Storage>>`
+  it owns directly (legacy eager mode) or a `fuel_graph::Tensor`
+  link into a graph-owned slot (node-handle mode, post-Phase-7.5-G).
+  Exactly one of the two is set at any time.
 
-`Storage` is a single typed contiguous buffer on one device. It knows
-its dtype and device but **does not know its logical shape** —
-that lives in the `Layout` carried by the Tensor handle. Multiple
-Tensors can — and routinely do — share one Storage via different
-Layouts: reshape, transpose, narrow, broadcast all produce a new
-Tensor handle pointing at the same bytes with a new Layout.
+`Storage` lives in `fuel-core-types` and is a single typed contiguous
+buffer on one device. It knows its dtype and device but **does not
+know its logical shape** — that lives in the `Layout` carried by
+the Tensor handle. Multiple Tensors can — and routinely do — share
+one Storage via different Layouts: reshape, transpose, narrow,
+broadcast all produce a new Tensor handle pointing at the same bytes
+with a new Layout.
 
-A graph **node** is operation + recipe (input NodeIds, cached output
-shape and dtype). It does **not** contain output bytes; those are
-computed when the executor walks the graph. The lone exception is
-`Op::Const`, where the recipe IS the data — a host-side `Arc<[T]>`
-typed buffer that the executor uploads/copies to a device-resident
-Storage at realize time.
+A graph **node** is operation + recipe (input NodeIds, cached
+output shape and dtype). It does **not** contain output bytes;
+those are computed when the executor walks the graph. The lone
+exception is `Op::Const`, where the recipe IS the data — a
+host-side `Arc<[T]>` typed buffer that the executor uploads/copies
+to a device-resident Storage at realize time.
 
-**Phase 7.5 work item G** moves Storage ownership from individual
-Tensors toward the graph: `fuel-core::graph_storage::GraphStorage`
-is a `HashMap<NodeId, StorageSlot>` paired alongside a
-`fuel_graph::SharedGraph`. Tensors built in node-handle mode carry
-a `GraphLink { graph, storage, id }` and look up their bytes
-through the slot map at read time.
+**Phase 7.5 work item G** moved Storage ownership from individual
+Tensors to the graph: `fuel_graph::Graph` owns a
+`HashMap<NodeId, Arc<RwLock<Storage>>>` storage map. A node-handle
+`fuel_core::Tensor` carries a `fuel_graph::Tensor` reference (the
+graph and NodeId) and reads its bytes via `link.storage_for()`,
+which looks up the slot in the graph's map. Lifetime is tied to
+the graph: when the graph drops, slots not held by external Arc
+clones are freed.
 
-During the G → B6 transition both fields are populated in parallel
-mode (the legacy `storage` Arc and the slot's Arc point at the
-same bytes), so old readers and new readers see the same data.
-After B6, the legacy field is dropped and the slot map is the
-sole source of truth.
+`fuel_core::Tensor::realized_storage()` is the mode-agnostic read
+seam. Legacy-mode Tensors return the directly-held Arc; node-handle
+Tensors return the graph slot's Arc. Every internal accessor
+(`storage()`, `storage_mut()`, `storage_and_layout()`) routes
+through this seam, so ops are correct in either mode without per-
+call-site changes. After B6 retires eager dispatch entirely, the
+legacy storage path can be removed.
 
 **Views are graph ops**, not Layout side-inputs: if you want a
 transpose of node `X`, build `Op::Transpose(X)` rather than
