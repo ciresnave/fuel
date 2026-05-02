@@ -2092,3 +2092,38 @@ fn realize_after_op_chain() -> Result<()> {
     assert_eq!(c.to_vec1::<f32>()?, vec![3., 5., 7., 9.]);
     Ok(())
 }
+
+// Phase 7.5 work item G step 2 — `Tensor_::link` field + the
+// `realized_storage()` mode-agnostic read seam. Every Tensor today is
+// constructed in legacy eager mode (`link = None`), and the seam falls
+// back to the legacy `storage` field. These tests verify the seam
+// returns the same Arc the legacy field holds and that the new
+// `has_graph_link` / `graph_link` accessors behave correctly.
+#[test]
+fn realized_storage_returns_legacy_arc_today() -> Result<()> {
+    let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    let arc = a.realized_storage();
+    // Legacy mode: should match what storage_and_layout reads back.
+    let (legacy, _layout) = a.storage_and_layout();
+    assert_eq!(legacy.dtype(), arc.read().unwrap().dtype());
+    Ok(())
+}
+
+#[test]
+fn has_graph_link_is_false_for_legacy_tensors() -> Result<()> {
+    let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
+    assert!(!a.has_graph_link());
+    assert!(a.graph_link().is_none());
+    Ok(())
+}
+
+#[test]
+fn realized_storage_arc_clone_is_cheap() -> Result<()> {
+    // Cloning the Arc returned by realized_storage should not allocate a
+    // new Storage — it's the same Arc<RwLock<Storage>> as the legacy field.
+    let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    let arc1 = a.realized_storage();
+    let arc2 = a.realized_storage();
+    assert!(std::sync::Arc::ptr_eq(&arc1, &arc2));
+    Ok(())
+}

@@ -1,5 +1,6 @@
 ﻿//! Tensors are N-dimensional matrixes of elements using a single data type.
 #![allow(clippy::redundant_closure_call)]
+use crate::graph_storage::GraphLink;
 use crate::op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp};
 use crate::scalar::TensorOrScalar;
 use crate::shape::{Dim, Dims, ShapeWithOneHole};
@@ -55,6 +56,17 @@ pub struct Tensor_ {
     is_variable: bool,
     dtype: DType,
     device: Device,
+    /// Phase 7.5 work item G: optional reference to a `(graph, NodeId)` pair
+    /// plus the graph's `SharedGraphStorage` sidecar. Populated once
+    /// factories (B2) and op methods (B3) start producing graph-rooted
+    /// tensors. While `None`, this tensor is in legacy eager mode and the
+    /// `storage` field above is the sole source of truth. While `Some`,
+    /// `Tensor::realized_storage()` consults the graph's storage map first
+    /// and falls back to `storage` if the slot hasn't been populated yet.
+    /// Once step 4 has migrated every reader to `realized_storage()`, the
+    /// `storage` field becomes `Option<...>` and the invariant "exactly one
+    /// of `storage`, `link` is Some" can be enforced.
+    link: Option<GraphLink>,
 }
 
 impl AsRef<Tensor> for Tensor {
@@ -191,6 +203,7 @@ pub(crate) fn from_storage<S: Into<Shape>>(
         is_variable,
         dtype,
         device,
+        link: None,
     };
     Tensor(Arc::new(tensor_))
 }
@@ -1681,6 +1694,7 @@ impl Tensor {
                 is_variable: false,
                 dtype: self.dtype,
                 device: self.device.clone(),
+                link: None,
             };
             Ok(Tensor(Arc::new(tensor_)))
         }
@@ -3780,6 +3794,7 @@ impl Tensor {
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
+            link: None,
         };
         Ok(Tensor(Arc::new(tensor_)))
     }
@@ -3818,6 +3833,7 @@ impl Tensor {
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
+            link: None,
         };
         Ok(Tensor(Arc::new(tensor_)))
     }
@@ -3877,6 +3893,7 @@ impl Tensor {
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
+            link: None,
         };
         Ok(Tensor(Arc::new(tensor_)))
     }
@@ -3908,6 +3925,7 @@ impl Tensor {
                 is_variable: false,
                 dtype: self.dtype,
                 device: self.device.clone(),
+                link: None,
             };
             Tensor(Arc::new(tensor_))
         }
@@ -3943,6 +3961,7 @@ impl Tensor {
                 is_variable: false,
                 dtype: self.dtype,
                 device: device.clone(),
+                link: None,
             };
             Ok(Tensor(Arc::new(tensor_)))
         }
@@ -3992,6 +4011,7 @@ impl Tensor {
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
+            link: None,
         };
         Ok(Tensor(Arc::new(tensor_)))
     }
@@ -4136,6 +4156,7 @@ impl Tensor {
                 is_variable: false,
                 dtype: self.dtype,
                 device: self.device.clone(),
+                link: None,
             };
             Ok(Tensor(Arc::new(tensor_)))
         } else {
@@ -4179,6 +4200,7 @@ impl Tensor {
                 is_variable: false,
                 dtype: self.dtype,
                 device: self.device.clone(),
+                link: None,
             };
             Ok(Tensor(Arc::new(tensor_)))
         } else {
@@ -4219,6 +4241,7 @@ impl Tensor {
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
+            link: None,
         };
         Ok(Tensor(Arc::new(tensor_)))
     }
@@ -4351,6 +4374,46 @@ impl Tensor {
     /// Run the `forward` method of `m` on `self`.
     pub fn apply_t<M: crate::ModuleT>(&self, m: &M, train: bool) -> Result<Self> {
         m.forward_t(self, train)
+    }
+
+    /// Mode-agnostic read seam for this tensor's realized storage
+    /// (Phase 7.5 work item G step 2).
+    ///
+    /// Returns the `Arc<RwLock<Storage>>` that backs this tensor's bytes:
+    /// - If this tensor is in node-handle mode (`link` is `Some`) and the
+    ///   graph's storage map has a slot populated for the linked
+    ///   `NodeId`, returns that slot's Arc clone.
+    /// - Otherwise (legacy eager mode, or node-handle mode where the slot
+    ///   hasn't been realized yet) returns the legacy `storage` field's
+    ///   Arc clone.
+    ///
+    /// During the G transition both fields can be populated; this seam
+    /// preferentially honours the graph slot when available so that
+    /// migrations from legacy → node-handle don't need to coordinate
+    /// reader updates atomically. Step 4 will mass-migrate every
+    /// `self.storage.read()` site to consult this seam, after which
+    /// the legacy field can become `Option<...>` and the invariant
+    /// "exactly one of `storage`, `link` is `Some`" can be enforced.
+    pub fn realized_storage(&self) -> Arc<RwLock<Storage>> {
+        if let Some(link) = &self.link {
+            if let Some(slot) = link.storage_slot() {
+                return slot;
+            }
+        }
+        self.storage.clone()
+    }
+
+    /// Whether this tensor is currently in node-handle mode (Phase 7.5 G).
+    /// `true` iff `link` is `Some`. Independent of whether the link's
+    /// storage slot has been populated yet — for the realised-vs-pending
+    /// distinction use [`Tensor::is_realized`].
+    pub fn has_graph_link(&self) -> bool {
+        self.link.is_some()
+    }
+
+    /// Borrow this tensor's [`GraphLink`] if it has one.
+    pub fn graph_link(&self) -> Option<&GraphLink> {
+        self.link.as_ref()
     }
 
     pub(crate) fn storage(&self) -> std::sync::RwLockReadGuard<'_, Storage> {
@@ -4589,6 +4652,7 @@ impl Tensor {
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
+            link: None,
         };
         Ok(Tensor(Arc::new(tensor_)))
     }
