@@ -166,9 +166,8 @@ mod tests {
         // legacy match still handles it. dispatch_gradient should
         // return None.
         use crate::SharedGraph;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let g: SharedGraph = Rc::new(RefCell::new(crate::Graph::new()));
+        use std::sync::{Arc, RwLock};
+        let g: SharedGraph = Arc::new(RwLock::new(crate::Graph::new()));
         let dummy = NodeId(0);
         let result = dispatch_gradient(&g, &Op::MatMul, &[dummy, dummy], dummy, dummy);
         assert!(result.is_none(), "MatMul should not have a registered rule yet");

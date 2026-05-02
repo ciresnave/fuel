@@ -652,9 +652,9 @@ mod tests {
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         assert_eq!(c.shape().dims(), &[3]);
-        // All three tensors share one underlying graph (by Rc cloning
+        // All three tensors share one underlying graph (by Arc cloning
         // via const_f32_like / add).
-        assert!(std::rc::Rc::ptr_eq(
+        assert!(std::sync::Arc::ptr_eq(
             c.graph_tensor().graph(),
             a.graph_tensor().graph(),
         ));
@@ -3436,7 +3436,7 @@ impl LlamaModel {
         // Find the NodeIds of the placeholder Const nodes by scanning
         // the graph for Consts with the right shape.
         if cached_len > 0 {
-            let graph = h.graph_tensor().graph().borrow();
+            let graph = h.graph_tensor().graph().read().unwrap();
             let target_elems = batch * cfg.n_kv_heads * cached_len * cfg.head_dim;
             let mut found: Vec<fuel_graph::NodeId> = Vec::new();
             for node_id in 0..graph.len() {
@@ -4534,7 +4534,7 @@ impl PhiModel {
 
         // Wire up cache placeholders.
         if cached_len > 0 {
-            let graph = h.graph_tensor().graph().borrow();
+            let graph = h.graph_tensor().graph().read().unwrap();
             let target_elems = batch * cfg.n_heads * cached_len * cfg.head_dim;
             let mut found: Vec<fuel_graph::NodeId> = Vec::new();
             for node_id in 0..graph.len() {

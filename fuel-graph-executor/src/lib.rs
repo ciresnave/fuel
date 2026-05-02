@@ -737,7 +737,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         if roots.is_empty() {
             return Ok(());
         }
-        let graph = roots[0].graph().borrow();
+        let graph = roots[0].graph().read().unwrap();
         let root_ids: Vec<NodeId> = roots.iter().map(|t| t.id()).collect();
         for id in fuel_graph::topo_order_multi(&graph, &root_ids) {
             if let Some(placement) = graph.placement(id) {
@@ -842,7 +842,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
     pub fn realize_f32(&mut self, tensor: &Tensor) -> RefTensor<f32> {
         let _span = info_span!("realize_f32").entered();
         let root_id = self.resolve_roots(&[tensor])[0];
-        let graph = tensor.graph().borrow();
+        let graph = tensor.graph().read().unwrap();
         let effective_roots = extend_with_side_effect_roots(&graph, &[root_id]);
         let order = execution_plan(&graph, &effective_roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
@@ -878,7 +878,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         if tensors.is_empty() { return Vec::new(); }
         let roots: Vec<NodeId> = self.resolve_roots(tensors);
         let graph_rc = tensors[0].graph();
-        let graph = graph_rc.borrow();
+        let graph = graph_rc.read().unwrap();
         let effective_roots = extend_with_side_effect_roots(&graph, &roots);
         let order = execution_plan(&graph, &effective_roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();
@@ -923,7 +923,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         if tensors.is_empty() { return (Vec::new(), Vec::new()); }
         let roots: Vec<NodeId> = self.resolve_roots(tensors);
         let graph_rc = tensors[0].graph();
-        let graph = graph_rc.borrow();
+        let graph = graph_rc.read().unwrap();
         let effective_roots = extend_with_side_effect_roots(&graph, &roots);
         let order = execution_plan(&graph, &effective_roots);
         let _walk = info_span!("topo_walk", nodes = order.len()).entered();

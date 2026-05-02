@@ -94,7 +94,7 @@ pub struct ResidencyPlanner;
 impl ResidencyPlanner {
     /// Run the analysis. O(V + E) in the reachable subgraph.
     pub fn analyze(graph: &SharedGraph, roots: &[NodeId]) -> ResidencyReport {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         let order = topo_order_multi(&g, roots);
 
         // 1. For every node, compute its output byte size.

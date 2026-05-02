@@ -163,11 +163,11 @@ fn is_commutative(op: &Op) -> bool {
 /// simplification rules are chosen so one forward pass suffices.
 pub fn optimize(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
     let order = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         topo_order_multi(&g, roots)
     };
 
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     let mut remap: HashMap<NodeId, NodeId> = HashMap::new();
     let mut cse: HashMap<(OpKey, Vec<NodeId>), NodeId> = HashMap::new();
 
@@ -283,7 +283,7 @@ pub fn optimize(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
 ///   (cross-device round-trips that cancel). Also future.
 pub fn insert_copies(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
     let order = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         topo_order_multi(&g, roots)
     };
 
@@ -295,7 +295,7 @@ pub fn insert_copies(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
     // any of its inputs needed a Copy interposed.
     let mut remap: HashMap<NodeId, NodeId> = HashMap::new();
 
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
 
     for id in order {
         // Snapshot the node — all subsequent reads need the old id's
@@ -414,13 +414,13 @@ pub fn lower_const_placement(graph: &SharedGraph, roots: &[NodeId]) -> usize {
     // Reverse edges: for each node, list its consumers. Only walks
     // nodes reachable from `roots`, so unused Consts don't waste work.
     let order = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         topo_order_multi(&g, roots)
     };
 
     let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         for &nid in &order {
             let node = g.node(nid);
             for &input in &node.inputs {
@@ -430,7 +430,7 @@ pub fn lower_const_placement(graph: &SharedGraph, roots: &[NodeId]) -> usize {
     }
 
     let mut lowered = 0;
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     for &nid in &order {
         // Only consider Const nodes without an explicit placement.
         let is_const = matches!(g.node(nid).op, Op::Const(_));
@@ -532,13 +532,13 @@ impl OrderingEdges {
 /// Returns the count of fusions applied.
 pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
     let order = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         topo_order_multi(&g, roots)
     };
     // Count consumers of each node (so we can guard "single consumer of matmul").
     let mut consumer_count: HashMap<NodeId, usize> = HashMap::new();
     {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         for &nid in &order {
             for &input in &g.node(nid).inputs {
                 *consumer_count.entry(input).or_insert(0) += 1;
@@ -550,7 +550,7 @@ pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
         }
     }
 
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     let mut remap: HashMap<NodeId, NodeId> = HashMap::new();
     let mut fused = 0usize;
 
@@ -796,7 +796,7 @@ pub fn insert_evict_reload(
     src_device: DeviceLocation,
     post_gap_consumers: &[NodeId],
 ) -> (NodeId, NodeId, NodeId) {
-    let mut g = graph.borrow_mut();
+    let mut g = graph.write().unwrap();
     let (shape, dtype) = {
         let n = g.node(candidate);
         (n.shape.clone(), n.dtype)
@@ -850,7 +850,7 @@ mod tests {
     }
 
     fn count_copy_nodes(graph: &SharedGraph) -> usize {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         (0..g.len()).filter(|i| matches!(g.node(NodeId(*i)).op, Op::Copy { .. })).count()
     }
 
@@ -885,7 +885,7 @@ mod tests {
         assert_eq!(count_copy_nodes(&graph) - before_copies, 2);
 
         // Rewritten Add should reference two Copy nodes.
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         let new_add = g.node(new_roots[0]);
         assert_eq!(new_add.inputs.len(), 2);
         for input in &new_add.inputs {
@@ -983,8 +983,8 @@ mod tests {
 
         let lowered = lower_const_placement(&graph, &[c.id()]);
         assert_eq!(lowered, 2); // both a and b tagged
-        assert_eq!(graph.borrow().placement(a.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
-        assert_eq!(graph.borrow().placement(b.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
+        assert_eq!(graph.read().unwrap().placement(a.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
+        assert_eq!(graph.read().unwrap().placement(b.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
 
         // After lowering, insert_copies should emit NO Copies (the
         // Consts are now on the target device).
@@ -1004,8 +1004,8 @@ mod tests {
         let graph = a.graph().clone();
 
         lower_const_placement(&graph, &[cpu_sum.id(), vulkan_sum.id()]);
-        assert_eq!(graph.borrow().placement(a.id()), None, "const with disagreeing consumers stays unplaced");
-        assert_eq!(graph.borrow().placement(b.id()), None);
+        assert_eq!(graph.read().unwrap().placement(a.id()), None, "const with disagreeing consumers stays unplaced");
+        assert_eq!(graph.read().unwrap().placement(b.id()), None);
     }
 
     #[test]
@@ -1019,9 +1019,9 @@ mod tests {
 
         lower_const_placement(&graph, &[c.id()]);
         // a keeps its explicit Cpu placement even though its consumer is Vulkan.
-        assert_eq!(graph.borrow().placement(a.id()), Some(DeviceLocation::Cpu));
+        assert_eq!(graph.read().unwrap().placement(a.id()), Some(DeviceLocation::Cpu));
         // b had no hint; it gets lowered to Vulkan.
-        assert_eq!(graph.borrow().placement(b.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
+        assert_eq!(graph.read().unwrap().placement(b.id()), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
     }
 
     #[test]
@@ -1045,10 +1045,10 @@ mod tests {
         let (graph, a) = make_scalar_graph();
         let b = a.add(&a);
         let c = a.add(&a);
-        let pre_len = graph.borrow().len();
+        let pre_len = graph.read().unwrap().len();
         let new_roots = optimize(&graph, &[b.id(), c.id()]);
         assert_eq!(new_roots[0], new_roots[1], "CSE should map both to same node");
-        assert!(graph.borrow().len() >= pre_len);
+        assert!(graph.read().unwrap().len() >= pre_len);
     }
 
     #[test]
@@ -1122,7 +1122,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
-        let ord = derive_ordering(&c.graph().borrow(), &[c.id()]);
+        let ord = derive_ordering(&c.graph().read().unwrap(), &[c.id()]);
         assert!(ord.is_empty(), "graph without destructive ops → no ordering edges");
     }
 
@@ -1136,7 +1136,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let b = a.relu();
         let r = a.release();
-        let ord = derive_ordering(&a.graph().borrow(), &[b.id(), r.id()]);
+        let ord = derive_ordering(&a.graph().read().unwrap(), &[b.id(), r.id()]);
         let deps = ord.deps_of(r.id());
         assert_eq!(deps.len(), 1, "release should have one ordering dep (the relu)");
         assert_eq!(deps[0], b.id(), "release must run after relu");
@@ -1150,7 +1150,7 @@ mod tests {
         let b = a.relu();
         let c = a.neg();
         let r = a.release();
-        let ord = derive_ordering(&a.graph().borrow(), &[b.id(), c.id(), r.id()]);
+        let ord = derive_ordering(&a.graph().read().unwrap(), &[b.id(), c.id(), r.id()]);
         let mut deps = ord.deps_of(r.id()).to_vec();
         deps.sort_by_key(|n| n.0);
         let mut expected = vec![b.id(), c.id()];
@@ -1163,7 +1163,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
-        let graph = c.graph().borrow();
+        let graph = c.graph().read().unwrap();
         let plan = execution_plan(&graph, &[c.id()]);
         let topo = topo_order_multi(&graph, &[c.id()]);
         assert_eq!(plan, topo);
@@ -1174,7 +1174,7 @@ mod tests {
         let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let b = a.relu();
         let r = a.release();
-        let plan = execution_plan(&a.graph().borrow(), &[b.id(), r.id()]);
+        let plan = execution_plan(&a.graph().read().unwrap(), &[b.id(), r.id()]);
         let b_pos = plan.iter().position(|&n| n == b.id()).unwrap();
         let r_pos = plan.iter().position(|&n| n == r.id()).unwrap();
         assert!(b_pos < r_pos, "expected relu@{b_pos} to precede release@{r_pos}: {plan:?}");
@@ -1190,7 +1190,7 @@ mod tests {
         let b = a.relu();
         let c = a.neg();
         let r = a.release();
-        let plan = execution_plan(&a.graph().borrow(), &[b.id(), c.id(), r.id()]);
+        let plan = execution_plan(&a.graph().read().unwrap(), &[b.id(), c.id(), r.id()]);
         let b_pos = plan.iter().position(|&n| n == b.id()).unwrap();
         let c_pos = plan.iter().position(|&n| n == c.id()).unwrap();
         let r_pos = plan.iter().position(|&n| n == r.id()).unwrap();
@@ -1216,7 +1216,7 @@ mod tests {
             a.graph(), a.id(), DeviceLocation::Cpu, &[c.id()],
         );
 
-        let g = a.graph().borrow();
+        let g = a.graph().read().unwrap();
         // cpu_copy is an Op::Copy{Cpu} reading a
         match &g.node(cpu_copy_id).op {
             Op::Copy { target: DeviceLocation::Cpu } => {},
@@ -1249,7 +1249,7 @@ mod tests {
         let b = a.relu();
         let sum = b.sum_all();
         let r = a.release();
-        let plan = execution_plan(&a.graph().borrow(), &[sum.id(), r.id()]);
+        let plan = execution_plan(&a.graph().read().unwrap(), &[sum.id(), r.id()]);
         let b_pos = plan.iter().position(|&n| n == b.id()).unwrap();
         let sum_pos = plan.iter().position(|&n| n == sum.id()).unwrap();
         let r_pos = plan.iter().position(|&n| n == r.id()).unwrap();
@@ -1284,7 +1284,7 @@ mod tests {
 
         // The fused node should now be reachable as the canonical
         // root after remap. Its op is FusedLinear with three inputs.
-        let g = out.graph().borrow();
+        let g = out.graph().read().unwrap();
         // Walk consumers of the original Add: any leftover Add should
         // be unreferenced; the new FusedLinear should be present.
         let any_fused = g.nodes.iter().any(|n| matches!(n.op, Op::FusedLinear));

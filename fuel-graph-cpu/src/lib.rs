@@ -122,11 +122,11 @@ pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
     let graph_rc = tensors[0].graph();
     for t in &tensors[1..] {
         assert!(
-            std::rc::Rc::ptr_eq(graph_rc, t.graph()),
+            std::sync::Arc::ptr_eq(graph_rc, t.graph()),
             "realize_many_f32: all tensors must belong to the same graph",
         );
     }
-    let graph = graph_rc.borrow();
+    let graph = graph_rc.read().unwrap();
     let roots: Vec<NodeId> = tensors.iter().map(|t| t.id()).collect();
     let order = topo_order_multi(&graph, &roots);
     let mut cache: HashMap<NodeId, AnyTensor> = HashMap::new();
@@ -154,7 +154,7 @@ pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
 /// each node's output and dispatching `MatMul` to the fast path.
 fn realize_any(tensor: &Tensor) -> AnyTensor {
     let _span = info_span!("realize_cpu").entered();
-    let graph = tensor.graph().borrow();
+    let graph = tensor.graph().read().unwrap();
     let order = topo_order(&graph, tensor.id());
     let num_nodes = order.len();
     let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
