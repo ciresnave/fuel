@@ -661,65 +661,29 @@ impl BufferedSafetensors {
     }
 }
 
-/// A low-level memory-mapped file handle for a safetensors file.
+/// A low-level memory-mapped safetensors file handle.
 ///
-/// Unlike [`MmapedSafetensors`], this does not eagerly deserialize the header. Call
-/// [`MmapedFile::deserialize`] to obtain a `SafeTensors` view that can be iterated or
-/// queried for individual tensors.
-///
-/// # Safety
-///
-/// Construction is `unsafe` because it relies on memory-mapped I/O. The underlying file
-/// must not be modified while this handle is alive.
+/// Re-exported from [`fuel_formats::safetensors`] — the
+/// transport-independent layer that owns the mmap surface. Use
+/// [`MmapedFile::deserialize`] to obtain a `SafeTensors` view, then
+/// the [`Load`] trait (defined here in fuel-core) to materialize
+/// individual tensors onto a [`Device`].
 ///
 /// # Example
 ///
 /// ```no_run
-/// use fuel_core::safetensors::MmapedFile;
+/// use fuel_core::safetensors::{Load, MmapedFile};
+/// use fuel_core::Device;
 /// // SAFETY: the file must not be modified while the mapping is alive.
 /// let file = unsafe { MmapedFile::new("weights.safetensors")? };
 /// let st = file.deserialize()?;
-/// for (name, _view) in st.tensors() {
+/// for (name, view) in st.tensors() {
+///     let _t = view.load(&Device::cpu())?;
 ///     println!("tensor: {name}");
 /// }
 /// # Ok::<(), fuel_core::Error>(())
 /// ```
-pub struct MmapedFile {
-    path: std::path::PathBuf,
-    inner: memmap2::Mmap,
-}
-
-impl MmapedFile {
-    /// Creates a wrapper around a memory mapped file from which you can retrieve
-    /// tensors using [`MmapedFile::deserialize`]
-    ///
-    /// # Safety
-    ///
-    /// The unsafe is inherited from [`memmap2::MmapOptions`].
-    pub unsafe fn new<P: AsRef<Path>>(p: P) -> Result<Self> {
-        let p = p.as_ref();
-        let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
-        let inner = unsafe {
-            memmap2::MmapOptions::new()
-                .map(&file)
-                .map_err(|e| Error::from(e).with_path(p))?
-        };
-        Ok(Self {
-            inner,
-            path: p.to_path_buf(),
-        })
-    }
-
-    /// Deserialize the safetensors header and return a `SafeTensors` view.
-    ///
-    /// The returned view borrows from the memory-mapped region and can be used to iterate
-    /// over tensor names or load individual tensors via the [`Load`] trait.
-    pub fn deserialize(&self) -> Result<SafeTensors<'_>> {
-        let st = safetensors::SafeTensors::deserialize(&self.inner)
-            .map_err(|e| Error::from(e).with_path(&self.path))?;
-        Ok(st)
-    }
-}
+pub use fuel_formats::safetensors::MmapedFile;
 
 #[cfg(test)]
 mod tests {
