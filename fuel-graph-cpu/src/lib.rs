@@ -133,6 +133,11 @@ pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
 
     for id in order {
         let node = graph.node(id);
+        // Phase 7.5 G2: slot-first dispatch.
+        if let Some(adopted) = try_adopt_slot_cpu(&graph, id, &node.shape) {
+            cache.insert(id, adopted);
+            continue;
+        }
         let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
@@ -150,6 +155,33 @@ pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<RefTensor<f32>> {
         .collect()
 }
 
+/// Phase 7.5 G2: slot-first dispatch for fuel-graph-cpu. If the
+/// graph's storage_map has a populated slot for `id`, adopt its bytes
+/// via host-buffer download and wrap as an `AnyTensor`.
+fn try_adopt_slot_cpu(
+    graph: &fuel_graph::Graph,
+    id: NodeId,
+    shape: &fuel_core_types::Shape,
+) -> Option<AnyTensor> {
+    let slot_arc = graph.storage_for(id)?;
+    let buf = {
+        let slot = slot_arc.read().unwrap();
+        slot.as_dyn().to_host_buffer_dyn().expect("slot D2H")
+    };
+    let any = match buf {
+        fuel_core_types::HostBuffer::F32(v) => AnyTensor::F32(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::F64(v) => AnyTensor::F64(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::BF16(v) => AnyTensor::BF16(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::F16(v) => AnyTensor::F16(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::U32(v) => AnyTensor::U32(RefTensor::from_vec(v, shape.clone())),
+        other => panic!(
+            "fuel-graph-cpu slot adopt: unsupported host-buffer dtype {:?}",
+            other.dtype(),
+        ),
+    };
+    Some(any)
+}
+
 /// Core realize loop: walk the graph in topological order, caching
 /// each node's output and dispatching `MatMul` to the fast path.
 fn realize_any(tensor: &Tensor) -> AnyTensor {
@@ -162,6 +194,11 @@ fn realize_any(tensor: &Tensor) -> AnyTensor {
 
     for id in order {
         let node = graph.node(id);
+        // Phase 7.5 G2: slot-first dispatch.
+        if let Some(adopted) = try_adopt_slot_cpu(&graph, id, &node.shape) {
+            cache.insert(id, adopted);
+            continue;
+        }
         let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
@@ -274,7 +311,13 @@ fn eval_node(
     cache: &HashMap<NodeId, AnyTensor>,
 ) -> AnyTensor {
     match op {
-        Op::Const(data) => eval_const(data, shape),
+        Op::Const(data) => eval_const(
+            data.as_ref().expect(
+                "Op::Const with no host data — fuel-graph-cpu has not yet \
+                 wired slot-first dispatch (Phase 7.5 G2 step 2).",
+            ),
+            shape,
+        ),
 
         // --- the fast path ---
         //

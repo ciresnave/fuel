@@ -303,7 +303,13 @@ impl CudaGraphExecutor {
         let _span = debug_span!("eval_node", op = op_name, elems = shape.elem_count()).entered();
 
         let result_storage = match op {
-            Op::Const(data) => return self.eval_const(data, shape),
+            Op::Const(data) => return self.eval_const(
+                data.as_ref().expect(
+                    "Op::Const with no host data — fuel-cuda-backend has \
+                     not yet wired slot-first dispatch (Phase 7.5 G2 step 2).",
+                ),
+                shape,
+            ),
 
             Op::MatMul => {
                 let (a, b) = (self.get_gt(inputs, 0, cache), self.get_gt(inputs, 1, cache));

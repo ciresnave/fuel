@@ -17,6 +17,7 @@
 use fuel_core_types::{DType, DimVec, Layout, Shape};
 use fuel_graph::{topo_order_multi, ConstData, NodeId, Op, Tensor};
 use fuel_graph::opt::execution_plan;
+use std::sync::Arc;
 
 /// Merge the graph's side-effect roots into the user's requested roots
 /// for the purposes of executing the plan. Deduplicates; preserves the
@@ -837,6 +838,48 @@ impl<B: GraphBackend> GraphExecutor<B> {
         fuel_graph::opt::optimize(graph, &original)
     }
 
+    /// Phase 7.5 G2: slot-first dispatch. If the graph's storage_map
+    /// has a populated slot for `id`, adopt it directly into the
+    /// executor's CacheEntry world (host-roundtrip + upload to the
+    /// backend's target device, with const_pool keyed on the slot
+    /// Arc's pointer identity for reuse across realize calls).
+    ///
+    /// Returns `Some(entry)` when the slot is consumed; `None` when the
+    /// slot is empty and the caller should fall through to eval_node.
+    ///
+    /// Today the host roundtrip happens unconditionally — even when
+    /// the slot's Storage already lives on the backend's target device.
+    /// A future fast-path can downcast and try a same-device adopt;
+    /// the const_pool keyed on slot-Arc identity already amortises the
+    /// roundtrip across repeated realize calls.
+    fn try_adopt_slot(
+        &mut self,
+        graph: &fuel_graph::Graph,
+        id: NodeId,
+        shape: &Shape,
+    ) -> Option<CacheEntry<B::Storage>> {
+        let slot_arc = graph.storage_for(id)?;
+        // Key on the slot Arc's pointer identity. Same Arc → same key
+        // → const_pool hit. The Arc is owned by the Graph, so its
+        // identity is stable for the Graph's lifetime.
+        let key = Arc::as_ptr(&slot_arc) as *const () as usize;
+        if let Some(arc) = self.const_pool.get(&key) {
+            return Some(CacheEntry::ConstRef(arc));
+        }
+        let (buf, dtype) = {
+            let slot = slot_arc.read().unwrap();
+            let buf = slot.as_dyn().to_host_buffer_dyn().expect("slot D2H");
+            let dtype = slot.dtype();
+            (buf, dtype)
+        };
+        let storage = self.backend.upload(&buf, shape).expect("slot upload");
+        let bytes = shape.elem_count() * dtype.size_in_bytes();
+        let arc = self.const_pool.insert(
+            key, TrackedTensor::new(storage, shape.clone()), bytes,
+        );
+        Some(CacheEntry::ConstRef(arc))
+    }
+
     // -- realize entry points -------------------------------------------------
 
     pub fn realize_f32(&mut self, tensor: &Tensor) -> RefTensor<f32> {
@@ -850,6 +893,12 @@ impl<B: GraphBackend> GraphExecutor<B> {
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
+            // Phase 7.5 G2: slot-first dispatch — adopt graph-owned
+            // storage directly when present, skipping eval_node.
+            if let Some(entry) = self.try_adopt_slot(&graph, id, &node.shape) {
+                cache.insert(id, entry);
+                continue;
+            }
             let entry = self.eval_node_with_graph_context(&graph, id, &node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
             // If this op destroyed an input (Op::Release et al.), drop
@@ -887,6 +936,11 @@ impl<B: GraphBackend> GraphExecutor<B> {
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
+            // Phase 7.5 G2: slot-first dispatch.
+            if let Some(entry) = self.try_adopt_slot(&graph, id, &node.shape) {
+                cache.insert(id, entry);
+                continue;
+            }
             let entry = self.eval_node_with_graph_context(&graph, id, &node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
             // Drop destroyed input from cache once a destructive op runs —
@@ -932,6 +986,11 @@ impl<B: GraphBackend> GraphExecutor<B> {
         for id in order {
             if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
+            // Phase 7.5 G2: slot-first dispatch.
+            if let Some(entry) = self.try_adopt_slot(&graph, id, &node.shape) {
+                cache.insert(id, entry);
+                continue;
+            }
             let entry = self.eval_node_with_graph_context(&graph, id, &node.op, &node.inputs, &node.shape, node.dtype, &cache);
             cache.insert(id, entry);
             if let Some(d_idx) = node.op.destructive_input() {
@@ -1064,7 +1123,22 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let _span = debug_span!("eval_node", op = op_short_name(op), elems = shape.elem_count()).entered();
 
         let result_storage = match op {
-            Op::Const(data) => return self.eval_const(data, shape),
+            // Phase 7.5 G2: when the realize loop reaches an Op::Const
+            // with no slot populated, fall back to the host-side
+            // ConstData payload. The slot-first dispatch in the realize
+            // loops above intercepts slot-populated nodes before
+            // eval_node is called, so we only see the legacy ConstData
+            // path here. Once G2 step 2 migrates every constructor to
+            // slot-population, this branch becomes dead code; G2 step 3
+            // removes it.
+            Op::Const(data_opt) => {
+                let data = data_opt.as_ref().expect(
+                    "Op::Const with neither slot nor ConstData — \
+                     unreachable: from_storage populates a slot, and \
+                     from_const wraps the data in Some.",
+                );
+                return self.eval_const(data, shape);
+            }
 
             // -- matmul (stride-aware — reads A/B via per-dim strides,
             //    permuted/transposed views work without materialization) --
