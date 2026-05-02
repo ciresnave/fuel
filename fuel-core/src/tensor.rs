@@ -49,24 +49,32 @@ pub struct Tensor_ {
     // Ideally, we would use Arc<Storage> for tensors on which we don't plan on modifying the data
     // and Arc<Mutex<Storage>> for tensors where the data could be modified, e.g. variables but
     // that's tricky to encode in the current setup.
-    storage: Arc<RwLock<Storage>>,
+    //
+    // Phase 7.5 work item G — `storage` is `Option<>` because every
+    // Tensor is in exactly one of two modes:
+    // - **Legacy eager mode**: `storage` is `Some(arc)`; `link` is
+    //   `None`. The Arc is the sole source of bytes.
+    // - **Node-handle mode**: `storage` is `None`; `link` is
+    //   `Some(graph_tensor)`. The bytes live in the graph's
+    //   `storage_map` slot for the linked NodeId; consult them via
+    //   `realized_storage()`.
+    //
+    // Constructors enforce the "exactly one of `storage`, `link` is
+    // `Some`" invariant. After B6 drops eager dispatch entirely and
+    // every Tensor is in node-handle mode, the `storage` field can
+    // be removed altogether.
+    storage: Option<Arc<RwLock<Storage>>>,
     layout: Layout,
     op: BackpropOp,
     is_variable: bool,
     dtype: DType,
     device: Device,
-    /// Phase 7.5 work item G: optional reference into a `fuel_graph`
-    /// graph at a particular `NodeId`. Populated once factories (B2)
-    /// and op methods (B3) produce graph-rooted tensors; while `None`,
-    /// this tensor is in legacy eager mode and the `storage` field
-    /// above is the sole source of truth.
-    ///
-    /// `realized_storage()` consults the graph's storage map first
-    /// (via `link.storage_for()`) and falls back to the legacy field
-    /// when the slot hasn't been populated yet. Once every reader is
-    /// migrated to the seam (storage field becomes `Option<...>`),
-    /// the invariant "exactly one of `storage`, `link` is `Some`" is
-    /// enforced at construction.
+    /// Phase 7.5 work item G: reference into a `fuel_graph` graph at
+    /// a particular `NodeId`. Populated once factories (B2) and op
+    /// methods (B3) produce graph-rooted tensors; while `None`, this
+    /// tensor is in legacy eager mode and the `storage` field above
+    /// is the sole source of truth. Exactly one of `storage`,
+    /// `link` is `Some` — enforced at construction.
     link: Option<fuel_graph::Tensor>,
 }
 
@@ -193,7 +201,10 @@ macro_rules! broadcast_binary_op {
     };
 }
 
-/// Creates a fresh tensor structure based on a storage and a shape, this uses contiguous strides.
+/// Creates a fresh legacy-mode tensor from a `Storage` and a shape
+/// (contiguous strides). Phase 7.5 work item G: legacy mode means
+/// `storage: Some(arc)` and `link: None` — the Arc is the sole source
+/// of bytes. Eventually retires when B6 drops eager dispatch.
 pub(crate) fn from_storage<S: Into<Shape>>(
     storage: Storage,
     shape: S,
@@ -204,7 +215,7 @@ pub(crate) fn from_storage<S: Into<Shape>>(
     let device = Device { inner: storage.device() };
     let tensor_ = Tensor_ {
         id: TensorId::new(),
-        storage: Arc::new(RwLock::new(storage)),
+        storage: Some(Arc::new(RwLock::new(storage))),
         layout: Layout::contiguous(shape),
         op,
         is_variable,
@@ -215,47 +226,45 @@ pub(crate) fn from_storage<S: Into<Shape>>(
     Tensor(Arc::new(tensor_))
 }
 
-/// Phase 7.5 work item G: construct a Tensor in node-handle mode
-/// with both the legacy `storage` Arc AND a `fuel_graph::Tensor`
-/// link populated. This is the "parallel mode" used during the
-/// G → B6 transition: legacy readers see the storage Arc directly;
-/// new readers via `Tensor::realized_storage()` consult the graph
-/// slot first.
+/// Phase 7.5 work item G: construct a Tensor in node-handle mode.
+/// The graph at `link.graph()` must already have a populated storage
+/// slot for `link.id()` (registered via `graph.set_storage(...)`);
+/// dtype, device, and shape are read from that slot.
 ///
-/// The `storage_arc` and the slot in `link.graph()` for `link.id()`
-/// should point at the same bytes — typically callers allocate a
-/// `Storage`, wrap it in `Arc::new(RwLock::new(...))`, and register
-/// that same Arc both as `Tensor_.storage` and via
-/// `graph.set_storage(id, arc.clone())`. Identity of the Arcs is
-/// the invariant that lets old readers and new readers see the
-/// same bytes.
+/// Node-handle mode means `storage: None`, `link: Some(graph_tensor)`
+/// — the graph is the sole source of bytes. `realized_storage()`
+/// consults `link.storage_for()`.
 ///
 /// `pub(crate)` for now — once B2 migrates factories to produce
 /// node-handle tensors, this becomes the canonical construction
 /// path. Until then, only the smoke tests build node-handle
 /// tensors directly.
-pub(crate) fn from_storage_with_link<S: Into<Shape>>(
-    storage_arc: Arc<RwLock<Storage>>,
-    shape: S,
+pub(crate) fn from_link(
+    link: fuel_graph::Tensor,
     op: BackpropOp,
     is_variable: bool,
-    link: fuel_graph::Tensor,
-) -> Tensor {
+) -> Result<Tensor> {
+    let slot = link
+        .storage_for()
+        .ok_or_else(|| Error::Msg(
+            "from_link: graph storage slot is not populated for the linked NodeId".to_string(),
+        ))?;
     let (dtype, device) = {
-        let s = storage_arc.read().unwrap();
+        let s = slot.read().unwrap();
         (s.dtype(), Device { inner: s.device() })
     };
+    let layout = Layout::contiguous(link.shape());
     let tensor_ = Tensor_ {
         id: TensorId::new(),
-        storage: storage_arc,
-        layout: Layout::contiguous(shape),
+        storage: None,
+        layout,
         op,
         is_variable,
         dtype,
         device,
         link: Some(link),
     };
-    Tensor(Arc::new(tensor_))
+    Ok(Tensor(Arc::new(tensor_)))
 }
 
 impl Tensor {
@@ -1738,7 +1747,7 @@ impl Tensor {
             let layout = self.layout().narrow(dim, start, len)?;
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: self.storage.clone(),
+                storage: Some(self.realized_storage()),
                 layout,
                 op,
                 is_variable: false,
@@ -3987,7 +3996,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, Op::Copy);
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Arc::new(RwLock::new(self.storage().read().unwrap().try_clone(self.layout())?)),
+            storage: Some(Arc::new(RwLock::new(self.storage().read().unwrap().try_clone(self.layout())?))),
             layout: self.layout.clone(),
             op,
             is_variable: false,
@@ -4055,7 +4064,7 @@ impl Tensor {
             let op = BackpropOp::new1(self, Op::ToDevice);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Arc::new(RwLock::new(storage)),
+                storage: Some(Arc::new(RwLock::new(storage))),
                 layout: self.layout.clone(),
                 op,
                 is_variable: false,
@@ -4493,27 +4502,33 @@ impl Tensor {
     ///
     /// Returns the `Arc<RwLock<Storage>>` that backs this tensor's
     /// bytes:
-    /// - If this tensor is in node-handle mode (`link` is `Some`) and
-    ///   the graph's storage map has a slot for the linked `NodeId`,
-    ///   returns that slot's Arc clone.
-    /// - Otherwise (legacy eager mode, or node-handle mode where the
-    ///   slot hasn't been populated yet) returns the legacy `storage`
-    ///   field's Arc clone.
+    /// - **Legacy eager mode** (`storage: Some(arc)`, `link: None`):
+    ///   returns the legacy `storage` Arc clone.
+    /// - **Node-handle mode** (`storage: None`, `link: Some(t)`):
+    ///   returns `link.storage_for()` — the slot Arc registered in
+    ///   the graph's storage map. Panics if the slot is not yet
+    ///   populated (the linked node hasn't been realized).
     ///
-    /// During the G transition both fields can be populated; this
-    /// seam preferentially honours the graph slot when available so
-    /// migrations from legacy → node-handle don't have to coordinate
-    /// reader updates atomically. Once every reader is migrated, the
-    /// legacy field becomes `Option<...>` and the invariant "exactly
-    /// one of `storage`, `link` is `Some`" is enforced at
-    /// construction.
+    /// The "exactly one of `storage`, `link` is `Some`" invariant is
+    /// enforced by the Tensor constructors (`from_storage` and
+    /// `from_link`). After B6 retires eager dispatch, the `storage`
+    /// field is dropped and this method becomes simply
+    /// `self.link.storage_for().expect(...)`.
     pub fn realized_storage(&self) -> Arc<RwLock<Storage>> {
-        if let Some(link) = &self.link {
-            if let Some(slot) = link.storage_for() {
-                return slot;
-            }
+        match (&self.storage, &self.link) {
+            (Some(arc), None) => arc.clone(),
+            (None, Some(link)) => link
+                .storage_for()
+                .expect("Tensor in node-handle mode: graph storage slot not populated for the linked NodeId"),
+            (Some(_), Some(_)) => unreachable!(
+                "Tensor invariant violated: both storage and link are Some — \
+                 G constructors should set exactly one"
+            ),
+            (None, None) => unreachable!(
+                "Tensor invariant violated: both storage and link are None — \
+                 G constructors should set exactly one"
+            ),
         }
-        self.storage.clone()
     }
 
     /// Whether this tensor is currently in node-handle mode (Phase
@@ -4566,9 +4581,12 @@ impl Tensor {
     }
 
     pub(crate) fn same_storage(&self, rhs: &Self) -> bool {
-        let lhs: &RwLock<Storage> = self.storage.as_ref();
-        let rhs: &RwLock<Storage> = rhs.storage.as_ref();
-        std::ptr::eq(lhs, rhs)
+        // Phase 7.5 work item G: compare via the realized-storage seam
+        // so node-handle and legacy-mode tensors compare correctly. Two
+        // tensors share storage iff their backing Arcs are pointer-equal.
+        let lhs = self.realized_storage();
+        let rhs = rhs.realized_storage();
+        Arc::ptr_eq(&lhs, &rhs)
     }
 
     /// Normalize a 'relative' axis value: positive values are kept, negative
@@ -4932,24 +4950,26 @@ impl<S: Into<Shape>> From<(Storage, S)> for Tensor {
 #[cfg(test)]
 mod node_handle_tests {
     //! Phase 7.5 work item G — node-handle Tensor smoke tests. These
-    //! live as unit tests so they can use the pub(crate)
-    //! `from_storage_with_link` constructor.
+    //! live as unit tests so they can use the pub(crate) `from_link`
+    //! constructor.
 
     use super::*;
     use fuel_graph::ConstData;
 
     /// Parametric helper: build a node-handle Tensor on `device`,
-    /// register its storage Arc as the graph slot for the Const node,
+    /// register its storage Arc as the graph slot for a Const leaf,
     /// and verify `realized_storage()` returns that exact Arc plus
     /// device identity survives.
     fn node_handle_smoke_for_device(device: &Device) {
         let shape = Shape::from_dims(&[3]);
+        // Allocate Storage on the device via the legacy factory; we
+        // only want the bytes — the Tensor wrapper is throwaway.
         let legacy = Tensor::new(&[1.0_f32, 2.0, 3.0], device).unwrap();
         let storage_arc = legacy.realized_storage();
 
-        // Build a fresh single-node graph + Const leaf via the public
-        // fuel_graph::Tensor::from_const builder. Register our storage
-        // Arc as the slot for that NodeId.
+        // Build a fresh single-node graph + Const leaf and register
+        // the storage Arc as its slot. After this, `link.storage_for()`
+        // returns the Arc.
         let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
         let link = fuel_graph::Tensor::from_const(const_data, shape.clone());
         link.graph()
@@ -4957,19 +4977,13 @@ mod node_handle_tests {
             .unwrap()
             .set_storage(link.id(), storage_arc.clone());
 
-        let t = from_storage_with_link(
-            storage_arc.clone(),
-            shape,
-            BackpropOp::none(),
-            false,
-            link,
-        );
+        // Construct a node-handle Tensor — `storage: None`, `link: Some`.
+        let t = from_link(link.clone(), BackpropOp::none(), false).unwrap();
 
         assert!(t.has_graph_link());
         assert!(t.graph_link().is_some());
 
-        // The seam returns the slot's Arc, which is the same Arc we
-        // registered — parallel-mode invariant.
+        // The seam returns the slot's Arc — the same Arc we registered.
         let slot_arc = t.realized_storage();
         assert!(
             Arc::ptr_eq(&slot_arc, &storage_arc),
@@ -5006,10 +5020,12 @@ mod node_handle_tests {
         node_handle_smoke_for_device(&device);
     }
 
-    /// Slot Arc and legacy Arc are the same object — both views see
-    /// the same bytes during parallel-mode transition.
+    /// Reading a node-handle Tensor through the seam returns the
+    /// graph slot's Arc identically to looking it up via the link
+    /// directly. Confirms the node-handle path doesn't accidentally
+    /// allocate a fresh Storage.
     #[test]
-    fn slot_and_legacy_arcs_are_identical() {
+    fn realized_storage_matches_slot_lookup() {
         let device = Device::cpu();
         let shape = Shape::from_dims(&[2]);
         let legacy = Tensor::new(&[5.0_f32, 6.0], &device).unwrap();
@@ -5022,18 +5038,23 @@ mod node_handle_tests {
             .unwrap()
             .set_storage(link.id(), storage_arc.clone());
 
-        let t = from_storage_with_link(
-            storage_arc.clone(),
-            shape,
-            BackpropOp::none(),
-            false,
-            link.clone(),
-        );
+        let t = from_link(link.clone(), BackpropOp::none(), false).unwrap();
 
-        // Direct legacy read and slot read return the same Arc.
         let via_seam = t.realized_storage();
         let via_link = link.storage_for().expect("slot was just registered");
         assert!(Arc::ptr_eq(&via_seam, &via_link));
         assert!(Arc::ptr_eq(&via_seam, &storage_arc));
+    }
+
+    /// `from_link` rejects construction when the linked node has no
+    /// storage slot yet — caller must register one first.
+    #[test]
+    fn from_link_errors_without_slot() {
+        let const_data = ConstData::F32(Arc::from(vec![1.0_f32]));
+        let link =
+            fuel_graph::Tensor::from_const(const_data, Shape::from_dims(&[1]));
+        // No set_storage call — slot is unpopulated.
+        let result = from_link(link, BackpropOp::none(), false);
+        assert!(result.is_err());
     }
 }
