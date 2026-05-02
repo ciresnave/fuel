@@ -21,6 +21,7 @@ members = [
     "fuel-flash-attn-cuda-sys",
     "fuel-flash-attn-v3-cuda",
     "fuel-flash-attn-v3-cuda-sys",
+    "fuel-formats",
     "fuel-graph",
     "fuel-graph-cpu",
     "fuel-cuda-backend",
@@ -55,6 +56,7 @@ default-members = [
     "fuel-core",
     "fuel-core-types",
     "fuel-cpu-backend",
+    "fuel-formats",
     "fuel-graph",
     "fuel-graph-cpu",
     "fuel-cuda-backend",
@@ -124,6 +126,7 @@ fuel-flash-attn-cuda = { path = "./fuel-flash-attn-cuda", version = "0.10.2" }
 fuel-flash-attn-cuda-sys = { path = "./fuel-flash-attn-cuda-sys", version = "0.10.2" }
 fuel-flash-attn-v3-cuda = { path = "./fuel-flash-attn-v3-cuda", version = "0.10.2" }
 fuel-flash-attn-v3-cuda-sys = { path = "./fuel-flash-attn-v3-cuda-sys", version = "0.10.2" }
+fuel-formats = { path = "./fuel-formats", version = "0.10.2" }
 fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
 fuel-cuda-kernels = { path = "./fuel-cuda-kernels", version = "0.10.2" }
 fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.2" }
