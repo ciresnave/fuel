@@ -1,5 +1,6 @@
 ﻿use crate::dyn_backend::DynBackendStorage;
 use crate::op::{BackpropOp, Op};
+use crate::storage::StorageApplyOps;
 use crate::tensor::from_storage;
 use crate::{Layout, Result, Shape, Tensor};
 use std::sync::Arc;

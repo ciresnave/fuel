@@ -317,9 +317,9 @@ mod tests {
 
         // Device identity survives the slot path: the slot's Storage
         // reports the same device location as the original Tensor.
-        let slot_device = slot_arc.read().unwrap().device();
+        let slot_arc_dev = slot_arc.read().unwrap().device();
         assert_eq!(
-            slot_device.location(),
+            slot_arc_dev.location_dyn(),
             device.location(),
             "slot Storage device must match construction device",
         );

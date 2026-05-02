@@ -194,7 +194,7 @@ pub(crate) fn from_storage<S: Into<Shape>>(
     is_variable: bool,
 ) -> Tensor {
     let dtype = storage.dtype();
-    let device = storage.device();
+    let device = Device { inner: storage.device() };
     let tensor_ = Tensor_ {
         id: TensorId::new(),
         storage: Arc::new(RwLock::new(storage)),
@@ -234,7 +234,7 @@ pub(crate) fn from_storage_with_link<S: Into<Shape>>(
 ) -> Tensor {
     let (dtype, device) = {
         let s = storage_arc.read().unwrap();
-        (s.dtype(), s.device())
+        (s.dtype(), Device { inner: s.device() })
     };
     let tensor_ = Tensor_ {
         id: TensorId::new(),

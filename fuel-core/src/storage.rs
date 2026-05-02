@@ -1,482 +1,82 @@
-﻿use crate::dyn_backend::DynBackendStorage;
-use crate::op::{self, CmpOp, ReduceOp};
-use crate::scalar::Scalar;
-use crate::{HostBuffer, DType, Device, Error, Layout, Result, Shape};
-use crate::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};
+//! `Storage` re-export + `StorageApplyOps` trait extension.
+//!
+//! Phase 7.5 work item G fix-up: the `Storage` struct and almost all of
+//! its eager-dispatch methods moved to `fuel-core-types::storage` so
+//! that `fuel_graph::Graph` can own a `HashMap<NodeId, Storage>` slot
+//! map without the fuel-graph crate inverting its dependency on
+//! fuel-core.
+//!
+//! What stays in fuel-core: the three `apply_op1/2/3` methods, because
+//! they take `&dyn CustomOp1/2/3` trait objects whose `bwd` method
+//! returns `Tensor` (autograd). They live as a trait extension on
+//! `Storage` rather than inherent impls because Rust orphan rules
+//! forbid inherent impls on a type defined in another crate.
+//!
+//! All three are scheduled for removal in Phase 7.5 work item B6
+//! along with the rest of eager dispatch.
 
-// We do not want to implement Clone on Storage as cloning may fail because of
-// out of memory. Instead try_clone should be used.
-#[derive(Debug)]
-pub struct Storage(pub(crate) Box<dyn DynBackendStorage>);
+pub use fuel_core_types::Storage;
 
-impl Storage {
-    /// Construct storage from any concrete `DynBackendStorage` implementor.
-    ///
-    /// This is the backend-agnostic entry point — backends provide a type
-    /// implementing `DynBackendStorage`, and `Storage::new` boxes it. Prefer
-    /// this over the named `from_cpu`/`from_cuda`/`from_metal` constructors,
-    /// which are scheduled for removal.
-    pub fn new<B: DynBackendStorage + 'static>(b: B) -> Self {
-        Storage(Box::new(b))
-    }
+use crate::custom_op::{CustomOp1, CustomOp2, CustomOp3};
+use crate::{Layout, Result, Shape};
 
-    /// Wrap an already-boxed `dyn DynBackendStorage`. Used by callers
-    /// (notably the quantized fast-paths) that produce a `Box<dyn ..>`
-    /// directly from trait dispatch.
-    pub fn from_dyn(b: Box<dyn DynBackendStorage>) -> Self {
-        Storage(b)
-    }
+/// Trait extension that re-attaches the `CustomOp` apply methods to
+/// the moved `Storage` type. `use crate::storage::StorageApplyOps;` to
+/// bring them into scope.
+pub trait StorageApplyOps {
+    fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Storage, Shape)>;
 
-    /// Borrow the inner storage as a `DynBackendStorage` trait object.
-    ///
-    /// Backends that need to peel back to their concrete storage type can
-    /// downcast via `storage.as_dyn().as_any().downcast_ref::<MyStorage>()`.
-    /// This replaces the deprecated `as_cpu_storage`/`as_cuda_storage`/
-    /// `as_metal_storage` helpers.
-    pub fn as_dyn(&self) -> &dyn DynBackendStorage {
-        &*self.0
-    }
-
-    /// Mutable variant of [`as_dyn`].
-    pub fn as_dyn_mut(&mut self) -> &mut dyn DynBackendStorage {
-        &mut *self.0
-    }
-
-    /// Downcast the inner storage to a concrete backend type.
-    ///
-    /// Returns `Some(&T)` when the boxed `dyn DynBackendStorage` is the
-    /// concrete type `T`; otherwise `None`. This is the backend-agnostic
-    /// replacement for the deleted `as_cpu_storage` / `as_cuda_storage` /
-    /// `as_metal_storage` accessors.
-    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        self.0.as_any().downcast_ref::<T>()
-    }
-
-    /// Mutable variant of [`downcast_ref`](Self::downcast_ref).
-    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.0.as_any_mut().downcast_mut::<T>()
-    }
-
-    pub fn try_clone(&self, layout: &Layout) -> Result<Self> {
-        Ok(Storage(self.0.try_clone_dyn(layout)?))
-    }
-
-    pub fn device(&self) -> Device {
-        Device {
-            inner: self.0.device_arc_dyn(),
-        }
-    }
-
-    pub fn dtype(&self) -> DType {
-        self.0.dtype_dyn()
-    }
-
-    pub(crate) fn same_device(&self, rhs: &Self, op: &'static str) -> Result<()> {
-        let lhs_device = self.device();
-        let rhs_device = rhs.device();
-        let lhs = lhs_device.location();
-        let rhs = rhs_device.location();
-        let same_device = if lhs_device.is_metal() {
-            // On metal, we require the device to be exactly the same rather than
-            // having the same location.
-            lhs_device.same_device(&rhs_device)
-        } else {
-            lhs == rhs
-        };
-        if !same_device {
-            Err(Error::DeviceMismatchBinaryOp { lhs, rhs, op }.bt())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(crate) fn same_dtype(&self, rhs: &Self, op: &'static str) -> Result<()> {
-        let lhs = self.dtype();
-        let rhs = rhs.dtype();
-        if lhs != rhs {
-            Err(Error::DTypeMismatchBinaryOp { lhs, rhs, op }.bt())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(crate) fn const_set(&mut self, v: Scalar, l: &Layout) -> Result<()> {
-        self.0.const_set_dyn(v, l)
-    }
-
-    pub(crate) fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
-        Ok(Storage(self.0.affine_dyn(layout, mul, add)?))
-    }
-
-    pub(crate) fn powf(&self, layout: &Layout, e: f64) -> Result<Self> {
-        Ok(Storage(self.0.powf_dyn(layout, e)?))
-    }
-
-    pub(crate) fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
-        Ok(Storage(self.0.elu_dyn(layout, alpha)?))
-    }
-
-    pub(crate) fn cmp(
-        &self,
-        op: CmpOp,
-        rhs: &Self,
-        lhs_layout: &Layout,
-        rhs_layout: &Layout,
-    ) -> Result<Self> {
-        Ok(Storage(
-            self.0.cmp_dyn(op, &*rhs.0, lhs_layout, rhs_layout)?,
-        ))
-    }
-
-    pub(crate) fn reduce_op(
-        &self,
-        op: ReduceOp,
-        layout: &Layout,
-        reduce_dims: &[usize],
-    ) -> Result<Self> {
-        Ok(Storage(self.0.reduce_op_dyn(op, layout, reduce_dims)?))
-    }
-
-    pub(crate) fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
-        Ok(Storage(self.0.to_dtype_dyn(layout, dtype)?))
-    }
-
-    pub(crate) fn to_cpu_storage(&self) -> Result<HostBuffer> {
-        self.0.to_host_buffer_dyn()
-    }
-
-    pub(crate) fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Self, Shape)> {
-        let (storage, shape) = c.fwd(&*self.0, l)?;
-        Ok((Self(storage), shape))
-    }
-
-    pub(crate) fn apply_op2(
+    #[allow(clippy::too_many_arguments)]
+    fn apply_op2(
         &self,
         l1: &Layout,
-        t2: &Self,
+        t2: &Storage,
         l2: &Layout,
         c: &dyn CustomOp2,
-    ) -> Result<(Self, Shape)> {
-        self.same_device(t2, c.name())?;
-        let (storage, shape) = c.fwd(&*self.0, l1, &*t2.0, l2)?;
-        Ok((Self(storage), shape))
-    }
+    ) -> Result<(Storage, Shape)>;
 
-    pub(crate) fn apply_op3(
+    #[allow(clippy::too_many_arguments)]
+    fn apply_op3(
         &self,
         l1: &Layout,
-        t2: &Self,
+        t2: &Storage,
         l2: &Layout,
-        t3: &Self,
+        t3: &Storage,
         l3: &Layout,
         c: &dyn CustomOp3,
-    ) -> Result<(Self, Shape)> {
-        self.same_device(t2, c.name())?;
-        self.same_device(t3, c.name())?;
-        let (storage, shape) = c.fwd(&*self.0, l1, &*t2.0, l2, &*t3.0, l3)?;
-        Ok((Self(storage), shape))
+    ) -> Result<(Storage, Shape)>;
+}
+
+impl StorageApplyOps for Storage {
+    fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Storage, Shape)> {
+        let (storage, shape) = c.fwd(self.as_dyn(), l)?;
+        Ok((Storage::from_dyn(storage), shape))
     }
 
-    pub(crate) fn inplace_op1(&mut self, l: &Layout, c: &dyn InplaceOp1) -> Result<()> {
-        c.fwd(&mut *self.0, l)
-    }
-
-    pub(crate) fn inplace_op2(
-        &mut self,
+    fn apply_op2(
+        &self,
         l1: &Layout,
-        t2: &Self,
+        t2: &Storage,
         l2: &Layout,
-        c: &dyn InplaceOp2,
-    ) -> Result<()> {
+        c: &dyn CustomOp2,
+    ) -> Result<(Storage, Shape)> {
         self.same_device(t2, c.name())?;
-        c.fwd(&mut *self.0, l1, &*t2.0, l2)
+        let (storage, shape) = c.fwd(self.as_dyn(), l1, t2.as_dyn(), l2)?;
+        Ok((Storage::from_dyn(storage), shape))
     }
 
-    pub(crate) fn inplace_op3(
-        &mut self,
+    fn apply_op3(
+        &self,
         l1: &Layout,
-        t2: &Self,
+        t2: &Storage,
         l2: &Layout,
-        t3: &Self,
+        t3: &Storage,
         l3: &Layout,
-        c: &dyn InplaceOp3,
-    ) -> Result<()> {
+        c: &dyn CustomOp3,
+    ) -> Result<(Storage, Shape)> {
         self.same_device(t2, c.name())?;
         self.same_device(t3, c.name())?;
-        c.fwd(&mut *self.0, l1, &*t2.0, l2, &*t3.0, l3)
-    }
-
-    // -----------------------------------------------------------------------
-    // Unary / Binary dispatch
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn unary_impl<B: op::UnaryOpT>(&self, layout: &Layout) -> Result<Self> {
-        let op = op::UnaryOp::from_name(B::NAME).ok_or_else(|| {
-            Error::Msg(format!("unknown unary op '{}'", B::NAME))
-        })?;
-        Ok(Storage(self.0.unary_op_dyn(layout, op)?))
-    }
-
-    pub(crate) fn binary_impl<B: op::BinaryOpT>(
-        &self,
-        rhs: &Self,
-        lhs_layout: &Layout,
-        rhs_layout: &Layout,
-    ) -> Result<Self> {
-        self.same_device(rhs, B::NAME)?;
-        self.same_dtype(rhs, B::NAME)?;
-        let op = op::BinaryOp::from_name(B::NAME).ok_or_else(|| {
-            Error::Msg(format!("unknown binary op '{}'", B::NAME))
-        })?;
-        Ok(Storage(
-            self.0
-                .binary_op_dyn(&*rhs.0, lhs_layout, rhs_layout, op)?,
-        ))
-    }
-
-    // -----------------------------------------------------------------------
-    // Convolutions, pooling, upsampling
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn conv1d(
-        &self,
-        l: &Layout,
-        kernel: &Self,
-        kernel_l: &Layout,
-        params: &crate::conv::ParamsConv1D,
-    ) -> Result<Self> {
-        self.same_device(kernel, "conv1d")?;
-        self.same_dtype(kernel, "conv1d")?;
-        Ok(Storage(
-            self.0.conv1d_dyn(l, &*kernel.0, kernel_l, params)?,
-        ))
-    }
-
-    pub(crate) fn conv_transpose1d(
-        &self,
-        l: &Layout,
-        kernel: &Self,
-        kernel_l: &Layout,
-        params: &crate::conv::ParamsConvTranspose1D,
-    ) -> Result<Self> {
-        self.same_device(kernel, "conv-transpose1d")?;
-        self.same_dtype(kernel, "conv-transpose1d")?;
-        Ok(Storage(
-            self.0
-                .conv_transpose1d_dyn(l, &*kernel.0, kernel_l, params)?,
-        ))
-    }
-
-    pub(crate) fn conv2d(
-        &self,
-        l: &Layout,
-        kernel: &Self,
-        kernel_l: &Layout,
-        params: &crate::conv::ParamsConv2D,
-    ) -> Result<Self> {
-        self.same_device(kernel, "conv2d")?;
-        self.same_dtype(kernel, "conv2d")?;
-        Ok(Storage(
-            self.0.conv2d_dyn(l, &*kernel.0, kernel_l, params)?,
-        ))
-    }
-
-    pub(crate) fn conv_transpose2d(
-        &self,
-        l: &Layout,
-        kernel: &Self,
-        kernel_l: &Layout,
-        params: &crate::conv::ParamsConvTranspose2D,
-    ) -> Result<Self> {
-        self.same_device(kernel, "conv_transpose2d")?;
-        self.same_dtype(kernel, "conv_transpose2d")?;
-        Ok(Storage(
-            self.0
-                .conv_transpose2d_dyn(l, &*kernel.0, kernel_l, params)?,
-        ))
-    }
-
-    pub(crate) fn avg_pool2d(
-        &self,
-        layout: &Layout,
-        kernel_size: (usize, usize),
-        stride: (usize, usize),
-    ) -> Result<Self> {
-        Ok(Storage(
-            self.0.avg_pool2d_dyn(layout, kernel_size, stride)?,
-        ))
-    }
-
-    pub(crate) fn max_pool2d(
-        &self,
-        layout: &Layout,
-        kernel_size: (usize, usize),
-        stride: (usize, usize),
-    ) -> Result<Self> {
-        Ok(Storage(
-            self.0.max_pool2d_dyn(layout, kernel_size, stride)?,
-        ))
-    }
-
-    pub(crate) fn upsample_nearest1d(&self, layout: &Layout, sz: usize) -> Result<Self> {
-        Ok(Storage(self.0.upsample_nearest1d_dyn(layout, sz)?))
-    }
-
-    pub(crate) fn upsample_nearest2d(&self, layout: &Layout, h: usize, w: usize) -> Result<Self> {
-        Ok(Storage(self.0.upsample_nearest2d_dyn(layout, h, w)?))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn upsample_bilinear2d(
-        &self,
-        layout: &Layout,
-        h: usize,
-        w: usize,
-        align_corners: bool,
-        scale_h: Option<f64>,
-        scale_w: Option<f64>,
-    ) -> Result<Self> {
-        Ok(Storage(
-            self.0
-                .upsample_bilinear2d_dyn(layout, h, w, align_corners, scale_h, scale_w)?,
-        ))
-    }
-
-    // -----------------------------------------------------------------------
-    // Gather / Scatter / Index
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn where_cond(
-        &self,
-        layout: &Layout,
-        t: &Self,
-        layout_t: &Layout,
-        f: &Self,
-        layout_f: &Layout,
-    ) -> Result<Self> {
-        self.same_device(t, "where")?;
-        self.same_device(f, "where")?;
-        t.same_dtype(f, "where")?;
-        Ok(Storage(
-            self.0
-                .where_cond_dyn(layout, &*t.0, layout_t, &*f.0, layout_f)?,
-        ))
-    }
-
-    pub(crate) fn gather(
-        &self,
-        l: &Layout,
-        indexes: &Self,
-        indexes_l: &Layout,
-        d: usize,
-    ) -> Result<Self> {
-        self.same_device(indexes, "index-add")?;
-        Ok(Storage(
-            self.0.gather_dyn(l, &*indexes.0, indexes_l, d)?,
-        ))
-    }
-
-    pub(crate) fn scatter_set(
-        &mut self,
-        l: &Layout,
-        indexes: &Self,
-        indexes_l: &Layout,
-        source: &Self,
-        source_l: &Layout,
-        d: usize,
-    ) -> Result<()> {
-        self.same_device(indexes, "scatter-set")?;
-        self.same_device(source, "scatter-set")?;
-        self.0
-            .scatter_set_dyn(l, &*source.0, source_l, &*indexes.0, indexes_l, d)
-    }
-
-    pub(crate) fn scatter_add(
-        &mut self,
-        l: &Layout,
-        indexes: &Self,
-        indexes_l: &Layout,
-        source: &Self,
-        source_l: &Layout,
-        d: usize,
-    ) -> Result<()> {
-        self.same_device(indexes, "scatter-add")?;
-        self.same_device(source, "scatter-add")?;
-        self.0
-            .scatter_add_set_dyn(l, &*source.0, source_l, &*indexes.0, indexes_l, d)
-    }
-
-    pub(crate) fn index_add(
-        &self,
-        l: &Layout,
-        indexes: &Self,
-        indexes_l: &Layout,
-        source: &Self,
-        source_l: &Layout,
-        d: usize,
-    ) -> Result<Self> {
-        self.same_device(indexes, "index-add")?;
-        self.same_device(source, "index-add")?;
-        Ok(Storage(
-            self.0
-                .index_add_dyn(l, &*indexes.0, indexes_l, &*source.0, source_l, d)?,
-        ))
-    }
-
-    pub(crate) fn index_select(
-        &self,
-        rhs: &Self,
-        lhs_l: &Layout,
-        rhs_l: &Layout,
-        d: usize,
-    ) -> Result<Self> {
-        self.same_device(rhs, "index-select")?;
-        Ok(Storage(
-            self.0.index_select_dyn(&*rhs.0, lhs_l, rhs_l, d)?,
-        ))
-    }
-
-    // -----------------------------------------------------------------------
-    // Matmul and copy
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn matmul(
-        &self,
-        rhs: &Self,
-        bmnk: (usize, usize, usize, usize),
-        lhs_layout: &Layout,
-        rhs_layout: &Layout,
-    ) -> Result<Self> {
-        self.same_device(rhs, "matmul")?;
-        self.same_dtype(rhs, "matmul")?;
-        Ok(Storage(
-            self.0
-                .matmul_dyn(&*rhs.0, bmnk, lhs_layout, rhs_layout)?,
-        ))
-    }
-
-    // self, the source can be strided whereas dst is contiguous.
-    pub(crate) fn copy_strided_src(
-        &self,
-        dst: &mut Self,
-        dst_offset: usize,
-        src_l: &Layout,
-    ) -> Result<()> {
-        self.0.copy_strided_src_dyn(&mut *dst.0, dst_offset, src_l)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn copy2d(
-        &self,
-        dst: &mut Self,
-        d1: usize,
-        d2: usize,
-        src_s: usize,
-        dst_s: usize,
-        src_o: usize,
-        dst_o: usize,
-    ) -> Result<()> {
-        self.0
-            .copy2d_dyn(&mut *dst.0, d1, d2, src_s, dst_s, src_o, dst_o)
+        let (storage, shape) = c.fwd(self.as_dyn(), l1, t2.as_dyn(), l2, t3.as_dyn(), l3)?;
+        Ok((Storage::from_dyn(storage), shape))
     }
 }
