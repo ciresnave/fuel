@@ -1841,22 +1841,39 @@ becomes ~one afternoon of mechanical extraction.
 
 **B. Drop eager mode, introduce `.realize()`.**
 
-- [ ] Add `.realize()` / `.materialize()` to `Tensor`. For tensors
-      backed by an eager-mode storage (current state), it's a
-      no-op; for graph-built tensors (post-step C), it triggers
-      executor dispatch.
-- [ ] Migrate every `Tensor::*` op method to build a graph node
-      instead of calling `Storage::*` directly. The dispatch path
-      becomes the lazy-stack's `realize_*` entry points, with a
-      fast-path for one-node graphs to amortise per-op overhead.
-- [ ] Update `to_vec*`, `to_scalar`, `Display` impls, and any
-      other "force value" entry points to call `.realize()`
+Internal sub-phases (B1-B6) tracked in memory plan. B1 is shipped;
+B2-B6 land *after* work item G below, because G provides the
+substrate (graph-owned Storage) that B's factory and op-method
+migration relies on.
+
+- [x] **B1.** Add `.realize()` / `.materialize()` / `.is_realized()`
+      stubs to `Tensor`. Identity clones today; gain real semantics
+      after G + B3.
+      *Shipped 2026-05-02 (commit a8e192ff). 3 unit tests verify
+      today-identity contract; full fuel-core test suite green.*
+- [ ] **B2.** Factories (`zeros`, `ones`, `from_slice`, `from_vec`,
+      `from_iter`, `arange`, `arange_step`, `eye`, `full`, `rand`,
+      `randn`, `meshgrid`) produce graph-rooted Tensors backed by
+      `Op::Const` nodes whose Storage lives in the graph's
+      storage map (post-G). Trivial once G has landed.
+- [ ] **B3.** Migrate every `Tensor::*` op method to build a graph
+      node instead of calling `Storage::*` directly. One op family
+      per commit (unary, binary, binary-scalar, cmp, reduce,
+      reshape/transpose, slice, matmul, conv, qmatmul, misc).
+      Dispatch becomes the lazy-stack's `realize_*` entry points,
+      with a fast-path for one-node graphs to amortise per-op
+      overhead.
+- [ ] **B4.** Update `to_vec*`, `to_scalar`, `Display` impls, and
+      any other "force value" entry points to call `.realize()`
       implicitly so users don't have to.
-- [ ] Migration pass through `fuel-nn`, `fuel-transformers`,
+- [ ] **B5.** Migration pass through `fuel-nn`, `fuel-transformers`,
       `fuel-examples`: most code remains unchanged because op
       methods retain their signatures; only "inspect a value"
       sites need `.realize()`.
-- [ ] Document the idiom in `GUIDE.md` and `PATTERNS.md`.
+- [ ] **B6.** Drop eager dispatch entirely. `Storage::matmul`,
+      `Storage::unary_impl`, `Storage::binary_impl`, etc. become
+      dead code. Storage shrinks to a thin enum of typed buffers.
+      Document the new idiom in `GUIDE.md` and `PATTERNS.md`.
       Particular care for the `if tensor.item::<f32>() > 0.5`
       case — this is the most user-visible difference from
       PyTorch eager.
@@ -1922,6 +1939,147 @@ backward to `fuel-autograd`.**
       lightweight consumers can depend on the smaller leaf
       crates directly.
 
+**G. Graph owns Storage; `Tensor` becomes a thin handle.**
+
+*Architectural prerequisite added 2026-05-02 between B1 (shipped)
+and B2. Inserted after the design pass on B's design question
+("how does `Tensor_` represent a graph-attached state?") concluded
+that the long-term answer is "Tensor doesn't own Storage — the
+Graph does," and that landing this before B2-B6 is cheaper than
+migrating every consumer twice (once to add an `Option<GraphLink>`,
+again to drop the Storage field).*
+
+The model after G:
+
+- `Graph` owns a `HashMap<NodeId, StorageSlot>` keyed per device.
+  Each slot holds a `Box<dyn DynBackendStorage>` plus its realized
+  `Layout`. Multi-device graphs (CPU↔Vulkan↔CUDA Router) keep
+  working — each NodeId's slot lives on the device its placement
+  side-table entry specifies.
+- `Tensor` shrinks to `{ graph: SharedGraph, id: NodeId }`. The
+  `Arc<RwLock<Storage>>` field on `Tensor_` goes away. (The
+  `op: BackpropOp` field stays for now — its removal is work
+  item C.)
+- The executor's existing NodeId→Storage cache moves *as-is*
+  into the Graph rather than living in executor scratch space.
+  Residency machinery (`Op::Release`, `ResidencyEvictionRule`,
+  `evict_from_candidates`) keeps working unchanged — it already
+  operates by NodeId, so the cache's new home doesn't change its
+  interface.
+- `Op::Const` keeps its current host-side `Arc<[T]>` payload
+  (`ConstData`). On first `.realize()` of a Const node, bytes
+  upload into a graph-owned Storage slot; subsequent realizes
+  read the slot. Moving Const fully into graph-Storage (so that
+  device-resident weights can be Consts directly without
+  round-tripping through host bytes) is an explicit follow-on
+  listed below — important for weight-loading paths but
+  mechanical once G itself is in place.
+
+Migration tactic — parallel-introduction-then-drop:
+
+1. Add `StorageMap` to `Graph`. Add a "node-handle" mode to
+   `Tensor` where the `storage` field is `Option<Arc<RwLock<Storage>>>`
+   — `None` means "ask the graph." Existing eagerly-constructed
+   Tensors stay as-is at first.
+2. Migrate factories first (B2's actual work, now trivially
+   simple because the substrate is in place): build a Const node,
+   fill its slot, return a node-handle Tensor.
+3. Migrate op methods family-by-family (B3 work, post-G). Each
+   migrated family produces node-handle Tensors and removes one
+   pin holding old-mode Tensors alive.
+4. Once nothing produces old-mode Tensors, drop the `Option`
+   wrapper and the legacy field. Tree compiles green throughout.
+
+Sub-tasks:
+
+- [ ] Add `StorageMap` (or named struct) to `fuel_graph::Graph`,
+      keyed by `NodeId`. Per-slot fields: realized Storage,
+      realized Layout, device tag (consistent with existing
+      placement side-table).
+- [ ] Add `node-handle` mode to `Tensor_`. Make the `storage`
+      field `Option<Arc<RwLock<Storage>>>`; add the
+      `Option<GraphLink { graph, id }>` field. Define which mode
+      a Tensor is in via the invariant "exactly one of `storage`
+      and `graph_link` is `Some`."
+- [ ] Move the executor's NodeId→Storage cache from executor
+      scratch space into the Graph. Verify `ResidencyEvictionRule`
+      and `evict_from_candidates` continue working without code
+      changes (their interface is purely NodeId-based).
+- [ ] Add a Tensor read API that's mode-agnostic:
+      `tensor.realized_storage(&self) -> &Arc<RwLock<Storage>>`
+      consults `self.storage` if Some, otherwise looks up
+      `self.graph_link.id` in the Graph's storage map.
+- [ ] Add a parity test: a Tensor in node-handle mode and the
+      same Tensor in legacy-mode produce bit-equivalent reads
+      from `to_vec*` and `to_scalar`.
+- [ ] Multi-device parity: confirm a graph with CPU and Vulkan
+      placements reads correctly through the new path on each
+      device. (The Phase 6c three-way Router test is the
+      canonical check.)
+- [ ] Document the new model in `GUIDE.md`: who owns what,
+      how Const works, where intermediate results live during
+      and between `.realize()` calls.
+
+Follow-on (post-G, ahead of CE):
+
+- [ ] **G2. Move `Op::Const` payload into graph-Storage.**
+      Today's `ConstData` is a host-side `Arc<[T]>` for one of
+      {f32, f64, bf16, f16, u32}. Replace with (or augment by)
+      a graph-resident Storage slot so that device-resident
+      weights — the dominant production case for Const — can
+      be loaded directly into device memory and live in the
+      graph as Consts without a host round-trip. The host-side
+      `Arc<[T]>` variant stays for tiny constants (masks,
+      scalar broadcasts) where uploading on first realize is
+      fine. Mechanical once G's storage map is in place;
+      affects fuel-formats integration paths and the
+      Const-uploading code in the executor's realize.
+
+Estimated scope: 1-2 focused weeks for G itself; G2 is half a
+week of mechanical follow-on.
+
+**F. Declared layout contracts and layout-tracking optimizer pass.**
+
+*Placeholder — needs design-pass planning before sub-tasks are
+written. Listed here so the idea isn't lost.*
+
+The high-level idea: each op-on-each-backend declares the input
+`Layout`s it can accept and the output `Layout` it produces. The
+graph optimizer reads those contracts, matches consumer-input
+against producer-output, and either inserts layout-conversion
+ops where there's a mismatch or selects op variants whose
+contract consumes the existing layout. Same kind of reasoning
+XLA does for HLO sharding/layout, MLIR's linalg dialect does for
+layout assignment, and cuDNN's plan-graph does for tensor format
+selection.
+
+Open design questions to resolve before this becomes actionable:
+
+- Layout space is bigger than contiguous-vs-strided. NHWC vs
+  NCHW for conv, blocked formats (cuDNN's `nchw_vect_c`, NHWC8),
+  interleaved quant block layouts (Q4_0's 32-element packing
+  isn't expressible as strides at all). Which axes of layout
+  space does the optimizer reason about? A small closed set of
+  named layouts plus an `Any` fallback for stride-aware kernels
+  is the pragmatic answer, but the choice needs to be made
+  explicitly.
+- Most of Fuel's ops today implicitly accept any stride-aware
+  Layout — their contract is `Any → Any`, which carries no
+  signal for the optimizer. The ops where layout-contracts pay
+  off are the rigid ones: cuBLAS gemm's lda/ldb/ldc rules, conv
+  kernel format preferences, Q4_0 matmul's block-aligned input.
+  Maybe 15-20 ops out of ~140. The cost-benefit of declaring
+  contracts on the rest is real and needs a deliberate answer.
+- Multi-device interaction: layout-on-device-A doesn't mean the
+  same thing as layout-on-device-B. Per-device layout reasoning
+  vs unified abstract layouts is itself a design choice.
+- Interaction with G's storage slots: each slot already records
+  a realized Layout. F's contract-reasoning operates on this
+  metadata. F is gated on G having shipped.
+
+Estimated scope: deferred — depends entirely on the design
+choices above. Likely 2-4 weeks once scoped.
+
 #### Sequencing
 
 Revised after the 2026-05-02 design pass (see work item A
@@ -1934,40 +2092,52 @@ after E) lets the parser layer ship now without compromise and
 defers the Tensor-coupled file-transport extraction to where it
 is mechanical.
 
-Order:
+Order (revised 2026-05-02 after G was added):
 
-1. **A (`fuel-formats`)** — ships now, parallel-safe with B
-   because it touches the byte-decode bodies of loader files,
+1. **A (`fuel-formats`)** ✅ shipped 2026-05-02. Parallel-safe with
+   B because it touches the byte-decode bodies of loader files,
    not the Tensor construction call sites B is rewriting. No
    `Tensor` / `Storage` / `Device` coupling.
-2. **B (drop eager + `.realize()`)** — the largest semantic
-   change. Once eager is gone, `Storage` shrinks to a thin enum
-   and `Tensor` op methods are pure graph builders. Most
-   downstream cleanup is gated on this.
-3. **C and E together** — once `Tensor_`'s `op: BackpropOp` and
+2. **B1 (`.realize()` stubs)** ✅ shipped 2026-05-02 (commit
+   a8e192ff). Identity-clone stubs that stabilise the public API
+   so downstream code can opt into the lazy idiom early.
+3. **G (Graph owns Storage)** — architectural prerequisite for
+   the rest of B. Lands the `(graph, NodeId)`-handle Tensor model
+   and moves Storage ownership into the Graph. 1-2 focused weeks.
+4. **G2 (`Op::Const` payload moves into graph-Storage)** —
+   mechanical follow-on, half a week. Eliminates host round-trip
+   for device-resident weights.
+5. **B2-B6 (factories, op methods, force-value entry points,
+   downstream migration, drop eager dispatch)** — much simpler
+   on top of G. Each B sub-phase is an independently shippable
+   landing; B3 ships op-family-by-op-family.
+6. **C and E together** — once `Tensor_`'s `op: BackpropOp` and
    `is_variable` come out (C), `Tensor` is small enough that
-   extracting it to `fuel-tensor` (E) is the same motion. The
-   ROADMAP's original split treated C and E as separate phases;
-   in practice C cannot finish without touching every site E
-   needs to touch, and doing them together avoids a
-   transitional state where `Tensor_` is half-shrunken.
-4. **A2 (`fuel-loaders` finalization)** — afternoon of work
-   once E lands. File-transport wrappers move from `fuel-core`
-   to `fuel-loaders`; `fuel-core` re-exports for back-compat;
-   no parse/construct seam to maintain.
-5. **D (inplace-rewrite optimizer)** — depends on C+E producing
+   extracting it to `fuel-tensor` (E) is the same motion. C
+   cannot finish without touching every site E needs to touch,
+   and doing them together avoids a transitional state where
+   `Tensor_` is half-shrunken.
+7. **A2 (`fuel-loaders` finalization)** — afternoon of work once
+   E lands. File-transport wrappers move from `fuel-core` to
+   `fuel-loaders`; `fuel-core` re-exports for back-compat; no
+   parse/construct seam to maintain.
+8. **D (inplace-rewrite optimizer)** — depends on C+E producing
    the unified forward+backward graph to do liveness on.
+9. **F (declared layout contracts)** — deferred, awaiting design
+   pass. Gated on G being in place because F operates on the
+   per-slot Layout metadata G introduces.
 
 B and C/E are tightly coupled but should ship as separate
 landings rather than one mega-PR — B first (so the eager-vs-
 lazy duality is collapsed before autograd refactor), then CE.
 
 Total estimated scope: A is one week (parser extraction is
-self-contained); B is two-to-three weeks including downstream
-migration; CE together is six-to-eight weeks (every op
-constructor touched, plus mechanical Tensor extraction); A2 is
-half a day; D is one-to-two weeks of optimizer-pass work.
-Roughly two-to-three months end-to-end.
+self-contained); G is 1-2 weeks plus G2 half a week; B2-B6 is
+two-to-three weeks of factory + op-method migration on top of
+G; CE together is six-to-eight weeks (every op constructor
+touched, plus mechanical Tensor extraction); A2 is half a day;
+D is one-to-two weeks of optimizer-pass work; F is deferred.
+Roughly three months end-to-end excluding F.
 
 #### Success criteria
 
@@ -2014,6 +2184,18 @@ semantics has to learn `.realize()`. Mitigation: documentation,
 an opt-in `FUEL_EAGER=1` env-flag during transition that forces
 `.realize()` after every op, and a deprecation cycle before the
 flag is removed.
+
+The third risk is G (Graph owns Storage): every read path that
+touches `tensor.storage()` today changes shape. Mitigation is
+the parallel-introduction-then-drop tactic — old-mode and
+node-handle Tensors coexist throughout the migration window so
+the tree compiles green at every step, and a single mode-agnostic
+read API (`tensor.realized_storage()`) gives consumers a stable
+seam. The residency machinery (`Op::Release`,
+`ResidencyEvictionRule`, `evict_from_candidates`) is purely
+NodeId-based and rides the change without code edits, which is
+a meaningful piece of evidence that the architectural cut is in
+the right place.
 
 This phase should not be attempted concurrently with Phase 8
 (FlashAttention) or Phase 8.5 (sparsity); both add new
