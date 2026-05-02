@@ -11,9 +11,14 @@ pub use fuel_core_types::conv::{
 
 impl Tensor {
     fn conv1d_single_group(&self, kernel: &Self, params: &ParamsConv1D) -> Result<Self> {
-        let storage =
-            self.storage()
-                .conv1d(self.layout(), &kernel.storage(), kernel.layout(), params)?;
+        let self_arc = self.storage();
+        let kernel_arc = kernel.storage();
+        let storage = self_arc.read().unwrap().conv1d(
+            self.layout(),
+            &kernel_arc.read().unwrap(),
+            kernel.layout(),
+            params,
+        )?;
         let op = BackpropOp::new2(self, kernel, |arg, kernel| Op::Conv1D {
             arg,
             kernel,
@@ -105,9 +110,11 @@ impl Tensor {
         kernel: &Self,
         params: &ParamsConvTranspose1D,
     ) -> Result<Self> {
-        let storage = self.storage().conv_transpose1d(
+        let self_arc = self.storage();
+        let kernel_arc = kernel.storage();
+        let storage = self_arc.read().unwrap().conv_transpose1d(
             self.layout(),
-            &kernel.storage(),
+            &kernel_arc.read().unwrap(),
             kernel.layout(),
             params,
         )?;
@@ -181,9 +188,14 @@ impl Tensor {
     }
 
     fn conv2d_single_group(&self, kernel: &Self, params: &ParamsConv2D) -> Result<Self> {
-        let storage =
-            self.storage()
-                .conv2d(self.layout(), &kernel.storage(), kernel.layout(), params)?;
+        let self_arc = self.storage();
+        let kernel_arc = kernel.storage();
+        let storage = self_arc.read().unwrap().conv2d(
+            self.layout(),
+            &kernel_arc.read().unwrap(),
+            kernel.layout(),
+            params,
+        )?;
         let op = BackpropOp::new2(self, kernel, |arg, kernel| Op::Conv2D {
             arg,
             kernel,
@@ -336,9 +348,11 @@ impl Tensor {
             stride,
             dilation,
         };
-        let storage = self.storage().conv_transpose2d(
+        let self_arc = self.storage();
+        let kernel_arc = kernel.storage();
+        let storage = self_arc.read().unwrap().conv_transpose2d(
             self.layout(),
-            &kernel.storage(),
+            &kernel_arc.read().unwrap(),
             kernel.layout(),
             &params,
         )?;

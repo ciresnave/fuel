@@ -104,25 +104,29 @@ where
             .map(|s| &s.0)
             .ok_or_else(|| fuel::Error::Msg("expected cpu storage".into()).bt())
     }
-    let (q_guard, q_layout) = q.storage_and_layout();
+    let (q_arc, q_layout) = q.storage_and_layout();
+    let q_guard = q_arc.read().unwrap();
     let q_cpu = cpu_buf(&q_guard)?;
     let q_data: &[T] = {
         let data = q_cpu.as_slice::<T>()?;
         &data[q_layout.start_offset()..]
     };
-    let (k_guard, k_layout) = k.storage_and_layout();
+    let (k_arc, k_layout) = k.storage_and_layout();
+    let k_guard = k_arc.read().unwrap();
     let k_cpu = cpu_buf(&k_guard)?;
     let k_data: &[T] = {
         let data = k_cpu.as_slice::<T>()?;
         &data[k_layout.start_offset()..]
     };
-    let (v_guard, v_layout) = v.storage_and_layout();
+    let (v_arc, v_layout) = v.storage_and_layout();
+    let v_guard = v_arc.read().unwrap();
     let v_cpu = cpu_buf(&v_guard)?;
     let v_data: &[T] = {
         let data = v_cpu.as_slice::<T>()?;
         &data[v_layout.start_offset()..]
     };
-    let mask_guard = mask.map(|mask| mask.storage_and_layout().0);
+    let mask_arc = mask.map(|mask| mask.storage_and_layout().0);
+    let mask_guard = mask_arc.as_ref().map(|arc| arc.read().unwrap());
     let mask_data: Option<&[T]> = if let Some(mask_guard) = &mask_guard {
         let mask = mask.as_ref().unwrap();
         let cpu = cpu_buf(mask_guard)?;

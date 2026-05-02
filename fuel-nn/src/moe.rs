@@ -61,21 +61,28 @@ pub fn moe_gemm(
             }
         };
 
-        let (input, _) = input.storage_and_layout();
-        let input = input.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<T>()?;
+        let (input_arc, _) = input.storage_and_layout();
+        let input_guard = input_arc.read().unwrap();
+        let input = input_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<T>()?;
 
-        let (weights, _) = weights.storage_and_layout();
-        let weights = weights.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("weight must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<T>()?;
+        let (weights_arc, _) = weights.storage_and_layout();
+        let weights_guard = weights_arc.read().unwrap();
+        let weights = weights_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("weight must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<T>()?;
 
-        let (sorted_token_ids, _) = sorted_token_ids.storage_and_layout();
-        let sorted_token_ids = sorted_token_ids.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("sorted_token_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
+        let (sorted_token_ids_arc, _) = sorted_token_ids.storage_and_layout();
+        let sorted_token_ids_guard = sorted_token_ids_arc.read().unwrap();
+        let sorted_token_ids = sorted_token_ids_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("sorted_token_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
-        let (experts_ids, _) = experts_ids.storage_and_layout();
-        let experts_ids = experts_ids.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
+        let (experts_ids_arc, _) = experts_ids.storage_and_layout();
+        let experts_ids_guard = experts_ids_arc.read().unwrap();
+        let experts_ids = experts_ids_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
+        let _topk_weights_arc;
+        let _topk_weights_guard;
         let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            let (topk_weights, _) = topk_weights.storage_and_layout();
-        let topk_weights = topk_weights.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+            _topk_weights_arc = topk_weights.storage_and_layout().0;
+            _topk_weights_guard = _topk_weights_arc.read().unwrap();
+            let topk_weights = _topk_weights_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
             let weights_ptr = topk_weights.as_raw().0 as *const f32;
             weights_ptr
         } else {
@@ -240,19 +247,24 @@ pub fn moe_gemm_gguf(
 
         let weight_ptr = weights.device_ptr()?;
 
+        let _topk_weights_arc;
+        let _topk_weights_guard;
         let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            let (topk_weights, _) = topk_weights.storage_and_layout();
-        let topk_weights = topk_weights.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+            _topk_weights_arc = topk_weights.storage_and_layout().0;
+            _topk_weights_guard = _topk_weights_arc.read().unwrap();
+            let topk_weights = _topk_weights_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
             let w_ptr = topk_weights.as_raw().0 as *const f32;
             w_ptr
         } else {
             std::ptr::null()
         };
 
-        let (sorted_token_ids, _) = sorted_token_ids.storage_and_layout();
-        let sorted_token_ids = sorted_token_ids.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("sorted_token_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
-        let (experts_ids, _) = experts_ids.storage_and_layout();
-        let experts_ids = experts_ids.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
+        let (sorted_token_ids_arc, _) = sorted_token_ids.storage_and_layout();
+        let sorted_token_ids_guard = sorted_token_ids_arc.read().unwrap();
+        let sorted_token_ids = sorted_token_ids_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("sorted_token_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
+        let (experts_ids_arc, _) = experts_ids.storage_and_layout();
+        let experts_ids_guard = experts_ids_arc.read().unwrap();
+        let experts_ids = experts_ids_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
         let output = unsafe { dev.alloc::<f32>(size_m * size_n) }?;
         let stream = dev.cuda_stream().as_raw() as i64;
@@ -263,8 +275,9 @@ pub fn moe_gemm_gguf(
         unsafe {
             if is_prefill {
                 let input = input.to_dtype(dtype)?;
-                let (input, _) = input.storage_and_layout();
-                let input_cuda = input
+                let (input_arc, _) = input.storage_and_layout();
+                let input_guard = input_arc.read().unwrap();
+                let input_cuda = input_guard
                     .downcast_ref::<fuel::CudaStorage>()
                     .ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".into()).bt())?;
                 let (input_ptr, input_dtype) = if dtype == DType::F16 {
@@ -291,8 +304,9 @@ pub fn moe_gemm_gguf(
                     stream,
                 );
             } else {
-                let (input, _) = input.storage_and_layout();
-        let input = input.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
+                let (input_arc, _) = input.storage_and_layout();
+                let input_guard = input_arc.read().unwrap();
+                let input = input_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
                 ffi::moe_gemm_gguf(
                     input.as_raw().0 as *const f32, // [size_m or size_m/topk, size_k]
