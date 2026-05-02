@@ -103,6 +103,38 @@ impl AnyRefTensor {
     }
 }
 
+/// Phase 7.5 G2: slot-first dispatch for the reference backend. If
+/// the graph's storage_map has a populated slot for `id`, adopt its
+/// bytes via host-buffer download and wrap as an `AnyRefTensor`.
+/// Returns `None` when no slot exists; callers fall through to
+/// `eval_node`.
+fn try_adopt_slot_ref(
+    graph: &fuel_graph::Graph,
+    id: NodeId,
+    shape: &Shape,
+) -> Option<AnyRefTensor> {
+    let slot_arc = graph.storage_for(id)?;
+    let buf = {
+        let slot = slot_arc.read().unwrap();
+        slot.as_dyn().to_host_buffer_dyn().expect("slot D2H")
+    };
+    Some(host_buffer_to_any_ref(buf, shape))
+}
+
+fn host_buffer_to_any_ref(buf: fuel_core_types::HostBuffer, shape: &Shape) -> AnyRefTensor {
+    match buf {
+        fuel_core_types::HostBuffer::F32(v) => AnyRefTensor::F32(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::F64(v) => AnyRefTensor::F64(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::BF16(v) => AnyRefTensor::BF16(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::F16(v) => AnyRefTensor::F16(RefTensor::from_vec(v, shape.clone())),
+        fuel_core_types::HostBuffer::U32(v) => AnyRefTensor::U32(RefTensor::from_vec(v, shape.clone())),
+        other => panic!(
+            "fuel-reference-backend slot adopt: unsupported host-buffer dtype {:?}",
+            other.dtype(),
+        ),
+    }
+}
+
 /// Compute the concrete value of `tensor` as an [`AnyRefTensor`] by
 /// walking its graph. The returned variant's dtype matches the root
 /// tensor's dtype.
@@ -113,6 +145,11 @@ pub fn realize(tensor: &Tensor) -> AnyRefTensor {
 
     for id in order {
         let node = graph.node(id);
+        // Phase 7.5 G2: slot-first dispatch.
+        if let Some(adopted) = try_adopt_slot_ref(&graph, id, &node.shape) {
+            cache.insert(id, adopted);
+            continue;
+        }
         let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
@@ -209,6 +246,11 @@ pub fn realize_many(tensors: &[&Tensor]) -> Vec<AnyRefTensor> {
 
     for id in order {
         let node = graph.node(id);
+        // Phase 7.5 G2: slot-first dispatch.
+        if let Some(adopted) = try_adopt_slot_ref(&graph, id, &node.shape) {
+            cache.insert(id, adopted);
+            continue;
+        }
         let result = eval_node_with_graph_context(&graph, id, node, &cache);
         cache.insert(id, result);
     }
@@ -302,7 +344,13 @@ pub fn eval_node_with_op(
     cache: &HashMap<NodeId, AnyRefTensor>,
 ) -> AnyRefTensor {
     match op {
-        Op::Const(data) => eval_const(data, shape),
+        Op::Const(data) => eval_const(
+            data.as_ref().expect(
+                "Op::Const with no host data — fuel-reference-backend has \
+                 not yet wired slot-first dispatch (Phase 7.5 G2 step 2).",
+            ),
+            shape,
+        ),
 
         // --- element-wise binary ---
         Op::Add => binary!(inputs, cache, ops::add),

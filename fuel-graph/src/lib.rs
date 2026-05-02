@@ -149,9 +149,22 @@ impl QuantType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     // --- leaves ---
-    /// A concrete constant tensor. The data lives on the node itself and
-    /// is the only kind of node with no inputs.
-    Const(ConstData),
+    /// A concrete constant tensor — a leaf with no input nodes. The
+    /// payload is `Option<ConstData>` for the duration of the G2
+    /// migration (Phase 7.5):
+    ///
+    /// - `Some(data)`: legacy mode. Bytes live in the host-side
+    ///   `ConstData` payload; backends `eval_const(data, shape)` and
+    ///   upload to their target device on first realize.
+    /// - `None`: graph-Storage mode. The graph's `storage_map` slot for
+    ///   this node holds the realized `Arc<RwLock<Storage>>`. The
+    ///   executor's slot-first dispatch returns the slot directly, no
+    ///   ConstData round-trip. Built via [`Tensor::from_storage`].
+    ///
+    /// Once every constructor migrates to slot-population (G2 step 2),
+    /// the Option wrapper retires and `Op::Const` becomes a unit
+    /// variant with the slot as the sole source of bytes (G2 step 3).
+    Const(Option<ConstData>),
 
     // --- element-wise binary ---
     /// Element-wise addition.
@@ -1111,11 +1124,53 @@ impl Tensor {
         let dtype = data.dtype();
         let graph = Arc::new(RwLock::new(Graph::new()));
         let id = graph.write().unwrap().push(Node {
-            op:     Op::Const(data),
+            op:     Op::Const(Some(data)),
             inputs: vec![],
             shape,
             dtype,
         });
+        Self { graph, id }
+    }
+
+    /// Phase 7.5 work item G2: build a `Const` leaf on a fresh graph
+    /// whose realized bytes already live in `storage`. Skips the
+    /// host-side `ConstData` payload — the graph's storage_map slot
+    /// for the new node is populated with `storage` directly, and
+    /// `Op::Const(None)` records that the slot is the source of truth.
+    ///
+    /// This is the primitive every G2-migrated factory funnels through:
+    /// allocate Storage on a device as today, wrap in
+    /// `Arc<RwLock<Storage>>`, call `from_storage`. The executor's
+    /// slot-first dispatch returns the slot's Arc directly, no upload
+    /// round-trip.
+    pub fn from_storage(
+        storage: Arc<RwLock<Storage>>,
+        shape: impl Into<Shape>,
+        dtype: DType,
+    ) -> Self {
+        let shape = shape.into();
+        // Sanity-check the slot's dtype matches the declared dtype.
+        // The slot's bytes don't carry a logical shape — that's the
+        // node's job — so we don't validate elem_count here.
+        debug_assert_eq!(
+            storage.read().unwrap().dtype(),
+            dtype,
+            "Tensor::from_storage: declared dtype {:?} does not match storage dtype {:?}",
+            dtype,
+            storage.read().unwrap().dtype(),
+        );
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const(None),
+                inputs: vec![],
+                shape,
+                dtype,
+            });
+            g.set_storage(id, storage);
+            id
+        };
         Self { graph, id }
     }
 
@@ -1162,11 +1217,45 @@ impl Tensor {
         );
         let dtype = data.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Const(data),
+            op:     Op::Const(Some(data)),
             inputs: vec![],
             shape,
             dtype,
         });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Phase 7.5 work item G2: build a second `Const` leaf on the same
+    /// graph as `self` whose realized bytes already live in `storage`.
+    /// Companion to [`Tensor::from_storage`] for the multi-input case.
+    pub fn const_like_from_storage(
+        &self,
+        storage: Arc<RwLock<Storage>>,
+        shape: impl Into<Shape>,
+        dtype: DType,
+    ) -> Self {
+        let shape = shape.into();
+        debug_assert_eq!(
+            storage.read().unwrap().dtype(),
+            dtype,
+            "Tensor::const_like_from_storage: declared dtype {:?} does not match storage dtype {:?}",
+            dtype,
+            storage.read().unwrap().dtype(),
+        );
+        let id = {
+            let mut g = self.graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const(None),
+                inputs: vec![],
+                shape,
+                dtype,
+            });
+            g.set_storage(id, storage);
+            id
+        };
         Self {
             graph: self.graph.clone(),
             id,
@@ -4489,7 +4578,7 @@ fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f6
              integer tensor)",
         ),
     };
-    push_node(graph, Op::Const(data), vec![], shape, dtype)
+    push_node(graph, Op::Const(Some(data)), vec![], shape, dtype)
 }
 
 /// Accumulate a new gradient contribution into the upstream map.
@@ -4694,7 +4783,7 @@ mod tests {
         assert_eq!(a.shape().dims(), &[3]);
         assert_eq!(a.dtype(), DType::F32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(ConstData::F32(_))));
+        assert!(matches!(node.op, Op::Const(Some(ConstData::F32(_)))));
         assert!(node.inputs.is_empty());
     }
 
@@ -4760,7 +4849,7 @@ mod tests {
         let a = Tensor::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         assert_eq!(a.dtype(), DType::F64);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(ConstData::F64(_))));
+        assert!(matches!(node.op, Op::Const(Some(ConstData::F64(_)))));
     }
 
     #[test]
@@ -4771,7 +4860,7 @@ mod tests {
         );
         assert_eq!(a.dtype(), DType::BF16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(ConstData::BF16(_))));
+        assert!(matches!(node.op, Op::Const(Some(ConstData::BF16(_)))));
     }
 
     #[test]
@@ -4782,7 +4871,7 @@ mod tests {
         );
         assert_eq!(a.dtype(), DType::F16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(ConstData::F16(_))));
+        assert!(matches!(node.op, Op::Const(Some(ConstData::F16(_)))));
     }
 
     #[test]
@@ -5112,7 +5201,7 @@ mod tests {
         let g_a = grads.get(&a).expect("root gets a seed gradient");
         // The seed is a Const ones node of matching shape.
         let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
-        assert!(matches!(node.op, Op::Const(ConstData::F32(_))));
+        assert!(matches!(node.op, Op::Const(Some(ConstData::F32(_)))));
         assert_eq!(g_a.shape().dims(), &[3]);
     }
 
@@ -5288,7 +5377,7 @@ mod tests {
         let a = Tensor::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]));
         assert_eq!(a.dtype(), DType::U32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(ConstData::U32(_))));
+        assert!(matches!(node.op, Op::Const(Some(ConstData::U32(_)))));
     }
 
     #[test]
