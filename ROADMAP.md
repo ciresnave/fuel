@@ -1772,15 +1772,19 @@ the parse-vs-construct join instead lifts a transport-agnostic
 parser layer that has standalone value. See "Fissioning
 fuel-core" above.
 
-- [ ] Create `fuel-formats` crate. Pure-Rust parsers for
+- [x] Create `fuel-formats` crate. Pure-Rust parsers for
       safetensors, pickle, GGUF (file + mmap), GGML, imatrix.
       API operates on `impl Read` / `impl Seek` / `&[u8]` /
-      `Cow<[u8]>` and returns format-typed structs (e.g.,
-      `safetensors::Header { tensors: HashMap<String, TensorMeta> }`,
-      `gguf::Content { metadata, tensor_infos, ... }`,
-      `pickle::Stack`, `imatrix::Records`). Depends only on
-      `fuel-core-types` (`DType`, `Shape`, `GgmlDType`).
-- [ ] Migrate the parser bodies out of
+      `Cow<[u8]>` and returns format-typed structs. Depends only
+      on `fuel-core-types` (`DType`, `Shape`, `GgmlDType`).
+      *Shipped 2026-05-02 (commits be7066f8 → 8f2614bb on branch
+      refactor/step-11-quantized-kernels). Module surfaces:
+      `imatrix::parse`, `ggml::{Header, RawTensor, read_one_raw_tensor}`,
+      `gguf::{Content, TensorInfo, Value, ValueType, VersionedMagic}`,
+      `pickle::{OpCode, Object, Stack, TensorInfo, read_pth_tensor_info}`,
+      `safetensors::{SafeTensors, TensorView, MmapedFile}` (re-exports
+      from upstream + the mmap convenience).*
+- [x] Migrate the parser bodies out of
       `fuel-core/src/safetensors.rs`, `pickle.rs`,
       `quantized/gguf_file.rs`, `gguf_mmap.rs`, `ggml_file.rs`,
       `imatrix_file.rs`. Leave thin Tensor-construction wrappers
@@ -1788,18 +1792,34 @@ fuel-core" above.
       `pickle::read_all(path)`, etc.) that call `fuel-formats`
       to parse and then build Tensors. Public API of `fuel-core`
       unchanged.
-- [ ] Add `fuel-formats` to the workspace. Verify the parser
+      *Shipped — fuel-core's loader files now thin orchestrators
+      that re-export format types and add Device-aware tensor
+      construction. 126 fuel-core unit tests pass throughout.*
+- [x] Add `fuel-formats` to the workspace. Verify the parser
       surface is complete by removing every byte-level read
       from `fuel-core` and confirming the wrappers don't
       reach for `byteorder` / `safetensors-rs` / etc. directly.
-- [ ] Round-trip test against the Phase 6 anchor weight set
+      *Shipped — workspace registration in commit be7066f8.
+      fuel-core's remaining `byteorder`/`safetensors` imports are
+      legitimate: NPY format (separate, not migrated), GGUF write
+      path (Tensor-aware), and lazy_* materializers (Tensor-aware).
+      No dead deps to remove from fuel-core/Cargo.toml.*
+- [~] Round-trip test against the Phase 6 anchor weight set
       (BERT, ConvNeXt, Whisper, SD CLIP, SD VAE, Qwen2-MoE,
       YOLOv8) — same loaded tensors, byte-equivalent buffers,
       across both file and `Cursor<&[u8]>` paths.
-- [ ] Document the streaming / IPC / network use cases in
+      *Partial — `fuel-formats/tests/transport_independence.rs`
+      exercises all 5 parsers with synthetic in-memory buffers and
+      proves zero-filesystem operation. Real anchor-weight round-trip
+      is gated on having those binary fixtures available in-tree;
+      defer until Phase 6 anchor weights land in a test-data crate.*
+- [x] Document the streaming / IPC / network use cases in
       `fuel-formats/README.md` so consumers know the parser
       surface is *the* public seam (file path is just one
-      transport).
+      transport). *Shipped — README covers HTTP body parsing,
+      inter-process tensor exchange via safetensors-on-the-wire,
+      KV-cache handoff, RemoteHostStorage foundation, hot reload,
+      and the pattern new transport adapters should follow.*
 
 **A2. `fuel-loaders` finalization (post-E).** Once `Tensor`
 lives in `fuel-tensor` (work item E below), the file-transport
