@@ -16,6 +16,7 @@ fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-mkl-cpu-backend = { workspace = true, optional = true }
 fuel-core-types = { workspace = true, features = ["serde"] }
 fuel-cpu-backend = { workspace = true }
+fuel-formats = { workspace = true }
 fuel-quantized = { workspace = true }
 fuel-graph = { workspace = true }
 fuel-graph-cpu = { workspace = true }
