@@ -228,6 +228,49 @@ Build with `maturin develop` inside `fuel-pyo3/`.
 
 ---
 
+## "How does Tensor relate to Storage and the lazy graph?"
+
+A `Tensor` is a **handle**, not the data. It holds:
+
+- A shape and dtype (what kind of array this is).
+- A `Layout` (shape + strides + offset — a *view* over bytes).
+- A reference to those bytes — historically an `Arc<RwLock<Storage>>`,
+  and post-Phase-7.5-G also an optional `GraphLink` into the lazy
+  graph and its sidecar storage map.
+
+`Storage` is a single typed contiguous buffer on one device. It knows
+its dtype and device but **does not know its logical shape** —
+that lives in the `Layout` carried by the Tensor handle. Multiple
+Tensors can — and routinely do — share one Storage via different
+Layouts: reshape, transpose, narrow, broadcast all produce a new
+Tensor handle pointing at the same bytes with a new Layout.
+
+A graph **node** is operation + recipe (input NodeIds, cached output
+shape and dtype). It does **not** contain output bytes; those are
+computed when the executor walks the graph. The lone exception is
+`Op::Const`, where the recipe IS the data — a host-side `Arc<[T]>`
+typed buffer that the executor uploads/copies to a device-resident
+Storage at realize time.
+
+**Phase 7.5 work item G** moves Storage ownership from individual
+Tensors toward the graph: `fuel-core::graph_storage::GraphStorage`
+is a `HashMap<NodeId, StorageSlot>` paired alongside a
+`fuel_graph::SharedGraph`. Tensors built in node-handle mode carry
+a `GraphLink { graph, storage, id }` and look up their bytes
+through the slot map at read time.
+
+During the G → B6 transition both fields are populated in parallel
+mode (the legacy `storage` Arc and the slot's Arc point at the
+same bytes), so old readers and new readers see the same data.
+After B6, the legacy field is dropped and the slot map is the
+sole source of truth.
+
+**Views are graph ops**, not Layout side-inputs: if you want a
+transpose of node `X`, build `Op::Transpose(X)` rather than
+"node X with a transposed Layout." The executor decides whether
+to implement each view by re-striding (free), aliasing the same
+slot, or copying. The graph IR stays purely logical.
+
 ## Architecture in one diagram
 
 ```text

@@ -296,6 +296,72 @@ Key properties:
 
 ---
 
+## 6. Node-handle Tensor (Phase 7.5 work item G)
+
+A *node-handle Tensor* is a Tensor whose bytes live in a
+graph-keyed slot rather than being owned solely by the Tensor
+itself. This is the model the post-G factories (B2) produce; it
+co-exists with legacy eager Tensors during the G → B6 transition.
+
+```rust
+use std::sync::Arc;
+use fuel_core::{Tensor, Device};
+use fuel_core::graph_storage::{
+    GraphLink, StorageSlot, new_shared_graph_storage,
+};
+use fuel_graph::{ConstData, Tensor as GraphTensor};
+use fuel_core_types::Shape;
+
+fn main() -> fuel_core::Result<()> {
+    // 1. Allocate the bytes — same as today.
+    let device = Device::cpu();
+    let legacy = Tensor::new(&[1.0_f32, 2.0, 3.0], &device)?;
+    let storage_arc = legacy.realized_storage();
+
+    // 2. Build a graph leaf for these bytes.
+    let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
+    let const_t = GraphTensor::from_const(const_data, Shape::from_dims(&[3]));
+
+    // 3. Register the storage Arc in the graph's storage sidecar.
+    let storage_map = new_shared_graph_storage();
+    storage_map.write().unwrap().set(
+        const_t.id(),
+        StorageSlot::from_arc(storage_arc.clone()),
+    );
+
+    // 4. The GraphLink ties the Tensor handle to the (graph, slot, id)
+    //    triple. realized_storage() consults the slot first.
+    let _link = GraphLink::new(
+        const_t.graph().clone(),
+        storage_map,
+        const_t.id(),
+    );
+    // Construction of the node-handle Tensor itself goes through
+    // `Tensor::from_storage_with_link` (pub(crate) until B2 makes it
+    // the canonical factory path).
+    Ok(())
+}
+```
+
+**When to reach for this directly**: rarely, until B2 lands.
+`Tensor::from_storage_with_link` is `pub(crate)` and used inside
+the smoke tests. Most users will see node-handle Tensors only
+indirectly — produced by post-B2 factories (`Tensor::zeros`,
+`Tensor::ones`, …) and consumed via the same public read API
+(`to_vec*`, `to_scalar`, op methods) as legacy Tensors. The seam
+is invisible at the call site by design.
+
+**Reading bytes**: `tensor.realized_storage()` returns
+`Arc<RwLock<Storage>>`, preferring the graph slot when populated
+and falling back to the legacy `storage` field otherwise. Both
+return the same Arc during the parallel-mode transition.
+
+**Mode predicates**: `tensor.has_graph_link()` and
+`tensor.graph_link()` for inspection. Most code shouldn't need
+either — write to the public Tensor API, not to the mode.
+
+---
+
 ## Cross-references
 
 | Goal                    | Where to look                        |
