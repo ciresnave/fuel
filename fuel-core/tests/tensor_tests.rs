@@ -2113,10 +2113,14 @@ fn realized_storage_returns_legacy_arc_today() -> Result<()> {
 }
 
 #[test]
-fn has_graph_link_is_false_for_legacy_tensors() -> Result<()> {
+fn factory_tensors_are_node_handle_post_b2() -> Result<()> {
+    // Phase 7.5 B2: public factories (`zeros`, `ones`, `from_slice`,
+    // ...) now produce node-handle tensors via `link_from_storage`.
+    // The link is populated and the legacy `storage` field is None;
+    // `realized_storage()` reaches the bytes through the graph slot.
     let a = Tensor::zeros((2, 3), DType::F32, &fuel_core::Device::cpu())?;
-    assert!(!a.has_graph_link());
-    assert!(a.graph_link().is_none());
+    assert!(a.has_graph_link());
+    assert!(a.graph_link().is_some());
     Ok(())
 }
 
