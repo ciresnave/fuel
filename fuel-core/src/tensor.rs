@@ -267,6 +267,31 @@ pub(crate) fn from_link(
     Ok(Tensor(Arc::new(tensor_)))
 }
 
+/// Phase 7.5 work item B2 — node-handle factory path. Wraps an
+/// already-allocated `Storage` in `Arc<RwLock<>>`, builds a
+/// single-Const-node `fuel_graph::Tensor` with the slot populated,
+/// and returns a node-handle `Tensor` via `from_link`. This is the
+/// post-B2 replacement for the legacy `from_storage` free function
+/// in factory constructors (`zeros`, `ones`, `empty`, `rand`,
+/// `randn`, `from_vec`, `from_slice`, `from_iter`, `arange*`,
+/// `full`, `new`).
+///
+/// Op methods (matmul, add, unary/binary/reduce/reshape/etc.) stay
+/// on the legacy `from_storage` path until B3. The public
+/// `Tensor::from_storage` escape hatch and `make_var` stay eager-
+/// mode and retire in B6.
+fn link_from_storage<S: Into<Shape>>(
+    storage: Storage,
+    shape: S,
+    op: BackpropOp,
+    is_variable: bool,
+) -> Result<Tensor> {
+    let dtype = storage.dtype();
+    let storage_arc = Arc::new(RwLock::new(storage));
+    let link = fuel_graph::Tensor::from_storage(storage_arc, shape, dtype);
+    from_link(link, op, is_variable)
+}
+
 impl Tensor {
     pub(crate) fn ones_impl<S: Into<Shape>>(
         shape: S,
@@ -279,7 +304,7 @@ impl Tensor {
         let mut storage = unsafe { device.alloc_uninit(&shape, dtype)? };
         let layout = Layout::contiguous(shape.clone());
         storage.const_set(crate::scalar::Scalar::one(dtype), &layout)?;
-        Ok(from_storage(storage, shape, none, is_variable))
+        link_from_storage(storage, shape, none, is_variable)
     }
 
     /// Creates a new tensor filled with ones.
@@ -368,7 +393,7 @@ impl Tensor {
         let none = BackpropOp::none();
         let shape = shape.into();
         let storage = device.zeros(&shape, dtype)?;
-        Ok(from_storage(storage, shape, none, is_variable))
+        link_from_storage(storage, shape, none, is_variable)
     }
 
     /// Creates a new tensor filled with zeros.
@@ -413,7 +438,7 @@ impl Tensor {
         let none = BackpropOp::none();
         let shape = shape.into();
         let storage = unsafe { device.alloc_uninit(&shape, dtype)? };
-        Ok(from_storage(storage, shape, none, is_variable))
+        link_from_storage(storage, shape, none, is_variable)
     }
 
     /// Creates a new tensor filled with uninitialized memory.
@@ -461,7 +486,7 @@ impl Tensor {
         let s = s.into();
         let storage = device.rand_uniform(lo, up, &s)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, s, none, is_variable))
+        link_from_storage(storage, s, none, is_variable)
     }
 
     pub(crate) fn rand_f64_impl<S: Into<Shape>>(
@@ -475,7 +500,7 @@ impl Tensor {
         let s = s.into();
         let storage = device.rand_uniform_f64(lo, up, &s, dtype)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, s, none, is_variable))
+        link_from_storage(storage, s, none, is_variable)
     }
 
     /// Creates a new tensor initialized with values sampled uniformly between `lo` and `up`.
@@ -524,7 +549,7 @@ impl Tensor {
         let s = s.into();
         let storage = device.rand_normal(mean, std, &s)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, s, none, is_variable))
+        link_from_storage(storage, s, none, is_variable)
     }
 
     pub(crate) fn randn_f64_impl<S: Into<Shape>>(
@@ -538,7 +563,7 @@ impl Tensor {
         let s = s.into();
         let storage = device.rand_normal_f64(mean, std, &s, dtype)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, s, none, is_variable))
+        link_from_storage(storage, s, none, is_variable)
     }
 
     /// Creates a new tensor with the same shape, dtype, and device, sampled from a normal
@@ -597,7 +622,7 @@ impl Tensor {
         }
         let storage = device.storage(array)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, shape, none, is_variable))
+        link_from_storage(storage, shape, none, is_variable)
     }
 
     /// Creates a new tensor on the specified device using the content and shape of the input.
@@ -650,7 +675,7 @@ impl Tensor {
         let mut storage = unsafe { device.alloc_uninit(&shape, D::DTYPE)? };
         let layout = Layout::contiguous(shape.clone());
         storage.const_set(value.to_scalar(), &layout)?;
-        Ok(from_storage(storage, shape, none, false))
+        link_from_storage(storage, shape, none, false)
     }
 
     /// Creates a new 1D tensor from an iterator.
@@ -736,7 +761,7 @@ impl Tensor {
         let shape = shape.into_shape(data.len())?;
         let storage = device.storage_owned(data)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, shape, none, is_variable))
+        link_from_storage(storage, shape, none, is_variable)
     }
 
     /// Creates a new tensor initialized with values from the input vector. The number of elements
@@ -787,7 +812,7 @@ impl Tensor {
         let shape = shape.into_shape(array.len())?;
         let storage = device.storage_from_slice(array)?;
         let none = BackpropOp::none();
-        Ok(from_storage(storage, shape, none, false))
+        link_from_storage(storage, shape, none, false)
     }
 
     pub(crate) fn same_shape_binary_op(&self, rhs: &Self, op: &'static str) -> Result<&Shape> {
@@ -3897,7 +3922,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, |t| Op::Transpose(t, dim1, dim2));
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: self.storage.clone(),
+            storage: Some(self.realized_storage()),
             layout: self.layout.transpose(dim1, dim2)?,
             op,
             is_variable: false,
@@ -3936,7 +3961,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, |t| Op::Permute(t, dims.clone()));
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: self.storage.clone(),
+            storage: Some(self.realized_storage()),
             layout: self.layout.permute(&dims)?,
             op,
             is_variable: false,
@@ -4028,7 +4053,7 @@ impl Tensor {
         } else {
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: self.storage.clone(),
+                storage: Some(self.realized_storage()),
                 layout: self.layout.clone(),
                 op: BackpropOp::none(),
                 is_variable: false,
@@ -4114,7 +4139,7 @@ impl Tensor {
     pub fn broadcast_as<S: Into<Shape>>(&self, shape: S) -> Result<Self> {
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: self.storage.clone(),
+            storage: Some(self.realized_storage()),
             layout: self.layout.broadcast_as(shape)?,
             op: BackpropOp::new1(self, Op::Broadcast),
             is_variable: false,
@@ -4268,7 +4293,7 @@ impl Tensor {
         if self.is_contiguous() {
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: self.storage.clone(),
+                storage: Some(self.realized_storage()),
                 layout: Layout::contiguous_with_offset(shape, self.layout.start_offset()),
                 op,
                 is_variable: false,
@@ -4315,7 +4340,7 @@ impl Tensor {
             strides.remove(dim);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: self.storage.clone(),
+                storage: Some(self.realized_storage()),
                 layout: Layout::new(dims.into(), strides, self.layout.start_offset()),
                 op: BackpropOp::new1(self, Op::Reshape),
                 is_variable: false,
@@ -4356,7 +4381,7 @@ impl Tensor {
         strides.insert(dim, stride);
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: self.storage.clone(),
+            storage: Some(self.realized_storage()),
             layout: Layout::new(dims.into(), strides, self.layout.start_offset()),
             op: BackpropOp::new1(self, Op::Reshape),
             is_variable: false,
@@ -4790,7 +4815,7 @@ impl Tensor {
 
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: self.storage.clone(),
+            storage: Some(self.realized_storage()),
             layout: Layout::new(sizes.into(), strides, self.layout.start_offset()),
             op: BackpropOp::new1(self, Op::Reshape),
             is_variable: false,
