@@ -99,7 +99,7 @@ impl SchedulerRule for MemoryPressureRule {
         let g = graph.read().unwrap();
         for nid in order {
             let node = g.node(nid);
-            if matches!(node.op, fuel_graph::Op::Const(_)) {
+            if matches!(node.op, fuel_graph::Op::Const) {
                 continue;
             }
             if node.inputs.is_empty() {

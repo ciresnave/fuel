@@ -66,7 +66,7 @@ pub use fuel_cuda_kernels as kernels;
 mod backend;
 pub use backend::CudaBackend;
 
-use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_graph::{topo_order, topo_order_multi, NodeId, Op, Tensor};
 use fuel_core_types::DimVec;
 use fuel_reference_backend::exec::AnyRefTensor as AnyRef;
 use fuel_reference_backend::RefTensor;
@@ -129,8 +129,17 @@ impl CudaGraphExecutor {
         let num_nodes = order.len();
         let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
         let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
+        for (id, gt) in self.injected.drain() {
+            cache.insert(id, CacheEntry::Owned(gt));
+        }
         for id in order {
+            if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
+            // Phase 7.5 G2: slot-first dispatch.
+            if let Some(entry) = self.try_adopt_slot_cuda(&graph, id, &node.shape) {
+                cache.insert(id, entry);
+                continue;
+            }
             let entry = self.eval_node(
                 &node.op, &node.inputs, &node.shape, node.dtype, &cache,
             );
@@ -155,8 +164,17 @@ impl CudaGraphExecutor {
         let num_nodes = order.len();
         let _walk = info_span!("topo_walk", nodes = num_nodes).entered();
         let mut cache: HashMap<NodeId, CacheEntry> = HashMap::new();
+        for (id, gt) in self.injected.drain() {
+            cache.insert(id, CacheEntry::Owned(gt));
+        }
         for id in order {
+            if cache.contains_key(&id) { continue; }
             let node = graph.node(id);
+            // Phase 7.5 G2: slot-first dispatch.
+            if let Some(entry) = self.try_adopt_slot_cuda(&graph, id, &node.shape) {
+                cache.insert(id, entry);
+                continue;
+            }
             let entry = self.eval_node(
                 &node.op, &node.inputs, &node.shape, node.dtype, &cache,
             );
@@ -216,6 +234,11 @@ impl CudaGraphExecutor {
                 continue; // pre-populated or injected
             }
             let node = graph.node(id);
+            // Phase 7.5 G2: slot-first dispatch.
+            if let Some(entry) = self.try_adopt_slot_cuda(&graph, id, &node.shape) {
+                cache.insert(id, entry);
+                continue;
+            }
             let entry = self.eval_node(
                 &node.op, &node.inputs, &node.shape, node.dtype, &cache,
             );
@@ -303,12 +326,14 @@ impl CudaGraphExecutor {
         let _span = debug_span!("eval_node", op = op_name, elems = shape.elem_count()).entered();
 
         let result_storage = match op {
-            Op::Const(data) => return self.eval_const(
-                data.as_ref().expect(
-                    "Op::Const with no host data — fuel-cuda-backend has \
-                     not yet wired slot-first dispatch (Phase 7.5 G2 step 2).",
-                ),
-                shape,
+            // Op::Const is intercepted by slot-first dispatch in the
+            // realize loops (try_adopt_slot_cuda). Reaching eval_node
+            // with a Const node means a constructor failed to slot-
+            // populate — a bug.
+            Op::Const => unreachable!(
+                "fuel-cuda-backend eval_node: Op::Const must be handled \
+                 by slot-first dispatch in the realize loop, never reach \
+                 eval_node",
             ),
 
             Op::MatMul => {
@@ -512,43 +537,31 @@ impl CudaGraphExecutor {
             .expect(kernel)
     }
 
-    fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> CacheEntry {
-        let ptr = const_data_arc_ptr(data);
-        let refcount = const_data_arc_strong_count(data);
-        let elems = data.elem_count();
-
-        // Only cache consts whose Arc has strong_count > 1, meaning
-        // the data is shared between the model's weight struct and the
-        // graph's ConstData — it will outlive this forward pass and
-        // the pointer will remain stable across calls.
-        //
-        // Ephemeral consts (causal masks, RoPE tables, KV cache data,
-        // token IDs) have strong_count == 1. Their Arc is dropped at
-        // the end of realize_*, and the allocator can reuse the same
-        // address for a completely different buffer next call — which
-        // would be a stale cache hit with wrong data.
-        if refcount > 1 {
-            if self.const_pool.contains_key(&ptr) {
-                let _s = debug_span!("const_cache_hit", elems).entered();
-                return CacheEntry::ConstRef(ptr);
-            }
-            let _s = debug_span!("const_upload_persistent", elems).entered();
-            let cpu_buf = const_data_to_host_buffer(data);
-            let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
-                .expect("Const H2D");
-            self.const_pool.insert(ptr, GpuTensor {
-                storage: gpu,
-                shape: shape.clone(),
-            });
-            return CacheEntry::ConstRef(ptr);
-        }
-
-        // Ephemeral const: upload fresh, owned by the per-realize cache.
-        let _s = debug_span!("const_upload_ephemeral", elems).entered();
-        let cpu_buf = const_data_to_host_buffer(data);
-        let gpu = self.device.storage_from_cpu_storage(&cpu_buf)
-            .expect("Const H2D");
-        CacheEntry::Owned(GpuTensor { storage: gpu, shape: shape.clone() })
+    /// Phase 7.5 G2: slot-first dispatch for fuel-cuda-backend. If
+    /// the graph's storage_map has a populated slot for `id`, adopt
+    /// its bytes via host-buffer download + H2D upload to the CUDA
+    /// device. Returns `None` if no slot is registered.
+    ///
+    /// const_pool keying on slot-Arc identity is intentionally
+    /// disabled here for the same reason as fuel-graph-executor:
+    /// graphs drop and re-create slots across realize calls (training
+    /// loop, fresh graph per step), and pointer recycling can cause
+    /// stale cache hits on a recycled address. Step 3c re-adds
+    /// pooling with proper liveness tracking.
+    fn try_adopt_slot_cuda(
+        &mut self,
+        graph: &fuel_graph::Graph,
+        id: NodeId,
+        shape: &Shape,
+    ) -> Option<CacheEntry> {
+        let slot_arc = graph.storage_for(id)?;
+        let buf = {
+            let slot = slot_arc.read().unwrap();
+            slot.as_dyn().to_host_buffer_dyn().expect("slot D2H")
+        };
+        let gpu = self.device.storage_from_cpu_storage(&buf)
+            .expect("slot H2D");
+        Some(CacheEntry::Owned(GpuTensor { storage: gpu, shape: shape.clone() }))
     }
 
     fn do_permute(&self, a: &GpuTensor, axes: &[usize], out_shape: &Shape) -> GpuTensor {
@@ -722,37 +735,6 @@ fn gpu_to_ref_f32_ref(gt: &GpuTensor) -> RefTensor<f32> {
     }
 }
 
-fn const_data_arc_ptr(data: &ConstData) -> usize {
-    match data {
-        ConstData::F32(v) => std::sync::Arc::as_ptr(v) as *const f32 as usize,
-        ConstData::F64(v) => std::sync::Arc::as_ptr(v) as *const f64 as usize,
-        ConstData::BF16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
-        ConstData::F16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
-        ConstData::U32(v) => std::sync::Arc::as_ptr(v) as *const u32 as usize,
-    }
-}
-
-fn const_data_arc_strong_count(data: &ConstData) -> usize {
-    match data {
-        ConstData::F32(v) => std::sync::Arc::strong_count(v),
-        ConstData::F64(v) => std::sync::Arc::strong_count(v),
-        ConstData::BF16(v) => std::sync::Arc::strong_count(v),
-        ConstData::F16(v) => std::sync::Arc::strong_count(v),
-        ConstData::U32(v) => std::sync::Arc::strong_count(v),
-    }
-}
-
-fn const_data_to_host_buffer(data: &ConstData) -> fuel_core_types::HostBuffer {
-    use fuel_core_types::HostBuffer;
-    match data {
-        ConstData::F32(v) => HostBuffer::F32(v.to_vec()),
-        ConstData::F64(v) => HostBuffer::F64(v.to_vec()),
-        ConstData::BF16(v) => HostBuffer::BF16(v.to_vec()),
-        ConstData::F16(v) => HostBuffer::F16(v.to_vec()),
-        ConstData::U32(v) => HostBuffer::U32(v.to_vec()),
-    }
-}
-
 fn host_buffer_to_any_ref(buf: fuel_core_types::HostBuffer, shape: &Shape) -> AnyRef {
     match buf {
         fuel_core_types::HostBuffer::F32(v) => AnyRef::F32(RefTensor::from_vec(v, shape.clone())),
@@ -766,7 +748,7 @@ fn host_buffer_to_any_ref(buf: fuel_core_types::HostBuffer, shape: &Shape) -> An
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
-        Op::Const(_) => "Const",
+        Op::Const => "Const",
         Op::MatMul => "MatMul",
         Op::Add => "Add", Op::Sub => "Sub", Op::Mul => "Mul", Op::Div => "Div",
         Op::Neg => "Neg", Op::Sqr => "Sqr", Op::Sqrt => "Sqrt",

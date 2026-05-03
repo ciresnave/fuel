@@ -15,9 +15,8 @@
 
 
 use fuel_core_types::{DType, DimVec, Layout, Shape};
-use fuel_graph::{topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_graph::{NodeId, Op, Tensor};
 use fuel_graph::opt::execution_plan;
-use std::sync::Arc;
 
 /// Merge the graph's side-effect roots into the user's requested roots
 /// for the purposes of executing the plan. Deduplicates; preserves the
@@ -585,25 +584,27 @@ struct ConstPoolEntry<S> {
     /// Monotonic access-time counter. Lower = older. `get` / `insert`
     /// bump it; eviction picks the smallest values.
     last_access: u64,
+    /// Phase 7.5 G2 step 3c: weak reference to the slot Arc this
+    /// entry was uploaded from. Used as a liveness witness — if the
+    /// Weak fails to upgrade, the slot Arc has been dropped and any
+    /// new Arc allocated at the same pointer is unrelated. The cache
+    /// treats that as a miss.
+    slot_witness: std::sync::Weak<std::sync::RwLock<fuel_core_types::Storage>>,
 }
 
-/// Size-bounded LRU cache for model weight constants. Keyed on the
-/// host Arc pointer of the originating `ConstData`. When a new entry
-/// would push total bytes over `max_bytes`, older entries are
-/// evicted until under budget — evicting just drops the
-/// device-side Arc<Storage>, reclaiming VRAM. The next access
-/// re-uploads from the original host `Arc<[T]>`, which is cheap
-/// (Arc clone of the host data + one upload dispatch).
+/// Size-bounded LRU cache for slot-populating const tensors, keyed on
+/// the slot Arc pointer with a `Weak<RwLock<Storage>>` liveness
+/// witness. When a new entry would push total bytes over `max_bytes`,
+/// older entries are evicted — evicting just drops the device-side
+/// Arc<Storage>, reclaiming VRAM. The next access re-uploads from
+/// the slot Arc.
 ///
-/// Tiering mechanism for weights specifically: the canonical
-/// weight bytes are already on host (owned by the `ConstData` on
-/// the graph), so we don't need a ResidencyFile round-trip. The
-/// const pool's device cache is the "VRAM tier"; evicting pushes
-/// the weight back to its natural host tier (the `Arc<[T]>`).
-///
-/// For computed tensors without a host canonical copy (KV cache,
-/// activations), use the ResidencyFile-based evict/fault_back
-/// flow on VulkanBackend instead.
+/// Tiering mechanism for weights specifically: the canonical weight
+/// bytes live in the slot Arc (owned by the Graph); evicting pushes
+/// the weight back to that natural tier. For computed tensors
+/// without a host canonical copy (KV cache, activations), use the
+/// ResidencyFile-based evict/fault_back flow on VulkanBackend
+/// instead.
 pub(crate) struct ConstPool<S> {
     entries: HashMap<usize, ConstPoolEntry<S>>,
     total_bytes: usize,
@@ -621,41 +622,63 @@ impl<S> ConstPool<S> {
         self.evict_to_fit(0);
     }
 
-    fn contains(&self, key: &usize) -> bool { self.entries.contains_key(key) }
-
     pub(crate) fn len(&self) -> usize { self.entries.len() }
 
     pub(crate) fn total_bytes(&self) -> usize { self.total_bytes }
 
-    /// Look up an entry; bumps its LRU timestamp on hit. Returns an
-    /// Arc clone so the caller can stash it in a `CacheEntry::ConstRef`
-    /// that survives pool eviction.
-    fn get(&mut self, key: &usize) -> Option<std::sync::Arc<TrackedTensor<S>>> {
+    /// Look up the cached upload for `slot_arc`. Returns `Some` only
+    /// when a cached entry exists for the slot's pointer AND the
+    /// stored Weak still upgrades to the same Arc — i.e. the slot
+    /// hasn't been dropped and recycled to a different Arc at the
+    /// same address.
+    fn get_for_slot(
+        &mut self,
+        slot_arc: &std::sync::Arc<std::sync::RwLock<fuel_core_types::Storage>>,
+    ) -> Option<std::sync::Arc<TrackedTensor<S>>> {
+        let key = std::sync::Arc::as_ptr(slot_arc) as *const () as usize;
         self.access_counter += 1;
         let c = self.access_counter;
-        self.entries.get_mut(key).map(|e| {
+        // Check witness first: if the slot Arc this entry was made
+        // for has dropped, the entry is stale (raw ptr may have been
+        // recycled to an unrelated Arc).
+        let is_alive = self.entries.get(&key).map(|e| {
+            e.slot_witness.upgrade().is_some_and(|alive_arc| {
+                std::sync::Arc::ptr_eq(&alive_arc, slot_arc)
+            })
+        }).unwrap_or(false);
+        if !is_alive {
+            // Purge any stale entry under this key.
+            if let Some(entry) = self.entries.remove(&key) {
+                self.total_bytes -= entry.bytes;
+            }
+            return None;
+        }
+        self.entries.get_mut(&key).map(|e| {
             e.last_access = c;
             std::sync::Arc::clone(&e.tensor)
         })
     }
 
-    /// Insert a new entry. Evicts LRU entries if needed to stay under
-    /// `max_bytes`. If the new entry alone exceeds max_bytes, it's
-    /// inserted anyway — the pool tolerates a single over-max entry
-    /// rather than refusing to cache (which would undo the perf win
-    /// for the weight it's meant to cache).
-    ///
-    /// Returns an Arc clone of the freshly inserted tensor so the
-    /// caller can stash it in a `CacheEntry::ConstRef`.
-    fn insert(&mut self, key: usize, tensor: TrackedTensor<S>, bytes: usize) -> std::sync::Arc<TrackedTensor<S>> {
+    /// Insert a new entry keyed on `slot_arc`'s pointer with a
+    /// liveness witness. Evicts LRU entries to stay under `max_bytes`.
+    fn insert_for_slot(
+        &mut self,
+        slot_arc: &std::sync::Arc<std::sync::RwLock<fuel_core_types::Storage>>,
+        tensor: TrackedTensor<S>,
+        bytes: usize,
+    ) -> std::sync::Arc<TrackedTensor<S>> {
+        let key = std::sync::Arc::as_ptr(slot_arc) as *const () as usize;
         self.evict_to_fit(bytes);
         self.access_counter += 1;
         let last_access = self.access_counter;
         let arc_tensor = std::sync::Arc::new(tensor);
-        if let Some(existing) = self.entries.insert(
-            key,
-            ConstPoolEntry { tensor: std::sync::Arc::clone(&arc_tensor), bytes, last_access },
-        ) {
+        let entry = ConstPoolEntry {
+            tensor: std::sync::Arc::clone(&arc_tensor),
+            bytes,
+            last_access,
+            slot_witness: std::sync::Arc::downgrade(slot_arc),
+        };
+        if let Some(existing) = self.entries.insert(key, entry) {
             self.total_bytes -= existing.bytes;
         }
         self.total_bytes += bytes;
@@ -859,20 +882,26 @@ impl<B: GraphBackend> GraphExecutor<B> {
         shape: &Shape,
     ) -> Option<CacheEntry<B::Storage>> {
         let slot_arc = graph.storage_for(id)?;
-        // Phase 7.5 G2 step 2: don't key the const_pool on the slot
-        // Arc's pointer identity. When graphs drop and re-create slots
-        // across realize calls (e.g. fresh graph per training step),
-        // raw pointers can be recycled — a stale const_pool entry
-        // could then alias a different node's storage. The const_pool
-        // optimization will return in step 3 with proper liveness
-        // tracking; for now slot adoption goes through the upload
-        // path every realize.
-        let buf = {
+        // Phase 7.5 G2 step 3c: liveness-aware const_pool lookup.
+        // The pool keys on slot Arc pointer with a Weak<RwLock<Storage>>
+        // witness — same pointer + still-upgrading witness = safe hit.
+        // If the witness fails to upgrade (slot Arc dropped, allocator
+        // may have recycled the address), the entry is purged.
+        if let Some(arc) = self.const_pool.get_for_slot(&slot_arc) {
+            return Some(CacheEntry::ConstRef(arc));
+        }
+        let (buf, dtype) = {
             let slot = slot_arc.read().unwrap();
-            slot.as_dyn().to_host_buffer_dyn().expect("slot D2H")
+            let buf = slot.as_dyn().to_host_buffer_dyn().expect("slot D2H");
+            let dtype = slot.dtype();
+            (buf, dtype)
         };
         let storage = self.backend.upload(&buf, shape).expect("slot upload");
-        Some(CacheEntry::Owned(TrackedTensor::new(storage, shape.clone())))
+        let bytes = shape.elem_count() * dtype.size_in_bytes();
+        let arc = self.const_pool.insert_for_slot(
+            &slot_arc, TrackedTensor::new(storage, shape.clone()), bytes,
+        );
+        Some(CacheEntry::ConstRef(arc))
     }
 
     // -- realize entry points -------------------------------------------------
@@ -1118,22 +1147,15 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let _span = debug_span!("eval_node", op = op_short_name(op), elems = shape.elem_count()).entered();
 
         let result_storage = match op {
-            // Phase 7.5 G2: when the realize loop reaches an Op::Const
-            // with no slot populated, fall back to the host-side
-            // ConstData payload. The slot-first dispatch in the realize
-            // loops above intercepts slot-populated nodes before
-            // eval_node is called, so we only see the legacy ConstData
-            // path here. Once G2 step 2 migrates every constructor to
-            // slot-population, this branch becomes dead code; G2 step 3
-            // removes it.
-            Op::Const(data_opt) => {
-                let data = data_opt.as_ref().expect(
-                    "Op::Const with neither slot nor ConstData — \
-                     unreachable: from_storage populates a slot, and \
-                     from_const wraps the data in Some.",
-                );
-                return self.eval_const(data, shape);
-            }
+            // Op::Const is intercepted by slot-first dispatch
+            // (try_adopt_slot) in the realize loops above. Reaching
+            // eval_node with a Const node means a constructor failed
+            // to slot-populate — a bug.
+            Op::Const => unreachable!(
+                "fuel-graph-executor eval_node: Op::Const must be \
+                 handled by slot-first dispatch in the realize loop, \
+                 never reach eval_node",
+            ),
 
             // -- matmul (stride-aware — reads A/B via per-dim strides,
             //    permuted/transposed views work without materialization) --
@@ -1779,30 +1801,6 @@ impl<B: GraphBackend> GraphExecutor<B> {
         TrackedTensor::new(dst, out_shape.clone())
     }
 
-    // -- const pool -----------------------------------------------------------
-
-    fn eval_const(&mut self, data: &ConstData, shape: &Shape) -> CacheEntry<B::Storage> {
-        let ptr = const_data_arc_ptr(data);
-        let refcount = const_data_arc_strong_count(data);
-        let elems = data.elem_count();
-        if refcount > 1 {
-            if let Some(arc) = self.const_pool.get(&ptr) {
-                let _s = debug_span!("const_cache_hit", elems).entered();
-                return CacheEntry::ConstRef(arc);
-            }
-            let _s = debug_span!("const_upload_persistent", elems).entered();
-            let buf = const_data_to_host_buffer(data);
-            let storage = self.backend.upload(&buf, shape).expect("const upload");
-            let bytes = elems * data.dtype().size_in_bytes();
-            let arc = self.const_pool.insert(ptr, TrackedTensor::new(storage, shape.clone()), bytes);
-            return CacheEntry::ConstRef(arc);
-        }
-        let _s = debug_span!("const_upload_ephemeral", elems).entered();
-        let buf = const_data_to_host_buffer(data);
-        let storage = self.backend.upload(&buf, shape).expect("const upload");
-        CacheEntry::Owned(TrackedTensor::new(storage, shape.clone()))
-    }
-
     // -- CPU fallback ---------------------------------------------------------
 
     fn cpu_fallback(
@@ -1837,7 +1835,7 @@ fn panic_payload_to_string(p: &Box<dyn std::any::Any + Send>) -> String {
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
-        Op::Const(_) => "Const", Op::MatMul => "MatMul",
+        Op::Const => "Const", Op::MatMul => "MatMul",
         Op::Add => "Add", Op::Sub => "Sub", Op::Mul => "Mul", Op::Div => "Div",
         Op::Neg => "Neg", Op::Sqr => "Sqr", Op::Sqrt => "Sqrt",
         Op::Exp => "Exp", Op::Log => "Log",
@@ -1863,37 +1861,6 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Rope => "Rope",
         Op::QMatMul { .. } => "QMatMul",
         _ => "Other",
-    }
-}
-
-fn const_data_arc_ptr(data: &ConstData) -> usize {
-    match data {
-        ConstData::F32(v) => std::sync::Arc::as_ptr(v) as *const f32 as usize,
-        ConstData::F64(v) => std::sync::Arc::as_ptr(v) as *const f64 as usize,
-        ConstData::BF16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
-        ConstData::F16(v) => std::sync::Arc::as_ptr(v) as *const () as usize,
-        ConstData::U32(v) => std::sync::Arc::as_ptr(v) as *const u32 as usize,
-    }
-}
-
-fn const_data_arc_strong_count(data: &ConstData) -> usize {
-    match data {
-        ConstData::F32(v) => std::sync::Arc::strong_count(v),
-        ConstData::F64(v) => std::sync::Arc::strong_count(v),
-        ConstData::BF16(v) => std::sync::Arc::strong_count(v),
-        ConstData::F16(v) => std::sync::Arc::strong_count(v),
-        ConstData::U32(v) => std::sync::Arc::strong_count(v),
-    }
-}
-
-fn const_data_to_host_buffer(data: &ConstData) -> fuel_core_types::HostBuffer {
-    use fuel_core_types::HostBuffer;
-    match data {
-        ConstData::F32(v) => HostBuffer::F32(v.to_vec()),
-        ConstData::F64(v) => HostBuffer::F64(v.to_vec()),
-        ConstData::BF16(v) => HostBuffer::BF16(v.to_vec()),
-        ConstData::F16(v) => HostBuffer::F16(v.to_vec()),
-        ConstData::U32(v) => HostBuffer::U32(v.to_vec()),
     }
 }
 

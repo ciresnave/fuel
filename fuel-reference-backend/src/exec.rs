@@ -24,7 +24,7 @@
 use crate::ops;
 use crate::RefTensor;
 use fuel_core_types::{DType, Shape};
-use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_graph::{topo_order, topo_order_multi, NodeId, Op, Tensor};
 use half::{bf16, f16};
 use std::collections::HashMap;
 
@@ -344,12 +344,12 @@ pub fn eval_node_with_op(
     cache: &HashMap<NodeId, AnyRefTensor>,
 ) -> AnyRefTensor {
     match op {
-        Op::Const(data) => eval_const(
-            data.as_ref().expect(
-                "Op::Const with no host data — fuel-reference-backend has \
-                 not yet wired slot-first dispatch (Phase 7.5 G2 step 2).",
-            ),
-            shape,
+        // Op::Const is intercepted by slot-first dispatch
+        // (try_adopt_slot_ref) in the realize loops above.
+        Op::Const => unreachable!(
+            "fuel-reference-backend eval_node: Op::Const must be handled \
+             by slot-first dispatch in the realize loop, never reach \
+             eval_node",
         ),
 
         // --- element-wise binary ---
@@ -537,30 +537,6 @@ fn eval_slice(
         AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::slice(t, dim, start, len)),
         AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::slice(t, dim, start, len)),
         AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::slice(t, dim, start, len)),
-    }
-}
-
-fn eval_const(data: &ConstData, shape: &Shape) -> AnyRefTensor {
-    // `v.clone()` is an `Arc::clone` — a refcount bump, not a memcpy.
-    // Large weight buffers that originate from model loading stay
-    // shared all the way through the executor cache, which turns
-    // per-call gigabytes of copying into nothing.
-    match data {
-        ConstData::F32(v) => {
-            AnyRefTensor::F32(RefTensor::from_arc(v.clone(), shape.clone()))
-        }
-        ConstData::F64(v) => {
-            AnyRefTensor::F64(RefTensor::from_arc(v.clone(), shape.clone()))
-        }
-        ConstData::BF16(v) => {
-            AnyRefTensor::BF16(RefTensor::from_arc(v.clone(), shape.clone()))
-        }
-        ConstData::F16(v) => {
-            AnyRefTensor::F16(RefTensor::from_arc(v.clone(), shape.clone()))
-        }
-        ConstData::U32(v) => {
-            AnyRefTensor::U32(RefTensor::from_arc(v.clone(), shape.clone()))
-        }
     }
 }
 

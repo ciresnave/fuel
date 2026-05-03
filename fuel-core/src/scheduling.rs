@@ -466,7 +466,7 @@ pub fn dp_plan(
         // Const nodes live in host memory; consumers on non-CPU
         // backends pay the upload. Pin them to CPU so the DP can't
         // "place" a Const on CUDA for free.
-        let is_const = matches!(node.op, fuel_graph::Op::Const(_));
+        let is_const = matches!(node.op, fuel_graph::Op::Const);
 
         for &b in &backends {
             // Const ops only have a finite cost on CPU. Non-CPU

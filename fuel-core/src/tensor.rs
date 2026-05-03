@@ -4954,7 +4954,6 @@ mod node_handle_tests {
     //! constructor.
 
     use super::*;
-    use fuel_graph::ConstData;
 
     /// Parametric helper: build a node-handle Tensor on `device`,
     /// register its storage Arc as the graph slot for a Const leaf,
@@ -4967,11 +4966,12 @@ mod node_handle_tests {
         let legacy = Tensor::new(&[1.0_f32, 2.0, 3.0], device).unwrap();
         let storage_arc = legacy.realized_storage();
 
-        // Build a fresh single-node graph + Const leaf and register
-        // the storage Arc as its slot. After this, `link.storage_for()`
-        // returns the Arc.
-        let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
-        let link = fuel_graph::Tensor::from_const(const_data, shape.clone(), Device::cpu().as_dyn());
+        // Build a fresh single-node graph + Const leaf via from_f32.
+        // Phase 7.5 G2 step 3: factories slot-populate; we then
+        // overwrite the slot with the legacy Arc for ptr_eq tests.
+        let link = fuel_graph::Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0], shape.clone(), Device::cpu().as_dyn(),
+        );
         link.graph()
             .write()
             .unwrap()
@@ -5031,8 +5031,9 @@ mod node_handle_tests {
         let legacy = Tensor::new(&[5.0_f32, 6.0], &device).unwrap();
         let storage_arc = legacy.realized_storage();
 
-        let const_data = ConstData::F32(Arc::from(vec![5.0_f32, 6.0]));
-        let link = fuel_graph::Tensor::from_const(const_data, shape.clone(), Device::cpu().as_dyn());
+        let link = fuel_graph::Tensor::from_f32(
+            vec![5.0_f32, 6.0], shape.clone(), Device::cpu().as_dyn(),
+        );
         link.graph()
             .write()
             .unwrap()
@@ -5052,9 +5053,8 @@ mod node_handle_tests {
     /// produce the slotless state this contract guards against.
     #[test]
     fn from_link_errors_without_slot() {
-        let const_data = ConstData::F32(Arc::from(vec![1.0_f32]));
-        let link = fuel_graph::Tensor::from_const(
-            const_data, Shape::from_dims(&[1]), Device::cpu().as_dyn(),
+        let link = fuel_graph::Tensor::from_f32(
+            vec![1.0_f32], Shape::from_dims(&[1]), Device::cpu().as_dyn(),
         );
         // Force the slot empty.
         link.graph().write().unwrap().remove_storage(link.id());

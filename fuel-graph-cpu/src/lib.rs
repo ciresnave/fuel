@@ -39,7 +39,7 @@
 //! [`fuel_reference_backend::exec`], so swapping executors is a
 //! one-line change in calling code.
 
-use fuel_graph::{topo_order, topo_order_multi, ConstData, NodeId, Op, Tensor};
+use fuel_graph::{topo_order, topo_order_multi, NodeId, Op, Tensor};
 use fuel_reference_backend::{ops, RefTensor};
 use half::{bf16, f16};
 use std::collections::HashMap;
@@ -311,12 +311,13 @@ fn eval_node(
     cache: &HashMap<NodeId, AnyTensor>,
 ) -> AnyTensor {
     match op {
-        Op::Const(data) => eval_const(
-            data.as_ref().expect(
-                "Op::Const with no host data — fuel-graph-cpu has not yet \
-                 wired slot-first dispatch (Phase 7.5 G2 step 2).",
-            ),
-            shape,
+        // Op::Const is intercepted by slot-first dispatch in the
+        // realize loops above (try_adopt_slot_cpu). If we get here
+        // it means a Const node was constructed without slot-population
+        // — a bug.
+        Op::Const => unreachable!(
+            "fuel-graph-cpu eval_node: Op::Const must be handled by \
+             slot-first dispatch in the realize loop, never reach eval_node",
         ),
 
         // --- the fast path ---
@@ -436,19 +437,6 @@ fn eval_node(
                 fuel_core_types::Shape::from_dims(&[0]),
             ))
         }
-    }
-}
-
-fn eval_const(data: &ConstData, shape: &fuel_core_types::Shape) -> AnyTensor {
-    // `v.clone()` is a cheap `Arc::clone`; `from_arc` wraps without
-    // copying. Weight-sized `Const` nodes stay shared all the way
-    // through the executor cache.
-    match data {
-        ConstData::F32(v) => AnyTensor::F32(RefTensor::from_arc(v.clone(), shape.clone())),
-        ConstData::F64(v) => AnyTensor::F64(RefTensor::from_arc(v.clone(), shape.clone())),
-        ConstData::BF16(v) => AnyTensor::BF16(RefTensor::from_arc(v.clone(), shape.clone())),
-        ConstData::F16(v) => AnyTensor::F16(RefTensor::from_arc(v.clone(), shape.clone())),
-        ConstData::U32(v) => AnyTensor::U32(RefTensor::from_arc(v.clone(), shape.clone())),
     }
 }
 

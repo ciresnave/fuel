@@ -62,7 +62,7 @@ struct OpKey {
 fn op_key(op: &Op) -> Option<OpKey> {
     // We deliberately refuse to CSE `Const`. Rationale above.
     let (tag, ints, bits, dims, shape, dtype) = match op {
-        Op::Const(_) => return None,
+        Op::Const => return None,
 
         Op::Add => (1, vec![], vec![], vec![], None, None),
         Op::Sub => (2, vec![], vec![], vec![], None, None),
@@ -433,7 +433,7 @@ pub fn lower_const_placement(graph: &SharedGraph, roots: &[NodeId]) -> usize {
     let mut g = graph.write().unwrap();
     for &nid in &order {
         // Only consider Const nodes without an explicit placement.
-        let is_const = matches!(g.node(nid).op, Op::Const(_));
+        let is_const = matches!(g.node(nid).op, Op::Const);
         if !is_const || g.placement(nid).is_some() {
             continue;
         }

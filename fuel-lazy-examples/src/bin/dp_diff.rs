@@ -156,7 +156,7 @@ fn compare_planners(
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
-        Op::Const(_)        => "Const",
+        Op::Const        => "Const",
         Op::Add             => "Add",
         Op::Sub             => "Sub",
         Op::Mul             => "Mul",
