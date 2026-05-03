@@ -23,7 +23,7 @@ fn from_storage_builds_single_const_node_with_slot_populated() {
         (2, 2),
         &device,
     ).unwrap();
-    let storage_arc = legacy.realized_storage();
+    let storage_arc = legacy.realized_storage().unwrap();
 
     let shape = Shape::from_dims(&[2, 2]);
     let dtype = fuel_core_types::DType::F32;
@@ -52,7 +52,7 @@ fn from_storage_realizes_through_graph_cpu() {
     let device = Device::cpu();
     let data = vec![10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0];
     let legacy = Tensor::from_slice(&data, (2, 3), &device).unwrap();
-    let storage_arc = legacy.realized_storage();
+    let storage_arc = legacy.realized_storage().unwrap();
 
     let t = fuel_graph::Tensor::from_storage(
         storage_arc, Shape::from_dims(&[2, 3]), fuel_core_types::DType::F32,
@@ -70,7 +70,7 @@ fn from_storage_realizes_through_reference() {
     let device = Device::cpu();
     let data = vec![1.0_f32, -2.0, 3.5, -4.5];
     let legacy = Tensor::from_slice(&data, (4,), &device).unwrap();
-    let storage_arc = legacy.realized_storage();
+    let storage_arc = legacy.realized_storage().unwrap();
 
     let t = fuel_graph::Tensor::from_storage(
         storage_arc, Shape::from_dims(&[4]), fuel_core_types::DType::F32,
@@ -89,7 +89,7 @@ fn from_storage_realizes_through_graph_executor() {
     let device = Device::cpu();
     let data = vec![7.0_f32, 8.0, 9.0];
     let legacy = Tensor::from_slice(&data, (3,), &device).unwrap();
-    let storage_arc = legacy.realized_storage();
+    let storage_arc = legacy.realized_storage().unwrap();
 
     let t = fuel_graph::Tensor::from_storage(
         storage_arc, Shape::from_dims(&[3]), fuel_core_types::DType::F32,
@@ -110,9 +110,9 @@ fn const_like_from_storage_shares_graph() {
     let a_data = vec![1.0_f32, 2.0, 3.0];
     let b_data = vec![4.0_f32, 5.0, 6.0];
     let a_legacy = Tensor::from_slice(&a_data, (3,), &device).unwrap();
-    let a_arc = a_legacy.realized_storage();
+    let a_arc = a_legacy.realized_storage().unwrap();
     let b_legacy = Tensor::from_slice(&b_data, (3,), &device).unwrap();
-    let b_arc = b_legacy.realized_storage();
+    let b_arc = b_legacy.realized_storage().unwrap();
 
     let a = fuel_graph::Tensor::from_storage(
         a_arc, Shape::from_dims(&[3]), fuel_core_types::DType::F32,

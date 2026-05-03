@@ -11,8 +11,8 @@ pub use fuel_core_types::conv::{
 
 impl Tensor {
     fn conv1d_single_group(&self, kernel: &Self, params: &ParamsConv1D) -> Result<Self> {
-        let self_arc = self.storage();
-        let kernel_arc = kernel.storage();
+        let self_arc = self.storage()?;
+        let kernel_arc = kernel.storage()?;
         let storage = self_arc.read().unwrap().conv1d(
             self.layout(),
             &kernel_arc.read().unwrap(),
@@ -110,8 +110,8 @@ impl Tensor {
         kernel: &Self,
         params: &ParamsConvTranspose1D,
     ) -> Result<Self> {
-        let self_arc = self.storage();
-        let kernel_arc = kernel.storage();
+        let self_arc = self.storage()?;
+        let kernel_arc = kernel.storage()?;
         let storage = self_arc.read().unwrap().conv_transpose1d(
             self.layout(),
             &kernel_arc.read().unwrap(),
@@ -188,8 +188,8 @@ impl Tensor {
     }
 
     fn conv2d_single_group(&self, kernel: &Self, params: &ParamsConv2D) -> Result<Self> {
-        let self_arc = self.storage();
-        let kernel_arc = kernel.storage();
+        let self_arc = self.storage()?;
+        let kernel_arc = kernel.storage()?;
         let storage = self_arc.read().unwrap().conv2d(
             self.layout(),
             &kernel_arc.read().unwrap(),
@@ -348,8 +348,8 @@ impl Tensor {
             stride,
             dilation,
         };
-        let self_arc = self.storage();
-        let kernel_arc = kernel.storage();
+        let self_arc = self.storage()?;
+        let kernel_arc = kernel.storage()?;
         let storage = self_arc.read().unwrap().conv_transpose2d(
             self.layout(),
             &kernel_arc.read().unwrap(),

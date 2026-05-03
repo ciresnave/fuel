@@ -1483,7 +1483,7 @@ impl fuel::CustomOp3 for Sdpa {
                 fuel::bail!("SDPA full requires softcapping to be disabled (1.0)");
             }
 
-            let mask_s_l = self.mask.as_ref().map(|m| m.storage_and_layout());
+            let mask_s_l = self.mask.as_ref().map(|m| m.storage_and_layout()?);
 
             let (mask_type, mask_buffer, mask_strides) = if let Some(mask) = &self.mask {
                 let (mask_s, mask_l) = mask_s_l.as_ref().unwrap();
