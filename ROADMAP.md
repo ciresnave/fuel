@@ -1856,9 +1856,10 @@ becomes ~one afternoon of mechanical extraction.
 **B. Drop eager mode, introduce `.realize()`.**
 
 Internal sub-phases (B1-B6) tracked in memory plan. B1 is shipped;
-B2-B6 land *after* work item G below, because G provides the
-substrate (graph-owned Storage) that B's factory and op-method
-migration relies on.
+B2-B6 land *after* work items G + G2 below, both shipped
+2026-05-02. G provides graph-owned Storage; G2 makes `Op::Const`
+a slot-rooted unit variant. Together they're the substrate that
+B's factory migration plugs into.
 
 - [x] **B1.** Add `.realize()` / `.materialize()` / `.is_realized()`
       stubs to `Tensor`. Identity clones today; gain real semantics
@@ -1999,9 +2000,13 @@ Migration tactic — parallel-introduction-then-drop:
    `Tensor` where the `storage` field is `Option<Arc<RwLock<Storage>>>`
    — `None` means "ask the graph." Existing eagerly-constructed
    Tensors stay as-is at first.
-2. Migrate factories first (B2's actual work, now trivially
-   simple because the substrate is in place): build a Const node,
-   fill its slot, return a node-handle Tensor.
+2. Migrate factories first (B2's actual work). The graph-side
+   primitive (`fuel_graph::Tensor::from_storage`) is in place;
+   B2 routes fuel-core's `Tensor::ones` / `::zeros` / `::from_slice`
+   / etc. through it instead of the legacy `from_storage` (eager-
+   mode) path. ~13 factory functions in `fuel-core/src/tensor.rs`
+   plus a few callsites that use them; structural work, not
+   trivially simple but not large either.
 3. Migrate op methods family-by-family (B3 work, post-G). Each
    migrated family produces node-handle Tensors and removes one
    pin holding old-mode Tensors alive.
@@ -2195,7 +2200,9 @@ landings rather than one mega-PR — B first (so the eager-vs-
 lazy duality is collapsed before autograd refactor), then CE.
 
 Total estimated scope: A is one week (parser extraction is
-self-contained); G is 1-2 weeks plus G2 half a week; B2-B6 is
+self-contained); G is 1-2 weeks plus G2 about a week (estimated
+half a week, plus the const_pool liveness fix and the cuda slot-
+first wiring that surfaced during the work); B2-B6 is
 two-to-three weeks of factory + op-method migration on top of
 G; CE together is six-to-eight weeks (every op constructor
 touched, plus mechanical Tensor extraction); A2 is half a day;
