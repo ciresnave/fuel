@@ -334,7 +334,7 @@ impl<B: GraphBackend> TrainState<B> {
     {
         // 1. Build parameter placeholder tensors in a fresh graph.
         //    Use a "seed" LazyTensor to get a fresh SharedGraph.
-        let seed = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]));
+        let seed = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &crate::Device::cpu());
         let graph = seed.graph_tensor().graph().clone();
 
         let mut param_tensors: HashMap<String, LazyTensor> = HashMap::new();

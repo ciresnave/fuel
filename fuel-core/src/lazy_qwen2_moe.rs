@@ -137,6 +137,7 @@ impl Qwen2MoeModel {
         let embed = LazyTensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
+            &crate::Device::cpu(),
         );
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut x = embed

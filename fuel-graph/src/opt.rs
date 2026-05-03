@@ -843,9 +843,18 @@ mod tests {
     use super::*;
     use crate::Tensor;
     use fuel_core_types::{DeviceLocation, Shape};
+    use std::sync::Arc;
+
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
 
     fn make_scalar_graph() -> (SharedGraph, Tensor) {
-        let t = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let t = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         (t.graph().clone(), t)
     }
 
@@ -858,7 +867,7 @@ mod tests {
     fn insert_copies_no_placement_no_copies() {
         // Graph with no placement hints: pass should be a no-op, no
         // Copies inserted, roots unchanged.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let graph = c.graph().clone();
@@ -873,7 +882,7 @@ mod tests {
         // Const a, Const b, Add(a, b) placed on Vulkan.
         // Expected: two Copy(a, Vulkan) and Copy(b, Vulkan) inserted,
         // Add's inputs rewritten to reference the Copies.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = c.graph().clone();
@@ -901,7 +910,7 @@ mod tests {
     fn insert_copies_matching_device_no_copies_inserted() {
         // Const a and Add both placed on Vulkan. Const flows into
         // Add, both want Vulkan — no Copy needed.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]))
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev())
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -920,7 +929,7 @@ mod tests {
         // Then run insert_copies on BOTH the forward root and the
         // gradient root. Every backward op should end up on Vulkan
         // (inherited from its inputs, which trace back to Vulkan-placed x).
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]))
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let sq = x.mul(&x).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let y = sq.sum_all().on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -950,7 +959,7 @@ mod tests {
         // and re-run insert_copies. The Copies that get inserted should
         // pull x to Vulkan; the backward path should follow suit when
         // we ask for both roots.
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let sq = x.mul(&x);
         let y = sq.sum_all().on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = y.graph().clone();
@@ -976,7 +985,7 @@ mod tests {
     fn lower_const_placement_single_vulkan_consumer() {
         // Const a → Add(a, b) placed on Vulkan. lower_const_placement
         // should tag a with Vulkan since Add is its only consumer.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = c.graph().clone();
@@ -997,7 +1006,7 @@ mod tests {
     fn lower_const_placement_consumers_disagree_stays_unplaced() {
         // Const a flows into two consumers on different devices.
         // Without replication support, lowering has to leave a unplaced.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let cpu_sum = a.add(&b).on_device(DeviceLocation::Cpu);
         let vulkan_sum = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -1011,7 +1020,7 @@ mod tests {
     #[test]
     fn lower_const_placement_skips_already_placed() {
         // An explicitly-placed Const should not be overridden.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]))
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev())
             .on_device(DeviceLocation::Cpu);
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -1026,7 +1035,7 @@ mod tests {
 
     #[test]
     fn insert_copies_idempotent() {
-        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]));
+        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
         let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1]));
         let c = a.add(&b).on_device(DeviceLocation::Cpu);
         let graph = c.graph().clone();
@@ -1119,7 +1128,7 @@ mod tests {
 
     #[test]
     fn derive_ordering_empty_for_non_destructive_graph() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let ord = derive_ordering(&c.graph().read().unwrap(), &[c.id()]);
@@ -1133,7 +1142,7 @@ mod tests {
         //   b = relu(a)   (non-destructive reader of a)
         //   r = release(a) (destructive reader of a)
         // Expected ordering: r must run after b.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let r = a.release();
         let ord = derive_ordering(&a.graph().read().unwrap(), &[b.id(), r.id()]);
@@ -1146,7 +1155,7 @@ mod tests {
     fn derive_ordering_release_of_multi_reader_input() {
         // a read by relu AND neg, then released. Both relu and neg
         // must precede the release.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let c = a.neg();
         let r = a.release();
@@ -1160,7 +1169,7 @@ mod tests {
 
     #[test]
     fn execution_plan_matches_topo_when_no_destructive_ops() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let graph = c.graph().read().unwrap();
@@ -1171,7 +1180,7 @@ mod tests {
 
     #[test]
     fn execution_plan_pins_release_after_sibling_reader() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let r = a.release();
         let plan = execution_plan(&a.graph().read().unwrap(), &[b.id(), r.id()]);
@@ -1186,7 +1195,7 @@ mod tests {
         // a -> neg -> c
         // a -> release
         // b and c must come before release.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let c = a.neg();
         let r = a.release();
@@ -1208,7 +1217,7 @@ mod tests {
         //   - 3 new nodes (cpu_copy, release, reload) appended
         //   - c's input list now has `reload_id` instead of `a.id()`
         //   - b's input list STILL has `a.id()` (unchanged)
-        let a = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let c = a.neg();
 
@@ -1245,7 +1254,7 @@ mod tests {
         //   r = release(a)  (destructive; runs after b)
         //   sum = sum_all(b) (data-dependent on b, not on r)
         // Plan must have: b before r, b before sum; b before both is enough.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let sum = b.sum_all();
         let r = a.release();
@@ -1263,15 +1272,14 @@ mod tests {
         let a = crate::Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
             crate::Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(
             (0..12).map(|i| (i as f32) * 0.1).collect::<Vec<f32>>(),
-            crate::Shape::from_dims(&[3, 4]),
-        );
+            crate::Shape::from_dims(&[3, 4]));
         let bias = a.const_f32_like(
             vec![0.5_f32, -0.5, 1.0, -1.0],
-            crate::Shape::from_dims(&[4]),
-        );
+            crate::Shape::from_dims(&[4]));
         let mm = a.matmul(&b);
         let bias_b = bias.broadcast_to(crate::Shape::from_dims(&[2, 4]));
         let out = mm.add(&bias_b);
@@ -1298,15 +1306,14 @@ mod tests {
         let a = crate::Tensor::from_f32(
             vec![1.0_f32; 6],
             crate::Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(
             vec![1.0_f32; 12],
-            crate::Shape::from_dims(&[3, 4]),
-        );
+            crate::Shape::from_dims(&[3, 4]));
         let bias = a.const_f32_like(
             vec![1.0_f32; 4],
-            crate::Shape::from_dims(&[4]),
-        );
+            crate::Shape::from_dims(&[4]));
         let mm = a.matmul(&b);
         let bias_b = bias.broadcast_to(crate::Shape::from_dims(&[2, 4]));
         let with_bias = mm.add(&bias_b);

@@ -30,3 +30,6 @@ onemkl  = ["dep:fuel-mkl-cpu-backend"]
 [dev-dependencies]
 # Tests reuse Q4_K block layout + dequant reference from fuel-core.
 fuel-core = { path = "../fuel-core" }
+# Phase 7.5 G2: tests need a CpuBackendDevice handle for slot-populating
+# constructors (cpu_dev() helper).
+fuel-cpu-backend = { workspace = true }

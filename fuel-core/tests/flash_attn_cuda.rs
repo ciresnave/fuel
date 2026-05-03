@@ -71,7 +71,7 @@ fn cuda_flash_attn_basic_f16_no_mask() {
     let v_data = rand_f16(&[b, h, sk, d], 3);
 
     // Build the F16 lazy graph + run via CUDA flash-attn.
-    let q = LazyTensor::from_f16(q_data.clone(), Shape::from_dims(&[b, h, sq, d]));
+    let q = LazyTensor::from_f16(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k = q.const_f16_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f16_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let out = q.flash_attn(&k, &v, None, scale, false, None, None, None)
@@ -86,7 +86,7 @@ fn cuda_flash_attn_basic_f16_no_mask() {
     let q_f32: Vec<f32> = q_data.iter().map(|x| x.to_f32()).collect();
     let k_f32: Vec<f32> = k_data.iter().map(|x| x.to_f32()).collect();
     let v_f32: Vec<f32> = v_data.iter().map(|x| x.to_f32()).collect();
-    let q2 = LazyTensor::from_f32(q_f32, Shape::from_dims(&[b, h, sq, d]));
+    let q2 = LazyTensor::from_f32(q_f32, Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k2 = q2.const_f32_like(k_f32, Shape::from_dims(&[b, h, sk, d]));
     let v2 = q2.const_f32_like(v_f32, Shape::from_dims(&[b, h, sk, d]));
     let out2 = q2.flash_attn(&k2, &v2, None, scale, false, None, None, None);
@@ -105,7 +105,7 @@ fn cuda_flash_attn_causal_f16() {
     let k_data = rand_f16(&[b, h, sk, d], 5);
     let v_data = rand_f16(&[b, h, sk, d], 6);
 
-    let q = LazyTensor::from_f16(q_data.clone(), Shape::from_dims(&[b, h, sq, d]));
+    let q = LazyTensor::from_f16(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k = q.const_f16_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f16_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let out = q.flash_attn(&k, &v, None, scale, true, None, None, None)
@@ -117,7 +117,7 @@ fn cuda_flash_attn_causal_f16() {
     let q_f32: Vec<f32> = q_data.iter().map(|x| x.to_f32()).collect();
     let k_f32: Vec<f32> = k_data.iter().map(|x| x.to_f32()).collect();
     let v_f32: Vec<f32> = v_data.iter().map(|x| x.to_f32()).collect();
-    let q2 = LazyTensor::from_f32(q_f32, Shape::from_dims(&[b, h, sq, d]));
+    let q2 = LazyTensor::from_f32(q_f32, Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k2 = q2.const_f32_like(k_f32, Shape::from_dims(&[b, h, sk, d]));
     let v2 = q2.const_f32_like(v_f32, Shape::from_dims(&[b, h, sk, d]));
     let out2 = q2.flash_attn(&k2, &v2, None, scale, true, None, None, None);

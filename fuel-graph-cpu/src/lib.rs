@@ -1221,6 +1221,14 @@ fn eval_clamp(
 
 #[cfg(test)]
 mod tests {
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     use super::*;
     use fuel_core_types::Shape;
     use fuel_graph::Tensor;
@@ -1263,6 +1271,7 @@ mod tests {
         let a = Tensor::from_f32(
             (0..12).map(|i| i as f32 * 0.1 - 0.5).collect::<Vec<_>>(),
             Shape::from_dims(&[3, 4]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(
             (0..20).map(|i| (i as f32 - 10.0) * 0.05).collect::<Vec<_>>(),
@@ -1277,7 +1286,7 @@ mod tests {
         // 16×32 @ 32×8, mid-sized — exercises gemm's blocking.
         let a_data: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
         let b_data: Vec<f32> = (0..256).map(|i| (i as f32 * 0.02).cos()).collect();
-        let a = Tensor::from_f32(a_data, Shape::from_dims(&[16, 32]));
+        let a = Tensor::from_f32(a_data, Shape::from_dims(&[16, 32]), cpu_dev());
         let b = a.const_f32_like(b_data, Shape::from_dims(&[32, 8]));
         let c = a.matmul(&b);
         assert_equivalent_f32(&c);
@@ -1288,7 +1297,7 @@ mod tests {
         // [2, 3, 4] @ [2, 4, 5] — batched rank-3 matmul.
         let a_data: Vec<f32> = (0..24).map(|i| i as f32 * 0.1).collect();
         let b_data: Vec<f32> = (0..40).map(|i| (i as f32 * 0.2) - 1.0).collect();
-        let a = Tensor::from_f32(a_data, Shape::from_dims(&[2, 3, 4]));
+        let a = Tensor::from_f32(a_data, Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(b_data, Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_equivalent_f32(&c);
@@ -1300,6 +1309,7 @@ mod tests {
         let a = Tensor::from_f32(
             vec![-1.0, 2.0, -3.0, 4.0],
             Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(vec![0.5, -0.5, 1.5, -1.5], Shape::from_dims(&[4]));
         let out = a.add(&b).mul(&a).relu().sqr();
@@ -1317,7 +1327,7 @@ mod tests {
         let d_model = num_heads * d_head;
 
         let x_data: Vec<f32> = (0..seq * d_model).map(|i| i as f32 * 0.02).collect();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]));
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), cpu_dev());
         let identity: Vec<f32> = {
             let mut v = vec![0.0_f32; d_model * d_model];
             for i in 0..d_model {
@@ -1352,7 +1362,7 @@ mod tests {
         // Chain 20 small matmuls; verifies that the executor handles
         // deep dependency graphs without issues and produces the same
         // result as reference.
-        let init = Tensor::from_f32(vec![1.0, 0.0, 0.0, 1.0], Shape::from_dims(&[2, 2]));
+        let init = Tensor::from_f32(vec![1.0, 0.0, 0.0, 1.0], Shape::from_dims(&[2, 2]), cpu_dev());
         let mut current = init.clone();
         for i in 0..20 {
             let step_data = vec![1.0 + (i as f32) * 0.01, 0.0, 0.0, 1.0 - (i as f32) * 0.01];
@@ -1373,7 +1383,7 @@ mod tests {
         use std::panic::{catch_unwind, AssertUnwindSafe};
         // Any tensor handle works as a "graph anchor" — we just need
         // the graph object to attach the U32 const to.
-        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]));
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), cpu_dev());
         let idx = anchor.const_u32_like(vec![1_u32, 2, 3], Shape::from_dims(&[3]));
         let bad = idx.log();  // Op::Log, dtype=U32
         let result = catch_unwind(AssertUnwindSafe(|| realize_f32(&bad)));

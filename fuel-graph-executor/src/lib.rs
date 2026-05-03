@@ -859,25 +859,20 @@ impl<B: GraphBackend> GraphExecutor<B> {
         shape: &Shape,
     ) -> Option<CacheEntry<B::Storage>> {
         let slot_arc = graph.storage_for(id)?;
-        // Key on the slot Arc's pointer identity. Same Arc → same key
-        // → const_pool hit. The Arc is owned by the Graph, so its
-        // identity is stable for the Graph's lifetime.
-        let key = Arc::as_ptr(&slot_arc) as *const () as usize;
-        if let Some(arc) = self.const_pool.get(&key) {
-            return Some(CacheEntry::ConstRef(arc));
-        }
-        let (buf, dtype) = {
+        // Phase 7.5 G2 step 2: don't key the const_pool on the slot
+        // Arc's pointer identity. When graphs drop and re-create slots
+        // across realize calls (e.g. fresh graph per training step),
+        // raw pointers can be recycled — a stale const_pool entry
+        // could then alias a different node's storage. The const_pool
+        // optimization will return in step 3 with proper liveness
+        // tracking; for now slot adoption goes through the upload
+        // path every realize.
+        let buf = {
             let slot = slot_arc.read().unwrap();
-            let buf = slot.as_dyn().to_host_buffer_dyn().expect("slot D2H");
-            let dtype = slot.dtype();
-            (buf, dtype)
+            slot.as_dyn().to_host_buffer_dyn().expect("slot D2H")
         };
         let storage = self.backend.upload(&buf, shape).expect("slot upload");
-        let bytes = shape.elem_count() * dtype.size_in_bytes();
-        let arc = self.const_pool.insert(
-            key, TrackedTensor::new(storage, shape.clone()), bytes,
-        );
-        Some(CacheEntry::ConstRef(arc))
+        Some(CacheEntry::Owned(TrackedTensor::new(storage, shape.clone())))
     }
 
     // -- realize entry points -------------------------------------------------

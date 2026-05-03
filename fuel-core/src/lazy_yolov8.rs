@@ -487,7 +487,7 @@ impl YoloV8Model {
         let isize = cfg.image_size;
         assert_eq!(image.len(), 3 * isize * isize, "forward: image wrong length");
 
-        let x = LazyTensor::from_f32(image.to_vec(), Shape::from_dims(&[1, 3, isize, isize]));
+        let x = LazyTensor::from_f32(image.to_vec(), Shape::from_dims(&[1, 3, isize, isize]), &crate::Device::cpu());
 
         // --- Backbone ---
         let (h1, w1) = (isize / 2, isize / 2);
@@ -842,8 +842,9 @@ mod tests {
             cls_logits: LazyTensor::from_f32(
                 vec![5.0_f32, 5.0, 5.0, 5.0],
                 Shape::from_dims(&[1, 1, 4]),
+                &crate::Device::cpu(),
             ),
-            reg_dists: LazyTensor::from_f32(reg, Shape::from_dims(&[1, 4, 4])),
+            reg_dists: LazyTensor::from_f32(reg, Shape::from_dims(&[1, 4, 4]), &crate::Device::cpu()),
             strides: vec![8.0; 4],
             grid_xy: vec![10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
         };

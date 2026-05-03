@@ -182,6 +182,14 @@ fn collect_roots(g: &fuel_graph::Graph) -> Vec<NodeId> {
 
 #[cfg(test)]
 mod tests {
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     use super::*;
     use fuel_core_types::Shape;
     use fuel_graph::{Op, Tensor};
@@ -204,7 +212,7 @@ mod tests {
     #[test]
     fn rule_is_noop_under_budget() {
         // Tiny graph, huge budget — rule should not mutate.
-        let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]));
+        let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let b = a.relu();
         let c = a.neg();
         let out = b.add(&c);
@@ -238,7 +246,7 @@ mod tests {
         //   pad2 = neg(pad)            (pos 3)
         //   c = mul(pad2, a)           (pos 4 — reads a AGAIN, after gap)
         //   out = add(b, c)            (pos 5)
-        let a = Tensor::from_f32(vec![1.0_f32; 1024], Shape::from_dims(&[1024]));
+        let a = Tensor::from_f32(vec![1.0_f32; 1024], Shape::from_dims(&[1024]), cpu_dev());
         let b = a.relu();
         let pad = b.neg();
         let pad2 = pad.neg();
@@ -277,7 +285,7 @@ mod tests {
         // out  = b + c    = [0, 6, 0, 20]
         let make_graph = || {
             let a = Tensor::from_f32(
-                vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]));
+                vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
             let b = a.relu();
             let pad = b.neg();
             let pad2 = pad.neg();

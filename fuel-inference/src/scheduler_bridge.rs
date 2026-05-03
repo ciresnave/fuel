@@ -93,10 +93,10 @@ impl SchedulerRule for MemoryPressureRule {
         // Skip ops that already have a hint (the user's explicit
         // `graph.placement()` call wins).
         let order = {
-            let g = graph.borrow();
+            let g = graph.read().unwrap();
             fuel_graph::topo_order_multi(&g, roots)
         };
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         for nid in order {
             let node = g.node(nid);
             if matches!(node.op, fuel_graph::Op::Const(_)) {

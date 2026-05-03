@@ -84,9 +84,9 @@ fn broadcast_matmul(device: &Device) -> Result<()> {
 
 #[test]
 fn tensor_dot() -> Result<()> {
-    let lhs = Tensor::new(&[1., 2., 3.], &Device::cpu())?;
-    let rhs = Tensor::new(&[4., 5., 6.], &Device::cpu())?;
-    let expected = Tensor::new(32., &Device::cpu())?;
+    let lhs = Tensor::new(&[1., 2., 3.], &fuel_core::Device::cpu())?;
+    let rhs = Tensor::new(&[4., 5., 6.], &fuel_core::Device::cpu())?;
+    let expected = Tensor::new(32., &fuel_core::Device::cpu())?;
     let dot_ret = lhs.dot(&rhs)?;
     fuel_core::test_utils::assert_tensor_eq(&dot_ret, &expected)?;
     Ok(())
@@ -94,9 +94,9 @@ fn tensor_dot() -> Result<()> {
 
 #[test]
 fn tensor_mv() -> Result<()> {
-    let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &Device::cpu())?;
-    let vec = Tensor::new(&[1., 1., 1.], &Device::cpu())?;
-    let expected = Tensor::new(&[6., 15.], &Device::cpu())?;
+    let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &fuel_core::Device::cpu())?;
+    let vec = Tensor::new(&[1., 1., 1.], &fuel_core::Device::cpu())?;
+    let expected = Tensor::new(&[6., 15.], &fuel_core::Device::cpu())?;
     let mv_ret = mat.mv(&vec)?;
     fuel_core::test_utils::assert_tensor_eq(&mv_ret, &expected)?;
     Ok(())

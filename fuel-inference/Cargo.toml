@@ -24,6 +24,11 @@
     serde_json          = { workspace = true }
     tracing             = { workspace = true }
 
+[dev-dependencies]
+    # Phase 7.5 G2: tests need a CpuBackendDevice handle for
+    # slot-populating constructors (cpu_dev() helper).
+    fuel-cpu-backend = { workspace = true }
+
 [features]
     accelerate = ["fuel-transformers/accelerate", "fuel/accelerate"]
     cuda       = ["fuel-transformers/cuda", "fuel/cuda"]

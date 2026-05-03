@@ -11,3 +11,9 @@
 [dependencies]
     fuel-core-types = { workspace = true }
     half            = { workspace = true }
+
+[dev-dependencies]
+    # Phase 7.5 G2: tests construct a CPU device via fuel-cpu-backend's
+    # CpuBackendDevice so the slot-populating constructors have an
+    # Arc<dyn DynBackendDevice> to allocate against.
+    fuel-cpu-backend = { workspace = true }

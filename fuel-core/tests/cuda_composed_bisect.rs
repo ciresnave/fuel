@@ -71,7 +71,7 @@ fn build_inputs() -> Inputs {
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
     let x_data: Vec<f32> = gen_lcg(12345, seq * dim_in);
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, seq, dim_in]));
+    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, seq, dim_in]), &fuel_core::Device::cpu());
     let w1 = x.const_f32_like(
         Arc::<[f32]>::from(gen_lcg(24691, dim_in * dim_mid)),
         Shape::from_dims(&[dim_in, dim_mid]),
@@ -113,7 +113,7 @@ fn bisect_c_just_rmsnorm() {
     let seq = 8_usize;
     let dim_mid = 32_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
-    let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]));
+    let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]), &fuel_core::Device::cpu());
     let y = x.rms_norm_last_dim(1e-5);
     let (r, c) = realize_both(&y);
     report("C: rms_norm only", &r, &c);
@@ -127,7 +127,7 @@ fn bisect_d_rmsnorm_then_matmul() {
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
-    let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]));
+    let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]), &fuel_core::Device::cpu());
     let w2 = x.const_f32_like(
         Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
         Shape::from_dims(&[dim_mid, dim_out]),

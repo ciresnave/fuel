@@ -38,7 +38,7 @@
 //! extensions — they do not require changes to the bridge's
 //! structural design.
 
-use crate::{DType, Shape};
+use crate::{DType, Device, Shape};
 use fuel_graph_executor::GraphExecutor;
 use std::sync::Arc;
 
@@ -54,50 +54,86 @@ pub struct LazyTensor {
 impl LazyTensor {
     // ---- constructors ----
 
-    /// Build an `f32` lazy tensor from flat data and a shape.
+    /// Build an `f32` lazy tensor from flat data, a shape, and a device.
     ///
     /// `data` takes `impl Into<Arc<[f32]>>` so both `Vec<f32>` and
     /// `Arc<[f32]>` callers work without conversion. Pass an `Arc`
     /// when you already have one (e.g. model weights loaded once at
     /// startup) to avoid any copy.
-    pub fn from_f32(data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
+    ///
+    /// Phase 7.5 G2: `device` selects where the realized Storage is
+    /// allocated. The graph's storage_map slot for the new node is
+    /// populated and `Op::Const(None)` is emitted — no host-side
+    /// `ConstData` payload rides on the graph node.
+    pub fn from_f32(
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f32(data, shape),
+            inner: fuel_graph::Tensor::from_f32(data, shape, device.as_dyn()),
         }
     }
 
-    /// Build an `f64` lazy tensor.
-    pub fn from_f64(data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
+    /// Build an `f64` lazy tensor. `device` selects where the realized
+    /// Storage is allocated.
+    pub fn from_f64(
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f64(data, shape),
+            inner: fuel_graph::Tensor::from_f64(data, shape, device.as_dyn()),
         }
     }
 
-    /// Build a `bf16` lazy tensor.
-    pub fn from_bf16(data: impl Into<Arc<[half::bf16]>>, shape: impl Into<Shape>) -> Self {
+    /// Build a `bf16` lazy tensor. `device` selects where the realized
+    /// Storage is allocated.
+    pub fn from_bf16(
+        data: impl Into<Arc<[half::bf16]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_bf16(data, shape),
+            inner: fuel_graph::Tensor::from_bf16(data, shape, device.as_dyn()),
         }
     }
 
-    /// Build an `f16` lazy tensor.
-    pub fn from_f16(data: impl Into<Arc<[half::f16]>>, shape: impl Into<Shape>) -> Self {
+    /// Build an `f16` lazy tensor. `device` selects where the realized
+    /// Storage is allocated.
+    pub fn from_f16(
+        data: impl Into<Arc<[half::f16]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f16(data, shape),
+            inner: fuel_graph::Tensor::from_f16(data, shape, device.as_dyn()),
         }
     }
 
     /// Build a `u32` (index) lazy tensor. Used for gather/scatter/
-    /// index_select and similar discrete operations.
-    pub fn from_u32(data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
+    /// index_select and similar discrete operations. `device` selects
+    /// where the realized Storage is allocated.
+    pub fn from_u32(
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+        device: &crate::Device,
+    ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_u32(data, shape),
+            inner: fuel_graph::Tensor::from_u32(data, shape, device.as_dyn()),
         }
     }
 
     /// Build a const tensor of the same dtype and graph as `self`.
     /// This is the most convenient way to attach new input data to an
     /// existing computation.
+    ///
+    /// Phase 7.5 G2: the realized Storage is allocated on the device
+    /// derived from `self`'s graph (any existing slot's device — the
+    /// graph always has at least one slot-bearing leaf by the time
+    /// const_*_like is called). Use [`from_f32`] with an explicit
+    /// `&Device` when you need a const on a different device than
+    /// `self`.
     pub fn const_f32_like(
         &self,
         data: impl Into<Arc<[f32]>>,
@@ -639,7 +675,7 @@ mod tests {
 
     #[test]
     fn constructors_wrap_graph_tensor_correctly() {
-        let t = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let t = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         assert_eq!(t.dtype(), DType::F32);
         assert_eq!(t.shape().dims(), &[3]);
         assert_eq!(t.rank(), 1);
@@ -648,7 +684,7 @@ mod tests {
 
     #[test]
     fn add_builds_add_node_in_underlying_graph() {
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         assert_eq!(c.shape().dims(), &[3]);
@@ -669,6 +705,7 @@ mod tests {
         let x = LazyTensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            &Device::cpu(),
         );
         let w = x.const_f32_like(
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
@@ -685,6 +722,7 @@ mod tests {
         let x = LazyTensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
             Shape::from_dims(&[2, 4]),
+            &Device::cpu(),
         );
         let y = x.rope(10000.0, 0);
         assert_eq!(y.shape().dims(), &[2, 4]);
@@ -693,7 +731,7 @@ mod tests {
 
     #[test]
     fn cast_switches_dtype_through_wrapper() {
-        let x = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let y = x.cast(DType::F64);
         assert_eq!(y.dtype(), DType::F64);
         assert_eq!(y.shape().dims(), &[3]);
@@ -701,7 +739,7 @@ mod tests {
 
     #[test]
     fn indexing_builds_correct_output_shape() {
-        let data = LazyTensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]));
+        let data = LazyTensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu());
         let idx = data.const_u32_like(vec![0, 2, 1], Shape::from_dims(&[3]));
         let out = data.index_select(0, &idx);
         assert_eq!(out.shape().dims(), &[3, 4]);
@@ -714,7 +752,7 @@ mod tests {
         // The moment of truth: build a graph through LazyTensor and
         // then realize it end-to-end. (a + b) * a for a = [1, 2, 3],
         // b = [4, 5, 6] should yield [5, 14, 27].
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a);
         let result = c.realize_f32();
@@ -727,6 +765,7 @@ mod tests {
         let a = LazyTensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            &Device::cpu(),
         );
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
@@ -748,7 +787,7 @@ mod tests {
         let n = 32;
         let a_data: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
         let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
-        let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]));
+        let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu());
         let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
         let c = a.matmul(&b);
         let fast = c.realize_f32();
@@ -772,7 +811,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_add_mul() {
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a);
         let cpu_result = c.realize_f32();
@@ -787,6 +826,7 @@ mod tests {
         let a = LazyTensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            &Device::cpu(),
         );
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
@@ -813,6 +853,7 @@ mod tests {
         let x = LazyTensor::from_f32(
             (0..12).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 4]),
+            &Device::cpu(),
         );
         let w = x.const_f32_like(
             (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
@@ -834,6 +875,7 @@ mod tests {
         let x = LazyTensor::from_f32(
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, 3, 4]),
+            &Device::cpu(),
         );
         let y = x.permute(&[0, 2, 1, 3]);
         let cpu = y.realize_f32();
@@ -848,6 +890,7 @@ mod tests {
         let x = LazyTensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            &Device::cpu(),
         );
         let y = x.softmax_last_dim();
         let cpu = y.realize_f32();
@@ -862,7 +905,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_concat_slice() {
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
+        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), &Device::cpu());
         let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
         let cat = a.concat(&b, 1); // [2, 4]
         let sliced = cat.slice(1, 1, 2); // [2, 2]
@@ -878,6 +921,7 @@ mod tests {
         let x = LazyTensor::from_f32(
             (0..8).map(|i| i as f32 * 0.5 - 1.5).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 4]),
+            &Device::cpu(),
         );
         let y = x.rms_norm_last_dim(1e-5);
         let cpu = y.realize_f32();
@@ -891,7 +935,7 @@ mod tests {
 
     #[test]
     fn realize_f64_through_bridge() {
-        let a = LazyTensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]));
+        let a = LazyTensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.mul(&a);
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
     }
@@ -913,7 +957,7 @@ mod tests {
 
         // Fake input: [1, seq, d_model]
         let x_data: Vec<f32> = (0..seq * d_model).map(|i| i as f32 * 0.01).collect();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]));
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu());
 
         // Fake weights (just identities for simplicity — makes the
         // test easy to verify output finiteness without needing to
@@ -1109,6 +1153,7 @@ impl LazyTensor {
         bytes: &[u8],
         dtype: safetensors::Dtype,
         shape: &[usize],
+        device: &Device,
     ) -> crate::Result<Self> {
         use safetensors::Dtype;
         let shape_obj = Shape::from_dims(shape);
@@ -1132,7 +1177,7 @@ impl LazyTensor {
                 for chunk in bytes.chunks_exact(4) {
                     data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                Ok(Self::from_f32(data, shape_obj))
+                Ok(Self::from_f32(data, shape_obj, device))
             }
             Dtype::F64 => {
                 check_len(elem_count * 8)?;
@@ -1141,7 +1186,7 @@ impl LazyTensor {
                     let arr: [u8; 8] = chunk.try_into().unwrap();
                     data.push(f64::from_le_bytes(arr));
                 }
-                Ok(Self::from_f64(data, shape_obj))
+                Ok(Self::from_f64(data, shape_obj, device))
             }
             Dtype::BF16 => {
                 check_len(elem_count * 2)?;
@@ -1150,7 +1195,7 @@ impl LazyTensor {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::bf16::from_bits(raw));
                 }
-                Ok(Self::from_bf16(data, shape_obj))
+                Ok(Self::from_bf16(data, shape_obj, device))
             }
             Dtype::F16 => {
                 check_len(elem_count * 2)?;
@@ -1159,7 +1204,7 @@ impl LazyTensor {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::f16::from_bits(raw));
                 }
-                Ok(Self::from_f16(data, shape_obj))
+                Ok(Self::from_f16(data, shape_obj, device))
             }
             Dtype::U32 => {
                 check_len(elem_count * 4)?;
@@ -1167,7 +1212,7 @@ impl LazyTensor {
                 for chunk in bytes.chunks_exact(4) {
                     data.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                Ok(Self::from_u32(data, shape_obj))
+                Ok(Self::from_u32(data, shape_obj, device))
             }
             other => crate::bail!(
                 "from_safetensors_bytes: unsupported dtype {other:?} — extend LazyTensor's \
@@ -1181,8 +1226,9 @@ impl LazyTensor {
     /// [`crate::safetensors::MmapedSafetensors`] or similar.
     pub fn from_safetensors_view(
         view: &safetensors::tensor::TensorView<'_>,
+        device: &Device,
     ) -> crate::Result<Self> {
-        Self::from_safetensors_bytes(view.data(), view.dtype(), view.shape())
+        Self::from_safetensors_bytes(view.data(), view.dtype(), view.shape(), device)
     }
 }
 
@@ -1609,6 +1655,7 @@ impl LlamaModel {
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
         );
         let token_ids =
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
@@ -2042,6 +2089,7 @@ impl LlamaModel {
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
         );
         let token_ids =
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
@@ -3386,6 +3434,7 @@ impl LlamaModel {
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
         );
         let token_ids =
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
@@ -3831,6 +3880,7 @@ impl Gemma2Model {
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
         );
         let token_ids =
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
@@ -4499,6 +4549,7 @@ impl PhiModel {
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
         );
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
@@ -6024,6 +6075,7 @@ mod lora_tests {
         let anchor = LazyTensor::from_f32(
             vec![0.0_f32; 1],
             Shape::from_dims(&[1]),
+            &Device::cpu(),
         );
         // Base weight [in, out].
         let base_vec: Vec<f32> = (0..in_f * out_f).map(|i| (i as f32) * 0.1).collect();
@@ -6388,6 +6440,7 @@ mod safetensors_bridge_tests {
             &bytes,
             safetensors::Dtype::F32,
             &[4],
+            &Device::cpu(),
         )
         .unwrap();
         assert_eq!(t.shape().dims(), &[4]);
@@ -6408,6 +6461,7 @@ mod safetensors_bridge_tests {
             &bytes,
             safetensors::Dtype::BF16,
             &[4],
+            &Device::cpu(),
         )
         .unwrap();
         assert_eq!(t.dtype(), DType::BF16);
@@ -6426,6 +6480,7 @@ mod safetensors_bridge_tests {
             &bad_bytes,
             safetensors::Dtype::F32,
             &[3],
+            &Device::cpu(),
         );
         assert!(result.is_err());
     }

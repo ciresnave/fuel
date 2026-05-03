@@ -19,7 +19,7 @@ fn build_conv_graph(
         .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let w_data: Vec<f32> = (0..(c_out * c_in * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c_in, h, w]));
+    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c_in, h, w]), &fuel_core::Device::cpu());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c_out, c_in, k, k]));
     x.conv2d(&weight, None, stride, padding, 1)
 }

@@ -30,6 +30,14 @@ use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
 
 /// Lazily constructed Vulkan executor; skips tests if the backend
 /// doesn't initialize on this host.
+
+/// Phase 7.5 G2: tests need a real device for slot-populating
+/// constructors. Singleton CpuBackendDevice via OnceLock.
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+        = std::sync::OnceLock::new();
+    D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+}
 fn vulkan_exec() -> Option<GraphExecutor<VulkanBackend>> {
     match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
         Ok(b) => Some(GraphExecutor::new(b)),
@@ -54,7 +62,7 @@ fn conv2d_oracle_check(
     let w_data: Vec<f32> = (0..(c_out * cin_per_g * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
 
-    let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, c_in, h, w]));
+    let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, c_in, h, w]), cpu_dev());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c_out, cin_per_g, k, k]));
     let y = x.conv2d(&weight, None, stride, padding, groups);
 
@@ -115,7 +123,7 @@ fn depthwise_falls_back_to_cpu() {
         .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let w_data: Vec<f32> = (0..(c * 1 * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]));
+    let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]), cpu_dev());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
     let y = x.conv2d(&weight, None, (1, 1), (1, 1), c);  // depthwise
 

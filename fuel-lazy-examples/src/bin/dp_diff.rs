@@ -122,7 +122,7 @@ fn compare_planners(
 ) -> DiffReport {
     let _ = label;
     let graph = outputs[0].graph_tensor().graph();
-    let g = graph.borrow();
+    let g = graph.read().unwrap();
 
     let roots: Vec<NodeId> = outputs.iter().map(|t| t.graph_tensor().id()).collect();
 

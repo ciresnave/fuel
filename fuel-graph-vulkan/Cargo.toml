@@ -36,3 +36,6 @@
     fuel-conv      = { workspace = true }
     fuel-graph-cpu = { workspace = true }
     fuel-core      = { path = "../fuel-core", features = ["vulkan"] }
+    # Phase 7.5 G2: tests need a CpuBackendDevice handle for
+    # slot-populating constructors (cpu_dev() helper).
+    fuel-cpu-backend = { workspace = true }

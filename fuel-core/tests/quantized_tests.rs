@@ -476,7 +476,7 @@ fn ggml_quantization_error_test(dtype: GgmlDType, device: &Device, max_error: f3
 
 #[test]
 fn imatrix_quantize_q6k() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -514,7 +514,7 @@ fn imatrix_quantize_q6k() -> Result<()> {
 
 #[test]
 fn imatrix_quantize_q5k() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -559,7 +559,7 @@ fn imatrix_quantize_q4k() -> Result<()> {
     // }
     // dbg!(&data["blk.0.attn_q.weight"].len());
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -597,7 +597,7 @@ fn imatrix_quantize_q4k() -> Result<()> {
 
 #[test]
 fn imatrix_quantize_q3k() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -635,7 +635,7 @@ fn imatrix_quantize_q3k() -> Result<()> {
 
 #[test]
 fn imatrix_quantize_q2k() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
 
     let mut row_counts = 0f64;
     let mut ncall = 0f64;
@@ -1254,7 +1254,7 @@ quantized_matmul!(
 fn quantized_matmul_q2k() -> Result<()> {
     use k_quants::BlockQ2K;
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1280,7 +1280,7 @@ fn quantized_matmul_q2k() -> Result<()> {
 fn quantized_matmul_q3k() -> Result<()> {
     use k_quants::BlockQ3K;
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1306,7 +1306,7 @@ fn quantized_matmul_q3k() -> Result<()> {
 fn quantized_matmul_q4k() -> Result<()> {
     use k_quants::BlockQ4K;
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1332,7 +1332,7 @@ fn quantized_matmul_q4k() -> Result<()> {
 fn quantized_matmul_q5k() -> Result<()> {
     use k_quants::BlockQ5K;
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1359,7 +1359,7 @@ fn quantized_matmul_q5k() -> Result<()> {
 fn quantized_matmul_q6k() -> Result<()> {
     use k_quants::BlockQ6K;
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);
@@ -1384,7 +1384,7 @@ fn quantized_matmul_q6k() -> Result<()> {
 fn quantized_matmul_q8k() -> Result<()> {
     use k_quants::BlockQ8K;
 
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let (m, k, n) = (11, 512, 21);
     let (lhs, rhs, mm) = get_random_tensors(m, k, n, cpu)?;
     assert_eq!(mm.dims(), [m, n]);

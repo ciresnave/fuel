@@ -51,7 +51,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let v_data = rand_f32(&[b, h, sk, d], 3);
     let scale = 1.0_f32 / (d as f32).sqrt();
 
-    let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]));
+    let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
 
@@ -60,7 +60,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let fa = fa_out.realize_f32();
 
     // Path B: explicit matmul+softmax composition.
-    let q2 = LazyTensor::from_f32(q_data, Shape::from_dims(&[b, h, sq, d]));
+    let q2 = LazyTensor::from_f32(q_data, Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k2 = q2.const_f32_like(k_data, Shape::from_dims(&[b, h, sk, d]));
     let v2 = q2.const_f32_like(v_data, Shape::from_dims(&[b, h, sk, d]));
     let composed = composed_attention(&q2, &k2, &v2, scale);
@@ -88,7 +88,7 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
     let v_data = rand_f32(&[b, h, sk, d], 6);
     let scale = 1.0_f32 / (d as f32).sqrt();
 
-    let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]));
+    let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let fa_out = q.flash_attn(&k, &v, None, scale, true, None, None, None).realize_f32();

@@ -227,7 +227,7 @@ impl WhisperModel {
             "forward_encoder: mel has {} elements, expected {}×{}",
             mel.len(), n_mel, mel_time
         );
-        let mel_t = LazyTensor::from_f32(mel.to_vec(), Shape::from_dims(&[1, n_mel, mel_time]));
+        let mel_t = LazyTensor::from_f32(mel.to_vec(), Shape::from_dims(&[1, n_mel, mel_time]), &crate::Device::cpu());
 
         // --- conv stem (pre-attention downsample) ------------------------
         // conv1: kernel=3, stride=1, padding=1 → [1, d, T]
@@ -357,7 +357,7 @@ impl WhisperModel {
 
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         for _ in 0..max_new_tokens {
-            let encoder_t = LazyTensor::from_f32(encoder_out.clone(), enc_shape.clone());
+            let encoder_t = LazyTensor::from_f32(encoder_out.clone(), enc_shape.clone(), &crate::Device::cpu());
             let logits = self.forward_decoder(&tokens, &encoder_t);
             let flat = logits.realize_f32();
             // logits shape is [1, seq, vocab]. Pick the last row.

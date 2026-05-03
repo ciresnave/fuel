@@ -19,6 +19,14 @@ use fuel_graph_cpu::CpuBackend;
 use fuel_graph_executor::{GraphBackend, GraphExecutor};
 use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
 
+
+/// Phase 7.5 G2: tests need a real device for slot-populating
+/// constructors. Singleton CpuBackendDevice via OnceLock.
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+        = std::sync::OnceLock::new();
+    D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+}
 fn almost_equal(a: &[f32], b: &[f32], tol: f32) -> Result<(), String> {
     if a.len() != b.len() {
         return Err(format!("length mismatch: {} vs {}", a.len(), b.len()));
@@ -45,6 +53,7 @@ fn build_graph() -> Tensor {
     let x = Tensor::from_f32(
         (0..24).map(|i| (i as f32) * 0.1 - 1.0).collect::<Vec<_>>(),
         Shape::from_dims(&[4, 6]),
+        cpu_dev(),
     );
     let w = x.const_f32_like(
         (0..24).map(|i| ((i * 7) % 13) as f32 * 0.05 - 0.4).collect::<Vec<_>>(),
@@ -104,6 +113,7 @@ fn build_rmsnorm_like_graph() -> Tensor {
     let x = Tensor::from_f32(
         (0..24).map(|i| (i as f32) * 0.1 - 0.5).collect::<Vec<_>>(),
         Shape::from_dims(&[3, 8]),
+        cpu_dev(),
     );
     // mean along last dim
     let sum = x.sum_dim(1);
@@ -144,6 +154,7 @@ fn build_tinyllama_scale_reduce() -> Tensor {
     let x = Tensor::from_f32(
         (0..n).map(|i| ((i as f32) * 0.001).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[1, seq, hidden]),
+        cpu_dev(),
     );
     // Just square + sum along last dim (matches RMSNorm's inner loop).
     x.sqr().sum_dim(2)
@@ -160,6 +171,7 @@ fn build_chained_rmsnorm_graph(n_norms: usize) -> Tensor {
     let mut x = Tensor::from_f32(
         (0..n).map(|i| ((i as f32) * 0.001).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[1, seq, hidden]),
+        cpu_dev(),
     );
     for _ in 0..n_norms {
         // RMSNorm-ish: sqrt(mean(x^2) + eps), then x / rms.
@@ -242,6 +254,7 @@ fn build_index_select_graph() -> Tensor {
     let table = Tensor::from_f32(
         (0..40).map(|i| (i as f32) * 0.1).collect::<Vec<_>>(),
         Shape::from_dims(&[10, 4]),
+        cpu_dev(),
     );
     let ids = table.const_u32_like(
         vec![2_u32, 5, 9],
@@ -352,7 +365,7 @@ fn vulkan_trains_linear_regression_sgd() {
     let w_final = state.param_to_host("w", &exe).unwrap()[0];
     let b_final = state.param_to_host("b", &exe).unwrap()[0];
     eprintln!("vulkan SGD final: w = {w_final}, b = {b_final}");
-    let _ = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1])); // silence unused-import
+    let _ = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev()); // silence unused-import
     assert!((w_final - 2.0).abs() < 0.1, "w={w_final}");
     assert!((b_final - 3.0).abs() < 0.5, "b={b_final}");
 }
@@ -390,6 +403,7 @@ fn build_rope_graph(batch: usize, heads: usize, seq: usize, head_dim: usize, see
     let x = Tensor::from_f32(
         (0..n).map(|i| (((i as u32) ^ seed) as f32 * 1e-4).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[batch, heads, seq, head_dim]),
+        cpu_dev(),
     );
     let cos = x.const_f32_like(
         (0..(seq * head_dim))
@@ -471,6 +485,7 @@ fn build_rope_strided_graph(batch: usize, heads: usize, seq: usize, head_dim: us
     let x = Tensor::from_f32(
         (0..n).map(|i| (((i as u32) ^ seed) as f32 * 1e-4).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[batch, seq, heads, head_dim]),
+        cpu_dev(),
     );
     // Permute [0,2,1,3] → [batch, heads, seq, head_dim].
     // With the generalized lazy permute, this is a zero-copy view.
@@ -498,6 +513,7 @@ fn build_rope_strided_ref(batch: usize, heads: usize, seq: usize, head_dim: usiz
     let x = Tensor::from_f32(
         (0..n).map(|i| (((i as u32) ^ seed) as f32 * 1e-4).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[batch, seq, heads, head_dim]),
+        cpu_dev(),
     );
     let x_perm = x.permute(&[0, 2, 1, 3]);
     // Use the decomposed path which materializes via get_gt_c anyway.
@@ -557,6 +573,7 @@ fn build_concat_strided_graph(batch: usize, heads: usize, cached_len: usize, fre
     let cached = Tensor::from_f32(
         (0..cached_n).map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[batch, heads, cached_len, head_dim]),
+        cpu_dev(),
     );
     // Fresh: created as [batch, fresh_len, heads, head_dim], then permuted
     // to [batch, heads, fresh_len, head_dim] — lazy stride view.
@@ -1203,6 +1220,7 @@ fn build_qmatmul_graph(m: usize, k: usize, n: usize, seed: u32) -> Tensor {
     let a = Tensor::from_f32(
         (0..m * k).map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[m, k]),
+        cpu_dev(),
     );
     let w = a.const_u32_like(w_u32, Shape::from_dims(&[n * (k / 32) * 18 / 4]));
     a.qmatmul(&w, fuel_graph::QuantType::Q4_0, k, n)
@@ -1246,6 +1264,7 @@ fn build_qmatmul_q4_km_graph(m: usize, k: usize, n: usize, seed: u32) -> Tensor 
     let a = Tensor::from_f32(
         (0..m * k).map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[m, k]),
+        cpu_dev(),
     );
     // W blob: n_blocks * 144 bytes = n_blocks * 36 u32s.
     let w = a.const_u32_like(w_u32, Shape::from_dims(&[n_blocks * 36]));
@@ -1289,6 +1308,7 @@ fn build_binary_strided_graph(batch: usize, seq: usize, dim: usize, seed: u32) -
     let x = Tensor::from_f32(
         (0..n).map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin()).collect::<Vec<_>>(),
         Shape::from_dims(&[batch, seq, dim]),
+        cpu_dev(),
     );
     let gain = x.const_f32_like(
         (0..dim).map(|i| 0.5 + ((i as f32) * 0.01).cos() * 0.3).collect::<Vec<_>>(),
@@ -1336,6 +1356,7 @@ fn build_rms_norm_backward_root(rows: usize, cols: usize, seed: u32) -> Tensor {
     let x = Tensor::from_f32(
         (0..n).map(|i| (((i as u32) ^ seed) as f32 * 1e-3).sin() * 0.5).collect::<Vec<_>>(),
         Shape::from_dims(&[rows, cols]),
+        cpu_dev(),
     );
     let y = x.rms_norm_last_dim(1e-6);
     let target = x.const_f32_like(
@@ -1386,6 +1407,7 @@ fn build_gemv_graph(k: usize, n: usize, k_seed: u32) -> Tensor {
     let x = Tensor::from_f32(
         (0..k).map(|i| ((i as u32 ^ k_seed) as f32).sin() * 0.1).collect::<Vec<_>>(),
         Shape::from_dims(&[1, k]),
+        cpu_dev(),
     );
     let w = x.const_f32_like(
         (0..(k * n))
@@ -1610,7 +1632,7 @@ fn build_bf16_mixed_matmul_graph(m: usize, k: usize, n: usize, seed: u32) -> Ten
             bf16::from_f32((w as i32 as f32 * 1e-9).cos() * 0.1)
         })
         .collect();
-    let a = Tensor::from_f32(act_f32, Shape::from_dims(&[m, k]));
+    let a = Tensor::from_f32(act_f32, Shape::from_dims(&[m, k]), cpu_dev());
     let w = a.const_bf16_like(w_bf16, Shape::from_dims(&[k, n]));
     a.matmul(&w)
 }
@@ -1990,7 +2012,7 @@ fn vulkan_const_pool_lru_runtime_eviction_demo() {
     let _keep_b = StdArc::clone(&b_data);
     let _keep_c = StdArc::clone(&c_data);
 
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[256]));
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[256]), cpu_dev());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[256]));
     let c = a.const_f32_like(c_data, Shape::from_dims(&[256]));
 

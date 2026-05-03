@@ -666,6 +666,23 @@ fn op_short_name(op: &Op) -> &'static str {
     }
 }
 
+/// G2 helper: convert a `ConstData` into a `HostBuffer` by copying out
+/// the typed slice. This is the (only) path through which the Arc-
+/// shared host bytes get owned by a fresh Vec backing a `HostBuffer`.
+/// The caller hands the `HostBuffer` to a backend's
+/// `storage_from_host_buffer_owned_dyn` to allocate the device-resident
+/// Storage that the graph slot then owns.
+fn const_data_into_host_buffer(data: ConstData) -> fuel_core_types::HostBuffer {
+    use fuel_core_types::HostBuffer;
+    match data {
+        ConstData::F32(v) => HostBuffer::F32(v.to_vec()),
+        ConstData::F64(v) => HostBuffer::F64(v.to_vec()),
+        ConstData::BF16(v) => HostBuffer::BF16(v.to_vec()),
+        ConstData::F16(v) => HostBuffer::F16(v.to_vec()),
+        ConstData::U32(v) => HostBuffer::U32(v.to_vec()),
+    }
+}
+
 /// Concrete data stored on a `Const` node. One variant per supported
 /// dtype; the executor matches on the variant to extract the correctly
 /// typed buffer.
@@ -1079,25 +1096,48 @@ impl Tensor {
     ///
     /// `data` takes `impl Into<Arc<[f32]>>` so both `Vec<f32>` (one-time
     /// conversion at the call site) and `Arc<[f32]>` (free clone that
-    /// shares buffers across forward passes) work without changing any
-    /// existing callers.
-    pub fn from_f32(data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
-        Self::from_const(ConstData::F32(data.into()), shape)
+    /// shares buffers across forward passes) work.
+    ///
+    /// Phase 7.5 work item G2: `device` is the device on which the
+    /// realized Storage is allocated. The graph's storage_map slot is
+    /// populated with that Storage and `Op::Const(None)` is emitted —
+    /// no host-side `ConstData` payload rides on the node.
+    pub fn from_f32(
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
+        Self::from_arc(ConstData::F32(data.into()), shape, device)
     }
 
     /// Build a `Const` tensor from an `f64` slice and shape on a fresh graph.
-    pub fn from_f64(data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
-        Self::from_const(ConstData::F64(data.into()), shape)
+    /// `device` selects where the realized Storage is allocated.
+    pub fn from_f64(
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
+        Self::from_arc(ConstData::F64(data.into()), shape, device)
     }
 
     /// Build a `Const` tensor from a `bf16` slice and shape on a fresh graph.
-    pub fn from_bf16(data: impl Into<Arc<[bf16]>>, shape: impl Into<Shape>) -> Self {
-        Self::from_const(ConstData::BF16(data.into()), shape)
+    /// `device` selects where the realized Storage is allocated.
+    pub fn from_bf16(
+        data: impl Into<Arc<[bf16]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
+        Self::from_arc(ConstData::BF16(data.into()), shape, device)
     }
 
     /// Build a `Const` tensor from an `f16` slice and shape on a fresh graph.
-    pub fn from_f16(data: impl Into<Arc<[f16]>>, shape: impl Into<Shape>) -> Self {
-        Self::from_const(ConstData::F16(data.into()), shape)
+    /// `device` selects where the realized Storage is allocated.
+    pub fn from_f16(
+        data: impl Into<Arc<[f16]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
+        Self::from_arc(ConstData::F16(data.into()), shape, device)
     }
 
     /// Build a `Const` tensor from a `u32` slice and shape on a fresh
@@ -1105,14 +1145,39 @@ impl Tensor {
     /// scatter / index_select. `u32` is the index type all real fuel
     /// backends use (Candle CPU, CUDA, Metal), so keeping the reference
     /// on the same type means oracle-equivalence tests do not need any
-    /// index-type translation.
-    pub fn from_u32(data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
-        Self::from_const(ConstData::U32(data.into()), shape)
+    /// index-type translation. `device` selects where the realized
+    /// Storage is allocated.
+    pub fn from_u32(
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
+        Self::from_arc(ConstData::U32(data.into()), shape, device)
     }
 
     /// Build a `Const` tensor from any [`ConstData`] value on a fresh graph.
     /// The per-dtype `from_*` methods funnel through this.
-    pub fn from_const(data: ConstData, shape: impl Into<Shape>) -> Self {
+    ///
+    /// Phase 7.5 work item G2: `device` selects where the realized
+    /// Storage is allocated. The graph's storage_map slot is
+    /// populated with that Storage and `Op::Const(None)` is emitted —
+    /// no host-side `ConstData` payload rides on the node.
+    pub fn from_const(
+        data: ConstData,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
+        Self::from_arc(data, shape, device)
+    }
+
+    /// G2 internal funnel: build the storage on `device`, register the
+    /// slot, emit `Op::Const(None)`. Both `from_const` (public) and the
+    /// per-dtype `from_*` methods delegate here.
+    fn from_arc(
+        data: ConstData,
+        shape: impl Into<Shape>,
+        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+    ) -> Self {
         let shape = shape.into();
         assert_eq!(
             data.elem_count(),
@@ -1122,13 +1187,23 @@ impl Tensor {
             shape.elem_count(),
         );
         let dtype = data.dtype();
+        let buf = const_data_into_host_buffer(data);
+        let backend_storage = device
+            .storage_from_host_buffer_owned_dyn(buf)
+            .expect("Tensor::from_const: device.storage_from_host_buffer_owned_dyn failed");
+        let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
         let graph = Arc::new(RwLock::new(Graph::new()));
-        let id = graph.write().unwrap().push(Node {
-            op:     Op::Const(Some(data)),
-            inputs: vec![],
-            shape,
-            dtype,
-        });
+        let id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const(None),
+                inputs: vec![],
+                shape,
+                dtype,
+            });
+            g.set_storage(id, storage_arc);
+            id
+        };
         Self { graph, id }
     }
 
@@ -1177,36 +1252,76 @@ impl Tensor {
     /// Build a second `Const` tensor that lives on the same graph as
     /// `self`. Use this to add more inputs to an existing computation.
     ///
-    /// Pass an `Arc<[f32]>` when you already have one (e.g. model
-    /// weights loaded once at startup) to avoid any copy; pass a
-    /// `Vec<f32>` when you're building fresh data inline.
-    pub fn const_f32_like(&self, data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
-        self.const_like(ConstData::F32(data.into()), shape)
+    /// Phase 7.5 G2: the realized Storage is allocated on the device
+    /// derived from `self`'s graph (any existing slot's device — the
+    /// graph always has at least one slot-bearing leaf by the time
+    /// const_*_like is called). For cross-device const construction,
+    /// build a fresh graph with [`Tensor::from_f32`] and link via
+    /// [`Op::Move`] / [`Op::Copy`].
+    pub fn const_f32_like(
+        &self,
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        self.const_like_arc(ConstData::F32(data.into()), shape)
     }
 
     /// Build a second `Const f64` tensor on the same graph as `self`.
-    pub fn const_f64_like(&self, data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
-        self.const_like(ConstData::F64(data.into()), shape)
+    pub fn const_f64_like(
+        &self,
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        self.const_like_arc(ConstData::F64(data.into()), shape)
     }
 
     /// Build a second `Const bf16` tensor on the same graph as `self`.
-    pub fn const_bf16_like(&self, data: impl Into<Arc<[bf16]>>, shape: impl Into<Shape>) -> Self {
-        self.const_like(ConstData::BF16(data.into()), shape)
+    pub fn const_bf16_like(
+        &self,
+        data: impl Into<Arc<[bf16]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        self.const_like_arc(ConstData::BF16(data.into()), shape)
     }
 
     /// Build a second `Const f16` tensor on the same graph as `self`.
-    pub fn const_f16_like(&self, data: impl Into<Arc<[f16]>>, shape: impl Into<Shape>) -> Self {
-        self.const_like(ConstData::F16(data.into()), shape)
+    pub fn const_f16_like(
+        &self,
+        data: impl Into<Arc<[f16]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        self.const_like_arc(ConstData::F16(data.into()), shape)
     }
 
     /// Build a second `Const u32` (index) tensor on the same graph as `self`.
-    pub fn const_u32_like(&self, data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
-        self.const_like(ConstData::U32(data.into()), shape)
+    pub fn const_u32_like(
+        &self,
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        self.const_like_arc(ConstData::U32(data.into()), shape)
     }
 
     /// Build a second `Const` tensor on the same graph as `self` from any
     /// [`ConstData`] value.
-    pub fn const_like(&self, data: ConstData, shape: impl Into<Shape>) -> Self {
+    pub fn const_like(
+        &self,
+        data: ConstData,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        self.const_like_arc(data, shape)
+    }
+
+    /// G2 internal funnel for the per-graph const_*_like family. The
+    /// device is derived from `self`'s graph slot (any existing one)
+    /// so callers don't have to thread a device through hot paths
+    /// like RoPE table construction or LoRA application — the const
+    /// goes on the same device as the graph it joins.
+    fn const_like_arc(
+        &self,
+        data: ConstData,
+        shape: impl Into<Shape>,
+    ) -> Self {
         let shape = shape.into();
         assert_eq!(
             data.elem_count(),
@@ -1216,12 +1331,23 @@ impl Tensor {
             shape.elem_count(),
         );
         let dtype = data.dtype();
-        let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Const(Some(data)),
-            inputs: vec![],
-            shape,
-            dtype,
-        });
+        let buf = const_data_into_host_buffer(data);
+        let device = pick_device_from_graph(&self.graph);
+        let backend_storage = device
+            .storage_from_host_buffer_owned_dyn(buf)
+            .expect("Tensor::const_like: device.storage_from_host_buffer_owned_dyn failed");
+        let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
+        let id = {
+            let mut g = self.graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const(None),
+                inputs: vec![],
+                shape,
+                dtype,
+            });
+            g.set_storage(id, storage_arc);
+            id
+        };
         Self {
             graph: self.graph.clone(),
             id,
@@ -2126,6 +2252,8 @@ impl Tensor {
             (v[rank - 2], v[rank - 1])
         };
         let (cos, sin) = build_rope_tables(base, start_pos, seq, d);
+        // Phase 7.5 G2: const_*_like derives the device from self's
+        // graph internally — RoPE tables go on the same device as self.
         let cos_t = self.const_f32_like(cos, Shape::from_dims(&[seq, d]));
         let sin_t = self.const_f32_like(sin, Shape::from_dims(&[seq, d]));
         self.rope_with_tables(&cos_t, &sin_t)
@@ -4564,6 +4692,14 @@ pub fn build_rope_tables(
 /// Only float dtypes are supported here — integer/index tensors never
 /// appear as gradients, so a `U32` call indicates a bug in a backward
 /// rule rather than a missing feature.
+///
+/// Phase 7.5 G2 transitional: gradient consts still use the legacy
+/// Op::Const(Some(ConstData)) path. The slot-only path (Op::Const(None)
+/// + storage_map) is the long-run target, but build_filled_const runs
+/// inside backward() in many places where the device-derivation
+/// helper hits unexpected graph states. Until step 3 collapses
+/// ConstData entirely, gradient consts are the one remaining
+/// caller of the Some-data branch.
 fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f64) -> NodeId {
     let n = shape.elem_count();
     let data = match dtype {
@@ -4579,6 +4715,26 @@ fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f6
         ),
     };
     push_node(graph, Op::Const(Some(data)), vec![], shape, dtype)
+}
+
+/// G2 helper: walk the graph for any populated slot and return its
+/// device. Used by gradient builders that don't have an explicit
+/// device parameter — the graph always has at least one slot-bearing
+/// Const leaf by the time backward() runs (the forward pass's inputs
+/// are slot-rooted Const leaves), so this can be relied on.
+fn pick_device_from_graph(graph: &SharedGraph) -> Arc<dyn fuel_core_types::DynBackendDevice> {
+    let g = graph.read().unwrap();
+    for i in 0..g.len() {
+        if let Some(slot_arc) = g.storage_for(NodeId(i)) {
+            return slot_arc.read().unwrap().device();
+        }
+    }
+    panic!(
+        "build_filled_const: graph has no populated storage slots; backward \
+         requires at least one slot-bearing Const leaf to pick a gradient \
+         device from. Was the forward pass built with G2-migrated \
+         constructors (from_f32/etc. with explicit &Device)?"
+    )
 }
 
 /// Accumulate a new gradient contribution into the upstream map.
@@ -4617,6 +4773,16 @@ fn accumulate_grad(
 mod tests {
     use super::*;
 
+    /// Phase 7.5 G2: tests need a real device to allocate slot
+    /// storage through the new constructor API. `cpu_dev()` returns a
+    /// stable singleton CpuBackendDevice handle so every call site can
+    /// just pass `cpu_dev()` without per-test boilerplate.
+    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     #[test]
     fn destructive_input_release_is_some_zero() {
         assert_eq!(Op::Release.destructive_input(), Some(0));
@@ -4639,7 +4805,7 @@ mod tests {
     #[test]
     fn conv2d_builder_emits_conv2d_node_with_right_shape() {
         // k=3 s=1 p=1 keeps H and W.
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]));
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]), cpu_dev());
         let w = x.const_f32_like(vec![0.0_f32; 3 * 2 * 3 * 3], Shape::from_dims(&[3, 2, 3, 3]));
         let b = x.const_f32_like(vec![0.0_f32; 3], Shape::from_dims(&[3]));
         let y = x.conv2d(&w, Some(&b), (1, 1), (1, 1), 1);
@@ -4649,7 +4815,7 @@ mod tests {
     #[test]
     fn conv2d_builder_stride_and_no_padding() {
         // k=3 s=2 p=0 on H=W=8 gives (8-3)/2+1 = 3.
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 8 * 8], Shape::from_dims(&[1, 2, 8, 8]));
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 8 * 8], Shape::from_dims(&[1, 2, 8, 8]), cpu_dev());
         let w = x.const_f32_like(vec![0.0_f32; 4 * 2 * 3 * 3], Shape::from_dims(&[4, 2, 3, 3]));
         let y = x.conv2d(&w, None, (2, 2), (0, 0), 1);
         assert_eq!(y.shape().dims(), &[1, 4, 3, 3]);
@@ -4658,7 +4824,7 @@ mod tests {
     #[test]
     fn conv2d_builder_depthwise_groups() {
         // groups=Cin=Cout=4 is the depthwise case. Weight per channel is [Cin/groups=1, kH, kW].
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 4 * 4 * 4], Shape::from_dims(&[1, 4, 4, 4]));
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 4 * 4 * 4], Shape::from_dims(&[1, 4, 4, 4]), cpu_dev());
         let w = x.const_f32_like(vec![0.0_f32; 4 * 1 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
         assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
@@ -4667,7 +4833,7 @@ mod tests {
     #[test]
     fn conv_transpose2d_builder_emits_node_with_right_shape() {
         // Hin=4, Kh=3, s=2, pad=1, out_pad=1 → Hout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
-        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]));
+        let x = Tensor::from_f32(vec![0.0_f32; 1 * 2 * 4 * 4], Shape::from_dims(&[1, 2, 4, 4]), cpu_dev());
         let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3 * 3], Shape::from_dims(&[2, 3, 3, 3]));
         let y = x.conv_transpose2d(&w, (2, 2), (1, 1), (1, 1), (1, 1), 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8, 8]);
@@ -4680,11 +4846,11 @@ mod tests {
         let x = Tensor::from_f32(
             (0..(1*2*4*4)).map(|i| (i as f32) * 0.05 - 0.5).collect::<Vec<f32>>(),
             Shape::from_dims(&[1, 2, 4, 4]),
+            cpu_dev(),
         );
         let w = x.const_f32_like(
             (0..(3*2*3*3)).map(|i| (i as f32) * 0.07 - 0.4).collect::<Vec<f32>>(),
-            Shape::from_dims(&[3, 2, 3, 3]),
-        );
+            Shape::from_dims(&[3, 2, 3, 3]));
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 1);
         let scalar_out = y.sum_all();
         let grads = scalar_out.backward();
@@ -4710,7 +4876,7 @@ mod tests {
 
     #[test]
     fn move_to_device_emits_op_move_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let moved = a.move_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let g = moved.graph().read().unwrap();
         match &g.node(moved.id()).op {
@@ -4726,7 +4892,7 @@ mod tests {
 
     #[test]
     fn copy_to_device_emits_op_copy_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.copy_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let g = b.graph().read().unwrap();
         match &g.node(b.id()).op {
@@ -4742,7 +4908,7 @@ mod tests {
 
     #[test]
     fn release_builder_emits_op_release_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let released = a.release();
         let g = released.graph().read().unwrap();
         assert!(matches!(g.node(released.id()).op, Op::Release));
@@ -4753,13 +4919,13 @@ mod tests {
 
     #[test]
     fn placement_is_none_by_default() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.placement(), None);
     }
 
     #[test]
     fn on_device_sets_placement_hint() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         // Only tag the Add node; the const leaves remain unplaced.
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -4770,7 +4936,7 @@ mod tests {
 
     #[test]
     fn placement_survives_graph_re_reads() {
-        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]));
+        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
         let tagged = a.clone().on_device(DeviceLocation::Cpu);
         // Re-read from a fresh borrow — round-trips through the side-table.
         assert_eq!(tagged.graph().read().unwrap().placement(tagged.id()), Some(DeviceLocation::Cpu));
@@ -4778,18 +4944,22 @@ mod tests {
 
     #[test]
     fn from_f32_creates_single_const_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.graph().read().unwrap().len(), 1);
         assert_eq!(a.shape().dims(), &[3]);
         assert_eq!(a.dtype(), DType::F32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(Some(ConstData::F32(_)))));
+        // Phase 7.5 G2: factory now emits Op::Const(None) + slot.
+        assert!(matches!(node.op, Op::Const(None)));
         assert!(node.inputs.is_empty());
+        // The slot is populated with F32 storage.
+        let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
+        assert_eq!(slot.read().unwrap().dtype(), DType::F32);
     }
 
     #[test]
     fn add_appends_a_node_and_tracks_inputs() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         assert_eq!(c.graph().read().unwrap().len(), 3); // const, const, add
@@ -4803,7 +4973,7 @@ mod tests {
 
     #[test]
     fn chained_ops_all_share_one_graph() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a).sqr().relu();
         assert_eq!(c.graph().read().unwrap().len(), 6); // 2 consts + add + mul + sqr + relu
@@ -4812,7 +4982,7 @@ mod tests {
 
     #[test]
     fn matmul_validates_shapes_and_produces_correct_output_shape() {
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 4]);
@@ -4821,7 +4991,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "shape mismatch")]
     fn add_panics_on_shape_mismatch() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.add(&b);
     }
@@ -4829,7 +4999,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "inner dim mismatch")]
     fn matmul_panics_on_inner_dim_mismatch() {
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 8], Shape::from_dims(&[4, 2]));
         let _ = a.matmul(&b);
     }
@@ -4837,8 +5007,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "must live on the same graph")]
     fn cross_graph_op_is_rejected() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
-        let b = Tensor::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let b = Tensor::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.add(&b);
     }
 
@@ -4846,10 +5016,13 @@ mod tests {
 
     #[test]
     fn from_f64_tags_node_with_f64_dtype() {
-        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.dtype(), DType::F64);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(Some(ConstData::F64(_)))));
+        // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
+        assert!(matches!(node.op, Op::Const(None)));
+        let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
+        assert_eq!(slot.read().unwrap().dtype(), DType::F64);
     }
 
     #[test]
@@ -4857,10 +5030,13 @@ mod tests {
         let a = Tensor::from_bf16(
             vec![bf16::from_f32(1.0), bf16::from_f32(2.0)],
             Shape::from_dims(&[2]),
+            cpu_dev(),
         );
         assert_eq!(a.dtype(), DType::BF16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(Some(ConstData::BF16(_)))));
+        assert!(matches!(node.op, Op::Const(None)));
+        let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
+        assert_eq!(slot.read().unwrap().dtype(), DType::BF16);
     }
 
     #[test]
@@ -4868,16 +5044,19 @@ mod tests {
         let a = Tensor::from_f16(
             vec![f16::from_f32(1.0), f16::from_f32(2.0)],
             Shape::from_dims(&[2]),
+            cpu_dev(),
         );
         assert_eq!(a.dtype(), DType::F16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(Some(ConstData::F16(_)))));
+        assert!(matches!(node.op, Op::Const(None)));
+        let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
+        assert_eq!(slot.read().unwrap().dtype(), DType::F16);
     }
 
     #[test]
     #[should_panic(expected = "dtype mismatch")]
     fn add_panics_on_mixed_dtype() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.add(&b);
     }
@@ -4886,7 +5065,7 @@ mod tests {
 
     #[test]
     fn transpose_swaps_shape_dims() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[3, 2]);
         let node = t.graph().read().unwrap().node(t.id()).clone();
@@ -4897,14 +5076,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "rank ≥ 2")]
     fn transpose_rejects_rank_1() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.transpose();
     }
 
     #[test]
     fn transpose_on_rank_3_swaps_last_two_dims() {
         // [2, 3, 4] → [2, 4, 3]
-        let a = Tensor::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[2, 3, 4]));
+        let a = Tensor::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[2, 4, 3]);
     }
@@ -4914,7 +5093,7 @@ mod tests {
     #[test]
     fn matmul_rank_3_batched_shape() {
         // [2, 3, 4] @ [2, 4, 5] → [2, 3, 5]
-        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]));
+        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -4923,7 +5102,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch dim mismatch")]
     fn matmul_rank_3_rejects_batch_dim_mismatch() {
-        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]));
+        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 60], Shape::from_dims(&[3, 4, 5]));
         let _ = a.matmul(&b);
     }
@@ -4933,7 +5112,7 @@ mod tests {
         // [batch=2, seq=3, k=4] @ [k=4, n=5] → [2, 3, 5]. This is the
         // canonical "linear layer across a batch" pattern and should
         // Just Work without an explicit broadcast_to on the RHS.
-        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]));
+        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 20], Shape::from_dims(&[4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -4942,7 +5121,7 @@ mod tests {
     #[test]
     fn matmul_auto_broadcasts_rank_2_lhs_against_batched_rhs() {
         // [m=3, k=4] @ [batch=2, k=4, n=5] → [2, 3, 5].
-        let a = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let a = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -4951,7 +5130,7 @@ mod tests {
     #[test]
     fn concat_output_shape_sums_along_dim() {
         // [2, 3] concat [2, 4] along dim 1 → [2, 7]
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
         let c = a.concat(&b, 1);
         assert_eq!(c.shape().dims(), &[2, 7]);
@@ -4960,7 +5139,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "non-dim shapes")]
     fn concat_rejects_nondim_shape_mismatch() {
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 12], Shape::from_dims(&[3, 4]));
         let _ = a.concat(&b, 1);
     }
@@ -4968,7 +5147,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "rank mismatch")]
     fn concat_rejects_rank_mismatch() {
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[6]));
         let _ = a.concat(&b, 0);
     }
@@ -4976,7 +5155,7 @@ mod tests {
     #[test]
     fn slice_shrinks_only_the_slice_dim() {
         // [3, 4] slice dim 1, start 1, len 2 → [3, 2]
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let s = x.slice(1, 1, 2);
         assert_eq!(s.shape().dims(), &[3, 2]);
     }
@@ -4984,14 +5163,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds dim size")]
     fn slice_rejects_out_of_bounds_range() {
-        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let _ = x.slice(1, 1, 3); // start=1, len=3 → would need dim>=4
     }
 
     #[test]
     fn broadcast_add_shape_promotes_to_common_shape() {
         // [4, 1] + [1, 3] → [4, 3]
-        let a = Tensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]));
+        let a = Tensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 3], Shape::from_dims(&[1, 3]));
         let c = a.broadcast_add(&b);
         assert_eq!(c.shape().dims(), &[4, 3]);
@@ -5000,7 +5179,7 @@ mod tests {
     #[test]
     fn broadcast_sub_pads_shorter_shape_with_leading_ones() {
         // [3] - [2, 3] → [2, 3]
-        let a = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[2, 3]));
         let c = a.broadcast_sub(&b);
         assert_eq!(c.shape().dims(), &[2, 3]);
@@ -5009,14 +5188,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "incompatible shapes")]
     fn broadcast_add_rejects_incompatible_shapes() {
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
         let _ = a.broadcast_add(&b);
     }
 
     #[test]
     fn argmax_dim_is_u32_and_removes_reduced_dim() {
-        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let am = x.argmax_dim(1);
         assert_eq!(am.dtype(), DType::U32);
         assert_eq!(am.shape().dims(), &[2]);
@@ -5025,13 +5204,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn argmax_dim_rejects_bad_dim() {
-        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let _ = x.argmax_dim(5);
     }
 
     #[test]
     fn index_add_shape_validation() {
-        let base = Tensor::from_f32(vec![0.0; 10], Shape::from_dims(&[10]));
+        let base = Tensor::from_f32(vec![0.0; 10], Shape::from_dims(&[10]), cpu_dev());
         let idx = base.const_u32_like(vec![1, 3, 5], Shape::from_dims(&[3]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         let out = base.index_add(0, &idx, &src);
@@ -5041,7 +5220,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "dtypes must match")]
     fn index_add_rejects_dtype_mismatch() {
-        let base = Tensor::from_f32(vec![0.0; 5], Shape::from_dims(&[5]));
+        let base = Tensor::from_f32(vec![0.0; 5], Shape::from_dims(&[5]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 2], Shape::from_dims(&[2]));
         let src = base.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = base.index_add(0, &idx, &src);
@@ -5049,7 +5228,7 @@ mod tests {
 
     #[test]
     fn scatter_add_validates_index_matches_src() {
-        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
         let out = base.scatter_add(1, &idx, &src);
@@ -5059,7 +5238,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "same shape")]
     fn scatter_add_rejects_index_src_shape_mismatch() {
-        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 1], Shape::from_dims(&[2]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
         let _ = base.scatter_add(1, &idx, &src);
@@ -5068,7 +5247,7 @@ mod tests {
     #[test]
     fn reduce_sum_to_validates_compatibility() {
         // [3, 4] can reduce to [4] (sum along dim 0) or [3, 1] (sum along dim 1).
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let r1 = x.reduce_sum_to(Shape::from_dims(&[4]));
         assert_eq!(r1.shape().dims(), &[4]);
         let r2 = x.reduce_sum_to(Shape::from_dims(&[3, 1]));
@@ -5079,13 +5258,13 @@ mod tests {
     #[should_panic(expected = "incompatible")]
     fn reduce_sum_to_rejects_non_broadcast_target() {
         // [3, 4] cannot reduce to [3, 2] — target must be broadcast-into-source.
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reduce_sum_to(Shape::from_dims(&[3, 2]));
     }
 
     #[test]
     fn reshape_preserves_element_count() {
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let r = x.reshape(Shape::from_dims(&[2, 6]));
         assert_eq!(r.shape().dims(), &[2, 6]);
     }
@@ -5093,21 +5272,21 @@ mod tests {
     #[test]
     #[should_panic(expected = "element count mismatch")]
     fn reshape_rejects_different_element_count() {
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reshape(Shape::from_dims(&[3, 3]));
     }
 
     #[test]
     #[should_panic(expected = "same graph")]
     fn concat_across_graphs_panics() {
-        let a = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]));
-        let b = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
+        let b = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.concat(&b, 0);
     }
 
     #[test]
     fn scalar_ops_preserve_shape_and_dtype() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.add_scalar(5.0).mul_scalar(2.0).powi(2).clamp(0.0, 100.0);
         assert_eq!(y.shape().dims(), &[3]);
         assert_eq!(y.dtype(), DType::F32);
@@ -5115,7 +5294,7 @@ mod tests {
 
     #[test]
     fn maximum_requires_matching_shapes() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 1.0, 5.0], Shape::from_dims(&[3]));
         let m = a.maximum(&b);
         assert_eq!(m.shape().dims(), &[3]);
@@ -5124,7 +5303,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "shape mismatch")]
     fn maximum_rejects_shape_mismatch() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.maximum(&b);
     }
@@ -5134,7 +5313,7 @@ mod tests {
     #[test]
     fn topo_order_places_inputs_before_dependents() {
         // Build: c = (a + b) * a
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let sum = a.add(&b);
         let c = sum.mul(&a);
@@ -5153,7 +5332,7 @@ mod tests {
     fn topo_order_visits_each_node_once_when_shared() {
         // (a + a) — `a` appears twice in the Add's inputs but the topo
         // pass should still visit it exactly once.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let double = a.add(&a);
         let order = topo_order(&double.graph().read().unwrap(), double.id());
         assert_eq!(order.len(), 2);
@@ -5173,7 +5352,7 @@ mod tests {
         // topo_order_multi(&[add1, add2]) must contain all 5 nodes
         // (a, b, c, add1, add2) with a before add1/add2 and b before
         // add1 and c before add2.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.const_f32_like(vec![5.0, 6.0], Shape::from_dims(&[2]));
         let add1 = a.add(&b);
@@ -5196,10 +5375,12 @@ mod tests {
     fn backward_of_lone_const_seeds_ones() {
         // backward(a) gives a = 1s (the root's upstream is a ones tensor,
         // which is the gradient stored for the root itself).
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let grads = a.backward();
         let g_a = grads.get(&a).expect("root gets a seed gradient");
-        // The seed is a Const ones node of matching shape.
+        // The seed is a Const ones node of matching shape. Phase 7.5
+        // G2 transitional: gradient consts still use the legacy
+        // Op::Const(Some(data)) path until step 3 collapses ConstData.
         let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
         assert!(matches!(node.op, Op::Const(Some(ConstData::F32(_)))));
         assert_eq!(g_a.shape().dims(), &[3]);
@@ -5210,7 +5391,7 @@ mod tests {
         // c = a + b  ⇒  dc/da = 1, dc/db = 1.
         // Upstream seed is a ones tensor. So grad_a and grad_b are both
         // the same ones node (no new math emitted for Add's backward).
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let grads = c.backward();
@@ -5225,7 +5406,7 @@ mod tests {
         // c = a * b  ⇒  dc/da = b, dc/db = a (upstream is 1s).
         // The backward pass should emit two new Mul nodes (upstream * b,
         // upstream * a).
-        let a = Tensor::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![5.0, 7.0], Shape::from_dims(&[2]));
         let c = a.mul(&b);
         let nodes_before = c.graph().read().unwrap().len();
@@ -5248,7 +5429,7 @@ mod tests {
         // After backward, the gradient for a should be an Add node
         // combining the two Mul contributions (one from each input slot
         // of the forward Mul).
-        let a = Tensor::from_f32(vec![3.0, 5.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![3.0, 5.0], Shape::from_dims(&[2]), cpu_dev());
         let c = a.mul(&a);
         let grads = c.backward();
         let g_a = grads.get(&a).unwrap();
@@ -5266,7 +5447,7 @@ mod tests {
     fn backward_of_matmul_emits_transpose_and_matmul_nodes() {
         // Forward: Y = A @ B,  A:[2,3], B:[3,4], Y:[2,4].
         // Backward: dA = dY @ B^T (shape [2,3]),  dB = A^T @ dY (shape [3,4]).
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
         let y = a.matmul(&b);
         let grads = y.backward();
@@ -5286,7 +5467,7 @@ mod tests {
 
     #[test]
     fn cast_tags_node_with_target_dtype() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.cast(DType::F64);
         assert_eq!(b.dtype(), DType::F64);
         assert_eq!(b.shape().dims(), &[2]);
@@ -5297,7 +5478,7 @@ mod tests {
     #[test]
     fn broadcast_to_accepts_right_aligned_expansion() {
         // [3] broadcasts to [2, 3]: pad with leading 1, expand.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.broadcast_to(Shape::from_dims(&[2, 3]));
         assert_eq!(b.shape().dims(), &[2, 3]);
     }
@@ -5305,7 +5486,7 @@ mod tests {
     #[test]
     fn broadcast_to_accepts_size_one_expansion() {
         // [3, 1] broadcasts to [3, 4]: size-1 dim expands.
-        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3, 1]));
+        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3, 1]), cpu_dev());
         let b = a.broadcast_to(Shape::from_dims(&[3, 4]));
         assert_eq!(b.shape().dims(), &[3, 4]);
     }
@@ -5314,20 +5495,20 @@ mod tests {
     #[should_panic(expected = "incompatible")]
     fn broadcast_to_rejects_incompatible_dim() {
         // [3] cannot broadcast to [2, 4] — the source dim 3 must match 4.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.broadcast_to(Shape::from_dims(&[2, 4]));
     }
 
     #[test]
     fn sum_all_produces_rank_zero_output() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let s = a.sum_all();
         assert_eq!(s.shape().dims(), &[] as &[usize]);
     }
 
     #[test]
     fn sum_dim_removes_reduced_dim_from_shape() {
-        let a = Tensor::from_f32(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]));
+        let a = Tensor::from_f32(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         // Reducing dim 1 should give shape [2, 4].
         let s = a.sum_dim(1);
         assert_eq!(s.shape().dims(), &[2, 4]);
@@ -5336,13 +5517,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn sum_dim_rejects_bad_dim() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.sum_dim(5);
     }
 
     #[test]
     fn softmax_and_layer_norm_preserve_shape() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev());
         assert_eq!(a.softmax_last_dim().shape().dims(), &[2, 2]);
         assert_eq!(a.layer_norm_last_dim(1e-5).shape().dims(), &[2, 2]);
     }
@@ -5351,7 +5532,7 @@ mod tests {
     fn neg_sub_div_sqrt_log_sin_cos_tanh_sigmoid_all_build() {
         // Smoke test: every new builder produces a node with the expected
         // shape and dtype. Numerical correctness is exercised in exec.rs.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         for tensor in [
             a.neg(),
@@ -5374,15 +5555,18 @@ mod tests {
 
     #[test]
     fn from_u32_tags_node_with_u32_dtype() {
-        let a = Tensor::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]));
+        let a = Tensor::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.dtype(), DType::U32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(Some(ConstData::U32(_)))));
+        // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
+        assert!(matches!(node.op, Op::Const(None)));
+        let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
+        assert_eq!(slot.read().unwrap().dtype(), DType::U32);
     }
 
     #[test]
     fn index_select_produces_shape_with_dim_replaced() {
-        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]));
+        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let idx = data.const_u32_like(vec![0, 2, 1, 0, 2], Shape::from_dims(&[5]));
         let out = data.index_select(0, &idx);
         assert_eq!(out.shape().dims(), &[5, 4]);
@@ -5392,7 +5576,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be U32")]
     fn index_select_rejects_float_index() {
-        let data = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let data = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let bad = data.const_f32_like(vec![0.0, 1.0], Shape::from_dims(&[2]));
         let _ = data.index_select(0, &bad);
     }
@@ -5400,14 +5584,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be rank 1")]
     fn index_select_rejects_multi_dim_index() {
-        let data = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]));
+        let data = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = data.const_u32_like(vec![0, 1, 0, 1], Shape::from_dims(&[2, 2]));
         let _ = data.index_select(0, &idx);
     }
 
     #[test]
     fn gather_output_shape_matches_index_shape() {
-        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]));
+        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         // Index shape [2, 5] — same rank as data (rank 2).
         let idx = data.const_u32_like(vec![0; 10], Shape::from_dims(&[2, 5]));
         let out = data.gather(1, &idx);
@@ -5417,7 +5601,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "same rank")]
     fn gather_rejects_rank_mismatch() {
-        let data = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]));
+        let data = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         // Rank-1 index for rank-2 data → error.
         let idx = data.const_u32_like(vec![0, 1, 0], Shape::from_dims(&[3]));
         let _ = data.gather(1, &idx);
@@ -5428,7 +5612,7 @@ mod tests {
         // Before: this used to panic. After adding Step + Relu backward,
         // it should successfully emit a backward graph rooted in a Mul
         // whose second input is a Step node.
-        let a = Tensor::from_f32(vec![-1.0, 2.0, -3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![-1.0, 2.0, -3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = a.relu();
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
@@ -5449,7 +5633,7 @@ mod tests {
         // Exp's backward rule uses the forward output directly. The
         // gradient for x should be a Mul whose inputs include the
         // forward Exp node (not a new Exp node).
-        let a = Tensor::from_f32(vec![0.0, 1.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![0.0, 1.0], Shape::from_dims(&[2]), cpu_dev());
         let e = a.exp();
         let exp_forward_id = e.id();
         let grads = e.backward();

@@ -65,7 +65,7 @@ impl CustomOp1 for Elu {
 
 #[test]
 fn custom_op1_no_backward() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let t = Tensor::arange(0u32, 12u32, cpu)?.to_dtype(DType::F32)?;
     let t = (t - 5.)?;
     let elu_t = t.apply_op1_no_bwd(&Elu { alpha: 1. })?;
@@ -159,7 +159,7 @@ impl CustomOp1 for EluWithBackward {
 
 #[test]
 fn custom_op1_with_backward() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let t = fuel_core::Var::new(&[-2f32, 0f32, 2f32], cpu)?;
     let elu_t = t.apply_op1(EluWithBackward::new(2.))?;
     assert_eq!(to_vec1_round(&elu_t, 4)?, &[-1.7293, 0.0, 2.0]);
@@ -196,7 +196,7 @@ impl InplaceOp1 for Elu {
 
 #[test]
 fn inplace_op1() -> Result<()> {
-    let cpu = &Device::cpu();
+    let cpu = &fuel_core::Device::cpu();
     let t = Tensor::arange(0u32, 12u32, cpu)?.to_dtype(DType::F32)?;
     let t = (t - 5.)?;
     t.inplace_op1(&Elu { alpha: 1. })?;
