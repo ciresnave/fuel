@@ -74,7 +74,7 @@ fn range_index() -> Result<()> {
 
 #[test]
 fn index_3d() -> Result<()> {
-    let tensor = Tensor::from_iter(0..24u32, &Device::cpu())?.reshape((2, 3, 4))?;
+    let tensor = Tensor::from_iter(0..24u32, &fuel_core::Device::cpu())?.reshape((2, 3, 4))?;
     assert_eq!(tensor.i((0, 0, 0))?.to_scalar::<u32>()?, 0);
     assert_eq!(tensor.i((1, 0, 0))?.to_scalar::<u32>()?, 12);
     assert_eq!(tensor.i((0, 1, 0))?.to_scalar::<u32>()?, 4);

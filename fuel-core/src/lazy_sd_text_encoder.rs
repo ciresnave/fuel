@@ -152,6 +152,7 @@ impl SdTextEncoder {
         let token_emb = LazyTensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
+            &crate::Device::cpu(),
         );
         let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let pos_ids: Vec<u32> = (0..seq as u32).collect();
@@ -586,7 +587,7 @@ mod tests {
         // We build a 1-element graph and compare against the closed form.
         let x_vals = [-2.0_f32, -0.5, 0.0, 0.5, 1.0, 2.0];
         for &v in &x_vals {
-            let x = LazyTensor::from_f32(vec![v], Shape::from_dims(&[1]));
+            let x = LazyTensor::from_f32(vec![v], Shape::from_dims(&[1]), &crate::Device::cpu());
             let y = quick_gelu(&x);
             let out = y.realize_f32()[0];
             let expected = v * (1.0 / (1.0 + (-1.702_f32 * v).exp()));

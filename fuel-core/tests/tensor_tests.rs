@@ -926,8 +926,8 @@ fn embeddings(device: &Device) -> Result<()> {
 #[test]
 fn index_select_fail() -> Result<()> {
     // Check that an error is properly reported on out of bounds.
-    let ids = Tensor::new(&[4u32, 2u32, 1u32], &Device::cpu())?;
-    let t = Tensor::new(&[[0f32, 1f32], [2f32, 3f32], [4f32, 5f32]], &Device::cpu())?;
+    let ids = Tensor::new(&[4u32, 2u32, 1u32], &fuel_core::Device::cpu())?;
+    let t = Tensor::new(&[[0f32, 1f32], [2f32, 3f32], [4f32, 5f32]], &fuel_core::Device::cpu())?;
     let hs = t.index_select(&ids, 0);
     assert!(hs.is_err());
     Ok(())
@@ -1771,7 +1771,7 @@ test_device!(
 // https://github.com/huggingface/fuel/issues/381
 #[test]
 fn randn_hasneg() -> Result<()> {
-    let t = Tensor::randn(0f32, 1f32, 200, &Device::cpu())?.to_vec1::<f32>()?;
+    let t = Tensor::randn(0f32, 1f32, 200, &fuel_core::Device::cpu())?.to_vec1::<f32>()?;
     if t.iter().all(|&v| v >= 0.) {
         fuel_core::bail!("all values in tensors are non-negative")
     }
@@ -1780,7 +1780,7 @@ fn randn_hasneg() -> Result<()> {
 
 #[test]
 fn pad_with_same() -> Result<()> {
-    let t = Tensor::arange(1f32, 5f32, &Device::cpu())?.reshape((2, 2))?;
+    let t = Tensor::arange(1f32, 5f32, &fuel_core::Device::cpu())?.reshape((2, 2))?;
     let t0 = t.pad_with_same(0, 1, 2)?;
     assert_eq!(
         t0.to_vec2::<f32>()?,
@@ -1796,7 +1796,7 @@ fn pad_with_same() -> Result<()> {
 
 #[test]
 fn i64_abs() -> Result<()> {
-    let t = Tensor::new(&[-42i64, 1337], &Device::cpu())?;
+    let t = Tensor::new(&[-42i64, 1337], &fuel_core::Device::cpu())?;
     let t = t.abs()?;
     assert_eq!(t.to_vec1::<i64>()?, [42, 1337]);
     Ok(())
@@ -1804,7 +1804,7 @@ fn i64_abs() -> Result<()> {
 
 #[test]
 fn tril_triu_eye() -> Result<()> {
-    let t = Tensor::tril2(4, DType::F32, &Device::cpu())?;
+    let t = Tensor::tril2(4, DType::F32, &fuel_core::Device::cpu())?;
     assert_eq!(
         t.to_vec2::<f32>()?,
         [
@@ -1814,7 +1814,7 @@ fn tril_triu_eye() -> Result<()> {
             [1.0, 1.0, 1.0, 1.0]
         ],
     );
-    let t = Tensor::triu2(4, DType::F32, &Device::cpu())?;
+    let t = Tensor::triu2(4, DType::F32, &fuel_core::Device::cpu())?;
     assert_eq!(
         t.to_vec2::<f32>()?,
         [
@@ -1824,7 +1824,7 @@ fn tril_triu_eye() -> Result<()> {
             [0.0, 0.0, 0.0, 1.0]
         ]
     );
-    let t = Tensor::eye(4, DType::F32, &Device::cpu())?;
+    let t = Tensor::eye(4, DType::F32, &fuel_core::Device::cpu())?;
     assert_eq!(
         t.to_vec2::<f32>()?,
         [
@@ -1840,7 +1840,7 @@ fn tril_triu_eye() -> Result<()> {
 #[test]
 fn cumsum() -> Result<()> {
     let t = &[3f32, 1., 4., 1., 5.];
-    let t = Tensor::new(t, &Device::cpu())?;
+    let t = Tensor::new(t, &fuel_core::Device::cpu())?;
     assert_eq!(t.cumsum(0)?.to_vec1::<f32>()?, [3., 4., 8., 9., 14.]);
     let t = t.unsqueeze(1)?;
     assert_eq!(
@@ -1852,7 +1852,7 @@ fn cumsum() -> Result<()> {
         [[3.0], [1.0], [4.0], [1.0], [5.0]]
     );
     let t = &[[3f32, 1., 4., 1., 5.], [2., 1., 7., 8., 2.]];
-    let t = Tensor::new(t, &Device::cpu())?;
+    let t = Tensor::new(t, &fuel_core::Device::cpu())?;
     assert_eq!(
         t.cumsum(1)?.to_vec2::<f32>()?,
         [[3.0, 4.0, 8.0, 9.0, 14.0], [2.0, 3.0, 10.0, 18.0, 20.0]],
@@ -1884,12 +1884,12 @@ fn log_sum_exp() -> Result<()> {
             [[1f64, 2., 3.], [4., 5., 6.]],
             [[-1000.0, -999.0, -1001.0], [1000.0, 999.0, 1001.0]],
         ],
-        &Device::cpu(),
+        &fuel_core::Device::cpu(),
     )?;
 
     let output = input.log_sum_exp(D::Minus1)?;
     // The expectations obtained from pytorch.
-    let expected = Tensor::new(&[[3.4076, 6.4076], [-998.5924, 1001.4076]], &Device::cpu())?;
+    let expected = Tensor::new(&[[3.4076, 6.4076], [-998.5924, 1001.4076]], &fuel_core::Device::cpu())?;
     assert_eq!(output.dims(), expected.dims());
     assert_close(&output.flatten_all()?, &expected.flatten_all()?, 0.00001)?;
 
@@ -1907,7 +1907,7 @@ fn log_sum_exp() -> Result<()> {
 
 #[test]
 fn pow() -> Result<()> {
-    let lhs = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &Device::cpu())?;
+    let lhs = Tensor::new(&[[1f32, 2., 3.], [4., 5., 6.]], &fuel_core::Device::cpu())?;
     let rhs = (&lhs - 2.)?;
     let res = lhs.pow(&rhs)?;
     assert_eq!(
@@ -1920,10 +1920,10 @@ fn pow() -> Result<()> {
 #[test]
 fn test_flip_1d() -> Result<()> {
     // 1D: [0, 1, 2, 3, 4]
-    let t = Tensor::arange(0.0, 5.0, &Device::cpu())?.reshape((5,))?;
+    let t = Tensor::arange(0.0, 5.0, &fuel_core::Device::cpu())?.reshape((5,))?;
     let flipped = t.flip(&[0])?;
     // Expected: [4, 3, 2, 1, 0]
-    let expected = Tensor::from_vec(vec![4.0, 3.0, 2.0, 1.0, 0.0], (5,), &Device::cpu())?;
+    let expected = Tensor::from_vec(vec![4.0, 3.0, 2.0, 1.0, 0.0], (5,), &fuel_core::Device::cpu())?;
     fuel_core::test_utils::assert_tensor_eq(&flipped, &expected)?;
     Ok(())
 }
@@ -1933,12 +1933,12 @@ fn test_flip_2d() -> Result<()> {
     // 2D:
     // [[0, 1, 2],
     //  [3, 4, 5]]
-    let t = Tensor::arange(0.0, 6.0, &Device::cpu())?.reshape((2, 3))?;
+    let t = Tensor::arange(0.0, 6.0, &fuel_core::Device::cpu())?.reshape((2, 3))?;
     let flipped = t.flip(&[0, 1])?;
     // Expected:
     // [[5, 4, 3],
     //  [2, 1, 0]]
-    let expected = Tensor::from_vec(vec![5.0, 4.0, 3.0, 2.0, 1.0, 0.0], (2, 3), &Device::cpu())?;
+    let expected = Tensor::from_vec(vec![5.0, 4.0, 3.0, 2.0, 1.0, 0.0], (2, 3), &fuel_core::Device::cpu())?;
     fuel_core::test_utils::assert_tensor_eq(&flipped, &expected)?;
     Ok(())
 }
@@ -1951,7 +1951,7 @@ fn test_flip_3d_channels() -> Result<()> {
     //
     //  [[6,7,8],
     //   [9,10,11]]]
-    let t = Tensor::arange(0.0, 12.0, &Device::cpu())?.reshape((2, 2, 3))?;
+    let t = Tensor::arange(0.0, 12.0, &fuel_core::Device::cpu())?.reshape((2, 2, 3))?;
     let flipped = t.flip(&[2])?;
     // Expected:
     // [[[2,1,0],
@@ -1962,7 +1962,7 @@ fn test_flip_3d_channels() -> Result<()> {
     let expected = Tensor::from_vec(
         vec![2.0, 1.0, 0.0, 5.0, 4.0, 3.0, 8.0, 7.0, 6.0, 11.0, 10.0, 9.0],
         (2, 2, 3),
-        &Device::cpu(),
+        &fuel_core::Device::cpu(),
     )?;
     fuel_core::test_utils::assert_tensor_eq(&flipped, &expected)?;
     Ok(())
@@ -1970,16 +1970,16 @@ fn test_flip_3d_channels() -> Result<()> {
 
 #[test]
 fn tensor_new() -> Result<()> {
-    let t1 = Tensor::new(vec![1f32, 2.0, 3.0], &Device::cpu())?;
+    let t1 = Tensor::new(vec![1f32, 2.0, 3.0], &fuel_core::Device::cpu())?;
     assert_eq!(t1.to_vec1::<f32>()?, [1.0, 2.0, 3.0]);
-    let t2 = Tensor::new(vec![vec![1f32, 2., 3.], vec![4., 5., 6.]], &Device::cpu())?;
+    let t2 = Tensor::new(vec![vec![1f32, 2., 3.], vec![4., 5., 6.]], &fuel_core::Device::cpu())?;
     assert_eq!(t2.to_vec2::<f32>()?, [[1., 2., 3.], [4., 5., 6.]]);
     let t3 = Tensor::new(
         vec![
             vec![vec![1f32, 2., 3.], vec![4., 5., 6.]],
             vec![vec![3f32, 1., 4.], vec![1., 5., 9.]],
         ],
-        &Device::cpu(),
+        &fuel_core::Device::cpu(),
     )?;
     assert_eq!(
         t3.to_vec3::<f32>()?,
@@ -1993,7 +1993,7 @@ fn tensor_new() -> Result<()> {
 
 #[test]
 fn tensor_norm() -> Result<()> {
-    let t = Tensor::new(&[[3., 4.], [0., 0.]], &Device::cpu())?;
+    let t = Tensor::new(&[[3., 4.], [0., 0.]], &fuel_core::Device::cpu())?;
     let norm = t.norm()?;
     assert_eq!(norm.to_scalar::<f64>()?, 5.);
     Ok(())
@@ -2065,7 +2065,7 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
 // the lazy idiom now and be unaffected when B3 wires real semantics.
 #[test]
 fn realize_is_identity_today() -> Result<()> {
-    let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    let a = Tensor::new(&[1f32, 2., 3.], &fuel_core::Device::cpu())?;
     assert!(a.is_realized());
     let b = a.realize()?;
     assert_eq!(a.id(), b.id(), "realize today is an Arc-clone identity");
@@ -2075,7 +2075,7 @@ fn realize_is_identity_today() -> Result<()> {
 
 #[test]
 fn materialize_is_alias_for_realize() -> Result<()> {
-    let a = Tensor::new(&[4f32, 5., 6.], &Device::cpu())?;
+    let a = Tensor::new(&[4f32, 5., 6.], &fuel_core::Device::cpu())?;
     let m = a.materialize()?;
     assert_eq!(a.id(), m.id());
     assert_eq!(m.to_vec1::<f32>()?, vec![4., 5., 6.]);
@@ -2086,7 +2086,7 @@ fn materialize_is_alias_for_realize() -> Result<()> {
 fn realize_after_op_chain() -> Result<()> {
     // Chain a few ops and confirm `.realize()` doesn't disturb values.
     // Pre-B3 it's identity; post-B3 it'll trigger graph execution.
-    let a = Tensor::new(&[1f32, 2., 3., 4.], &Device::cpu())?;
+    let a = Tensor::new(&[1f32, 2., 3., 4.], &fuel_core::Device::cpu())?;
     let b = a.affine(2.0, 1.0)?;
     let c = b.realize()?;
     assert_eq!(c.to_vec1::<f32>()?, vec![3., 5., 7., 9.]);
@@ -2101,7 +2101,7 @@ fn realize_after_op_chain() -> Result<()> {
 // `has_graph_link` / `graph_link` accessors behave correctly.
 #[test]
 fn realized_storage_returns_legacy_arc_today() -> Result<()> {
-    let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    let a = Tensor::new(&[1f32, 2., 3.], &fuel_core::Device::cpu())?;
     let arc = a.realized_storage();
     // Legacy mode: should match what storage_and_layout reads back.
     let (legacy_arc, _layout) = a.storage_and_layout();
@@ -2114,7 +2114,7 @@ fn realized_storage_returns_legacy_arc_today() -> Result<()> {
 
 #[test]
 fn has_graph_link_is_false_for_legacy_tensors() -> Result<()> {
-    let a = Tensor::zeros((2, 3), DType::F32, &Device::cpu())?;
+    let a = Tensor::zeros((2, 3), DType::F32, &fuel_core::Device::cpu())?;
     assert!(!a.has_graph_link());
     assert!(a.graph_link().is_none());
     Ok(())
@@ -2124,7 +2124,7 @@ fn has_graph_link_is_false_for_legacy_tensors() -> Result<()> {
 fn realized_storage_arc_clone_is_cheap() -> Result<()> {
     // Cloning the Arc returned by realized_storage should not allocate a
     // new Storage — it's the same Arc<RwLock<Storage>> as the legacy field.
-    let a = Tensor::new(&[1f32, 2., 3.], &Device::cpu())?;
+    let a = Tensor::new(&[1f32, 2., 3.], &fuel_core::Device::cpu())?;
     let arc1 = a.realized_storage();
     let arc2 = a.realized_storage();
     assert!(std::sync::Arc::ptr_eq(&arc1, &arc2));

@@ -11,6 +11,7 @@
 [dependencies]
     fuel = { workspace = true }
     fuel-core-types = { workspace = true }
+    fuel-cpu-backend = { workspace = true }
     fuel-graph = { workspace = true }
     fuel-cuda-backend = { workspace = true, optional = true }
     fuel-graph-executor = { workspace = true }

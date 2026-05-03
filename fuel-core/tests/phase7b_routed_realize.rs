@@ -20,7 +20,7 @@ fn build_matmul() -> LazyTensor {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]));
+    let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     a.matmul(&b)
 }

@@ -72,7 +72,7 @@ fn single_matmul_cuda_matches_reference_within_tolerance() {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]));
+    let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b);
 
@@ -370,7 +370,7 @@ fn cuda_depthwise_conv2d_matches_reference() {
         .map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let w_data: Vec<f32> = (0..(c * 1 * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]));
+    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]), &fuel_core::Device::cpu());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c); // groups = c → depthwise
     assert_cuda_oracle(&y, 5e-4, 5e-4);

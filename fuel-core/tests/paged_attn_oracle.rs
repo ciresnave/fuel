@@ -33,7 +33,7 @@ fn lazy_paged_attn_decode_round_trip() {
     let cl_data: Vec<u32> = vec![sk as u32; b];
 
     let scale = 1.0_f32 / (d as f32).sqrt();
-    let q  = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]));
+    let q  = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let kc = q.const_f32_like(kc_data.clone(), Shape::from_dims(&[num_blocks, block_size, h, d]));
     let vc = q.const_f32_like(vc_data.clone(), Shape::from_dims(&[num_blocks, block_size, h, d]));
     let bt = q.const_u32_like(bt_data.clone(), Shape::from_dims(&[b, blocks_per_seq]));

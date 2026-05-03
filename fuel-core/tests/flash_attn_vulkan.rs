@@ -63,7 +63,7 @@ fn run_case(label: &str, b: usize, hq: usize, hkv: usize, sq: usize, sk: usize, 
     let k_data = rand_f32(&[b, hkv, sk, d], 2);
     let v_data = rand_f32(&[b, hkv, sk, d], 3);
 
-    let q = LazyTensor::from_f32(q_data, Shape::from_dims(&[b, hq, sq, d]));
+    let q = LazyTensor::from_f32(q_data, Shape::from_dims(&[b, hq, sq, d]), &fuel_core::Device::cpu());
     let k = q.const_f32_like(k_data, Shape::from_dims(&[b, hkv, sk, d]));
     let v = q.const_f32_like(v_data, Shape::from_dims(&[b, hkv, sk, d]));
     let out = q.flash_attn(&k, &v, None, scale, causal, None, None, None);

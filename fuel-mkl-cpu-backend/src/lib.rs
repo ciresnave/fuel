@@ -353,6 +353,14 @@ fn matmul_f32_mkl(a: &RefTensor<f32>, b: &RefTensor<f32>) -> RefTensor<f32> {
 
 #[cfg(test)]
 mod tests {
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     use super::*;
     use fuel_graph::Tensor;
 
@@ -371,6 +379,7 @@ mod tests {
         let a = Tensor::from_f32(
             (0..12).map(|i| i as f32 * 0.1 - 0.5).collect::<Vec<_>>(),
             Shape::from_dims(&[3, 4]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(
             (0..20).map(|i| (i as f32 - 10.0) * 0.05).collect::<Vec<_>>(),
@@ -406,6 +415,7 @@ mod tests {
         let x = Tensor::from_f32(
             (0..(n * c * h * w)).map(|i| ((i as f32) * 1.3e-2).sin()).collect::<Vec<_>>(),
             Shape::from_dims(&[n, c, h, w]),
+            cpu_dev(),
         );
         let weight = x.const_f32_like(
             (0..(c * 1 * k * k)).map(|i| ((i as f32) * 1.7e-2).cos()).collect::<Vec<_>>(),

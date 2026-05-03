@@ -4971,7 +4971,7 @@ mod node_handle_tests {
         // the storage Arc as its slot. After this, `link.storage_for()`
         // returns the Arc.
         let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
-        let link = fuel_graph::Tensor::from_const(const_data, shape.clone());
+        let link = fuel_graph::Tensor::from_const(const_data, shape.clone(), Device::cpu().as_dyn());
         link.graph()
             .write()
             .unwrap()
@@ -5032,7 +5032,7 @@ mod node_handle_tests {
         let storage_arc = legacy.realized_storage();
 
         let const_data = ConstData::F32(Arc::from(vec![5.0_f32, 6.0]));
-        let link = fuel_graph::Tensor::from_const(const_data, shape.clone());
+        let link = fuel_graph::Tensor::from_const(const_data, shape.clone(), Device::cpu().as_dyn());
         link.graph()
             .write()
             .unwrap()
@@ -5047,13 +5047,17 @@ mod node_handle_tests {
     }
 
     /// `from_link` rejects construction when the linked node has no
-    /// storage slot yet — caller must register one first.
+    /// storage slot. After Phase 7.5 G2 step 2, all factory
+    /// constructors slot-populate, so we manually `remove_storage` to
+    /// produce the slotless state this contract guards against.
     #[test]
     fn from_link_errors_without_slot() {
         let const_data = ConstData::F32(Arc::from(vec![1.0_f32]));
-        let link =
-            fuel_graph::Tensor::from_const(const_data, Shape::from_dims(&[1]));
-        // No set_storage call — slot is unpopulated.
+        let link = fuel_graph::Tensor::from_const(
+            const_data, Shape::from_dims(&[1]), Device::cpu().as_dyn(),
+        );
+        // Force the slot empty.
+        link.graph().write().unwrap().remove_storage(link.id());
         let result = from_link(link, BackpropOp::none(), false);
         assert!(result.is_err());
     }

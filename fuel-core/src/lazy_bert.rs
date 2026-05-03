@@ -186,6 +186,7 @@ impl BertModel {
         let word_emb = LazyTensor::from_f32(
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
+            &crate::Device::cpu(),
         );
         let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]));
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();

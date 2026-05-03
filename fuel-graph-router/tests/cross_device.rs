@@ -10,6 +10,14 @@ use fuel_graph_router::{
 };
 use fuel_graph_cpu::CpuBackend;
 
+/// Phase 7.5 G2: tests need a real device for slot-populating
+/// constructors. Singleton CpuBackendDevice via OnceLock.
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+        = std::sync::OnceLock::new();
+    D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+}
+
 /// For each capability a backend advertises, invoke the corresponding
 /// DynBackend method with minimal valid inputs. If the backend declared
 /// the capability but the impl still bails, this returns `Err` — the
@@ -294,7 +302,7 @@ fn router_new_is_empty() {
 fn simple_scheduler_assigns_default_device_to_unplaced_nodes() {
     // Graph with no explicit placement hints. SimpleScheduler should
     // tag every reachable node with the Router's default device.
-    let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
     let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[4]));
     let c = a.add(&b);
     let router = Router::new().add_cpu();
@@ -311,7 +319,7 @@ fn simple_scheduler_assigns_default_device_to_unplaced_nodes() {
 fn simple_scheduler_preserves_explicit_placement_hints() {
     // A node with an explicit placement should keep it, not get
     // overwritten by the default.
-    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
     let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
     let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
     let router = Router::new().add_cpu();
@@ -341,7 +349,7 @@ fn const_pool_limit_evicts_lru_when_budget_exceeded() {
     let _keep_b = StdArc::clone(&b_data);
     let _keep_c = StdArc::clone(&c_data);
 
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[256]));
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[256]), cpu_dev());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[256]));
     let c = a.const_f32_like(c_data, Shape::from_dims(&[256]));
 
@@ -373,7 +381,7 @@ fn const_pool_no_limit_accumulates() {
     let _keep_b = StdArc::clone(&b_data);
     let _keep_c = StdArc::clone(&c_data);
 
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[256]));
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[256]), cpu_dev());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[256]));
     let c = a.const_f32_like(c_data, Shape::from_dims(&[256]));
     let sum_abc = a.add(&b).add(&c);
@@ -397,7 +405,7 @@ fn const_pool_reupload_after_eviction_is_correct() {
     let _keep_a = StdArc::clone(&a_data);
     let _keep_b = StdArc::clone(&b_data);
 
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[4]), cpu_dev());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[4]));
     let c = a.add(&b);
 
@@ -421,7 +429,7 @@ fn op_move_realizes_to_target_with_destructive_semantics() {
     // still return the moved tensor's data intact.
     use fuel_graph_executor::GraphExecutor;
 
-    let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
     let moved = a.move_to_device(DeviceLocation::Cpu);
 
     let mut exec: GraphExecutor<fuel_graph_cpu::CpuBackend> =
@@ -447,7 +455,7 @@ fn op_move_pinned_after_sibling_reader_via_derive_ordering() {
     //   out = b + m = [2, 4, 6, 8]
     use fuel_graph_executor::GraphExecutor;
 
-    let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
     let b = a.relu();
     let m = a.move_to_device(DeviceLocation::Cpu);
     let out = b.add(&m);
@@ -471,7 +479,7 @@ fn release_with_sibling_reader_realizes_both_roots_correctly() {
     // is wrong (e.g., `a` is removed before relu can read it).
     use fuel_graph_executor::GraphExecutor;
 
-    let a = Tensor::from_f32(vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
     let b = a.relu();
     let r = a.release();
 
@@ -495,7 +503,7 @@ fn release_does_not_break_transitive_consumer() {
     // from cache after release.
     use fuel_graph_executor::GraphExecutor;
 
-    let a = Tensor::from_f32(vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
     let b = a.relu();
     let sum = b.sum_all();
     let r = a.release();
@@ -517,7 +525,7 @@ fn op_release_realizes_as_zero_element_marker() {
     // arrives with derive_ordering.
     use fuel_graph_executor::GraphExecutor;
 
-    let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+    let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
     let released = a.release();
 
     let mut exec: GraphExecutor<fuel_graph_cpu::CpuBackend> =
@@ -533,7 +541,7 @@ fn rule_scheduler_default_pipeline_matches_simple_on_flat_graph() {
     // final placement as SimpleScheduler: every node on default.
     // ConstLowering finds nothing to refine because consumers all
     // agree on default anyway.
-    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
     let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
     let c = a.add(&b);
     let router = Router::new().add_cpu();
@@ -549,7 +557,7 @@ fn rule_scheduler_lowers_const_placement_when_consumer_placed() {
     // Then we override c's placement to Vulkan via explicit hint.
     // ConstLoweringRule should pull a, b onto Vulkan to match c's
     // consumer placement — saving the Copies insert_copies would emit.
-    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
     let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
     let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
     let router = Router::new().add_cpu();
@@ -567,7 +575,7 @@ fn scheduler_plan_then_apply_then_insert_copies_roundtrip() {
     // Full pipeline demo: SimpleScheduler → apply → insert_copies.
     // With SimpleScheduler-on-CPU and no placement hints, everything
     // lands on Cpu and no Copies should get inserted.
-    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]));
+    let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
     let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
     let c = a.add(&b);
     let router = Router::new().add_cpu();
@@ -636,6 +644,7 @@ fn router_cpu_only_single_device_matmul() {
     let a = Tensor::from_f32(
         vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
         Shape::from_dims(&[2, 3]),
+        cpu_dev(),
     );
     let b = a.const_f32_like(
         vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -656,6 +665,7 @@ fn router_cpu_copy_to_cpu_is_identity() {
     let a = Tensor::from_f32(
         vec![7.0, 8.0, 9.0, 10.0],
         Shape::from_dims(&[4]),
+        cpu_dev(),
     );
     let moved = a.copy_to_device(DeviceLocation::Cpu);
 
@@ -715,6 +725,7 @@ fn router_vulkan_default_realizes_graph() {
     let a = Tensor::from_f32(
         vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
         Shape::from_dims(&[2, 3]),
+        cpu_dev(),
     );
     let b = a.const_f32_like(
         vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -747,6 +758,7 @@ fn auto_insert_copies_reconciles_mixed_placement_graph() {
     let a = Tensor::from_f32(
         vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
         Shape::from_dims(&[2, 3]),
+        cpu_dev(),
     );
     let b = a.const_f32_like(
         vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -800,6 +812,7 @@ fn router_graph_with_explicit_moves() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         Shape::from_dims(&[8]),
+        cpu_dev(),
     );
     let moved_cpu = a.copy_to_device(DeviceLocation::Cpu);
     let back_vulkan = moved_cpu.copy_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -837,7 +850,7 @@ fn residency_planner_analyzes_vulkan_graph_against_vram_budget() {
     let c_data: StdArc<[f32]> = vec![3.0_f32; 4 * 1024].into();
     let _keep = (StdArc::clone(&a_data), StdArc::clone(&b_data), StdArc::clone(&c_data));
 
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[4 * 1024]));
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[4 * 1024]), cpu_dev());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[4 * 1024]));
     let c = a.const_f32_like(c_data, Shape::from_dims(&[4 * 1024]));
 
@@ -904,6 +917,7 @@ fn cuda_router_default_realizes_graph() {
     let a = Tensor::from_f32(
         vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
         Shape::from_dims(&[2, 3]),
+        cpu_dev(),
     );
     let b = a.const_f32_like(
         vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -947,7 +961,7 @@ fn cuda_residency_eviction_rule_preserves_correctness() {
         //   c    = pad2 * a
         //   out  = b + c
         let a = Tensor::from_f32(
-            vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]))
+            vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
             .on_device(DeviceLocation::Cuda { gpu_id: 0 });
         let b = a.relu();
         let pad = b.neg();
@@ -1028,7 +1042,7 @@ fn cuda_rope_matches_cpu_reference() {
 
         // CPU reference: build graph, realize via CpuBackend.
         let x_cpu = Tensor::from_f32(x_data.clone(),
-            Shape::from_dims(&[outer, seq, head_dim]));
+            Shape::from_dims(&[outer, seq, head_dim]), cpu_dev());
         let cos_cpu = x_cpu.const_f32_like(cos_data.clone(),
             Shape::from_dims(&[seq, head_dim]));
         let sin_cpu = x_cpu.const_f32_like(sin_data.clone(),
@@ -1282,7 +1296,7 @@ fn cuda_rms_norm_last_dim_matches_cpu_reference() {
         let shape = Shape::from_dims(&[n_rows, n_cols]);
 
         // CPU reference
-        let x_cpu = Tensor::from_f32(x_data.clone(), shape.clone());
+        let x_cpu = Tensor::from_f32(x_data.clone(), shape.clone(), cpu_dev());
         let y_cpu_t = x_cpu.rms_norm_last_dim(eps);
         let mut cpu_exec: GraphExecutor<fuel_graph_cpu::CpuBackend> =
             GraphExecutor::new(fuel_graph_cpu::CpuBackend);
@@ -1344,6 +1358,7 @@ fn router_cpu_plus_vulkan_plus_cuda_routes_per_placement() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
         Shape::from_dims(&[2, 3]),
+        cpu_dev(),
     ).on_device(DeviceLocation::Cuda { gpu_id: 0 });
     let b = a.const_f32_like(
         vec![1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],

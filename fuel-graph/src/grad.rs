@@ -137,6 +137,15 @@ mod tests {
     use super::*;
     use crate::{Tensor};
     use fuel_core_types::Shape;
+    use std::sync::Arc;
+
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
 
     /// Confirm that the dispatch hook actually fires for migrated ops:
     /// `dispatch_gradient(Op::Add, ...)` returns Some, indicating the
@@ -144,7 +153,7 @@ mod tests {
     /// for Add still exists as a safety net but should never run.)
     #[test]
     fn dispatch_fires_for_migrated_ops() {
-        let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0_f32, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         // Drive a backward to populate upstream

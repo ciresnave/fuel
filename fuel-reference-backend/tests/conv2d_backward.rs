@@ -11,6 +11,14 @@ use fuel_core_types::Shape;
 use fuel_graph::Tensor;
 use fuel_reference_backend::exec;
 
+
+/// Phase 7.5 G2: tests need a real device for slot-populating
+/// constructors. Singleton CpuBackendDevice via OnceLock.
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+        = std::sync::OnceLock::new();
+    D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+}
 fn realize_f32_vec(t: &Tensor) -> Vec<f32> {
     exec::realize_f32(t).into_vec()
 }
@@ -72,7 +80,7 @@ fn conv2d_backward_matches_finite_difference_stride1_pad1() {
         .collect();
 
     // Analytic: build the graph once, get dX and dW from backward.
-    let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]));
+    let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), cpu_dev());
     let weight = x.const_f32_like(w_data.clone(), Shape::from_dims(&[cout, cin, k, k]));
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), 1);
     let scalar = y.sum_all();
@@ -82,7 +90,7 @@ fn conv2d_backward_matches_finite_difference_stride1_pad1() {
 
     // Numeric dX: hold weights fixed, perturb each x element.
     let dx_numeric = numerical_grad(&x_data, 1e-3, |xs| {
-        let xt = Tensor::from_f32(xs.to_vec(), Shape::from_dims(&[n, cin, h, w]));
+        let xt = Tensor::from_f32(xs.to_vec(), Shape::from_dims(&[n, cin, h, w]), cpu_dev());
         let wt = xt.const_f32_like(w_data.clone(), Shape::from_dims(&[cout, cin, k, k]));
         let yt = xt.conv2d(&wt, None, (1, 1), (pad, pad), 1).sum_all();
         realize_f32_vec(&yt)[0]
@@ -91,7 +99,7 @@ fn conv2d_backward_matches_finite_difference_stride1_pad1() {
 
     // Numeric dW: hold x fixed, perturb each weight element.
     let dw_numeric = numerical_grad(&w_data, 1e-3, |ws| {
-        let xt = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]));
+        let xt = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), cpu_dev());
         let wt = xt.const_f32_like(ws.to_vec(), Shape::from_dims(&[cout, cin, k, k]));
         let yt = xt.conv2d(&wt, None, (1, 1), (pad, pad), 1).sum_all();
         realize_f32_vec(&yt)[0]
@@ -110,7 +118,7 @@ fn conv2d_backward_with_bias() {
     let w_data: Vec<f32> = (0..(cout * cin * k * k)).map(|i| (i as f32) * 0.07).collect();
     let b_data: Vec<f32> = (0..cout).map(|i| (i as f32) * 0.11).collect();
 
-    let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w]));
+    let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w]), cpu_dev());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[cout, cin, k, k]));
     let bias = x.const_f32_like(b_data.clone(), Shape::from_dims(&[cout]));
     let y = x.conv2d(&weight, Some(&bias), (1, 1), (pad, pad), 1);

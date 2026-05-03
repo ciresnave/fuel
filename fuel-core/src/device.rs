@@ -289,6 +289,18 @@ impl Device {
         Device { inner: device }
     }
 
+    /// Borrow the underlying `Arc<dyn DynBackendDevice>`.
+    ///
+    /// Phase 7.5 work item G2: fuel-graph's slot-populating
+    /// constructors (`Tensor::from_f32`, `const_f32_like`, etc.) take
+    /// a `&Arc<dyn DynBackendDevice>` so they can allocate Storage on
+    /// the right device without depending on fuel-core. Callers that
+    /// hold a `&fuel_core::Device` thread it through with
+    /// `dev.as_dyn()`.
+    pub fn as_dyn(&self) -> &Arc<dyn DynBackendDevice> {
+        &self.inner
+    }
+
     /// Returns `true` if this is a custom (third-party) device.
     pub fn is_custom(&self) -> bool {
         !self.is_cpu() && !self.is_cuda() && !self.is_metal()

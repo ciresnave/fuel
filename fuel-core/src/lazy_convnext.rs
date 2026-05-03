@@ -183,7 +183,7 @@ impl ConvNextModel {
             image.len(), cin * s * s,
             "forward: image has {} elements, expected {cin}×{s}×{s}", image.len()
         );
-        let x = LazyTensor::from_f32(image.to_vec(), Shape::from_dims(&[1, cin, s, s]));
+        let x = LazyTensor::from_f32(image.to_vec(), Shape::from_dims(&[1, cin, s, s]), &crate::Device::cpu());
 
         // --- stem: Conv(3, dims[0], k=patch, s=patch) + LN ----------------
         let p = cfg.stem_patch;

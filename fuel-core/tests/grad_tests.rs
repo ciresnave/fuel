@@ -507,7 +507,7 @@ fn binary_grad(device: &Device) -> Result<()> {
 
 #[test]
 fn test_flip_backprop() -> Result<()> {
-    let device = &Device::cpu();
+    let device = &fuel_core::Device::cpu();
 
     // Create a tensor (leaf node) that requires gradients
     let x = Var::ones((2, 2), DType::F64, device)?;

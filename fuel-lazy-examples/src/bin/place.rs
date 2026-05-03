@@ -19,6 +19,14 @@ use fuel_core_types::{DeviceLocation, Shape};
 use fuel_graph::{Op, Tensor};
 use std::sync::Arc;
 
+/// Phase 7.5 G2: example needs a real device for slot-populating
+/// constructors. Singleton CpuBackendDevice via OnceLock.
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+        = std::sync::OnceLock::new();
+    D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Phase 6b end-to-end demo");
     eprintln!("========================");
@@ -35,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: build a heterogeneous graph — three matmul sizes plus
     // a couple of unprofiled ops (Sub, Silu).
-    let root = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+    let root = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), cpu_dev());
     let mk = |elems: usize| Arc::<[f32]>::from(vec![0.0_f32; elems]);
 
     // Tiny matmul: 64×64 @ 64×64 (size_class 12)
@@ -58,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let unprofiled_silu = tiny_mm.silu();
 
     // Step 3: recommend placement under each criterion.
-    let graph = root.graph().borrow();
+    let graph = root.graph().read().unwrap();
     let fallback = DeviceLocation::Cpu;
 
     println!("Per-node placement (graph has {} nodes):", graph.len());
@@ -81,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 4: one-call auto-routing — `auto_place_and_route` does
     // recommend → apply (skip-existing) → insert_copies in one shot.
-    let n_before = root.graph().borrow().len();
+    let n_before = root.graph().read().unwrap().len();
     let _new_roots = auto_place_and_route(
         root.graph(),
         &[tiny_mm.id(), mid_mm.id(), big_mm.id(), unprofiled_sub.id(), unprofiled_silu.id()],
@@ -89,9 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Criterion::Fastest,
         fallback,
     );
-    let n_after = root.graph().borrow().len();
+    let n_after = root.graph().read().unwrap().len();
 
-    let g = root.graph().borrow();
+    let g = root.graph().read().unwrap();
     let mut copies_to: std::collections::BTreeMap<String, usize> = Default::default();
     for i in n_before..n_after {
         if let Op::Copy { target } = &g.node(fuel_graph::NodeId(i)).op {

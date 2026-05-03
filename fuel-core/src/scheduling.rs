@@ -815,7 +815,7 @@ mod tests {
 
         // -- 2) build a graph with two matmuls + one unprofiled op
         //       — all derived from a single root so they share a graph.
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -872,7 +872,7 @@ mod tests {
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);
 
-        let a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]));
+        let a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]), crate::Device::cpu().as_dyn());
         let b = a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
@@ -910,7 +910,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&scratch);
 
         // Build a small graph the planner will actually route.
-        let a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
         let b = a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -985,7 +985,7 @@ mod tests {
             ],
         };
 
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -1033,7 +1033,7 @@ mod tests {
             ],
         };
 
-        let big_a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]));
+        let big_a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]), crate::Device::cpu().as_dyn());
         let big_b = big_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
@@ -1071,7 +1071,7 @@ mod tests {
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);
 
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -1136,7 +1136,7 @@ mod tests {
         let table = DispatchTable::build(&report);
 
         // Build the heterogeneous graph (small + big matmul).
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]));
+        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),

@@ -1320,6 +1320,14 @@ fn eval_scatter_add(
 
 #[cfg(test)]
 mod tests {
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     use super::*;
     use fuel_core_types::Shape;
     use fuel_graph::Tensor;
@@ -1338,14 +1346,14 @@ mod tests {
 
     #[test]
     fn realize_single_const_f32() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let result = realize_f32(&a);
         assert_eq!(result.as_slice(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn realize_add_then_mul_chain() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         // (a + b) * a = [5*1, 7*2, 9*3] = [5, 14, 27]
         let c = a.add(&b).mul(&a);
@@ -1359,6 +1367,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
             Shape::from_dims(&[1, 1, 3, 3]),
+            cpu_dev(),
         );
         let w = x.const_f32_like(vec![1.0], Shape::from_dims(&[1, 1, 1, 1]));
         let y = x.conv2d(&w, None, (1, 1), (0, 0), 1);
@@ -1374,6 +1383,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0; 9],
             Shape::from_dims(&[1, 1, 3, 3]),
+            cpu_dev(),
         );
         let w = x.const_f32_like(vec![1.0; 9], Shape::from_dims(&[1, 1, 3, 3]));
         let b = x.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1]));
@@ -1396,6 +1406,7 @@ mod tests {
                 10.0, 20.0, 30.0, 40.0, // ch 1
             ],
             Shape::from_dims(&[1, 2, 2, 2]),
+            cpu_dev(),
         );
         // Kernel [2, 1, 1, 1] — a single scalar per channel.
         let w = x.const_f32_like(vec![2.0, 0.5], Shape::from_dims(&[2, 1, 1, 1]));
@@ -1412,7 +1423,7 @@ mod tests {
 
     #[test]
     fn realize_matmul_hand_computed() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
@@ -1426,7 +1437,7 @@ mod tests {
 
     #[test]
     fn realize_f64_matmul() {
-        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f64_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
@@ -1441,6 +1452,7 @@ mod tests {
         let a = Tensor::from_bf16(
             vec![bf16::from_f32(1.0), bf16::from_f32(2.0), bf16::from_f32(3.0)],
             Shape::from_dims(&[3]),
+            cpu_dev(),
         );
         let b = a.const_bf16_like(
             vec![bf16::from_f32(4.0), bf16::from_f32(5.0), bf16::from_f32(6.0)],
@@ -1458,6 +1470,7 @@ mod tests {
         let a = Tensor::from_f16(
             vec![f16::from_f32(2.0), f16::from_f32(3.0)],
             Shape::from_dims(&[2]),
+            cpu_dev(),
         );
         let b = a.const_f16_like(
             vec![f16::from_f32(4.0), f16::from_f32(5.0)],
@@ -1473,7 +1486,7 @@ mod tests {
 
     #[test]
     fn cast_f32_to_f64_preserves_values() {
-        let a = Tensor::from_f32(vec![1.0, 2.5, -3.25], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.5, -3.25], Shape::from_dims(&[3]), cpu_dev());
         let b = a.cast(DType::F64);
         let result = realize_f64(&b);
         assert_eq!(result.as_slice(), &[1.0_f64, 2.5, -3.25]);
@@ -1483,7 +1496,7 @@ mod tests {
     fn cast_f64_to_f32_roundtrip() {
         // f64 → f32 → f64 loses precision, but for exactly-representable
         // values it's a no-op.
-        let a = Tensor::from_f64(vec![1.0, 2.5, -3.25], Shape::from_dims(&[3]));
+        let a = Tensor::from_f64(vec![1.0, 2.5, -3.25], Shape::from_dims(&[3]), cpu_dev());
         let b = a.cast(DType::F32).cast(DType::F64);
         let result = realize_f64(&b);
         assert_eq!(result.as_slice(), &[1.0_f64, 2.5, -3.25]);
@@ -1493,7 +1506,7 @@ mod tests {
     fn cast_chain_through_bf16() {
         // f32 → bf16 → f32. Round trip loses precision but small integers
         // are exactly representable.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let b = a.cast(DType::BF16).cast(DType::F32);
         let result = realize_f32(&b);
         assert_eq!(result.as_slice(), &[1.0, 2.0, 3.0, 4.0]);
@@ -1504,7 +1517,7 @@ mod tests {
         // Build the matmul in f64 for precision, then cast the result to
         // f32 for output. This is the canonical "high-precision
         // accumulator, low-precision storage" mixed-precision pattern.
-        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
+        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f64_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
@@ -1519,7 +1532,7 @@ mod tests {
 
     #[test]
     fn realize_neg_and_sub() {
-        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         let c = a.sub(&b);
         assert_eq!(realize_f32(&c).as_slice(), &[9.0, 18.0, 27.0]);
@@ -1529,7 +1542,7 @@ mod tests {
 
     #[test]
     fn realize_div() {
-        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![2.0, 4.0, 5.0], Shape::from_dims(&[3]));
         let c = a.div(&b);
         assert_eq!(realize_f32(&c).as_slice(), &[5.0, 5.0, 6.0]);
@@ -1537,31 +1550,33 @@ mod tests {
 
     #[test]
     fn realize_sqrt_log_sin_cos_tanh_sigmoid_step() {
-        let x = Tensor::from_f32(vec![0.0, 1.0, 4.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![0.0, 1.0, 4.0], Shape::from_dims(&[3]), cpu_dev());
         // sqrt(0, 1, 4) = (0, 1, 2)
         assert_eq!(realize_f32(&x.sqrt()).as_slice(), &[0.0, 1.0, 2.0]);
         // log(e, e², 1) — build a fresh input
         let x2 = Tensor::from_f32(
             vec![std::f32::consts::E, std::f32::consts::E.powi(2), 1.0],
             Shape::from_dims(&[3]),
+            cpu_dev(),
         );
         approx_vec(realize_f32(&x2.log()).as_slice(), &[1.0, 2.0, 0.0], 1e-5);
         // sin(0, pi/2, pi) ≈ (0, 1, 0)
         let x3 = Tensor::from_f32(
             vec![0.0, std::f32::consts::FRAC_PI_2, std::f32::consts::PI],
             Shape::from_dims(&[3]),
+            cpu_dev(),
         );
         approx_vec(realize_f32(&x3.sin()).as_slice(), &[0.0, 1.0, 0.0], 1e-5);
         approx_vec(realize_f32(&x3.cos()).as_slice(), &[1.0, 0.0, -1.0], 1e-5);
         // tanh(0) = 0, tanh(100) ~ 1
-        let x4 = Tensor::from_f32(vec![-100.0, 0.0, 100.0], Shape::from_dims(&[3]));
+        let x4 = Tensor::from_f32(vec![-100.0, 0.0, 100.0], Shape::from_dims(&[3]), cpu_dev());
         let t = realize_f32(&x4.tanh());
         approx_vec(t.as_slice(), &[-1.0, 0.0, 1.0], 1e-5);
         // sigmoid(0) = 0.5, sigmoid(±∞) → (0, 1)
         let s = realize_f32(&x4.sigmoid());
         approx_vec(s.as_slice(), &[0.0, 0.5, 1.0], 1e-5);
         // step: [0, 0, 1]
-        let x5 = Tensor::from_f32(vec![-1.0, 0.0, 2.0], Shape::from_dims(&[3]));
+        let x5 = Tensor::from_f32(vec![-1.0, 0.0, 2.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(realize_f32(&x5.step()).as_slice(), &[0.0, 0.0, 1.0]);
     }
 
@@ -1569,7 +1584,7 @@ mod tests {
 
     #[test]
     fn realize_sum_mean_max_min_all() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0], Shape::from_dims(&[5]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0], Shape::from_dims(&[5]), cpu_dev());
         assert_eq!(realize_f32(&x.sum_all()).as_slice(), &[15.0]);
         assert_eq!(realize_f32(&x.mean_all()).as_slice(), &[3.0]);
         assert_eq!(realize_f32(&x.max_all()).as_slice(), &[5.0]);
@@ -1579,7 +1594,7 @@ mod tests {
     #[test]
     fn realize_axis_reductions() {
         // [[1, 2, 3], [4, 5, 6]]
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
         assert_eq!(realize_f32(&x.sum_dim(1)).as_slice(), &[6.0, 15.0]);
         assert_eq!(realize_f32(&x.mean_dim(1)).as_slice(), &[2.0, 5.0]);
         assert_eq!(realize_f32(&x.max_dim(0)).as_slice(), &[4.0, 5.0, 6.0]);
@@ -1589,14 +1604,14 @@ mod tests {
     #[test]
     fn realize_broadcast_to_matches_ops() {
         // Broadcast a scalar to [3]
-        let a = Tensor::from_f32(vec![7.0], Shape::from_dims(&[]));
+        let a = Tensor::from_f32(vec![7.0], Shape::from_dims(&[]), cpu_dev());
         let b = a.broadcast_to(Shape::from_dims(&[3]));
         assert_eq!(realize_f32(&b).as_slice(), &[7.0, 7.0, 7.0]);
     }
 
     #[test]
     fn realize_softmax_last_dim_sums_to_one() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Shape::from_dims(&[2, 3]), cpu_dev());
         let s = realize_f32(&x.softmax_last_dim());
         for row in 0..2 {
             let total: f32 = s.as_slice()[row * 3..row * 3 + 3].iter().sum();
@@ -1606,7 +1621,7 @@ mod tests {
 
     #[test]
     fn realize_layer_norm_last_dim_zero_mean_unit_variance() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let y = realize_f32(&x.layer_norm_last_dim(1e-12));
         let slice = y.as_slice();
         let mean: f32 = slice.iter().sum::<f32>() / 4.0;
@@ -1619,7 +1634,7 @@ mod tests {
 
     #[test]
     fn backward_of_sub_realizes_to_ones_and_neg_ones() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.sub(&b);
         let grads = c.backward();
@@ -1632,7 +1647,7 @@ mod tests {
         // y = a / b, so dy/da = 1/b and dy/db = -a/b².
         let a_vals = vec![2.0_f32, 8.0, 15.0];
         let b_vals = vec![1.0_f32, 4.0, 5.0];
-        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(b_vals.clone(), Shape::from_dims(&[3]));
         let y = a.div(&b);
         let grads = y.backward();
@@ -1652,7 +1667,7 @@ mod tests {
     fn backward_of_sqrt_matches_analytic() {
         // y = sqrt(x), dy/dx = 1/(2*sqrt(x))
         let x_vals = vec![1.0_f32, 4.0, 9.0, 16.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = x.sqrt();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1664,7 +1679,7 @@ mod tests {
     fn backward_of_log_is_reciprocal() {
         // y = ln(x), dy/dx = 1/x.
         let x_vals = vec![1.0_f32, 2.0, 4.0, 10.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = x.log();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1675,7 +1690,7 @@ mod tests {
     #[test]
     fn backward_of_sin_is_cos() {
         let x_vals = vec![0.0_f32, 0.5, 1.0, 1.5];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = x.sin();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1686,7 +1701,7 @@ mod tests {
     #[test]
     fn backward_of_cos_is_neg_sin() {
         let x_vals = vec![0.0_f32, 0.5, 1.0, 1.5];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = x.cos();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1697,7 +1712,7 @@ mod tests {
     #[test]
     fn backward_of_tanh_matches_one_minus_sq() {
         let x_vals = vec![-1.0_f32, 0.0, 0.5, 1.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = x.tanh();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1714,7 +1729,7 @@ mod tests {
     #[test]
     fn backward_of_sigmoid_matches_y_one_minus_y() {
         let x_vals = vec![-2.0_f32, -0.5, 0.0, 1.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = x.sigmoid();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1733,7 +1748,7 @@ mod tests {
     fn backward_of_relu_via_step() {
         // dL/dx for relu is step(x): 1 where x > 0, 0 elsewhere.
         let x_vals = vec![-2.0_f32, -0.5, 0.0, 1.0, 3.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[5]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[5]), cpu_dev());
         let y = x.relu();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1743,7 +1758,7 @@ mod tests {
     #[test]
     fn backward_of_cast_roundtrips_dtype() {
         // y = cast(x_f32, f64), dy/dx = cast(upstream, f32).
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.cast(DType::F64);
         let grads = y.backward();
         let g_x_tensor = grads.get(&x).unwrap();
@@ -1757,7 +1772,7 @@ mod tests {
     #[test]
     fn backward_of_sum_all_broadcasts_upstream() {
         // y = sum(x) (scalar), so dy/dx = broadcast(1.0, x.shape) = ones.
-        let x = Tensor::from_f32(vec![2.0, 3.0, 5.0, 7.0], Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(vec![2.0, 3.0, 5.0, 7.0], Shape::from_dims(&[4]), cpu_dev());
         let y = x.sum_all();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1767,7 +1782,7 @@ mod tests {
     #[test]
     fn backward_of_mean_all_is_one_over_n() {
         // y = mean(x) (scalar), so dy/dx = 1/n everywhere.
-        let x = Tensor::from_f32(vec![2.0, 3.0, 5.0, 7.0], Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(vec![2.0, 3.0, 5.0, 7.0], Shape::from_dims(&[4]), cpu_dev());
         let y = x.mean_all();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1782,7 +1797,7 @@ mod tests {
     fn backward_of_mul_realizes_to_other_input() {
         let a_vals = vec![2.0_f32, 3.0, 5.0];
         let b_vals = vec![7.0_f32, 11.0, 13.0];
-        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(b_vals.clone(), Shape::from_dims(&[3]));
         let c = a.mul(&b);
         let grads = c.backward();
@@ -1795,7 +1810,7 @@ mod tests {
     #[test]
     fn backward_of_sqr_realizes_to_two_x() {
         let a_vals = vec![2.0_f32, 3.0, 5.0, 7.0];
-        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[4]));
+        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let y = a.sqr();
         let grads = y.backward();
         let g_a = realize_f32(&grads.get(&a).unwrap());
@@ -1805,7 +1820,7 @@ mod tests {
 
     #[test]
     fn backward_of_exp_realizes_to_exp_of_input() {
-        let a = Tensor::from_f32(vec![0.0, 1.0, 2.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![0.0, 1.0, 2.0], Shape::from_dims(&[3]), cpu_dev());
         let y = a.exp();
         let grads = y.backward();
         let g_a = realize_f32(&grads.get(&a).unwrap());
@@ -1817,7 +1832,7 @@ mod tests {
     fn backward_accumulates_via_multi_use() {
         // f(a) = a * a, so df/da = 2a via both inputs of the same Mul.
         let a_vals = vec![3.0_f32, 5.0, 7.0];
-        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(a_vals.clone(), Shape::from_dims(&[3]), cpu_dev());
         let y = a.mul(&a);
         let grads = y.backward();
         let g_a = realize_f32(&grads.get(&a).unwrap());
@@ -1833,6 +1848,7 @@ mod tests {
         let a = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
@@ -1851,6 +1867,7 @@ mod tests {
         let a = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let t = a.transpose();
         let result = realize_f32(&t);
@@ -1866,6 +1883,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let y = x.reshape(Shape::from_dims(&[3, 2]));
         assert_eq!(y.shape().dims(), &[3, 2]);
@@ -1876,7 +1894,7 @@ mod tests {
 
     #[test]
     fn realize_reduce_sum_to_scalar() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let y = x.reduce_sum_to(Shape::from_dims(&[]));
         assert_eq!(realize_f32(&y).as_slice(), &[10.0]);
     }
@@ -1888,6 +1906,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let y = x.reduce_sum_to(Shape::from_dims(&[3]));
         assert_eq!(realize_f32(&y).as_slice(), &[5.0, 7.0, 9.0]);
@@ -1899,6 +1918,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 4]),
+            cpu_dev(),
         );
         let y = x.reduce_sum_to(Shape::from_dims(&[3, 1]));
         // row sums: 10, 26, 42
@@ -1910,7 +1930,7 @@ mod tests {
         // y = broadcast_to(x, [2, 3]) where x has shape [3]. Backward
         // should sum along the leading dim, giving grad_x of shape [3] =
         // [2, 2, 2] (each column summed across 2 rows of ones).
-        let x = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.broadcast_to(Shape::from_dims(&[2, 3]));
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -1924,6 +1944,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let y = x.reshape(Shape::from_dims(&[3, 2]));
         let grads = y.backward();
@@ -1941,6 +1962,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let y = x.sum_dim(1);
         let grads = y.backward();
@@ -1956,6 +1978,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let y = x.mean_dim(1);
         let grads = y.backward();
@@ -1976,6 +1999,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 5.0, 2.0, 5.0, 3.0],
             Shape::from_dims(&[5]),
+            cpu_dev(),
         );
         let y = x.max_all();
         let grads = y.backward();
@@ -1988,6 +2012,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![3.0, 1.0, 4.0, 1.0, 5.0],
             Shape::from_dims(&[5]),
+            cpu_dev(),
         );
         let y = x.min_all();
         let grads = y.backward();
@@ -2004,6 +2029,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 5.0, 2.0, 4.0, 3.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let y = x.max_dim(1);
         let grads = y.backward();
@@ -2016,7 +2042,7 @@ mod tests {
 
     #[test]
     fn realize_u32_const_via_graph() {
-        let a = Tensor::from_u32(vec![10, 20, 30], Shape::from_dims(&[3]));
+        let a = Tensor::from_u32(vec![10, 20, 30], Shape::from_dims(&[3]), cpu_dev());
         let result = realize(&a).into_u32();
         assert_eq!(result.as_slice(), &[10, 20, 30]);
     }
@@ -2030,6 +2056,7 @@ mod tests {
         let data = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
             Shape::from_dims(&[3, 3]),
+            cpu_dev(),
         );
         let idx = data.const_u32_like(vec![2, 0, 2], Shape::from_dims(&[3]));
         let out = data.index_select(0, &idx);
@@ -2047,6 +2074,7 @@ mod tests {
         let data = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
             Shape::from_dims(&[3, 3]),
+            cpu_dev(),
         );
         let idx = data.const_u32_like(vec![2, 0], Shape::from_dims(&[2]));
         let out = data.index_select(1, &idx);
@@ -2066,6 +2094,7 @@ mod tests {
         let data = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let idx = data.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
         let out = data.gather(1, &idx);
@@ -2087,6 +2116,7 @@ mod tests {
                 4.0, 4.0, 4.0,   // id 4
             ],
             Shape::from_dims(&[5, 3]),
+            cpu_dev(),
         );
         let ids = table.const_u32_like(vec![3, 1, 4], Shape::from_dims(&[3]));
         let embeddings = table.index_select(0, &ids);
@@ -2101,7 +2131,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be U32")]
     fn index_select_rejects_non_u32_indices() {
-        let data = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let data = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let bad_idx = data.const_f32_like(vec![0.0, 1.0], Shape::from_dims(&[2]));
         let _ = data.index_select(0, &bad_idx);
     }
@@ -2133,6 +2163,7 @@ mod tests {
             // 2 rows × 3 cols
             vec![1.0, 2.0, 3.0, 0.5, -0.5, 1.5],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let w1 = x.const_f32_like(
             // 3 rows × 4 cols — simple integer weights
@@ -2230,7 +2261,7 @@ mod tests {
         // panic or loop infinitely. It also catches regressions in
         // backward composability: every op emitted by the first backward
         // pass must itself have a backward rule.
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.sqr();
         let first_grads = y.backward();
         let g_x = first_grads.get(&x).unwrap();
@@ -2261,6 +2292,7 @@ mod tests {
         let base = Tensor::from_f32(
             vec![10.0, 20.0, 30.0, 40.0, 50.0],
             Shape::from_dims(&[5]),
+            cpu_dev(),
         );
         let idx = base.const_u32_like(vec![1, 3], Shape::from_dims(&[2]));
         let src = base.const_f32_like(vec![100.0, 200.0], Shape::from_dims(&[2]));
@@ -2276,7 +2308,7 @@ mod tests {
         // out[0, 0] += 1, out[0, 2] += 3
         // out[1, 1] += 5, out[1, 0] += 4
         // Expected: [[1, 0, 3], [4, 5, 0]]
-        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
         let src = base.const_f32_like(vec![1.0, 3.0, 5.0, 4.0], Shape::from_dims(&[2, 2]));
         let out = base.scatter_add(1, &idx, &src);
@@ -2295,6 +2327,7 @@ mod tests {
         let data = Tensor::from_f32(
             vec![10.0, 20.0, 30.0, 40.0],
             Shape::from_dims(&[4]),
+            cpu_dev(),
         );
         let idx = data.const_u32_like(vec![2, 0, 2], Shape::from_dims(&[3]));
         let out = data.index_select(0, &idx);
@@ -2316,6 +2349,7 @@ mod tests {
         let data = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let idx = data.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
         let out = data.gather(1, &idx);
@@ -2335,7 +2369,7 @@ mod tests {
         // So the gradient is all zeros when upstream is uniform.
         // This reflects the fact that softmax is invariant to uniform
         // shifts in its upstream (since probabilities sum to 1).
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.softmax_last_dim();
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -2353,7 +2387,7 @@ mod tests {
         // We verify by perturbing each x_i and recomputing the loss.
         let x_vals = vec![0.5_f32, 1.5, -0.5, 2.0];
         let w_vals = vec![0.1_f32, 0.3, 0.2, 0.4];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let w = x.const_f32_like(w_vals.clone(), Shape::from_dims(&[4]));
         let loss = x.softmax_last_dim().mul(&w).sum_all();
         let grads = loss.backward();
@@ -2393,7 +2427,7 @@ mod tests {
         // Check LN backward against finite differences with non-uniform w.
         let x_vals = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0];
         let w_vals = vec![0.5_f32, -0.3, 0.8, 0.1, -0.7];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[5]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[5]), cpu_dev());
         let w = x.const_f32_like(w_vals.clone(), Shape::from_dims(&[5]));
         let eps_ln = 1e-5_f64;
         let loss = x.layer_norm_last_dim(eps_ln).mul(&w).sum_all();
@@ -2432,7 +2466,7 @@ mod tests {
     fn realize_concat_along_dim_1() {
         // [[1, 2], [3, 4]] ++ [[5, 6, 7], [8, 9, 10]] along dim 1
         // = [[1, 2, 5, 6, 7], [3, 4, 8, 9, 10]]
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev());
         let b = a.const_f32_like(
             vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
             Shape::from_dims(&[2, 3]),
@@ -2450,6 +2484,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
             Shape::from_dims(&[3, 3]),
+            cpu_dev(),
         );
         // Slice rows [1, 3) → [[4,5,6], [7,8,9]]
         let s = x.slice(0, 1, 2);
@@ -2465,7 +2500,7 @@ mod tests {
     fn backward_of_concat_splits_upstream() {
         // a: [1, 2, 3], b: [4, 5], concat dim 0 → [1, 2, 3, 4, 5]
         // Upstream ones, so grad_a = [1, 1, 1], grad_b = [1, 1]
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0], Shape::from_dims(&[2]));
         let c = a.concat(&b, 0);
         let grads = c.backward();
@@ -2480,6 +2515,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![10.0, 20.0, 30.0, 40.0, 50.0],
             Shape::from_dims(&[5]),
+            cpu_dev(),
         );
         let s = x.slice(0, 1, 3);
         let grads = s.backward();
@@ -2489,7 +2525,7 @@ mod tests {
 
     #[test]
     fn realize_scalar_add_and_mul() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.add_scalar(10.0);
         assert_eq!(realize_f32(&y).as_slice(), &[11.0, 12.0, 13.0]);
         let z = x.mul_scalar(2.5);
@@ -2499,7 +2535,7 @@ mod tests {
     #[test]
     fn backward_of_scalar_ops() {
         // y = x * 3 + 7, dy/dx = 3 everywhere.
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.mul_scalar(3.0).add_scalar(7.0);
         let grads = y.backward();
         assert_eq!(
@@ -2516,6 +2552,7 @@ mod tests {
         let m = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let r = m.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
         let out = m.broadcast_add(&r);
@@ -2529,7 +2566,7 @@ mod tests {
     #[test]
     fn broadcast_mul_col_against_row_makes_outer_product() {
         // [3, 1] * [1, 4] → [3, 4] outer product
-        let col = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3, 1]));
+        let col = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3, 1]), cpu_dev());
         let row = col.const_f32_like(vec![10.0, 20.0, 30.0, 40.0], Shape::from_dims(&[1, 4]));
         let out = col.broadcast_mul(&row);
         assert_eq!(out.shape().dims(), &[3, 4]);
@@ -2552,6 +2589,7 @@ mod tests {
         let m = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let r = m.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
         let out = m.broadcast_add(&r);
@@ -2601,7 +2639,7 @@ mod tests {
         };
 
         for _ in 0..iters {
-            let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 3]));
+            let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 3]), cpu_dev());
             let target = x.const_f32_like(target_data.clone(), Shape::from_dims(&[1, 2]));
             let w1_t = x.const_f32_like(w1.clone(), Shape::from_dims(&[3, 4]));
             let b1_t = x.const_f32_like(b1.clone(), Shape::from_dims(&[4]));
@@ -2652,7 +2690,7 @@ mod tests {
         w2: &[f32],
         b2: &[f32],
     ) -> Tensor {
-        let x = Tensor::from_f32(x_data.to_vec(), Shape::from_dims(&[1, 3]));
+        let x = Tensor::from_f32(x_data.to_vec(), Shape::from_dims(&[1, 3]), cpu_dev());
         let target = x.const_f32_like(target_data.to_vec(), Shape::from_dims(&[1, 2]));
         let w1_t = x.const_f32_like(w1.to_vec(), Shape::from_dims(&[3, 4]));
         let b1_t = x.const_f32_like(b1.to_vec(), Shape::from_dims(&[4]));
@@ -2668,7 +2706,7 @@ mod tests {
 
     #[test]
     fn realize_powi_cubes_and_inverses() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         assert_eq!(realize_f32(&x.powi(3)).as_slice(), &[1.0, 8.0, 27.0, 64.0]);
         // Negative exponent: reciprocal of square.
         let inv = realize_f32(&x.powi(-2));
@@ -2682,7 +2720,7 @@ mod tests {
     fn backward_of_powi_is_n_times_x_to_nm1() {
         // f(x) = x^3, f'(x) = 3x².
         let x_vals = vec![1.0_f32, 2.0, 3.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[3]), cpu_dev());
         let y = x.powi(3);
         let grads = y.backward();
         let g_x = realize_f32(&grads.get(&x).unwrap());
@@ -2695,6 +2733,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![-5.0, -1.0, 0.0, 1.0, 5.0],
             Shape::from_dims(&[5]),
+            cpu_dev(),
         );
         let y = x.clamp(-1.0, 1.0);
         assert_eq!(realize_f32(&y).as_slice(), &[-1.0, -1.0, 0.0, 1.0, 1.0]);
@@ -2706,6 +2745,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![-5.0, -1.0, 0.0, 1.0, 5.0],
             Shape::from_dims(&[5]),
+            cpu_dev(),
         );
         let y = x.clamp(-1.0, 1.0);
         let grads = y.backward();
@@ -2721,7 +2761,7 @@ mod tests {
 
     #[test]
     fn realize_maximum_and_minimum_elementwise() {
-        let a = Tensor::from_f32(vec![1.0, 5.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let a = Tensor::from_f32(vec![1.0, 5.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let b = a.const_f32_like(vec![2.0, 4.0, 6.0, 1.0], Shape::from_dims(&[4]));
         let max_ab = a.maximum(&b);
         let min_ab = a.minimum(&b);
@@ -2732,7 +2772,7 @@ mod tests {
     #[test]
     fn backward_of_maximum_routes_to_larger_input() {
         // For each position the gradient goes to whichever input is larger.
-        let a = Tensor::from_f32(vec![1.0, 5.0, 3.0, 4.0], Shape::from_dims(&[4]));
+        let a = Tensor::from_f32(vec![1.0, 5.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let b = a.const_f32_like(vec![2.0, 4.0, 6.0, 1.0], Shape::from_dims(&[4]));
         let out = a.maximum(&b);
         let grads = out.backward();
@@ -2771,7 +2811,7 @@ mod tests {
         let lr = 0.1_f32;
 
         let build_loss = |w: &[f32], b: &[f32]| -> (Tensor, Tensor, Tensor) {
-            let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[2, 3]));
+            let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[2, 3]), cpu_dev());
             let w_t = x.const_f32_like(w.to_vec(), Shape::from_dims(&[3, 4]));
             let b_t = x.const_f32_like(b.to_vec(), Shape::from_dims(&[4]));
             let logits = x.matmul(&w_t).broadcast_add(&b_t);
@@ -2840,6 +2880,7 @@ mod tests {
                 1.0, 1.0, 1.0, //
             ],
             Shape::from_dims(&[2, 2, 3]),
+            cpu_dev(),
         );
         let b = a.const_f32_like(
             vec![
@@ -2878,7 +2919,7 @@ mod tests {
                 }
             }
         }
-        let x = Tensor::from_f32(data, Shape::from_dims(&[2, 3, 4]));
+        let x = Tensor::from_f32(data, Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let t = x.transpose();
         assert_eq!(t.shape().dims(), &[2, 4, 3]);
         let result = realize_f32(&t);
@@ -2907,7 +2948,7 @@ mod tests {
         // Just verify the backward graph builds + realizes with the
         // correct gradient shapes for a batched matmul. Full numerical
         // verification is covered by the rank-2 test.
-        let a = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[2, 2, 3]));
+        let a = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[2, 2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]));
         let y = a.matmul(&b);
         assert_eq!(y.shape().dims(), &[2, 2, 4]);
@@ -2931,6 +2972,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 5.0, 2.0, 4.0, 3.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         let am0 = x.argmax_dim(0);
         let am1 = x.argmax_dim(1);
@@ -2947,6 +2989,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 5.0, 2.0, 4.0, 3.0, 6.0],
             Shape::from_dims(&[2, 3]),
+            cpu_dev(),
         );
         // argmin along dim 1: [row 0: col 0 (1), row 1: col 1 (3)]
         //                   = [0, 1]
@@ -2963,7 +3006,7 @@ mod tests {
         // tensor (first line of defense), or from the ArgMaxDim backward
         // match arm if execution ever reaches it. Either panic proves
         // the invariant.
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.argmax_dim(0);
         let _ = y.backward();
     }
@@ -3012,7 +3055,7 @@ mod tests {
 
         let build_loss =
             |w1: &[f32], b1: &[f32], w2: &[f32], b2: &[f32]| -> (Tensor, Tensor, Tensor, Tensor, Tensor) {
-                let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[8, 2]));
+                let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[8, 2]), cpu_dev());
                 let tgt = x.const_f32_like(y_target.clone(), Shape::from_dims(&[8, 1]));
                 let w1_t = x.const_f32_like(w1.to_vec(), Shape::from_dims(&[2, 6]));
                 let b1_t = x.const_f32_like(b1.to_vec(), Shape::from_dims(&[6]));
@@ -3089,7 +3132,7 @@ mod tests {
             .map(|i| ((i * 3) % 7) as f32 * 0.1)
             .collect();
 
-        let q = Tensor::from_f32(q_data, Shape::from_dims(&[seq_len, d_k]));
+        let q = Tensor::from_f32(q_data, Shape::from_dims(&[seq_len, d_k]), cpu_dev());
         let k = q.const_f32_like(k_data, Shape::from_dims(&[seq_len, d_k]));
         let v = q.const_f32_like(v_data, Shape::from_dims(&[seq_len, d_k]));
 
@@ -3152,7 +3195,7 @@ mod tests {
 
     #[test]
     fn cast_u32_to_f32_and_back() {
-        let x = Tensor::from_u32(vec![0, 1, 42, 1000], Shape::from_dims(&[4]));
+        let x = Tensor::from_u32(vec![0, 1, 42, 1000], Shape::from_dims(&[4]), cpu_dev());
         let as_f32 = x.cast(DType::F32);
         assert_eq!(as_f32.dtype(), DType::F32);
         assert_eq!(
@@ -3182,6 +3225,7 @@ mod tests {
                 0.1, 0.4, 0.3, 0.2, // example 2: argmax = 1
             ],
             Shape::from_dims(&[3, 4]),
+            cpu_dev(),
         );
         let targets = logits.const_u32_like(vec![2, 0, 3], Shape::from_dims(&[3]));
         let predictions = logits.argmax_dim(1);
@@ -3237,7 +3281,7 @@ mod tests {
             .map(|i| ((i * 5 + 2) as f32) * 0.05 - 0.2)
             .collect();
 
-        let q = Tensor::from_f32(q_flat, Shape::from_dims(&[seq_len, d_model]));
+        let q = Tensor::from_f32(q_flat, Shape::from_dims(&[seq_len, d_model]), cpu_dev());
         let k = q.const_f32_like(k_flat, Shape::from_dims(&[seq_len, d_model]));
         let v = q.const_f32_like(v_flat, Shape::from_dims(&[seq_len, d_model]));
 
@@ -3343,7 +3387,7 @@ mod tests {
         // (via the powi backward rule), stressing the backward pass on
         // a deeper forward graph.
         let x_vals = vec![1.0_f32, 2.0, 3.0];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[3]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[3]), cpu_dev());
         let y = x.powi(3).sum_all();
 
         // First backward: df/dx should be [3, 12, 27].
@@ -3370,6 +3414,7 @@ mod tests {
         let x = Tensor::from_f32(
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 3, 4]),
+            cpu_dev(),
         );
         let y = x.permute(&[2, 0, 1]);
         assert_eq!(y.shape().dims(), &[4, 2, 3]);
@@ -3394,6 +3439,7 @@ mod tests {
         let x = Tensor::from_f32(
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 3, 4]),
+            cpu_dev(),
         );
         let axes = [2, 0, 1];
         let inv = [1, 2, 0]; // inverse of [2, 0, 1]
@@ -3412,6 +3458,7 @@ mod tests {
         let x = Tensor::from_f32(
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 3, 4]),
+            cpu_dev(),
         );
         let y = x.permute(&[2, 0, 1]);
         let loss = y.sum_all();
@@ -3433,6 +3480,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![3.0, 4.0, 5.0, 12.0],
             Shape::from_dims(&[2, 2]),
+            cpu_dev(),
         );
         let y = x.rms_norm_last_dim(1e-6);
         let result = realize_f32(&y);
@@ -3454,7 +3502,7 @@ mod tests {
         // finite-difference estimate.
         let x_vals = vec![1.0_f32, 2.0, 3.0, 4.0];
         let w_vals = vec![0.5_f32, -0.3, 0.8, 0.1];
-        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]));
+        let x = Tensor::from_f32(x_vals.clone(), Shape::from_dims(&[4]), cpu_dev());
         let w = x.const_f32_like(w_vals.clone(), Shape::from_dims(&[4]));
         let eps = 1e-5_f64;
         let loss = x.rms_norm_last_dim(eps).mul(&w).sum_all();
@@ -3518,7 +3566,7 @@ mod tests {
         let x_data: Vec<f32> = (0..batch * seq * d_model)
             .map(|i| (i as f32) * 0.05 - 0.6)
             .collect();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[batch, seq, d_model]));
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[batch, seq, d_model]), cpu_dev());
 
         // Attention weights: W_q, W_k, W_v, W_o (four [d_model, d_model] projections).
         let rand = |seed: u32| {
@@ -3661,6 +3709,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
             Shape::from_dims(&[2, 4]), // seq=2, d=4
+            cpu_dev(),
         );
         let y = x.rope(10000.0, 0);
         assert_eq!(y.shape().dims(), &[2, 4]);
@@ -3680,6 +3729,7 @@ mod tests {
                 0.9, -0.2, 0.1, -0.5, //
             ],
             Shape::from_dims(&[3, 4]),
+            cpu_dev(),
         );
         let y = x.rope(10000.0, 0);
         let x_val = realize_f32(&x);
@@ -3710,6 +3760,7 @@ mod tests {
                 -0.1, 0.8, -0.4, 0.6, //
             ],
             Shape::from_dims(&[2, 4]),
+            cpu_dev(),
         );
         let y = x.rope(10000.0, 0);
         let loss = y.sum_all();
@@ -3900,7 +3951,7 @@ mod tests {
         let x_data: Vec<f32> = (0..batch * seq * d_model)
             .map(|i| (i as f32) * 0.05 - 0.6)
             .collect();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[batch, seq, d_model]));
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[batch, seq, d_model]), cpu_dev());
 
         // Chain the blocks.
         let mut current = x.clone();
@@ -3962,7 +4013,7 @@ mod tests {
         //
         // Expected value per element: 1.0 * 10 001 (the original plus
         // 10 000 additions of itself).
-        let a = Tensor::from_f32(vec![1.0, 1.0, 1.0], Shape::from_dims(&[3]));
+        let a = Tensor::from_f32(vec![1.0, 1.0, 1.0], Shape::from_dims(&[3]), cpu_dev());
         let mut current = a.clone();
         for _ in 0..10_000 {
             current = current.add(&a);

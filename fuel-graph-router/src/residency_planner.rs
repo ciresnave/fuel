@@ -220,6 +220,14 @@ impl ResidencyPlanner {
 
 #[cfg(test)]
 mod tests {
+    /// Phase 7.5 G2: tests need a real device for slot-populating
+    /// constructors. Singleton CpuBackendDevice via OnceLock.
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     use super::*;
     use fuel_core_types::Shape;
     use fuel_graph::Tensor;
@@ -234,7 +242,7 @@ mod tests {
         // c = neg(b)       4096 bytes
         // Peak: when c is produced, a is already dead (last-use was relu),
         // so live set is {b, c} = 8192 bytes.
-        let a = Tensor::from_f32(vec![1.0_f32; 1024], Shape::from_dims(&[1024]));
+        let a = Tensor::from_f32(vec![1.0_f32; 1024], Shape::from_dims(&[1024]), cpu_dev());
         let b = a.relu();
         let c = b.neg();
         let report = ResidencyPlanner::analyze(c.graph(), &[c.id()]);
@@ -246,7 +254,7 @@ mod tests {
     fn shared_const_stays_live_across_multiple_uses() {
         // a is consumed twice — by add(a,b) and by neg(a).
         // a stays live until both are done.
-        let a = Tensor::from_f32(vec![1.0_f32; 256], Shape::from_dims(&[256]));
+        let a = Tensor::from_f32(vec![1.0_f32; 256], Shape::from_dims(&[256]), cpu_dev());
         let b = a.const_f32_like(vec![2.0_f32; 256], Shape::from_dims(&[256]));
         let ab = a.add(&b);      // reads a, b
         let na = a.neg();         // reads a again
@@ -262,7 +270,7 @@ mod tests {
 
     #[test]
     fn report_fits_in_and_overage() {
-        let a = Tensor::from_f32(vec![1.0_f32; 256], Shape::from_dims(&[256]));
+        let a = Tensor::from_f32(vec![1.0_f32; 256], Shape::from_dims(&[256]), cpu_dev());
         let b = a.relu();
         let report = ResidencyPlanner::analyze(b.graph(), &[b.id()]);
         assert!(report.fits_in(10_000));
