@@ -165,15 +165,15 @@ pub trait CustomOp3 {
 impl Tensor {
     /// Applies a unary custom op without backward support
     pub fn apply_op1_no_bwd<C: CustomOp1>(&self, c: &C) -> Result<Self> {
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         let (storage, shape) = self_arc.read().unwrap().apply_op1(self.layout(), c)?;
         Ok(from_storage(storage, shape, BackpropOp::none(), false))
     }
 
     /// Applies a binary custom op without backward support
     pub fn apply_op2_no_bwd<C: CustomOp2>(&self, rhs: &Self, c: &C) -> Result<Self> {
-        let self_arc = self.storage();
-        let rhs_arc = rhs.storage();
+        let self_arc = self.storage()?;
+        let rhs_arc = rhs.storage()?;
         let (storage, shape) = self_arc.read().unwrap().apply_op2(
             self.layout(),
             &rhs_arc.read().unwrap(),
@@ -185,9 +185,9 @@ impl Tensor {
 
     /// Applies a ternary custom op without backward support
     pub fn apply_op3_no_bwd<C: CustomOp3>(&self, t2: &Self, t3: &Self, c: &C) -> Result<Self> {
-        let self_arc = self.storage();
-        let t2_arc = t2.storage();
-        let t3_arc = t3.storage();
+        let self_arc = self.storage()?;
+        let t2_arc = t2.storage()?;
+        let t3_arc = t3.storage()?;
         let (storage, shape) = self_arc.read().unwrap().apply_op3(
             self.layout(),
             &t2_arc.read().unwrap(),
@@ -204,7 +204,7 @@ impl Tensor {
     /// This is the `Arc`-based variant; prefer [`apply_op1`](Tensor::apply_op1) unless you
     /// need to share the operation object.
     pub fn apply_op1_arc(&self, c: Arc<dyn CustomOp1 + Send + Sync>) -> Result<Self> {
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         let (storage, shape) = self_arc.read().unwrap().apply_op1(self.layout(), c.as_ref())?;
         let op = BackpropOp::new1(self, |s| Op::CustomOp1(s, c.clone()));
         Ok(from_storage(storage, shape, op, false))
@@ -227,8 +227,8 @@ impl Tensor {
         rhs: &Self,
         c: Arc<dyn CustomOp2 + Send + Sync>,
     ) -> Result<Self> {
-        let self_arc = self.storage();
-        let rhs_arc = rhs.storage();
+        let self_arc = self.storage()?;
+        let rhs_arc = rhs.storage()?;
         let (storage, shape) = self_arc.read().unwrap().apply_op2(
             self.layout(),
             &rhs_arc.read().unwrap(),
@@ -254,9 +254,9 @@ impl Tensor {
         t3: &Self,
         c: Arc<dyn CustomOp3 + Send + Sync>,
     ) -> Result<Self> {
-        let self_arc = self.storage();
-        let t2_arc = t2.storage();
-        let t3_arc = t3.storage();
+        let self_arc = self.storage()?;
+        let t2_arc = t2.storage()?;
+        let t3_arc = t3.storage()?;
         let (storage, shape) = self_arc.read().unwrap().apply_op3(
             self.layout(),
             &t2_arc.read().unwrap(),
@@ -289,14 +289,14 @@ pub use fuel_core_types::inplace_op::{InplaceOp1, InplaceOp2, InplaceOp3};
 impl Tensor {
     /// Applies a unary custom op in place.
     pub fn inplace_op1<C: InplaceOp1>(&self, c: &C) -> Result<()> {
-        let self_arc = self.storage_mut();
+        let self_arc = self.storage_mut()?;
         self_arc.write().unwrap().inplace_op1(self.layout(), c)
     }
 
     /// Applies a unary custom op in place (for the first tensor).
     pub fn inplace_op2<C: InplaceOp2>(&self, rhs: &Self, c: &C) -> Result<()> {
-        let self_arc = self.storage_mut();
-        let rhs_arc = rhs.storage();
+        let self_arc = self.storage_mut()?;
+        let rhs_arc = rhs.storage()?;
         self_arc.write().unwrap().inplace_op2(
             self.layout(),
             &rhs_arc.read().unwrap(),
@@ -307,9 +307,9 @@ impl Tensor {
 
     /// Applies a ternary custom op in place (for the first tensor).
     pub fn inplace_op3<C: InplaceOp3>(&self, t2: &Self, t3: &Self, c: &C) -> Result<()> {
-        let self_arc = self.storage_mut();
-        let t2_arc = t2.storage();
-        let t3_arc = t3.storage();
+        let self_arc = self.storage_mut()?;
+        let t2_arc = t2.storage()?;
+        let t3_arc = t3.storage()?;
         self_arc.write().unwrap().inplace_op3(
             self.layout(),
             &t2_arc.read().unwrap(),

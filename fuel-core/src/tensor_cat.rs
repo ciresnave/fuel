@@ -142,7 +142,7 @@ impl Tensor {
         let mut storage = unsafe { device.alloc_uninit(&shape, dtype)? };
         for (arg, &offset) in args.iter().zip(offsets.iter()) {
             let arg = arg.as_ref();
-            let arg_arc = arg.storage();
+            let arg_arc = arg.storage()?;
             arg_arc
                 .read()
                 .unwrap()
@@ -225,7 +225,7 @@ impl Tensor {
             let d2 = block_size * arg_dims[dim];
             let dst_s = block_size * cat_target_dim_len;
             let src_o = arg.layout().start_offset();
-            let arg_arc = arg.storage();
+            let arg_arc = arg.storage()?;
             arg_arc.read().unwrap().copy2d(
                 &mut storage,
                 d1,
@@ -252,7 +252,7 @@ impl Tensor {
         if !self.is_contiguous() || !src.is_contiguous() {
             Err(Error::RequiresContiguous { op: "slice-set" }.bt())?
         }
-        if self.same_storage(src) {
+        if self.same_storage(src)? {
             crate::bail!("cannot use slice_set when self and src share their storage")
         }
         if self.dtype() != src.dtype() {
@@ -292,8 +292,8 @@ impl Tensor {
         let d2 = block_size * src.dims()[dim];
         let dst_o = self.layout().start_offset() + offset * block_size;
         let src_o = src.layout().start_offset();
-        let src_arc = src.storage();
-        let self_arc = self.storage_mut();
+        let src_arc = src.storage()?;
+        let self_arc = self.storage_mut()?;
         src_arc.read().unwrap().copy2d(
             &mut self_arc.write().unwrap(),
             d1,

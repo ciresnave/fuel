@@ -2044,8 +2044,8 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
     let t1 = Tensor::from_vec(data, (512, 512), &first)?;
     let t2 = t1.to_device(&second)?;
 
-    let (storage1, _) = t1.storage_and_layout();
-    let (storage2, _) = t2.storage_and_layout();
+    let (storage1, _) = t1.storage_and_layout()?;
+    let (storage2, _) = t2.storage_and_layout()?;
     let extract = |s: RwLockReadGuard<'_, Storage>| {
         use baracuda_driver::DevicePtr;
         let c = s.downcast_ref::<fuel_core::CudaStorage>().expect("expected cuda storage");
@@ -2102,9 +2102,9 @@ fn realize_after_op_chain() -> Result<()> {
 #[test]
 fn realized_storage_returns_legacy_arc_today() -> Result<()> {
     let a = Tensor::new(&[1f32, 2., 3.], &fuel_core::Device::cpu())?;
-    let arc = a.realized_storage();
+    let arc = a.realized_storage()?;
     // Legacy mode: should match what storage_and_layout reads back.
-    let (legacy_arc, _layout) = a.storage_and_layout();
+    let (legacy_arc, _layout) = a.storage_and_layout()?;
     assert_eq!(
         legacy_arc.read().unwrap().dtype(),
         arc.read().unwrap().dtype(),
@@ -2129,8 +2129,8 @@ fn realized_storage_arc_clone_is_cheap() -> Result<()> {
     // Cloning the Arc returned by realized_storage should not allocate a
     // new Storage — it's the same Arc<RwLock<Storage>> as the legacy field.
     let a = Tensor::new(&[1f32, 2., 3.], &fuel_core::Device::cpu())?;
-    let arc1 = a.realized_storage();
-    let arc2 = a.realized_storage();
+    let arc1 = a.realized_storage()?;
+    let arc2 = a.realized_storage()?;
     assert!(std::sync::Arc::ptr_eq(&arc1, &arc2));
     Ok(())
 }

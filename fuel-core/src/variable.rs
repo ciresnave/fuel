@@ -332,16 +332,16 @@ impl Var {
     /// # Ok::<(), fuel_core::Error>(())
     /// ```
     pub fn set(&self, src: &Tensor) -> Result<()> {
-        if self.same_storage(src) {
+        if self.same_storage(src)? {
             let msg = "cannot set a variable to a tensor that is derived from its value";
             Err(Error::CannotSetVar { msg }.bt())?
         }
-        let (dst_arc, layout) = self.storage_mut_and_layout();
+        let (dst_arc, layout) = self.storage_mut_and_layout()?;
         if !layout.is_contiguous() {
             let msg = "cannot set a non-contiguous variable";
             Err(Error::CannotSetVar { msg }.bt())?
         }
-        let (src_arc, src_l) = src.storage_and_layout();
+        let (src_arc, src_l) = src.storage_and_layout()?;
         if layout.shape() != src_l.shape() {
             Err(Error::ShapeMismatchBinaryOp {
                 lhs: layout.shape().clone(),

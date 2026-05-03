@@ -119,7 +119,7 @@ macro_rules! unary_op {
             if shape.elem_count() == 0 {
                 return Ok(self.clone());
             }
-            let lhs_arc = self.storage();
+            let lhs_arc = self.storage()?;
             let storage = lhs_arc
                 .read()
                 .unwrap()
@@ -138,8 +138,8 @@ macro_rules! binary_op {
             if shape.elem_count() == 0 {
                 return Ok(self.clone());
             }
-            let lhs_arc = self.storage();
-            let rhs_arc = rhs.storage();
+            let lhs_arc = self.storage()?;
+            let rhs_arc = rhs.storage()?;
             let storage = lhs_arc.read().unwrap().binary_impl::<crate::op::$op_name>(
                 &*rhs_arc.read().unwrap(),
                 self.layout(),
@@ -166,8 +166,8 @@ macro_rules! binary_op_scalar {
             if self.elem_count() == 0 {
                 return Ok(self.clone());
             }
-            let lhs_arc = self.storage();
-            let rhs_arc = rhs.storage();
+            let lhs_arc = self.storage()?;
+            let rhs_arc = rhs.storage()?;
             let storage = lhs_arc.read().unwrap().binary_impl::<crate::op::$op_name>(
                 &*rhs_arc.read().unwrap(),
                 self.layout(),
@@ -334,7 +334,7 @@ impl Tensor {
     /// # Ok::<(), fuel_core::Error>(())
     /// ```
     pub fn const_set(&self, value: crate::scalar::Scalar) -> Result<()> {
-        self.storage_mut().write().unwrap().const_set(value, self.layout())
+        self.storage_mut()?.write().unwrap().const_set(value, self.layout())
     }
 
     /// Sets all elements in the tensor to zero in-place.
@@ -1457,7 +1457,7 @@ impl Tensor {
             Ok::<_, Error>(data[self.layout().start_offset()])
         };
         {
-            let cpu_storage = self.storage().read().unwrap().to_cpu_storage()?;
+            let cpu_storage = self.storage()?.read().unwrap().to_cpu_storage()?;
             from_cpu_storage(&cpu_storage)
         }
     }
@@ -1597,7 +1597,7 @@ impl Tensor {
         if self.elem_count() == 0 {
             return Ok(self.clone());
         }
-        let storage = self.storage().read().unwrap().affine(self.layout(), mul, add)?;
+        let storage = self.storage()?.read().unwrap().affine(self.layout(), mul, add)?;
         let op = BackpropOp::new1(self, |arg| Op::Affine { arg, mul, add });
         Ok(from_storage(storage, self.shape(), op, false))
     }
@@ -1637,7 +1637,7 @@ impl Tensor {
         if self.elem_count() == 0 {
             return Ok(self.clone());
         }
-        let storage = self.storage().read().unwrap().elu(self.layout(), alpha)?;
+        let storage = self.storage()?.read().unwrap().elu(self.layout(), alpha)?;
         let op = BackpropOp::new1(self, |t| Op::Elu(t, alpha));
         Ok(from_storage(storage, self.shape(), op, false))
     }
@@ -1657,7 +1657,7 @@ impl Tensor {
         if self.elem_count() == 0 {
             return Ok(self.clone());
         }
-        let storage = self.storage().read().unwrap().powf(self.layout(), e)?;
+        let storage = self.storage()?.read().unwrap().powf(self.layout(), e)?;
         let op = BackpropOp::new1(self, |t| Op::Powf(t, e));
         Ok(from_storage(storage, self.shape(), op, false))
     }
@@ -1772,7 +1772,7 @@ impl Tensor {
             let layout = self.layout().narrow(dim, start, len)?;
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Some(self.realized_storage()),
+                storage: Some(self.realized_storage()?),
                 layout,
                 op,
                 is_variable: false,
@@ -1808,7 +1808,7 @@ impl Tensor {
 
     fn reduce_impl<D: Dim>(&self, dim: D, keepdim: bool, op: ReduceOp) -> Result<Self> {
         let dim = dim.to_index(self.shape(), op.name())?;
-        let storage = self.storage().read().unwrap().reduce_op(op, self.layout(), &[dim])?;
+        let storage = self.storage()?.read().unwrap().reduce_op(op, self.layout(), &[dim])?;
         let mut dims = self.dims().to_vec();
         dims[dim] = 1;
         let op = match op {
@@ -1828,7 +1828,7 @@ impl Tensor {
     fn sum_impl<D: Dims>(&self, sum_dims: D, keepdim: bool) -> Result<Self> {
         let sum_dims = sum_dims.to_indexes(self.shape(), "sum")?;
         let storage = self
-            .storage()
+            .storage()?
             .read()
             .unwrap()
             .reduce_op(ReduceOp::Sum, self.layout(), &sum_dims)?;
@@ -2141,8 +2141,8 @@ impl Tensor {
                 .broadcast_as(self.shape())?,
         };
         let shape = self.same_shape_binary_op(&rhs, "cmp")?;
-        let lhs_arc = self.storage();
-        let rhs_arc = rhs.storage();
+        let lhs_arc = self.storage()?;
+        let rhs_arc = rhs.storage()?;
         let storage = lhs_arc
             .read()
             .unwrap()
@@ -2274,7 +2274,7 @@ impl Tensor {
         let (n, c, _l) = self.dims3()?;
         let op = BackpropOp::new1(self, |arg| Op::UpsampleNearest1D { arg, target_size });
         let storage = self
-            .storage()
+            .storage()?
             .read()
             .unwrap()
             .upsample_nearest1d(self.layout(), target_size)?;
@@ -2319,7 +2319,7 @@ impl Tensor {
             target_w,
         });
         let storage = self
-            .storage()
+            .storage()?
             .read()
             .unwrap()
             .upsample_nearest2d(self.layout(), target_h, target_w)?;
@@ -2378,7 +2378,7 @@ impl Tensor {
             align_corners,
         });
         // Pass None for scale factors (size mode)
-        let storage = self.storage().read().unwrap().upsample_bilinear2d(
+        let storage = self.storage()?.read().unwrap().upsample_bilinear2d(
             self.layout(),
             target_h,
             target_w,
@@ -2438,7 +2438,7 @@ impl Tensor {
 
         // Pass original scale factors (scale_factor mode)
         // This ensures PyTorch-compatible scale calculation
-        let storage = self.storage().read().unwrap().upsample_bilinear2d(
+        let storage = self.storage()?.read().unwrap().upsample_bilinear2d(
             self.layout(),
             height_out,
             width_out,
@@ -2507,7 +2507,7 @@ impl Tensor {
             stride,
         });
         let storage = self
-            .storage()
+            .storage()?
             .read()
             .unwrap()
             .avg_pool2d(self.layout(), kernel_size, stride)?;
@@ -2567,7 +2567,7 @@ impl Tensor {
             stride,
         });
         let storage = self
-            .storage()
+            .storage()?
             .read()
             .unwrap()
             .max_pool2d(self.layout(), kernel_size, stride)?;
@@ -2721,8 +2721,8 @@ impl Tensor {
             .bt())?
         }
 
-        let lhs_arc = self.storage();
-        let rhs_arc = rhs.storage();
+        let lhs_arc = self.storage()?;
+        let rhs_arc = rhs.storage()?;
         let storage = lhs_arc.read().unwrap().matmul(
             &rhs_arc.read().unwrap(),
             (batching, m, n, k),
@@ -2783,9 +2783,9 @@ impl Tensor {
     pub fn where_cond(&self, on_true: &Self, on_false: &Self) -> Result<Self> {
         let _shap = self.same_shape_binary_op(on_true, "where_cond")?;
         let shape = self.same_shape_binary_op(on_false, "where_cond")?;
-        let cond_arc = self.storage();
-        let on_true_arc = on_true.storage();
-        let on_false_arc = on_false.storage();
+        let cond_arc = self.storage()?;
+        let on_true_arc = on_true.storage()?;
+        let on_false_arc = on_false.storage()?;
         let storage = cond_arc.read().unwrap().where_cond(
             self.layout(),
             &on_true_arc.read().unwrap(),
@@ -2883,14 +2883,14 @@ impl Tensor {
         self.scatter_checks(indexes, source, dim)?;
         let shape = self.shape();
         let mut storage = unsafe { self.device().alloc_uninit(shape, self.dtype())? };
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         self_arc
             .read()
             .unwrap()
             .copy_strided_src(&mut storage, 0, self.layout())?;
         let layout = Layout::contiguous(shape);
-        let indexes_arc = indexes.storage();
-        let source_arc = source.storage();
+        let indexes_arc = indexes.storage()?;
+        let source_arc = source.storage()?;
         storage.scatter_set(
             &layout,
             &indexes_arc.read().unwrap(),
@@ -2919,14 +2919,14 @@ impl Tensor {
     /// # Ok::<(), fuel_core::Error>(())
     /// ```
     pub fn scatter_set<D: Dim>(&self, indexes: &Self, source: &Self, dim: D) -> Result<()> {
-        if self.same_storage(source) {
+        if self.same_storage(source)? {
             crate::bail!("cannot use slice_set when self and src share their storage")
         }
         let dim = dim.to_index(self.shape(), "scatter-set")?;
         self.scatter_checks(indexes, source, dim)?;
-        let self_arc = self.storage_mut();
-        let indexes_arc = indexes.storage();
-        let source_arc = source.storage();
+        let self_arc = self.storage_mut()?;
+        let indexes_arc = indexes.storage()?;
+        let source_arc = source.storage()?;
         self_arc.write().unwrap().scatter_set(
             self.layout(),
             &indexes_arc.read().unwrap(),
@@ -2959,14 +2959,14 @@ impl Tensor {
         self.scatter_checks(indexes, source, dim)?;
         let shape = self.shape();
         let mut storage = unsafe { self.device().alloc_uninit(shape, self.dtype())? };
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         self_arc
             .read()
             .unwrap()
             .copy_strided_src(&mut storage, 0, self.layout())?;
         let layout = Layout::contiguous(shape);
-        let indexes_arc = indexes.storage();
-        let source_arc = source.storage();
+        let indexes_arc = indexes.storage()?;
+        let source_arc = source.storage()?;
         storage.scatter_add(
             &layout,
             &indexes_arc.read().unwrap(),
@@ -2995,14 +2995,14 @@ impl Tensor {
     /// # Ok::<(), fuel_core::Error>(())
     /// ```
     pub fn scatter_add_set<D: Dim>(&self, indexes: &Self, source: &Self, dim: D) -> Result<()> {
-        if self.same_storage(source) {
+        if self.same_storage(source)? {
             crate::bail!("cannot use slice_set when self and src share their storage")
         }
         let dim = dim.to_index(self.shape(), "scatter-add-set")?;
         self.scatter_checks(indexes, source, dim)?;
-        let self_arc = self.storage_mut();
-        let indexes_arc = indexes.storage();
-        let source_arc = source.storage();
+        let self_arc = self.storage_mut()?;
+        let indexes_arc = indexes.storage()?;
+        let source_arc = source.storage()?;
         self_arc.write().unwrap().scatter_add(
             self.layout(),
             &indexes_arc.read().unwrap(),
@@ -3096,13 +3096,13 @@ impl Tensor {
             .bt())?
         }
         let mut storage = unsafe { self.device().alloc_uninit(self.shape(), self.dtype())? };
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         self_arc
             .read()
             .unwrap()
             .copy_strided_src(&mut storage, 0, self.layout())?;
         let offset = start * src.dims()[1..].iter().product::<usize>();
-        let src_arc = src.storage();
+        let src_arc = src.storage()?;
         src_arc
             .read()
             .unwrap()
@@ -3160,9 +3160,9 @@ impl Tensor {
             }
             .bt())?
         }
-        let self_arc = self.storage();
-        let indexes_arc = indexes.storage();
-        let source_arc = source.storage();
+        let self_arc = self.storage()?;
+        let indexes_arc = indexes.storage()?;
+        let source_arc = source.storage()?;
         let storage = self_arc.read().unwrap().index_add(
             self.layout(),
             &indexes_arc.read().unwrap(),
@@ -3218,8 +3218,8 @@ impl Tensor {
             }
             .bt())?
         }
-        let self_arc = self.storage();
-        let indexes_arc = indexes.storage();
+        let self_arc = self.storage()?;
+        let indexes_arc = indexes.storage()?;
         let storage = self_arc.read().unwrap().gather(
             self.layout(),
             &indexes_arc.read().unwrap(),
@@ -3256,8 +3256,8 @@ impl Tensor {
             }
             .bt())?,
         };
-        let self_arc = self.storage();
-        let indexes_arc = indexes.storage();
+        let self_arc = self.storage()?;
+        let indexes_arc = indexes.storage()?;
         let storage = self_arc.read().unwrap().index_select(
             &indexes_arc.read().unwrap(),
             self.layout(),
@@ -3338,7 +3338,7 @@ impl Tensor {
             Ok::<Vec<_>, Error>(data)
         };
         {
-            let cpu_storage = self.storage().read().unwrap().to_cpu_storage()?;
+            let cpu_storage = self.storage()?.read().unwrap().to_cpu_storage()?;
             from_cpu_storage(&cpu_storage)
         }
     }
@@ -3377,7 +3377,7 @@ impl Tensor {
             Ok(rows)
         };
         {
-            let cpu_storage = self.storage().read().unwrap().to_cpu_storage()?;
+            let cpu_storage = self.storage()?.read().unwrap().to_cpu_storage()?;
             from_cpu_storage(&cpu_storage)
         }
     }
@@ -3429,7 +3429,7 @@ impl Tensor {
             Ok(top_rows)
         };
         {
-            let cpu_storage = self.storage().read().unwrap().to_cpu_storage()?;
+            let cpu_storage = self.storage()?.read().unwrap().to_cpu_storage()?;
             from_cpu_storage(&cpu_storage)
         }
     }
@@ -3922,7 +3922,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, |t| Op::Transpose(t, dim1, dim2));
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Some(self.realized_storage()),
+            storage: Some(self.realized_storage()?),
             layout: self.layout.transpose(dim1, dim2)?,
             op,
             is_variable: false,
@@ -3961,7 +3961,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, |t| Op::Permute(t, dims.clone()));
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Some(self.realized_storage()),
+            storage: Some(self.realized_storage()?),
             layout: self.layout.permute(&dims)?,
             op,
             is_variable: false,
@@ -4021,7 +4021,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, Op::Copy);
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Some(Arc::new(RwLock::new(self.storage().read().unwrap().try_clone(self.layout())?))),
+            storage: Some(Arc::new(RwLock::new(self.storage()?.read().unwrap().try_clone(self.layout())?))),
             layout: self.layout.clone(),
             op,
             is_variable: false,
@@ -4051,15 +4051,19 @@ impl Tensor {
         if self.op.is_none() && !self.is_variable {
             self.clone()
         } else {
+            // Detach is metadata-only: it severs autograd (`BackpropOp::none`,
+            // `is_variable: false`) but the bytes don't change. Preserve
+            // whichever mode `self` is in by cloning both `storage` and
+            // `link` — the exactly-one-of invariant transfers from `self`.
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Some(self.realized_storage()),
+                storage: self.storage.clone(),
                 layout: self.layout.clone(),
                 op: BackpropOp::none(),
                 is_variable: false,
                 dtype: self.dtype,
                 device: self.device.clone(),
-                link: None,
+                link: self.link.clone(),
             };
             Tensor(Arc::new(tensor_))
         }
@@ -4083,7 +4087,7 @@ impl Tensor {
             // General path: source → CPU → target device.
             // For GPU→GPU on the same vendor this adds a CPU roundtrip; a direct
             // peer transfer optimisation can be added later via DynBackendStorage.
-            let host_buf = self.storage().read().unwrap().to_cpu_storage()?;
+            let host_buf = self.storage()?.read().unwrap().to_cpu_storage()?;
             let storage =
                 Storage(device.inner.storage_from_host_buffer_owned_dyn(host_buf)?);
             let op = BackpropOp::new1(self, Op::ToDevice);
@@ -4139,7 +4143,7 @@ impl Tensor {
     pub fn broadcast_as<S: Into<Shape>>(&self, shape: S) -> Result<Self> {
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Some(self.realized_storage()),
+            storage: Some(self.realized_storage()?),
             layout: self.layout.broadcast_as(shape)?,
             op: BackpropOp::new1(self, Op::Broadcast),
             is_variable: false,
@@ -4182,7 +4186,7 @@ impl Tensor {
             Ok(self.clone())
         } else {
             let shape = self.shape();
-            let storage = self.storage().read().unwrap().to_dtype(self.layout(), dtype)?;
+            let storage = self.storage()?.read().unwrap().to_dtype(self.layout(), dtype)?;
             let op = BackpropOp::new1(self, Op::ToDType);
             Ok(from_storage(storage, shape.clone(), op, false))
         }
@@ -4206,7 +4210,7 @@ impl Tensor {
         } else {
             let shape = self.shape();
             let mut storage = unsafe { self.device().alloc_uninit(shape, self.dtype())? };
-            let self_arc = self.storage();
+            let self_arc = self.storage()?;
             self_arc
                 .read()
                 .unwrap()
@@ -4231,7 +4235,7 @@ impl Tensor {
     pub fn force_contiguous(&self) -> Result<Tensor> {
         let shape = self.shape();
         let mut storage = unsafe { self.device().alloc_uninit(shape, self.dtype())? };
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         self_arc
             .read()
             .unwrap()
@@ -4245,7 +4249,7 @@ impl Tensor {
     pub(crate) fn make_var(&self) -> Result<Tensor> {
         let shape = self.shape().clone();
         let mut storage = unsafe { self.device().alloc_uninit(&shape, self.dtype())? };
-        let self_arc = self.storage();
+        let self_arc = self.storage()?;
         self_arc
             .read()
             .unwrap()
@@ -4293,7 +4297,7 @@ impl Tensor {
         if self.is_contiguous() {
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Some(self.realized_storage()),
+                storage: Some(self.realized_storage()?),
                 layout: Layout::contiguous_with_offset(shape, self.layout.start_offset()),
                 op,
                 is_variable: false,
@@ -4304,7 +4308,7 @@ impl Tensor {
             Ok(Tensor(Arc::new(tensor_)))
         } else {
             let mut storage = unsafe { self.device().alloc_uninit(&shape, self.dtype())? };
-            let self_arc = self.storage();
+            let self_arc = self.storage()?;
             self_arc
                 .read()
                 .unwrap()
@@ -4340,7 +4344,7 @@ impl Tensor {
             strides.remove(dim);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Some(self.realized_storage()),
+                storage: Some(self.realized_storage()?),
                 layout: Layout::new(dims.into(), strides, self.layout.start_offset()),
                 op: BackpropOp::new1(self, Op::Reshape),
                 is_variable: false,
@@ -4381,7 +4385,7 @@ impl Tensor {
         strides.insert(dim, stride);
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Some(self.realized_storage()),
+            storage: Some(self.realized_storage()?),
             layout: Layout::new(dims.into(), strides, self.layout.start_offset()),
             op: BackpropOp::new1(self, Op::Reshape),
             is_variable: false,
@@ -4531,20 +4535,28 @@ impl Tensor {
     ///   returns the legacy `storage` Arc clone.
     /// - **Node-handle mode** (`storage: None`, `link: Some(t)`):
     ///   returns `link.storage_for()` — the slot Arc registered in
-    ///   the graph's storage map. Panics if the slot is not yet
-    ///   populated (the linked node hasn't been realized).
+    ///   the graph's storage map. Returns `Err` if the slot is not
+    ///   yet populated (the linked node hasn't been realized). B3
+    ///   step 3 will replace that error path with a lazy realize
+    ///   through the executor; the `Result` shape is in place from
+    ///   day one so call sites already propagate failures cleanly.
     ///
     /// The "exactly one of `storage`, `link` is `Some`" invariant is
     /// enforced by the Tensor constructors (`from_storage` and
-    /// `from_link`). After B6 retires eager dispatch, the `storage`
-    /// field is dropped and this method becomes simply
-    /// `self.link.storage_for().expect(...)`.
-    pub fn realized_storage(&self) -> Arc<RwLock<Storage>> {
+    /// `from_link`). The two `unreachable!` arms below stay as
+    /// `unreachable!` because no call path can produce the violating
+    /// state — they're invariant guards, not error paths.
+    pub fn realized_storage(&self) -> Result<Arc<RwLock<Storage>>> {
         match (&self.storage, &self.link) {
-            (Some(arc), None) => arc.clone(),
-            (None, Some(link)) => link
-                .storage_for()
-                .expect("Tensor in node-handle mode: graph storage slot not populated for the linked NodeId"),
+            (Some(arc), None) => Ok(arc.clone()),
+            (None, Some(link)) => link.storage_for().ok_or_else(|| {
+                Error::Msg(
+                    "Tensor in node-handle mode: graph storage slot not populated \
+                     for the linked NodeId (B3 step 3 will lazy-realize here)"
+                        .to_string(),
+                )
+                .bt()
+            }),
             (Some(_), Some(_)) => unreachable!(
                 "Tensor invariant violated: both storage and link are Some — \
                  G constructors should set exactly one"
@@ -4580,38 +4592,38 @@ impl Tensor {
     /// node-handle mode (link is Some, slot populated). Once B6
     /// drops the legacy `storage` field, this accessor's body
     /// stays the same — call sites are unchanged.
-    pub(crate) fn storage(&self) -> Arc<RwLock<Storage>> {
+    pub(crate) fn storage(&self) -> Result<Arc<RwLock<Storage>>> {
         self.realized_storage()
     }
 
     /// Mutable variant of [`Self::storage`]. Same routing through
     /// `realized_storage()`. Callers take `.write().unwrap()` on
     /// the returned Arc.
-    pub(crate) fn storage_mut(&self) -> Arc<RwLock<Storage>> {
+    pub(crate) fn storage_mut(&self) -> Result<Arc<RwLock<Storage>>> {
         self.realized_storage()
     }
 
     // If we extend the visibility of this function to be usable outside of this crate, we should
     // make it unsafe.
-    pub(crate) fn storage_mut_and_layout(&self) -> (Arc<RwLock<Storage>>, &Layout) {
-        (self.realized_storage(), &self.layout)
+    pub(crate) fn storage_mut_and_layout(&self) -> Result<(Arc<RwLock<Storage>>, &Layout)> {
+        Ok((self.realized_storage()?, &self.layout))
     }
 
     /// The storage used by this tensor (as an `Arc<RwLock<Storage>>`)
     /// together with the layout to use to access it safely. Phase 7.5
     /// work item G: callers add `.read().unwrap()` after
     /// destructuring; routes through [`Tensor::realized_storage`].
-    pub fn storage_and_layout(&self) -> (Arc<RwLock<Storage>>, &Layout) {
-        (self.realized_storage(), &self.layout)
+    pub fn storage_and_layout(&self) -> Result<(Arc<RwLock<Storage>>, &Layout)> {
+        Ok((self.realized_storage()?, &self.layout))
     }
 
-    pub(crate) fn same_storage(&self, rhs: &Self) -> bool {
+    pub(crate) fn same_storage(&self, rhs: &Self) -> Result<bool> {
         // Phase 7.5 work item G: compare via the realized-storage seam
         // so node-handle and legacy-mode tensors compare correctly. Two
         // tensors share storage iff their backing Arcs are pointer-equal.
-        let lhs = self.realized_storage();
-        let rhs = rhs.realized_storage();
-        Arc::ptr_eq(&lhs, &rhs)
+        let lhs = self.realized_storage()?;
+        let rhs = rhs.realized_storage()?;
+        Ok(Arc::ptr_eq(&lhs, &rhs))
     }
 
     /// Normalize a 'relative' axis value: positive values are kept, negative
@@ -4815,7 +4827,7 @@ impl Tensor {
 
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Some(self.realized_storage()),
+            storage: Some(self.realized_storage()?),
             layout: Layout::new(sizes.into(), strides, self.layout.start_offset()),
             op: BackpropOp::new1(self, Op::Reshape),
             is_variable: false,
@@ -4989,7 +5001,7 @@ mod node_handle_tests {
         // Allocate Storage on the device via the legacy factory; we
         // only want the bytes — the Tensor wrapper is throwaway.
         let legacy = Tensor::new(&[1.0_f32, 2.0, 3.0], device).unwrap();
-        let storage_arc = legacy.realized_storage();
+        let storage_arc = legacy.realized_storage().unwrap();
 
         // Build a fresh single-node graph + Const leaf via from_f32.
         // Phase 7.5 G2 step 3: factories slot-populate; we then
@@ -5009,7 +5021,7 @@ mod node_handle_tests {
         assert!(t.graph_link().is_some());
 
         // The seam returns the slot's Arc — the same Arc we registered.
-        let slot_arc = t.realized_storage();
+        let slot_arc = t.realized_storage().unwrap();
         assert!(
             Arc::ptr_eq(&slot_arc, &storage_arc),
             "realized_storage should return the registered slot Arc"
@@ -5054,7 +5066,7 @@ mod node_handle_tests {
         let device = Device::cpu();
         let shape = Shape::from_dims(&[2]);
         let legacy = Tensor::new(&[5.0_f32, 6.0], &device).unwrap();
-        let storage_arc = legacy.realized_storage();
+        let storage_arc = legacy.realized_storage().unwrap();
 
         let link = fuel_graph::Tensor::from_f32(
             vec![5.0_f32, 6.0], shape.clone(), Device::cpu().as_dyn(),
@@ -5066,7 +5078,7 @@ mod node_handle_tests {
 
         let t = from_link(link.clone(), BackpropOp::none(), false).unwrap();
 
-        let via_seam = t.realized_storage();
+        let via_seam = t.realized_storage().unwrap();
         let via_link = link.storage_for().expect("slot was just registered");
         assert!(Arc::ptr_eq(&via_seam, &via_link));
         assert!(Arc::ptr_eq(&via_seam, &storage_arc));
