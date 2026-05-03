@@ -1064,11 +1064,14 @@ possible hardware configuration.*
       `qwen-lazy` binary defaults to `Qwen/Qwen2-0.5B-Instruct`. EOS
       scan includes `<|im_end|>` for Qwen2 chat. Two new tests covering
       bias correctness and cached-vs-non-cached equivalence with biases.
-- [x] **Performance: Arc-shared weights.** `ConstData` variants hold
+- [x] **Performance: Arc-shared weights.** `ConstData` variants held
       `Arc<[T]>`, `RefTensor` stores `Arc<[T]>`, `LlamaWeights` fields
-      are `Arc<[f32]>`. Const-node evaluation in both executors is now a
+      are `Arc<[f32]>`. Const-node evaluation in both executors was a
       refcount bump, not a memcpy. Eliminated ~8 GB/call of allocation
-      churn on TinyLlama.
+      churn on TinyLlama. *(Phase 7.5 G2 retired `ConstData` itself —
+      bytes now live in graph-Storage slots, with the Arc-shared
+      perf property carried by the slot's `Arc<RwLock<Storage>>` and
+      the executor's liveness-witnessed const_pool cache.)*
 - [x] **Performance: zero-copy broadcast and reshape.** `broadcast_to`
       detects pure-padding cases (e.g. `[M,K]` → `[1,M,K]`) and Arc-
       shares the source buffer. General path preallocates scratch outside
@@ -1866,7 +1869,11 @@ migration relies on.
       `from_iter`, `arange`, `arange_step`, `eye`, `full`, `rand`,
       `randn`, `meshgrid`) produce graph-rooted Tensors backed by
       `Op::Const` nodes whose Storage lives in the graph's
-      storage map (post-G). Trivial once G has landed.
+      storage map. **Substrate ready post-G2:** `fuel_graph::Tensor`
+      factories already slot-populate, and `fuel_core::Tensor::from_link`
+      is in place. B2 is the fuel-core eager `Tensor::zeros` /
+      `::ones` / `::from_slice` / etc. migration to construct via
+      `from_link` instead of `from_storage` (legacy eager mode).
 - [ ] **B3.** Migrate every `Tensor::*` op method to build a graph
       node instead of calling `Storage::*` directly. One op family
       per commit (unary, binary, binary-scalar, cmp, reduce,
@@ -1977,14 +1984,14 @@ The model after G:
   `evict_from_candidates`) keeps working unchanged — it already
   operates by NodeId, so the cache's new home doesn't change its
   interface.
-- `Op::Const` keeps its current host-side `Arc<[T]>` payload
-  (`ConstData`). On first `.realize()` of a Const node, bytes
-  upload into a graph-owned Storage slot; subsequent realizes
-  read the slot. Moving Const fully into graph-Storage (so that
-  device-resident weights can be Consts directly without
-  round-tripping through host bytes) is an explicit follow-on
-  listed below — important for weight-loading paths but
-  mechanical once G itself is in place.
+- `Op::Const` is a unit variant (post-G2). Bytes live in the
+  graph's storage_map slot, populated when the constructor is
+  called (`Tensor::from_f32`, `const_f32_like`, etc.). The
+  executor's slot-first dispatch returns the slot's Arc on
+  realize — no host-side payload rides on the node itself.
+  Const-pool cache is liveness-witnessed via
+  `Weak<RwLock<Storage>>` so slot Arc recycling can't produce
+  stale cache hits.
 
 Migration tactic — parallel-introduction-then-drop:
 
@@ -2064,21 +2071,33 @@ that brought G into alignment with what was originally agreed):
 
 Follow-on (post-G, ahead of CE):
 
-- [ ] **G2. Move `Op::Const` payload into graph-Storage.**
-      Today's `ConstData` is a host-side `Arc<[T]>` for one of
-      {f32, f64, bf16, f16, u32}. Replace with (or augment by)
-      a graph-resident Storage slot so that device-resident
-      weights — the dominant production case for Const — can
-      be loaded directly into device memory and live in the
-      graph as Consts without a host round-trip. The host-side
-      `Arc<[T]>` variant stays for tiny constants (masks,
-      scalar broadcasts) where uploading on first realize is
-      fine. Mechanical once G's storage map is in place;
-      affects fuel-formats integration paths and the
-      Const-uploading code in the executor's realize.
+- [x] **G2. Move `Op::Const` payload into graph-Storage.**
+      Shipped 2026-05-02 as a 3-step sequence:
+      1. Substrate (commit a4b836c9): `Op::Const(Option<ConstData>)`
+         wraps the legacy host payload alongside a new slot-only
+         `Op::Const(None)` mode; `Tensor::from_storage` primitive
+         for slot-only construction; slot-first dispatch in
+         fuel-graph-executor / fuel-graph-cpu / fuel-reference-backend's
+         realize loops.
+      2. Sweep (commit f0062c4f): public factories take an explicit
+         `&Device` (`fuel_graph::Tensor` takes `&Arc<dyn DynBackendDevice>`,
+         `fuel_core::LazyTensor` takes `&Device`); `const_*_like`
+         methods stay 2-arg and derive device from `self`'s graph.
+         ~700 callsites swept across ~50 files.
+      3. Cleanup (commit a00e6738): `ConstData` enum dropped;
+         `Op::Const` becomes a unit variant; gradient seeder
+         `build_filled_const` slot-populates via
+         `pick_device_from_graph`; `eval_const` arms in every
+         backend become `unreachable!`; const_pool restored
+         with `Weak<RwLock<Storage>>` liveness witness so slot
+         pointer recycling across realize calls (fresh-graph-per-
+         training-step pattern) can't cause stale cache hits.
+         fuel-cuda-backend gained `try_adopt_slot_cuda` slot-first
+         dispatch in all three realize loops.
 
-Estimated scope: 1-2 focused weeks for G itself; G2 is half a
-week of mechanical follow-on.
+Estimated scope: 1-2 focused weeks for G itself; G2 was about a
+week (estimated half a week, plus the const_pool liveness fix and
+the cuda slot-first wiring that surfaced during the work).
 
 **F. Declared layout contracts and layout-tracking optimizer pass.**
 
@@ -2146,9 +2165,11 @@ Order (revised 2026-05-02 after G was added):
 3. **G (Graph owns Storage)** — architectural prerequisite for
    the rest of B. Lands the `(graph, NodeId)`-handle Tensor model
    and moves Storage ownership into the Graph. 1-2 focused weeks.
-4. **G2 (`Op::Const` payload moves into graph-Storage)** —
-   mechanical follow-on, half a week. Eliminates host round-trip
-   for device-resident weights.
+4. **G2 (`Op::Const` payload moves into graph-Storage)** ✅ shipped
+   2026-05-02 across commits a4b836c9 / f0062c4f / a00e6738.
+   Public factories (`Tensor::from_f32`, etc.) take an explicit
+   `&Device`, slot-populate at construction, and emit `Op::Const`
+   as a unit variant. ConstData is gone.
 5. **B2-B6 (factories, op methods, force-value entry points,
    downstream migration, drop eager dispatch)** — much simpler
    on top of G. Each B sub-phase is an independently shippable
