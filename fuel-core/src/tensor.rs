@@ -125,7 +125,7 @@ macro_rules! unary_op {
                 .unwrap()
                 .unary_impl::<crate::op::$op_name>(self.layout())?;
             let op = BackpropOp::new1(self, |s| Op::Unary(s, UnaryOp::$op_name));
-            link_from_storage(storage, shape.clone(), op, false)
+            Ok(from_storage(storage, shape.clone(), op, false))
         }
     };
 }
