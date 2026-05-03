@@ -249,10 +249,12 @@ with a new Layout.
 
 A graph **node** is operation + recipe (input NodeIds, cached
 output shape and dtype). It does **not** contain output bytes;
-those are computed when the executor walks the graph. The lone
-exception is `Op::Const`, where the recipe IS the data — a
-host-side `Arc<[T]>` typed buffer that the executor uploads/copies
-to a device-resident Storage at realize time.
+those are computed when the executor walks the graph. `Op::Const`
+is a leaf with no input nodes — its bytes live in the graph's
+storage_map slot, populated when the constructor is called
+(`Tensor::from_f32`, `const_f32_like`, etc.). The executor's
+slot-first dispatch returns the slot's Arc directly on realize —
+no host-side payload rides on the node itself.
 
 **Phase 7.5 work item G** moved Storage ownership from individual
 Tensors to the graph: `fuel_graph::Graph` owns a

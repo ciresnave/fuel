@@ -308,39 +308,32 @@ will produce; it co-exists with legacy eager Tensors until B6
 retires eager dispatch.
 
 ```rust
-use std::sync::Arc;
 use fuel_core::{Tensor, Device};
-use fuel_graph::{ConstData, Tensor as GraphTensor};
+use fuel_graph::Tensor as GraphTensor;
 use fuel_core_types::Shape;
 
 fn main() -> fuel_core::Result<()> {
-    // 1. Allocate the bytes via the legacy factory; we only want
-    //    the Storage Arc — the wrapping Tensor handle is throwaway.
+    // 1. Build a Const leaf via the public factory. After Phase 7.5
+    //    G2, every constructor allocates Storage on the passed
+    //    device and registers the slot — `Op::Const` is a unit
+    //    variant whose bytes live in the graph's storage_map.
     let device = Device::cpu();
-    let bytes = Tensor::new(&[1.0_f32, 2.0, 3.0], &device)?;
-    let storage_arc = bytes.realized_storage();
+    let link = GraphTensor::from_f32(
+        vec![1.0_f32, 2.0, 3.0],
+        Shape::from_dims(&[3]),
+        device.as_dyn(),
+    );
 
-    // 2. Build a Const leaf in a fresh graph.
-    let const_data = ConstData::F32(Arc::from(vec![1.0_f32, 2.0, 3.0]));
-    let link = GraphTensor::from_const(const_data, Shape::from_dims(&[3]));
+    // 2. The slot is now populated; `link.storage_for()` returns
+    //    the Arc<RwLock<Storage>>. The executor's slot-first
+    //    dispatch returns this on realize, no host round-trip.
+    let _slot = link.storage_for().expect("from_f32 slot-populates");
 
-    // 3. Register the storage Arc in the graph's storage map under
-    //    the leaf's NodeId. After this, link.storage_for() returns
-    //    the Arc.
-    link.graph()
-        .write()
-        .unwrap()
-        .set_storage(link.id(), storage_arc);
-
-    // 4. Construct the node-handle Tensor. The constructor reads
-    //    dtype, device, and shape from the slot — there is no
-    //    secondary Arc on the Tensor handle.
-    //
-    // Tensor::from_link is pub(crate) for now; once B2 migrates
-    // the public factories (Tensor::zeros, ::ones, ::from_slice,
-    // ...) to produce node-handle Tensors, end users construct
-    // them through those public APIs and never call from_link
-    // directly.
+    // Tensor::from_link is pub(crate); once B2 migrates the public
+    // fuel-core factories (Tensor::zeros, ::ones, ::from_slice, ...)
+    // to produce node-handle Tensors, end users construct them
+    // through those public APIs and never call from_link directly.
+    let _ = device;
     Ok(())
 }
 ```
