@@ -3491,7 +3491,7 @@ impl LlamaModel {
             for node_id in 0..graph.len() {
                 let nid = fuel_graph::NodeId(node_id);
                 let node = graph.node(nid);
-                if matches!(node.op, fuel_graph::Op::Const(_))
+                if matches!(node.op, fuel_graph::Op::Const)
                     && node.shape.elem_count() == target_elems
                     && node.dtype == fuel_core_types::DType::F32
                     && node.shape.dims() == [batch, cfg.n_kv_heads, cached_len, cfg.head_dim]
@@ -4591,7 +4591,7 @@ impl PhiModel {
             for node_id in 0..graph.len() {
                 let nid = fuel_graph::NodeId(node_id);
                 let node = graph.node(nid);
-                if matches!(node.op, fuel_graph::Op::Const(_))
+                if matches!(node.op, fuel_graph::Op::Const)
                     && node.shape.elem_count() == target_elems
                     && node.dtype == fuel_core_types::DType::F32
                     && node.shape.dims() == [batch, cfg.n_heads, cached_len, cfg.head_dim]

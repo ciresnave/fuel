@@ -253,7 +253,7 @@ impl SchedulerRule for ConstLoweringRule {
         // For each Const without an explicit graph-level hint, check
         // consumer unanimity in the current placement map.
         for &nid in &order {
-            let is_const = matches!(g.node(nid).op, fuel_graph::Op::Const(_));
+            let is_const = matches!(g.node(nid).op, fuel_graph::Op::Const);
             if !is_const { continue; }
             if g.placement(nid).is_some() { continue; } // respect explicit hint
 

@@ -150,21 +150,12 @@ impl QuantType {
 pub enum Op {
     // --- leaves ---
     /// A concrete constant tensor — a leaf with no input nodes. The
-    /// payload is `Option<ConstData>` for the duration of the G2
-    /// migration (Phase 7.5):
-    ///
-    /// - `Some(data)`: legacy mode. Bytes live in the host-side
-    ///   `ConstData` payload; backends `eval_const(data, shape)` and
-    ///   upload to their target device on first realize.
-    /// - `None`: graph-Storage mode. The graph's `storage_map` slot for
-    ///   this node holds the realized `Arc<RwLock<Storage>>`. The
-    ///   executor's slot-first dispatch returns the slot directly, no
-    ///   ConstData round-trip. Built via [`Tensor::from_storage`].
-    ///
-    /// Once every constructor migrates to slot-population (G2 step 2),
-    /// the Option wrapper retires and `Op::Const` becomes a unit
-    /// variant with the slot as the sole source of bytes (G2 step 3).
-    Const(Option<ConstData>),
+    /// realized bytes live in the graph's `storage_map` slot for this
+    /// node, populated at construction time. The executor's slot-first
+    /// dispatch returns the slot's `Arc<RwLock<Storage>>` directly.
+    /// (Phase 7.5 work item G2 retired the host-side `ConstData`
+    /// payload — the slot is the sole source of bytes.)
+    Const,
 
     // --- element-wise binary ---
     /// Element-wise addition.
@@ -597,7 +588,7 @@ impl Op {
 
 fn op_short_name(op: &Op) -> &'static str {
     match op {
-        Op::Const(_)             => "Const",
+        Op::Const             => "Const",
         Op::Add                  => "Add",
         Op::Sub                  => "Sub",
         Op::Mul                  => "Mul",
@@ -666,74 +657,21 @@ fn op_short_name(op: &Op) -> &'static str {
     }
 }
 
-/// G2 helper: convert a `ConstData` into a `HostBuffer` by copying out
-/// the typed slice. This is the (only) path through which the Arc-
-/// shared host bytes get owned by a fresh Vec backing a `HostBuffer`.
-/// The caller hands the `HostBuffer` to a backend's
-/// `storage_from_host_buffer_owned_dyn` to allocate the device-resident
-/// Storage that the graph slot then owns.
-fn const_data_into_host_buffer(data: ConstData) -> fuel_core_types::HostBuffer {
+/// G2 helper: element count of a `HostBuffer`. Used by Tensor's
+/// constructors to validate that the supplied data matches the
+/// declared shape's `elem_count` before allocating Storage.
+fn host_buffer_elem_count(buf: &fuel_core_types::HostBuffer) -> usize {
     use fuel_core_types::HostBuffer;
-    match data {
-        ConstData::F32(v) => HostBuffer::F32(v.to_vec()),
-        ConstData::F64(v) => HostBuffer::F64(v.to_vec()),
-        ConstData::BF16(v) => HostBuffer::BF16(v.to_vec()),
-        ConstData::F16(v) => HostBuffer::F16(v.to_vec()),
-        ConstData::U32(v) => HostBuffer::U32(v.to_vec()),
-    }
-}
-
-/// Concrete data stored on a `Const` node. One variant per supported
-/// dtype; the executor matches on the variant to extract the correctly
-/// typed buffer.
-///
-/// The index-tensor variants (`U32` today, future `I64`/`U64`/etc.) carry
-/// integer data used for gather/scatter and similar indexing operations.
-/// They are not expected to participate in arithmetic ops — doing so
-/// panics at the executor level.
-///
-/// Variants hold [`Arc<[T]>`] rather than `Vec<T>` so that:
-///
-/// - cloning the enum (which happens on every `graph.node(id)` fetch
-///   because `Node: Clone`) is a refcount bump, not a memcpy;
-/// - weight buffers loaded once at model-load time can be shared
-///   across every forward pass and every layer that reuses them,
-///   which for a TinyLlama-sized model turns gigabytes of per-call
-///   memcpy into zero-cost Arc bumps.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConstData {
-    F32(Arc<[f32]>),
-    F64(Arc<[f64]>),
-    BF16(Arc<[bf16]>),
-    F16(Arc<[f16]>),
-    /// Unsigned 32-bit integer tensor, used for index tensors in
-    /// gather/scatter/index_select. Matches the convention of every real
-    /// backend fuel has (Candle, CUDA, Metal all use `u32` for indices).
-    U32(Arc<[u32]>),
-}
-
-impl ConstData {
-    /// The number of elements in this constant, for shape validation.
-    pub fn elem_count(&self) -> usize {
-        match self {
-            ConstData::F32(v) => v.len(),
-            ConstData::F64(v) => v.len(),
-            ConstData::BF16(v) => v.len(),
-            ConstData::F16(v) => v.len(),
-            ConstData::U32(v) => v.len(),
-        }
-    }
-
-    /// The dtype of this constant. Useful when constructing a `Node` from
-    /// a `ConstData` without duplicating the dtype tag.
-    pub fn dtype(&self) -> DType {
-        match self {
-            ConstData::F32(_) => DType::F32,
-            ConstData::F64(_) => DType::F64,
-            ConstData::BF16(_) => DType::BF16,
-            ConstData::F16(_) => DType::F16,
-            ConstData::U32(_) => DType::U32,
-        }
+    match buf {
+        HostBuffer::F32(v) => v.len(),
+        HostBuffer::F64(v) => v.len(),
+        HostBuffer::BF16(v) => v.len(),
+        HostBuffer::F16(v) => v.len(),
+        HostBuffer::U32(v) => v.len(),
+        other => panic!(
+            "Tensor::from_*: unsupported host-buffer dtype {:?}",
+            other.dtype(),
+        ),
     }
 }
 
@@ -1100,14 +1038,16 @@ impl Tensor {
     ///
     /// Phase 7.5 work item G2: `device` is the device on which the
     /// realized Storage is allocated. The graph's storage_map slot is
-    /// populated with that Storage and `Op::Const(None)` is emitted —
+    /// populated with that Storage and `Op::Const` is emitted —
     /// no host-side `ConstData` payload rides on the node.
     pub fn from_f32(
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_core_types::DynBackendDevice>,
     ) -> Self {
-        Self::from_arc(ConstData::F32(data.into()), shape, device)
+        let v: Arc<[f32]> = data.into();
+        let buf = fuel_core_types::HostBuffer::F32(v.to_vec());
+        Self::from_host_buffer(buf, DType::F32, shape, device)
     }
 
     /// Build a `Const` tensor from an `f64` slice and shape on a fresh graph.
@@ -1117,7 +1057,9 @@ impl Tensor {
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_core_types::DynBackendDevice>,
     ) -> Self {
-        Self::from_arc(ConstData::F64(data.into()), shape, device)
+        let v: Arc<[f64]> = data.into();
+        let buf = fuel_core_types::HostBuffer::F64(v.to_vec());
+        Self::from_host_buffer(buf, DType::F64, shape, device)
     }
 
     /// Build a `Const` tensor from a `bf16` slice and shape on a fresh graph.
@@ -1127,7 +1069,9 @@ impl Tensor {
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_core_types::DynBackendDevice>,
     ) -> Self {
-        Self::from_arc(ConstData::BF16(data.into()), shape, device)
+        let v: Arc<[bf16]> = data.into();
+        let buf = fuel_core_types::HostBuffer::BF16(v.to_vec());
+        Self::from_host_buffer(buf, DType::BF16, shape, device)
     }
 
     /// Build a `Const` tensor from an `f16` slice and shape on a fresh graph.
@@ -1137,7 +1081,9 @@ impl Tensor {
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_core_types::DynBackendDevice>,
     ) -> Self {
-        Self::from_arc(ConstData::F16(data.into()), shape, device)
+        let v: Arc<[f16]> = data.into();
+        let buf = fuel_core_types::HostBuffer::F16(v.to_vec());
+        Self::from_host_buffer(buf, DType::F16, shape, device)
     }
 
     /// Build a `Const` tensor from a `u32` slice and shape on a fresh
@@ -1152,51 +1098,37 @@ impl Tensor {
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_core_types::DynBackendDevice>,
     ) -> Self {
-        Self::from_arc(ConstData::U32(data.into()), shape, device)
+        let v: Arc<[u32]> = data.into();
+        let buf = fuel_core_types::HostBuffer::U32(v.to_vec());
+        Self::from_host_buffer(buf, DType::U32, shape, device)
     }
 
-    /// Build a `Const` tensor from any [`ConstData`] value on a fresh graph.
-    /// The per-dtype `from_*` methods funnel through this.
-    ///
-    /// Phase 7.5 work item G2: `device` selects where the realized
-    /// Storage is allocated. The graph's storage_map slot is
-    /// populated with that Storage and `Op::Const(None)` is emitted —
-    /// no host-side `ConstData` payload rides on the node.
-    pub fn from_const(
-        data: ConstData,
-        shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
-    ) -> Self {
-        Self::from_arc(data, shape, device)
-    }
-
-    /// G2 internal funnel: build the storage on `device`, register the
-    /// slot, emit `Op::Const(None)`. Both `from_const` (public) and the
-    /// per-dtype `from_*` methods delegate here.
-    fn from_arc(
-        data: ConstData,
+    /// G2 internal funnel: allocate Storage on `device` from `buf`,
+    /// register the slot, emit `Op::Const`. Per-dtype `from_*` methods
+    /// delegate here.
+    fn from_host_buffer(
+        buf: fuel_core_types::HostBuffer,
+        dtype: DType,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_core_types::DynBackendDevice>,
     ) -> Self {
         let shape = shape.into();
+        let n = host_buffer_elem_count(&buf);
         assert_eq!(
-            data.elem_count(),
+            n,
             shape.elem_count(),
-            "Tensor::from_const: data length {} does not match shape element count {}",
-            data.elem_count(),
+            "Tensor::from_*: data length {n} does not match shape element count {}",
             shape.elem_count(),
         );
-        let dtype = data.dtype();
-        let buf = const_data_into_host_buffer(data);
         let backend_storage = device
             .storage_from_host_buffer_owned_dyn(buf)
-            .expect("Tensor::from_const: device.storage_from_host_buffer_owned_dyn failed");
+            .expect("Tensor::from_*: device.storage_from_host_buffer_owned_dyn failed");
         let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
         let graph = Arc::new(RwLock::new(Graph::new()));
         let id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const(None),
+                op:     Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -1208,16 +1140,10 @@ impl Tensor {
     }
 
     /// Phase 7.5 work item G2: build a `Const` leaf on a fresh graph
-    /// whose realized bytes already live in `storage`. Skips the
-    /// host-side `ConstData` payload — the graph's storage_map slot
-    /// for the new node is populated with `storage` directly, and
-    /// `Op::Const(None)` records that the slot is the source of truth.
-    ///
-    /// This is the primitive every G2-migrated factory funnels through:
-    /// allocate Storage on a device as today, wrap in
-    /// `Arc<RwLock<Storage>>`, call `from_storage`. The executor's
-    /// slot-first dispatch returns the slot's Arc directly, no upload
-    /// round-trip.
+    /// whose realized bytes already live in `storage`. The graph's
+    /// storage_map slot for the new node is populated with `storage`
+    /// directly. The executor's slot-first dispatch returns the slot's
+    /// Arc on realize.
     pub fn from_storage(
         storage: Arc<RwLock<Storage>>,
         shape: impl Into<Shape>,
@@ -1238,7 +1164,7 @@ impl Tensor {
         let id = {
             let mut g = graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const(None),
+                op:     Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -1263,7 +1189,10 @@ impl Tensor {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
     ) -> Self {
-        self.const_like_arc(ConstData::F32(data.into()), shape)
+        let v: Arc<[f32]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::F32(v.to_vec()), DType::F32, shape,
+        )
     }
 
     /// Build a second `Const f64` tensor on the same graph as `self`.
@@ -1272,7 +1201,10 @@ impl Tensor {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
     ) -> Self {
-        self.const_like_arc(ConstData::F64(data.into()), shape)
+        let v: Arc<[f64]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::F64(v.to_vec()), DType::F64, shape,
+        )
     }
 
     /// Build a second `Const bf16` tensor on the same graph as `self`.
@@ -1281,7 +1213,10 @@ impl Tensor {
         data: impl Into<Arc<[bf16]>>,
         shape: impl Into<Shape>,
     ) -> Self {
-        self.const_like_arc(ConstData::BF16(data.into()), shape)
+        let v: Arc<[bf16]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::BF16(v.to_vec()), DType::BF16, shape,
+        )
     }
 
     /// Build a second `Const f16` tensor on the same graph as `self`.
@@ -1290,7 +1225,10 @@ impl Tensor {
         data: impl Into<Arc<[f16]>>,
         shape: impl Into<Shape>,
     ) -> Self {
-        self.const_like_arc(ConstData::F16(data.into()), shape)
+        let v: Arc<[f16]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::F16(v.to_vec()), DType::F16, shape,
+        )
     }
 
     /// Build a second `Const u32` (index) tensor on the same graph as `self`.
@@ -1299,17 +1237,10 @@ impl Tensor {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
     ) -> Self {
-        self.const_like_arc(ConstData::U32(data.into()), shape)
-    }
-
-    /// Build a second `Const` tensor on the same graph as `self` from any
-    /// [`ConstData`] value.
-    pub fn const_like(
-        &self,
-        data: ConstData,
-        shape: impl Into<Shape>,
-    ) -> Self {
-        self.const_like_arc(data, shape)
+        let v: Arc<[u32]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::U32(v.to_vec()), DType::U32, shape,
+        )
     }
 
     /// G2 internal funnel for the per-graph const_*_like family. The
@@ -1317,21 +1248,20 @@ impl Tensor {
     /// so callers don't have to thread a device through hot paths
     /// like RoPE table construction or LoRA application — the const
     /// goes on the same device as the graph it joins.
-    fn const_like_arc(
+    fn const_like_host_buffer(
         &self,
-        data: ConstData,
+        buf: fuel_core_types::HostBuffer,
+        dtype: DType,
         shape: impl Into<Shape>,
     ) -> Self {
         let shape = shape.into();
+        let n = host_buffer_elem_count(&buf);
         assert_eq!(
-            data.elem_count(),
+            n,
             shape.elem_count(),
-            "const_like: data length {} does not match shape element count {}",
-            data.elem_count(),
+            "const_*_like: data length {n} does not match shape element count {}",
             shape.elem_count(),
         );
-        let dtype = data.dtype();
-        let buf = const_data_into_host_buffer(data);
         let device = pick_device_from_graph(&self.graph);
         let backend_storage = device
             .storage_from_host_buffer_owned_dyn(buf)
@@ -1340,7 +1270,7 @@ impl Tensor {
         let id = {
             let mut g = self.graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const(None),
+                op:     Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -1374,7 +1304,7 @@ impl Tensor {
         let id = {
             let mut g = self.graph.write().unwrap();
             let id = g.push(Node {
-                op:     Op::Const(None),
+                op:     Op::Const,
                 inputs: vec![],
                 shape,
                 dtype,
@@ -2893,7 +2823,7 @@ impl Tensor {
             }
 
             match op {
-                Op::Const(_) => {
+                Op::Const => {
                     // Leaf. The upstream value has already been stored and
                     // is what `GradMap::get` will return for this input.
                 }
@@ -4693,20 +4623,20 @@ pub fn build_rope_tables(
 /// appear as gradients, so a `U32` call indicates a bug in a backward
 /// rule rather than a missing feature.
 ///
-/// Phase 7.5 G2 transitional: gradient consts still use the legacy
-/// Op::Const(Some(ConstData)) path. The slot-only path (Op::Const(None)
-/// + storage_map) is the long-run target, but build_filled_const runs
-/// inside backward() in many places where the device-derivation
-/// helper hits unexpected graph states. Until step 3 collapses
-/// ConstData entirely, gradient consts are the one remaining
-/// caller of the Some-data branch.
+/// Phase 7.5 G2: gradient consts are slot-populating Op::Const
+/// nodes. Device is picked from any existing slot (the forward pass
+/// always populated at least one slot-bearing leaf by the time
+/// backward runs). For a CPU-rooted graph the device's
+/// `storage_from_host_buffer_owned_dyn` is a zero-copy wrap; for
+/// GPU-rooted, an H2D upload (matching today's eval_const path on
+/// first realize).
 fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f64) -> NodeId {
     let n = shape.elem_count();
-    let data = match dtype {
-        DType::F32 => ConstData::F32(Arc::from(vec![value as f32; n])),
-        DType::F64 => ConstData::F64(Arc::from(vec![value; n])),
-        DType::BF16 => ConstData::BF16(Arc::from(vec![bf16::from_f64(value); n])),
-        DType::F16 => ConstData::F16(Arc::from(vec![f16::from_f64(value); n])),
+    let buf = match dtype {
+        DType::F32 => fuel_core_types::HostBuffer::F32(vec![value as f32; n]),
+        DType::F64 => fuel_core_types::HostBuffer::F64(vec![value; n]),
+        DType::BF16 => fuel_core_types::HostBuffer::BF16(vec![bf16::from_f64(value); n]),
+        DType::F16 => fuel_core_types::HostBuffer::F16(vec![f16::from_f64(value); n]),
         other => panic!(
             "backward: build_filled_const: unsupported dtype {other:?} \
              (gradients are always floats — this would indicate a bug in \
@@ -4714,7 +4644,14 @@ fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f6
              integer tensor)",
         ),
     };
-    push_node(graph, Op::Const(Some(data)), vec![], shape, dtype)
+    let device = pick_device_from_graph(graph);
+    let backend_storage = device
+        .storage_from_host_buffer_owned_dyn(buf)
+        .expect("build_filled_const: storage_from_host_buffer_owned_dyn failed");
+    let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
+    let id = push_node(graph, Op::Const, vec![], shape, dtype);
+    graph.write().unwrap().set_storage(id, storage_arc);
+    id
 }
 
 /// G2 helper: walk the graph for any populated slot and return its
@@ -4949,8 +4886,8 @@ mod tests {
         assert_eq!(a.shape().dims(), &[3]);
         assert_eq!(a.dtype(), DType::F32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        // Phase 7.5 G2: factory now emits Op::Const(None) + slot.
-        assert!(matches!(node.op, Op::Const(None)));
+        // Phase 7.5 G2: factory now emits Op::Const + slot.
+        assert!(matches!(node.op, Op::Const));
         assert!(node.inputs.is_empty());
         // The slot is populated with F32 storage.
         let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
@@ -5020,7 +4957,7 @@ mod tests {
         assert_eq!(a.dtype(), DType::F64);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
-        assert!(matches!(node.op, Op::Const(None)));
+        assert!(matches!(node.op, Op::Const));
         let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
         assert_eq!(slot.read().unwrap().dtype(), DType::F64);
     }
@@ -5034,7 +4971,7 @@ mod tests {
         );
         assert_eq!(a.dtype(), DType::BF16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(None)));
+        assert!(matches!(node.op, Op::Const));
         let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
         assert_eq!(slot.read().unwrap().dtype(), DType::BF16);
     }
@@ -5048,7 +4985,7 @@ mod tests {
         );
         assert_eq!(a.dtype(), DType::F16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
-        assert!(matches!(node.op, Op::Const(None)));
+        assert!(matches!(node.op, Op::Const));
         let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
         assert_eq!(slot.read().unwrap().dtype(), DType::F16);
     }
@@ -5379,10 +5316,12 @@ mod tests {
         let grads = a.backward();
         let g_a = grads.get(&a).expect("root gets a seed gradient");
         // The seed is a Const ones node of matching shape. Phase 7.5
-        // G2 transitional: gradient consts still use the legacy
-        // Op::Const(Some(data)) path until step 3 collapses ConstData.
+        // G2: gradient consts are slot-rooted Op::Const — no
+        // host-side ConstData on the node.
         let node = g_a.graph().read().unwrap().node(g_a.id()).clone();
-        assert!(matches!(node.op, Op::Const(Some(ConstData::F32(_)))));
+        assert!(matches!(node.op, Op::Const));
+        let slot = g_a.graph().read().unwrap().storage_for(g_a.id()).unwrap();
+        assert_eq!(slot.read().unwrap().dtype(), DType::F32);
         assert_eq!(g_a.shape().dims(), &[3]);
     }
 
@@ -5559,7 +5498,7 @@ mod tests {
         assert_eq!(a.dtype(), DType::U32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
-        assert!(matches!(node.op, Op::Const(None)));
+        assert!(matches!(node.op, Op::Const));
         let slot = a.graph().read().unwrap().storage_for(a.id()).unwrap();
         assert_eq!(slot.read().unwrap().dtype(), DType::U32);
     }
