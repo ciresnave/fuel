@@ -95,14 +95,21 @@ pub enum OpParams {
 
     /// Matrix multiplication. Carries the dimensions explicitly
     /// because [`Storage`](crate::Storage) only holds bytes + dtype;
-    /// the kernel needs `(m, n, k)` to walk inputs and outputs.
+    /// the kernel needs `(batch_count, m, n, k)` to walk inputs and
+    /// outputs.
     ///
-    /// Today's path is strict rank-2: lhs `[m, k]` @ rhs `[k, n]`
-    /// → out `[m, n]`. Both inputs are guaranteed contiguous
-    /// because the executor's auto-Contiguize pass runs first;
-    /// transpose flags don't appear here because `Op::Transpose`
-    /// is its own metadata-only op in fuel-graph.
+    /// Shape contract: lhs `[..., m, k]` @ rhs `[..., k, n]` →
+    /// out `[..., m, n]`. Leading batch dims must match exactly
+    /// (auto-broadcast in fuel-graph's matmul builder ensures
+    /// this). `batch_count` is the product of leading dims —
+    /// 1 for rank-2 inputs.
+    ///
+    /// Both inputs are guaranteed contiguous by the executor's
+    /// auto-Contiguize pass; transpose flags don't appear here
+    /// because `Op::Transpose` is its own metadata-only op in
+    /// fuel-graph.
     Matmul {
+        batch_count: usize,
         m: usize,
         n: usize,
         k: usize,
@@ -257,7 +264,7 @@ mod tests {
             dims: vec![0, 1],
             keepdim: false,
         };
-        let _ = OpParams::Matmul { m: 4, n: 8, k: 16 };
+        let _ = OpParams::Matmul { batch_count: 1, m: 4, n: 8, k: 16 };
         let _ = OpParams::Slice { dim: 0, start: 0, end: 10, step: 1 };
         let _ = OpParams::Cast;
         let _ = OpParams::Affine { mul: 2.0, add: 1.0 };
