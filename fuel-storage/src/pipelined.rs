@@ -504,6 +504,42 @@ fn op_to_op_params(
                 keepdim: false,
             }
         }
+        Op::MatMul => {
+            // Strict rank-2 today: lhs [m, k] @ rhs [k, n] → [m, n].
+            // Batched matmul lands later — extend this arm with a
+            // batched OpParams variant when it does.
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::MatMul expects 2 inputs, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let lhs = input_layout(node.inputs[0]);
+            let rhs = input_layout(node.inputs[1]);
+            let lhs_dims = lhs.shape().dims();
+            let rhs_dims = rhs.shape().dims();
+            if lhs_dims.len() != 2 || rhs_dims.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::MatMul: only rank-2 inputs are wired in the new path \
+                     today (got lhs rank {}, rhs rank {}); batched matmul \
+                     is a follow-up — reshape or split first",
+                    lhs_dims.len(),
+                    rhs_dims.len(),
+                ))
+                .bt());
+            }
+            let (m, k_lhs) = (lhs_dims[0], lhs_dims[1]);
+            let (k_rhs, n) = (rhs_dims[0], rhs_dims[1]);
+            if k_lhs != k_rhs {
+                return Err(Error::Msg(format!(
+                    "Op::MatMul: contracting dims disagree — lhs is [{m}, {k_lhs}], \
+                     rhs is [{k_rhs}, {n}]",
+                ))
+                .bt());
+            }
+            OpParams::Matmul { m, n, k: k_lhs }
+        }
         _ => OpParams::None,
     })
 }
@@ -1035,6 +1071,96 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[4, 3]);
         // Broadcasted leading dim has stride 0.
         assert_eq!(result_layout.stride(), &[0, 1]);
+    }
+
+    /// E2E: Const + Const + MatMul — exercises rank-2 matmul
+    /// through the pipelined executor. Inputs are contiguous (no
+    /// auto-Contiguize needed); the kernel walks them via the
+    /// (m, n, k) carried in OpParams::Matmul.
+    #[test]
+    fn pipelined_realize_matmul_2x3_times_3x2() {
+        // [[1, 2, 3], [4, 5, 6]] @ [[7, 8], [9, 10], [11, 12]]
+        //   = [[58, 64], [139, 154]]
+        let lhs_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs_storage = crate::from_slice_cpu(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (lhs_id, rhs_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let lhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let rhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul, inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (lhs, rhs, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(lhs_id, Arc::new(RwLock::new(lhs_storage)));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        assert_eq!(result_layout.shape().dims(), &[2, 2]);
+        assert!(result_layout.is_contiguous());
+
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[58.0, 64.0, 139.0, 154.0]);
+    }
+
+    /// E2E: matmul with a transposed rhs — proves stage 3+4
+    /// integration carries through the matmul path. The transpose
+    /// is metadata-only; auto-Contiguize materializes the strided
+    /// rhs before the matmul kernel sees it.
+    #[test]
+    fn pipelined_realize_matmul_with_transposed_rhs() {
+        // lhs [[1, 2], [3, 4]], rhs original [[5, 6], [7, 8]]
+        // rhs.T = [[5, 7], [6, 8]]
+        // lhs @ rhs.T = [[1*5+2*6, 1*7+2*8], [3*5+4*6, 3*7+4*8]]
+        //             = [[17, 23], [39, 53]]
+        let lhs_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let rhs_storage = crate::from_slice_cpu(&[5.0_f32, 6.0, 7.0, 8.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (lhs_id, rhs_id, t_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let lhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            let rhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            let t = g.push(Node {
+                op: Op::Transpose, inputs: vec![rhs],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul, inputs: vec![lhs, t],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (lhs, rhs, t, mm)
+        };
+        let _ = t_id;
+        let mut inputs = StorageCache::new();
+        inputs.insert(lhs_id, Arc::new(RwLock::new(lhs_storage)));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[17.0, 23.0, 39.0, 53.0]);
     }
 
     /// E2E: Const + Reshape — contiguous-input reshape is zero

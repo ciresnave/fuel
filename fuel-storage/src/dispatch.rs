@@ -404,6 +404,47 @@ cpu_reduce_wrapper!(max_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::
 cpu_reduce_wrapper!(min_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f32, "min_reduce");
 cpu_reduce_wrapper!(mean_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f32, "mean_reduce");
 
+/// Dispatch wrapper for `(MatMul, F32, Cpu)`. Extracts the
+/// `OpParams::Matmul { m, n, k }` and forwards to the typed
+/// kernel. Both inputs are guaranteed contiguous f32 by the
+/// executor's auto-Contiguize pass.
+fn matmul_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "matmul wrapper expects 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "matmul wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (m, n, k) = match params {
+        OpParams::Matmul { m, n, k } => (*m, *n, *k),
+        other => {
+            return Err(Error::Msg(format!(
+                "matmul wrapper expects OpParams::Matmul, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let lhs_guard = read_storage(&inputs[0])?;
+    let rhs_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let lhs_cpu = cpu_input(&lhs_guard)?;
+    let rhs_cpu = cpu_input(&rhs_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::matmul_f32(lhs_cpu, rhs_cpu, out_cpu, m, n, k)
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -439,6 +480,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MaxReduce,          f32_dt, cpu, max_reduce_f32_cpu_wrapper);
     table.register(MinReduce,          f32_dt, cpu, min_reduce_f32_cpu_wrapper);
     table.register(MeanReduce,         f32_dt, cpu, mean_reduce_f32_cpu_wrapper);
+
+    table.register(MatMul,             f32_dt, cpu, matmul_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -492,6 +535,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MaxReduce,
         MinReduce,
         MeanReduce,
+        MatMul,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
