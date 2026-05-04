@@ -31,11 +31,10 @@
 //! GPU placeholder variants. A3.1/A3.2/A3.3 replace those placeholders
 //! with real types from each GPU backend.
 
+/// Vulkan storage variant — re-exported from fuel-graph-vulkan when
+/// the vulkan feature is enabled.
 #[cfg(feature = "vulkan")]
-pub mod vulkan;
-
-#[cfg(feature = "vulkan")]
-pub use vulkan::VulkanStorage;
+pub use fuel_graph_vulkan::VulkanStorageBytes as VulkanStorage;
 
 /// CUDA storage variant — re-exported from fuel-cuda-backend when
 /// the cuda feature is enabled.

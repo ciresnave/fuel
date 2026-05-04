@@ -12,6 +12,7 @@ version.workspace = true
 fuel-core-types = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
+fuel-graph-vulkan = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
 thiserror = { workspace = true }
@@ -21,10 +22,10 @@ fuel-metal-backend = { workspace = true, optional = true }
 
 [features]
 default = []
-# Per-backend storage variants. A3.1 wires Metal via
+# Per-backend storage variants. A3.1 wired Metal via
 # fuel-metal-backend (target-gated to Apple platforms);
-# A3.2 wires CUDA via fuel-cuda-backend; A3.3 wires Vulkan via
-# fuel-graph-vulkan.
+# A3.2 wired CUDA via fuel-cuda-backend;
+# A3.3 wires Vulkan via fuel-graph-vulkan.
 cuda = ["dep:fuel-cuda-backend"]
-vulkan = []
+vulkan = ["dep:fuel-graph-vulkan"]
 metal = ["dep:fuel-metal-backend"]
