@@ -74,9 +74,15 @@ pub enum OpParams {
     /// sub, div, …), shape-only ops (reshape, transpose), etc.
     None,
 
-    /// Reduction (sum, max, mean, …) along specific dims with
-    /// optional keepdim semantics.
+    /// Reduction (sum, max, mean, …) along specific dims. Carries
+    /// the input tensor's shape because [`Storage`](crate::Storage)
+    /// only holds bytes + dtype — the kernel needs the shape to
+    /// walk the input multi-index. `dims` is the sorted list of
+    /// dims to reduce; `keepdim` controls whether reduced dims are
+    /// retained as size-1 in the output (today fuel-graph never
+    /// asks for keepdim, but the field is reserved for the future).
     Reduce {
+        input_shape: Vec<usize>,
         dims: Vec<usize>,
         keepdim: bool,
     },
@@ -234,6 +240,7 @@ mod tests {
     fn op_params_variants_construct() {
         let _ = OpParams::None;
         let _ = OpParams::Reduce {
+            input_shape: vec![4, 8],
             dims: vec![0, 1],
             keepdim: false,
         };
