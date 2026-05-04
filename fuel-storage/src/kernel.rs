@@ -93,12 +93,19 @@ pub enum OpParams {
         keepdim: bool,
     },
 
-    /// Matrix multiplication with optional transpose flags.
-    /// Single-batch and batched matmul share this variant; batch
-    /// shape lives on the Storage's Layout.
+    /// Matrix multiplication. Carries the dimensions explicitly
+    /// because [`Storage`](crate::Storage) only holds bytes + dtype;
+    /// the kernel needs `(m, n, k)` to walk inputs and outputs.
+    ///
+    /// Today's path is strict rank-2: lhs `[m, k]` @ rhs `[k, n]`
+    /// → out `[m, n]`. Both inputs are guaranteed contiguous
+    /// because the executor's auto-Contiguize pass runs first;
+    /// transpose flags don't appear here because `Op::Transpose`
+    /// is its own metadata-only op in fuel-graph.
     Matmul {
-        transpose_lhs: bool,
-        transpose_rhs: bool,
+        m: usize,
+        n: usize,
+        k: usize,
     },
 
     /// 1D convolution geometry (forward path).
@@ -250,10 +257,7 @@ mod tests {
             dims: vec![0, 1],
             keepdim: false,
         };
-        let _ = OpParams::Matmul {
-            transpose_lhs: false,
-            transpose_rhs: true,
-        };
+        let _ = OpParams::Matmul { m: 4, n: 8, k: 16 };
         let _ = OpParams::Slice { dim: 0, start: 0, end: 10, step: 1 };
         let _ = OpParams::Cast;
         let _ = OpParams::Affine { mul: 2.0, add: 1.0 };
