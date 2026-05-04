@@ -397,6 +397,155 @@ pub fn matmul_f32(
 }
 
 // =============================================================================
+// 2D Convolution (f32)
+// =============================================================================
+
+/// Direct (no-im2col) 2D convolution forward pass on `f32`.
+///
+/// Shapes:
+///   x:      [N, Cin,                Hin, Win]
+///   weight: [Cout, Cin/groups,      Kh,  Kw ]
+///   bias:   optional [Cout]
+///   out:    [N, Cout,               Hout, Wout]
+///
+/// Out-of-bounds reads (from padding) yield 0. Groups partition Cin
+/// and Cout into `groups` even chunks; output channel `co` reads
+/// from input channels `(co / Co_per_group) * Ci_per_group ..`.
+///
+/// Correctness-first; vendor backends (cuDNN, MKL-DNN) will
+/// dramatically outperform this once they're wired.
+#[allow(clippy::too_many_arguments)]
+pub fn conv2d_f32(
+    x: &CpuStorageBytes,
+    weight: &CpuStorageBytes,
+    bias: Option<&CpuStorageBytes>,
+    out: &mut CpuStorageBytes,
+    x_shape: [usize; 4],
+    w_shape: [usize; 4],
+    out_shape: [usize; 4],
+    stride: (usize, usize),
+    padding: (usize, usize),
+    dilation: (usize, usize),
+    groups: usize,
+) -> Result<()> {
+    let [n, cin, h_in, w_in] = x_shape;
+    let [cout, cin_per_group, kh, kw] = w_shape;
+    let [n_out, cout_out, h_out, w_out] = out_shape;
+    if n != n_out {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: input batch {n} != output batch {n_out}"
+        ))
+        .bt());
+    }
+    if cout != cout_out {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: weight Cout {cout} != output Cout {cout_out}"
+        ))
+        .bt());
+    }
+    if groups == 0 || cin % groups != 0 || cout % groups != 0 {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: groups={groups} must divide Cin={cin} and Cout={cout}"
+        ))
+        .bt());
+    }
+    if cin / groups != cin_per_group {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: weight expects Cin/group={cin_per_group}, but \
+             Cin/groups = {cin}/{groups} = {}",
+            cin / groups,
+        ))
+        .bt());
+    }
+    let cout_per_group = cout / groups;
+    let elem = std::mem::size_of::<f32>();
+    let need_x = n.saturating_mul(cin).saturating_mul(h_in).saturating_mul(w_in)
+        .saturating_mul(elem);
+    let need_w = cout.saturating_mul(cin_per_group).saturating_mul(kh).saturating_mul(kw)
+        .saturating_mul(elem);
+    let need_out = n.saturating_mul(cout).saturating_mul(h_out).saturating_mul(w_out)
+        .saturating_mul(elem);
+    if x.len_bytes() != need_x {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: x bytes={} doesn't match shape {:?}",
+            x.len_bytes(), x_shape,
+        ))
+        .bt());
+    }
+    if weight.len_bytes() != need_w {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: weight bytes={} doesn't match shape {:?}",
+            weight.len_bytes(), w_shape,
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_out {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: out bytes={} doesn't match shape {:?}",
+            out.len_bytes(), out_shape,
+        ))
+        .bt());
+    }
+    if let Some(b) = bias {
+        if b.len_bytes() != cout * elem {
+            return Err(Error::Msg(format!(
+                "conv2d_f32: bias bytes={} doesn't match Cout={cout} (f32)",
+                b.len_bytes(),
+            ))
+            .bt());
+        }
+    }
+    let x_view: &[f32] = x.as_slice()?;
+    let w_view: &[f32] = weight.as_slice()?;
+    let bias_view: Option<&[f32]> = match bias {
+        Some(b) => Some(b.as_slice()?),
+        None => None,
+    };
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let (sh, sw) = stride;
+    let (ph, pw) = padding;
+    let (dh, dw) = dilation;
+
+    // Output element [b, co, oh, ow] = bias[co] + sum over (ci_inner, kh_i, kw_i) of
+    //   weight[co, ci_inner, kh_i, kw_i] * x[b, group_offset + ci_inner, in_h, in_w]
+    // where in_h = oh * sh + kh_i * dh - ph, in_w = ow * sw + kw_i * dw - pw.
+    for b in 0..n {
+        for co in 0..cout {
+            let group = co / cout_per_group;
+            let ci_offset = group * cin_per_group;
+            let bias_val = bias_view.map(|bv| bv[co]).unwrap_or(0.0);
+            for oh in 0..h_out {
+                for ow in 0..w_out {
+                    let mut acc: f32 = bias_val;
+                    for ci in 0..cin_per_group {
+                        for kh_i in 0..kh {
+                            let in_h = (oh * sh + kh_i * dh) as isize - ph as isize;
+                            if in_h < 0 || in_h as usize >= h_in {
+                                continue;
+                            }
+                            let in_h = in_h as usize;
+                            for kw_i in 0..kw {
+                                let in_w = (ow * sw + kw_i * dw) as isize - pw as isize;
+                                if in_w < 0 || in_w as usize >= w_in {
+                                    continue;
+                                }
+                                let in_w = in_w as usize;
+                                let x_idx = ((b * cin + (ci_offset + ci)) * h_in + in_h) * w_in + in_w;
+                                let w_idx = ((co * cin_per_group + ci) * kh + kh_i) * kw + kw_i;
+                                acc += x_view[x_idx] * w_view[w_idx];
+                            }
+                        }
+                    }
+                    let out_idx = ((b * cout + co) * h_out + oh) * w_out + ow;
+                    out_view[out_idx] = acc;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Reduction kernels (f32)
 // =============================================================================
 
@@ -764,6 +913,129 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn conv2d_f32_identity_3x3_kernel() {
+        // 1×1 input ch, 1×1 output ch, 3×3 kernel with center 1 and rest 0
+        // → output equals input.
+        let x = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+        let weight = CpuStorageBytes::from_slice(&[
+            0.0_f32, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0,
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(9 * 4);
+        conv2d_f32(
+            &x, &weight, None, &mut out,
+            [1, 1, 3, 3], [1, 1, 3, 3], [1, 1, 3, 3],
+            (1, 1), (1, 1), (1, 1), 1,
+        ).expect("conv");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+        );
+    }
+
+    #[test]
+    fn conv2d_f32_2x2_sum_kernel_no_padding() {
+        // Input 1×1×3×3; kernel 2×2 of all-ones; no padding; stride 1.
+        // Output shape 1×1×2×2; each output is sum of a 2×2 window.
+        let x = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+        let weight = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        conv2d_f32(
+            &x, &weight, None, &mut out,
+            [1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2],
+            (1, 1), (0, 0), (1, 1), 1,
+        ).expect("conv");
+        // Window at (0,0): 1+2+4+5 = 12
+        // Window at (0,1): 2+3+5+6 = 16
+        // Window at (1,0): 4+5+7+8 = 24
+        // Window at (1,1): 5+6+8+9 = 28
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
+    }
+
+    #[test]
+    fn conv2d_f32_with_bias() {
+        // Same as the 2×2 sum kernel test, plus a bias of 100 — every
+        // output gets +100.
+        let x = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+        let weight = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let bias = CpuStorageBytes::from_slice(&[100.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        conv2d_f32(
+            &x, &weight, Some(&bias), &mut out,
+            [1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2],
+            (1, 1), (0, 0), (1, 1), 1,
+        ).expect("conv");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[112.0, 116.0, 124.0, 128.0]);
+    }
+
+    #[test]
+    fn conv2d_f32_padding_yields_zero_outside() {
+        // 1×1×2×2 input, 2×2 kernel of ones, padding 1 → out shape 1×1×3×3.
+        // Output[0,0] reads only x[0,0] (rest is padded zeros) → 1.
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let weight = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(9 * 4);
+        conv2d_f32(
+            &x, &weight, None, &mut out,
+            [1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 3, 3],
+            (1, 1), (1, 1), (1, 1), 1,
+        ).expect("conv");
+        // Output positions:
+        //   [0,0]: only x[0,0]=1
+        //   [0,1]: x[0,0]+x[0,1]=1+2=3
+        //   [0,2]: only x[0,1]=2
+        //   [1,0]: x[0,0]+x[1,0]=1+3=4
+        //   [1,1]: 1+2+3+4=10
+        //   [1,2]: x[0,1]+x[1,1]=2+4=6
+        //   [2,0]: only x[1,0]=3
+        //   [2,1]: x[1,0]+x[1,1]=3+4=7
+        //   [2,2]: only x[1,1]=4
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn conv2d_f32_depthwise_groups_equal_cin() {
+        // 2 channels in, 2 channels out, groups=2 (depthwise). Each
+        // output channel reads only its corresponding input channel.
+        // x[0, ch=0] = [[1, 2], [3, 4]]; ch=1 = [[10, 20], [30, 40]]
+        // weight: ch0 has all-ones 2x2; ch1 has identity
+        let x = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0, 4.0,    // ch 0
+            10.0, 20.0, 30.0, 40.0,    // ch 1
+        ]);
+        // weight shape [Cout, Cin/groups=1, 2, 2] = [2, 1, 2, 2]
+        let weight = CpuStorageBytes::from_slice(&[
+            1.0_f32, 1.0, 1.0, 1.0,    // co 0 sees ci 0
+            1.0, 0.0, 0.0, 0.0,        // co 1 sees ci 1, but only top-left
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4); // [1, 2, 1, 1]
+        conv2d_f32(
+            &x, &weight, None, &mut out,
+            [1, 2, 2, 2], [2, 1, 2, 2], [1, 2, 1, 1],
+            (1, 1), (0, 0), (1, 1), 2,
+        ).expect("conv");
+        // co 0: 1+2+3+4 = 10
+        // co 1: 10 (only top-left of ch 1)
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[10.0, 10.0]);
     }
 
     #[test]

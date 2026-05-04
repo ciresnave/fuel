@@ -463,6 +463,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::MeanAll       => Some(OpKind::MeanReduce),
         Op::MatMul        => Some(OpKind::MatMul),
         Op::Cast(_)       => Some(OpKind::Cast),
+        Op::Conv2D { .. } => Some(OpKind::Conv2D),
         _ => None,
     }
 }
@@ -575,6 +576,47 @@ fn op_to_op_params(
                 m,
                 n,
                 k: k_lhs,
+            }
+        }
+        Op::Conv2D { stride, padding, groups } => {
+            // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
+            // [Cout, Cin/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
+            // Output (this Node's shape) = [N, Cout, Hout, Wout].
+            if node.inputs.len() != 2 && node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::Conv2D expects 2 or 3 inputs, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let w_layout = input_layout(node.inputs[1]);
+            let x_dims = x_layout.shape().dims();
+            let w_dims = w_layout.shape().dims();
+            if x_dims.len() != 4 || w_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::Conv2D requires rank-4 x and weight; got x={x_dims:?} w={w_dims:?}",
+                ))
+                .bt());
+            }
+            let out_dims = node.shape.dims();
+            if out_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::Conv2D output must be rank 4, got {out_dims:?}",
+                ))
+                .bt());
+            }
+            let x_shape = [x_dims[0], x_dims[1], x_dims[2], x_dims[3]];
+            let w_shape = [w_dims[0], w_dims[1], w_dims[2], w_dims[3]];
+            let out_shape = [out_dims[0], out_dims[1], out_dims[2], out_dims[3]];
+            OpParams::Conv2D {
+                x_shape,
+                w_shape,
+                out_shape,
+                stride: *stride,
+                padding: *padding,
+                dilation: (1, 1),
+                groups: *groups,
             }
         }
         _ => OpParams::None,
@@ -1352,6 +1394,100 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: Const + Const + Conv2D — the 2×2 sum-kernel test from
+    /// byte_kernels driven through the pipelined executor.
+    #[test]
+    fn pipelined_realize_conv2d_2x2_sum_kernel() {
+        // x [1, 1, 3, 3]: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        // weight [1, 1, 2, 2]: all-ones
+        // → out [1, 1, 2, 2]: [[12, 16], [24, 28]]
+        let x_storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+        let w_storage = crate::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        assert_eq!(result_layout.shape().dims(), &[1, 1, 2, 2]);
+
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
+    }
+
+    /// E2E: Conv2D with bias (3 inputs).
+    #[test]
+    fn pipelined_realize_conv2d_with_bias() {
+        let x_storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+        let w_storage = crate::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let bias_storage = crate::from_slice_cpu(&[100.0_f32]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, b_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                inputs: vec![x, w, b],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, b, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        inputs.insert(b_id, Arc::new(RwLock::new(bias_storage)));
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[112.0, 116.0, 124.0, 128.0]);
     }
 
     /// E2E: GQA-style matmul through the pipelined executor.
