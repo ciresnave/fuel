@@ -41,7 +41,7 @@ use std::thread;
 
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Error, Result};
+use fuel_core_types::{DType, Error, Layout, Result};
 use fuel_graph::{topo_order, Graph, Node, NodeId, Op};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
@@ -54,6 +54,24 @@ use crate::Storage;
 /// and as the output cache (built up during execution).
 pub type StorageCache = HashMap<NodeId, Arc<RwLock<Storage>>>;
 
+/// What flavor of work item the executor is processing. Disambiguates
+/// the three "no kernel" cases that all carry `compiled: None`.
+enum WorkItemKind {
+    /// `Op::Const` — its Storage Arc is already in the input cache.
+    /// Executor verifies the entry exists and moves on.
+    ConstAdopt,
+    /// Metadata-only view op (`Op::Transpose`, `Op::Permute`,
+    /// `Op::BroadcastTo`, …): the output's Storage Arc IS the
+    /// input's Storage Arc (the bytes are shared); the
+    /// `output_layout` on the WorkItem describes the strided view.
+    ViewOf {
+        input: NodeId,
+    },
+    /// Computational kernel: allocate output, run the compiled
+    /// kernel, store the result. `compiled` is `Some(...)`.
+    Kernel,
+}
+
 /// One unit of work emitted by the compiler thread to the executor
 /// thread.
 struct WorkItem {
@@ -64,10 +82,18 @@ struct WorkItem {
     elem_count: usize,
     dtype: DType,
     target_backend: BackendId,
-    /// `None` for `Op::Const` — the executor adopts the entry from
-    /// the input cache rather than calling a kernel.
-    /// `Some` for any computational op.
+    /// What kind of work this represents (kernel vs adopt vs view).
+    kind: WorkItemKind,
+    /// `Some` for [`WorkItemKind::Kernel`]; `None` for the other
+    /// two. Carries the resolved kernel ref + op_params.
     compiled: Option<CompiledNode>,
+    /// The output's [`Layout`]. For kernels: always
+    /// `Layout::contiguous(node.shape)`. For metadata-only view
+    /// ops: a strided/broadcast Layout pointing at the input's
+    /// Storage. Carried so the executor can publish the right
+    /// Layout into its layout cache and ultimately return it from
+    /// [`PipelinedExecutor::realize`].
+    output_layout: Layout,
 }
 
 /// Pipelined executor: walks a graph, compiles each node in a
@@ -89,19 +115,31 @@ impl PipelinedExecutor {
     ///   (`Graph::set_target_backend`).
     /// - The op + dtype must be registered in `global_bindings()`.
     ///
-    /// Returns the realized `Storage` Arc for `target`.
+    /// Returns the realized `Storage` Arc for `target` plus its
+    /// resolved [`Layout`]. The Layout is contiguous for kernel
+    /// outputs; for graphs whose target is a metadata-only view
+    /// op (`Op::Transpose`, `Op::Permute`, `Op::BroadcastTo`),
+    /// the returned Storage shares its bytes with an upstream
+    /// node and the Layout encodes the view's strides + offset.
+    ///
     /// Production-correct: errors on any unmet precondition rather
     /// than panicking.
     pub fn realize(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
         inputs: StorageCache,
-    ) -> Result<Arc<RwLock<Storage>>> {
-        // Topo order computed on the calling thread to keep the
-        // compiler thread free of graph-locking responsibilities.
-        let order: Vec<NodeId> = {
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        // Topo order + initial layouts for the input cache entries
+        // computed on the calling thread to keep the compiler
+        // thread free of graph-locking responsibilities.
+        let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
-            topo_order(&g, target)
+            let order = topo_order(&g, target);
+            let mut layouts = HashMap::with_capacity(inputs.len());
+            for &id in inputs.keys() {
+                layouts.insert(id, g.layout(id));
+            }
+            (order, layouts)
         };
 
         let (tx, rx) = channel::<Result<WorkItem>>();
@@ -121,7 +159,7 @@ impl PipelinedExecutor {
         let mut last_processed: Option<NodeId> = None;
         for item in rx {
             let item = item?;
-            execute_work_item(&item, &mut cache)?;
+            execute_work_item(&item, &mut cache, &mut layout_cache)?;
             last_processed = Some(item.node_id);
         }
 
@@ -140,13 +178,21 @@ impl PipelinedExecutor {
             }
         }
 
-        cache.remove(&target).ok_or_else(|| {
+        let storage = cache.remove(&target).ok_or_else(|| {
             Error::Msg(format!(
                 "PipelinedExecutor::realize: target slot {:?} not populated after execution",
                 target
             ))
             .bt()
-        })
+        })?;
+        let layout = layout_cache.remove(&target).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor::realize: target layout {:?} not populated after execution",
+                target
+            ))
+            .bt()
+        })?;
+        Ok((storage, layout))
     }
 }
 
@@ -168,8 +214,15 @@ fn compiler_thread_body(
         }
     };
 
+    // Compiler-thread-local layout cache. Populated as compile_one
+    // walks topologically; downstream nodes look up their inputs'
+    // layouts here (rather than from the graph side-table) to honor
+    // the strided layouts emitted by metadata-only view ops earlier
+    // in the same realize call.
+    let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
+
     for id in order {
-        let item = compile_one(&g, id, &bindings);
+        let item = compile_one(&g, id, &mut layout_cache, &bindings);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
             return;
@@ -180,22 +233,110 @@ fn compiler_thread_body(
     }
 }
 
-/// Resolve one node into a `WorkItem`. `Op::Const` produces a
-/// `WorkItem` with `compiled: None` — the executor adopts the
-/// pre-realized entry from the input cache.
-fn compile_one(graph: &Graph, id: NodeId, bindings: &KernelBindingTable) -> Result<WorkItem> {
+/// Whether this op is a metadata-only view op — a node whose output
+/// shares bytes with its sole input but reinterprets them through
+/// strides + offset.
+fn is_view_op(op: &Op) -> bool {
+    matches!(op, Op::Transpose | Op::Permute(_) | Op::BroadcastTo(_))
+}
+
+/// Compute the output Layout of a metadata-only view op from its
+/// input Layout + the op variant. Returns `Err` if the op variant
+/// isn't a recognized view op (caller's contract).
+fn derive_view_output_layout(op: &Op, input_layout: &Layout) -> Result<Layout> {
+    match op {
+        Op::Transpose => {
+            let rank = input_layout.shape().rank();
+            if rank < 2 {
+                return Err(Error::Msg(format!(
+                    "Op::Transpose requires rank >= 2, input rank is {rank}",
+                ))
+                .bt());
+            }
+            input_layout.transpose(rank - 2, rank - 1)
+        }
+        Op::Permute(axes) => input_layout.permute(axes),
+        Op::BroadcastTo(target_shape) => input_layout.broadcast_as(target_shape.clone()),
+        other => Err(Error::Msg(format!(
+            "derive_view_output_layout called with non-view op {other:?}",
+        ))
+        .bt()),
+    }
+}
+
+/// Resolve one node into a `WorkItem` and update `layout_cache`
+/// with the node's output layout. Three op shapes:
+///
+/// - `Op::Const` — adopts the entry from the input cache; layout is
+///   read from the graph's side-table (or its contiguous fallback).
+///
+/// - Metadata-only view op — output layout is derived from the
+///   input layout via [`derive_view_output_layout`]; the executor
+///   adopts the input's Storage Arc (no allocation, no kernel).
+///
+/// - Computational op — output layout is `Layout::contiguous(node.shape)`
+///   because today's kernels write contiguous output. The compiler
+///   resolves the kernel ref and emits a Kernel work item.
+fn compile_one(
+    graph: &Graph,
+    id: NodeId,
+    layout_cache: &mut HashMap<NodeId, Layout>,
+    bindings: &KernelBindingTable,
+) -> Result<WorkItem> {
     let node = graph.node(id);
     let elem_count = node.shape.elem_count();
     let inputs = node.inputs.clone();
 
     if matches!(node.op, Op::Const) {
+        let output_layout = graph.layout(id);
+        layout_cache.insert(id, output_layout.clone());
         return Ok(WorkItem {
             node_id: id,
             inputs,
             elem_count,
             dtype: node.dtype,
             target_backend: BackendId::Cpu,
+            kind: WorkItemKind::ConstAdopt,
             compiled: None,
+            output_layout,
+        });
+    }
+
+    if is_view_op(&node.op) {
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "view op {:?} expects 1 input, got {}",
+                node.op,
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let input_layout = layout_cache.get(&inputs[0]).cloned().ok_or_else(|| {
+            Error::Msg(format!(
+                "view op {:?} input {:?} has no layout in compiler cache",
+                node.op, inputs[0],
+            ))
+            .bt()
+        })?;
+        let output_layout = derive_view_output_layout(&node.op, &input_layout)?;
+        layout_cache.insert(id, output_layout.clone());
+        // Inherit the upstream's target_backend (or default CPU) —
+        // metadata-only adoption doesn't actually run on a backend,
+        // but downstream consumers look at target_backend so it
+        // needs to be set sensibly. Any device works.
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::ViewOf { input: node.inputs[0] },
+            compiled: None,
+            output_layout,
         });
     }
 
@@ -216,15 +357,19 @@ fn compile_one(graph: &Graph, id: NodeId, bindings: &KernelBindingTable) -> Resu
         .bt()
     })?;
 
-    let op_params = op_to_op_params(graph, node)?;
+    let op_params = op_to_op_params(graph, node, layout_cache)?;
     let compiled = compile_node(op_kind, node.dtype, target_backend, op_params, bindings)?;
+    let output_layout = Layout::contiguous(node.shape.clone());
+    layout_cache.insert(id, output_layout.clone());
     Ok(WorkItem {
         node_id: id,
         inputs,
         elem_count,
         dtype: node.dtype,
         target_backend,
+        kind: WorkItemKind::Kernel,
         compiled: Some(compiled),
+        output_layout,
     })
 }
 
@@ -272,29 +417,35 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
 /// Phase C — extends as op families migrate. Returns Err if a
 /// graph-shape lookup fails (currently can't, but the signature is
 /// `Result` so future cases needing validation slot in cleanly).
-fn op_to_op_params(graph: &Graph, node: &Node) -> Result<OpParams> {
+fn op_to_op_params(
+    graph: &Graph,
+    node: &Node,
+    layout_cache: &HashMap<NodeId, Layout>,
+) -> Result<OpParams> {
+    // Helper: read an input's layout from the compiler-thread-local
+    // cache (which is current within the realize call), falling back
+    // to the graph's side-table if the input wasn't visited (which
+    // shouldn't happen in topo order, but the fallback keeps the
+    // path safe).
+    let input_layout = |input_id: NodeId| -> Layout {
+        layout_cache
+            .get(&input_id)
+            .cloned()
+            .unwrap_or_else(|| graph.layout(input_id))
+    };
     Ok(match &node.op {
         Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => {
-            // Stage 2 of Layout-on-Node: read the input layout
-            // from the graph rather than fabricating a contiguous
-            // shape. Today every node's layout is contiguous (no
-            // view ops are metadata-only yet), so this returns
-            // `Layout::contiguous(input_shape)` — but the path
-            // through which the layout arrives is now correct, so
-            // stage 3 (metadata-only view ops) can flip the
-            // implementation without touching this site.
-            let input_layout = graph.layout(node.inputs[0]);
             OpParams::Reduce {
-                input_layout,
+                input_layout: input_layout(node.inputs[0]),
                 dims: vec![*d],
                 keepdim: false,
             }
         }
         Op::SumAll | Op::MaxAll | Op::MinAll | Op::MeanAll => {
-            let input_layout = graph.layout(node.inputs[0]);
-            let rank = input_layout.shape().rank();
+            let il = input_layout(node.inputs[0]);
+            let rank = il.shape().rank();
             OpParams::Reduce {
-                input_layout,
+                input_layout: il,
                 dims: (0..rank).collect(),
                 keepdim: false,
             }
@@ -303,57 +454,93 @@ fn op_to_op_params(graph: &Graph, node: &Node) -> Result<OpParams> {
     })
 }
 
-/// Execute one work item. Const adoption verifies the input cache
-/// has the entry; computational ops gather inputs, allocate
-/// output, call the kernel, and store the output in the cache.
-fn execute_work_item(item: &WorkItem, cache: &mut StorageCache) -> Result<()> {
-    // Const adoption.
-    let Some(compiled) = &item.compiled else {
-        if cache.contains_key(&item.node_id) {
-            return Ok(());
+/// Execute one work item. Three branches by `WorkItemKind`:
+///
+/// - `ConstAdopt` — verify cache has an entry pre-seeded by the
+///   caller; record the layout from the WorkItem.
+/// - `ViewOf { input }` — clone the input's Storage Arc into the
+///   output slot (bytes are shared); record the strided layout
+///   from the WorkItem.
+/// - `Kernel` — gather input Arcs, allocate the output, run the
+///   compiled kernel, store the result; record the contiguous
+///   layout from the WorkItem.
+fn execute_work_item(
+    item: &WorkItem,
+    cache: &mut StorageCache,
+    layout_cache: &mut HashMap<NodeId, Layout>,
+) -> Result<()> {
+    match &item.kind {
+        WorkItemKind::ConstAdopt => {
+            if !cache.contains_key(&item.node_id) {
+                return Err(Error::Msg(format!(
+                    "PipelinedExecutor: Const node {:?} not in input cache",
+                    item.node_id
+                ))
+                .bt());
+            }
+            // Layout for input cache entries was seeded at realize
+            // start; refresh from the WorkItem in case the side-table
+            // was set after seeding.
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
         }
-        return Err(Error::Msg(format!(
-            "PipelinedExecutor: Const node {:?} not in input cache",
-            item.node_id
-        ))
-        .bt());
-    };
-
-    // Gather input Arcs from the cache.
-    let input_arcs: Vec<Arc<RwLock<Storage>>> = item
-        .inputs
-        .iter()
-        .map(|in_id| {
-            cache.get(in_id).cloned().ok_or_else(|| {
+        WorkItemKind::ViewOf { input } => {
+            let input_arc = cache.get(input).cloned().ok_or_else(|| {
                 Error::Msg(format!(
-                    "PipelinedExecutor: input {:?} of {:?} not realized",
-                    in_id, item.node_id
+                    "PipelinedExecutor: view-op input {:?} of {:?} not realized",
+                    input, item.node_id,
                 ))
                 .bt()
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    // Allocate output on the target backend. B4 ships CPU only;
-    // multi-backend allocation lands in Phase C.
-    let output = match item.target_backend {
-        BackendId::Cpu => crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
-        other => {
-            return Err(Error::Msg(format!(
-                "PipelinedExecutor: target_backend {:?} output allocation \
-                 not yet implemented (B4 ships CPU only; Phase C extends)",
-                other
-            ))
-            .bt());
+            })?;
+            cache.insert(item.node_id, input_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
         }
-    };
-    let mut output_arcs = vec![Arc::new(RwLock::new(output))];
+        WorkItemKind::Kernel => {
+            let compiled = item.compiled.as_ref().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: Kernel work item {:?} has no compiled node",
+                    item.node_id,
+                ))
+                .bt()
+            })?;
+            // Gather input Arcs from the cache.
+            let input_arcs: Vec<Arc<RwLock<Storage>>> = item
+                .inputs
+                .iter()
+                .map(|in_id| {
+                    cache.get(in_id).cloned().ok_or_else(|| {
+                        Error::Msg(format!(
+                            "PipelinedExecutor: input {:?} of {:?} not realized",
+                            in_id, item.node_id
+                        ))
+                        .bt()
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-    execute_compiled(compiled, &input_arcs, &mut output_arcs)?;
+            // Allocate output on the target backend.
+            let output = match item.target_backend {
+                BackendId::Cpu => crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
+                other => {
+                    return Err(Error::Msg(format!(
+                        "PipelinedExecutor: target_backend {:?} output allocation \
+                         not yet implemented (CPU is wired; GPUs extend later)",
+                        other
+                    ))
+                    .bt());
+                }
+            };
+            let mut output_arcs = vec![Arc::new(RwLock::new(output))];
 
-    let arc = output_arcs.into_iter().next().expect("one output");
-    cache.insert(item.node_id, arc);
-    Ok(())
+            execute_compiled(compiled, &input_arcs, &mut output_arcs)?;
+
+            let arc = output_arcs.into_iter().next().expect("one output");
+            cache.insert(item.node_id, arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+    }
 }
 
 fn poisoned(what: &'static str) -> Error {
@@ -403,7 +590,8 @@ mod tests {
         inputs.insert(lhs_id, Arc::new(RwLock::new(lhs_storage)));
         inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
+        let (result_arc, _result_layout) =
+            PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
 
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
@@ -482,7 +670,7 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(const_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc =
+        let (result_arc, _) =
             PipelinedExecutor::realize(graph, const_id, inputs).expect("realize const");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
@@ -536,7 +724,8 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, relu_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, relu_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().expect("f32 cast");
@@ -595,13 +784,122 @@ mod tests {
         inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
         inputs.insert(c_id, Arc::new(RwLock::new(c_storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, div_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, div_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert!((typed[0] - (14.0_f32 / 3.0)).abs() < 1e-6);
             assert!((typed[1] - 12.0).abs() < 1e-6);
         }
+    }
+
+    /// E2E: Const + Transpose — verifies metadata-only view ops
+    /// share the input's Storage Arc and produce a strided Layout.
+    /// Stage 3 of Layout-on-Node.
+    #[test]
+    fn pipelined_realize_transpose_is_metadata_only() {
+        // shape [2, 3]; transpose → shape [3, 2], strided
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, t_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let t_id = g.push(Node {
+                op: Op::Transpose, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            // Note: NO set_target_backend — transpose is metadata-only
+            // and doesn't run on a backend.
+            (in_id, t_id)
+        };
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, t_id, inputs).expect("realize");
+
+        // The output Storage Arc is the SAME Arc as the input —
+        // metadata-only adoption shares bytes.
+        assert!(Arc::ptr_eq(&result_arc, &in_arc), "transpose must share input bytes");
+
+        // The output Layout is the transposed view.
+        assert_eq!(result_layout.shape().dims(), &[3, 2]);
+        assert_eq!(result_layout.stride(), &[1, 3]);
+        assert!(!result_layout.is_contiguous());
+    }
+
+    /// E2E: Const + Permute(rank-3 axes [2, 0, 1]) — verifies the
+    /// general permute path through metadata-only adoption.
+    #[test]
+    fn pipelined_realize_permute_is_metadata_only() {
+        // shape [2, 3, 4]; permute axes [2, 0, 1] → shape [4, 2, 3]
+        let data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
+        let storage = crate::from_slice_cpu(&data);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, p_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+            });
+            let p_id = g.push(Node {
+                op: Op::Permute(vec![2, 0, 1]), inputs: vec![in_id],
+                shape: Shape::from_dims(&[4, 2, 3]), dtype: DType::F32,
+            });
+            (in_id, p_id)
+        };
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, p_id, inputs).expect("realize");
+
+        assert!(Arc::ptr_eq(&result_arc, &in_arc));
+        assert_eq!(result_layout.shape().dims(), &[4, 2, 3]);
+        // Original strides for shape [2, 3, 4] are [12, 4, 1].
+        // After permute axes [2, 0, 1]: [strides[2], strides[0], strides[1]] = [1, 12, 4].
+        assert_eq!(result_layout.stride(), &[1, 12, 4]);
+    }
+
+    /// E2E: Const + BroadcastTo — verifies that broadcast layouts
+    /// have stride 0 on the broadcast dim while sharing the input's
+    /// bytes. Stage 3 of Layout-on-Node.
+    #[test]
+    fn pipelined_realize_broadcast_is_metadata_only() {
+        // shape [3]; broadcast to [4, 3] — leading dim is 0-stride
+        let storage = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, b_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let b_id = g.push(Node {
+                op: Op::BroadcastTo(Shape::from_dims(&[4, 3])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[4, 3]),
+                dtype: DType::F32,
+            });
+            (in_id, b_id)
+        };
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, b_id, inputs).expect("realize");
+
+        assert!(Arc::ptr_eq(&result_arc, &in_arc));
+        assert_eq!(result_layout.shape().dims(), &[4, 3]);
+        // Broadcasted leading dim has stride 0.
+        assert_eq!(result_layout.stride(), &[0, 1]);
     }
 
     /// E2E: Const + SumDim — verifies that `OpParams::Reduce`
@@ -628,7 +926,8 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -659,7 +958,8 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -696,7 +996,8 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, mean_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, mean_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -736,7 +1037,8 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, silu_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, silu_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -772,7 +1074,8 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
@@ -833,7 +1136,8 @@ mod tests {
         inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
         inputs.insert(c_id, Arc::new(RwLock::new(c_storage)));
 
-        let result_arc = PipelinedExecutor::realize(graph, abc_id, inputs).expect("realize");
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, abc_id, inputs).expect("realize");
         // Suppress unused warning for the intermediate id.
         let _ = ab_id;
 
