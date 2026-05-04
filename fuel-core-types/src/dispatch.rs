@@ -100,6 +100,14 @@ pub enum OpKind {
     /// [`SumReduce`]; divides the sum by the product of reduced
     /// dim sizes.
     MeanReduce,
+
+    /// Convert input bytes from one dtype to another. The target
+    /// dtype lives on the output Storage's `dtype` field (and on
+    /// the Node's dtype); the source dtype is read from the input
+    /// Storage at runtime by the wrapper, which dispatches to the
+    /// right typed conversion kernel internally. Binding-table
+    /// lookup is keyed on the *target* dtype (= the Node's dtype).
+    Cast,
 }
 
 impl OpKind {
@@ -129,6 +137,7 @@ impl OpKind {
             OpKind::MaxReduce         => "max_reduce",
             OpKind::MinReduce         => "min_reduce",
             OpKind::MeanReduce        => "mean_reduce",
+            OpKind::Cast              => "cast",
         }
     }
 }

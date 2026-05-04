@@ -171,6 +171,94 @@ pub fn contiguize_cpu(
 }
 
 // =============================================================================
+// Dtype conversion (Cast)
+// =============================================================================
+
+/// Generate a typed dtype-conversion kernel of the form
+/// `out[i] = convert(input[i])`. Validates that the input byte
+/// length is a multiple of the source type's size and that the
+/// output byte length matches `elem_count * size_of::<TOut>()`.
+/// Output is pre-allocated by the caller.
+macro_rules! cast_kernel {
+    ($name:ident, $TIn:ty, $TOut:ty, $convert:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+            let in_size = std::mem::size_of::<$TIn>();
+            let out_size = std::mem::size_of::<$TOut>();
+            if in_size == 0 || input.len_bytes() % in_size != 0 {
+                return Err(Error::Msg(format!(
+                    "{}: input bytes {} not a multiple of {} ({})",
+                    stringify!($name),
+                    input.len_bytes(),
+                    in_size,
+                    stringify!($TIn),
+                ))
+                .bt());
+            }
+            let elem_count = input.len_bytes() / in_size;
+            let want_out = elem_count.saturating_mul(out_size);
+            if out.len_bytes() != want_out {
+                return Err(Error::Msg(format!(
+                    "{}: output bytes {} doesn't match input elem count {} \
+                     × {} ({}) = {}",
+                    stringify!($name),
+                    out.len_bytes(),
+                    elem_count,
+                    out_size,
+                    stringify!($TOut),
+                    want_out,
+                ))
+                .bt());
+            }
+            let in_view: &[$TIn] = input.as_slice()?;
+            let out_view: &mut [$TOut] = out.as_slice_mut()?;
+            let convert: fn($TIn) -> $TOut = $convert;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = convert(in_view[i]);
+            }
+            Ok(())
+        }
+    };
+}
+
+cast_kernel!(
+    cast_f32_to_f64,
+    f32, f64,
+    |x: f32| x as f64,
+    "Convert `f32` → `f64`. Lossless widening."
+);
+cast_kernel!(
+    cast_f64_to_f32,
+    f64, f32,
+    |x: f64| x as f32,
+    "Convert `f64` → `f32`. Lossy narrowing per IEEE-754 rounding."
+);
+cast_kernel!(
+    cast_f32_to_bf16,
+    f32, half::bf16,
+    half::bf16::from_f32,
+    "Convert `f32` → `bf16`. Lossy narrowing — keeps the f32 exponent and the top mantissa bits."
+);
+cast_kernel!(
+    cast_bf16_to_f32,
+    half::bf16, f32,
+    |x: half::bf16| x.to_f32(),
+    "Convert `bf16` → `f32`. Lossless widening (bf16 is a strict subset of f32)."
+);
+cast_kernel!(
+    cast_f32_to_f16,
+    f32, half::f16,
+    half::f16::from_f32,
+    "Convert `f32` → `f16`. Lossy narrowing — clips to f16 range with NaN/inf preserved."
+);
+cast_kernel!(
+    cast_f16_to_f32,
+    half::f16, f32,
+    |x: half::f16| x.to_f32(),
+    "Convert `f16` → `f32`. Lossless widening within f16's representable range."
+);
+
+// =============================================================================
 // Matrix multiplication (f32)
 // =============================================================================
 
@@ -619,6 +707,60 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn cast_f32_to_f64_round_trip() {
+        let input = CpuStorageBytes::from_slice(&[1.5_f32, -2.25, 100.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 8);
+        cast_f32_to_f64(&input, &mut out).expect("cast");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[1.5_f64, -2.25, 100.0]);
+    }
+
+    #[test]
+    fn cast_f64_to_f32_lossy() {
+        let input = CpuStorageBytes::from_slice(&[1.5_f64, -2.25, 100.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        cast_f64_to_f32(&input, &mut out).expect("cast");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.5_f32, -2.25, 100.0]);
+    }
+
+    #[test]
+    fn cast_bf16_round_trip_via_f32() {
+        let input_f32 = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, -3.0, 0.5]);
+        let mut bf16_buf = CpuStorageBytes::from_zero_bytes(4 * 2);
+        cast_f32_to_bf16(&input_f32, &mut bf16_buf).expect("to_bf16");
+
+        let mut back_f32 = CpuStorageBytes::from_zero_bytes(4 * 4);
+        cast_bf16_to_f32(&bf16_buf, &mut back_f32).expect("to_f32");
+
+        let result: &[f32] = back_f32.as_slice().unwrap();
+        // bf16 has ~3 decimal digits of precision; these inputs round-trip exactly.
+        assert_eq!(result, &[1.0_f32, 2.0, -3.0, 0.5]);
+    }
+
+    #[test]
+    fn cast_f16_round_trip_via_f32() {
+        let input_f32 = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, -3.0, 0.5]);
+        let mut f16_buf = CpuStorageBytes::from_zero_bytes(4 * 2);
+        cast_f32_to_f16(&input_f32, &mut f16_buf).expect("to_f16");
+
+        let mut back_f32 = CpuStorageBytes::from_zero_bytes(4 * 4);
+        cast_f16_to_f32(&f16_buf, &mut back_f32).expect("to_f32");
+
+        let result: &[f32] = back_f32.as_slice().unwrap();
+        // f16 has ~3 decimal digits of precision in this range.
+        for (got, want) in result.iter().zip(&[1.0_f32, 2.0, -3.0, 0.5]) {
+            assert!((got - want).abs() < 1e-3, "f16 round trip lost too much: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn cast_size_mismatch_errors() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
+        let mut out_wrong = CpuStorageBytes::from_zero_bytes(8); // should be 16 (2 f64)
+        let r = cast_f32_to_f64(&input, &mut out_wrong);
+        assert!(r.is_err());
     }
 
     #[test]
