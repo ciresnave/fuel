@@ -11,6 +11,7 @@
 [dependencies]
     fuel-core-types = { workspace = true }
     fuel-quantized  = { workspace = true }
+    bytemuck          = { workspace = true }
     float8            = { workspace = true }
     gemm              = { workspace = true }
     half              = { workspace = true }
@@ -26,7 +27,6 @@
     intel-mkl-src  = { workspace = true, optional = true }
 
 [dev-dependencies]
-    bytemuck = { workspace = true }
     tempfile = { workspace = true }
 
 [features]

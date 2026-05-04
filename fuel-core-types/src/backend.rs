@@ -39,3 +39,32 @@ pub trait HostStorage {
         Ok(self.as_host_buffer_ref()?.to_owned())
     }
 }
+
+/// Phase 7.5 storage unification — see [docs/storage-unification.md].
+///
+/// Minimum contract every per-backend storage type implements. The
+/// trait defines only the universally-required surface today
+/// (`len_bytes`); allocation, copy-from-other-backend, and the
+/// capability advertisement land in subsequent phases as the rest of
+/// the design fills in.
+///
+/// Bounds:
+///
+/// - `Send + Sync` so storage handles can cross thread boundaries
+///   (`Arc<RwLock<Storage>>` lives in graph slots accessed from
+///   compiler + executor threads).
+/// - `Debug` for diagnostic error messages and tracing.
+///
+/// Implementors:
+///
+/// - `fuel_cpu_backend::CpuStorageBytes` (Phase A3.0)
+/// - `fuel_metal_backend::MetalStorageBytes` (Phase A3.1)
+/// - `fuel_cuda_backend::CudaStorageBytes` (Phase A3.2)
+/// - `fuel_graph_vulkan::VulkanStorageBytes` (Phase A3.3)
+pub trait BackendStorage: Send + Sync + std::fmt::Debug {
+    /// Total addressable byte count, regardless of dtype.
+    ///
+    /// The dtype tag lives on the `Storage` wrapper (in fuel-storage),
+    /// not on the variant — `len_bytes` is dtype-agnostic.
+    fn len_bytes(&self) -> usize;
+}

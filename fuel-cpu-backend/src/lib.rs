@@ -19,6 +19,14 @@ pub mod probe;
 pub mod quantized;
 pub mod utils;
 
+/// Phase 7.5 storage-unification target: byte-shaped CPU storage
+/// with `Arc<AlignedBytes>` backing, 64-byte alignment, and CoW
+/// mutation. Coexists with the legacy `CpuStorage` (HostBuffer-based)
+/// during op-kernel migration; legacy retires when the last kernel
+/// migrates.
+pub mod byte_storage;
+
+pub use byte_storage::{CpuStorageBytes, CPU_ALIGN_BYTES};
 pub use dyn_impl::CpuStorage;
 pub use ops::*;
 pub use quantized::CpuQStorage;
