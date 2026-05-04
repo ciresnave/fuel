@@ -472,6 +472,8 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Minimum       => Some(OpKind::MinimumElementwise),
         Op::Concat { .. } => Some(OpKind::Concat),
         Op::SoftmaxLastDim => Some(OpKind::SoftmaxLastDim),
+        Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
+        Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         _ => None,
     }
 }
@@ -599,6 +601,20 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::SoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::RmsNormLastDim { eps } | Op::LayerNormLastDim { eps } => {
+            let il = input_layout(node.inputs[0]);
+            let dims = il.shape().dims();
+            if dims.is_empty() {
+                return Err(Error::Msg(format!(
+                    "Op::{:?} requires rank ≥ 1",
+                    node.op,
+                ))
+                .bt());
+            }
+            let last_dim = *dims.last().unwrap();
+            let outer_count: usize = dims[..dims.len() - 1].iter().product();
+            OpParams::NormLastDim { outer_count, last_dim, eps: *eps }
         }
         Op::Concat { dim } => {
             // Output's shape: [..., total_dim, ...]. Compute outer
@@ -1460,6 +1476,85 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: RmsNormLastDim on a 2-row input. Each row's output
+    /// has unit RMS up to the eps-induced bias.
+    #[test]
+    fn pipelined_realize_rms_norm_last_dim() {
+        let storage = crate::from_slice_cpu(&[
+            3.0_f32, 4.0,    // row 0: rms = sqrt(12.5)
+            6.0, 8.0,        // row 1: rms = sqrt(50.0) = 5*sqrt(2)
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::RmsNormLastDim { eps: 0.0 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let result: &[f32] = c.as_slice().unwrap();
+        // Row 0: rms = sqrt(12.5). Output = [3, 4] / sqrt(12.5).
+        let rms0 = (12.5_f32).sqrt();
+        assert!((result[0] - 3.0 / rms0).abs() < 1e-6);
+        assert!((result[1] - 4.0 / rms0).abs() < 1e-6);
+        // Row 1: rms = sqrt(50). Output = [6, 8] / sqrt(50).
+        let rms1 = (50.0_f32).sqrt();
+        assert!((result[2] - 6.0 / rms1).abs() < 1e-6);
+        assert!((result[3] - 8.0 / rms1).abs() < 1e-6);
+    }
+
+    /// E2E: LayerNormLastDim — each row's output has zero mean and
+    /// unit variance.
+    #[test]
+    fn pipelined_realize_layer_norm_last_dim() {
+        let storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+            10.0, 20.0, 30.0,
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::LayerNormLastDim { eps: 0.0 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let result: &[f32] = c.as_slice().unwrap();
+        // Each row should have mean ~0 and var ~1.
+        for row in 0..2 {
+            let off = row * 3;
+            let sum: f32 = result[off..off + 3].iter().sum();
+            let mean = sum / 3.0;
+            assert!(mean.abs() < 1e-6, "row {row} mean should be 0, got {mean}");
+            let var: f32 = result[off..off + 3].iter().map(|v| (v - mean).powi(2)).sum::<f32>() / 3.0;
+            assert!((var - 1.0).abs() < 1e-6, "row {row} var should be 1, got {var}");
+        }
     }
 
     /// E2E: SoftmaxLastDim on a 2-row input. Each row should sum

@@ -132,6 +132,12 @@ pub enum OpKind {
     /// Softmax along the last dim, numerically stable
     /// (subtract per-row max, exp, divide by sum).
     SoftmaxLastDim,
+    /// RMS normalization along the last dim, no affine params:
+    /// `y = x / sqrt(mean(x², last) + eps)`.
+    RmsNormLastDim,
+    /// Layer normalization along the last dim, no affine params:
+    /// `y = (x - mean(x)) / sqrt(var(x) + eps)`.
+    LayerNormLastDim,
 }
 
 impl OpKind {
@@ -170,6 +176,8 @@ impl OpKind {
             OpKind::MinimumElementwise => "minimum",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
+            OpKind::RmsNormLastDim    => "rms_norm_last_dim",
+            OpKind::LayerNormLastDim  => "layer_norm_last_dim",
         }
     }
 }

@@ -233,6 +233,108 @@ pub fn softmax_last_dim_f32(
 }
 
 // =============================================================================
+// RMS / Layer norm along the last dim (f32, no affine)
+// =============================================================================
+
+/// Helper: validate that input/output bytes match `outer_count *
+/// last_dim * sizeof::<f32>()`. Returns Ok if all three agree.
+fn check_norm_lens(
+    name: &str,
+    input: &CpuStorageBytes,
+    out: &CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+) -> Result<()> {
+    let elem = std::mem::size_of::<f32>();
+    let need = outer_count
+        .saturating_mul(last_dim)
+        .saturating_mul(elem);
+    if input.len_bytes() != need || out.len_bytes() != need {
+        return Err(Error::Msg(format!(
+            "{name}: bytes mismatch (input={}, out={}, expected outer={outer_count} × last={last_dim} × {elem} = {need})",
+            input.len_bytes(), out.len_bytes(),
+        ))
+        .bt());
+    }
+    Ok(())
+}
+
+/// RMS normalization along the last dim, no affine params:
+/// `out[i] = x[i] / sqrt(mean(x²) + eps)` per row.
+/// `eps` is `f64` for graph-API consistency; converted to `f32`
+/// before use in the f32 kernel.
+pub fn rms_norm_last_dim_f32(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    check_norm_lens("rms_norm_last_dim_f32", input, out, outer_count, last_dim)?;
+    if last_dim == 0 {
+        return Ok(());
+    }
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let eps32 = eps as f32;
+    let inv_n = 1.0_f32 / last_dim as f32;
+    for row in 0..outer_count {
+        let off = row * last_dim;
+        let row_in = &in_view[off..off + last_dim];
+        let mut sum_sq = 0.0_f32;
+        for &v in row_in {
+            sum_sq += v * v;
+        }
+        let mean_sq = sum_sq * inv_n;
+        let rms_inv = 1.0_f32 / (mean_sq + eps32).sqrt();
+        for j in 0..last_dim {
+            out_view[off + j] = row_in[j] * rms_inv;
+        }
+    }
+    Ok(())
+}
+
+/// Layer normalization along the last dim, no affine params:
+/// `out[i] = (x[i] - mean(x)) / sqrt(var(x) + eps)` per row, with
+/// `var = mean((x - mean)²)`.
+pub fn layer_norm_last_dim_f32(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    check_norm_lens("layer_norm_last_dim_f32", input, out, outer_count, last_dim)?;
+    if last_dim == 0 {
+        return Ok(());
+    }
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let eps32 = eps as f32;
+    let inv_n = 1.0_f32 / last_dim as f32;
+    for row in 0..outer_count {
+        let off = row * last_dim;
+        let row_in = &in_view[off..off + last_dim];
+        let mut sum = 0.0_f32;
+        for &v in row_in {
+            sum += v;
+        }
+        let mean = sum * inv_n;
+        let mut sum_sq = 0.0_f32;
+        for &v in row_in {
+            let d = v - mean;
+            sum_sq += d * d;
+        }
+        let var = sum_sq * inv_n;
+        let inv_std = 1.0_f32 / (var + eps32).sqrt();
+        for j in 0..last_dim {
+            out_view[off + j] = (row_in[j] - mean) * inv_std;
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Concat (f32)
 // =============================================================================
 
@@ -1114,6 +1216,63 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn rms_norm_last_dim_f32_basic() {
+        // Input [3, 4]: rms = sqrt(mean(9, 16)) = sqrt(12.5)
+        // out = [3 / sqrt(12.5), 4 / sqrt(12.5)]
+        let input = CpuStorageBytes::from_slice(&[3.0_f32, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        rms_norm_last_dim_f32(&input, &mut out, 1, 2, 0.0).expect("rms_norm");
+        let result: &[f32] = out.as_slice().unwrap();
+        let rms = (12.5_f32).sqrt();
+        assert!((result[0] - 3.0 / rms).abs() < 1e-6);
+        assert!((result[1] - 4.0 / rms).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rms_norm_last_dim_f32_eps_prevents_zero_division() {
+        // All-zero row → mean_sq = 0; without eps, would divide by 0.
+        let input = CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 0.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        rms_norm_last_dim_f32(&input, &mut out, 1, 3, 1e-5).expect("rms_norm");
+        let result: &[f32] = out.as_slice().unwrap();
+        for v in result {
+            assert!(v.is_finite() && *v == 0.0);
+        }
+    }
+
+    #[test]
+    fn layer_norm_last_dim_f32_zero_mean_unit_var() {
+        // Input [1, 2, 3]: mean = 2; var = (1 + 0 + 1) / 3 = 2/3
+        // inv_std = 1/sqrt(2/3 + eps)
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        layer_norm_last_dim_f32(&input, &mut out, 1, 3, 0.0).expect("layer_norm");
+        let result: &[f32] = out.as_slice().unwrap();
+        // Output mean should be 0; output stddev should be 1.
+        let out_sum: f32 = result.iter().sum();
+        assert!(out_sum.abs() < 1e-6);
+        let out_mean = out_sum / 3.0;
+        let out_var: f32 = result.iter().map(|v| (v - out_mean).powi(2)).sum::<f32>() / 3.0;
+        assert!((out_var - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn layer_norm_last_dim_f32_two_rows_independent() {
+        // Two rows of 3; each row's output should have mean ≈ 0.
+        let input = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0,
+            10.0, 20.0, 30.0,
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(6 * 4);
+        layer_norm_last_dim_f32(&input, &mut out, 2, 3, 0.0).expect("layer_norm");
+        let result: &[f32] = out.as_slice().unwrap();
+        let r0_mean: f32 = result[..3].iter().sum::<f32>() / 3.0;
+        let r1_mean: f32 = result[3..].iter().sum::<f32>() / 3.0;
+        assert!(r0_mean.abs() < 1e-6);
+        assert!(r1_mean.abs() < 1e-6);
     }
 
     #[test]
