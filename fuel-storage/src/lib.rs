@@ -31,10 +31,12 @@
 //! GPU placeholder variants. A3.1/A3.2/A3.3 replace those placeholders
 //! with real types from each GPU backend.
 
+pub mod compiled;
 pub mod dispatch;
 pub mod kernel;
 
-pub use kernel::{KernelRef, OpParams};
+pub use compiled::{compile_node, execute_compiled, CompiledNode};
+pub use kernel::{KernelBindingTable, KernelRef, OpParams};
 
 /// Vulkan storage variant — re-exported from fuel-graph-vulkan when
 /// the vulkan feature is enabled.
