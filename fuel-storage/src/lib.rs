@@ -35,15 +35,18 @@
 pub mod cuda;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
-#[cfg(feature = "metal")]
-pub mod metal;
 
 #[cfg(feature = "cuda")]
 pub use cuda::CudaStorage;
 #[cfg(feature = "vulkan")]
 pub use vulkan::VulkanStorage;
-#[cfg(feature = "metal")]
-pub use metal::MetalStorage;
+
+/// Metal storage variant — re-exported from fuel-metal-backend on
+/// Apple platforms when the metal feature is enabled. The metal
+/// feature has no effect on non-Apple platforms (the dep is
+/// target-gated).
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
 use fuel_core_types::{DType, Result};
 use fuel_cpu_backend::CpuStorageBytes;
@@ -60,7 +63,7 @@ pub enum BackendStorage {
     Cuda(CudaStorage),
     #[cfg(feature = "vulkan")]
     Vulkan(VulkanStorage),
-    #[cfg(feature = "metal")]
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     Metal(MetalStorage),
 }
 
@@ -96,7 +99,7 @@ macro_rules! dispatch_storage {
             $crate::BackendStorage::Cuda($name) => $body,
             #[cfg(feature = "vulkan")]
             $crate::BackendStorage::Vulkan($name) => $body,
-            #[cfg(feature = "metal")]
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             $crate::BackendStorage::Metal($name) => $body,
         }
     };

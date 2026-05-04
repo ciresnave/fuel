@@ -15,10 +15,15 @@ bytemuck = { workspace = true }
 half = { workspace = true }
 thiserror = { workspace = true }
 
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+fuel-metal-backend = { workspace = true, optional = true }
+
 [features]
 default = []
-# Per-backend storage variants. A1 ships skeleton variants and gates;
-# A2 fills CPU; A3 fills CUDA/Vulkan/Metal.
+# Per-backend storage variants. A3.1 wires Metal via
+# fuel-metal-backend (target-gated to Apple platforms);
+# A3.2 wires CUDA via fuel-cuda-backend; A3.3 wires Vulkan via
+# fuel-graph-vulkan.
 cuda = []
 vulkan = []
-metal = []
+metal = ["dep:fuel-metal-backend"]

@@ -8,6 +8,8 @@
 //! On non-Apple platforms the crate compiles but is empty.
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod byte_storage;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod device;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod dyn_impl;
@@ -21,6 +23,8 @@ pub mod ug;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use byte_storage::MetalStorageBytes;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use device::{DeviceId, MetalDevice};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
