@@ -346,6 +346,97 @@ cpu_unary_wrapper!(silu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_unary_wrapper!(gelu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f32, "gelu_elementwise");
 cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f32, "step_elementwise");
 
+cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
+cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
+
+/// Dispatch wrapper for `(Affine, F32, Cpu)`. Extracts scalar
+/// coefficients from `OpParams::Affine`.
+fn affine_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "affine wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (mul, add) = match params {
+        OpParams::Affine { mul, add } => (*mul as f32, *add as f32),
+        other => {
+            return Err(Error::Msg(format!(
+                "affine wrapper expects OpParams::Affine, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::affine_f32(in_cpu, out_cpu, mul, add)
+}
+
+/// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
+fn clamp_elementwise_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "clamp wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (min, max) = match params {
+        OpParams::Clamp { min, max } => (*min as f32, *max as f32),
+        other => {
+            return Err(Error::Msg(format!(
+                "clamp wrapper expects OpParams::Clamp, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::clamp_f32(in_cpu, out_cpu, min, max)
+}
+
+/// Dispatch wrapper for `(PowIElementwise, F32, Cpu)`.
+fn powi_elementwise_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "powi wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let exp = match params {
+        OpParams::PowI { exp } => *exp,
+        other => {
+            return Err(Error::Msg(format!(
+                "powi wrapper expects OpParams::PowI, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::powi_f32(in_cpu, out_cpu, exp)
+}
+
 /// Build a CPU reduction wrapper that calls a typed `(input,
 /// output, input_shape, dims)` reduce kernel. Verifies the
 /// `OpParams::Reduce` variant and forwards the shape + dims to the
@@ -643,6 +734,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Cast, DType::F16,  cpu, cast_to_f16_cpu_wrapper);
 
     table.register(Conv2D, f32_dt, cpu, conv2d_f32_cpu_wrapper);
+
+    table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
+    table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
+    table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
+    table.register(MaximumElementwise, f32_dt, cpu, maximum_elementwise_f32_cpu_wrapper);
+    table.register(MinimumElementwise, f32_dt, cpu, minimum_elementwise_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -698,6 +795,11 @@ fn default_cpu_caps() -> BackendCapabilities {
         MeanReduce,
         MatMul,
         Conv2D,
+        Affine,
+        ClampElementwise,
+        PowIElementwise,
+        MaximumElementwise,
+        MinimumElementwise,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
