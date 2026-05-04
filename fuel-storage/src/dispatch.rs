@@ -404,6 +404,92 @@ cpu_reduce_wrapper!(max_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::
 cpu_reduce_wrapper!(min_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f32, "min_reduce");
 cpu_reduce_wrapper!(mean_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f32, "mean_reduce");
 
+/// Generate a dispatch wrapper for `(Cast, <target>, Cpu)`. The
+/// binding-table key is keyed on the *target* dtype (= the
+/// Node's dtype = the output Storage's dtype); the wrapper reads
+/// the input Storage's dtype at runtime and dispatches to the
+/// right typed conversion kernel.
+macro_rules! cpu_cast_wrapper {
+    (
+        $wrapper:ident,
+        $target_dtype:expr,
+        $target_name:literal,
+        { $( $source:pat => $kernel:path ),+ $(,)? } $(,)?
+    ) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "cast→{} wrapper expects 1 input, got {}",
+                    $target_name,
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "cast→{} wrapper expects 1 output, got {}",
+                    $target_name,
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let source_dtype = in_guard.dtype;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            match source_dtype {
+                $( $source => $kernel(in_cpu, out_cpu), )+
+                other => Err(Error::Msg(format!(
+                    "cast→{}: source dtype {:?} not yet wired (Phase C \
+                     extends the cast matrix as needed)",
+                    $target_name, other,
+                ))
+                .bt()),
+            }
+        }
+    };
+}
+
+cpu_cast_wrapper!(
+    cast_to_f32_cpu_wrapper,
+    DType::F32,
+    "f32",
+    {
+        DType::F64  => fuel_cpu_backend::byte_kernels::cast_f64_to_f32,
+        DType::BF16 => fuel_cpu_backend::byte_kernels::cast_bf16_to_f32,
+        DType::F16  => fuel_cpu_backend::byte_kernels::cast_f16_to_f32,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_f64_cpu_wrapper,
+    DType::F64,
+    "f64",
+    {
+        DType::F32 => fuel_cpu_backend::byte_kernels::cast_f32_to_f64,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_bf16_cpu_wrapper,
+    DType::BF16,
+    "bf16",
+    {
+        DType::F32 => fuel_cpu_backend::byte_kernels::cast_f32_to_bf16,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_f16_cpu_wrapper,
+    DType::F16,
+    "f16",
+    {
+        DType::F32 => fuel_cpu_backend::byte_kernels::cast_f32_to_f16,
+    },
+);
+
 /// Dispatch wrapper for `(MatMul, F32, Cpu)`. Extracts the
 /// `OpParams::Matmul { m, n, k }` and forwards to the typed
 /// kernel. Both inputs are guaranteed contiguous f32 by the
@@ -482,6 +568,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MeanReduce,         f32_dt, cpu, mean_reduce_f32_cpu_wrapper);
 
     table.register(MatMul,             f32_dt, cpu, matmul_f32_cpu_wrapper);
+
+    // Cast keys on the *target* dtype; each wrapper handles its
+    // supported source dtypes internally. Add new (target, source)
+    // pairs by extending the wrapper's match arms.
+    table.register(Cast, DType::F32,  cpu, cast_to_f32_cpu_wrapper);
+    table.register(Cast, DType::F64,  cpu, cast_to_f64_cpu_wrapper);
+    table.register(Cast, DType::BF16, cpu, cast_to_bf16_cpu_wrapper);
+    table.register(Cast, DType::F16,  cpu, cast_to_f16_cpu_wrapper);
 }
 
 // =============================================================================
@@ -538,6 +632,13 @@ fn default_cpu_caps() -> BackendCapabilities {
         MatMul,
     ] {
         op_dtype_support.insert((op, f32_dt));
+    }
+    // Cast advertises every target dtype that has a wrapper
+    // registered. The capability matrix says "this backend can
+    // produce an F64 output via Cast"; the source-side coverage
+    // is managed inside each wrapper's match arms.
+    for target in [DType::F32, DType::F64, DType::BF16, DType::F16] {
+        op_dtype_support.insert((Cast, target));
     }
     BackendCapabilities {
         backend_id: BackendId::Cpu,

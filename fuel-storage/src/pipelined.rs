@@ -462,6 +462,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::MinAll        => Some(OpKind::MinReduce),
         Op::MeanAll       => Some(OpKind::MeanReduce),
         Op::MatMul        => Some(OpKind::MatMul),
+        Op::Cast(_)       => Some(OpKind::Cast),
         _ => None,
     }
 }
@@ -1062,6 +1063,77 @@ mod tests {
         // Original strides for shape [2, 3, 4] are [12, 4, 1].
         // After permute axes [2, 0, 1]: [strides[2], strides[0], strides[1]] = [1, 12, 4].
         assert_eq!(result_layout.stride(), &[1, 12, 4]);
+    }
+
+    /// E2E: Const + Cast(f32→f64) — verifies cast through the
+    /// pipelined executor. Output Storage has the target dtype;
+    /// bytes encode the widened values.
+    #[test]
+    fn pipelined_realize_cast_f32_to_f64() {
+        let storage = crate::from_slice_cpu(&[1.5_f32, -2.25, 100.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let c_id = g.push(Node {
+                op: Op::Cast(DType::F64), inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+            });
+            g.set_target_backend(c_id, BackendId::Cpu);
+            (in_id, c_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        assert_eq!(result_layout.shape().dims(), &[3]);
+
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F64);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f64>().unwrap(), &[1.5_f64, -2.25, 100.0]);
+    }
+
+    /// E2E: Const + Cast(f32→bf16) + Cast(bf16→f32) — round trip
+    /// through bf16; verifies the Cast wrapper's source-dtype
+    /// dispatch (different sources hit different match arms).
+    /// Inputs chosen to round-trip exactly through bf16.
+    #[test]
+    fn pipelined_realize_cast_round_trip_via_bf16() {
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, -3.0, 0.5]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, c1_id, c2_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let c1_id = g.push(Node {
+                op: Op::Cast(DType::BF16), inputs: vec![in_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::BF16,
+            });
+            let c2_id = g.push(Node {
+                op: Op::Cast(DType::F32), inputs: vec![c1_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(c1_id, BackendId::Cpu);
+            g.set_target_backend(c2_id, BackendId::Cpu);
+            (in_id, c1_id, c2_id)
+        };
+        let _ = c1_id;
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, c2_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F32);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0_f32, 2.0, -3.0, 0.5]);
     }
 
     /// E2E: Const + Slice — slice is metadata-only; the output Arc
