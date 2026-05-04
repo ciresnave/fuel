@@ -67,6 +67,24 @@ pub enum OpKind {
     AbsElementwise,
     /// Elementwise hyperbolic tangent.
     TanhElementwise,
+    /// Elementwise exponential (`e^x`).
+    ExpElementwise,
+    /// Elementwise natural logarithm (`ln(x)`).
+    LogElementwise,
+    /// Elementwise sine.
+    SinElementwise,
+    /// Elementwise cosine.
+    CosElementwise,
+    /// Elementwise logistic sigmoid (`1 / (1 + e^-x)`).
+    SigmoidElementwise,
+    /// SiLU / Swish activation (`x * sigmoid(x)`).
+    SiluElementwise,
+    /// GELU activation, tanh approximation
+    /// (`0.5*x*(1 + tanh(√(2/π) * (x + 0.044715*x³)))`).
+    GeluElementwise,
+    /// Heaviside step function (`1` where `x > 0`, `0` otherwise) —
+    /// the derivative of [`OpKind::ReluElementwise`].
+    StepElementwise,
 }
 
 impl OpKind {
@@ -84,6 +102,14 @@ impl OpKind {
             OpKind::RecipElementwise => "recip",
             OpKind::AbsElementwise   => "abs",
             OpKind::TanhElementwise  => "tanh",
+            OpKind::ExpElementwise    => "exp",
+            OpKind::LogElementwise    => "log",
+            OpKind::SinElementwise    => "sin",
+            OpKind::CosElementwise    => "cos",
+            OpKind::SigmoidElementwise => "sigmoid",
+            OpKind::SiluElementwise   => "silu",
+            OpKind::GeluElementwise   => "gelu",
+            OpKind::StepElementwise   => "step",
         }
     }
 }

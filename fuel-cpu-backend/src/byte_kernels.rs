@@ -110,6 +110,31 @@ unary_f32_kernel!(sqrt_f32, |x| x.sqrt(), "Elementwise `f32` square root: `out[i
 unary_f32_kernel!(recip_f32, |x| 1.0 / x, "Elementwise `f32` reciprocal: `out[i] = 1 / input[i]`. Zero input yields IEEE-754 inf/NaN.");
 unary_f32_kernel!(abs_f32, |x: f32| x.abs(), "Elementwise `f32` absolute value: `out[i] = |input[i]|`.");
 unary_f32_kernel!(tanh_f32, |x: f32| x.tanh(), "Elementwise `f32` hyperbolic tangent: `out[i] = tanh(input[i])`.");
+unary_f32_kernel!(exp_f32, |x: f32| x.exp(), "Elementwise `f32` exponential: `out[i] = e^input[i]`.");
+unary_f32_kernel!(log_f32, |x: f32| x.ln(), "Elementwise `f32` natural log: `out[i] = ln(input[i])`. Negative inputs yield NaN per IEEE-754.");
+unary_f32_kernel!(sin_f32, |x: f32| x.sin(), "Elementwise `f32` sine: `out[i] = sin(input[i])`.");
+unary_f32_kernel!(cos_f32, |x: f32| x.cos(), "Elementwise `f32` cosine: `out[i] = cos(input[i])`.");
+unary_f32_kernel!(sigmoid_f32, |x: f32| 1.0 / (1.0 + (-x).exp()), "Elementwise `f32` logistic sigmoid: `out[i] = 1 / (1 + exp(-input[i]))`.");
+unary_f32_kernel!(silu_f32, |x: f32| x / (1.0 + (-x).exp()), "Elementwise `f32` SiLU/Swish: `out[i] = input[i] * sigmoid(input[i])`.");
+unary_f32_kernel!(step_f32, |x: f32| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f32` Heaviside step: `out[i] = 1` where `input[i] > 0`, `0` otherwise.");
+
+/// Elementwise GELU using the tanh approximation:
+/// `out[i] = 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x^3)))`.
+///
+/// Matches `Op::Gelu`'s tanh-approximation semantics in fuel-graph.
+pub fn gelu_f32(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+    check_lens_2("gelu_f32", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    // √(2/π) ≈ 0.7978845608
+    const COEFF: f32 = 0.797_884_56;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        let x = in_view[i];
+        let inner = COEFF * (x + 0.044_715 * x * x * x);
+        *slot = 0.5 * x * (1.0 + inner.tanh());
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -211,8 +236,81 @@ mod tests {
     fn unary_f32_size_mismatch_errors() {
         let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(4); // wrong size
-        for f in [relu_f32, neg_f32, sqr_f32, sqrt_f32, recip_f32, abs_f32, tanh_f32] {
+        for f in [
+            relu_f32, neg_f32, sqr_f32, sqrt_f32, recip_f32, abs_f32, tanh_f32,
+            exp_f32, log_f32, sin_f32, cos_f32, sigmoid_f32, silu_f32, step_f32,
+            gelu_f32,
+        ] {
             assert!(f(&input, &mut out).is_err(), "size mismatch must error");
         }
+    }
+
+    #[test]
+    fn exp_log_round_trip() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let mut intermediate = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+
+        exp_f32(&input, &mut intermediate).expect("exp");
+        log_f32(&intermediate, &mut out).expect("log");
+
+        let result: &[f32] = out.as_slice().unwrap();
+        for (got, want) in result.iter().zip(&[1.0_f32, 2.0, 3.0]) {
+            assert!((got - want).abs() < 1e-5, "exp+log not identity");
+        }
+    }
+
+    #[test]
+    fn sin_cos_at_known_points() {
+        let input = CpuStorageBytes::from_slice(&[0.0_f32, std::f32::consts::FRAC_PI_2]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+
+        sin_f32(&input, &mut out).expect("sin");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!(r[0].abs() < 1e-7);
+        assert!((r[1] - 1.0).abs() < 1e-6);
+
+        cos_f32(&input, &mut out).expect("cos");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!((r[0] - 1.0).abs() < 1e-6);
+        assert!(r[1].abs() < 1e-6);
+    }
+
+    #[test]
+    fn sigmoid_silu_at_known_points() {
+        let input = CpuStorageBytes::from_slice(&[0.0_f32, 5.0, -5.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+
+        sigmoid_f32(&input, &mut out).expect("sigmoid");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!((r[0] - 0.5).abs() < 1e-7);
+        assert!(r[1] > 0.99);
+        assert!(r[2] < 0.01);
+
+        silu_f32(&input, &mut out).expect("silu");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!(r[0].abs() < 1e-7); // 0 * sigmoid(0) = 0
+    }
+
+    #[test]
+    fn step_clips_correctly() {
+        let input = CpuStorageBytes::from_slice(&[-2.0_f32, 0.0, 0.5, 100.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        step_f32(&input, &mut out).expect("step");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn gelu_at_known_points() {
+        let input = CpuStorageBytes::from_slice(&[0.0_f32, 1.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        gelu_f32(&input, &mut out).expect("gelu");
+        let r: &[f32] = out.as_slice().unwrap();
+        // gelu(0) = 0
+        assert!(r[0].abs() < 1e-6);
+        // gelu(1) ≈ 0.8412 (tanh approx)
+        assert!((r[1] - 0.841_192).abs() < 1e-3);
+        // gelu(-1) ≈ -0.1588 (tanh approx)
+        assert!((r[2] - (-0.158_808)).abs() < 1e-3);
     }
 }
