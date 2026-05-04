@@ -129,6 +129,9 @@ pub enum OpKind {
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
     Concat,
+    /// Softmax along the last dim, numerically stable
+    /// (subtract per-row max, exp, divide by sum).
+    SoftmaxLastDim,
 }
 
 impl OpKind {
@@ -166,6 +169,7 @@ impl OpKind {
             OpKind::MaximumElementwise => "maximum",
             OpKind::MinimumElementwise => "minimum",
             OpKind::Concat            => "concat",
+            OpKind::SoftmaxLastDim    => "softmax_last_dim",
         }
     }
 }

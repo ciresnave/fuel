@@ -204,6 +204,13 @@ pub enum OpParams {
         /// Product of output dims after the concat dim.
         inner_count: usize,
     },
+
+    /// Softmax along the last dim. The kernel walks
+    /// `outer_count` rows of `last_dim` elements each.
+    SoftmaxLastDim {
+        outer_count: usize,
+        last_dim: usize,
+    },
 }
 
 // =============================================================================

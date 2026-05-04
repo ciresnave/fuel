@@ -349,6 +349,37 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Dispatch wrapper for `(SoftmaxLastDim, F32, Cpu)`. Single
+/// input + single output; (outer_count, last_dim) flow through
+/// `OpParams::SoftmaxLastDim`.
+fn softmax_last_dim_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "softmax_last_dim wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, last_dim) = match params {
+        OpParams::SoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+        other => {
+            return Err(Error::Msg(format!(
+                "softmax_last_dim wrapper expects OpParams::SoftmaxLastDim, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_f32(in_cpu, out_cpu, outer_count, last_dim)
+}
+
 /// Dispatch wrapper for `(Concat, F32, Cpu)`. Variable number of
 /// inputs (≥ 1); shape parameters flow through `OpParams::Concat`.
 fn concat_f32_cpu_wrapper(
@@ -798,6 +829,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MinimumElementwise, f32_dt, cpu, minimum_elementwise_f32_cpu_wrapper);
 
     table.register(Concat,             f32_dt, cpu, concat_f32_cpu_wrapper);
+    table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -859,6 +891,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MaximumElementwise,
         MinimumElementwise,
         Concat,
+        SoftmaxLastDim,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
