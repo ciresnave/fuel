@@ -874,10 +874,16 @@ impl Graph {
         )
     }
 
-    /// Append a node and return its fresh ID. Internal helper used by the
-    /// `Tensor` builders and by `opt` passes that canonicalize or rewrite
-    /// the graph by appending fresh nodes.
-    pub(crate) fn push(&mut self, node: Node) -> NodeId {
+    /// Append a node and return its fresh ID. Used by the `Tensor`
+    /// builders, by `opt` passes that canonicalize or rewrite the
+    /// graph by appending fresh nodes, and by external consumers
+    /// (fuel-storage's pipelined executor tests, custom-op authors)
+    /// that need direct graph construction.
+    ///
+    /// Misuse (malformed Node, dangling input ids, etc.) is caught
+    /// at execute time as a typed error, not a panic — per project's
+    /// no-panic-in-production rule.
+    pub fn push(&mut self, node: Node) -> NodeId {
         let id = NodeId(self.nodes.len());
         self.nodes.push(node);
         id
