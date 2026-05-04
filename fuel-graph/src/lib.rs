@@ -44,7 +44,7 @@
 pub mod grad;
 pub mod opt;
 
-use fuel_core_types::{DeviceLocation, DType, Shape, Storage};
+use fuel_core_types::{DeviceLocation, DType, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -713,6 +713,18 @@ pub struct Graph {
     /// clones. Lifetime is tied to the Graph; when the graph drops,
     /// any slots not held by external Arc clones are freed.
     storage_map: HashMap<NodeId, Arc<RwLock<Storage>>>,
+    /// Phase 7.5 storage-unification B2: per-node dispatch
+    /// resolution result. Set by the dispatch resolver (Phase B3+)
+    /// when DAG construction picks which backend will execute the
+    /// node's op given its inputs' dtype + residency. Sparse like
+    /// `placements`: absent entries mean "not yet resolved" and the
+    /// executor falls back to per-op-eval dispatch (today's
+    /// behavior). After full migration, every Node has an entry.
+    ///
+    /// Note: this is a *side-table*, not a `Node` field, so that
+    /// existing `Node { ... }` constructors don't need to change
+    /// during the migration. Mirrors the `placements` pattern.
+    target_backends: HashMap<NodeId, BackendId>,
 }
 
 impl Graph {
@@ -723,7 +735,39 @@ impl Graph {
             placements: HashMap::new(),
             side_effect_roots: Vec::new(),
             storage_map: HashMap::new(),
+            target_backends: HashMap::new(),
         }
+    }
+
+    /// Look up the resolved target backend for a node, if any has
+    /// been set. Returns `None` if dispatch resolution hasn't
+    /// happened yet for this node — common during the migration
+    /// because old op-builder paths don't call the resolver.
+    ///
+    /// Phase 7.5 B2.
+    pub fn target_backend(&self, id: NodeId) -> Option<BackendId> {
+        self.target_backends.get(&id).copied()
+    }
+
+    /// Record the resolved target backend for `id`. Set once at DAG
+    /// construction time (or first-realize time, depending on the
+    /// dispatch policy chosen in Phase B3). Idempotent: calling
+    /// twice with the same value is fine; calling twice with
+    /// different values overwrites.
+    ///
+    /// Phase 7.5 B2.
+    pub fn set_target_backend(&mut self, id: NodeId, backend: BackendId) {
+        assert!(
+            id.0 < self.nodes.len(),
+            "set_target_backend: id out of bounds",
+        );
+        self.target_backends.insert(id, backend);
+    }
+
+    /// Number of nodes with a resolved target backend. Mostly for
+    /// tests and diagnostics.
+    pub fn target_backend_count(&self) -> usize {
+        self.target_backends.len()
     }
 
     /// Look up the realized storage for a node, if any has been
@@ -4723,6 +4767,52 @@ mod tests {
     #[test]
     fn destructive_input_release_is_some_zero() {
         assert_eq!(Op::Release.destructive_input(), Some(0));
+    }
+
+    /// Phase 7.5 storage-unification B2: target_backend side-table
+    /// is sparse — empty by default, set explicitly per node.
+    #[test]
+    fn target_backend_side_table_starts_empty() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[1]),
+            dtype: DType::F32,
+        });
+        assert_eq!(g.target_backend(id), None);
+        assert_eq!(g.target_backend_count(), 0);
+    }
+
+    /// set_target_backend then read returns the same value.
+    #[test]
+    fn target_backend_set_and_read() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[1]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(id, BackendId::Cpu);
+        assert_eq!(g.target_backend(id), Some(BackendId::Cpu));
+        assert_eq!(g.target_backend_count(), 1);
+    }
+
+    /// set_target_backend overwrites prior value.
+    #[test]
+    fn target_backend_overwrite() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[1]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(id, BackendId::Cpu);
+        g.set_target_backend(id, BackendId::Cuda);
+        assert_eq!(g.target_backend(id), Some(BackendId::Cuda));
+        assert_eq!(g.target_backend_count(), 1);
     }
 
     /// Phase 7.5 work item G — empty-map invariants. End-to-end
