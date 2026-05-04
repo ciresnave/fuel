@@ -245,7 +245,10 @@ fn compiler_thread_body(
 /// shares bytes with its sole input but reinterprets them through
 /// strides + offset.
 fn is_view_op(op: &Op) -> bool {
-    matches!(op, Op::Transpose | Op::Permute(_) | Op::BroadcastTo(_))
+    matches!(
+        op,
+        Op::Transpose | Op::Permute(_) | Op::BroadcastTo(_) | Op::Slice { .. }
+    )
 }
 
 /// Compute the output Layout of a metadata-only view op from its
@@ -265,6 +268,7 @@ fn derive_view_output_layout(op: &Op, input_layout: &Layout) -> Result<Layout> {
         }
         Op::Permute(axes) => input_layout.permute(axes),
         Op::BroadcastTo(target_shape) => input_layout.broadcast_as(target_shape.clone()),
+        Op::Slice { dim, start, len } => input_layout.narrow(*dim, *start, *len),
         other => Err(Error::Msg(format!(
             "derive_view_output_layout called with non-view op {other:?}",
         ))
@@ -1036,6 +1040,85 @@ mod tests {
         // Original strides for shape [2, 3, 4] are [12, 4, 1].
         // After permute axes [2, 0, 1]: [strides[2], strides[0], strides[1]] = [1, 12, 4].
         assert_eq!(result_layout.stride(), &[1, 12, 4]);
+    }
+
+    /// E2E: Const + Slice — slice is metadata-only; the output Arc
+    /// shares bytes with the input, and the Layout's start_offset
+    /// + narrowed shape reflect the slice. Stage 3 of Layout-on-Node
+    /// extended to cover Op::Slice via Layout::narrow.
+    #[test]
+    fn pipelined_realize_slice_is_metadata_only() {
+        // shape [5]; slice dim 0 from index 1 with len 3 → shape [3]
+        // Source: [10, 20, 30, 40, 50]; slice → [20, 30, 40]
+        let storage = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, s_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let s_id = g.push(Node {
+                op: Op::Slice { dim: 0, start: 1, len: 3 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
+            });
+            (in_id, s_id)
+        };
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, s_id, inputs).expect("realize");
+
+        // Bytes shared with the input.
+        assert!(Arc::ptr_eq(&result_arc, &in_arc));
+        assert_eq!(result_layout.shape().dims(), &[3]);
+        // Slice into a contiguous source: the resulting layout has
+        // start_offset = original_stride[0] * start = 1 * 1 = 1,
+        // and stride [1] (still contiguous within the narrowed dim).
+        assert_eq!(result_layout.start_offset(), 1);
+        assert_eq!(result_layout.stride(), &[1]);
+    }
+
+    /// E2E: Const + Slice + SumAll — slice is metadata-only, but
+    /// sum needs contiguous bytes, so auto-Contiguize materializes
+    /// the slice before reduce. Tests the stage 3+4 integration
+    /// through Op::Slice. Sum of `[20, 30, 40]` is 90.
+    #[test]
+    fn pipelined_realize_slice_then_sum_all() {
+        let storage = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, s_id, sum_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let s_id = g.push(Node {
+                op: Op::Slice { dim: 0, start: 1, len: 3 },
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
+            });
+            let sum_id = g.push(Node {
+                op: Op::SumAll, inputs: vec![s_id],
+                shape: Shape::from_dims(&[]), dtype: DType::F32,
+            });
+            g.set_target_backend(sum_id, BackendId::Cpu);
+            (in_id, s_id, sum_id)
+        };
+        let _ = s_id;
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[90.0]);
     }
 
     /// E2E: Const + BroadcastTo — verifies that broadcast layouts
