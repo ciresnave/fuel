@@ -1,0 +1,23 @@
+[package]
+categories.workspace = true
+description = "Unified storage abstraction for fuel: byte-shaped Storage owning bytes + dtype + backend memory region. Closed enum over CPU/CUDA/Vulkan/Metal variants. Backends provide kernels against these types; backends do not own their own storage type."
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "fuel-storage"
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+fuel-core-types = { workspace = true }
+bytemuck = { workspace = true }
+half = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+# Per-backend storage variants. A1 ships skeleton variants and gates;
+# A2 fills CPU; A3 fills CUDA/Vulkan/Metal.
+cuda = []
+vulkan = []
+metal = []

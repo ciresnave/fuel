@@ -40,6 +40,7 @@ members = [
     "fuel-pyo3",
     "fuel-quantized",
     "fuel-reference-backend",
+    "fuel-storage",
     "fuel-training",
     "fuel-transformers",
     "fuel-ug",
@@ -67,6 +68,7 @@ default-members = [
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
     "fuel-reference-backend",
+    "fuel-storage",
     "fuel-metal-backend",
     "fuel-datasets",
     "fuel-examples",
@@ -136,6 +138,7 @@ fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }
 fuel-parallel = { path = "./fuel-parallel", version = "0.10.2" }
 fuel-quantized = { path = "./fuel-quantized", version = "0.10.2" }
 fuel-reference-backend = { path = "./fuel-reference-backend", version = "0.10.2" }
+fuel-storage = { path = "./fuel-storage", version = "0.10.2" }
 fuel-training = { path = "./fuel-training", version = "0.10.2" }
 fuel-transformers = { path = "./fuel-transformers", version = "0.10.2" }
 fuel-ug = { path = "./fuel-ug", version = "0.10.2" }
