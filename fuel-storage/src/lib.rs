@@ -29,6 +29,7 @@
 //! during the migration; this crate defines the new shape and
 //! consumers migrate piecewise.
 
+mod aligned;
 pub mod cpu;
 #[cfg(feature = "cuda")]
 pub mod cuda;
@@ -37,7 +38,7 @@ pub mod vulkan;
 #[cfg(feature = "metal")]
 pub mod metal;
 
-pub use cpu::CpuStorage;
+pub use cpu::{CpuStorage, CPU_ALIGN_BYTES};
 #[cfg(feature = "cuda")]
 pub use cuda::CudaStorage;
 #[cfg(feature = "vulkan")]
@@ -135,18 +136,25 @@ impl Storage {
 }
 
 /// Allocate freshly on the CPU backend with the given dtype + element
-/// count. Bytes are zeroed.
-///
-/// A1 placeholder: real allocator (with 64-byte alignment) lands in
-/// A2. This stub uses `vec![0u8; ...]` so the surface compiles and
-/// tests can construct Storages, but performance and alignment
-/// guarantees are not yet what the design promises.
+/// count. Bytes are zero-initialized and 64-byte aligned (suitable
+/// for AVX-512 SIMD).
 pub fn alloc_cpu_zeroed(dtype: DType, elem_count: usize) -> Result<Storage> {
     let len_bytes = elem_count.saturating_mul(dtype.size_in_bytes());
     Ok(Storage::new(
         BackendStorage::Cpu(CpuStorage::from_zero_bytes(len_bytes)),
         dtype,
     ))
+}
+
+/// Build a CPU `Storage` from a typed slice, copying the bytes. The
+/// result has the dtype matching `T` and is 64-byte aligned.
+pub fn from_slice_cpu<T: bytemuck::Pod + fuel_core_types::WithDType>(
+    data: &[T],
+) -> Storage {
+    Storage::new(
+        BackendStorage::Cpu(CpuStorage::from_slice(data)),
+        T::DTYPE,
+    )
 }
 
 #[cfg(test)]
