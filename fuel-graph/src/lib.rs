@@ -44,7 +44,7 @@
 pub mod grad;
 pub mod opt;
 
-use fuel_core_types::{DeviceLocation, DType, Shape, Storage, probe::BackendId};
+use fuel_core_types::{DeviceLocation, DType, Layout, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -725,6 +725,20 @@ pub struct Graph {
     /// existing `Node { ... }` constructors don't need to change
     /// during the migration. Mirrors the `placements` pattern.
     target_backends: HashMap<NodeId, BackendId>,
+    /// Phase 7.5 storage-unification — Layout-on-Node side-table.
+    /// Sparse: every Node has a logical [`Layout`], but for the
+    /// common case (contiguous result of a kernel) we don't store
+    /// it explicitly — [`Graph::layout`] returns
+    /// `Layout::contiguous(node.shape)` as the fallback. Entries
+    /// are written here exclusively by metadata-only view ops
+    /// (`Op::Transpose`, `Op::Permute`, `Op::BroadcastTo`,
+    /// 0-copy `Op::Reshape`) where the output is a strided view
+    /// over an upstream node's Storage.
+    ///
+    /// Coherence rule: if `layouts[id]` is present, its
+    /// `shape()` must equal `nodes[id].shape` — Layout adds
+    /// strides + offset; the visible shape is identical.
+    layouts: HashMap<NodeId, Layout>,
 }
 
 impl Graph {
@@ -736,6 +750,7 @@ impl Graph {
             side_effect_roots: Vec::new(),
             storage_map: HashMap::new(),
             target_backends: HashMap::new(),
+            layouts: HashMap::new(),
         }
     }
 
@@ -768,6 +783,61 @@ impl Graph {
     /// tests and diagnostics.
     pub fn target_backend_count(&self) -> usize {
         self.target_backends.len()
+    }
+
+    /// The [`Layout`] associated with `id`. If the side-table has
+    /// no explicit entry, returns `Layout::contiguous(shape)` —
+    /// every Node logically has a Layout; the side-table is just
+    /// the sparse storage for the strided / offset cases.
+    ///
+    /// Phase 7.5 storage-unification: metadata-only view ops
+    /// (`Op::Transpose`, `Op::Permute`, `Op::BroadcastTo`,
+    /// 0-copy `Op::Reshape`) populate this side-table during
+    /// graph construction. Kernel ops produce contiguous results
+    /// and rely on the fallback.
+    pub fn layout(&self, id: NodeId) -> Layout {
+        if let Some(l) = self.layouts.get(&id) {
+            return l.clone();
+        }
+        Layout::contiguous(self.node(id).shape.clone())
+    }
+
+    /// Record an explicit [`Layout`] for `id`. The Layout's
+    /// `shape()` must equal `nodes[id].shape` — otherwise the
+    /// graph becomes incoherent (downstream ops were validated
+    /// against `node.shape`). Panics in `debug_assertions` mode
+    /// on mismatch; in release the mismatch is silently kept
+    /// because the alternative would require this method to
+    /// return `Result`, which would break call ergonomics in
+    /// graph-construction code.
+    ///
+    /// Set this exactly when an op produces a strided / offset
+    /// view over upstream Storage. For the common case
+    /// (contiguous kernel output), don't call this at all —
+    /// [`Graph::layout`] returns `Layout::contiguous(shape)`
+    /// as the implicit fallback.
+    pub fn set_layout(&mut self, id: NodeId, layout: Layout) {
+        assert!(id.0 < self.nodes.len(), "set_layout: id out of bounds");
+        debug_assert_eq!(
+            layout.shape(),
+            &self.nodes[id.0].shape,
+            "set_layout: Layout shape disagrees with Node shape \
+             (Layout sets strides/offset, not the visible shape)",
+        );
+        self.layouts.insert(id, layout);
+    }
+
+    /// Whether `id` has an explicit Layout entry in the side-table
+    /// (i.e. it's a strided / offset view; not the default
+    /// contiguous case).
+    pub fn has_explicit_layout(&self, id: NodeId) -> bool {
+        self.layouts.contains_key(&id)
+    }
+
+    /// Number of nodes with an explicit (non-contiguous) Layout.
+    /// Mostly for tests and diagnostics.
+    pub fn explicit_layout_count(&self) -> usize {
+        self.layouts.len()
     }
 
     /// Look up the realized storage for a node, if any has been
@@ -4819,6 +4889,72 @@ mod tests {
         g.set_target_backend(id, BackendId::Cuda);
         assert_eq!(g.target_backend(id), Some(BackendId::Cuda));
         assert_eq!(g.target_backend_count(), 1);
+    }
+
+    /// Layouts side-table: default fallback returns
+    /// `Layout::contiguous(node.shape)` for any node without an
+    /// explicit entry.
+    #[test]
+    fn layout_default_is_contiguous_over_node_shape() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
+        });
+        assert!(!g.has_explicit_layout(id));
+        assert_eq!(g.explicit_layout_count(), 0);
+        let l = g.layout(id);
+        assert_eq!(l.shape().dims(), &[2, 3]);
+        assert!(l.is_contiguous());
+        assert_eq!(l.start_offset(), 0);
+    }
+
+    /// set_layout records a strided Layout (e.g. for a transpose
+    /// view). Subsequent reads return the explicit entry.
+    #[test]
+    fn layout_explicit_strided_is_remembered() {
+        use fuel_core_types::DimVec;
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op: Op::Transpose,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 2]),
+            dtype: DType::F32,
+        });
+        // Strided view: shape stays [3, 2] (the post-transpose view),
+        // strides are [1, 3] (row-of-output is column-of-source).
+        let l = Layout::new(
+            Shape::from_dims(&[3, 2]),
+            DimVec::from_slice(&[1usize, 3]),
+            0,
+        );
+        g.set_layout(id, l);
+        assert!(g.has_explicit_layout(id));
+        assert_eq!(g.explicit_layout_count(), 1);
+        assert_eq!(g.layout(id).stride(), &[1, 3]);
+        assert!(!g.layout(id).is_contiguous());
+    }
+
+    /// set_layout twice with different layouts overwrites.
+    #[test]
+    fn layout_set_overwrites() {
+        use fuel_core_types::DimVec;
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op: Op::Transpose,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        g.set_layout(id, Layout::contiguous(Shape::from_dims(&[2])));
+        g.set_layout(
+            id,
+            Layout::new(Shape::from_dims(&[2]), DimVec::from_slice(&[3usize]), 1),
+        );
+        assert_eq!(g.layout(id).start_offset(), 1);
+        assert_eq!(g.explicit_layout_count(), 1);
     }
 
     /// Phase 7.5 work item G — empty-map invariants. End-to-end
