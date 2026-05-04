@@ -21,7 +21,7 @@
 //! instance in Phase B.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use fuel_core_types::backend::{BackendCapabilities, TransferPath};
 use fuel_core_types::dispatch::OpKind;
@@ -288,6 +288,97 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     );
     // Phase C: more (op, dtype) registrations land here as kernels
     // migrate.
+}
+
+// =============================================================================
+// Phase 7.5 B5+ — process-wide singleton (CapabilityRegistry + KernelBindingTable)
+// =============================================================================
+
+/// Process-wide [`CapabilityRegistry`]. Initialized on first access
+/// via [`global_registry`]; the CPU backend is auto-registered
+/// always (universal fallback). Other backends register themselves
+/// during their initialization in fuel-graph-router or app startup.
+///
+/// Tests that need a private registry should construct one
+/// directly with `CapabilityRegistry::new()` rather than touch the
+/// global.
+static GLOBAL_REGISTRY: OnceLock<RwLock<CapabilityRegistry>> = OnceLock::new();
+
+/// Process-wide [`KernelBindingTable`]. Initialized on first access
+/// with the CPU dispatch wrappers from [`register_cpu_kernels`].
+/// Other backends extend it when they register.
+static GLOBAL_BINDINGS: OnceLock<RwLock<KernelBindingTable>> = OnceLock::new();
+
+fn default_cpu_caps() -> BackendCapabilities {
+    use std::collections::HashSet;
+    let mut op_dtype_support = HashSet::new();
+    // Bootstrap: only AddElementwise+F32 registered today (matches
+    // the binding table). Phase C grows this set as kernels
+    // migrate. Eventually the full CPU coverage matrix lives here.
+    op_dtype_support.insert((OpKind::AddElementwise, DType::F32));
+    BackendCapabilities {
+        backend_id: BackendId::Cpu,
+        device_location: DeviceLocation::Cpu,
+        op_dtype_support,
+        required_alignment: 64,
+        access_granularity_bits: 8,
+        transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
+    }
+}
+
+/// Read-lock the process-wide capability registry. CPU is auto-
+/// registered on first access; subsequent backends register
+/// themselves via [`register_backend_capabilities`].
+pub fn global_registry() -> std::sync::RwLockReadGuard<'static, CapabilityRegistry> {
+    GLOBAL_REGISTRY
+        .get_or_init(|| {
+            let mut r = CapabilityRegistry::new();
+            r.register(default_cpu_caps());
+            RwLock::new(r)
+        })
+        .read()
+        .unwrap()
+}
+
+/// Add a backend's capabilities to the process-wide registry.
+/// Typically called by each backend's init / probe path during
+/// app startup. Idempotent for the same `(backend_id,
+/// device_location)` is the *caller's* responsibility — the
+/// registry happily appends duplicates and the lookup picks the
+/// first-registered match.
+pub fn register_backend_capabilities(caps: BackendCapabilities) {
+    let lock = GLOBAL_REGISTRY.get_or_init(|| {
+        let mut r = CapabilityRegistry::new();
+        r.register(default_cpu_caps());
+        RwLock::new(r)
+    });
+    lock.write().unwrap().register(caps);
+}
+
+/// Read-lock the process-wide kernel-binding table. CPU dispatch
+/// wrappers are auto-registered on first access.
+pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTable> {
+    GLOBAL_BINDINGS
+        .get_or_init(|| {
+            let mut t = KernelBindingTable::new();
+            register_cpu_kernels(&mut t);
+            RwLock::new(t)
+        })
+        .read()
+        .unwrap()
+}
+
+/// Add a backend's dispatch wrappers to the process-wide binding
+/// table. Each backend exposes a `register_*_kernels(table)`
+/// function (see [`register_cpu_kernels`]); per-backend init paths
+/// call this to plug their wrappers into the global table.
+pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
+    let lock = GLOBAL_BINDINGS.get_or_init(|| {
+        let mut t = KernelBindingTable::new();
+        register_cpu_kernels(&mut t);
+        RwLock::new(t)
+    });
+    register(&mut lock.write().unwrap());
 }
 
 #[cfg(test)]
@@ -600,5 +691,25 @@ mod tests {
 
         let result = kernel(&inputs, &mut outputs, &OpParams::None);
         assert!(result.is_err());
+    }
+
+    /// Global registry auto-registers CPU on first access.
+    #[test]
+    fn global_registry_auto_registers_cpu() {
+        // First access initializes the registry with CPU caps.
+        let r = global_registry();
+        assert!(!r.backends().is_empty());
+        // CPU is registered.
+        let cpu = r.backends().iter().find(|c| c.backend_id == BackendId::Cpu);
+        assert!(cpu.is_some(), "CPU should be auto-registered");
+    }
+
+    /// Global bindings auto-registers the CPU AddElementwise+F32
+    /// wrapper on first access.
+    #[test]
+    fn global_bindings_auto_registers_cpu_wrappers() {
+        let b = global_bindings();
+        let result = b.lookup(OpKind::AddElementwise, DType::F32, BackendId::Cpu);
+        assert!(result.is_ok(), "CPU AddElementwise+F32 should be registered");
     }
 }
