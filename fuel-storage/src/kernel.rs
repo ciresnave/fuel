@@ -95,21 +95,26 @@ pub enum OpParams {
 
     /// Matrix multiplication. Carries the dimensions explicitly
     /// because [`Storage`](crate::Storage) only holds bytes + dtype;
-    /// the kernel needs `(batch_count, m, n, k)` to walk inputs and
-    /// outputs.
+    /// the kernel needs the batch shape and `(m, n, k)` to walk
+    /// inputs and outputs.
     ///
-    /// Shape contract: lhs `[..., m, k]` @ rhs `[..., k, n]` →
-    /// out `[..., m, n]`. Leading batch dims must match exactly
-    /// (auto-broadcast in fuel-graph's matmul builder ensures
-    /// this). `batch_count` is the product of leading dims —
-    /// 1 for rank-2 inputs.
+    /// Shape contract: lhs `[..lhs_batch.., m, k]` @
+    /// rhs `[..rhs_batch.., k, n]` → out `[..lhs_batch.., m, n]`.
+    /// Per-axis the batch dims must either match or follow GQA-style
+    /// divisibility (`lhs_dim > rhs_dim && lhs_dim % rhs_dim == 0`)
+    /// — the kernel maps each lhs batch slot to the corresponding
+    /// rhs slot via `rhs_axis_idx = lhs_axis_idx / n_rep_axis`.
     ///
-    /// Both inputs are guaranteed contiguous by the executor's
+    /// Equal-batch case: `lhs_batch_dims == rhs_batch_dims`. Rank-2
+    /// case: both batch vectors are empty. Both work uniformly.
+    ///
+    /// Inputs are guaranteed contiguous by the executor's
     /// auto-Contiguize pass; transpose flags don't appear here
     /// because `Op::Transpose` is its own metadata-only op in
     /// fuel-graph.
     Matmul {
-        batch_count: usize,
+        lhs_batch_dims: Vec<usize>,
+        rhs_batch_dims: Vec<usize>,
         m: usize,
         n: usize,
         k: usize,
@@ -264,7 +269,13 @@ mod tests {
             dims: vec![0, 1],
             keepdim: false,
         };
-        let _ = OpParams::Matmul { batch_count: 1, m: 4, n: 8, k: 16 };
+        let _ = OpParams::Matmul {
+            lhs_batch_dims: vec![],
+            rhs_batch_dims: vec![],
+            m: 4,
+            n: 8,
+            k: 16,
+        };
         let _ = OpParams::Slice { dim: 0, start: 0, end: 10, step: 1 };
         let _ = OpParams::Cast;
         let _ = OpParams::Affine { mul: 2.0, add: 1.0 };

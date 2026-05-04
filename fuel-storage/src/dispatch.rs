@@ -513,8 +513,10 @@ fn matmul_f32_cpu_wrapper(
         ))
         .bt());
     }
-    let (batch_count, m, n, k) = match params {
-        OpParams::Matmul { batch_count, m, n, k } => (*batch_count, *m, *n, *k),
+    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+        }
         other => {
             return Err(Error::Msg(format!(
                 "matmul wrapper expects OpParams::Matmul, got {other:?}",
@@ -528,7 +530,16 @@ fn matmul_f32_cpu_wrapper(
     let lhs_cpu = cpu_input(&lhs_guard)?;
     let rhs_cpu = cpu_input(&rhs_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::matmul_f32(lhs_cpu, rhs_cpu, out_cpu, batch_count, m, n, k)
+    fuel_cpu_backend::byte_kernels::matmul_f32(
+        lhs_cpu,
+        rhs_cpu,
+        out_cpu,
+        lhs_batch_dims,
+        rhs_batch_dims,
+        m,
+        n,
+        k,
+    )
 }
 
 /// Register CPU dispatch wrappers in the binding table. Call once
