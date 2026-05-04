@@ -471,6 +471,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Maximum       => Some(OpKind::MaximumElementwise),
         Op::Minimum       => Some(OpKind::MinimumElementwise),
         Op::Concat { .. } => Some(OpKind::Concat),
+        Op::SoftmaxLastDim => Some(OpKind::SoftmaxLastDim),
         _ => None,
     }
 }
@@ -584,6 +585,20 @@ fn op_to_op_params(
                 n,
                 k: k_lhs,
             }
+        }
+        Op::SoftmaxLastDim => {
+            // Input shape == output shape == [outer_dims..., last_dim].
+            let il = input_layout(node.inputs[0]);
+            let dims = il.shape().dims();
+            if dims.is_empty() {
+                return Err(Error::Msg(
+                    "Op::SoftmaxLastDim requires rank ≥ 1".to_string(),
+                )
+                .bt());
+            }
+            let last_dim = *dims.last().unwrap();
+            let outer_count: usize = dims[..dims.len() - 1].iter().product();
+            OpParams::SoftmaxLastDim { outer_count, last_dim }
         }
         Op::Concat { dim } => {
             // Output's shape: [..., total_dim, ...]. Compute outer
@@ -1445,6 +1460,54 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: SoftmaxLastDim on a 2-row input. Each row should sum
+    /// to 1; uniform row gives uniform output.
+    #[test]
+    fn pipelined_realize_softmax_last_dim() {
+        // Row 0: [1, 1, 1, 1] → uniform 0.25 each
+        // Row 1: [0, 0, 0, 100] → effectively a one-hot at position 3
+        let storage = crate::from_slice_cpu(&[
+            1.0_f32, 1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, 100.0,
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::SoftmaxLastDim, inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let result: &[f32] = c.as_slice().unwrap();
+
+        // Row 0: uniform 0.25
+        for v in &result[..4] {
+            assert!((v - 0.25).abs() < 1e-7);
+        }
+        // Row 1: positions 0..3 ≈ 0, position 4 (= last column) ≈ 1
+        // (e^100 dominates).
+        for v in &result[4..7] {
+            assert!(*v < 1e-30, "row-1 leading positions should be near 0, got {v}");
+        }
+        assert!(result[7] > 0.999, "row-1 last position should dominate, got {}", result[7]);
+        // Each row sums to 1.
+        let row0_sum: f32 = result[..4].iter().sum();
+        let row1_sum: f32 = result[4..].iter().sum();
+        assert!((row0_sum - 1.0).abs() < 1e-6);
+        assert!((row1_sum - 1.0).abs() < 1e-6);
     }
 
     /// E2E: Concat along inner dim — two [2, 3] tensors → [2, 6].

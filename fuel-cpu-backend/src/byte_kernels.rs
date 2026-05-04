@@ -171,6 +171,68 @@ pub fn contiguize_cpu(
 }
 
 // =============================================================================
+// Softmax (f32)
+// =============================================================================
+
+/// Softmax along the last dim, numerically stable. For each of the
+/// `outer_count` rows of `last_dim` elements, computes
+/// `out[i] = exp(x[i] - max_row) / sum(exp(x - max_row))`. The
+/// `max_row` subtraction prevents overflow in `exp`.
+///
+/// Edge cases:
+///   - `last_dim == 0`: no work; returns `Ok(())`.
+///   - All-`-inf` row: would divide 0/0; returns NaN per IEEE-754.
+///     Caller is expected to ensure inputs are finite.
+pub fn softmax_last_dim_f32(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+) -> Result<()> {
+    check_lens_2("softmax_last_dim_f32", input.len_bytes(), out.len_bytes())?;
+    let elem = std::mem::size_of::<f32>();
+    let need = outer_count
+        .saturating_mul(last_dim)
+        .saturating_mul(elem);
+    if input.len_bytes() != need {
+        return Err(Error::Msg(format!(
+            "softmax_last_dim_f32: input bytes={} doesn't match outer={outer_count} × last={last_dim} × {elem}",
+            input.len_bytes(),
+        ))
+        .bt());
+    }
+    if last_dim == 0 {
+        return Ok(());
+    }
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for row in 0..outer_count {
+        let off = row * last_dim;
+        let row_in = &in_view[off..off + last_dim];
+        // Find row max for numerical stability.
+        let mut row_max = row_in[0];
+        for &v in &row_in[1..] {
+            if v > row_max {
+                row_max = v;
+            }
+        }
+        // Compute exp(x - max) and accumulate sum.
+        let mut sum = 0.0_f32;
+        for j in 0..last_dim {
+            let e = (row_in[j] - row_max).exp();
+            out_view[off + j] = e;
+            sum += e;
+        }
+        // Normalize.
+        let inv = 1.0 / sum;
+        for j in 0..last_dim {
+            out_view[off + j] *= inv;
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Concat (f32)
 // =============================================================================
 
@@ -1052,6 +1114,72 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn softmax_last_dim_f32_uniform_row() {
+        // [1, 1, 1, 1] → uniform softmax = 0.25 each
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        softmax_last_dim_f32(&input, &mut out, 1, 4).expect("softmax");
+        let result: &[f32] = out.as_slice().unwrap();
+        for v in result {
+            assert!((v - 0.25).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn softmax_last_dim_f32_sums_to_one_per_row() {
+        // Two rows of 3; arbitrary values; each row should sum to 1.
+        let input = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0,
+            -1.0, 0.0, 1.0,
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(6 * 4);
+        softmax_last_dim_f32(&input, &mut out, 2, 3).expect("softmax");
+        let result: &[f32] = out.as_slice().unwrap();
+        let row0_sum: f32 = result[..3].iter().sum();
+        let row1_sum: f32 = result[3..].iter().sum();
+        assert!((row0_sum - 1.0).abs() < 1e-6);
+        assert!((row1_sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn softmax_last_dim_f32_numerical_stability_at_large_values() {
+        // [1000, 1001, 1002] — without max subtraction, exp would
+        // overflow. Stable softmax should still produce finite output.
+        let input = CpuStorageBytes::from_slice(&[1000.0_f32, 1001.0, 1002.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        softmax_last_dim_f32(&input, &mut out, 1, 3).expect("softmax");
+        let result: &[f32] = out.as_slice().unwrap();
+        for v in result {
+            assert!(v.is_finite(), "softmax must not overflow at large inputs");
+        }
+        let sum: f32 = result.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn softmax_last_dim_f32_known_values() {
+        // [0, 1] → softmax = [1/(1+e), e/(1+e)]
+        let input = CpuStorageBytes::from_slice(&[0.0_f32, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        softmax_last_dim_f32(&input, &mut out, 1, 2).expect("softmax");
+        let result: &[f32] = out.as_slice().unwrap();
+        let e = std::f32::consts::E;
+        let expected = [1.0 / (1.0 + e), e / (1.0 + e)];
+        for (got, want) in result.iter().zip(&expected) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn softmax_last_dim_f32_size_mismatch_errors() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]); // 3 elements
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        // Claim 2 rows of 4 = 8 elements but only 3 — must error.
+        let r = softmax_last_dim_f32(&input, &mut out, 2, 4);
+        assert!(r.is_err());
     }
 
     #[test]
