@@ -27,6 +27,18 @@ pub const PROFILE_REPORT_VERSION: u32 = 1;
 /// Op kinds the Judge profiles. Adding a variant + a Judge match
 /// arm extends the profile matrix; existing reports parse forward
 /// thanks to `#[non_exhaustive]`.
+///
+/// Phase 7.5 storage unification — Phase C grows this enum one op
+/// family per migration step. Each variant is the dispatch key that
+/// pairs with [`crate::DType`] and
+/// [`crate::probe::BackendId`] to select a kernel. The naming
+/// convention is `<Op><Family>` (e.g. `ReluElementwise`,
+/// `MulElementwise`); families currently in use:
+///
+/// - elementwise binary: `Add/Sub/Mul/Div` + `Elementwise`
+/// - elementwise unary: `Relu/Neg/Sqr/Sqrt/Recip/Abs/Tanh/...`
+///   + `Elementwise`
+/// - dense linear algebra: `MatMul`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
@@ -35,13 +47,43 @@ pub enum OpKind {
     MatMul,
     /// Elementwise addition of two equally-shaped tensors.
     AddElementwise,
+    /// Elementwise subtraction (`a - b`).
+    SubElementwise,
+    /// Elementwise multiplication.
+    MulElementwise,
+    /// Elementwise division (`a / b`).
+    DivElementwise,
+    /// Elementwise rectified linear unit (`max(0, x)`).
+    ReluElementwise,
+    /// Elementwise negation (`-x`).
+    NegElementwise,
+    /// Elementwise square (`x * x`).
+    SqrElementwise,
+    /// Elementwise square root.
+    SqrtElementwise,
+    /// Elementwise reciprocal (`1 / x`).
+    RecipElementwise,
+    /// Elementwise absolute value.
+    AbsElementwise,
+    /// Elementwise hyperbolic tangent.
+    TanhElementwise,
 }
 
 impl OpKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            OpKind::MatMul         => "matmul",
-            OpKind::AddElementwise => "add",
+            OpKind::MatMul           => "matmul",
+            OpKind::AddElementwise   => "add",
+            OpKind::SubElementwise   => "sub",
+            OpKind::MulElementwise   => "mul",
+            OpKind::DivElementwise   => "div",
+            OpKind::ReluElementwise  => "relu",
+            OpKind::NegElementwise   => "neg",
+            OpKind::SqrElementwise   => "sqr",
+            OpKind::SqrtElementwise  => "sqrt",
+            OpKind::RecipElementwise => "recip",
+            OpKind::AbsElementwise   => "abs",
+            OpKind::TanhElementwise  => "tanh",
         }
     }
 }

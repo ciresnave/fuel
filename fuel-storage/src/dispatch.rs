@@ -237,57 +237,129 @@ fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes>
     }
 }
 
-/// Dispatch wrapper for `(AddElementwise, F32, Cpu)`. Extracts
-/// CpuStorageBytes from the BackendStorage::Cpu variant of inputs +
-/// output, then calls the typed kernel in fuel-cpu-backend.
-fn add_elementwise_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 2 {
-        return Err(Error::Msg(format!(
-            "add_elementwise wrapper expects 2 inputs, got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "add_elementwise wrapper expects 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let lhs_arc = inputs[0].clone();
-    let rhs_arc = inputs[1].clone();
-    let out_arc = outputs[0].clone();
-
-    let lhs_guard = lhs_arc.read().unwrap();
-    let rhs_guard = rhs_arc.read().unwrap();
-    let mut out_guard = out_arc.write().unwrap();
-
-    let lhs_cpu = cpu_input(&lhs_guard)?;
-    let rhs_cpu = cpu_input(&rhs_guard)?;
-    let out_cpu = cpu_output(&mut out_guard)?;
-
-    fuel_cpu_backend::byte_kernels::add_f32(lhs_cpu, rhs_cpu, out_cpu)
+/// Acquire a poisoned-lock-aware read guard. Lock poisoning is a
+/// programming bug (a previous writer panicked while holding the
+/// lock); production code surfaces it as a typed error rather than
+/// re-panicking through `unwrap`.
+fn read_storage(arc: &Arc<RwLock<Storage>>) -> Result<std::sync::RwLockReadGuard<'_, Storage>> {
+    arc.read()
+        .map_err(|_| Error::Msg("kernel wrapper: storage RwLock poisoned (read)".to_string()).bt())
 }
+
+fn write_storage(
+    arc: &Arc<RwLock<Storage>>,
+) -> Result<std::sync::RwLockWriteGuard<'_, Storage>> {
+    arc.write()
+        .map_err(|_| Error::Msg("kernel wrapper: storage RwLock poisoned (write)".to_string()).bt())
+}
+
+/// Build a `(2 inputs, 1 output)` CPU dispatch wrapper that calls a
+/// typed binary kernel. The expanded function matches the
+/// [`KernelRef`] signature and is suitable for direct registration
+/// in the binding table.
+macro_rules! cpu_binary_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 2 inputs, got {}",
+                    $op_name,
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 output, got {}",
+                    $op_name,
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let lhs_guard = read_storage(&inputs[0])?;
+            let rhs_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let lhs_cpu = cpu_input(&lhs_guard)?;
+            let rhs_cpu = cpu_input(&rhs_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(lhs_cpu, rhs_cpu, out_cpu)
+        }
+    };
+}
+
+/// Build a `(1 input, 1 output)` CPU dispatch wrapper that calls a
+/// typed unary kernel.
+macro_rules! cpu_unary_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input, got {}",
+                    $op_name,
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 output, got {}",
+                    $op_name,
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu)
+        }
+    };
+}
+
+cpu_binary_wrapper!(add_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_f32, "add_elementwise");
+cpu_binary_wrapper!(sub_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_f32, "sub_elementwise");
+cpu_binary_wrapper!(mul_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_f32, "mul_elementwise");
+cpu_binary_wrapper!(div_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_f32, "div_elementwise");
+
+cpu_unary_wrapper!(relu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_f32, "relu_elementwise");
+cpu_unary_wrapper!(neg_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_f32, "neg_elementwise");
+cpu_unary_wrapper!(sqr_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_f32, "sqr_elementwise");
+cpu_unary_wrapper!(sqrt_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_f32, "sqrt_elementwise");
+cpu_unary_wrapper!(recip_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_f32, "recip_elementwise");
+cpu_unary_wrapper!(abs_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_f32, "abs_elementwise");
+cpu_unary_wrapper!(tanh_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_f32, "tanh_elementwise");
 
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
-/// (op, dtype) combination after Phase C migration. B5 ships a
-/// minimal set: just `(AddElementwise, F32)`.
+/// (op, dtype) combination after Phase C migration. Today's set
+/// covers the elementwise binary + unary `f32` families.
 pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
-    table.register(
-        OpKind::AddElementwise,
-        DType::F32,
-        BackendId::Cpu,
-        add_elementwise_f32_cpu_wrapper,
-    );
-    // Phase C: more (op, dtype) registrations land here as kernels
-    // migrate.
+    use OpKind::*;
+    let cpu = BackendId::Cpu;
+    let f32_dt = DType::F32;
+
+    table.register(AddElementwise,   f32_dt, cpu, add_elementwise_f32_cpu_wrapper);
+    table.register(SubElementwise,   f32_dt, cpu, sub_elementwise_f32_cpu_wrapper);
+    table.register(MulElementwise,   f32_dt, cpu, mul_elementwise_f32_cpu_wrapper);
+    table.register(DivElementwise,   f32_dt, cpu, div_elementwise_f32_cpu_wrapper);
+
+    table.register(ReluElementwise,  f32_dt, cpu, relu_elementwise_f32_cpu_wrapper);
+    table.register(NegElementwise,   f32_dt, cpu, neg_elementwise_f32_cpu_wrapper);
+    table.register(SqrElementwise,   f32_dt, cpu, sqr_elementwise_f32_cpu_wrapper);
+    table.register(SqrtElementwise,  f32_dt, cpu, sqrt_elementwise_f32_cpu_wrapper);
+    table.register(RecipElementwise, f32_dt, cpu, recip_elementwise_f32_cpu_wrapper);
+    table.register(AbsElementwise,   f32_dt, cpu, abs_elementwise_f32_cpu_wrapper);
+    table.register(TanhElementwise,  f32_dt, cpu, tanh_elementwise_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -311,11 +383,27 @@ static GLOBAL_BINDINGS: OnceLock<RwLock<KernelBindingTable>> = OnceLock::new();
 
 fn default_cpu_caps() -> BackendCapabilities {
     use std::collections::HashSet;
+    use OpKind::*;
     let mut op_dtype_support = HashSet::new();
-    // Bootstrap: only AddElementwise+F32 registered today (matches
-    // the binding table). Phase C grows this set as kernels
-    // migrate. Eventually the full CPU coverage matrix lives here.
-    op_dtype_support.insert((OpKind::AddElementwise, DType::F32));
+    // The CPU coverage set must stay in lockstep with
+    // `register_cpu_kernels`: each (op, dtype) pair registered there
+    // is advertised here so capability-driven dispatch picks it.
+    let f32_dt = DType::F32;
+    for op in [
+        AddElementwise,
+        SubElementwise,
+        MulElementwise,
+        DivElementwise,
+        ReluElementwise,
+        NegElementwise,
+        SqrElementwise,
+        SqrtElementwise,
+        RecipElementwise,
+        AbsElementwise,
+        TanhElementwise,
+    ] {
+        op_dtype_support.insert((op, f32_dt));
+    }
     BackendCapabilities {
         backend_id: BackendId::Cpu,
         device_location: DeviceLocation::Cpu,
