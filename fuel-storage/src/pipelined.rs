@@ -232,8 +232,16 @@ fn compile_one(graph: &Graph, id: NodeId, bindings: &KernelBindingTable) -> Resu
 /// dispatch path yet — Phase C extends this as op families migrate.
 fn op_to_op_kind(op: &Op) -> Option<OpKind> {
     match op {
-        Op::Add => Some(OpKind::AddElementwise),
-        Op::MatMul { .. } => Some(OpKind::MatMul),
+        Op::Add           => Some(OpKind::AddElementwise),
+        Op::Sub           => Some(OpKind::SubElementwise),
+        Op::Mul           => Some(OpKind::MulElementwise),
+        Op::Div           => Some(OpKind::DivElementwise),
+        Op::Relu          => Some(OpKind::ReluElementwise),
+        Op::Neg           => Some(OpKind::NegElementwise),
+        Op::Sqr           => Some(OpKind::SqrElementwise),
+        Op::Sqrt          => Some(OpKind::SqrtElementwise),
+        Op::Tanh          => Some(OpKind::TanhElementwise),
+        Op::MatMul        => Some(OpKind::MatMul),
         _ => None,
     }
 }
@@ -443,6 +451,136 @@ mod tests {
         let inputs = StorageCache::new();
         let result = PipelinedExecutor::realize(graph, const_id, inputs);
         assert!(result.is_err());
+    }
+
+    /// E2E: 2-node graph (Const + Relu) — exercises the unary
+    /// dispatch wrapper + kernel through the pipelined executor.
+    #[test]
+    fn pipelined_realize_const_relu() {
+        let storage = crate::from_slice_cpu(&[-1.0_f32, 0.0, 0.5, -3.5, 7.25]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, relu_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
+            });
+            let relu_id = g.push(Node {
+                op: Op::Relu,
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[5]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(relu_id, BackendId::Cpu);
+            (in_id, relu_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, relu_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().expect("f32 cast");
+            assert_eq!(typed, &[0.0, 0.0, 0.5, 0.0, 7.25]);
+        }
+    }
+
+    /// E2E: Const + Const + Sub + Mul + Div — exercises three more
+    /// of the freshly-migrated binary kernels in one graph. Verifies
+    /// that intermediates flow through the cache as expected.
+    #[test]
+    fn pipelined_realize_chained_binary_ops() {
+        let a_storage = crate::from_slice_cpu(&[10.0_f32, 20.0]);
+        let b_storage = crate::from_slice_cpu(&[3.0_f32, 5.0]);
+        let c_storage = crate::from_slice_cpu(&[2.0_f32, 4.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, c_id, sub_id, mul_id, div_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            // (a - b)         = [7, 15]
+            let sub = g.push(Node {
+                op: Op::Sub, inputs: vec![a, b],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            // (a - b) * c     = [14, 60]
+            let mul = g.push(Node {
+                op: Op::Mul, inputs: vec![sub, c],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            // ((a-b)*c) / b   = [14/3, 12]
+            let div = g.push(Node {
+                op: Op::Div, inputs: vec![mul, b],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            g.set_target_backend(sub, BackendId::Cpu);
+            g.set_target_backend(mul, BackendId::Cpu);
+            g.set_target_backend(div, BackendId::Cpu);
+            (a, b, c, sub, mul, div)
+        };
+
+        let _ = (sub_id, mul_id);
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a_storage)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
+        inputs.insert(c_id, Arc::new(RwLock::new(c_storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, div_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().unwrap();
+            assert!((typed[0] - (14.0_f32 / 3.0)).abs() < 1e-6);
+            assert!((typed[1] - 12.0).abs() < 1e-6);
+        }
+    }
+
+    /// E2E: chained unary ops — Const + Sqr + Sqrt should be a noop
+    /// for non-negative inputs. Exercises the cache reuse path.
+    #[test]
+    fn pipelined_realize_chained_unary_sqr_then_sqrt() {
+        let storage = crate::from_slice_cpu(&[1.0_f32, 4.0, 9.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sqrt_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let sqr_id = g.push(Node {
+                op: Op::Sqr, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let sqrt_id = g.push(Node {
+                op: Op::Sqrt, inputs: vec![sqr_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(sqr_id, BackendId::Cpu);
+            g.set_target_backend(sqrt_id, BackendId::Cpu);
+            (in_id, sqrt_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().unwrap();
+            // sqrt(sqr(x)) == |x| == x for non-negative inputs.
+            assert_eq!(typed, &[1.0, 4.0, 9.0]);
+        }
     }
 
     /// Multi-stage pipelined: Const + Const + Add + Add (chain of
