@@ -190,6 +190,20 @@ pub enum OpParams {
     PowI {
         exp: i32,
     },
+
+    /// Concatenate N inputs along one dim. The kernel needs the
+    /// outer/inner element counts (product of dims before/after
+    /// the concat dim) plus each input's size along the concat
+    /// dim — that's all that distinguishes a concat from a
+    /// sequence of slab-copies. Order matches `Node::inputs`.
+    Concat {
+        /// Product of output dims before the concat dim.
+        outer_count: usize,
+        /// Per-input size along the concat dim (length = N inputs).
+        input_dim_sizes: Vec<usize>,
+        /// Product of output dims after the concat dim.
+        inner_count: usize,
+    },
 }
 
 // =============================================================================

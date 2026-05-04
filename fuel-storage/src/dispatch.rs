@@ -349,6 +349,62 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Dispatch wrapper for `(Concat, F32, Cpu)`. Variable number of
+/// inputs (≥ 1); shape parameters flow through `OpParams::Concat`.
+fn concat_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.is_empty() {
+        return Err(Error::Msg("concat wrapper expects ≥ 1 input, got 0".to_string()).bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "concat wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, input_dim_sizes, inner_count) = match params {
+        OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+            (*outer_count, input_dim_sizes, *inner_count)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "concat wrapper expects OpParams::Concat, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    if input_dim_sizes.len() != inputs.len() {
+        return Err(Error::Msg(format!(
+            "concat wrapper: OpParams declares {} inputs but the work item \
+             carries {}",
+            input_dim_sizes.len(),
+            inputs.len(),
+        ))
+        .bt());
+    }
+    let in_guards: Vec<_> = inputs
+        .iter()
+        .map(read_storage)
+        .collect::<Result<Vec<_>>>()?;
+    let mut in_cpus: Vec<&fuel_cpu_backend::CpuStorageBytes> = Vec::with_capacity(in_guards.len());
+    for g in &in_guards {
+        in_cpus.push(cpu_input(g)?);
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::concat_f32(
+        &in_cpus,
+        out_cpu,
+        outer_count,
+        input_dim_sizes,
+        inner_count,
+    )
+}
+
 /// Dispatch wrapper for `(Affine, F32, Cpu)`. Extracts scalar
 /// coefficients from `OpParams::Affine`.
 fn affine_f32_cpu_wrapper(
@@ -740,6 +796,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
     table.register(MaximumElementwise, f32_dt, cpu, maximum_elementwise_f32_cpu_wrapper);
     table.register(MinimumElementwise, f32_dt, cpu, minimum_elementwise_f32_cpu_wrapper);
+
+    table.register(Concat,             f32_dt, cpu, concat_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -800,6 +858,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         PowIElementwise,
         MaximumElementwise,
         MinimumElementwise,
+        Concat,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
