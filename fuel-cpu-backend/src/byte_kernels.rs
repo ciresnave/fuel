@@ -19,7 +19,7 @@
 //!   `abs`, `tanh`
 
 use crate::byte_storage::CpuStorageBytes;
-use fuel_core_types::{Error, Result};
+use fuel_core_types::{Error, Layout, Result};
 
 /// Verify three byte buffers have matching lengths.
 fn check_lens_3(name: &str, a: usize, b: usize, c: usize) -> Result<()> {
@@ -117,6 +117,58 @@ unary_f32_kernel!(cos_f32, |x: f32| x.cos(), "Elementwise `f32` cosine: `out[i] 
 unary_f32_kernel!(sigmoid_f32, |x: f32| 1.0 / (1.0 + (-x).exp()), "Elementwise `f32` logistic sigmoid: `out[i] = 1 / (1 + exp(-input[i]))`.");
 unary_f32_kernel!(silu_f32, |x: f32| x / (1.0 + (-x).exp()), "Elementwise `f32` SiLU/Swish: `out[i] = input[i] * sigmoid(input[i])`.");
 unary_f32_kernel!(step_f32, |x: f32| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f32` Heaviside step: `out[i] = 1` where `input[i] > 0`, `0` otherwise.");
+
+// =============================================================================
+// Contiguize (dtype-agnostic, byte-level)
+// =============================================================================
+
+/// Materialize a contiguous-row-major buffer from a (potentially
+/// strided / offset / broadcast) input. The output is a freshly
+/// allocated [`CpuStorageBytes`] holding `layout.shape().elem_count()
+/// * dtype_size` bytes; element `i` of the output corresponds to
+/// the i-th element produced by `layout`'s strided iteration over
+/// the input.
+///
+/// Dtype-agnostic: only `dtype_size` matters; the kernel copies
+/// that many bytes per element. Broadcast layouts (stride 0)
+/// transparently replicate source elements.
+///
+/// Used by the pipelined executor's auto-Contiguize pass before
+/// kernels that require contiguous input (currently every kernel,
+/// since today's kernels assume contiguous f32 walks).
+pub fn contiguize_cpu(
+    input: &CpuStorageBytes,
+    layout: &Layout,
+    dtype_size: usize,
+) -> Result<CpuStorageBytes> {
+    let elem_count = layout.shape().elem_count();
+    let total_bytes = elem_count
+        .checked_mul(dtype_size)
+        .ok_or_else(|| Error::Msg("contiguize_cpu: elem_count * dtype_size overflow".to_string()).bt())?;
+    let mut out = CpuStorageBytes::from_zero_bytes(total_bytes);
+    if elem_count == 0 {
+        return Ok(out);
+    }
+    let in_bytes = input.bytes();
+    let out_bytes = out.bytes_mut();
+    for (out_i, src_elem_off) in layout.strided_index().enumerate() {
+        let src_byte_off = src_elem_off
+            .checked_mul(dtype_size)
+            .ok_or_else(|| Error::Msg("contiguize_cpu: src byte offset overflow".to_string()).bt())?;
+        let dst_byte_off = out_i * dtype_size;
+        if src_byte_off + dtype_size > in_bytes.len() {
+            return Err(Error::Msg(format!(
+                "contiguize_cpu: layout points past input bytes \
+                 (src_byte={src_byte_off}, dtype_size={dtype_size}, input_bytes={})",
+                in_bytes.len(),
+            ))
+            .bt());
+        }
+        out_bytes[dst_byte_off..dst_byte_off + dtype_size]
+            .copy_from_slice(&in_bytes[src_byte_off..src_byte_off + dtype_size]);
+    }
+    Ok(out)
+}
 
 // =============================================================================
 // Reduction kernels (f32)
@@ -486,6 +538,58 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn contiguize_cpu_no_op_on_contiguous_input() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let layout = Layout::contiguous(fuel_core_types::Shape::from_dims(&[2, 2]));
+        let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn contiguize_cpu_realizes_transpose() {
+        // shape [2, 3], stored row-major: 1 2 3 / 4 5 6
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // Transposed view: shape [3, 2], strides [1, 3]
+        let layout = Layout::new(
+            fuel_core_types::Shape::from_dims(&[3, 2]),
+            fuel_core_types::DimVec::from_slice(&[1usize, 3]),
+            0,
+        );
+        let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
+        // Transposed: column 0 of source (1, 4) becomes row 0; col 1 (2, 5) row 1; col 2 (3, 6) row 2
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn contiguize_cpu_replicates_broadcast() {
+        // shape [3] broadcast to [2, 3] — leading dim has stride 0
+        let input = CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0]);
+        let layout = Layout::new(
+            fuel_core_types::Shape::from_dims(&[2, 3]),
+            fuel_core_types::DimVec::from_slice(&[0usize, 1]),
+            0,
+        );
+        let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[10.0, 20.0, 30.0, 10.0, 20.0, 30.0]
+        );
+    }
+
+    #[test]
+    fn contiguize_cpu_offset_layout() {
+        // input has 5 elements; layout views the last 3 with offset 2
+        let input = CpuStorageBytes::from_slice(&[100.0_f32, 200.0, 1.0, 2.0, 3.0]);
+        let layout = Layout::new(
+            fuel_core_types::Shape::from_dims(&[3]),
+            fuel_core_types::DimVec::from_slice(&[1usize]),
+            2,
+        );
+        let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0]);
     }
 
     #[test]

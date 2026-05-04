@@ -504,20 +504,36 @@ fn execute_work_item(
                 ))
                 .bt()
             })?;
-            // Gather input Arcs from the cache.
-            let input_arcs: Vec<Arc<RwLock<Storage>>> = item
-                .inputs
-                .iter()
-                .map(|in_id| {
-                    cache.get(in_id).cloned().ok_or_else(|| {
-                        Error::Msg(format!(
-                            "PipelinedExecutor: input {:?} of {:?} not realized",
-                            in_id, item.node_id
-                        ))
-                        .bt()
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            // Gather input Arcs from the cache, auto-contiguizing
+            // any input whose layout is non-contiguous (typically
+            // produced by an upstream metadata-only view op).
+            // Today's kernels assume contiguous; this pass keeps
+            // that invariant true at every kernel call site.
+            let mut input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::with_capacity(item.inputs.len());
+            for in_id in &item.inputs {
+                let in_arc = cache.get(in_id).cloned().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "PipelinedExecutor: input {:?} of {:?} not realized",
+                        in_id, item.node_id,
+                    ))
+                    .bt()
+                })?;
+                let in_layout = layout_cache.get(in_id).cloned().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "PipelinedExecutor: input {:?} of {:?} has no cached layout",
+                        in_id, item.node_id,
+                    ))
+                    .bt()
+                })?;
+                let already_ok =
+                    in_layout.is_contiguous() && in_layout.start_offset() == 0;
+                if already_ok {
+                    input_arcs.push(in_arc);
+                } else {
+                    let contig_arc = auto_contiguize(&in_arc, &in_layout)?;
+                    input_arcs.push(contig_arc);
+                }
+            }
 
             // Allocate output on the target backend.
             let output = match item.target_backend {
@@ -545,6 +561,43 @@ fn execute_work_item(
 
 fn poisoned(what: &'static str) -> Error {
     Error::Msg(format!("PipelinedExecutor: {} poisoned", what)).bt()
+}
+
+/// Materialize a contiguous Storage Arc from a non-contiguous one.
+/// Allocates a fresh buffer on the input's backend and copies the
+/// strided / offset / broadcast input into it via the backend's
+/// contiguize kernel. The returned Arc is a brand-new buffer; the
+/// caller is responsible for replacing the cache entry only for the
+/// duration of one kernel call (the upstream view op's output stays
+/// in the cache so other consumers still see the strided view).
+///
+/// Stage 4 of Layout-on-Node — auto-Contiguize.
+fn auto_contiguize(
+    arc: &Arc<RwLock<Storage>>,
+    layout: &Layout,
+) -> Result<Arc<RwLock<Storage>>> {
+    let in_guard = arc
+        .read()
+        .map_err(|_| poisoned("input storage lock during auto_contiguize"))?;
+    let dtype = in_guard.dtype;
+    let dtype_size = dtype.size_in_bytes();
+    let new_storage = match &in_guard.inner {
+        crate::BackendStorage::Cpu(c) => {
+            let new_bytes = fuel_cpu_backend::byte_kernels::contiguize_cpu(c, layout, dtype_size)?;
+            Storage::new(crate::BackendStorage::Cpu(new_bytes), dtype)
+        }
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(Error::Msg(
+                "auto_contiguize: only the CPU backend is wired today; \
+                 GPU backends extend this match when their first kernel \
+                 family lands"
+                    .to_string(),
+            )
+            .bt());
+        }
+    };
+    Ok(Arc::new(RwLock::new(new_storage)))
 }
 
 #[cfg(test)]
@@ -900,6 +953,106 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[4, 3]);
         // Broadcasted leading dim has stride 0.
         assert_eq!(result_layout.stride(), &[0, 1]);
+    }
+
+    /// E2E: Const + Transpose + SumDim — exercises stage 3
+    /// (metadata-only Transpose, strided intermediate Layout) +
+    /// stage 4 (auto-Contiguize before reduce kernel) end-to-end.
+    /// The transpose makes the intermediate non-contiguous; the
+    /// reduce wrapper would have failed in stage 2; with stage 4's
+    /// auto-Contiguize, the kernel sees the materialized contiguous
+    /// transposed bytes and produces the right answer.
+    #[test]
+    fn pipelined_realize_transpose_then_sum_dim_e2e() {
+        // shape [2, 3]: rows are [1, 2, 3], [4, 5, 6]
+        // After transpose: shape [3, 2], rows are [1, 4], [2, 5], [3, 6]
+        // After SumDim(1): shape [3], values [5, 7, 9]
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, t_id, sum_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let t_id = g.push(Node {
+                op: Op::Transpose, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            let sum_id = g.push(Node {
+                op: Op::SumDim(1), inputs: vec![t_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            // Only the reduce kernel runs on the backend; the
+            // transpose is metadata-only and doesn't need a target.
+            g.set_target_backend(sum_id, BackendId::Cpu);
+            (in_id, t_id, sum_id)
+        };
+        let _ = t_id;
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+
+        // The reduce output is contiguous (kernel-produced).
+        assert_eq!(result_layout.shape().dims(), &[3]);
+        assert!(result_layout.is_contiguous());
+
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let typed: &[f32] = c.as_slice().unwrap();
+        assert_eq!(typed, &[5.0, 7.0, 9.0]);
+    }
+
+    /// E2E: Const + BroadcastTo + Add — broadcast intermediate
+    /// auto-contiguizes for the Add kernel; the result is the
+    /// expected sum.
+    #[test]
+    fn pipelined_realize_broadcast_then_add_e2e() {
+        // shape [3]: [10, 20, 30]
+        // BroadcastTo [2, 3]: [[10, 20, 30], [10, 20, 30]]
+        // Plus shape [2, 3]: [[1, 2, 3], [4, 5, 6]]
+        // Result: [[11, 22, 33], [14, 25, 36]]
+        let bc_input = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let plus_input = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (bc_in_id, plus_in_id, b_id, add_id) = {
+            let mut g = graph.write().unwrap();
+            let bc_in = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let plus_in = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::BroadcastTo(Shape::from_dims(&[2, 3])),
+                inputs: vec![bc_in],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
+            });
+            let add = g.push(Node {
+                op: Op::Add,
+                inputs: vec![b, plus_in],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(add, BackendId::Cpu);
+            (bc_in, plus_in, b, add)
+        };
+        let _ = b_id;
+        let mut inputs = StorageCache::new();
+        inputs.insert(bc_in_id, Arc::new(RwLock::new(bc_input)));
+        inputs.insert(plus_in_id, Arc::new(RwLock::new(plus_input)));
+
+        let (result_arc, _result_layout) =
+            PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let typed: &[f32] = c.as_slice().unwrap();
+        assert_eq!(typed, &[11.0, 22.0, 33.0, 14.0, 25.0, 36.0]);
     }
 
     /// E2E: Const + SumDim — verifies that `OpParams::Reduce`
