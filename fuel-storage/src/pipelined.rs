@@ -470,6 +470,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::PowI(_)       => Some(OpKind::PowIElementwise),
         Op::Maximum       => Some(OpKind::MaximumElementwise),
         Op::Minimum       => Some(OpKind::MinimumElementwise),
+        Op::Concat { .. } => Some(OpKind::Concat),
         _ => None,
     }
 }
@@ -582,6 +583,46 @@ fn op_to_op_params(
                 m,
                 n,
                 k: k_lhs,
+            }
+        }
+        Op::Concat { dim } => {
+            // Output's shape: [..., total_dim, ...]. Compute outer
+            // and inner counts from output_shape[..dim] and
+            // [dim+1..]; per-input dim sizes from each input's
+            // layout shape at index `dim`.
+            if node.inputs.is_empty() {
+                return Err(Error::Msg(
+                    "Op::Concat requires at least 1 input".to_string(),
+                )
+                .bt());
+            }
+            let out_dims = node.shape.dims();
+            if *dim >= out_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::Concat: dim {dim} out of range for output rank {}",
+                    out_dims.len(),
+                ))
+                .bt());
+            }
+            let outer_count: usize = out_dims[..*dim].iter().product();
+            let inner_count: usize = out_dims[*dim + 1..].iter().product();
+            let mut input_dim_sizes: Vec<usize> = Vec::with_capacity(node.inputs.len());
+            for in_id in &node.inputs {
+                let il = input_layout(*in_id);
+                let il_dims = il.shape().dims();
+                if *dim >= il_dims.len() {
+                    return Err(Error::Msg(format!(
+                        "Op::Concat: input {in_id:?} has rank {} but concat dim is {dim}",
+                        il_dims.len(),
+                    ))
+                    .bt());
+                }
+                input_dim_sizes.push(il_dims[*dim]);
+            }
+            OpParams::Concat {
+                outer_count,
+                input_dim_sizes,
+                inner_count,
             }
         }
         Op::AddScalar(c) => OpParams::Affine { mul: 1.0, add: *c },
@@ -1404,6 +1445,82 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: Concat along inner dim — two [2, 3] tensors → [2, 6].
+    #[test]
+    fn pipelined_realize_concat_inner_dim() {
+        let a = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = crate::from_slice_cpu(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::Concat { dim: 1 }, inputs: vec![a, b],
+                shape: Shape::from_dims(&[2, 6]), dtype: DType::F32,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (a, b, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b)));
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        assert_eq!(result_layout.shape().dims(), &[2, 6]);
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0]
+        );
+    }
+
+    /// E2E: Concat with three inputs along outer dim — verifies
+    /// variable-arity input handling through the executor.
+    #[test]
+    fn pipelined_realize_concat_three_inputs_outer() {
+        let a = crate::from_slice_cpu(&[1.0_f32, 2.0]);
+        let b = crate::from_slice_cpu(&[3.0_f32, 4.0]);
+        let c = crate::from_slice_cpu(&[5.0_f32, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, c_id, cat_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let cat = g.push(Node {
+                op: Op::Concat { dim: 0 }, inputs: vec![a, b, c],
+                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+            });
+            g.set_target_backend(cat, BackendId::Cpu);
+            (a, b, c, cat)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b)));
+        inputs.insert(c_id, Arc::new(RwLock::new(c)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, cat_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     /// E2E: AddScalar — graph emits Op::AddScalar; the executor

@@ -125,6 +125,10 @@ pub enum OpKind {
     MaximumElementwise,
     /// Element-wise tensor minimum: `y[i] = min(lhs[i], rhs[i])`.
     MinimumElementwise,
+    /// Concatenate N inputs along one dim. Inputs must agree on
+    /// every dim except the concat dim; output's concat-dim size
+    /// is the sum of inputs' concat-dim sizes.
+    Concat,
 }
 
 impl OpKind {
@@ -161,6 +165,7 @@ impl OpKind {
             OpKind::PowIElementwise   => "powi",
             OpKind::MaximumElementwise => "maximum",
             OpKind::MinimumElementwise => "minimum",
+            OpKind::Concat            => "concat",
         }
     }
 }

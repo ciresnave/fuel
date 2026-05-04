@@ -171,6 +171,82 @@ pub fn contiguize_cpu(
 }
 
 // =============================================================================
+// Concat (f32)
+// =============================================================================
+
+/// Concatenate N `f32` inputs along one dim. The output is laid out
+/// as `[outer_count, total_dim, inner_count]` row-major, where
+/// `total_dim = sum(input_dim_sizes)`. Each input contributes a
+/// `[outer_count, input_dim_sizes[i], inner_count]` slab into the
+/// output's `[outer_count, dim_offset_i .. dim_offset_i + input_dim_sizes[i], inner_count]`
+/// region.
+///
+/// Inputs are assumed contiguous in row-major order (the executor's
+/// auto-Contiguize pass guarantees this).
+pub fn concat_f32(
+    inputs: &[&CpuStorageBytes],
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    input_dim_sizes: &[usize],
+    inner_count: usize,
+) -> Result<()> {
+    if inputs.len() != input_dim_sizes.len() {
+        return Err(Error::Msg(format!(
+            "concat_f32: inputs count ({}) != input_dim_sizes len ({})",
+            inputs.len(),
+            input_dim_sizes.len(),
+        ))
+        .bt());
+    }
+    if inputs.is_empty() {
+        return Err(Error::Msg("concat_f32: at least one input required".to_string()).bt());
+    }
+    let elem = std::mem::size_of::<f32>();
+    let total_dim: usize = input_dim_sizes.iter().sum();
+    let need_out = outer_count
+        .saturating_mul(total_dim)
+        .saturating_mul(inner_count)
+        .saturating_mul(elem);
+    if out.len_bytes() != need_out {
+        return Err(Error::Msg(format!(
+            "concat_f32: out bytes={} doesn't match outer={outer_count} × total_dim={total_dim} × inner={inner_count} × {elem}",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    for (i, input) in inputs.iter().enumerate() {
+        let need_in = outer_count
+            .saturating_mul(input_dim_sizes[i])
+            .saturating_mul(inner_count)
+            .saturating_mul(elem);
+        if input.len_bytes() != need_in {
+            return Err(Error::Msg(format!(
+                "concat_f32: input[{i}] bytes={} doesn't match outer={outer_count} × dim={} × inner={inner_count} × {elem}",
+                input.len_bytes(),
+                input_dim_sizes[i],
+            ))
+            .bt());
+        }
+    }
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let mut dim_offset = 0usize;
+    for (i, input) in inputs.iter().enumerate() {
+        let in_view: &[f32] = input.as_slice()?;
+        let d_i = input_dim_sizes[i];
+        for outer in 0..outer_count {
+            for dim_pos in 0..d_i {
+                let src_off = (outer * d_i + dim_pos) * inner_count;
+                let dst_off = (outer * total_dim + dim_offset + dim_pos) * inner_count;
+                out_view[dst_off..dst_off + inner_count]
+                    .copy_from_slice(&in_view[src_off..src_off + inner_count]);
+            }
+        }
+        dim_offset += d_i;
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Scalar / clamp / pow / extrema (f32)
 // =============================================================================
 
@@ -976,6 +1052,61 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn concat_f32_along_inner_dim() {
+        // Two [2, 3] tensors concatenated along dim 1 → [2, 6].
+        // a = [[1, 2, 3], [4, 5, 6]]
+        // b = [[7, 8, 9], [10, 11, 12]]
+        // concat dim 1 = [[1, 2, 3, 7, 8, 9], [4, 5, 6, 10, 11, 12]]
+        let a = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = CpuStorageBytes::from_slice(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(12 * 4);
+
+        // dim=1: outer=2 (rows), inner=1 (1D inside each cell)
+        concat_f32(&[&a, &b], &mut out, 2, &[3, 3], 1).expect("concat");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0]
+        );
+    }
+
+    #[test]
+    fn concat_f32_along_outer_dim() {
+        // Two [2, 3] tensors concatenated along dim 0 → [4, 3].
+        // For dim=0: outer_count=1 (no dims before), inner_count=3.
+        // Input dim sizes are 2 and 2.
+        // Output: [a-row-0, a-row-1, b-row-0, b-row-1].
+        let a = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = CpuStorageBytes::from_slice(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(12 * 4);
+
+        concat_f32(&[&a, &b], &mut out, 1, &[2, 2], 3).expect("concat");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+        );
+    }
+
+    #[test]
+    fn concat_f32_three_inputs() {
+        // Three [2] tensors concatenated → [6].
+        let a = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
+        let b = CpuStorageBytes::from_slice(&[3.0_f32, 4.0]);
+        let c = CpuStorageBytes::from_slice(&[5.0_f32, 6.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(6 * 4);
+        concat_f32(&[&a, &b, &c], &mut out, 1, &[2, 2, 2], 1).expect("concat");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn concat_f32_size_mismatch_errors() {
+        let a = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
+        let b = CpuStorageBytes::from_slice(&[3.0_f32, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8); // expects 4 elements but only 8 bytes
+        let r = concat_f32(&[&a, &b], &mut out, 1, &[3, 2], 1); // claims a has 3 but it has 2
+        assert!(r.is_err());
     }
 
     #[test]
