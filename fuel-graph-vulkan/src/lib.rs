@@ -4,10 +4,13 @@
 //! ops through WGSL shaders compiled to SPIR-V via naga. Third
 //! backend for fuel's generic `GraphExecutor<B>`.
 
+pub mod byte_storage;
 pub mod pipelines;
 pub mod probe;
 mod recorder;
 pub mod residency;
+
+pub use byte_storage::VulkanStorageBytes;
 
 use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
