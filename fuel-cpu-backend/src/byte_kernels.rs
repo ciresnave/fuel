@@ -174,44 +174,53 @@ pub fn contiguize_cpu(
 // Matrix multiplication (f32)
 // =============================================================================
 
-/// Rank-2 row-major `f32` matrix multiply:
-/// `out[i, j] = Σₖ lhs[i, k] * rhs[k, j]`.
+/// Batched row-major `f32` matrix multiply:
+/// `out[b, i, j] = Σₖ lhs[b, i, k] * rhs[b, k, j]` for each
+/// batch index `b ∈ 0..batch_count`. Both inputs share the same
+/// batch shape (auto-broadcast handled by fuel-graph's matmul
+/// builder). For rank-2 inputs, `batch_count == 1`.
 ///
 /// Inputs are assumed contiguous in row-major order (the pipelined
 /// executor's auto-Contiguize pass guarantees this). Output is
-/// pre-allocated, zero-initialized, and overwritten by this kernel.
+/// pre-allocated and overwritten by this kernel.
 ///
-/// This is the textbook triple loop in `i, k, j` order — sub-optimal
-/// for cache behavior but a correct reference. Phase 7b's vendor-
-/// specific BLAS backends (MKL, AOCL) will eclipse this on
-/// performance once they're wired into the unified path; this
-/// kernel is the always-available fallback.
+/// This is the textbook triple loop in `i, k, j` order per batch —
+/// sub-optimal for cache behavior but a correct reference. Phase 7b's
+/// vendor-specific BLAS backends (MKL, AOCL) will eclipse this once
+/// they're wired into the unified path.
 pub fn matmul_f32(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
+    batch_count: usize,
     m: usize,
     n: usize,
     k: usize,
 ) -> Result<()> {
     let elem = std::mem::size_of::<f32>();
-    if lhs.len_bytes() != m.saturating_mul(k).saturating_mul(elem) {
+    let lhs_per_batch = m.saturating_mul(k);
+    let rhs_per_batch = k.saturating_mul(n);
+    let out_per_batch = m.saturating_mul(n);
+    let need_lhs = batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
+    let need_rhs = batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
+    let need_out = batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    if lhs.len_bytes() != need_lhs {
         return Err(Error::Msg(format!(
-            "matmul_f32: lhs bytes={} doesn't match shape [{m}, {k}] (f32)",
+            "matmul_f32: lhs bytes={} doesn't match shape [{batch_count}, {m}, {k}] (f32)",
             lhs.len_bytes(),
         ))
         .bt());
     }
-    if rhs.len_bytes() != k.saturating_mul(n).saturating_mul(elem) {
+    if rhs.len_bytes() != need_rhs {
         return Err(Error::Msg(format!(
-            "matmul_f32: rhs bytes={} doesn't match shape [{k}, {n}] (f32)",
+            "matmul_f32: rhs bytes={} doesn't match shape [{batch_count}, {k}, {n}] (f32)",
             rhs.len_bytes(),
         ))
         .bt());
     }
-    if out.len_bytes() != m.saturating_mul(n).saturating_mul(elem) {
+    if out.len_bytes() != need_out {
         return Err(Error::Msg(format!(
-            "matmul_f32: out bytes={} doesn't match shape [{m}, {n}] (f32)",
+            "matmul_f32: out bytes={} doesn't match shape [{batch_count}, {m}, {n}] (f32)",
             out.len_bytes(),
         ))
         .bt());
@@ -219,21 +228,23 @@ pub fn matmul_f32(
     let lhs_view: &[f32] = lhs.as_slice()?;
     let rhs_view: &[f32] = rhs.as_slice()?;
     let out_view: &mut [f32] = out.as_slice_mut()?;
-    // Zero the output even though alloc_cpu_zeroed normally hands us
-    // zero bytes — the kernel is robust against stale output buffers
-    // (e.g. when a future executor re-uses a buffer).
     for slot in out_view.iter_mut() {
         *slot = 0.0;
     }
-    // i, k, j order: each lhs[i, kk] is loaded once and broadcast to
-    // every j of the inner loop, giving good lhs reuse.
-    for i in 0..m {
-        for kk in 0..k {
-            let a = lhs_view[i * k + kk];
-            let rhs_row_off = kk * n;
-            let out_row_off = i * n;
-            for j in 0..n {
-                out_view[out_row_off + j] += a * rhs_view[rhs_row_off + j];
+    for b in 0..batch_count {
+        let lhs_off = b * lhs_per_batch;
+        let rhs_off = b * rhs_per_batch;
+        let out_off = b * out_per_batch;
+        // i, k, j order: each lhs[b, i, kk] is loaded once and
+        // broadcast across every j of the inner loop.
+        for i in 0..m {
+            for kk in 0..k {
+                let a = lhs_view[lhs_off + i * k + kk];
+                let rhs_row_off = rhs_off + kk * n;
+                let out_row_off = out_off + i * n;
+                for j in 0..n {
+                    out_view[out_row_off + j] += a * rhs_view[rhs_row_off + j];
+                }
             }
         }
     }
@@ -619,42 +630,62 @@ mod tests {
         let rhs = CpuStorageBytes::from_slice(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(16); // 2 * 2 * 4
 
-        matmul_f32(&lhs, &rhs, &mut out, 2, 2, 3).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, 1, 2, 2, 3).expect("matmul");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[58.0, 64.0, 139.0, 154.0]);
     }
 
     #[test]
     fn matmul_f32_identity_returns_input() {
-        // [[1, 2],         [[1, 0],         [[1, 2],
-        //  [3, 4]]    @     [0, 1]]    =     [3, 4]]
         let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
         let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 0.0, 0.0, 1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(16);
 
-        matmul_f32(&lhs, &rhs, &mut out, 2, 2, 2).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, 1, 2, 2, 2).expect("matmul");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn matmul_f32_inner_product_1x3_times_3x1() {
-        // Row vector × column vector → 1×1.
-        // [1, 2, 3] @ [4; 5; 6] = [32]
         let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
         let rhs = CpuStorageBytes::from_slice(&[4.0_f32, 5.0, 6.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
 
-        matmul_f32(&lhs, &rhs, &mut out, 1, 1, 3).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, 1, 1, 1, 3).expect("matmul");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[32.0]);
     }
 
     #[test]
     fn matmul_f32_size_mismatch_errors() {
-        let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]); // 4 elem; bytes = 16
-        let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]); // 2 elem
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(16);
-        // Claim shape [2, 2] @ [2, 2] but rhs only has 2 elements
-        let r = matmul_f32(&lhs, &rhs, &mut out, 2, 2, 2);
+        let r = matmul_f32(&lhs, &rhs, &mut out, 1, 2, 2, 2);
         assert!(r.is_err(), "matmul must error on shape/byte mismatch");
+    }
+
+    #[test]
+    fn matmul_f32_batched_2x_2x2_times_2x2() {
+        // Two batches of [2, 2] @ [2, 2]:
+        //   batch 0: [[1, 2], [3, 4]] @ [[5, 6], [7, 8]]
+        //          = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
+        //          = [[19, 22], [43, 50]]
+        //   batch 1: [[1, 0], [0, 1]] @ [[10, 20], [30, 40]]
+        //          = [[10, 20], [30, 40]]
+        let lhs = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0, 4.0, // batch 0
+            1.0, 0.0, 0.0, 1.0,     // batch 1
+        ]);
+        let rhs = CpuStorageBytes::from_slice(&[
+            5.0_f32, 6.0, 7.0, 8.0, // batch 0
+            10.0, 20.0, 30.0, 40.0, // batch 1
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 4); // 2 batches * 4 elems * 4 bytes
+
+        matmul_f32(&lhs, &rhs, &mut out, 2, 2, 2, 2).expect("matmul");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
+        );
     }
 
     #[test]
