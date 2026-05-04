@@ -42,7 +42,7 @@ use std::thread;
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Result};
-use fuel_graph::{topo_order, Graph, NodeId, Op};
+use fuel_graph::{topo_order, Graph, Node, NodeId, Op};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
@@ -216,7 +216,8 @@ fn compile_one(graph: &Graph, id: NodeId, bindings: &KernelBindingTable) -> Resu
         .bt()
     })?;
 
-    let compiled = compile_node(op_kind, node.dtype, target_backend, OpParams::None, bindings)?;
+    let op_params = op_to_op_params(graph, node)?;
+    let compiled = compile_node(op_kind, node.dtype, target_backend, op_params, bindings)?;
     Ok(WorkItem {
         node_id: id,
         inputs,
@@ -249,9 +250,49 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Silu          => Some(OpKind::SiluElementwise),
         Op::Gelu          => Some(OpKind::GeluElementwise),
         Op::Step          => Some(OpKind::StepElementwise),
+        Op::SumDim(_)     => Some(OpKind::SumReduce),
+        Op::MaxDim(_)     => Some(OpKind::MaxReduce),
+        Op::MinDim(_)     => Some(OpKind::MinReduce),
+        Op::MeanDim(_)    => Some(OpKind::MeanReduce),
+        Op::SumAll        => Some(OpKind::SumReduce),
+        Op::MaxAll        => Some(OpKind::MaxReduce),
+        Op::MinAll        => Some(OpKind::MinReduce),
+        Op::MeanAll       => Some(OpKind::MeanReduce),
         Op::MatMul        => Some(OpKind::MatMul),
         _ => None,
     }
+}
+
+/// Build the [`OpParams`] for `node`'s op. Most ops use
+/// `OpParams::None`; reductions / matmul / conv / slice carry their
+/// op-specific extras here. The graph is consulted to read input
+/// shapes (e.g. reductions need the input shape to walk the
+/// multi-index — Storage only carries bytes + dtype).
+///
+/// Phase C — extends as op families migrate. Returns Err if a
+/// graph-shape lookup fails (currently can't, but the signature is
+/// `Result` so future cases needing validation slot in cleanly).
+fn op_to_op_params(graph: &Graph, node: &Node) -> Result<OpParams> {
+    Ok(match &node.op {
+        Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => {
+            let input_shape = graph.node(node.inputs[0]).shape.dims().to_vec();
+            OpParams::Reduce {
+                input_shape,
+                dims: vec![*d],
+                keepdim: false,
+            }
+        }
+        Op::SumAll | Op::MaxAll | Op::MinAll | Op::MeanAll => {
+            let input_shape = graph.node(node.inputs[0]).shape.dims().to_vec();
+            let rank = input_shape.len();
+            OpParams::Reduce {
+                input_shape,
+                dims: (0..rank).collect(),
+                keepdim: false,
+            }
+        }
+        _ => OpParams::None,
+    })
 }
 
 /// Execute one work item. Const adoption verifies the input cache
@@ -552,6 +593,107 @@ mod tests {
             let typed: &[f32] = c.as_slice().unwrap();
             assert!((typed[0] - (14.0_f32 / 3.0)).abs() < 1e-6);
             assert!((typed[1] - 12.0).abs() < 1e-6);
+        }
+    }
+
+    /// E2E: Const + SumDim — verifies that `OpParams::Reduce`
+    /// flows from the graph (input shape via `op_to_op_params`)
+    /// through compile_one and reaches the reduce kernel.
+    #[test]
+    fn pipelined_realize_sum_dim() {
+        // shape [2, 3]; reduce dim 1 → output shape [2]
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sum_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let sum_id = g.push(Node {
+                op: Op::SumDim(1), inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            g.set_target_backend(sum_id, BackendId::Cpu);
+            (in_id, sum_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().unwrap();
+            assert_eq!(typed, &[6.0, 15.0]);
+        }
+    }
+
+    /// E2E: SumAll on a rank-3 input, exercising the all-dims branch
+    /// of `op_to_op_params` (every dim reduced, rank-0 output).
+    #[test]
+    fn pipelined_realize_sum_all_rank3() {
+        let data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
+        let storage = crate::from_slice_cpu(&data);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sum_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+            });
+            let sum_id = g.push(Node {
+                op: Op::SumAll, inputs: vec![in_id],
+                shape: Shape::from_dims(&[]), dtype: DType::F32,
+            });
+            g.set_target_backend(sum_id, BackendId::Cpu);
+            (in_id, sum_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().unwrap();
+            // 1 + 2 + ... + 24 = 300
+            assert_eq!(typed, &[300.0]);
+        }
+    }
+
+    /// E2E: MaxDim + MeanDim chained — verifies all four reduce
+    /// OpKinds reach their wrappers via the OpParams plumbing.
+    #[test]
+    fn pipelined_realize_max_then_mean() {
+        // shape [2, 3], MaxDim(1) → [2], MeanDim(0) → []
+        let storage = crate::from_slice_cpu(&[1.0_f32, 9.0, 3.0, 4.0, 2.0, 8.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, mean_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let max_id = g.push(Node {
+                op: Op::MaxDim(1), inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let mean_id = g.push(Node {
+                op: Op::MeanDim(0), inputs: vec![max_id],
+                shape: Shape::from_dims(&[]), dtype: DType::F32,
+            });
+            g.set_target_backend(max_id, BackendId::Cpu);
+            g.set_target_backend(mean_id, BackendId::Cpu);
+            (in_id, mean_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, mean_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().unwrap();
+            // MaxDim(1) on [[1,9,3],[4,2,8]] = [9, 8]; MeanDim(0) = 8.5
+            assert_eq!(typed, &[8.5]);
         }
     }
 

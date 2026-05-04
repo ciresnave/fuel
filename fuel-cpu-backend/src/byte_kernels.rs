@@ -118,6 +118,194 @@ unary_f32_kernel!(sigmoid_f32, |x: f32| 1.0 / (1.0 + (-x).exp()), "Elementwise `
 unary_f32_kernel!(silu_f32, |x: f32| x / (1.0 + (-x).exp()), "Elementwise `f32` SiLU/Swish: `out[i] = input[i] * sigmoid(input[i])`.");
 unary_f32_kernel!(step_f32, |x: f32| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f32` Heaviside step: `out[i] = 1` where `input[i] > 0`, `0` otherwise.");
 
+// =============================================================================
+// Reduction kernels (f32)
+// =============================================================================
+
+/// Validate a reduction's shape contract: `input_shape`'s product
+/// equals `input` element count; reduce_dims are in-range and
+/// sorted; output element count equals the product of kept dims.
+fn check_reduce_shape(
+    name: &str,
+    input: &CpuStorageBytes,
+    output: &CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<(usize, Vec<usize>)> {
+    let total_input: usize = input_shape.iter().product();
+    let elem_size = std::mem::size_of::<f32>();
+    if input.len_bytes() != total_input.saturating_mul(elem_size) {
+        return Err(Error::Msg(format!(
+            "{name}: input bytes={} doesn't match shape {:?}",
+            input.len_bytes(),
+            input_shape,
+        ))
+        .bt());
+    }
+    let rank = input_shape.len();
+    for &d in reduce_dims {
+        if d >= rank {
+            return Err(Error::Msg(format!(
+                "{name}: reduce dim {d} out of range for rank {rank}",
+            ))
+            .bt());
+        }
+    }
+    // dims must be sorted ascending and unique — caller's contract.
+    if reduce_dims.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(Error::Msg(format!(
+            "{name}: reduce dims {reduce_dims:?} must be sorted ascending + unique",
+        ))
+        .bt());
+    }
+    let kept: Vec<usize> = (0..rank).filter(|d| !reduce_dims.contains(d)).collect();
+    let output_count: usize = kept.iter().map(|&d| input_shape[d]).product();
+    if output.len_bytes() != output_count.saturating_mul(elem_size) {
+        return Err(Error::Msg(format!(
+            "{name}: output bytes={} doesn't match reduced shape (kept dims {:?}, count {output_count})",
+            output.len_bytes(),
+            kept,
+        ))
+        .bt());
+    }
+    Ok((total_input, kept))
+}
+
+/// Build the row-major flat index in the output tensor for a given
+/// input multi-index, by reading only the kept dims.
+fn output_index(input_shape: &[usize], kept: &[usize], multi_index: &[usize]) -> usize {
+    let mut out_flat = 0;
+    for &d in kept {
+        out_flat = out_flat * input_shape[d] + multi_index[d];
+    }
+    out_flat
+}
+
+/// Decode a row-major flat index into a multi-index in `multi_index`
+/// (must be the right rank).
+fn decode_multi_index(flat: usize, input_shape: &[usize], multi_index: &mut [usize]) {
+    let mut rem = flat;
+    for d in (0..input_shape.len()).rev() {
+        let s = input_shape[d];
+        multi_index[d] = rem % s;
+        rem /= s;
+    }
+}
+
+/// Sum-reduce `f32`: walks every input element and accumulates into
+/// the output slot determined by the kept dims of the input
+/// multi-index. Output is written from scratch (zeroed first); the
+/// caller's pre-allocated bytes need not be zeroed.
+pub fn sum_reduce_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    let (total_input, kept) =
+        check_reduce_shape("sum_reduce_f32", input, output, input_shape, reduce_dims)?;
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = output.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = 0.0;
+    }
+    let mut mi = vec![0usize; input_shape.len()];
+    for flat in 0..total_input {
+        decode_multi_index(flat, input_shape, &mut mi);
+        let oi = output_index(input_shape, &kept, &mi);
+        out_view[oi] += in_view[flat];
+    }
+    Ok(())
+}
+
+/// Mean-reduce `f32`: sum-reduce divided by the product of reduced
+/// dim sizes.
+pub fn mean_reduce_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    sum_reduce_f32(input, output, input_shape, reduce_dims)?;
+    let divisor: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
+    if divisor == 0 {
+        return Err(Error::Msg(
+            "mean_reduce_f32: divisor zero (reduced dim has size 0)".to_string(),
+        )
+        .bt());
+    }
+    let inv = 1.0_f32 / divisor as f32;
+    let out_view: &mut [f32] = output.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot *= inv;
+    }
+    Ok(())
+}
+
+/// Generic reduction with a custom accumulator init + combine fn.
+/// Used by max/min reduce; not exposed (kept private to keep the
+/// kernel surface tight).
+fn reduce_f32_generic(
+    name: &str,
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+    init: f32,
+    combine: fn(f32, f32) -> f32,
+) -> Result<()> {
+    let (total_input, kept) =
+        check_reduce_shape(name, input, output, input_shape, reduce_dims)?;
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = output.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = init;
+    }
+    let mut mi = vec![0usize; input_shape.len()];
+    for flat in 0..total_input {
+        decode_multi_index(flat, input_shape, &mut mi);
+        let oi = output_index(input_shape, &kept, &mi);
+        out_view[oi] = combine(out_view[oi], in_view[flat]);
+    }
+    Ok(())
+}
+
+/// Max-reduce `f32`. Output slots initialize to `-inf`.
+pub fn max_reduce_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce_f32_generic(
+        "max_reduce_f32",
+        input,
+        output,
+        input_shape,
+        reduce_dims,
+        f32::NEG_INFINITY,
+        |a, b| a.max(b),
+    )
+}
+
+/// Min-reduce `f32`. Output slots initialize to `+inf`.
+pub fn min_reduce_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce_f32_generic(
+        "min_reduce_f32",
+        input,
+        output,
+        input_shape,
+        reduce_dims,
+        f32::INFINITY,
+        |a, b| a.min(b),
+    )
+}
+
 /// Elementwise GELU using the tanh approximation:
 /// `out[i] = 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x^3)))`.
 ///
@@ -298,6 +486,96 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sum_reduce_along_one_dim() {
+        // shape [2, 3], reduce dim 1 → output shape [2]
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8); // 2 f32s
+
+        sum_reduce_f32(&input, &mut out, &[2, 3], &[1]).expect("sum_reduce");
+        // row 0: 1+2+3=6; row 1: 4+5+6=15
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[6.0, 15.0]);
+    }
+
+    #[test]
+    fn sum_reduce_all_dims() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4); // 1 f32
+
+        sum_reduce_f32(&input, &mut out, &[2, 2], &[0, 1]).expect("sum_reduce_all");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[10.0]);
+    }
+
+    #[test]
+    fn sum_reduce_inner_dim_of_rank_3() {
+        // shape [2, 2, 3], reduce dim 1 → output shape [2, 3]
+        // Layout (row-major):
+        //   batch=0: [[1,2,3],[4,5,6]]   → reduce dim 1 → [5,7,9]
+        //   batch=1: [[7,8,9],[10,11,12]] → reduce dim 1 → [17,19,21]
+        let data: Vec<f32> = (1..=12).map(|x| x as f32).collect();
+        let input = CpuStorageBytes::from_slice(&data);
+        let mut out = CpuStorageBytes::from_zero_bytes(24); // 6 f32s
+
+        sum_reduce_f32(&input, &mut out, &[2, 2, 3], &[1]).expect("sum_reduce");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[5.0, 7.0, 9.0, 17.0, 19.0, 21.0]
+        );
+    }
+
+    #[test]
+    fn mean_reduce_divides_by_reduced_dim_count() {
+        let input = CpuStorageBytes::from_slice(&[2.0_f32, 4.0, 6.0, 8.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8); // [2] output
+
+        mean_reduce_f32(&input, &mut out, &[2, 2], &[1]).expect("mean_reduce");
+        // row 0 mean = (2+4)/2 = 3; row 1 mean = (6+8)/2 = 7
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[3.0, 7.0]);
+    }
+
+    #[test]
+    fn max_reduce_f32_basic() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, -5.0, 3.0, 2.0, 0.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8); // [2] output
+
+        max_reduce_f32(&input, &mut out, &[2, 3], &[1]).expect("max_reduce");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[3.0, 2.0]);
+    }
+
+    #[test]
+    fn min_reduce_f32_basic() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, -5.0, 3.0, 2.0, 0.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8); // [2] output
+
+        min_reduce_f32(&input, &mut out, &[2, 3], &[1]).expect("min_reduce");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[-5.0, -1.0]);
+    }
+
+    #[test]
+    fn reduce_errors_on_shape_mismatch() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]); // 3 elems
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
+        // shape says 4 elems but storage has 3 — must error.
+        let r = sum_reduce_f32(&input, &mut out, &[2, 2], &[1]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn reduce_errors_on_unsorted_dims() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let r = sum_reduce_f32(&input, &mut out, &[2, 2], &[1, 0]); // unsorted
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn reduce_errors_on_out_of_range_dim() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let r = sum_reduce_f32(&input, &mut out, &[2], &[5]); // dim 5 doesn't exist
+        assert!(r.is_err());
     }
 
     #[test]

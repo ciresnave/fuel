@@ -346,6 +346,57 @@ cpu_unary_wrapper!(silu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_unary_wrapper!(gelu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f32, "gelu_elementwise");
 cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f32, "step_elementwise");
 
+/// Build a CPU reduction wrapper that calls a typed `(input,
+/// output, input_shape, dims)` reduce kernel. Verifies the
+/// `OpParams::Reduce` variant and forwards the shape + dims to the
+/// kernel.
+macro_rules! cpu_reduce_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input, got {}",
+                    $op_name,
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 output, got {}",
+                    $op_name,
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (input_shape, dims) = match params {
+                OpParams::Reduce { input_shape, dims, .. } => (input_shape, dims),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::Reduce, got {:?}",
+                        $op_name, other,
+                    ))
+                    .bt())
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, input_shape, dims)
+        }
+    };
+}
+
+cpu_reduce_wrapper!(sum_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_f32, "sum_reduce");
+cpu_reduce_wrapper!(max_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f32, "max_reduce");
+cpu_reduce_wrapper!(min_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f32, "min_reduce");
+cpu_reduce_wrapper!(mean_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f32, "mean_reduce");
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -376,6 +427,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(SiluElementwise,    f32_dt, cpu, silu_elementwise_f32_cpu_wrapper);
     table.register(GeluElementwise,    f32_dt, cpu, gelu_elementwise_f32_cpu_wrapper);
     table.register(StepElementwise,    f32_dt, cpu, step_elementwise_f32_cpu_wrapper);
+
+    table.register(SumReduce,          f32_dt, cpu, sum_reduce_f32_cpu_wrapper);
+    table.register(MaxReduce,          f32_dt, cpu, max_reduce_f32_cpu_wrapper);
+    table.register(MinReduce,          f32_dt, cpu, min_reduce_f32_cpu_wrapper);
+    table.register(MeanReduce,         f32_dt, cpu, mean_reduce_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -425,6 +481,10 @@ fn default_cpu_caps() -> BackendCapabilities {
         SiluElementwise,
         GeluElementwise,
         StepElementwise,
+        SumReduce,
+        MaxReduce,
+        MinReduce,
+        MeanReduce,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }

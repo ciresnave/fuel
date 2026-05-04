@@ -85,6 +85,21 @@ pub enum OpKind {
     /// Heaviside step function (`1` where `x > 0`, `0` otherwise) —
     /// the derivative of [`OpKind::ReluElementwise`].
     StepElementwise,
+
+    /// Sum-reduce one or more dimensions of the input. The reduced
+    /// dims and the input shape live in
+    /// [`OpParams::Reduce`](super::dispatch::OpKind); the output is
+    /// the input with those dims dropped (or rank-0 when every dim
+    /// is reduced).
+    SumReduce,
+    /// Max-reduce — same shape contract as [`SumReduce`].
+    MaxReduce,
+    /// Min-reduce — same shape contract as [`SumReduce`].
+    MinReduce,
+    /// Arithmetic-mean reduce — same shape contract as
+    /// [`SumReduce`]; divides the sum by the product of reduced
+    /// dim sizes.
+    MeanReduce,
 }
 
 impl OpKind {
@@ -110,6 +125,10 @@ impl OpKind {
             OpKind::SiluElementwise   => "silu",
             OpKind::GeluElementwise   => "gelu",
             OpKind::StepElementwise   => "step",
+            OpKind::SumReduce         => "sum_reduce",
+            OpKind::MaxReduce         => "max_reduce",
+            OpKind::MinReduce         => "min_reduce",
+            OpKind::MeanReduce        => "mean_reduce",
         }
     }
 }
