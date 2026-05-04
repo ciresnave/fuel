@@ -510,11 +510,11 @@ fn op_to_op_params(
             }
         }
         Op::MatMul => {
-            // Batched matmul: lhs [..., m, k] @ rhs [..., k, n] →
-            // out [..., m, n]. Leading batch dims must match
-            // exactly. fuel-graph's matmul builder also allows
-            // GQA-style divisible mismatch (la > ra && la % ra == 0)
-            // — that's a follow-up; we error out cleanly here.
+            // Batched matmul: lhs `[..lhs_batch.., m, k]` @
+            // rhs `[..rhs_batch.., k, n]` → out `[..lhs_batch.., m, n]`.
+            // Per-axis the batch dims either match or follow GQA-style
+            // divisibility (lhs_dim > rhs_dim && lhs_dim % rhs_dim == 0);
+            // the kernel honors the latter via `rhs_idx = lhs_idx / n_rep`.
             if node.inputs.len() != 2 {
                 return Err(Error::Msg(format!(
                     "Op::MatMul expects 2 inputs, got {}",
@@ -544,18 +544,22 @@ fn op_to_op_params(
             }
             let rank = lhs_dims.len();
             let batch_rank = rank - 2;
+            // Per-axis validation: equal or GQA-divisible.
             for i in 0..batch_rank {
-                if lhs_dims[i] != rhs_dims[i] {
+                let la = lhs_dims[i];
+                let ra = rhs_dims[i];
+                let ok = la == ra || (ra > 0 && la > ra && la % ra == 0);
+                if !ok {
                     return Err(Error::Msg(format!(
-                        "Op::MatMul: batch dim {i} mismatch — lhs={} rhs={}; \
-                         GQA-style divisible mismatch isn't yet wired in the \
-                         unified path",
-                        lhs_dims[i], rhs_dims[i],
+                        "Op::MatMul: batch dim {i} disallowed combination \
+                         (lhs={la}, rhs={ra}); must be equal or \
+                         GQA-divisible (lhs > rhs && lhs % rhs == 0)",
                     ))
                     .bt());
                 }
             }
-            let batch_count: usize = lhs_dims[..batch_rank].iter().product();
+            let lhs_batch_dims: Vec<usize> = lhs_dims[..batch_rank].to_vec();
+            let rhs_batch_dims: Vec<usize> = rhs_dims[..batch_rank].to_vec();
             let (m, k_lhs) = (lhs_dims[rank - 2], lhs_dims[rank - 1]);
             let (k_rhs, n) = (rhs_dims[rank - 2], rhs_dims[rank - 1]);
             if k_lhs != k_rhs {
@@ -565,7 +569,13 @@ fn op_to_op_params(
                 ))
                 .bt());
             }
-            OpParams::Matmul { batch_count, m, n, k: k_lhs }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k: k_lhs,
+            }
         }
         _ => OpParams::None,
     })
@@ -1342,6 +1352,56 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: GQA-style matmul through the pipelined executor.
+    /// lhs has 4 batch heads, rhs has 2; each rhs head is shared
+    /// by 2 lhs heads. Output's batch dim follows lhs (4 heads).
+    #[test]
+    fn pipelined_realize_matmul_gqa() {
+        // lhs [4, 1, 2]: heads 0..3 are [[1,2]], [[3,4]], [[5,6]], [[7,8]]
+        // rhs [2, 2, 1]: heads 0,1 are [[1],[0]], [[0],[1]]
+        // Expected out [4, 1, 1]: [[1]], [[3]], [[6]], [[8]]
+        let lhs_storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+            7.0, 8.0,
+        ]);
+        let rhs_storage = crate::from_slice_cpu(&[
+            1.0_f32, 0.0,
+            0.0, 1.0,
+        ]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (lhs_id, rhs_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let lhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4, 1, 2]), dtype: DType::F32,
+            });
+            let rhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2, 1]), dtype: DType::F32,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul, inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[4, 1, 1]), dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (lhs, rhs, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(lhs_id, Arc::new(RwLock::new(lhs_storage)));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        assert_eq!(result_layout.shape().dims(), &[4, 1, 1]);
+
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 3.0, 6.0, 8.0]);
     }
 
     /// E2E: matmul with a transposed rhs — proves stage 3+4

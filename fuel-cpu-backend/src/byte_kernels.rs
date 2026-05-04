@@ -262,54 +262,92 @@ cast_kernel!(
 // Matrix multiplication (f32)
 // =============================================================================
 
-/// Batched row-major `f32` matrix multiply:
-/// `out[b, i, j] = Σₖ lhs[b, i, k] * rhs[b, k, j]` for each
-/// batch index `b ∈ 0..batch_count`. Both inputs share the same
-/// batch shape (auto-broadcast handled by fuel-graph's matmul
-/// builder). For rank-2 inputs, `batch_count == 1`.
+/// Batched row-major `f32` matrix multiply with optional GQA-style
+/// batch broadcasting. For each output batch index, the kernel
+/// runs the textbook (i, k, j) triple loop on the corresponding
+/// `[m, k] @ [k, n]` slice.
+///
+/// Per-axis the batch dims either match (`lhs_batch_dims[i] ==
+/// rhs_batch_dims[i]`) or follow GQA-style divisibility
+/// (`lhs_dim > rhs_dim && lhs_dim % rhs_dim == 0`). The kernel
+/// maps each lhs batch slot to the corresponding rhs slot via
+/// `rhs_axis_idx = lhs_axis_idx / n_rep_axis`. Equal-batch and
+/// rank-2 cases fall out as `n_rep == 1` everywhere.
 ///
 /// Inputs are assumed contiguous in row-major order (the pipelined
 /// executor's auto-Contiguize pass guarantees this). Output is
 /// pre-allocated and overwritten by this kernel.
 ///
-/// This is the textbook triple loop in `i, k, j` order per batch —
-/// sub-optimal for cache behavior but a correct reference. Phase 7b's
-/// vendor-specific BLAS backends (MKL, AOCL) will eclipse this once
-/// they're wired into the unified path.
+/// This is correctness-first; vendor BLAS backends will eclipse
+/// it on performance once they're wired into the unified path.
 pub fn matmul_f32(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
-    batch_count: usize,
+    lhs_batch_dims: &[usize],
+    rhs_batch_dims: &[usize],
     m: usize,
     n: usize,
     k: usize,
 ) -> Result<()> {
+    if lhs_batch_dims.len() != rhs_batch_dims.len() {
+        return Err(Error::Msg(format!(
+            "matmul_f32: batch ranks must match (lhs={}, rhs={}); fuel-graph's \
+             auto-broadcast equalizes them at graph construction time",
+            lhs_batch_dims.len(),
+            rhs_batch_dims.len(),
+        ))
+        .bt());
+    }
+    let batch_rank = lhs_batch_dims.len();
+    // Per-axis n_rep validation: matched (n_rep=1) or GQA (lhs is a
+    // multiple of rhs).
+    let mut n_rep: Vec<usize> = Vec::with_capacity(batch_rank);
+    for i in 0..batch_rank {
+        let la = lhs_batch_dims[i];
+        let ra = rhs_batch_dims[i];
+        if la == ra {
+            n_rep.push(1);
+        } else if ra > 0 && la > ra && la % ra == 0 {
+            n_rep.push(la / ra);
+        } else {
+            return Err(Error::Msg(format!(
+                "matmul_f32: batch dim {i} disallowed combination (lhs={la}, rhs={ra}); \
+                 must be equal or GQA-divisible (lhs > rhs && lhs % rhs == 0)",
+            ))
+            .bt());
+        }
+    }
     let elem = std::mem::size_of::<f32>();
     let lhs_per_batch = m.saturating_mul(k);
     let rhs_per_batch = k.saturating_mul(n);
     let out_per_batch = m.saturating_mul(n);
-    let need_lhs = batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-    let need_rhs = batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-    let need_out = batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+    let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
+    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
+    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
     if lhs.len_bytes() != need_lhs {
         return Err(Error::Msg(format!(
-            "matmul_f32: lhs bytes={} doesn't match shape [{batch_count}, {m}, {k}] (f32)",
+            "matmul_f32: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f32)",
             lhs.len_bytes(),
+            lhs_batch_dims,
         ))
         .bt());
     }
     if rhs.len_bytes() != need_rhs {
         return Err(Error::Msg(format!(
-            "matmul_f32: rhs bytes={} doesn't match shape [{batch_count}, {k}, {n}] (f32)",
+            "matmul_f32: rhs bytes={} doesn't match shape {:?} + [{k}, {n}] (f32)",
             rhs.len_bytes(),
+            rhs_batch_dims,
         ))
         .bt());
     }
     if out.len_bytes() != need_out {
         return Err(Error::Msg(format!(
-            "matmul_f32: out bytes={} doesn't match shape [{batch_count}, {m}, {n}] (f32)",
+            "matmul_f32: out bytes={} doesn't match shape {:?} + [{m}, {n}] (f32)",
             out.len_bytes(),
+            lhs_batch_dims,
         ))
         .bt());
     }
@@ -319,12 +357,31 @@ pub fn matmul_f32(
     for slot in out_view.iter_mut() {
         *slot = 0.0;
     }
-    for b in 0..batch_count {
+    // Decode lhs's flat batch index into a multi-index, map per-axis
+    // to rhs's multi-index, encode rhs's flat batch index. Reuses
+    // two scratch buffers across iterations.
+    let mut lhs_multi = vec![0usize; batch_rank];
+    let mut rhs_multi = vec![0usize; batch_rank];
+    for b in 0..lhs_batch_count {
+        // Decode b into lhs_multi (row-major over lhs_batch_dims).
+        let mut rem = b;
+        for d in (0..batch_rank).rev() {
+            let s = lhs_batch_dims[d];
+            lhs_multi[d] = rem % s;
+            rem /= s;
+        }
+        // Per-axis GQA mapping.
+        for d in 0..batch_rank {
+            rhs_multi[d] = lhs_multi[d] / n_rep[d];
+        }
+        // Encode rhs's flat batch index.
+        let mut rhs_b = 0usize;
+        for d in 0..batch_rank {
+            rhs_b = rhs_b * rhs_batch_dims[d] + rhs_multi[d];
+        }
         let lhs_off = b * lhs_per_batch;
-        let rhs_off = b * rhs_per_batch;
+        let rhs_off = rhs_b * rhs_per_batch;
         let out_off = b * out_per_batch;
-        // i, k, j order: each lhs[b, i, kk] is loaded once and
-        // broadcast across every j of the inner loop.
         for i in 0..m {
             for kk in 0..k {
                 let a = lhs_view[lhs_off + i * k + kk];
@@ -765,14 +822,11 @@ mod tests {
 
     #[test]
     fn matmul_f32_2x3_times_3x2() {
-        // [[1, 2, 3],         [[7,  8],          [[58,  64],
-        //  [4, 5, 6]]    @     [9, 10],     =     [139, 154]]
-        //                      [11, 12]]
         let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let rhs = CpuStorageBytes::from_slice(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
-        let mut out = CpuStorageBytes::from_zero_bytes(16); // 2 * 2 * 4
+        let mut out = CpuStorageBytes::from_zero_bytes(16);
 
-        matmul_f32(&lhs, &rhs, &mut out, 1, 2, 2, 3).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, &[], &[], 2, 2, 3).expect("matmul");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[58.0, 64.0, 139.0, 154.0]);
     }
 
@@ -782,7 +836,7 @@ mod tests {
         let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 0.0, 0.0, 1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(16);
 
-        matmul_f32(&lhs, &rhs, &mut out, 1, 2, 2, 2).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, &[], &[], 2, 2, 2).expect("matmul");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -792,7 +846,7 @@ mod tests {
         let rhs = CpuStorageBytes::from_slice(&[4.0_f32, 5.0, 6.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(4);
 
-        matmul_f32(&lhs, &rhs, &mut out, 1, 1, 1, 3).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, &[], &[], 1, 1, 3).expect("matmul");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[32.0]);
     }
 
@@ -801,33 +855,64 @@ mod tests {
         let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
         let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(16);
-        let r = matmul_f32(&lhs, &rhs, &mut out, 1, 2, 2, 2);
+        let r = matmul_f32(&lhs, &rhs, &mut out, &[], &[], 2, 2, 2);
         assert!(r.is_err(), "matmul must error on shape/byte mismatch");
     }
 
     #[test]
     fn matmul_f32_batched_2x_2x2_times_2x2() {
-        // Two batches of [2, 2] @ [2, 2]:
-        //   batch 0: [[1, 2], [3, 4]] @ [[5, 6], [7, 8]]
-        //          = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
-        //          = [[19, 22], [43, 50]]
-        //   batch 1: [[1, 0], [0, 1]] @ [[10, 20], [30, 40]]
-        //          = [[10, 20], [30, 40]]
         let lhs = CpuStorageBytes::from_slice(&[
-            1.0_f32, 2.0, 3.0, 4.0, // batch 0
-            1.0, 0.0, 0.0, 1.0,     // batch 1
+            1.0_f32, 2.0, 3.0, 4.0,
+            1.0, 0.0, 0.0, 1.0,
         ]);
         let rhs = CpuStorageBytes::from_slice(&[
-            5.0_f32, 6.0, 7.0, 8.0, // batch 0
-            10.0, 20.0, 30.0, 40.0, // batch 1
+            5.0_f32, 6.0, 7.0, 8.0,
+            10.0, 20.0, 30.0, 40.0,
         ]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 4); // 2 batches * 4 elems * 4 bytes
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 4);
 
-        matmul_f32(&lhs, &rhs, &mut out, 2, 2, 2, 2).expect("matmul");
+        matmul_f32(&lhs, &rhs, &mut out, &[2], &[2], 2, 2, 2).expect("matmul");
         assert_eq!(
             out.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// GQA-style: lhs has 4 batch heads, rhs has 2; n_rep = 2.
+    /// lhs heads {0, 1} share rhs head 0; lhs heads {2, 3} share rhs head 1.
+    #[test]
+    fn matmul_f32_gqa_4x_vs_2x() {
+        // lhs shape [4, 1, 2]: heads 0..3 are [[1,2]], [[3,4]], [[5,6]], [[7,8]]
+        let lhs = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+            7.0, 8.0,
+        ]);
+        // rhs shape [2, 2, 1]: heads 0,1 are [[1],[0]], [[0],[1]]
+        let rhs = CpuStorageBytes::from_slice(&[
+            1.0_f32, 0.0,
+            0.0, 1.0,
+        ]);
+        // output shape [4, 1, 1]:
+        //   head 0: [[1, 2]] @ [[1], [0]] = [[1]]
+        //   head 1: [[3, 4]] @ [[1], [0]] = [[3]]   (still rhs 0)
+        //   head 2: [[5, 6]] @ [[0], [1]] = [[6]]   (rhs 1)
+        //   head 3: [[7, 8]] @ [[0], [1]] = [[8]]   (rhs 1)
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+
+        matmul_f32(&lhs, &rhs, &mut out, &[4], &[2], 1, 1, 2).expect("gqa matmul");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 3.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn matmul_f32_gqa_rejects_non_divisible() {
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f32; 6]); // [3, 1, 2]
+        let rhs = CpuStorageBytes::from_slice(&[1.0_f32; 4]); // [2, 2, 1]
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        // 3 is NOT a multiple of 2 — must error.
+        let r = matmul_f32(&lhs, &rhs, &mut out, &[3], &[2], 1, 1, 2);
+        assert!(r.is_err());
     }
 
     #[test]
