@@ -11,6 +11,7 @@ version.workspace = true
 [dependencies]
 fuel-core-types = { workspace = true }
 fuel-cpu-backend = { workspace = true }
+fuel-cuda-backend = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
 thiserror = { workspace = true }
@@ -24,6 +25,6 @@ default = []
 # fuel-metal-backend (target-gated to Apple platforms);
 # A3.2 wires CUDA via fuel-cuda-backend; A3.3 wires Vulkan via
 # fuel-graph-vulkan.
-cuda = []
+cuda = ["dep:fuel-cuda-backend"]
 vulkan = []
 metal = ["dep:fuel-metal-backend"]

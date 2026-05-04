@@ -31,15 +31,16 @@
 //! GPU placeholder variants. A3.1/A3.2/A3.3 replace those placeholders
 //! with real types from each GPU backend.
 
-#[cfg(feature = "cuda")]
-pub mod cuda;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
-#[cfg(feature = "cuda")]
-pub use cuda::CudaStorage;
 #[cfg(feature = "vulkan")]
 pub use vulkan::VulkanStorage;
+
+/// CUDA storage variant — re-exported from fuel-cuda-backend when
+/// the cuda feature is enabled.
+#[cfg(feature = "cuda")]
+pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 
 /// Metal storage variant — re-exported from fuel-metal-backend on
 /// Apple platforms when the metal feature is enabled. The metal

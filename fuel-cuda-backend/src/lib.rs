@@ -40,6 +40,7 @@ pub mod cudnn;
 pub mod flash_attn;
 #[cfg(feature = "flash-attn-v3")]
 pub mod flash_attn_v3;
+pub mod byte_storage;
 pub mod device;
 pub mod dyn_impl;
 pub mod error;
@@ -51,6 +52,7 @@ pub mod storage;
 pub mod ug;
 pub mod utils;
 
+pub use byte_storage::CudaStorageBytes;
 pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};
