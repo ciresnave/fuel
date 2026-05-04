@@ -337,6 +337,14 @@ cpu_unary_wrapper!(sqrt_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_unary_wrapper!(recip_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_f32, "recip_elementwise");
 cpu_unary_wrapper!(abs_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_f32, "abs_elementwise");
 cpu_unary_wrapper!(tanh_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_f32, "tanh_elementwise");
+cpu_unary_wrapper!(exp_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_f32, "exp_elementwise");
+cpu_unary_wrapper!(log_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_f32, "log_elementwise");
+cpu_unary_wrapper!(sin_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_f32, "sin_elementwise");
+cpu_unary_wrapper!(cos_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_f32, "cos_elementwise");
+cpu_unary_wrapper!(sigmoid_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_f32, "sigmoid_elementwise");
+cpu_unary_wrapper!(silu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_f32, "silu_elementwise");
+cpu_unary_wrapper!(gelu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f32, "gelu_elementwise");
+cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f32, "step_elementwise");
 
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
@@ -353,13 +361,21 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MulElementwise,   f32_dt, cpu, mul_elementwise_f32_cpu_wrapper);
     table.register(DivElementwise,   f32_dt, cpu, div_elementwise_f32_cpu_wrapper);
 
-    table.register(ReluElementwise,  f32_dt, cpu, relu_elementwise_f32_cpu_wrapper);
-    table.register(NegElementwise,   f32_dt, cpu, neg_elementwise_f32_cpu_wrapper);
-    table.register(SqrElementwise,   f32_dt, cpu, sqr_elementwise_f32_cpu_wrapper);
-    table.register(SqrtElementwise,  f32_dt, cpu, sqrt_elementwise_f32_cpu_wrapper);
-    table.register(RecipElementwise, f32_dt, cpu, recip_elementwise_f32_cpu_wrapper);
-    table.register(AbsElementwise,   f32_dt, cpu, abs_elementwise_f32_cpu_wrapper);
-    table.register(TanhElementwise,  f32_dt, cpu, tanh_elementwise_f32_cpu_wrapper);
+    table.register(ReluElementwise,    f32_dt, cpu, relu_elementwise_f32_cpu_wrapper);
+    table.register(NegElementwise,     f32_dt, cpu, neg_elementwise_f32_cpu_wrapper);
+    table.register(SqrElementwise,     f32_dt, cpu, sqr_elementwise_f32_cpu_wrapper);
+    table.register(SqrtElementwise,    f32_dt, cpu, sqrt_elementwise_f32_cpu_wrapper);
+    table.register(RecipElementwise,   f32_dt, cpu, recip_elementwise_f32_cpu_wrapper);
+    table.register(AbsElementwise,     f32_dt, cpu, abs_elementwise_f32_cpu_wrapper);
+    table.register(TanhElementwise,    f32_dt, cpu, tanh_elementwise_f32_cpu_wrapper);
+    table.register(ExpElementwise,     f32_dt, cpu, exp_elementwise_f32_cpu_wrapper);
+    table.register(LogElementwise,     f32_dt, cpu, log_elementwise_f32_cpu_wrapper);
+    table.register(SinElementwise,     f32_dt, cpu, sin_elementwise_f32_cpu_wrapper);
+    table.register(CosElementwise,     f32_dt, cpu, cos_elementwise_f32_cpu_wrapper);
+    table.register(SigmoidElementwise, f32_dt, cpu, sigmoid_elementwise_f32_cpu_wrapper);
+    table.register(SiluElementwise,    f32_dt, cpu, silu_elementwise_f32_cpu_wrapper);
+    table.register(GeluElementwise,    f32_dt, cpu, gelu_elementwise_f32_cpu_wrapper);
+    table.register(StepElementwise,    f32_dt, cpu, step_elementwise_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -401,6 +417,14 @@ fn default_cpu_caps() -> BackendCapabilities {
         RecipElementwise,
         AbsElementwise,
         TanhElementwise,
+        ExpElementwise,
+        LogElementwise,
+        SinElementwise,
+        CosElementwise,
+        SigmoidElementwise,
+        SiluElementwise,
+        GeluElementwise,
+        StepElementwise,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }

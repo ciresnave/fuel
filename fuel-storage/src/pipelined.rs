@@ -241,6 +241,14 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Sqr           => Some(OpKind::SqrElementwise),
         Op::Sqrt          => Some(OpKind::SqrtElementwise),
         Op::Tanh          => Some(OpKind::TanhElementwise),
+        Op::Exp           => Some(OpKind::ExpElementwise),
+        Op::Log           => Some(OpKind::LogElementwise),
+        Op::Sin           => Some(OpKind::SinElementwise),
+        Op::Cos           => Some(OpKind::CosElementwise),
+        Op::Sigmoid       => Some(OpKind::SigmoidElementwise),
+        Op::Silu          => Some(OpKind::SiluElementwise),
+        Op::Gelu          => Some(OpKind::GeluElementwise),
+        Op::Step          => Some(OpKind::StepElementwise),
         Op::MatMul        => Some(OpKind::MatMul),
         _ => None,
     }
@@ -544,6 +552,46 @@ mod tests {
             let typed: &[f32] = c.as_slice().unwrap();
             assert!((typed[0] - (14.0_f32 / 3.0)).abs() < 1e-6);
             assert!((typed[1] - 12.0).abs() < 1e-6);
+        }
+    }
+
+    /// E2E: Sigmoid + Silu — exercises two of the more compositional
+    /// new unary kernels through the pipelined executor. Verifies
+    /// the additional `op_to_op_kind` mappings reach the right
+    /// dispatch wrappers.
+    #[test]
+    fn pipelined_realize_sigmoid_then_silu() {
+        let storage = crate::from_slice_cpu(&[0.0_f32, 1.0, -1.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sig_id, silu_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let sig_id = g.push(Node {
+                op: Op::Sigmoid, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            // Silu of the sigmoid output — chains to confirm cache flow.
+            let silu_id = g.push(Node {
+                op: Op::Silu, inputs: vec![sig_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(sig_id, BackendId::Cpu);
+            g.set_target_backend(silu_id, BackendId::Cpu);
+            (in_id, sig_id, silu_id)
+        };
+        let _ = sig_id;
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let result_arc = PipelinedExecutor::realize(graph, silu_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        if let crate::BackendStorage::Cpu(c) = &guard.inner {
+            let typed: &[f32] = c.as_slice().unwrap();
+            // sigmoid(0) = 0.5; silu(0.5) = 0.5 * sigmoid(0.5) ≈ 0.3112
+            assert!((typed[0] - 0.5 * (1.0 / (1.0 + (-0.5_f32).exp()))).abs() < 1e-6);
         }
     }
 
