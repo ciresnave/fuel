@@ -161,6 +161,50 @@ pub enum Error {
     #[error("backward is not supported for {op}")]
     BackwardNotSupported { op: &'static str },
 
+    // === Phase 7.5 storage-unification dispatch errors ===
+    /// No registered backend supports `(op, dtype)` for the given
+    /// input residency. Fires at DAG construction (planning time),
+    /// not at execution.
+    #[error(
+        "no backend supports {op} on {dtype:?}; available backends: \
+         {available_backends:?}; supported (op, dtype) by backend: \
+         {supported_combinations:?}"
+    )]
+    NoBackendForOp {
+        op: crate::dispatch::OpKind,
+        dtype: DType,
+        available_backends: Vec<crate::probe::BackendId>,
+        supported_combinations: Vec<(
+            crate::probe::BackendId,
+            crate::dispatch::OpKind,
+            DType,
+        )>,
+    },
+
+    /// No transfer path connects `from` and `to` directly, and
+    /// host-staging fallback isn't available either (e.g. neither
+    /// device can copy_to_host). Fires at DAG construction.
+    #[error(
+        "unsupported transfer from {from:?} to {to:?}; available paths: {available_paths:?}"
+    )]
+    UnsupportedTransfer {
+        from: DeviceLocation,
+        to: DeviceLocation,
+        available_paths: Vec<crate::backend::TransferPath>,
+    },
+
+    /// Source storage's alignment doesn't meet the destination
+    /// backend's required alignment, and Router has no way to
+    /// repack on this path. Fires at DAG construction.
+    #[error(
+        "alignment mismatch on {backend:?}: required {required} bytes, got {actual} bytes"
+    )]
+    AlignmentMismatch {
+        backend: crate::probe::BackendId,
+        required: usize,
+        actual: usize,
+    },
+
     // === Other Errors ===
     #[error("the fuel crate has not been built with cuda support")]
     NotCompiledWithCudaSupport,
