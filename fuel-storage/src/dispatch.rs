@@ -349,6 +349,55 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Generate a CPU last-dim norm wrapper that pulls
+/// `(outer_count, last_dim, eps)` from `OpParams::NormLastDim`
+/// and forwards to a typed kernel.
+macro_rules! cpu_norm_last_dim_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, last_dim, eps) = match params {
+                OpParams::NormLastDim { outer_count, last_dim, eps } => {
+                    (*outer_count, *last_dim, *eps)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::NormLastDim, got {other:?}",
+                        $op_name,
+                    ))
+                    .bt())
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, outer_count, last_dim, eps)
+        }
+    };
+}
+
+cpu_norm_last_dim_wrapper!(
+    rms_norm_last_dim_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_f32,
+    "rms_norm_last_dim"
+);
+cpu_norm_last_dim_wrapper!(
+    layer_norm_last_dim_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_f32,
+    "layer_norm_last_dim"
+);
+
 /// Dispatch wrapper for `(SoftmaxLastDim, F32, Cpu)`. Single
 /// input + single output; (outer_count, last_dim) flow through
 /// `OpParams::SoftmaxLastDim`.
@@ -830,6 +879,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     table.register(Concat,             f32_dt, cpu, concat_f32_cpu_wrapper);
     table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
+    table.register(RmsNormLastDim,     f32_dt, cpu, rms_norm_last_dim_f32_cpu_wrapper);
+    table.register(LayerNormLastDim,   f32_dt, cpu, layer_norm_last_dim_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -892,6 +943,8 @@ fn default_cpu_caps() -> BackendCapabilities {
         MinimumElementwise,
         Concat,
         SoftmaxLastDim,
+        RmsNormLastDim,
+        LayerNormLastDim,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }

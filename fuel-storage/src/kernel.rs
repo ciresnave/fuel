@@ -211,6 +211,15 @@ pub enum OpParams {
         outer_count: usize,
         last_dim: usize,
     },
+
+    /// Last-dim norm parameters shared by RMS-norm and LayerNorm
+    /// (no affine flavor for both today). The OpKind selects which
+    /// kernel reads this variant.
+    NormLastDim {
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    },
 }
 
 // =============================================================================
