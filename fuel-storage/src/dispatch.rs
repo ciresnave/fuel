@@ -146,6 +146,64 @@ impl TransferMatrix {
     }
 }
 
+/// Resolve which backend should handle `(op, dtype)` given the
+/// registry of available backends. Returns the chosen `BackendId`
+/// or [`Error::NoBackendForOp`] with diagnostic data on miss.
+///
+/// The chosen backend is the first registered backend that
+/// supports `(op, dtype)`. Convention: register GPU before CPU so
+/// GPU wins ties; the universal CPU fallback is picked iff no GPU
+/// registered.
+///
+/// Phase 7.5 B3 — used by op-builder methods to populate
+/// `Graph::target_backends` at DAG construction time. After the
+/// full migration, every Node has a target_backend set this way.
+pub fn resolve_target_backend(
+    registry: &CapabilityRegistry,
+    op: OpKind,
+    dtype: DType,
+) -> Result<BackendId> {
+    registry.find_backend_for(op, dtype).map(|caps| caps.backend_id)
+}
+
+/// Residency-aware variant of [`resolve_target_backend`]. Prefers
+/// backends that have at least one input already resident on their
+/// device, breaking ties only on the residency axis (within the
+/// "supports (op, dtype)" set). Falls back to registration order
+/// when no candidate has local input residency.
+///
+/// `input_locations` is the list of input tensors' current
+/// `DeviceLocation`s; pass an empty slice for ops that take no
+/// inputs (constants / factories).
+///
+/// Phase 7.5 B3 — used when the dispatcher should avoid transfers
+/// when possible. A simpler dispatch policy is to call
+/// [`resolve_target_backend`] directly and let Router auto-insert
+/// transfers; the residency-aware version saves transfers when
+/// the choice is otherwise free.
+pub fn resolve_target_backend_residency_aware(
+    registry: &CapabilityRegistry,
+    op: OpKind,
+    dtype: DType,
+    input_locations: &[DeviceLocation],
+) -> Result<BackendId> {
+    let candidates = registry.find_backends(op, dtype);
+    if candidates.is_empty() {
+        // Reuse find_backend_for to construct the canonical error.
+        return registry.find_backend_for(op, dtype).map(|c| c.backend_id);
+    }
+    // Pick a candidate whose device matches at least one input
+    // location.
+    for caps in &candidates {
+        if input_locations.contains(&caps.device_location) {
+            return Ok(caps.backend_id);
+        }
+    }
+    // No residency match — fall back to first candidate
+    // (registration order).
+    Ok(candidates[0].backend_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +346,80 @@ mod tests {
             m.path_or_staging(DeviceLocation::Cpu, DeviceLocation::Cuda { gpu_id: 0 }),
             TransferPath::HostStaging
         );
+    }
+
+    /// resolve_target_backend picks the first registered backend
+    /// supporting (op, dtype).
+    #[test]
+    fn resolve_picks_first_match() {
+        let mut r = CapabilityRegistry::new();
+        r.register(cuda_caps());
+        r.register(cpu_caps());
+        assert_eq!(
+            resolve_target_backend(&r, OpKind::MatMul, DType::F32).unwrap(),
+            BackendId::Cuda
+        );
+    }
+
+    /// resolve_target_backend falls back to CPU for dtypes GPU doesn't support.
+    #[test]
+    fn resolve_falls_back_to_cpu() {
+        let mut r = CapabilityRegistry::new();
+        r.register(cuda_caps());
+        r.register(cpu_caps());
+        assert_eq!(
+            resolve_target_backend(&r, OpKind::MatMul, DType::F64).unwrap(),
+            BackendId::Cpu
+        );
+    }
+
+    /// resolve_target_backend errors with NoBackendForOp on miss.
+    #[test]
+    fn resolve_errors_on_unsupported() {
+        let mut r = CapabilityRegistry::new();
+        r.register(cpu_caps());
+        let result = resolve_target_backend(&r, OpKind::MatMul, DType::BF16);
+        assert!(result.is_err());
+    }
+
+    /// Residency-aware resolver picks a backend with input-local
+    /// residency when available.
+    #[test]
+    fn resolve_residency_aware_prefers_local() {
+        let mut r = CapabilityRegistry::new();
+        // CUDA registered first (would normally win ties for f32).
+        r.register(cuda_caps());
+        r.register(cpu_caps());
+
+        // Inputs live on CPU; residency-aware prefers CPU even
+        // though CUDA also supports (MatMul, F32).
+        let chosen = resolve_target_backend_residency_aware(
+            &r,
+            OpKind::MatMul,
+            DType::F32,
+            &[DeviceLocation::Cpu],
+        )
+        .unwrap();
+        assert_eq!(chosen, BackendId::Cpu);
+    }
+
+    /// Residency-aware falls back to first match when no residency
+    /// match exists.
+    #[test]
+    fn resolve_residency_aware_no_local_falls_back() {
+        let mut r = CapabilityRegistry::new();
+        r.register(cuda_caps());
+        r.register(cpu_caps());
+
+        // Inputs on a Vulkan device — no candidate matches; falls
+        // back to first (CUDA).
+        let chosen = resolve_target_backend_residency_aware(
+            &r,
+            OpKind::MatMul,
+            DType::F32,
+            &[DeviceLocation::Vulkan { gpu_id: 0 }],
+        )
+        .unwrap();
+        assert_eq!(chosen, BackendId::Cuda);
     }
 }
