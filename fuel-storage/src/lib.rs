@@ -32,6 +32,9 @@
 //! with real types from each GPU backend.
 
 pub mod dispatch;
+pub mod kernel;
+
+pub use kernel::{KernelRef, OpParams};
 
 /// Vulkan storage variant — re-exported from fuel-graph-vulkan when
 /// the vulkan feature is enabled.
