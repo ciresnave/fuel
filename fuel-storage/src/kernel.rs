@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use fuel_core_types::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
+use fuel_core_types::conv::{ParamsConv1D, ParamsConvTranspose1D, ParamsConvTranspose2D};
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
@@ -123,8 +123,24 @@ pub enum OpParams {
     /// 1D convolution geometry (forward path).
     Conv1D(ParamsConv1D),
 
-    /// 2D convolution geometry (forward path).
-    Conv2D(ParamsConv2D),
+    /// 2D convolution geometry (forward path). Carries the tuple-shaped
+    /// stride/padding that fuel-graph's `Op::Conv2D` uses (asymmetric
+    /// supported), plus the input/weight/output shapes the kernel
+    /// needs to walk the multi-index. Storage holds only bytes +
+    /// dtype, so spatial shapes flow through OpParams.
+    ///
+    /// Inputs: `x` shape `[N, Cin, Hin, Win]`, `weight` shape
+    /// `[Cout, Cin/groups, Kh, Kw]`, optional `bias` shape `[Cout]`.
+    /// Output: `[N, Cout, Hout, Wout]`.
+    Conv2D {
+        x_shape: [usize; 4],
+        w_shape: [usize; 4],
+        out_shape: [usize; 4],
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+    },
 
     /// 1D transposed-convolution geometry.
     ConvTranspose1D(ParamsConvTranspose1D),

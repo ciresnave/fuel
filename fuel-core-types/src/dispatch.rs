@@ -108,6 +108,11 @@ pub enum OpKind {
     /// right typed conversion kernel internally. Binding-table
     /// lookup is keyed on the *target* dtype (= the Node's dtype).
     Cast,
+    /// 2D convolution forward pass. Shape + geometry flow through
+    /// [`OpParams::Conv2D`](super::dispatch::OpKind). Two-input
+    /// case: `(x, weight)`; three-input case adds `bias`. Output
+    /// shape `[N, Cout, Hout, Wout]`.
+    Conv2D,
 }
 
 impl OpKind {
@@ -138,6 +143,7 @@ impl OpKind {
             OpKind::MinReduce         => "min_reduce",
             OpKind::MeanReduce        => "mean_reduce",
             OpKind::Cast              => "cast",
+            OpKind::Conv2D            => "conv2d",
         }
     }
 }
