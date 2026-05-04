@@ -464,6 +464,12 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::MatMul        => Some(OpKind::MatMul),
         Op::Cast(_)       => Some(OpKind::Cast),
         Op::Conv2D { .. } => Some(OpKind::Conv2D),
+        Op::AddScalar(_)  => Some(OpKind::Affine),
+        Op::MulScalar(_)  => Some(OpKind::Affine),
+        Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
+        Op::PowI(_)       => Some(OpKind::PowIElementwise),
+        Op::Maximum       => Some(OpKind::MaximumElementwise),
+        Op::Minimum       => Some(OpKind::MinimumElementwise),
         _ => None,
     }
 }
@@ -578,6 +584,10 @@ fn op_to_op_params(
                 k: k_lhs,
             }
         }
+        Op::AddScalar(c) => OpParams::Affine { mul: 1.0, add: *c },
+        Op::MulScalar(c) => OpParams::Affine { mul: *c, add: 0.0 },
+        Op::Clamp { min, max } => OpParams::Clamp { min: *min, max: *max },
+        Op::PowI(exp) => OpParams::PowI { exp: *exp },
         Op::Conv2D { stride, padding, groups } => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
             // [Cout, Cin/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
@@ -1394,6 +1404,91 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: AddScalar — graph emits Op::AddScalar; the executor
+    /// maps it to OpKind::Affine with mul=1, add=c.
+    #[test]
+    fn pipelined_realize_add_scalar() {
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::AddScalar(10.0), inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 12.0, 13.0]);
+    }
+
+    /// E2E: Clamp — clamp values to [-2, 2].
+    #[test]
+    fn pipelined_realize_clamp() {
+        let storage = crate::from_slice_cpu(&[-5.0_f32, 0.5, 100.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::Clamp { min: -2.0, max: 2.0 }, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[-2.0, 0.5, 2.0]);
+    }
+
+    /// E2E: Maximum — elementwise tensor max.
+    #[test]
+    fn pipelined_realize_maximum_elementwise() {
+        let lhs_storage = crate::from_slice_cpu(&[1.0_f32, 5.0, -3.0]);
+        let rhs_storage = crate::from_slice_cpu(&[2.0_f32, 1.0, -1.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (lhs_id, rhs_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let lhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let rhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::Maximum, inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (lhs, rhs, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(lhs_id, Arc::new(RwLock::new(lhs_storage)));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[2.0, 5.0, -1.0]);
     }
 
     /// E2E: Const + Const + Conv2D — the 2×2 sum-kernel test from

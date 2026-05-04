@@ -171,6 +171,69 @@ pub fn contiguize_cpu(
 }
 
 // =============================================================================
+// Scalar / clamp / pow / extrema (f32)
+// =============================================================================
+
+/// Affine transformation: `out[i] = mul * input[i] + add`. The
+/// pipelined executor maps `Op::AddScalar(c)` as `mul=1, add=c`
+/// and `Op::MulScalar(c)` as `mul=c, add=0`, so this single kernel
+/// covers both.
+pub fn affine_f32(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    mul: f32,
+    add: f32,
+) -> Result<()> {
+    check_lens_2("affine_f32", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = mul * in_view[i] + add;
+    }
+    Ok(())
+}
+
+/// Element-wise clamp: `out[i] = clamp(input[i], min, max)`.
+pub fn clamp_f32(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    min: f32,
+    max: f32,
+) -> Result<()> {
+    check_lens_2("clamp_f32", input.len_bytes(), out.len_bytes())?;
+    if min > max {
+        return Err(Error::Msg(format!(
+            "clamp_f32: min ({min}) > max ({max})"
+        ))
+        .bt());
+    }
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = in_view[i].clamp(min, max);
+    }
+    Ok(())
+}
+
+/// Element-wise integer power: `out[i] = input[i].powi(exp)`.
+pub fn powi_f32(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    exp: i32,
+) -> Result<()> {
+    check_lens_2("powi_f32", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = in_view[i].powi(exp);
+    }
+    Ok(())
+}
+
+binary_f32_kernel!(maximum_f32, |a: f32, b: f32| a.max(b), "Element-wise `f32` maximum: `out[i] = max(lhs[i], rhs[i])`. NaN handling follows `f32::max` (NaN-propagating per IEEE-754).");
+binary_f32_kernel!(minimum_f32, |a: f32, b: f32| a.min(b), "Element-wise `f32` minimum: `out[i] = min(lhs[i], rhs[i])`. NaN handling follows `f32::min`.");
+
+// =============================================================================
 // Dtype conversion (Cast)
 // =============================================================================
 
@@ -913,6 +976,75 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn affine_f32_basic() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, -3.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        // y = 2 * x + 1
+        affine_f32(&input, &mut out, 2.0, 1.0).expect("affine");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[3.0, 5.0, -5.0]);
+    }
+
+    #[test]
+    fn affine_f32_handles_addscalar_and_mulscalar() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+
+        // AddScalar(10): mul=1, add=10
+        affine_f32(&input, &mut out, 1.0, 10.0).expect("addscalar");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[11.0, 12.0, 13.0]);
+
+        // MulScalar(3): mul=3, add=0
+        affine_f32(&input, &mut out, 3.0, 0.0).expect("mulscalar");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn clamp_f32_basic() {
+        let input = CpuStorageBytes::from_slice(&[-5.0_f32, -1.0, 0.5, 3.0, 100.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        clamp_f32(&input, &mut out, -2.0, 2.0).expect("clamp");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[-2.0, -1.0, 0.5, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn clamp_f32_rejects_inverted_bounds() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        let r = clamp_f32(&input, &mut out, 5.0, 1.0);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn powi_f32_basic() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        // exp = 3
+        powi_f32(&input, &mut out, 3).expect("powi");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 8.0, 27.0, 64.0]);
+        // exp = 0 → 1.0 everywhere
+        powi_f32(&input, &mut out, 0).expect("powi");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 1.0, 1.0, 1.0]);
+        // exp = -1 → reciprocal
+        let pos = CpuStorageBytes::from_slice(&[2.0_f32, 4.0, 8.0]);
+        let mut out2 = CpuStorageBytes::from_zero_bytes(pos.len_bytes());
+        powi_f32(&pos, &mut out2, -1).expect("powi");
+        assert_eq!(out2.as_slice::<f32>().unwrap(), &[0.5, 0.25, 0.125]);
+    }
+
+    #[test]
+    fn maximum_minimum_f32_basic() {
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 5.0, -3.0]);
+        let rhs = CpuStorageBytes::from_slice(&[2.0_f32, 1.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(lhs.len_bytes());
+
+        maximum_f32(&lhs, &rhs, &mut out).expect("max");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[2.0, 5.0, -1.0]);
+
+        minimum_f32(&lhs, &rhs, &mut out).expect("min");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 1.0, -3.0]);
     }
 
     #[test]

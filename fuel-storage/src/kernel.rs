@@ -179,6 +179,17 @@ pub enum OpParams {
         mul: f64,
         add: f64,
     },
+
+    /// Element-wise clamp: `y = clamp(x, min, max)`.
+    Clamp {
+        min: f64,
+        max: f64,
+    },
+
+    /// Element-wise integer power: `y = x.powi(exp)`.
+    PowI {
+        exp: i32,
+    },
 }
 
 // =============================================================================

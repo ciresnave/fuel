@@ -113,6 +113,18 @@ pub enum OpKind {
     /// case: `(x, weight)`; three-input case adds `bias`. Output
     /// shape `[N, Cout, Hout, Wout]`.
     Conv2D,
+    /// Affine transformation `y = mul * x + add` with scalar
+    /// coefficients. `Op::AddScalar(c)` maps as `mul=1, add=c`;
+    /// `Op::MulScalar(c)` maps as `mul=c, add=0`.
+    Affine,
+    /// Element-wise clamp: `y = clamp(x, min, max)`.
+    ClampElementwise,
+    /// Element-wise integer power: `y = x.powi(exp)`.
+    PowIElementwise,
+    /// Element-wise tensor maximum: `y[i] = max(lhs[i], rhs[i])`.
+    MaximumElementwise,
+    /// Element-wise tensor minimum: `y[i] = min(lhs[i], rhs[i])`.
+    MinimumElementwise,
 }
 
 impl OpKind {
@@ -144,6 +156,11 @@ impl OpKind {
             OpKind::MeanReduce        => "mean_reduce",
             OpKind::Cast              => "cast",
             OpKind::Conv2D            => "conv2d",
+            OpKind::Affine            => "affine",
+            OpKind::ClampElementwise  => "clamp",
+            OpKind::PowIElementwise   => "powi",
+            OpKind::MaximumElementwise => "maximum",
+            OpKind::MinimumElementwise => "minimum",
         }
     }
 }
