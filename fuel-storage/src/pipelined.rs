@@ -275,18 +275,26 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
 fn op_to_op_params(graph: &Graph, node: &Node) -> Result<OpParams> {
     Ok(match &node.op {
         Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => {
-            let input_shape = graph.node(node.inputs[0]).shape.dims().to_vec();
+            // Stage 2 of Layout-on-Node: read the input layout
+            // from the graph rather than fabricating a contiguous
+            // shape. Today every node's layout is contiguous (no
+            // view ops are metadata-only yet), so this returns
+            // `Layout::contiguous(input_shape)` — but the path
+            // through which the layout arrives is now correct, so
+            // stage 3 (metadata-only view ops) can flip the
+            // implementation without touching this site.
+            let input_layout = graph.layout(node.inputs[0]);
             OpParams::Reduce {
-                input_shape,
+                input_layout,
                 dims: vec![*d],
                 keepdim: false,
             }
         }
         Op::SumAll | Op::MaxAll | Op::MinAll | Op::MeanAll => {
-            let input_shape = graph.node(node.inputs[0]).shape.dims().to_vec();
-            let rank = input_shape.len();
+            let input_layout = graph.layout(node.inputs[0]);
+            let rank = input_layout.shape().rank();
             OpParams::Reduce {
-                input_shape,
+                input_layout,
                 dims: (0..rank).collect(),
                 keepdim: false,
             }

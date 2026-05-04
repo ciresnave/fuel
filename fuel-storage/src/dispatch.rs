@@ -373,8 +373,8 @@ macro_rules! cpu_reduce_wrapper {
                 ))
                 .bt());
             }
-            let (input_shape, dims) = match params {
-                OpParams::Reduce { input_shape, dims, .. } => (input_shape, dims),
+            let (input_layout, dims) = match params {
+                OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::Reduce, got {:?}",
@@ -383,6 +383,22 @@ macro_rules! cpu_reduce_wrapper {
                     .bt())
                 }
             };
+            // Stage 2 of Layout-on-Node: the wrapper extracts the
+            // shape from input_layout and passes it to the typed
+            // kernel. Today's reduce kernels expect contiguous
+            // input — when stage 4 lands, an auto-Contiguize will
+            // run before a non-contiguous input reaches here, so
+            // the contiguous-only kernel surface stays valid.
+            if !input_layout.is_contiguous() || input_layout.start_offset() != 0 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper: non-contiguous / offset input layout not yet \
+                     supported (stage 4 of Layout-on-Node will auto-insert \
+                     a Contiguize op before this kernel)",
+                    $op_name,
+                ))
+                .bt());
+            }
+            let input_shape: &[usize] = input_layout.shape().dims();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let in_cpu = cpu_input(&in_guard)?;
