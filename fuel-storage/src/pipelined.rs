@@ -54,17 +54,25 @@ use crate::Storage;
 /// and as the output cache (built up during execution).
 pub type StorageCache = HashMap<NodeId, Arc<RwLock<Storage>>>;
 
-/// What flavor of work item the executor is processing. Disambiguates
-/// the three "no kernel" cases that all carry `compiled: None`.
+/// What flavor of work item the executor is processing.
+/// Disambiguates the four cases:
 enum WorkItemKind {
     /// `Op::Const` — its Storage Arc is already in the input cache.
     /// Executor verifies the entry exists and moves on.
     ConstAdopt,
     /// Metadata-only view op (`Op::Transpose`, `Op::Permute`,
-    /// `Op::BroadcastTo`, …): the output's Storage Arc IS the
-    /// input's Storage Arc (the bytes are shared); the
-    /// `output_layout` on the WorkItem describes the strided view.
+    /// `Op::BroadcastTo`): the output's Storage Arc IS the
+    /// input's Storage Arc (bytes shared); `output_layout`
+    /// describes the strided view.
     ViewOf {
+        input: NodeId,
+    },
+    /// Reshape-style adoption: the output is contiguous in
+    /// `output_layout.shape()`. If the input is already contiguous
+    /// + zero offset, the output Arc is the input Arc (zero copy).
+    /// Otherwise, the executor auto-contiguizes the input into a
+    /// fresh Arc and uses that.
+    ContiguizeOf {
         input: NodeId,
     },
     /// Computational kernel: allocate output, run the compiled
@@ -340,6 +348,52 @@ fn compile_one(
         });
     }
 
+    if matches!(node.op, Op::Reshape(_)) {
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::Reshape expects 1 input, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let input_layout = layout_cache.get(&inputs[0]).cloned().ok_or_else(|| {
+            Error::Msg(format!(
+                "Op::Reshape input {:?} has no layout in compiler cache",
+                inputs[0],
+            ))
+            .bt()
+        })?;
+        // Output is contiguous in the new shape — bytes per element
+        // are unchanged, so a contiguous input flows through with
+        // zero copy. A non-contiguous input is auto-contiguized at
+        // execute time and the result is naturally contiguous.
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        // Sanity: same total element count.
+        let in_elem_count = input_layout.shape().elem_count();
+        if in_elem_count != elem_count {
+            return Err(Error::Msg(format!(
+                "Op::Reshape changes element count: input {} → output {}",
+                in_elem_count, elem_count,
+            ))
+            .bt());
+        }
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::ContiguizeOf { input: node.inputs[0] },
+            compiled: None,
+            output_layout,
+        });
+    }
+
     let target_backend = graph.target_backend(id).ok_or_else(|| {
         Error::Msg(format!(
             "PipelinedExecutor: node {:?} ({:?}) has no target_backend set",
@@ -493,6 +547,34 @@ fn execute_work_item(
                 .bt()
             })?;
             cache.insert(item.node_id, input_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::ContiguizeOf { input } => {
+            let input_arc = cache.get(input).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: reshape input {:?} of {:?} not realized",
+                    input, item.node_id,
+                ))
+                .bt()
+            })?;
+            let input_layout = layout_cache.get(input).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: reshape input {:?} of {:?} has no cached layout",
+                    input, item.node_id,
+                ))
+                .bt()
+            })?;
+            // Zero-copy when the input is already contiguous + zero
+            // offset; allocate + copy via the contiguize kernel
+            // otherwise.
+            let out_arc =
+                if input_layout.is_contiguous() && input_layout.start_offset() == 0 {
+                    input_arc
+                } else {
+                    auto_contiguize(&input_arc, &input_layout)?
+                };
+            cache.insert(item.node_id, out_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }
@@ -953,6 +1035,91 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[4, 3]);
         // Broadcasted leading dim has stride 0.
         assert_eq!(result_layout.stride(), &[0, 1]);
+    }
+
+    /// E2E: Const + Reshape — contiguous-input reshape is zero
+    /// copy. The output Storage Arc is the input Arc; the layout
+    /// is contiguous in the new shape.
+    #[test]
+    fn pipelined_realize_reshape_zero_copy_when_contiguous() {
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, r_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let r_id = g.push(Node {
+                op: Op::Reshape(Shape::from_dims(&[3, 2])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
+            });
+            (in_id, r_id)
+        };
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
+
+        // Zero copy — same Arc.
+        assert!(Arc::ptr_eq(&result_arc, &in_arc), "contiguous reshape must zero-copy");
+        assert_eq!(result_layout.shape().dims(), &[3, 2]);
+        assert!(result_layout.is_contiguous());
+
+        // Bytes are unchanged; just reinterpreted as [3, 2].
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    /// E2E: Const + Transpose + Reshape — reshape on a strided
+    /// input auto-contiguizes the bytes. Output Arc is fresh
+    /// (NOT the input Arc); the bytes are the materialized
+    /// transposed layout.
+    #[test]
+    fn pipelined_realize_reshape_materializes_when_strided() {
+        // shape [2, 3]: 1 2 3 / 4 5 6
+        // Transpose → [3, 2] strided
+        // Reshape → [6] (forces materialization)
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, t_id, r_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let t_id = g.push(Node {
+                op: Op::Transpose, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            let r_id = g.push(Node {
+                op: Op::Reshape(Shape::from_dims(&[6])), inputs: vec![t_id],
+                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+            });
+            (in_id, t_id, r_id)
+        };
+        let _ = t_id;
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
+
+        // Fresh Arc — auto-contiguize allocated new bytes.
+        assert!(!Arc::ptr_eq(&result_arc, &in_arc));
+        assert_eq!(result_layout.shape().dims(), &[6]);
+        assert!(result_layout.is_contiguous());
+
+        // Materialized transposed bytes flattened: [1, 4, 2, 5, 3, 6].
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
 
     /// E2E: Const + Transpose + SumDim — exercises stage 3
