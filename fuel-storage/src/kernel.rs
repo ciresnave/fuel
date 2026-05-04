@@ -1,30 +1,43 @@
-//! Kernel reference + op parameters. Phase 7.5 B1.
+//! Kernel reference + op parameters + binding table. Phase 7.5 B1+B5.
 //!
 //! [`KernelRef`] is the uniform function-pointer type that every
-//! per-backend kernel implementation matches. Phase B's dispatch
-//! resolver picks one at DAG construction time and stores it on the
-//! graph node; the executor walks the graph calling stored kernel
-//! references without per-op match-on-dtype.
+//! dispatch wrapper matches. Backend-specific typed kernels live in
+//! their backend crates (e.g. `fuel_cpu_backend::byte_kernels`); the
+//! *wrapper* functions here in fuel-storage bridge the dispatch-
+//! erased `Storage` to those typed kernels by matching on
+//! `BackendStorage::Cpu(...)` etc.
 //!
 //! [`OpParams`] is the typed extras bag — one variant per op family
 //! that needs auxiliary data beyond inputs and outputs. Most
 //! elementwise ops use `OpParams::None`; reductions carry their
 //! reduce dims; conv2d carries kernel/stride/padding; etc.
 //!
-//! ## Status
+//! [`KernelBindingTable`] (B5) maps `(OpKind, DType, BackendId) ->
+//! KernelRef`. Backends register their dispatch wrappers via the
+//! `dispatch::register_*` functions; op-builder methods consult the
+//! table at DAG construction time using `Graph::target_backend(id)`
+//! as the BackendId key.
 //!
-//! B1 (this commit): type definitions only. Nothing yet wires
-//! KernelRef into Node or invokes it. Subsequent B sub-phases:
-//! - B2: Node gains `kernel: Option<KernelRef>` field.
-//! - B3: dispatch resolver `(op, dtype, registry) -> KernelRef`.
-//! - B4: pipelined compilation (channels + threads).
-//! - B5: first op family migrated through the new path.
+//! ## Architecture (cycle-avoidance)
+//!
+//! - Backend crates (`fuel-cpu-backend`, …): typed kernels on their
+//!   concrete storage types (`CpuStorageBytes`, …). No fuel-storage
+//!   dependency.
+//! - fuel-storage (this crate): dispatch wrappers that match
+//!   `BackendStorage::Cpu(...)`, extract the typed storage, and
+//!   call the backend's typed kernel. KernelBindingTable lives here.
+//! - Backend crates depend on fuel-storage? No — only the wrappers
+//!   do. fuel-storage already depends on backend crates for variant
+//!   types; this round-trip closes naturally.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
 use fuel_core_types::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
-use fuel_core_types::Result;
+use fuel_core_types::dispatch::OpKind;
+use fuel_core_types::probe::BackendId;
+use fuel_core_types::{DType, Error, Result};
 
 use crate::Storage;
 
@@ -119,6 +132,80 @@ pub enum OpParams {
         mul: f64,
         add: f64,
     },
+}
+
+// =============================================================================
+// Phase 7.5 B5 — kernel binding table
+// =============================================================================
+
+/// Maps `(OpKind, DType, BackendId)` triples to dispatch wrapper
+/// functions. Built once at backend registration time (typically a
+/// process-wide `OnceLock` though that's not enforced here for
+/// testability), consulted at execute time via lookup.
+///
+/// Backends register their wrappers via the `dispatch::register_*`
+/// functions in this crate (e.g.
+/// [`crate::dispatch::register_cpu_kernels`]).
+#[derive(Default)]
+pub struct KernelBindingTable {
+    bindings: HashMap<(OpKind, DType, BackendId), KernelRef>,
+}
+
+impl KernelBindingTable {
+    pub fn new() -> Self {
+        Self { bindings: HashMap::new() }
+    }
+
+    /// Register a dispatch wrapper for `(op, dtype, backend)`.
+    /// Idempotent: re-registering with the same key overwrites.
+    pub fn register(&mut self, op: OpKind, dtype: DType, backend: BackendId, kernel: KernelRef) {
+        self.bindings.insert((op, dtype, backend), kernel);
+    }
+
+    /// Look up the wrapper for `(op, dtype, backend)`. Returns
+    /// [`Error::NoBackendForOp`] if none registered (production-
+    /// correct: no panic). The error includes diagnostic data.
+    pub fn lookup(&self, op: OpKind, dtype: DType, backend: BackendId) -> Result<KernelRef> {
+        self.bindings.get(&(op, dtype, backend)).copied().ok_or_else(|| {
+            let available_backends: Vec<BackendId> = self
+                .bindings
+                .keys()
+                .map(|(_, _, b)| *b)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            let supported_combinations: Vec<(BackendId, OpKind, DType)> = self
+                .bindings
+                .keys()
+                .map(|(o, d, b)| (*b, *o, *d))
+                .collect();
+            Error::NoBackendForOp {
+                op,
+                dtype,
+                available_backends,
+                supported_combinations,
+            }
+            .bt()
+        })
+    }
+
+    /// Total bindings registered.
+    pub fn len(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Empty binding table.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+}
+
+impl std::fmt::Debug for KernelBindingTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KernelBindingTable")
+            .field("bindings_count", &self.bindings.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

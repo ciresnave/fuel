@@ -21,11 +21,15 @@
 //! instance in Phase B.
 
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use fuel_core_types::backend::{BackendCapabilities, TransferPath};
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Result};
+
+use crate::kernel::{KernelBindingTable, OpParams};
+use crate::{BackendStorage, Storage};
 
 /// Collection of backend capabilities, queried during DAG
 /// construction to pick which backend handles each op.
@@ -202,6 +206,88 @@ pub fn resolve_target_backend_residency_aware(
     // No residency match — fall back to first candidate
     // (registration order).
     Ok(candidates[0].backend_id)
+}
+
+// =============================================================================
+// Phase 7.5 B5 — CPU dispatch wrappers + registration
+// =============================================================================
+
+/// Helper: extract `&CpuStorageBytes` from `&Storage`. Returns
+/// Err if the variant isn't `BackendStorage::Cpu`.
+fn cpu_input(s: &Storage) -> Result<&fuel_cpu_backend::CpuStorageBytes> {
+    match &s.inner {
+        BackendStorage::Cpu(c) => Ok(c),
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::Msg(
+            "cpu kernel wrapper called with non-CPU input".to_string(),
+        )
+        .bt()),
+    }
+}
+
+/// Helper: extract `&mut CpuStorageBytes` from `&mut Storage`.
+fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes> {
+    match &mut s.inner {
+        BackendStorage::Cpu(c) => Ok(c),
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::Msg(
+            "cpu kernel wrapper called with non-CPU output".to_string(),
+        )
+        .bt()),
+    }
+}
+
+/// Dispatch wrapper for `(AddElementwise, F32, Cpu)`. Extracts
+/// CpuStorageBytes from the BackendStorage::Cpu variant of inputs +
+/// output, then calls the typed kernel in fuel-cpu-backend.
+fn add_elementwise_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "add_elementwise wrapper expects 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "add_elementwise wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let lhs_arc = inputs[0].clone();
+    let rhs_arc = inputs[1].clone();
+    let out_arc = outputs[0].clone();
+
+    let lhs_guard = lhs_arc.read().unwrap();
+    let rhs_guard = rhs_arc.read().unwrap();
+    let mut out_guard = out_arc.write().unwrap();
+
+    let lhs_cpu = cpu_input(&lhs_guard)?;
+    let rhs_cpu = cpu_input(&rhs_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+
+    fuel_cpu_backend::byte_kernels::add_f32(lhs_cpu, rhs_cpu, out_cpu)
+}
+
+/// Register CPU dispatch wrappers in the binding table. Call once
+/// at process startup or on first table creation. The CPU backend
+/// is the universal fallback; its bindings cover every standard
+/// (op, dtype) combination after Phase C migration. B5 ships a
+/// minimal set: just `(AddElementwise, F32)`.
+pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
+    table.register(
+        OpKind::AddElementwise,
+        DType::F32,
+        BackendId::Cpu,
+        add_elementwise_f32_cpu_wrapper,
+    );
+    // Phase C: more (op, dtype) registrations land here as kernels
+    // migrate.
 }
 
 #[cfg(test)]
@@ -421,5 +507,98 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chosen, BackendId::Cuda);
+    }
+
+    // -------- B5: kernel binding table + CPU dispatch wrappers --------
+
+    /// Smoke: register_cpu_kernels populates the binding table.
+    #[test]
+    fn register_cpu_kernels_populates_table() {
+        let mut table = KernelBindingTable::new();
+        assert!(table.is_empty());
+        register_cpu_kernels(&mut table);
+        assert!(!table.is_empty());
+        // The (AddElementwise, F32, Cpu) binding lands.
+        let _kernel = table
+            .lookup(OpKind::AddElementwise, DType::F32, BackendId::Cpu)
+            .expect("registered");
+    }
+
+    /// Lookup miss returns NoBackendForOp with diagnostic data.
+    #[test]
+    fn binding_table_lookup_miss_errors() {
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+        // BF16 isn't registered — error.
+        let result = table.lookup(OpKind::AddElementwise, DType::BF16, BackendId::Cpu);
+        assert!(result.is_err());
+    }
+
+    /// End-to-end: register, resolve target backend, look up the
+    /// kernel, allocate input/output Storages, call the kernel,
+    /// verify output bytes match the elementwise sum. This is the
+    /// proof-of-concept for the entire B-phase dispatch path.
+    #[test]
+    fn b5_end_to_end_add_elementwise_f32() {
+        // 1. Build registry + capability advertisement.
+        let mut registry = CapabilityRegistry::new();
+        registry.register(cpu_caps());
+
+        // 2. Resolve which backend handles (AddElementwise, F32).
+        let backend = resolve_target_backend(
+            &registry,
+            OpKind::AddElementwise,
+            DType::F32,
+        )
+        .expect("resolve");
+        assert_eq!(backend, BackendId::Cpu);
+
+        // 3. Build binding table + register CPU wrappers.
+        let mut bindings = KernelBindingTable::new();
+        register_cpu_kernels(&mut bindings);
+
+        // 4. Look up the kernel for (op, dtype, backend).
+        let kernel = bindings
+            .lookup(OpKind::AddElementwise, DType::F32, backend)
+            .expect("lookup");
+
+        // 5. Allocate input + output Storages.
+        let lhs = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let rhs = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0]);
+        let out = crate::alloc_cpu_zeroed(DType::F32, 4).expect("alloc");
+
+        let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
+        let mut outputs = vec![Arc::new(RwLock::new(out))];
+
+        // 6. Call the dispatch wrapper.
+        kernel(&inputs, &mut outputs, &OpParams::None).expect("kernel");
+
+        // 7. Verify output bytes match elementwise sum.
+        let out_guard = outputs[0].read().unwrap();
+        if let BackendStorage::Cpu(c) = &out_guard.inner {
+            let typed: &[f32] = c.as_slice().expect("cast");
+            assert_eq!(typed, &[11.0, 22.0, 33.0, 44.0]);
+        } else {
+            panic!("expected CPU output");
+        }
+    }
+
+    /// E2E: wrong number of inputs surfaces a typed error.
+    #[test]
+    fn b5_wrapper_arity_check() {
+        let mut bindings = KernelBindingTable::new();
+        register_cpu_kernels(&mut bindings);
+        let kernel = bindings
+            .lookup(OpKind::AddElementwise, DType::F32, BackendId::Cpu)
+            .unwrap();
+
+        // Only one input — should error, not panic.
+        let lhs = crate::from_slice_cpu(&[1.0_f32, 2.0]);
+        let out = crate::alloc_cpu_zeroed(DType::F32, 2).unwrap();
+        let inputs = vec![Arc::new(RwLock::new(lhs))];
+        let mut outputs = vec![Arc::new(RwLock::new(out))];
+
+        let result = kernel(&inputs, &mut outputs, &OpParams::None);
+        assert!(result.is_err());
     }
 }
