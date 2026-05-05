@@ -47,14 +47,14 @@ fn check_lens_2(name: &str, a: usize, b: usize) -> Result<()> {
 // Elementwise binary kernels (f32)
 // =============================================================================
 
-/// Generate a binary f32 kernel of the form
-/// `out[i] = op(lhs[i], rhs[i])`.
+/// Generate a binary kernel parameterized over the element type
+/// `$T`: `out[i] = op(lhs[i], rhs[i])`.
 ///
 /// Output is pre-allocated by the caller (the dispatch wrapper) and
 /// must match the input byte length. The kernel writes into the
 /// pre-allocated bytes; it never allocates.
-macro_rules! binary_f32_kernel {
-    ($name:ident, $op:expr, $doc:literal) => {
+macro_rules! binary_kernel {
+    ($name:ident, $T:ty, $op:expr, $doc:literal) => {
         #[doc = $doc]
         pub fn $name(
             lhs: &CpuStorageBytes,
@@ -62,10 +62,10 @@ macro_rules! binary_f32_kernel {
             out: &mut CpuStorageBytes,
         ) -> Result<()> {
             check_lens_3(stringify!($name), lhs.len_bytes(), rhs.len_bytes(), out.len_bytes())?;
-            let lhs_view: &[f32] = lhs.as_slice()?;
-            let rhs_view: &[f32] = rhs.as_slice()?;
-            let out_view: &mut [f32] = out.as_slice_mut()?;
-            let op: fn(f32, f32) -> f32 = $op;
+            let lhs_view: &[$T] = lhs.as_slice()?;
+            let rhs_view: &[$T] = rhs.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let op: fn($T, $T) -> $T = $op;
             for (i, slot) in out_view.iter_mut().enumerate() {
                 *slot = op(lhs_view[i], rhs_view[i]);
             }
@@ -74,32 +74,55 @@ macro_rules! binary_f32_kernel {
     };
 }
 
+/// Backward-compat alias for the previous `binary_f32_kernel!`
+/// invocations. Existing call sites stay unchanged; new dtypes
+/// declare via `binary_kernel!` directly.
+macro_rules! binary_f32_kernel {
+    ($name:ident, $op:expr, $doc:literal) => {
+        binary_kernel!($name, f32, $op, $doc);
+    };
+}
+
 binary_f32_kernel!(add_f32, |a, b| a + b, "Elementwise `f32` addition: `out[i] = lhs[i] + rhs[i]`.");
 binary_f32_kernel!(sub_f32, |a, b| a - b, "Elementwise `f32` subtraction: `out[i] = lhs[i] - rhs[i]`.");
 binary_f32_kernel!(mul_f32, |a, b| a * b, "Elementwise `f32` multiplication: `out[i] = lhs[i] * rhs[i]`.");
 binary_f32_kernel!(div_f32, |a, b| a / b, "Elementwise `f32` division: `out[i] = lhs[i] / rhs[i]`. Division by zero yields IEEE-754 inf/NaN per platform.");
 
+binary_kernel!(add_f64, f64, |a: f64, b: f64| a + b, "Elementwise `f64` addition.");
+binary_kernel!(sub_f64, f64, |a: f64, b: f64| a - b, "Elementwise `f64` subtraction.");
+binary_kernel!(mul_f64, f64, |a: f64, b: f64| a * b, "Elementwise `f64` multiplication.");
+binary_kernel!(div_f64, f64, |a: f64, b: f64| a / b, "Elementwise `f64` division.");
+
 // =============================================================================
 // Elementwise unary kernels (f32)
 // =============================================================================
 
-/// Generate a unary f32 kernel of the form `out[i] = op(input[i])`.
+/// Generate a unary kernel parameterized over the element type `$T`:
+/// `out[i] = op(input[i])`.
 ///
 /// Output is pre-allocated by the caller and must match the input
 /// byte length.
-macro_rules! unary_f32_kernel {
-    ($name:ident, $op:expr, $doc:literal) => {
+macro_rules! unary_kernel {
+    ($name:ident, $T:ty, $op:expr, $doc:literal) => {
         #[doc = $doc]
         pub fn $name(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
             check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
-            let in_view: &[f32] = input.as_slice()?;
-            let out_view: &mut [f32] = out.as_slice_mut()?;
-            let op: fn(f32) -> f32 = $op;
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let op: fn($T) -> $T = $op;
             for (i, slot) in out_view.iter_mut().enumerate() {
                 *slot = op(in_view[i]);
             }
             Ok(())
         }
+    };
+}
+
+/// Backward-compat alias for the previous `unary_f32_kernel!`
+/// invocations.
+macro_rules! unary_f32_kernel {
+    ($name:ident, $op:expr, $doc:literal) => {
+        unary_kernel!($name, f32, $op, $doc);
     };
 }
 
@@ -117,6 +140,30 @@ unary_f32_kernel!(cos_f32, |x: f32| x.cos(), "Elementwise `f32` cosine: `out[i] 
 unary_f32_kernel!(sigmoid_f32, |x: f32| 1.0 / (1.0 + (-x).exp()), "Elementwise `f32` logistic sigmoid: `out[i] = 1 / (1 + exp(-input[i]))`.");
 unary_f32_kernel!(silu_f32, |x: f32| x / (1.0 + (-x).exp()), "Elementwise `f32` SiLU/Swish: `out[i] = input[i] * sigmoid(input[i])`.");
 unary_f32_kernel!(step_f32, |x: f32| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f32` Heaviside step: `out[i] = 1` where `input[i] > 0`, `0` otherwise.");
+
+// f64 mirrors of the unary set above. Each is a one-liner via the
+// parametric `unary_kernel!` macro.
+unary_kernel!(relu_f64, f64, |x: f64| x.max(0.0), "Elementwise `f64` ReLU.");
+unary_kernel!(neg_f64, f64, |x: f64| -x, "Elementwise `f64` negation.");
+unary_kernel!(sqr_f64, f64, |x: f64| x * x, "Elementwise `f64` square.");
+unary_kernel!(sqrt_f64, f64, |x: f64| x.sqrt(), "Elementwise `f64` square root.");
+unary_kernel!(recip_f64, f64, |x: f64| 1.0 / x, "Elementwise `f64` reciprocal.");
+unary_kernel!(abs_f64, f64, |x: f64| x.abs(), "Elementwise `f64` absolute value.");
+unary_kernel!(tanh_f64, f64, |x: f64| x.tanh(), "Elementwise `f64` hyperbolic tangent.");
+unary_kernel!(exp_f64, f64, |x: f64| x.exp(), "Elementwise `f64` exponential.");
+unary_kernel!(log_f64, f64, |x: f64| x.ln(), "Elementwise `f64` natural log.");
+unary_kernel!(sin_f64, f64, |x: f64| x.sin(), "Elementwise `f64` sine.");
+unary_kernel!(cos_f64, f64, |x: f64| x.cos(), "Elementwise `f64` cosine.");
+unary_kernel!(sigmoid_f64, f64, |x: f64| 1.0 / (1.0 + (-x).exp()), "Elementwise `f64` logistic sigmoid.");
+unary_kernel!(silu_f64, f64, |x: f64| x / (1.0 + (-x).exp()), "Elementwise `f64` SiLU/Swish.");
+unary_kernel!(step_f64, f64, |x: f64| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f64` Heaviside step.");
+
+// f64 versions of the binary extrema (Maximum/Minimum). The f32
+// versions sit later in the file (in the scalar/clamp/extrema
+// section); placing the f64 mirrors here keeps the elementwise
+// arithmetic block contiguous.
+binary_kernel!(maximum_f64, f64, |a: f64, b: f64| a.max(b), "Elementwise `f64` maximum.");
+binary_kernel!(minimum_f64, f64, |a: f64, b: f64| a.min(b), "Elementwise `f64` minimum.");
 
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
@@ -1634,6 +1681,22 @@ pub fn gelu_f32(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()
     Ok(())
 }
 
+/// f64 mirror of [`gelu_f32`]. Kept hand-rolled for the same
+/// reason — the inner expression is more than a single arithmetic
+/// step so the macro form doesn't quite fit.
+pub fn gelu_f64(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+    check_lens_2("gelu_f64", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    const COEFF: f64 = 0.797_884_560_802_865_4;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        let x = in_view[i];
+        let inner = COEFF * (x + 0.044_715 * x * x * x);
+        *slot = 0.5 * x * (1.0 + inner.tanh());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1796,6 +1859,65 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn add_f64_basic() {
+        let a = CpuStorageBytes::from_slice(&[1.0_f64, 2.0, 3.0]);
+        let b = CpuStorageBytes::from_slice(&[10.0_f64, 20.0, 30.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 8);
+        add_f64(&a, &b, &mut out).expect("add f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[11.0, 22.0, 33.0]);
+    }
+
+    #[test]
+    fn relu_f64_clips_negatives() {
+        let input = CpuStorageBytes::from_slice(&[-1.0_f64, 0.0, 0.5, -3.5, 7.25]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_f64(&input, &mut out).expect("relu f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[0.0, 0.0, 0.5, 0.0, 7.25]);
+    }
+
+    #[test]
+    fn unary_f64_round_trip_sample() {
+        // Smoke-test several f64 unaries on one input.
+        let input = CpuStorageBytes::from_slice(&[1.0_f64, -2.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+
+        neg_f64(&input, &mut out).expect("neg f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[-1.0, 2.0, -4.0]);
+
+        sqr_f64(&input, &mut out).expect("sqr f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[1.0, 4.0, 16.0]);
+
+        let pos = CpuStorageBytes::from_slice(&[1.0_f64, 4.0, 9.0]);
+        let mut out2 = CpuStorageBytes::from_zero_bytes(pos.len_bytes());
+        sqrt_f64(&pos, &mut out2).expect("sqrt f64");
+        assert_eq!(out2.as_slice::<f64>().unwrap(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn maximum_minimum_f64_basic() {
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f64, 5.0, -3.0]);
+        let rhs = CpuStorageBytes::from_slice(&[2.0_f64, 1.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(lhs.len_bytes());
+        maximum_f64(&lhs, &rhs, &mut out).expect("max f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[2.0, 5.0, -1.0]);
+        minimum_f64(&lhs, &rhs, &mut out).expect("min f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[1.0, 1.0, -3.0]);
+    }
+
+    #[test]
+    fn gelu_f64_at_known_points() {
+        let input = CpuStorageBytes::from_slice(&[0.0_f64, 1.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        gelu_f64(&input, &mut out).expect("gelu f64");
+        let r: &[f64] = out.as_slice().unwrap();
+        // gelu(0) = 0
+        assert!(r[0].abs() < 1e-12);
+        // gelu(1) ≈ 0.8412 (tanh approx); f64 should be ~12 digits accurate
+        assert!((r[1] - 0.841_192).abs() < 1e-3);
+        assert!((r[2] - (-0.158_808)).abs() < 1e-3);
     }
 
     #[test]
