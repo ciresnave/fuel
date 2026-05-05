@@ -87,6 +87,14 @@ pub fn minimum_elementwise_f32(
     binary_elementwise_f32(lhs, rhs, "bminimum_f32")
 }
 
+/// Element-wise ReLU (max(x, 0)) of one F32 `CudaStorageBytes`.
+/// First unary op through the unified binding table; extracts the
+/// shared [`unary_elementwise_f32`] helper for the rest of the F32
+/// unary fanout to delegate to.
+pub fn relu_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
+    unary_elementwise_f32(src, "urelu_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
@@ -139,5 +147,50 @@ fn binary_elementwise_f32(
         Arc::new(out),
         device,
         lhs.len_bytes(),
+    ))
+}
+
+/// Shared launch path for F32 elementwise unary ops. Mirrors
+/// [`binary_elementwise_f32`] but with a single input. The
+/// fuel-cuda-kernels UNARY function signature is
+/// `(elem_count, ndims, dims_strides_or_null, src, out)` — same as
+/// the legacy `Map1::f` for `UnaryOpT`. A null `dims_strides_or_null`
+/// selects the contiguous fast path; auto-Contiguize guarantees
+/// that on the unified path.
+fn unary_elementwise_f32(
+    src: &CudaStorageBytes,
+    kernel_name: &'static str,
+) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    if src.len_bytes() % elem != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: src.len_bytes={} not a multiple of f32 size",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    let elem_count = src.len_bytes() / elem;
+    let device = src.device().clone();
+    if elem_count == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let mut out = device.alloc_zeros::<u8>(src.len_bytes())?;
+    let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+    let func = device.get_or_load_func(kernel_name, &kernels::UNARY)?;
+    let dims_strides: SlicePtrOrNull<usize> = SlicePtrOrNull::Null;
+    let mut builder = func.builder();
+    barg!(builder, elem_count);
+    barg!(builder, 1_usize); // ndims (ignored on the contiguous path)
+    dims_strides.builder_arg(&mut builder);
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    // SAFETY: kernel signature matches the args above — same shape as
+    // the legacy `Map1::f` for `UnaryOpT`, just on byte buffers.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        src.len_bytes(),
     ))
 }

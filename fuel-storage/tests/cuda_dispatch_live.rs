@@ -280,6 +280,45 @@ fn minimum_elementwise_f32_through_binding_table() {
     assert_eq!(host_f32, &[1.0_f32, 2.0, -2.0, 4.0]);
 }
 
+/// End-to-end: ReluElementwise F32 through the binding table.
+/// First unary op of Tier 1 unary fanout — exercises the shared
+/// `unary_elementwise_f32` helper in fuel-cuda-backend::byte_kernels.
+#[test]
+#[ignore]
+fn relu_elementwise_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let src = build_storage_cuda(&dev, &[-2.0_f32, -0.5, 0.0, 1.5, 3.0]);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 20).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ReluElementwise, DType::F32, BackendId::Cuda)
+        .expect("lookup (ReluElementwise, F32, Cuda)");
+
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &OpParams::None,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_f32, &[0.0_f32, 0.0, 0.0, 1.5, 3.0]);
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.
