@@ -1702,6 +1702,67 @@ mod tests {
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
     }
 
+    /// E2E: F64 sum-reduce along one dim through the pipelined
+    /// executor.
+    #[test]
+    fn pipelined_realize_sum_dim_f64() {
+        let storage = crate::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sum_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F64,
+            });
+            let sum_id = g.push(Node {
+                op: Op::SumDim(1), inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F64,
+            });
+            g.set_target_backend(sum_id, BackendId::Cpu);
+            (in_id, sum_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F64);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f64>().unwrap(), &[6.0_f64, 15.0]);
+    }
+
+    /// E2E: F64 matmul through the pipelined executor.
+    #[test]
+    fn pipelined_realize_matmul_2x3_times_3x2_f64() {
+        let lhs = crate::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs = crate::from_slice_cpu(&[7.0_f64, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F64,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F64,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul, inputs: vec![l, r],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F64,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (l, r, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F64);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f64>().unwrap(), &[58.0_f64, 64.0, 139.0, 154.0]);
+    }
+
     /// E2E: F64 unary chain — Const + Sqr + Sqrt — verifies that
     /// the kernel-binding lookup picks the f64 entries when the
     /// graph nodes carry DType::F64.

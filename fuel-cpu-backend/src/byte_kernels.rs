@@ -1213,6 +1213,115 @@ pub fn matmul_f32(
     Ok(())
 }
 
+/// Batched row-major `f64` matrix multiply — a direct mirror of
+/// [`matmul_f32`] with f64 element type and accumulator. Same
+/// per-axis matched/GQA contract; same (i, k, j) inner loop.
+pub fn matmul_f64(
+    lhs: &CpuStorageBytes,
+    rhs: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    lhs_batch_dims: &[usize],
+    rhs_batch_dims: &[usize],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    if lhs_batch_dims.len() != rhs_batch_dims.len() {
+        return Err(Error::Msg(format!(
+            "matmul_f64: batch ranks must match (lhs={}, rhs={})",
+            lhs_batch_dims.len(),
+            rhs_batch_dims.len(),
+        ))
+        .bt());
+    }
+    let batch_rank = lhs_batch_dims.len();
+    let mut n_rep: Vec<usize> = Vec::with_capacity(batch_rank);
+    for i in 0..batch_rank {
+        let la = lhs_batch_dims[i];
+        let ra = rhs_batch_dims[i];
+        if la == ra {
+            n_rep.push(1);
+        } else if ra > 0 && la > ra && la % ra == 0 {
+            n_rep.push(la / ra);
+        } else {
+            return Err(Error::Msg(format!(
+                "matmul_f64: batch dim {i} disallowed combination (lhs={la}, rhs={ra})",
+            ))
+            .bt());
+        }
+    }
+    let elem = std::mem::size_of::<f64>();
+    let lhs_per_batch = m.saturating_mul(k);
+    let rhs_per_batch = k.saturating_mul(n);
+    let out_per_batch = m.saturating_mul(n);
+    let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+    let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
+    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
+    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    if lhs.len_bytes() != need_lhs {
+        return Err(Error::Msg(format!(
+            "matmul_f64: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f64)",
+            lhs.len_bytes(),
+            lhs_batch_dims,
+        ))
+        .bt());
+    }
+    if rhs.len_bytes() != need_rhs {
+        return Err(Error::Msg(format!(
+            "matmul_f64: rhs bytes={} doesn't match shape {:?} + [{k}, {n}] (f64)",
+            rhs.len_bytes(),
+            rhs_batch_dims,
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_out {
+        return Err(Error::Msg(format!(
+            "matmul_f64: out bytes={} doesn't match shape {:?} + [{m}, {n}] (f64)",
+            out.len_bytes(),
+            lhs_batch_dims,
+        ))
+        .bt());
+    }
+    let lhs_view: &[f64] = lhs.as_slice()?;
+    let rhs_view: &[f64] = rhs.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = 0.0;
+    }
+    let mut lhs_multi = vec![0usize; batch_rank];
+    let mut rhs_multi = vec![0usize; batch_rank];
+    for b in 0..lhs_batch_count {
+        let mut rem = b;
+        for d in (0..batch_rank).rev() {
+            let s = lhs_batch_dims[d];
+            lhs_multi[d] = rem % s;
+            rem /= s;
+        }
+        for d in 0..batch_rank {
+            rhs_multi[d] = lhs_multi[d] / n_rep[d];
+        }
+        let mut rhs_b = 0usize;
+        for d in 0..batch_rank {
+            rhs_b = rhs_b * rhs_batch_dims[d] + rhs_multi[d];
+        }
+        let lhs_off = b * lhs_per_batch;
+        let rhs_off = rhs_b * rhs_per_batch;
+        let out_off = b * out_per_batch;
+        for i in 0..m {
+            for kk in 0..k {
+                let a = lhs_view[lhs_off + i * k + kk];
+                let rhs_row_off = rhs_off + kk * n;
+                let out_row_off = out_off + i * n;
+                for j in 0..n {
+                    out_view[out_row_off + j] += a * rhs_view[rhs_row_off + j];
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // 2D Convolution (f32)
 // =============================================================================
@@ -1375,9 +1484,9 @@ fn check_reduce_shape(
     output: &CpuStorageBytes,
     input_shape: &[usize],
     reduce_dims: &[usize],
+    elem_size: usize,
 ) -> Result<(usize, Vec<usize>)> {
     let total_input: usize = input_shape.iter().product();
-    let elem_size = std::mem::size_of::<f32>();
     if input.len_bytes() != total_input.saturating_mul(elem_size) {
         return Err(Error::Msg(format!(
             "{name}: input bytes={} doesn't match shape {:?}",
@@ -1447,7 +1556,7 @@ pub fn sum_reduce_f32(
     reduce_dims: &[usize],
 ) -> Result<()> {
     let (total_input, kept) =
-        check_reduce_shape("sum_reduce_f32", input, output, input_shape, reduce_dims)?;
+        check_reduce_shape("sum_reduce_f32", input, output, input_shape, reduce_dims, std::mem::size_of::<f32>())?;
     let in_view: &[f32] = input.as_slice()?;
     let out_view: &mut [f32] = output.as_slice_mut()?;
     for slot in out_view.iter_mut() {
@@ -1612,7 +1721,7 @@ fn reduce_f32_generic(
     combine: fn(f32, f32) -> f32,
 ) -> Result<()> {
     let (total_input, kept) =
-        check_reduce_shape(name, input, output, input_shape, reduce_dims)?;
+        check_reduce_shape(name, input, output, input_shape, reduce_dims, std::mem::size_of::<f32>())?;
     let in_view: &[f32] = input.as_slice()?;
     let out_view: &mut [f32] = output.as_slice_mut()?;
     for slot in out_view.iter_mut() {
@@ -1660,6 +1769,111 @@ pub fn min_reduce_f32(
         reduce_dims,
         f32::INFINITY,
         |a, b| a.min(b),
+    )
+}
+
+// =============================================================================
+// Reduction kernels (f64) — direct mirrors of the f32 versions
+// =============================================================================
+
+/// Sum-reduce `f64` — same algorithm as [`sum_reduce_f32`] with
+/// f64 element type and accumulator.
+pub fn sum_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    let (total_input, kept) = check_reduce_shape(
+        "sum_reduce_f64", input, output, input_shape, reduce_dims, std::mem::size_of::<f64>(),
+    )?;
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = output.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = 0.0;
+    }
+    let mut mi = vec![0usize; input_shape.len()];
+    for flat in 0..total_input {
+        decode_multi_index(flat, input_shape, &mut mi);
+        let oi = output_index(input_shape, &kept, &mi);
+        out_view[oi] += in_view[flat];
+    }
+    Ok(())
+}
+
+/// Mean-reduce `f64`.
+pub fn mean_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    sum_reduce_f64(input, output, input_shape, reduce_dims)?;
+    let divisor: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
+    if divisor == 0 {
+        return Err(Error::Msg(
+            "mean_reduce_f64: divisor zero (reduced dim has size 0)".to_string(),
+        )
+        .bt());
+    }
+    let inv = 1.0_f64 / divisor as f64;
+    let out_view: &mut [f64] = output.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot *= inv;
+    }
+    Ok(())
+}
+
+/// Generic reduce helper for max/min on `f64`.
+fn reduce_f64_generic(
+    name: &str,
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+    init: f64,
+    combine: fn(f64, f64) -> f64,
+) -> Result<()> {
+    let (total_input, kept) = check_reduce_shape(
+        name, input, output, input_shape, reduce_dims, std::mem::size_of::<f64>(),
+    )?;
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = output.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = init;
+    }
+    let mut mi = vec![0usize; input_shape.len()];
+    for flat in 0..total_input {
+        decode_multi_index(flat, input_shape, &mut mi);
+        let oi = output_index(input_shape, &kept, &mi);
+        out_view[oi] = combine(out_view[oi], in_view[flat]);
+    }
+    Ok(())
+}
+
+/// Max-reduce `f64`.
+pub fn max_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce_f64_generic(
+        "max_reduce_f64", input, output, input_shape, reduce_dims,
+        f64::NEG_INFINITY, |a, b| a.max(b),
+    )
+}
+
+/// Min-reduce `f64`.
+pub fn min_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce_f64_generic(
+        "min_reduce_f64", input, output, input_shape, reduce_dims,
+        f64::INFINITY, |a, b| a.min(b),
     )
 }
 
@@ -1859,6 +2073,59 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sum_reduce_f64_along_one_dim() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 8);
+        sum_reduce_f64(&input, &mut out, &[2, 3], &[1]).expect("sum");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[6.0_f64, 15.0]);
+    }
+
+    #[test]
+    fn max_min_reduce_f64_basic() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f64, -5.0, 3.0, 2.0, 0.0, -1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 8);
+        max_reduce_f64(&input, &mut out, &[2, 3], &[1]).expect("max");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[3.0_f64, 2.0]);
+        min_reduce_f64(&input, &mut out, &[2, 3], &[1]).expect("min");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[-5.0_f64, -1.0]);
+    }
+
+    #[test]
+    fn mean_reduce_f64_divides_by_count() {
+        let input = CpuStorageBytes::from_slice(&[2.0_f64, 4.0, 6.0, 8.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 8);
+        mean_reduce_f64(&input, &mut out, &[2, 2], &[1]).expect("mean");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[3.0_f64, 7.0]);
+    }
+
+    #[test]
+    fn matmul_f64_2x3_times_3x2() {
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs = CpuStorageBytes::from_slice(&[7.0_f64, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 8);
+        matmul_f64(&lhs, &rhs, &mut out, &[], &[], 2, 2, 3).expect("matmul");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[58.0_f64, 64.0, 139.0, 154.0]);
+    }
+
+    #[test]
+    fn matmul_f64_batched_2x_2x2_times_2x2() {
+        let lhs = CpuStorageBytes::from_slice(&[
+            1.0_f64, 2.0, 3.0, 4.0,
+            1.0, 0.0, 0.0, 1.0,
+        ]);
+        let rhs = CpuStorageBytes::from_slice(&[
+            5.0_f64, 6.0, 7.0, 8.0,
+            10.0, 20.0, 30.0, 40.0,
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 8);
+        matmul_f64(&lhs, &rhs, &mut out, &[2], &[2], 2, 2, 2).expect("matmul");
+        assert_eq!(
+            out.as_slice::<f64>().unwrap(),
+            &[19.0_f64, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
+        );
     }
 
     #[test]
