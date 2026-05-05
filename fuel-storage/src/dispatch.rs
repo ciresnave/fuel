@@ -989,6 +989,309 @@ fn concat_cpu_wrapper(
     )
 }
 
+/// Generate a CPU IndexAdd wrapper. Same shape across all dtypes;
+/// only the underlying typed kernel differs.
+macro_rules! cpu_index_add_wrapper {
+    ($wrapper:ident, $kernel:path, $idx_ck:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{}: expects 3 inputs + 1 output, got {} + {}",
+                    $idx_ck, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, base_dim_size, n_indices, inner_count) = match params {
+                OpParams::IndexAdd {
+                    outer_count, base_dim_size, n_indices, inner_count,
+                } => (*outer_count, *base_dim_size, *n_indices, *inner_count),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{}: expects OpParams::IndexAdd, got {other:?}", $idx_ck,
+                    ))
+                    .bt())
+                }
+            };
+            let base_guard = read_storage(&inputs[0])?;
+            let idx_guard = read_storage(&inputs[1])?;
+            if idx_guard.dtype != DType::U32 {
+                return Err(Error::Msg(format!(
+                    "{}: indices must be U32", $idx_ck,
+                ))
+                .bt());
+            }
+            let src_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let base_cpu = cpu_input(&base_guard)?;
+            let idx_cpu = cpu_input(&idx_guard)?;
+            let src_cpu = cpu_input(&src_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                base_cpu, idx_cpu, src_cpu, out_cpu,
+                outer_count, base_dim_size, n_indices, inner_count,
+            )
+        }
+    };
+}
+
+cpu_index_add_wrapper!(index_add_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::index_add_f64,  "index_add_f64");
+cpu_index_add_wrapper!(index_add_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::index_add_bf16, "index_add_bf16");
+cpu_index_add_wrapper!(index_add_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::index_add_f16,  "index_add_f16");
+
+/// Generate a CPU ScatterAdd wrapper.
+macro_rules! cpu_scatter_add_wrapper {
+    ($wrapper:ident, $kernel:path, $name_str:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{}: expects 3 inputs + 1 output, got {} + {}",
+                    $name_str, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (base_shape, src_shape, dim) = match params {
+                OpParams::ScatterAdd { base_shape, src_shape, dim } => (base_shape, src_shape, *dim),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{}: expects OpParams::ScatterAdd, got {other:?}", $name_str,
+                    ))
+                    .bt())
+                }
+            };
+            let base_guard = read_storage(&inputs[0])?;
+            let idx_guard = read_storage(&inputs[1])?;
+            if idx_guard.dtype != DType::U32 {
+                return Err(Error::Msg(format!(
+                    "{}: indices must be U32", $name_str,
+                ))
+                .bt());
+            }
+            let src_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let base_cpu = cpu_input(&base_guard)?;
+            let idx_cpu = cpu_input(&idx_guard)?;
+            let src_cpu = cpu_input(&src_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                base_cpu, idx_cpu, src_cpu, out_cpu,
+                base_shape, src_shape, dim,
+            )
+        }
+    };
+}
+
+cpu_scatter_add_wrapper!(scatter_add_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::scatter_add_f64,  "scatter_add_f64");
+cpu_scatter_add_wrapper!(scatter_add_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::scatter_add_bf16, "scatter_add_bf16");
+cpu_scatter_add_wrapper!(scatter_add_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::scatter_add_f16,  "scatter_add_f16");
+
+/// Build a CPU Affine wrapper for any element type. Cast from f64
+/// scalars in OpParams::Affine to the target arithmetic type
+/// happens inside the macro (different cast for f64 vs half).
+macro_rules! cpu_affine_wrapper_native {
+    ($wrapper:ident, $kernel:path, $T:ty) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg("affine: 1 input + 1 output".to_string()).bt());
+            }
+            let (mul, add) = match params {
+                OpParams::Affine { mul, add } => (*mul as $T, *add as $T),
+                other => return Err(Error::Msg(format!("affine: bad params {other:?}")).bt()),
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, mul, add)
+        }
+    };
+}
+
+cpu_affine_wrapper_native!(affine_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::affine_f64, f64);
+
+macro_rules! cpu_affine_wrapper_half {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg("affine: 1 input + 1 output".to_string()).bt());
+            }
+            let (mul, add) = match params {
+                OpParams::Affine { mul, add } => (*mul as f32, *add as f32),
+                other => return Err(Error::Msg(format!("affine: bad params {other:?}")).bt()),
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, mul, add)
+        }
+    };
+}
+
+cpu_affine_wrapper_half!(affine_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::affine_bf16);
+cpu_affine_wrapper_half!(affine_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::affine_f16);
+
+macro_rules! cpu_clamp_wrapper {
+    ($wrapper:ident, $kernel:path, $T:ty) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg("clamp: 1 input + 1 output".to_string()).bt());
+            }
+            let (min, max) = match params {
+                OpParams::Clamp { min, max } => (*min as $T, *max as $T),
+                other => return Err(Error::Msg(format!("clamp: bad params {other:?}")).bt()),
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, min, max)
+        }
+    };
+}
+
+cpu_clamp_wrapper!(clamp_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::clamp_f64,  f64);
+cpu_clamp_wrapper!(clamp_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::clamp_bf16, f32);
+cpu_clamp_wrapper!(clamp_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::clamp_f16,  f32);
+
+macro_rules! cpu_powi_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg("powi: 1 input + 1 output".to_string()).bt());
+            }
+            let exp = match params {
+                OpParams::PowI { exp } => *exp,
+                other => return Err(Error::Msg(format!("powi: bad params {other:?}")).bt()),
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, exp)
+        }
+    };
+}
+
+cpu_powi_wrapper!(powi_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::powi_f64);
+cpu_powi_wrapper!(powi_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::powi_bf16);
+cpu_powi_wrapper!(powi_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::powi_f16);
+
+// ArgMax/ArgMin per-input-dtype wrappers. The existing
+// `cpu_arg_dim_wrapper!` macro hardcodes F32 input — generalize it
+// for non-F32 input dtypes.
+macro_rules! cpu_arg_dim_wrapper_typed {
+    ($wrapper:ident, $kernel:path, $expected_in_dtype:expr, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{}: 1 input + 1 output", $op_name,
+                ))
+                .bt());
+            }
+            let (input_layout, dims) = match params {
+                OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+                other => return Err(Error::Msg(format!(
+                    "{}: expects OpParams::Reduce, got {other:?}", $op_name,
+                ))
+                .bt()),
+            };
+            if dims.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{}: expects exactly 1 reduce dim, got {dims:?}", $op_name,
+                ))
+                .bt());
+            }
+            let dim = dims[0];
+            let in_guard = read_storage(&inputs[0])?;
+            if in_guard.dtype != $expected_in_dtype {
+                return Err(Error::Msg(format!(
+                    "{}: expects input dtype {:?}, got {:?}",
+                    $op_name, $expected_in_dtype, in_guard.dtype,
+                ))
+                .bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, input_layout.shape().dims(), dim)
+        }
+    };
+}
+
+// New ArgMax/ArgMin entries are keyed on output U32 like the
+// existing ones, but we need separate wrappers per input dtype.
+// Use a dispatch macro that combines them.
+fn argmax_dim_u32_cpu_dispatch(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    let in_dtype = read_storage(&inputs[0])?.dtype;
+    match in_dtype {
+        DType::F32 => argmax_dim_u32_cpu_wrapper(inputs, outputs, params),
+        DType::F64 => argmax_dim_f64_only_wrapper(inputs, outputs, params),
+        DType::BF16 => argmax_dim_bf16_only_wrapper(inputs, outputs, params),
+        DType::F16 => argmax_dim_f16_only_wrapper(inputs, outputs, params),
+        other => Err(Error::Msg(format!(
+            "argmax_dim: unsupported input dtype {other:?}",
+        ))
+        .bt()),
+    }
+}
+
+fn argmin_dim_u32_cpu_dispatch(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    let in_dtype = read_storage(&inputs[0])?.dtype;
+    match in_dtype {
+        DType::F32 => argmin_dim_u32_cpu_wrapper(inputs, outputs, params),
+        DType::F64 => argmin_dim_f64_only_wrapper(inputs, outputs, params),
+        DType::BF16 => argmin_dim_bf16_only_wrapper(inputs, outputs, params),
+        DType::F16 => argmin_dim_f16_only_wrapper(inputs, outputs, params),
+        other => Err(Error::Msg(format!(
+            "argmin_dim: unsupported input dtype {other:?}",
+        ))
+        .bt()),
+    }
+}
+
+cpu_arg_dim_wrapper_typed!(argmax_dim_f64_only_wrapper,  fuel_cpu_backend::byte_kernels::argmax_dim_f64,  DType::F64,  "argmax_dim_f64");
+cpu_arg_dim_wrapper_typed!(argmin_dim_f64_only_wrapper,  fuel_cpu_backend::byte_kernels::argmin_dim_f64,  DType::F64,  "argmin_dim_f64");
+cpu_arg_dim_wrapper_typed!(argmax_dim_bf16_only_wrapper, fuel_cpu_backend::byte_kernels::argmax_dim_bf16, DType::BF16, "argmax_dim_bf16");
+cpu_arg_dim_wrapper_typed!(argmin_dim_bf16_only_wrapper, fuel_cpu_backend::byte_kernels::argmin_dim_bf16, DType::BF16, "argmin_dim_bf16");
+cpu_arg_dim_wrapper_typed!(argmax_dim_f16_only_wrapper,  fuel_cpu_backend::byte_kernels::argmax_dim_f16,  DType::F16,  "argmax_dim_f16");
+cpu_arg_dim_wrapper_typed!(argmin_dim_f16_only_wrapper,  fuel_cpu_backend::byte_kernels::argmin_dim_f16,  DType::F16,  "argmin_dim_f16");
+
 /// Dispatch wrapper for `(Affine, F32, Cpu)`. Extracts scalar
 /// coefficients from `OpParams::Affine`.
 fn affine_f32_cpu_wrapper(
@@ -1610,10 +1913,26 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // ArgMax/ArgMin output U32 indices regardless of input dtype.
     // Binding-table key is keyed on the OUTPUT dtype; the wrapper
-    // dispatches to the right per-input-dtype kernel internally
-    // (only F32 input is wired today).
-    table.register(ArgMaxDim,          DType::U32, cpu, argmax_dim_u32_cpu_wrapper);
-    table.register(ArgMinDim,          DType::U32, cpu, argmin_dim_u32_cpu_wrapper);
+    // dispatches to the right per-input-dtype kernel internally.
+    table.register(ArgMaxDim,          DType::U32, cpu, argmax_dim_u32_cpu_dispatch);
+    table.register(ArgMinDim,          DType::U32, cpu, argmin_dim_u32_cpu_dispatch);
+
+    // IndexAdd, ScatterAdd, Affine, Clamp, PowI for f64/bf16/f16.
+    table.register(IndexAdd,           f64_dt,  cpu, index_add_f64_cpu_wrapper);
+    table.register(IndexAdd,           bf16_dt, cpu, index_add_bf16_cpu_wrapper);
+    table.register(IndexAdd,           f16_dt,  cpu, index_add_f16_cpu_wrapper);
+    table.register(ScatterAdd,         f64_dt,  cpu, scatter_add_f64_cpu_wrapper);
+    table.register(ScatterAdd,         bf16_dt, cpu, scatter_add_bf16_cpu_wrapper);
+    table.register(ScatterAdd,         f16_dt,  cpu, scatter_add_f16_cpu_wrapper);
+    table.register(Affine,             f64_dt,  cpu, affine_f64_cpu_wrapper);
+    table.register(Affine,             bf16_dt, cpu, affine_bf16_cpu_wrapper);
+    table.register(Affine,             f16_dt,  cpu, affine_f16_cpu_wrapper);
+    table.register(ClampElementwise,   f64_dt,  cpu, clamp_f64_cpu_wrapper);
+    table.register(ClampElementwise,   bf16_dt, cpu, clamp_bf16_cpu_wrapper);
+    table.register(ClampElementwise,   f16_dt,  cpu, clamp_f16_cpu_wrapper);
+    table.register(PowIElementwise,    f64_dt,  cpu, powi_f64_cpu_wrapper);
+    table.register(PowIElementwise,    bf16_dt, cpu, powi_bf16_cpu_wrapper);
+    table.register(PowIElementwise,    f16_dt,  cpu, powi_f16_cpu_wrapper);
 }
 
 // =============================================================================
@@ -1766,6 +2085,14 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((Concat, dt));
         op_dtype_support.insert((IndexSelect, dt));
         op_dtype_support.insert((Gather, dt));
+    }
+    // IndexAdd / ScatterAdd / Affine / Clamp / PowI for f64/bf16/f16.
+    for dt in [DType::F64, DType::BF16, DType::F16] {
+        op_dtype_support.insert((IndexAdd, dt));
+        op_dtype_support.insert((ScatterAdd, dt));
+        op_dtype_support.insert((Affine, dt));
+        op_dtype_support.insert((ClampElementwise, dt));
+        op_dtype_support.insert((PowIElementwise, dt));
     }
     // Argmax/argmin always produce U32 indices.
     for op in [ArgMaxDim, ArgMinDim] {
