@@ -47,6 +47,14 @@ impl CpuStorageBytes {
         }
     }
 
+    /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` zero-
+    /// initialized bytes, 64-byte aligned. Synonym for
+    /// [`Self::from_zero_bytes`]; named `alloc` for symmetry with
+    /// the GPU backend allocators.
+    pub fn alloc(byte_count: usize) -> Self {
+        Self::from_zero_bytes(byte_count)
+    }
+
     /// Allocate a fresh aligned buffer and copy `src` into it.
     pub fn from_bytes(src: &[u8]) -> Self {
         let mut buf = AlignedBytes::new_zeroed(src.len(), CPU_ALIGN_BYTES);
