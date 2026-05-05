@@ -220,6 +220,17 @@ pub enum OpParams {
         last_dim: usize,
         eps: f64,
     },
+
+    /// Pick slices along a single dim using a rank-1 U32 index
+    /// tensor. The kernel needs the outer/inner counts (dims
+    /// before/after the selected axis), the source's selected-dim
+    /// size for index bounds checking, and the index count.
+    IndexSelect {
+        outer_count: usize,
+        source_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    },
 }
 
 // =============================================================================

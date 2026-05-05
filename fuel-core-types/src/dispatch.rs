@@ -138,6 +138,9 @@ pub enum OpKind {
     /// Layer normalization along the last dim, no affine params:
     /// `y = (x - mean(x)) / sqrt(var(x) + eps)`.
     LayerNormLastDim,
+    /// Pick slices from a source tensor along `dim` using a rank-1
+    /// U32 index tensor. Output's `dim` size = number of indices.
+    IndexSelect,
 }
 
 impl OpKind {
@@ -178,6 +181,7 @@ impl OpKind {
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
             OpKind::LayerNormLastDim  => "layer_norm_last_dim",
+            OpKind::IndexSelect       => "index_select",
         }
     }
 }

@@ -171,6 +171,80 @@ pub fn contiguize_cpu(
 }
 
 // =============================================================================
+// Index select (f32 source, U32 indices)
+// =============================================================================
+
+/// Pick slices from a source `f32` tensor along one axis using
+/// `u32` indices. The source is laid out as
+/// `[outer_count, source_dim_size, inner_count]`, indices is a
+/// rank-1 `[n_indices]` `u32` array, and the output is
+/// `[outer_count, n_indices, inner_count]`.
+///
+/// Each output element at `(outer, j, inner)` reads from source
+/// at `(outer, indices[j], inner)`. Out-of-bounds indices return
+/// a typed error rather than reading garbage.
+pub fn index_select_f32(
+    source: &CpuStorageBytes,
+    indices: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    source_dim_size: usize,
+    n_indices: usize,
+    inner_count: usize,
+) -> Result<()> {
+    let elem = std::mem::size_of::<f32>();
+    let need_src = outer_count
+        .saturating_mul(source_dim_size)
+        .saturating_mul(inner_count)
+        .saturating_mul(elem);
+    let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
+    let need_out = outer_count
+        .saturating_mul(n_indices)
+        .saturating_mul(inner_count)
+        .saturating_mul(elem);
+    if source.len_bytes() != need_src {
+        return Err(Error::Msg(format!(
+            "index_select_f32: source bytes={} doesn't match outer={outer_count} × dim={source_dim_size} × inner={inner_count} × {elem}",
+            source.len_bytes(),
+        ))
+        .bt());
+    }
+    if indices.len_bytes() != need_idx {
+        return Err(Error::Msg(format!(
+            "index_select_f32: indices bytes={} doesn't match n_indices={n_indices} × 4",
+            indices.len_bytes(),
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_out {
+        return Err(Error::Msg(format!(
+            "index_select_f32: out bytes={} doesn't match outer={outer_count} × n={n_indices} × inner={inner_count} × {elem}",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    let src_view: &[f32] = source.as_slice()?;
+    let idx_view: &[u32] = indices.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for j in 0..n_indices {
+        let i = idx_view[j] as usize;
+        if i >= source_dim_size {
+            return Err(Error::Msg(format!(
+                "index_select_f32: index {i} at position {j} out of bounds for source dim {source_dim_size}",
+            ))
+            .bt());
+        }
+        for outer in 0..outer_count {
+            let src_off = (outer * source_dim_size + i) * inner_count;
+            let dst_off = (outer * n_indices + j) * inner_count;
+            out_view[dst_off..dst_off + inner_count]
+                .copy_from_slice(&src_view[src_off..src_off + inner_count]);
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Softmax (f32)
 // =============================================================================
 
@@ -1216,6 +1290,52 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn index_select_f32_embedding_lookup() {
+        // Embedding table [4, 3]: rows 0..3 are different.
+        // Indices [u32; 3] = [2, 0, 2]; output [3, 3] picks
+        // rows 2, 0, 2 in that order.
+        let table = CpuStorageBytes::from_slice(&[
+            10.0_f32, 11.0, 12.0,    // row 0
+            20.0, 21.0, 22.0,        // row 1
+            30.0, 31.0, 32.0,        // row 2
+            40.0, 41.0, 42.0,        // row 3
+        ]);
+        let indices = CpuStorageBytes::from_slice(&[2u32, 0, 2]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 3 * 4);
+        index_select_f32(&table, &indices, &mut out, 1, 4, 3, 3).expect("index_select");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[
+                30.0, 31.0, 32.0,
+                10.0, 11.0, 12.0,
+                30.0, 31.0, 32.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn index_select_f32_inner_dim() {
+        // source [2, 3]: outer=2, dim_size=3, inner=1.
+        // Pick along dim=1 with indices [2, 0]: output [2, 2].
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let indices = CpuStorageBytes::from_slice(&[2u32, 0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 4);
+        index_select_f32(&source, &indices, &mut out, 2, 3, 2, 1).expect("index_select");
+        // outer 0: row [1, 2, 3], pick (2, 0) → [3, 1]
+        // outer 1: row [4, 5, 6], pick (2, 0) → [6, 4]
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[3.0, 1.0, 6.0, 4.0]);
+    }
+
+    #[test]
+    fn index_select_f32_rejects_out_of_bounds_index() {
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let indices = CpuStorageBytes::from_slice(&[5u32]); // out of bounds for dim 3
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let r = index_select_f32(&source, &indices, &mut out, 1, 3, 1, 1);
+        assert!(r.is_err());
     }
 
     #[test]
