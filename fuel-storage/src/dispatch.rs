@@ -782,6 +782,16 @@ cpu_norm_last_dim_wrapper!(
     fuel_cpu_backend::byte_kernels::layer_norm_last_dim_f16,
     "layer_norm_last_dim"
 );
+cpu_norm_last_dim_wrapper!(
+    rms_norm_last_dim_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_f64,
+    "rms_norm_last_dim"
+);
+cpu_norm_last_dim_wrapper!(
+    layer_norm_last_dim_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_f64,
+    "layer_norm_last_dim"
+);
 
 /// Dispatch wrapper for `(SoftmaxLastDim, F32, Cpu)`. Single
 /// input + single output; (outer_count, last_dim) flow through
@@ -822,6 +832,7 @@ macro_rules! cpu_softmax_last_dim_wrapper {
 }
 
 cpu_softmax_last_dim_wrapper!(softmax_last_dim_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f32);
+cpu_softmax_last_dim_wrapper!(softmax_last_dim_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f64);
 cpu_softmax_last_dim_wrapper!(softmax_last_dim_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::softmax_last_dim_bf16);
 cpu_softmax_last_dim_wrapper!(softmax_last_dim_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f16);
 
@@ -868,6 +879,7 @@ macro_rules! cpu_rope_wrapper {
 
 cpu_rope_wrapper!(rope_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rope_bf16);
 cpu_rope_wrapper!(rope_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f16);
+cpu_rope_wrapper!(rope_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f64);
 
 /// Dispatch wrapper for `(QMatMul, F32, Cpu)`. Two inputs:
 /// activations (F32) and quantized weight bytes (U32-typed).
@@ -1907,6 +1919,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
     table.register(Rope,               bf16_dt, cpu, rope_bf16_cpu_wrapper);
     table.register(Rope,               f16_dt,  cpu, rope_f16_cpu_wrapper);
+    table.register(Rope,               f64_dt,  cpu, rope_f64_cpu_wrapper);
+    table.register(SoftmaxLastDim,     f64_dt, cpu, softmax_last_dim_f64_cpu_wrapper);
+    table.register(RmsNormLastDim,     f64_dt, cpu, rms_norm_last_dim_f64_cpu_wrapper);
+    table.register(LayerNormLastDim,   f64_dt, cpu, layer_norm_last_dim_f64_cpu_wrapper);
     table.register(QMatMul,            f32_dt, cpu, qmatmul_f32_cpu_wrapper);
     table.register(IndexAdd,           f32_dt, cpu, index_add_f32_cpu_wrapper);
     table.register(ScatterAdd,         f32_dt, cpu, scatter_add_f32_cpu_wrapper);
@@ -2093,6 +2109,10 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((Affine, dt));
         op_dtype_support.insert((ClampElementwise, dt));
         op_dtype_support.insert((PowIElementwise, dt));
+    }
+    // F64 composed/fused ops (Softmax, RmsNorm, LayerNorm, Rope).
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope] {
+        op_dtype_support.insert((op, DType::F64));
     }
     // Argmax/argmin always produce U32 indices.
     for op in [ArgMaxDim, ArgMinDim] {

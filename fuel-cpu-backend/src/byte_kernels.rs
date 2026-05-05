@@ -1121,6 +1121,76 @@ macro_rules! rope_half {
 rope_half!(rope_bf16, half::bf16);
 rope_half!(rope_f16, half::f16);
 
+/// `f64` Rope — native arithmetic, same rotate_half formula as
+/// `rope_f32`.
+pub fn rope_f64(
+    x: &CpuStorageBytes,
+    cos: &CpuStorageBytes,
+    sin: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+) -> Result<()> {
+    if head_dim % 2 != 0 {
+        return Err(Error::Msg(format!(
+            "rope_f64: head_dim ({head_dim}) must be even",
+        ))
+        .bt());
+    }
+    let elem = std::mem::size_of::<f64>();
+    let need_x = outer_count
+        .saturating_mul(seq)
+        .saturating_mul(head_dim)
+        .saturating_mul(elem);
+    let need_cs = seq.saturating_mul(head_dim).saturating_mul(elem);
+    if x.len_bytes() != need_x {
+        return Err(Error::Msg(format!(
+            "rope_f64: x bytes={} doesn't match shape (outer={outer_count} × seq={seq} × head_dim={head_dim})",
+            x.len_bytes(),
+        ))
+        .bt());
+    }
+    if cos.len_bytes() != need_cs || sin.len_bytes() != need_cs {
+        return Err(Error::Msg(format!(
+            "rope_f64: cos/sin bytes don't match (seq × head_dim × {elem})",
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_x {
+        return Err(Error::Msg(format!(
+            "rope_f64: out bytes={} doesn't match x shape",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    if seq == 0 || head_dim == 0 {
+        return Ok(());
+    }
+    let x_view: &[f64] = x.as_slice()?;
+    let cos_view: &[f64] = cos.as_slice()?;
+    let sin_view: &[f64] = sin.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    let h = head_dim / 2;
+    for outer in 0..outer_count {
+        for s in 0..seq {
+            let x_row_off = (outer * seq + s) * head_dim;
+            let cs_row_off = s * head_dim;
+            for i in 0..h {
+                let x_lo = x_view[x_row_off + i];
+                let x_hi = x_view[x_row_off + i + h];
+                let cos_lo = cos_view[cs_row_off + i];
+                let cos_hi = cos_view[cs_row_off + i + h];
+                let sin_lo = sin_view[cs_row_off + i];
+                let sin_hi = sin_view[cs_row_off + i + h];
+                out_view[x_row_off + i] = x_lo * cos_lo - x_hi * sin_lo;
+                out_view[x_row_off + i + h] = x_hi * cos_hi + x_lo * sin_hi;
+            }
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Gather (f32 source, U32 indices, same-rank)
 // =============================================================================
@@ -1423,6 +1493,52 @@ macro_rules! softmax_last_dim_half {
 softmax_last_dim_half!(softmax_last_dim_bf16, half::bf16);
 softmax_last_dim_half!(softmax_last_dim_f16, half::f16);
 
+/// Softmax along the last dim for `f64`. Same numerically-stable
+/// algorithm as `softmax_last_dim_f32`; native f64 arithmetic.
+pub fn softmax_last_dim_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+) -> Result<()> {
+    check_lens_2("softmax_last_dim_f64", input.len_bytes(), out.len_bytes())?;
+    let elem = std::mem::size_of::<f64>();
+    let need = outer_count.saturating_mul(last_dim).saturating_mul(elem);
+    if input.len_bytes() != need {
+        return Err(Error::Msg(format!(
+            "softmax_last_dim_f64: input bytes={} doesn't match outer={outer_count} × last={last_dim} × {elem}",
+            input.len_bytes(),
+        ))
+        .bt());
+    }
+    if last_dim == 0 {
+        return Ok(());
+    }
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    for row in 0..outer_count {
+        let off = row * last_dim;
+        let row_in = &in_view[off..off + last_dim];
+        let mut row_max = row_in[0];
+        for &v in &row_in[1..] {
+            if v > row_max {
+                row_max = v;
+            }
+        }
+        let mut sum = 0.0_f64;
+        for j in 0..last_dim {
+            let e = (row_in[j] - row_max).exp();
+            out_view[off + j] = e;
+            sum += e;
+        }
+        let inv = 1.0_f64 / sum;
+        for j in 0..last_dim {
+            out_view[off + j] *= inv;
+        }
+    }
+    Ok(())
+}
+
 /// Layer normalization along the last dim, no affine params:
 /// `out[i] = (x[i] - mean(x)) / sqrt(var(x) + eps)` per row, with
 /// `var = mean((x - mean)²)`.
@@ -1506,6 +1622,38 @@ macro_rules! rms_norm_last_dim_half {
 rms_norm_last_dim_half!(rms_norm_last_dim_bf16, half::bf16);
 rms_norm_last_dim_half!(rms_norm_last_dim_f16, half::f16);
 
+/// `f64` RMS norm — native arithmetic, same algorithm as the
+/// f32 version.
+pub fn rms_norm_last_dim_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    check_norm_lens_typed::<f64>("rms_norm_last_dim_f64", input, out, outer_count, last_dim)?;
+    if last_dim == 0 {
+        return Ok(());
+    }
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    let inv_n = 1.0_f64 / last_dim as f64;
+    for row in 0..outer_count {
+        let off = row * last_dim;
+        let row_in = &in_view[off..off + last_dim];
+        let mut sum_sq = 0.0_f64;
+        for &v in row_in {
+            sum_sq += v * v;
+        }
+        let mean_sq = sum_sq * inv_n;
+        let rms_inv = 1.0_f64 / (mean_sq + eps).sqrt();
+        for j in 0..last_dim {
+            out_view[off + j] = row_in[j] * rms_inv;
+        }
+    }
+    Ok(())
+}
+
 // `check_norm_lens` (used by f32 norm helpers) is dtype-specific
 // — it currently bakes in `size_of::<f32>()`. The bf16/f16 norm
 // kernels above can't call it. Verify shape locally:
@@ -1574,6 +1722,44 @@ macro_rules! layer_norm_last_dim_half {
 
 layer_norm_last_dim_half!(layer_norm_last_dim_bf16, half::bf16);
 layer_norm_last_dim_half!(layer_norm_last_dim_f16, half::f16);
+
+/// `f64` layer norm — native arithmetic, same algorithm as the
+/// f32 version.
+pub fn layer_norm_last_dim_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    check_norm_lens_typed::<f64>("layer_norm_last_dim_f64", input, out, outer_count, last_dim)?;
+    if last_dim == 0 {
+        return Ok(());
+    }
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    let inv_n = 1.0_f64 / last_dim as f64;
+    for row in 0..outer_count {
+        let off = row * last_dim;
+        let row_in = &in_view[off..off + last_dim];
+        let mut sum = 0.0_f64;
+        for &v in row_in {
+            sum += v;
+        }
+        let mean = sum * inv_n;
+        let mut sum_sq = 0.0_f64;
+        for &v in row_in {
+            let d = v - mean;
+            sum_sq += d * d;
+        }
+        let var = sum_sq * inv_n;
+        let inv_std = 1.0_f64 / (var + eps).sqrt();
+        for j in 0..last_dim {
+            out_view[off + j] = (row_in[j] - mean) * inv_std;
+        }
+    }
+    Ok(())
+}
 
 // Patch the bf16/f16 RmsNorm kernels to use `check_norm_lens_typed`
 // — the version above mistakenly called `check_norm_lens` (which
