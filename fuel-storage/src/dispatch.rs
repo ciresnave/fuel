@@ -2334,6 +2334,103 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 }
 
 // =============================================================================
+// Phase 7.5 — CUDA dispatch wrappers + registration
+// =============================================================================
+//
+// First CUDA op through the unified binding table. Mirrors the CPU
+// extractor + wrapper pattern but operates on `CudaStorageBytes`.
+// Only `(AddElementwise, F32, Cuda)` is registered today; this is the
+// "smallest possible first commit" that proves the CUDA migration
+// pattern. Subsequent commits fan out to the rest of the op surface
+// using the same wrapper-macro shape.
+
+/// Helper: extract `&CudaStorageBytes` from `&Storage`. Returns
+/// Err if the variant isn't `BackendStorage::Cuda`.
+#[cfg(feature = "cuda")]
+fn cuda_input(s: &Storage) -> Result<&fuel_cuda_backend::CudaStorageBytes> {
+    match &s.inner {
+        BackendStorage::Cuda(c) => Ok(c),
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::Msg(
+            "cuda kernel wrapper called with non-CUDA input".to_string(),
+        )
+        .bt()),
+    }
+}
+
+/// Helper: extract `&mut CudaStorageBytes` from `&mut Storage`.
+#[cfg(feature = "cuda")]
+fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::CudaStorageBytes> {
+    match &mut s.inner {
+        BackendStorage::Cuda(c) => Ok(c),
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::Msg(
+            "cuda kernel wrapper called with non-CUDA output".to_string(),
+        )
+        .bt()),
+    }
+}
+
+/// Dispatch wrapper for `(AddElementwise, F32, Cuda)`. Two F32
+/// CUDA inputs of equal byte length, one F32 CUDA output. The
+/// kernel call lives in `fuel-cuda-backend::byte_kernels`; this
+/// wrapper does the variant extraction + replaces the
+/// pre-allocated output's storage with the freshly-computed one.
+///
+/// Replacement-of-output (vs. write-into-output) is the pragmatic
+/// shape for this first commit: the legacy CUDA kernel-launch
+/// infrastructure allocates fresh `DeviceBuffer<u8>` for output,
+/// and getting unique `&mut Arc<DeviceBuffer<u8>>` from the
+/// pre-allocated `CudaStorageBytes` would require `Arc::get_mut`
+/// (only succeeds if no other holder). Replacement avoids the
+/// Arc-uniqueness dance at the cost of one drop on the executor's
+/// pre-allocated placeholder. Future-revisit if profiling shows
+/// the alloc churn matters.
+#[cfg(feature = "cuda")]
+fn add_elementwise_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "add_elementwise_f32_cuda_wrapper: expected 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "add_elementwise_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let lhs_guard = read_storage(&inputs[0])?;
+    let rhs_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let lhs_cuda = cuda_input(&lhs_guard)?;
+    let rhs_cuda = cuda_input(&rhs_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::add_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
+/// Phase 7.5 first CUDA registration. Wires
+/// `(AddElementwise, F32, Cuda)` to the byte-level CUDA kernel.
+/// Subsequent op families (sub/mul/div, matmul, etc.) extend this
+/// function — same shape as `register_cpu_kernels` but on the Cuda
+/// backend.
+#[cfg(feature = "cuda")]
+pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
+    use OpKind::*;
+    let cuda = BackendId::Cuda;
+    let f32_dt = DType::F32;
+    table.register(AddElementwise, f32_dt, cuda, add_elementwise_f32_cuda_wrapper);
+}
+
+// =============================================================================
 // Phase 7.5 B5+ — process-wide singleton (CapabilityRegistry + KernelBindingTable)
 // =============================================================================
 
