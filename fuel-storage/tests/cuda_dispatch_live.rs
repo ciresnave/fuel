@@ -202,6 +202,45 @@ fn div_elementwise_f32_through_binding_table() {
     assert_eq!(host_f32, &[10.0_f32, 20.0, 30.0, 40.0]);
 }
 
+/// End-to-end: MaximumElementwise F32 through the binding table.
+#[test]
+#[ignore]
+fn maximum_elementwise_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let lhs = build_storage_cuda(&dev, &[1.0_f32, 5.0, -2.0, 4.0]);
+    let rhs = build_storage_cuda(&dev, &[3.0_f32, 2.0, 0.0, 4.0]);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 16).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MaximumElementwise, DType::F32, BackendId::Cuda)
+        .expect("lookup (MaximumElementwise, F32, Cuda)");
+
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &OpParams::None,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_f32, &[3.0_f32, 5.0, 0.0, 4.0]);
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.
