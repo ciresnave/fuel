@@ -493,15 +493,75 @@ pub fn scatter_add_f32(
 // Index select (f32 source, U32 indices)
 // =============================================================================
 
-/// Pick slices from a source `f32` tensor along one axis using
-/// `u32` indices. The source is laid out as
-/// `[outer_count, source_dim_size, inner_count]`, indices is a
-/// rank-1 `[n_indices]` `u32` array, and the output is
-/// `[outer_count, n_indices, inner_count]`.
+/// Pick slices from a source tensor along one axis using `u32`
+/// indices. Dtype-agnostic: copies `inner_count * dtype_size`
+/// bytes per source slab.
 ///
 /// Each output element at `(outer, j, inner)` reads from source
 /// at `(outer, indices[j], inner)`. Out-of-bounds indices return
 /// a typed error rather than reading garbage.
+pub fn index_select_cpu(
+    source: &CpuStorageBytes,
+    indices: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    source_dim_size: usize,
+    n_indices: usize,
+    inner_count: usize,
+    dtype_size: usize,
+) -> Result<()> {
+    if dtype_size == 0 {
+        return Err(Error::Msg("index_select_cpu: dtype_size must be > 0".to_string()).bt());
+    }
+    let stride_bytes = inner_count.saturating_mul(dtype_size);
+    let need_src = outer_count
+        .saturating_mul(source_dim_size)
+        .saturating_mul(stride_bytes);
+    let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
+    let need_out = outer_count.saturating_mul(n_indices).saturating_mul(stride_bytes);
+    if source.len_bytes() != need_src {
+        return Err(Error::Msg(format!(
+            "index_select_cpu: source bytes={} doesn't match outer={outer_count} × dim={source_dim_size} × inner={inner_count} × dtype_size={dtype_size}",
+            source.len_bytes(),
+        ))
+        .bt());
+    }
+    if indices.len_bytes() != need_idx {
+        return Err(Error::Msg(format!(
+            "index_select_cpu: indices bytes={} doesn't match n_indices={n_indices} × 4",
+            indices.len_bytes(),
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_out {
+        return Err(Error::Msg(format!(
+            "index_select_cpu: out bytes={} doesn't match outer={outer_count} × n={n_indices} × inner={inner_count} × dtype_size={dtype_size}",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    let src_bytes = source.bytes();
+    let idx_view: &[u32] = indices.as_slice()?;
+    let out_bytes = out.bytes_mut();
+    for j in 0..n_indices {
+        let i = idx_view[j] as usize;
+        if i >= source_dim_size {
+            return Err(Error::Msg(format!(
+                "index_select_cpu: index {i} at position {j} out of bounds for source dim {source_dim_size}",
+            ))
+            .bt());
+        }
+        for outer in 0..outer_count {
+            let src_off = (outer * source_dim_size + i) * stride_bytes;
+            let dst_off = (outer * n_indices + j) * stride_bytes;
+            out_bytes[dst_off..dst_off + stride_bytes]
+                .copy_from_slice(&src_bytes[src_off..src_off + stride_bytes]);
+        }
+    }
+    Ok(())
+}
+
+/// Backward-compat shim — same shape as the prior f32-only kernel.
 pub fn index_select_f32(
     source: &CpuStorageBytes,
     indices: &CpuStorageBytes,
@@ -511,56 +571,11 @@ pub fn index_select_f32(
     n_indices: usize,
     inner_count: usize,
 ) -> Result<()> {
-    let elem = std::mem::size_of::<f32>();
-    let need_src = outer_count
-        .saturating_mul(source_dim_size)
-        .saturating_mul(inner_count)
-        .saturating_mul(elem);
-    let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
-    let need_out = outer_count
-        .saturating_mul(n_indices)
-        .saturating_mul(inner_count)
-        .saturating_mul(elem);
-    if source.len_bytes() != need_src {
-        return Err(Error::Msg(format!(
-            "index_select_f32: source bytes={} doesn't match outer={outer_count} × dim={source_dim_size} × inner={inner_count} × {elem}",
-            source.len_bytes(),
-        ))
-        .bt());
-    }
-    if indices.len_bytes() != need_idx {
-        return Err(Error::Msg(format!(
-            "index_select_f32: indices bytes={} doesn't match n_indices={n_indices} × 4",
-            indices.len_bytes(),
-        ))
-        .bt());
-    }
-    if out.len_bytes() != need_out {
-        return Err(Error::Msg(format!(
-            "index_select_f32: out bytes={} doesn't match outer={outer_count} × n={n_indices} × inner={inner_count} × {elem}",
-            out.len_bytes(),
-        ))
-        .bt());
-    }
-    let src_view: &[f32] = source.as_slice()?;
-    let idx_view: &[u32] = indices.as_slice()?;
-    let out_view: &mut [f32] = out.as_slice_mut()?;
-    for j in 0..n_indices {
-        let i = idx_view[j] as usize;
-        if i >= source_dim_size {
-            return Err(Error::Msg(format!(
-                "index_select_f32: index {i} at position {j} out of bounds for source dim {source_dim_size}",
-            ))
-            .bt());
-        }
-        for outer in 0..outer_count {
-            let src_off = (outer * source_dim_size + i) * inner_count;
-            let dst_off = (outer * n_indices + j) * inner_count;
-            out_view[dst_off..dst_off + inner_count]
-                .copy_from_slice(&src_view[src_off..src_off + inner_count]);
-        }
-    }
-    Ok(())
+    index_select_cpu(
+        source, indices, out,
+        outer_count, source_dim_size, n_indices, inner_count,
+        std::mem::size_of::<f32>(),
+    )
 }
 
 // =============================================================================
@@ -757,25 +772,23 @@ rope_half!(rope_f16, half::f16);
 // Gather (f32 source, U32 indices, same-rank)
 // =============================================================================
 
-/// N-dimensional gather along `dim`. Source and output shapes
-/// agree on every dim except `dim`. The indices tensor has the
-/// output's shape and supplies the source coord for `dim`.
-///
-/// For each output position (i₀, …, iₙ):
-/// `out[i₀, …, iₙ] = source[i₀, …, indices[i₀, …, iₙ], …, iₙ]`.
-///
-/// Out-of-bounds indices return a typed error.
-pub fn gather_f32(
+/// N-dimensional gather along `dim`. Dtype-agnostic byte-level
+/// version — copies `dtype_size` bytes per output element.
+pub fn gather_cpu(
     source: &CpuStorageBytes,
     indices: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
     source_shape: &[usize],
     output_shape: &[usize],
     dim: usize,
+    dtype_size: usize,
 ) -> Result<()> {
+    if dtype_size == 0 {
+        return Err(Error::Msg("gather_cpu: dtype_size must be > 0".to_string()).bt());
+    }
     if source_shape.len() != output_shape.len() {
         return Err(Error::Msg(format!(
-            "gather_f32: source rank ({}) != output rank ({})",
+            "gather_cpu: source rank ({}) != output rank ({})",
             source_shape.len(),
             output_shape.len(),
         ))
@@ -784,14 +797,14 @@ pub fn gather_f32(
     let rank = source_shape.len();
     if dim >= rank {
         return Err(Error::Msg(format!(
-            "gather_f32: dim {dim} out of range for rank {rank}",
+            "gather_cpu: dim {dim} out of range for rank {rank}",
         ))
         .bt());
     }
     for d in 0..rank {
         if d != dim && source_shape[d] != output_shape[d] {
             return Err(Error::Msg(format!(
-                "gather_f32: source and output disagree at dim {d} \
+                "gather_cpu: source and output disagree at dim {d} \
                  (source={}, output={}); only `dim`={dim} may differ",
                 source_shape[d],
                 output_shape[d],
@@ -799,26 +812,25 @@ pub fn gather_f32(
             .bt());
         }
     }
-    let elem = std::mem::size_of::<f32>();
     let source_total: usize = source_shape.iter().product();
     let output_total: usize = output_shape.iter().product();
-    if source.len_bytes() != source_total.saturating_mul(elem) {
+    if source.len_bytes() != source_total.saturating_mul(dtype_size) {
         return Err(Error::Msg(format!(
-            "gather_f32: source bytes={} doesn't match shape {source_shape:?} (f32)",
+            "gather_cpu: source bytes={} doesn't match shape {source_shape:?} (dtype_size={dtype_size})",
             source.len_bytes(),
         ))
         .bt());
     }
     if indices.len_bytes() != output_total.saturating_mul(std::mem::size_of::<u32>()) {
         return Err(Error::Msg(format!(
-            "gather_f32: indices bytes={} doesn't match output shape {output_shape:?} (u32)",
+            "gather_cpu: indices bytes={} doesn't match output shape {output_shape:?} (u32)",
             indices.len_bytes(),
         ))
         .bt());
     }
-    if out.len_bytes() != output_total.saturating_mul(elem) {
+    if out.len_bytes() != output_total.saturating_mul(dtype_size) {
         return Err(Error::Msg(format!(
-            "gather_f32: out bytes={} doesn't match output shape {output_shape:?} (f32)",
+            "gather_cpu: out bytes={} doesn't match output shape {output_shape:?} (dtype_size={dtype_size})",
             out.len_bytes(),
         ))
         .bt());
@@ -826,10 +838,9 @@ pub fn gather_f32(
     if output_total == 0 {
         return Ok(());
     }
-    let src_view: &[f32] = source.as_slice()?;
+    let src_bytes = source.bytes();
     let idx_view: &[u32] = indices.as_slice()?;
-    let out_view: &mut [f32] = out.as_slice_mut()?;
-    // Source strides (row-major).
+    let out_bytes = out.bytes_mut();
     let mut src_strides = vec![0usize; rank];
     let mut s = 1;
     for d in (0..rank).rev() {
@@ -838,7 +849,6 @@ pub fn gather_f32(
     }
     let mut multi = vec![0usize; rank];
     for f in 0..output_total {
-        // Decode output multi-index from f (row-major).
         let mut rem = f;
         for d in (0..rank).rev() {
             multi[d] = rem % output_shape[d];
@@ -847,21 +857,36 @@ pub fn gather_f32(
         let src_dim_idx = idx_view[f] as usize;
         if src_dim_idx >= source_shape[dim] {
             return Err(Error::Msg(format!(
-                "gather_f32: index {src_dim_idx} at output position {f} out of bounds for source dim {} = {}",
+                "gather_cpu: index {src_dim_idx} at output position {f} out of bounds for source dim {} = {}",
                 dim, source_shape[dim],
             ))
             .bt());
         }
-        // Compose source flat index.
         let mut src_flat = 0;
         for d in 0..rank {
             let coord = if d == dim { src_dim_idx } else { multi[d] };
             src_flat += coord * src_strides[d];
         }
-        out_view[f] = src_view[src_flat];
+        let src_off = src_flat * dtype_size;
+        let dst_off = f * dtype_size;
+        out_bytes[dst_off..dst_off + dtype_size]
+            .copy_from_slice(&src_bytes[src_off..src_off + dtype_size]);
     }
     Ok(())
 }
+
+/// Backward-compat shim — calls [`gather_cpu`] with `f32`'s dtype size.
+pub fn gather_f32(
+    source: &CpuStorageBytes,
+    indices: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    source_shape: &[usize],
+    output_shape: &[usize],
+    dim: usize,
+) -> Result<()> {
+    gather_cpu(source, indices, out, source_shape, output_shape, dim, std::mem::size_of::<f32>())
+}
+
 
 // =============================================================================
 // Softmax (f32)
@@ -1202,45 +1227,44 @@ layer_norm_last_dim_half!(layer_norm_last_dim_f16, half::f16);
 // hardcodes f32). Replace those calls below.
 
 // =============================================================================
-// Concat (f32)
+// Concat (dtype-agnostic, byte-level)
 // =============================================================================
 
-/// Concatenate N `f32` inputs along one dim. The output is laid out
-/// as `[outer_count, total_dim, inner_count]` row-major, where
-/// `total_dim = sum(input_dim_sizes)`. Each input contributes a
-/// `[outer_count, input_dim_sizes[i], inner_count]` slab into the
-/// output's `[outer_count, dim_offset_i .. dim_offset_i + input_dim_sizes[i], inner_count]`
-/// region.
+/// Concatenate N inputs along one dim. Dtype-agnostic: the kernel
+/// memcpys `inner_count * dtype_size` bytes per slab, so it works
+/// uniformly for f32 / f64 / bf16 / f16 / u32 / etc.
 ///
-/// Inputs are assumed contiguous in row-major order (the executor's
-/// auto-Contiguize pass guarantees this).
-pub fn concat_f32(
+/// Output layout: `[outer_count, total_dim, inner_count]` row-major
+/// where `total_dim = sum(input_dim_sizes)`. Each input contributes
+/// a `[outer_count, input_dim_sizes[i], inner_count]` slab.
+pub fn concat_cpu(
     inputs: &[&CpuStorageBytes],
     out: &mut CpuStorageBytes,
     outer_count: usize,
     input_dim_sizes: &[usize],
     inner_count: usize,
+    dtype_size: usize,
 ) -> Result<()> {
     if inputs.len() != input_dim_sizes.len() {
         return Err(Error::Msg(format!(
-            "concat_f32: inputs count ({}) != input_dim_sizes len ({})",
+            "concat_cpu: inputs count ({}) != input_dim_sizes len ({})",
             inputs.len(),
             input_dim_sizes.len(),
         ))
         .bt());
     }
     if inputs.is_empty() {
-        return Err(Error::Msg("concat_f32: at least one input required".to_string()).bt());
+        return Err(Error::Msg("concat_cpu: at least one input required".to_string()).bt());
     }
-    let elem = std::mem::size_of::<f32>();
+    if dtype_size == 0 {
+        return Err(Error::Msg("concat_cpu: dtype_size must be > 0".to_string()).bt());
+    }
     let total_dim: usize = input_dim_sizes.iter().sum();
-    let need_out = outer_count
-        .saturating_mul(total_dim)
-        .saturating_mul(inner_count)
-        .saturating_mul(elem);
+    let stride_bytes = inner_count.saturating_mul(dtype_size);
+    let need_out = outer_count.saturating_mul(total_dim).saturating_mul(stride_bytes);
     if out.len_bytes() != need_out {
         return Err(Error::Msg(format!(
-            "concat_f32: out bytes={} doesn't match outer={outer_count} × total_dim={total_dim} × inner={inner_count} × {elem}",
+            "concat_cpu: out bytes={} doesn't match outer={outer_count} × total_dim={total_dim} × inner={inner_count} × dtype_size={dtype_size}",
             out.len_bytes(),
         ))
         .bt());
@@ -1248,33 +1272,45 @@ pub fn concat_f32(
     for (i, input) in inputs.iter().enumerate() {
         let need_in = outer_count
             .saturating_mul(input_dim_sizes[i])
-            .saturating_mul(inner_count)
-            .saturating_mul(elem);
+            .saturating_mul(stride_bytes);
         if input.len_bytes() != need_in {
             return Err(Error::Msg(format!(
-                "concat_f32: input[{i}] bytes={} doesn't match outer={outer_count} × dim={} × inner={inner_count} × {elem}",
+                "concat_cpu: input[{i}] bytes={} doesn't match outer={outer_count} × dim={} × inner={inner_count} × dtype_size={dtype_size}",
                 input.len_bytes(),
                 input_dim_sizes[i],
             ))
             .bt());
         }
     }
-    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let out_bytes = out.bytes_mut();
     let mut dim_offset = 0usize;
     for (i, input) in inputs.iter().enumerate() {
-        let in_view: &[f32] = input.as_slice()?;
+        let in_bytes = input.bytes();
         let d_i = input_dim_sizes[i];
         for outer in 0..outer_count {
             for dim_pos in 0..d_i {
-                let src_off = (outer * d_i + dim_pos) * inner_count;
-                let dst_off = (outer * total_dim + dim_offset + dim_pos) * inner_count;
-                out_view[dst_off..dst_off + inner_count]
-                    .copy_from_slice(&in_view[src_off..src_off + inner_count]);
+                let src_off = (outer * d_i + dim_pos) * stride_bytes;
+                let dst_off = (outer * total_dim + dim_offset + dim_pos) * stride_bytes;
+                out_bytes[dst_off..dst_off + stride_bytes]
+                    .copy_from_slice(&in_bytes[src_off..src_off + stride_bytes]);
             }
         }
         dim_offset += d_i;
     }
     Ok(())
+}
+
+/// Backward-compat shim: forwards to [`concat_cpu`] with `f32`'s
+/// dtype size. Existing callers (the dispatch wrapper and tests)
+/// keep working unchanged.
+pub fn concat_f32(
+    inputs: &[&CpuStorageBytes],
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    input_dim_sizes: &[usize],
+    inner_count: usize,
+) -> Result<()> {
+    concat_cpu(inputs, out, outer_count, input_dim_sizes, inner_count, std::mem::size_of::<f32>())
 }
 
 // =============================================================================

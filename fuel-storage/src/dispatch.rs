@@ -616,10 +616,9 @@ fn rope_f32_cpu_wrapper(
     )
 }
 
-/// Dispatch wrapper for `(Gather, F32, Cpu)`. Two inputs:
-/// source (f32) and indices (U32). Source/output shapes flow
-/// through `OpParams::Gather`.
-fn gather_f32_cpu_wrapper(
+/// Dispatch wrapper for `(Gather, *, Cpu)`. Dtype-agnostic at
+/// the byte level — `dtype_size` flows from the output Storage.
+fn gather_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     params: &OpParams,
@@ -652,20 +651,20 @@ fn gather_f32_cpu_wrapper(
         .bt());
     }
     let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
     let src_cpu = cpu_input(&src_guard)?;
     let idx_cpu = cpu_input(&idx_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::gather_f32(
+    fuel_cpu_backend::byte_kernels::gather_cpu(
         src_cpu, idx_cpu, out_cpu,
-        source_shape, output_shape, dim,
+        source_shape, output_shape, dim, dtype_size,
     )
 }
 
-/// Dispatch wrapper for `(IndexSelect, F32, Cpu)`. Two inputs:
-/// source (f32) and indices (U32). The binding-table key is the
-/// *output* dtype (= the source's dtype = f32). Indices dtype is
-/// fixed and read at runtime from the input Storage.
-fn index_select_f32_cpu_wrapper(
+/// Dispatch wrapper for `(IndexSelect, *, Cpu)`. Dtype-agnostic
+/// at the byte level — `dtype_size` flows from the output Storage.
+/// Indices are always U32 (validated at runtime).
+fn index_select_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     params: &OpParams,
@@ -705,12 +704,13 @@ fn index_select_f32_cpu_wrapper(
         .bt());
     }
     let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
     let src_cpu = cpu_input(&src_guard)?;
     let idx_cpu = cpu_input(&idx_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::index_select_f32(
+    fuel_cpu_backend::byte_kernels::index_select_cpu(
         src_cpu, idx_cpu, out_cpu,
-        outer_count, source_dim_size, n_indices, inner_count,
+        outer_count, source_dim_size, n_indices, inner_count, dtype_size,
     )
 }
 
@@ -930,9 +930,10 @@ fn qmatmul_f32_cpu_wrapper(
     }
 }
 
-/// Dispatch wrapper for `(Concat, F32, Cpu)`. Variable number of
-/// inputs (≥ 1); shape parameters flow through `OpParams::Concat`.
-fn concat_f32_cpu_wrapper(
+/// Dispatch wrapper for `(Concat, *, Cpu)`. Dtype-agnostic — the
+/// underlying kernel is `concat_cpu(... dtype_size)`. The wrapper
+/// reads dtype_size from the output Storage's dtype tag.
+fn concat_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     params: &OpParams,
@@ -976,13 +977,15 @@ fn concat_f32_cpu_wrapper(
         in_cpus.push(cpu_input(g)?);
     }
     let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::concat_f32(
+    fuel_cpu_backend::byte_kernels::concat_cpu(
         &in_cpus,
         out_cpu,
         outer_count,
         input_dim_sizes,
         inner_count,
+        dtype_size,
     )
 }
 
@@ -1578,7 +1581,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GeluElementwise,    f16_dt, cpu, gelu_elementwise_f16_cpu_wrapper);
     table.register(StepElementwise,    f16_dt, cpu, step_elementwise_f16_cpu_wrapper);
 
-    table.register(Concat,             f32_dt, cpu, concat_f32_cpu_wrapper);
+    // Concat is dtype-agnostic at the byte level — register the
+    // same wrapper for every dtype the executor might allocate.
+    for dt in [DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8, DType::I16, DType::I32, DType::I64] {
+        table.register(Concat, dt, cpu, concat_cpu_wrapper);
+    }
     table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
     table.register(SoftmaxLastDim,     bf16_dt, cpu, softmax_last_dim_bf16_cpu_wrapper);
     table.register(SoftmaxLastDim,     f16_dt,  cpu, softmax_last_dim_f16_cpu_wrapper);
@@ -1588,8 +1595,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(LayerNormLastDim,   f32_dt, cpu, layer_norm_last_dim_f32_cpu_wrapper);
     table.register(LayerNormLastDim,   bf16_dt, cpu, layer_norm_last_dim_bf16_cpu_wrapper);
     table.register(LayerNormLastDim,   f16_dt,  cpu, layer_norm_last_dim_f16_cpu_wrapper);
-    table.register(IndexSelect,        f32_dt, cpu, index_select_f32_cpu_wrapper);
-    table.register(Gather,             f32_dt, cpu, gather_f32_cpu_wrapper);
+    // IndexSelect and Gather are dtype-agnostic at the byte level —
+    // register the same wrappers across every supported dtype.
+    for dt in [DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8, DType::I16, DType::I32, DType::I64] {
+        table.register(IndexSelect, dt, cpu, index_select_cpu_wrapper);
+        table.register(Gather,      dt, cpu, gather_cpu_wrapper);
+    }
     table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
     table.register(Rope,               bf16_dt, cpu, rope_bf16_cpu_wrapper);
     table.register(Rope,               f16_dt,  cpu, rope_f16_cpu_wrapper);
@@ -1748,6 +1759,13 @@ fn default_cpu_caps() -> BackendCapabilities {
     for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
+    }
+    // Concat / IndexSelect / Gather are dtype-agnostic at the
+    // byte level — advertised across the universal float/int set.
+    for dt in [DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8, DType::I16, DType::I32, DType::I64] {
+        op_dtype_support.insert((Concat, dt));
+        op_dtype_support.insert((IndexSelect, dt));
+        op_dtype_support.insert((Gather, dt));
     }
     // Argmax/argmin always produce U32 indices.
     for op in [ArgMaxDim, ArgMinDim] {
