@@ -3892,6 +3892,361 @@ flash_attn_half_kernel!(flash_attn_bf16, half::bf16);
 flash_attn_half_kernel!(flash_attn_f16, half::f16);
 
 // =============================================================================
+// PagedAttn — paged-KV-cache attention (naive)
+// =============================================================================
+//
+// Inputs:
+//   q:             [B, Hq, Sq, D]
+//   k_cache:       [num_blocks, block_size, Hkv, D]
+//   v_cache:       [num_blocks, block_size, Hkv, D]
+//   block_table:   [B, max_num_blocks_per_seq] (U32)  logical → physical block
+//   context_lens:  [B] (U32)                          true context length per seq
+//   alibi_slopes:  [Hq] (optional)
+// Output: [B, Hq, Sq, D] (same shape as q).
+//
+// Causal masking is implicit: query at position `q_pos = ctx_len - Sq + sq`
+// (absolute position in the sequence) admits keys at `kj <= q_pos`.
+
+/// PagedAttn for native arithmetic.
+macro_rules! paged_attn_native_kernel {
+    ($name:ident, $T:ty, $T_zero:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            q: &CpuStorageBytes,
+            k_cache: &CpuStorageBytes,
+            v_cache: &CpuStorageBytes,
+            block_table: &CpuStorageBytes,
+            context_lens: &CpuStorageBytes,
+            alibi_slopes: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, d: usize,
+            block_size: usize,
+            max_blocks_per_seq: usize,
+            num_blocks: usize,
+            softmax_scale: f32,
+            softcap: Option<f32>,
+        ) -> Result<()> {
+            if hq % hkv != 0 || hkv == 0 || block_size == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: contract violation (Hq={hq}, Hkv={hkv}, block_size={block_size})",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            let u32_elem = std::mem::size_of::<u32>();
+            if q.len_bytes() != b * hq * sq * d * elem
+                || k_cache.len_bytes() != num_blocks * block_size * hkv * d * elem
+                || v_cache.len_bytes() != num_blocks * block_size * hkv * d * elem
+                || block_table.len_bytes() != b * max_blocks_per_seq * u32_elem
+                || context_lens.len_bytes() != b * u32_elem
+                || out.len_bytes() != b * hq * sq * d * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if let Some(a) = alibi_slopes {
+                if a.len_bytes() != hq * elem {
+                    return Err(Error::Msg(format!(
+                        "{}: alibi_slopes bytes mismatch", stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let q_view: &[$T] = q.as_slice()?;
+            let k_view: &[$T] = k_cache.as_slice()?;
+            let v_view: &[$T] = v_cache.as_slice()?;
+            let bt_view: &[u32] = block_table.as_slice()?;
+            let cl_view: &[u32] = context_lens.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let alibi_view: Option<&[$T]> = match alibi_slopes {
+                Some(a) => Some(a.as_slice()?),
+                None => None,
+            };
+            let groups = hq / hkv;
+            let q_h_stride = sq * d;
+            let q_b_stride = hq * q_h_stride;
+            let o_h_stride = sq * d;
+            let o_b_stride = hq * o_h_stride;
+            // KV cache strides for [num_blocks, block_size, Hkv, D]
+            let kv_block_stride = block_size * hkv * d;
+            let kv_slot_stride = hkv * d;
+            let kv_head_stride = d;
+            let scale = softmax_scale as $T;
+            for slot in out_view.iter_mut() { *slot = $T_zero; }
+            for bi in 0..b {
+                let ctx_len = cl_view[bi] as usize;
+                if ctx_len == 0 { continue; }
+                if ctx_len > max_blocks_per_seq * block_size {
+                    return Err(Error::Msg(format!(
+                        "{}: context_lens[{bi}]={ctx_len} > capacity {} block_size*max_blocks",
+                        stringify!($name), max_blocks_per_seq * block_size,
+                    ))
+                    .bt());
+                }
+                let bt_off = bi * max_blocks_per_seq;
+                for hi in 0..hq {
+                    let kv_h = hi / groups;
+                    let q_off = bi * q_b_stride + hi * q_h_stride;
+                    let o_off = bi * o_b_stride + hi * o_h_stride;
+                    let alibi_h: Option<$T> = alibi_view.map(|a| a[hi]);
+                    for qi in 0..sq {
+                        let q_pos_abs = ctx_len + qi - sq;
+                        // Build admissible scores over [0, ctx_len).
+                        let mut scores = vec![$T_zero; ctx_len];
+                        let mut admissible = vec![false; ctx_len];
+                        let mut max_score: $T = <$T>::NEG_INFINITY;
+                        for kj in 0..ctx_len {
+                            // Implicit causal mask.
+                            if kj > q_pos_abs { continue; }
+                            let logical_block = kj / block_size;
+                            let block_off = kj % block_size;
+                            let physical_block = bt_view[bt_off + logical_block] as usize;
+                            if physical_block >= num_blocks {
+                                return Err(Error::Msg(format!(
+                                    "{}: block_table[{bi}, {logical_block}]={physical_block} \
+                                     out of range (num_blocks={num_blocks})",
+                                    stringify!($name),
+                                ))
+                                .bt());
+                            }
+                            admissible[kj] = true;
+                            let k_off = physical_block * kv_block_stride
+                                + block_off * kv_slot_stride
+                                + kv_h * kv_head_stride;
+                            let v_off = k_off;
+                            let mut acc: $T = $T_zero;
+                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off .. k_off + d];
+                            for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                                acc += (*qx) * (*kx);
+                            }
+                            let mut s = acc * scale;
+                            if let Some(c) = softcap {
+                                let cc = c as $T;
+                                s = (s / cc).tanh() * cc;
+                            }
+                            if let Some(slope) = alibi_h {
+                                let delta = (kj as f32 - q_pos_abs as f32) as $T;
+                                s += slope * delta;
+                            }
+                            scores[kj] = s;
+                            if s > max_score { max_score = s; }
+                            // The v_off variable is just a name alias for k_off in
+                            // this naive impl since v_cache shares the block layout.
+                            let _ = v_off;
+                        }
+                        if !max_score.is_finite() { continue; }
+                        let mut sum: $T = $T_zero;
+                        for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
+                            if *ad {
+                                *s = (*s - max_score).exp();
+                                sum += *s;
+                            } else {
+                                *s = $T_zero;
+                            }
+                        }
+                        if sum == $T_zero { continue; }
+                        let inv_sum = (1.0 as $T) / sum;
+                        for kj in 0..ctx_len {
+                            if !admissible[kj] { continue; }
+                            let p_ij = scores[kj] * inv_sum;
+                            if p_ij == $T_zero { continue; }
+                            let logical_block = kj / block_size;
+                            let block_off = kj % block_size;
+                            let physical_block = bt_view[bt_off + logical_block] as usize;
+                            let v_off = physical_block * kv_block_stride
+                                + block_off * kv_slot_stride
+                                + kv_h * kv_head_stride;
+                            let v_row = &v_view[v_off .. v_off + d];
+                            for (od, vd) in
+                                out_view[o_off + qi * d .. o_off + (qi + 1) * d]
+                                    .iter_mut()
+                                    .zip(v_row.iter())
+                            {
+                                *od += p_ij * (*vd);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+paged_attn_native_kernel!(paged_attn_f32, f32, 0.0_f32);
+paged_attn_native_kernel!(paged_attn_f64, f64, 0.0_f64);
+
+/// PagedAttn for half-floats — f32 accumulator.
+macro_rules! paged_attn_half_kernel {
+    ($name:ident, $T:ty) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            q: &CpuStorageBytes,
+            k_cache: &CpuStorageBytes,
+            v_cache: &CpuStorageBytes,
+            block_table: &CpuStorageBytes,
+            context_lens: &CpuStorageBytes,
+            alibi_slopes: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, d: usize,
+            block_size: usize,
+            max_blocks_per_seq: usize,
+            num_blocks: usize,
+            softmax_scale: f32,
+            softcap: Option<f32>,
+        ) -> Result<()> {
+            if hq % hkv != 0 || hkv == 0 || block_size == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: contract violation", stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            let u32_elem = std::mem::size_of::<u32>();
+            if q.len_bytes() != b * hq * sq * d * elem
+                || k_cache.len_bytes() != num_blocks * block_size * hkv * d * elem
+                || v_cache.len_bytes() != num_blocks * block_size * hkv * d * elem
+                || block_table.len_bytes() != b * max_blocks_per_seq * u32_elem
+                || context_lens.len_bytes() != b * u32_elem
+                || out.len_bytes() != b * hq * sq * d * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if let Some(a) = alibi_slopes {
+                if a.len_bytes() != hq * elem {
+                    return Err(Error::Msg(format!(
+                        "{}: alibi_slopes bytes mismatch", stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let q_view: &[$T] = q.as_slice()?;
+            let k_view: &[$T] = k_cache.as_slice()?;
+            let v_view: &[$T] = v_cache.as_slice()?;
+            let bt_view: &[u32] = block_table.as_slice()?;
+            let cl_view: &[u32] = context_lens.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let alibi_view: Option<&[$T]> = match alibi_slopes {
+                Some(a) => Some(a.as_slice()?),
+                None => None,
+            };
+            let groups = hq / hkv;
+            let q_h_stride = sq * d;
+            let q_b_stride = hq * q_h_stride;
+            let o_h_stride = sq * d;
+            let o_b_stride = hq * o_h_stride;
+            let kv_block_stride = block_size * hkv * d;
+            let kv_slot_stride = hkv * d;
+            let kv_head_stride = d;
+            for slot in out_view.iter_mut() { *slot = <$T>::from_f32(0.0); }
+            for bi in 0..b {
+                let ctx_len = cl_view[bi] as usize;
+                if ctx_len == 0 { continue; }
+                if ctx_len > max_blocks_per_seq * block_size {
+                    return Err(Error::Msg(format!(
+                        "{}: ctx_len out of capacity", stringify!($name),
+                    ))
+                    .bt());
+                }
+                let bt_off = bi * max_blocks_per_seq;
+                for hi in 0..hq {
+                    let kv_h = hi / groups;
+                    let q_off = bi * q_b_stride + hi * q_h_stride;
+                    let o_off = bi * o_b_stride + hi * o_h_stride;
+                    let alibi_h: Option<f32> = alibi_view.map(|a| a[hi].to_f32());
+                    for qi in 0..sq {
+                        let q_pos_abs = ctx_len + qi - sq;
+                        let mut scores = vec![0.0_f32; ctx_len];
+                        let mut admissible = vec![false; ctx_len];
+                        let mut max_score = f32::NEG_INFINITY;
+                        for kj in 0..ctx_len {
+                            if kj > q_pos_abs { continue; }
+                            let logical_block = kj / block_size;
+                            let block_off = kj % block_size;
+                            let physical_block = bt_view[bt_off + logical_block] as usize;
+                            if physical_block >= num_blocks {
+                                return Err(Error::Msg(format!(
+                                    "{}: block_table out of range", stringify!($name),
+                                ))
+                                .bt());
+                            }
+                            admissible[kj] = true;
+                            let k_off = physical_block * kv_block_stride
+                                + block_off * kv_slot_stride
+                                + kv_h * kv_head_stride;
+                            let mut acc = 0.0_f32;
+                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off .. k_off + d];
+                            for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                                acc += qx.to_f32() * kx.to_f32();
+                            }
+                            let mut s = acc * softmax_scale;
+                            if let Some(c) = softcap {
+                                s = (s / c).tanh() * c;
+                            }
+                            if let Some(slope) = alibi_h {
+                                let delta = kj as f32 - q_pos_abs as f32;
+                                s += slope * delta;
+                            }
+                            scores[kj] = s;
+                            if s > max_score { max_score = s; }
+                        }
+                        if !max_score.is_finite() { continue; }
+                        let mut sum = 0.0_f32;
+                        for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
+                            if *ad {
+                                *s = (*s - max_score).exp();
+                                sum += *s;
+                            } else {
+                                *s = 0.0;
+                            }
+                        }
+                        if sum == 0.0 { continue; }
+                        let inv_sum = 1.0_f32 / sum;
+                        let mut row_acc = vec![0.0_f32; d];
+                        for kj in 0..ctx_len {
+                            if !admissible[kj] { continue; }
+                            let p_ij = scores[kj] * inv_sum;
+                            if p_ij == 0.0 { continue; }
+                            let logical_block = kj / block_size;
+                            let block_off = kj % block_size;
+                            let physical_block = bt_view[bt_off + logical_block] as usize;
+                            let v_off = physical_block * kv_block_stride
+                                + block_off * kv_slot_stride
+                                + kv_h * kv_head_stride;
+                            let v_row = &v_view[v_off .. v_off + d];
+                            for (od, vd) in row_acc.iter_mut().zip(v_row.iter()) {
+                                *od += p_ij * vd.to_f32();
+                            }
+                        }
+                        for (slot, val) in
+                            out_view[o_off + qi * d .. o_off + (qi + 1) * d]
+                                .iter_mut()
+                                .zip(row_acc.iter())
+                        {
+                            *slot = <$T>::from_f32(*val);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+paged_attn_half_kernel!(paged_attn_bf16, half::bf16);
+paged_attn_half_kernel!(paged_attn_f16, half::f16);
+
+// =============================================================================
 // 2D Convolution (f32)
 // =============================================================================
 

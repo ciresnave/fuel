@@ -1840,6 +1840,89 @@ cpu_flash_attn_wrapper!(flash_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kern
 cpu_flash_attn_wrapper!(flash_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_bf16);
 cpu_flash_attn_wrapper!(flash_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f16);
 
+/// Dispatch wrapper for `(PagedAttn, *, Cpu)`. 5 or 6 inputs (q,
+/// k_cache, v_cache, block_table, context_lens, optional alibi_slopes).
+macro_rules! cpu_paged_attn_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 5 && inputs.len() != 6 {
+                return Err(Error::Msg(format!(
+                    "paged_attn wrapper expects 5 or 6 inputs, got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "paged_attn wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (b, hq, hkv, sq, d, block_size, max_blocks_per_seq, num_blocks, scale, softcap) =
+                match params {
+                    OpParams::PagedAttn {
+                        b, hq, hkv, sq, d,
+                        block_size, max_blocks_per_seq, num_blocks,
+                        softmax_scale, softcap,
+                    } => (
+                        *b, *hq, *hkv, *sq, *d,
+                        *block_size, *max_blocks_per_seq, *num_blocks,
+                        *softmax_scale, *softcap,
+                    ),
+                    other => {
+                        return Err(Error::Msg(format!(
+                            "paged_attn wrapper expects OpParams::PagedAttn, got {other:?}",
+                        ))
+                        .bt())
+                    }
+                };
+            let q_g = read_storage(&inputs[0])?;
+            let kc_g = read_storage(&inputs[1])?;
+            let vc_g = read_storage(&inputs[2])?;
+            let bt_g = read_storage(&inputs[3])?;
+            let cl_g = read_storage(&inputs[4])?;
+            let alibi_g = match inputs.get(5) {
+                Some(arc) => Some(read_storage(arc)?),
+                None => None,
+            };
+            if bt_g.dtype != DType::U32 || cl_g.dtype != DType::U32 {
+                return Err(Error::Msg(format!(
+                    "paged_attn: block_table and context_lens must be U32, got {:?} / {:?}",
+                    bt_g.dtype, cl_g.dtype,
+                ))
+                .bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let q_cpu = cpu_input(&q_g)?;
+            let kc_cpu = cpu_input(&kc_g)?;
+            let vc_cpu = cpu_input(&vc_g)?;
+            let bt_cpu = cpu_input(&bt_g)?;
+            let cl_cpu = cpu_input(&cl_g)?;
+            let alibi_cpu = match &alibi_g {
+                Some(g) => Some(cpu_input(g)?),
+                None => None,
+            };
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                q_cpu, kc_cpu, vc_cpu, bt_cpu, cl_cpu, alibi_cpu, out_cpu,
+                b, hq, hkv, sq, d,
+                block_size, max_blocks_per_seq, num_blocks,
+                scale, softcap,
+            )
+        }
+    };
+}
+
+cpu_paged_attn_wrapper!(paged_attn_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f32);
+cpu_paged_attn_wrapper!(paged_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f64);
+cpu_paged_attn_wrapper!(paged_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::paged_attn_bf16);
+cpu_paged_attn_wrapper!(paged_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f16);
+
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
     DType::F32,
@@ -2137,6 +2220,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(FlashAttn, bf16_dt, cpu, flash_attn_bf16_cpu_wrapper);
     table.register(FlashAttn, f16_dt,  cpu, flash_attn_f16_cpu_wrapper);
 
+    table.register(PagedAttn, f32_dt,  cpu, paged_attn_f32_cpu_wrapper);
+    table.register(PagedAttn, f64_dt,  cpu, paged_attn_f64_cpu_wrapper);
+    table.register(PagedAttn, bf16_dt, cpu, paged_attn_bf16_cpu_wrapper);
+    table.register(PagedAttn, f16_dt,  cpu, paged_attn_f16_cpu_wrapper);
+
     table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
     table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
@@ -2302,6 +2390,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         ReduceSumTo,
         FusedLinear,
         FlashAttn,
+        PagedAttn,
         Affine,
         ClampElementwise,
         PowIElementwise,
@@ -2355,6 +2444,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         ReduceSumTo,
         FusedLinear,
         FlashAttn,
+        PagedAttn,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
@@ -2394,8 +2484,8 @@ fn default_cpu_caps() -> BackendCapabilities {
     }
     // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
     // Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear,
-    // FlashAttn) — all use the f32-accumulator pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear, FlashAttn] {
+    // FlashAttn, PagedAttn) — all use the f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear, FlashAttn, PagedAttn] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
