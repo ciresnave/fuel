@@ -662,6 +662,97 @@ pub fn rope_f32(
     Ok(())
 }
 
+/// Generate a half-float Rope kernel parameterized over `$T`.
+/// Each element is widened to f32 for the rotate_half computation,
+/// then narrowed back when written to the output.
+macro_rules! rope_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            x: &CpuStorageBytes,
+            cos: &CpuStorageBytes,
+            sin: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            seq: usize,
+            head_dim: usize,
+        ) -> Result<()> {
+            if head_dim % 2 != 0 {
+                return Err(Error::Msg(format!(
+                    "{}: head_dim ({head_dim}) must be even",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            let need_x = outer_count
+                .saturating_mul(seq)
+                .saturating_mul(head_dim)
+                .saturating_mul(elem);
+            let need_cs = seq.saturating_mul(head_dim).saturating_mul(elem);
+            if x.len_bytes() != need_x {
+                return Err(Error::Msg(format!(
+                    "{}: x bytes={} doesn't match outer={outer_count} × seq={seq} × head_dim={head_dim} × {elem}",
+                    stringify!($name), x.len_bytes(),
+                ))
+                .bt());
+            }
+            if cos.len_bytes() != need_cs {
+                return Err(Error::Msg(format!(
+                    "{}: cos bytes={} doesn't match seq × head_dim × {elem}",
+                    stringify!($name), cos.len_bytes(),
+                ))
+                .bt());
+            }
+            if sin.len_bytes() != need_cs {
+                return Err(Error::Msg(format!(
+                    "{}: sin bytes={} doesn't match seq × head_dim × {elem}",
+                    stringify!($name), sin.len_bytes(),
+                ))
+                .bt());
+            }
+            if out.len_bytes() != need_x {
+                return Err(Error::Msg(format!(
+                    "{}: out bytes={} doesn't match x shape",
+                    stringify!($name), out.len_bytes(),
+                ))
+                .bt());
+            }
+            if seq == 0 || head_dim == 0 {
+                return Ok(());
+            }
+            let x_view: &[$T] = x.as_slice()?;
+            let cos_view: &[$T] = cos.as_slice()?;
+            let sin_view: &[$T] = sin.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let h = head_dim / 2;
+            for outer in 0..outer_count {
+                for s in 0..seq {
+                    let x_row_off = (outer * seq + s) * head_dim;
+                    let cs_row_off = s * head_dim;
+                    for i in 0..h {
+                        let x_lo_off = x_row_off + i;
+                        let x_hi_off = x_row_off + i + h;
+                        let cs_lo_off = cs_row_off + i;
+                        let cs_hi_off = cs_row_off + i + h;
+                        let x_lo = x_view[x_lo_off].to_f32();
+                        let x_hi = x_view[x_hi_off].to_f32();
+                        let cos_lo = cos_view[cs_lo_off].to_f32();
+                        let cos_hi = cos_view[cs_hi_off].to_f32();
+                        let sin_lo = sin_view[cs_lo_off].to_f32();
+                        let sin_hi = sin_view[cs_hi_off].to_f32();
+                        out_view[x_lo_off] = <$T>::from_f32(x_lo * cos_lo - x_hi * sin_lo);
+                        out_view[x_hi_off] = <$T>::from_f32(x_hi * cos_hi + x_lo * sin_hi);
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+rope_half!(rope_bf16, half::bf16);
+rope_half!(rope_f16, half::f16);
+
 // =============================================================================
 // Gather (f32 source, U32 indices, same-rank)
 // =============================================================================
@@ -896,6 +987,64 @@ pub fn rms_norm_last_dim_f32(
     Ok(())
 }
 
+/// Generate a half-float SoftmaxLastDim kernel parameterized
+/// over `$T` (`half::bf16` / `half::f16`). All arithmetic happens
+/// in f32 (numerically stable max-subtract + exp + sum +
+/// normalize); narrowing back to half-float happens only on the
+/// final write.
+macro_rules! softmax_last_dim_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            last_dim: usize,
+        ) -> Result<()> {
+            check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
+            let elem = std::mem::size_of::<$T>();
+            let need = outer_count.saturating_mul(last_dim).saturating_mul(elem);
+            if input.len_bytes() != need {
+                return Err(Error::Msg(format!(
+                    "{}: input bytes={} doesn't match outer={outer_count} × last={last_dim} × {elem}",
+                    stringify!($name), input.len_bytes(),
+                ))
+                .bt());
+            }
+            if last_dim == 0 {
+                return Ok(());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            // Per-row scratch buffer for exp(x - max) values.
+            let mut exps = vec![0.0_f32; last_dim];
+            for row in 0..outer_count {
+                let off = row * last_dim;
+                let mut row_max = in_view[off].to_f32();
+                for j in 1..last_dim {
+                    let v = in_view[off + j].to_f32();
+                    if v > row_max {
+                        row_max = v;
+                    }
+                }
+                let mut sum = 0.0_f32;
+                for j in 0..last_dim {
+                    let e = (in_view[off + j].to_f32() - row_max).exp();
+                    exps[j] = e;
+                    sum += e;
+                }
+                let inv = 1.0_f32 / sum;
+                for j in 0..last_dim {
+                    out_view[off + j] = <$T>::from_f32(exps[j] * inv);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+softmax_last_dim_half!(softmax_last_dim_bf16, half::bf16);
+softmax_last_dim_half!(softmax_last_dim_f16, half::f16);
+
 /// Layer normalization along the last dim, no affine params:
 /// `out[i] = (x[i] - mean(x)) / sqrt(var(x) + eps)` per row, with
 /// `var = mean((x - mean)²)`.
@@ -935,6 +1084,122 @@ pub fn layer_norm_last_dim_f32(
     }
     Ok(())
 }
+
+/// Generate a half-float RmsNormLastDim kernel parameterized
+/// over `$T`. All arithmetic happens in f32 (sum-of-squares,
+/// reciprocal sqrt); narrowing back to the half-float type
+/// happens only on the final write.
+macro_rules! rms_norm_last_dim_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            last_dim: usize,
+            eps: f64,
+        ) -> Result<()> {
+            check_norm_lens_typed::<$T>(stringify!($name), input, out, outer_count, last_dim)?;
+            if last_dim == 0 {
+                return Ok(());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let eps32 = eps as f32;
+            let inv_n = 1.0_f32 / last_dim as f32;
+            for row in 0..outer_count {
+                let off = row * last_dim;
+                let mut sum_sq = 0.0_f32;
+                for j in 0..last_dim {
+                    let v = in_view[off + j].to_f32();
+                    sum_sq += v * v;
+                }
+                let mean_sq = sum_sq * inv_n;
+                let rms_inv = 1.0_f32 / (mean_sq + eps32).sqrt();
+                for j in 0..last_dim {
+                    out_view[off + j] =
+                        <$T>::from_f32(in_view[off + j].to_f32() * rms_inv);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+rms_norm_last_dim_half!(rms_norm_last_dim_bf16, half::bf16);
+rms_norm_last_dim_half!(rms_norm_last_dim_f16, half::f16);
+
+// `check_norm_lens` (used by f32 norm helpers) is dtype-specific
+// — it currently bakes in `size_of::<f32>()`. The bf16/f16 norm
+// kernels above can't call it. Verify shape locally:
+fn check_norm_lens_typed<T>(
+    name: &str,
+    input: &CpuStorageBytes,
+    out: &CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+) -> Result<()> {
+    let elem = std::mem::size_of::<T>();
+    let need = outer_count.saturating_mul(last_dim).saturating_mul(elem);
+    if input.len_bytes() != need || out.len_bytes() != need {
+        return Err(Error::Msg(format!(
+            "{name}: bytes mismatch (input={}, out={}, expected outer={outer_count} × last={last_dim} × {elem})",
+            input.len_bytes(),
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    Ok(())
+}
+
+/// Generate a half-float LayerNormLastDim kernel (no affine
+/// params) parameterized over `$T`. Two-pass per row in f32.
+macro_rules! layer_norm_last_dim_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            last_dim: usize,
+            eps: f64,
+        ) -> Result<()> {
+            check_norm_lens_typed::<$T>(stringify!($name), input, out, outer_count, last_dim)?;
+            if last_dim == 0 {
+                return Ok(());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let eps32 = eps as f32;
+            let inv_n = 1.0_f32 / last_dim as f32;
+            for row in 0..outer_count {
+                let off = row * last_dim;
+                let mut sum = 0.0_f32;
+                for j in 0..last_dim {
+                    sum += in_view[off + j].to_f32();
+                }
+                let mean = sum * inv_n;
+                let mut sum_sq = 0.0_f32;
+                for j in 0..last_dim {
+                    let d = in_view[off + j].to_f32() - mean;
+                    sum_sq += d * d;
+                }
+                let var = sum_sq * inv_n;
+                let inv_std = 1.0_f32 / (var + eps32).sqrt();
+                for j in 0..last_dim {
+                    out_view[off + j] =
+                        <$T>::from_f32((in_view[off + j].to_f32() - mean) * inv_std);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+layer_norm_last_dim_half!(layer_norm_last_dim_bf16, half::bf16);
+layer_norm_last_dim_half!(layer_norm_last_dim_f16, half::f16);
+
+// Patch the bf16/f16 RmsNorm kernels to use `check_norm_lens_typed`
+// — the version above mistakenly called `check_norm_lens` (which
+// hardcodes f32). Replace those calls below.
 
 // =============================================================================
 // Concat (f32)
@@ -2399,6 +2664,81 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn softmax_last_dim_bf16_uniform_row() {
+        let v: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 2);
+        softmax_last_dim_bf16(&input, &mut out, 1, 4).expect("softmax bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        for x in r {
+            assert!((x.to_f32() - 0.25).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn softmax_last_dim_f16_sums_to_one() {
+        let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 2);
+        softmax_last_dim_f16(&input, &mut out, 1, 3).expect("softmax f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        let sum: f32 = r.iter().map(|x| x.to_f32()).sum();
+        assert!((sum - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn rms_norm_last_dim_bf16_basic() {
+        let v: Vec<half::bf16> = [3.0_f32, 4.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
+        rms_norm_last_dim_bf16(&input, &mut out, 1, 2, 0.0).expect("rms_norm bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let rms = (12.5_f32).sqrt();
+        // bf16 has ~3 decimal digits — accept small absolute error.
+        assert!((r[0].to_f32() - 3.0 / rms).abs() < 0.05);
+        assert!((r[1].to_f32() - 4.0 / rms).abs() < 0.05);
+    }
+
+    #[test]
+    fn layer_norm_last_dim_f16_zero_mean() {
+        let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 2);
+        layer_norm_last_dim_f16(&input, &mut out, 1, 3, 0.0).expect("layer_norm f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        // Output mean should be ≈ 0; output var should be ≈ 1.
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        let mean: f32 = result_f32.iter().sum::<f32>() / 3.0;
+        assert!(mean.abs() < 0.01);
+        let var: f32 = result_f32.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / 3.0;
+        assert!((var - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn rope_bf16_pi_over_two_swaps_with_sign() {
+        // x [1, 1, 4] = [1, 2, 3, 4]; cos=0, sin=1.
+        // Expected: [-3, -4, 1, 2].
+        let x_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let zero_v: Vec<half::bf16> = [0.0_f32; 4]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let one_v: Vec<half::bf16> = [1.0_f32; 4]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let x = CpuStorageBytes::from_slice(&x_v);
+        let cos = CpuStorageBytes::from_slice(&zero_v);
+        let sin = CpuStorageBytes::from_slice(&one_v);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 2);
+        rope_bf16(&x, &cos, &sin, &mut out, 1, 1, 4).expect("rope bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(result_f32, vec![-3.0, -4.0, 1.0, 2.0]);
     }
 
     #[test]

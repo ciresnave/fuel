@@ -762,37 +762,112 @@ cpu_norm_last_dim_wrapper!(
     fuel_cpu_backend::byte_kernels::layer_norm_last_dim_f32,
     "layer_norm_last_dim"
 );
+cpu_norm_last_dim_wrapper!(
+    rms_norm_last_dim_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_bf16,
+    "rms_norm_last_dim"
+);
+cpu_norm_last_dim_wrapper!(
+    rms_norm_last_dim_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_f16,
+    "rms_norm_last_dim"
+);
+cpu_norm_last_dim_wrapper!(
+    layer_norm_last_dim_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_bf16,
+    "layer_norm_last_dim"
+);
+cpu_norm_last_dim_wrapper!(
+    layer_norm_last_dim_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_f16,
+    "layer_norm_last_dim"
+);
 
 /// Dispatch wrapper for `(SoftmaxLastDim, F32, Cpu)`. Single
 /// input + single output; (outer_count, last_dim) flow through
 /// `OpParams::SoftmaxLastDim`.
-fn softmax_last_dim_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 1 || outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "softmax_last_dim wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        ))
-        .bt());
-    }
-    let (outer_count, last_dim) = match params {
-        OpParams::SoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
-        other => {
-            return Err(Error::Msg(format!(
-                "softmax_last_dim wrapper expects OpParams::SoftmaxLastDim, got {other:?}",
-            ))
-            .bt())
+/// Generate a CPU SoftmaxLastDim wrapper for any element type.
+/// All entries share the (1 input, 1 output, OpParams::SoftmaxLastDim)
+/// shape; only the underlying typed kernel differs.
+macro_rules! cpu_softmax_last_dim_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "softmax_last_dim wrapper expects 1 input + 1 output, got {} + {}",
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, last_dim) = match params {
+                OpParams::SoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "softmax_last_dim wrapper expects OpParams::SoftmaxLastDim, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, outer_count, last_dim)
         }
     };
-    let in_guard = read_storage(&inputs[0])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let in_cpu = cpu_input(&in_guard)?;
-    let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::softmax_last_dim_f32(in_cpu, out_cpu, outer_count, last_dim)
 }
+
+cpu_softmax_last_dim_wrapper!(softmax_last_dim_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f32);
+cpu_softmax_last_dim_wrapper!(softmax_last_dim_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::softmax_last_dim_bf16);
+cpu_softmax_last_dim_wrapper!(softmax_last_dim_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f16);
+
+/// Generate a CPU Rope wrapper for any element type. The wrapper
+/// shape is identical across dtypes — three inputs (x, cos, sin)
+/// and `OpParams::Rope` carries the geometry.
+macro_rules! cpu_rope_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "rope wrapper expects 3 inputs + 1 output, got {} + {}",
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, seq, head_dim) = match params {
+                OpParams::Rope { outer_count, seq, head_dim } => {
+                    (*outer_count, *seq, *head_dim)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "rope wrapper expects OpParams::Rope, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let cos_guard = read_storage(&inputs[1])?;
+            let sin_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let cos_cpu = cpu_input(&cos_guard)?;
+            let sin_cpu = cpu_input(&sin_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(x_cpu, cos_cpu, sin_cpu, out_cpu, outer_count, seq, head_dim)
+        }
+    };
+}
+
+cpu_rope_wrapper!(rope_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rope_bf16);
+cpu_rope_wrapper!(rope_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f16);
 
 /// Dispatch wrapper for `(Concat, F32, Cpu)`. Variable number of
 /// inputs (≥ 1); shape parameters flow through `OpParams::Concat`.
@@ -1444,11 +1519,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     table.register(Concat,             f32_dt, cpu, concat_f32_cpu_wrapper);
     table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
+    table.register(SoftmaxLastDim,     bf16_dt, cpu, softmax_last_dim_bf16_cpu_wrapper);
+    table.register(SoftmaxLastDim,     f16_dt,  cpu, softmax_last_dim_f16_cpu_wrapper);
     table.register(RmsNormLastDim,     f32_dt, cpu, rms_norm_last_dim_f32_cpu_wrapper);
+    table.register(RmsNormLastDim,     bf16_dt, cpu, rms_norm_last_dim_bf16_cpu_wrapper);
+    table.register(RmsNormLastDim,     f16_dt,  cpu, rms_norm_last_dim_f16_cpu_wrapper);
     table.register(LayerNormLastDim,   f32_dt, cpu, layer_norm_last_dim_f32_cpu_wrapper);
+    table.register(LayerNormLastDim,   bf16_dt, cpu, layer_norm_last_dim_bf16_cpu_wrapper);
+    table.register(LayerNormLastDim,   f16_dt,  cpu, layer_norm_last_dim_f16_cpu_wrapper);
     table.register(IndexSelect,        f32_dt, cpu, index_select_f32_cpu_wrapper);
     table.register(Gather,             f32_dt, cpu, gather_f32_cpu_wrapper);
     table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
+    table.register(Rope,               bf16_dt, cpu, rope_bf16_cpu_wrapper);
+    table.register(Rope,               f16_dt,  cpu, rope_f16_cpu_wrapper);
     table.register(IndexAdd,           f32_dt, cpu, index_add_f32_cpu_wrapper);
     table.register(ScatterAdd,         f32_dt, cpu, scatter_add_f32_cpu_wrapper);
 
@@ -1594,6 +1677,12 @@ fn default_cpu_caps() -> BackendCapabilities {
     }
     // bf16/f16 reductions + matmul (kernels accumulate in f32).
     for op in [SumReduce, MaxReduce, MinReduce, MeanReduce, MatMul] {
+        op_dtype_support.insert((op, DType::BF16));
+        op_dtype_support.insert((op, DType::F16));
+    }
+    // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
+    // Rope) — all use the f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
