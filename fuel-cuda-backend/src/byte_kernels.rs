@@ -163,6 +163,15 @@ pub fn gelu_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> 
     unary_elementwise_f32(src, "ugelu_f32")
 }
 
+/// Element-wise Heaviside step (1.0 if x > 0 else 0.0) of one F32
+/// `CudaStorageBytes`. Maps to `ustep_f32`, which was added to
+/// `fuel-cuda-kernels::UNARY` (via `unary.cu`) in the same commit
+/// that introduced this wrapper — the rest of the legacy unary
+/// kernels predated it.
+pub fn step_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
+    unary_elementwise_f32(src, "ustep_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
