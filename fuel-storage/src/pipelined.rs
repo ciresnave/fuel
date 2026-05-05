@@ -479,6 +479,8 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Rope => Some(OpKind::Rope),
         Op::IndexAdd { .. } => Some(OpKind::IndexAdd),
         Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
+        Op::ArgMaxDim(_) => Some(OpKind::ArgMaxDim),
+        Op::ArgMinDim(_) => Some(OpKind::ArgMinDim),
         _ => None,
     }
 }
@@ -509,6 +511,15 @@ fn op_to_op_params(
             .unwrap_or_else(|| graph.layout(input_id))
     };
     Ok(match &node.op {
+        Op::ArgMaxDim(d) | Op::ArgMinDim(d) => {
+            // Reuse OpParams::Reduce — same shape contract; the
+            // single reduce dim is the argmax/argmin axis.
+            OpParams::Reduce {
+                input_layout: input_layout(node.inputs[0]),
+                dims: vec![*d],
+                keepdim: false,
+            }
+        }
         Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => {
             OpParams::Reduce {
                 input_layout: input_layout(node.inputs[0]),
@@ -1654,6 +1665,35 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: ArgMaxDim — produces U32 output indices.
+    #[test]
+    fn pipelined_realize_argmax_dim() {
+        // input [2, 3] = [[1, 5, 2], [9, 0, 4]]
+        // argmax dim=1 → [1, 0]
+        let storage = crate::from_slice_cpu(&[1.0_f32, 5.0, 2.0, 9.0, 0.0, 4.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::ArgMaxDim(1), inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::U32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::U32);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<u32>().unwrap(), &[1u32, 0]);
     }
 
     /// E2E: IndexAdd along outer dim — accumulate updates into a

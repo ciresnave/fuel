@@ -1439,6 +1439,119 @@ pub fn mean_reduce_f32(
     Ok(())
 }
 
+/// Argmax / argmin along a single dim — same shape contract as
+/// the value-reducing kernels (output's `dim` is removed) but the
+/// output dtype is `u32` carrying the index of the extremum within
+/// each row of `dim`.
+///
+/// Tie-breaking: returns the first index that achieves the
+/// extremum (lowest index on ties). NaN handling propagates per
+/// IEEE-754 — comparisons against NaN return false, so a NaN
+/// row's argmax is whichever non-NaN slot it first encountered
+/// (or 0 if every value is NaN).
+fn argextremum_dim_f32(
+    name: &str,
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    dim: usize,
+    is_better: fn(f32, f32) -> bool,
+    init: f32,
+) -> Result<()> {
+    if dim >= input_shape.len() {
+        return Err(Error::Msg(format!(
+            "{name}: dim {dim} out of range for rank {}",
+            input_shape.len(),
+        ))
+        .bt());
+    }
+    let f32_size = std::mem::size_of::<f32>();
+    let u32_size = std::mem::size_of::<u32>();
+    let total_input: usize = input_shape.iter().product();
+    if input.len_bytes() != total_input.saturating_mul(f32_size) {
+        return Err(Error::Msg(format!(
+            "{name}: input bytes={} doesn't match shape {input_shape:?} (f32)",
+            input.len_bytes(),
+        ))
+        .bt());
+    }
+    let outer_count: usize = input_shape[..dim].iter().product();
+    let dim_size = input_shape[dim];
+    let inner_count: usize = input_shape[dim + 1..].iter().product();
+    let output_count = outer_count * inner_count;
+    if output.len_bytes() != output_count.saturating_mul(u32_size) {
+        return Err(Error::Msg(format!(
+            "{name}: output bytes={} doesn't match (input shape - dim {dim}) × {u32_size}",
+            output.len_bytes(),
+        ))
+        .bt());
+    }
+    if dim_size == 0 {
+        return Err(Error::Msg(format!(
+            "{name}: dim {dim} has size 0 — argmax/argmin undefined",
+        ))
+        .bt());
+    }
+    let in_view: &[f32] = input.as_slice()?;
+    let out_view: &mut [u32] = output.as_slice_mut()?;
+    for outer in 0..outer_count {
+        for inner in 0..inner_count {
+            let mut best_val = init;
+            let mut best_idx = 0u32;
+            for d in 0..dim_size {
+                let off = (outer * dim_size + d) * inner_count + inner;
+                let v = in_view[off];
+                // Initial slot: take the first valid value seen.
+                if d == 0 {
+                    best_val = v;
+                    best_idx = 0;
+                } else if is_better(v, best_val) {
+                    best_val = v;
+                    best_idx = d as u32;
+                }
+            }
+            out_view[outer * inner_count + inner] = best_idx;
+        }
+    }
+    Ok(())
+}
+
+/// Argmax along one dim — `out[i] = argmax over dim of input`.
+pub fn argmax_dim_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    dim: usize,
+) -> Result<()> {
+    argextremum_dim_f32(
+        "argmax_dim_f32",
+        input,
+        output,
+        input_shape,
+        dim,
+        |new, best| new > best,
+        f32::NEG_INFINITY,
+    )
+}
+
+/// Argmin along one dim — `out[i] = argmin over dim of input`.
+pub fn argmin_dim_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    dim: usize,
+) -> Result<()> {
+    argextremum_dim_f32(
+        "argmin_dim_f32",
+        input,
+        output,
+        input_shape,
+        dim,
+        |new, best| new < best,
+        f32::INFINITY,
+    )
+}
+
 /// Generic reduction with a custom accumulator init + combine fn.
 /// Used by max/min reduce; not exposed (kept private to keep the
 /// kernel surface tight).
@@ -1683,6 +1796,56 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn argmax_dim_f32_basic() {
+        // input [2, 3]: row 0 = [1, 5, 2], row 1 = [9, 0, 4]
+        // argmax along dim=1 → output [2] with [1, 0]
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 5.0, 2.0, 9.0, 0.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        argmax_dim_f32(&input, &mut out, &[2, 3], 1).expect("argmax");
+        assert_eq!(out.as_slice::<u32>().unwrap(), &[1u32, 0]);
+    }
+
+    #[test]
+    fn argmin_dim_f32_basic() {
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 5.0, 2.0, 9.0, 0.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        argmin_dim_f32(&input, &mut out, &[2, 3], 1).expect("argmin");
+        // Row 0 min at index 0 (= 1.0); row 1 min at index 1 (= 0.0)
+        assert_eq!(out.as_slice::<u32>().unwrap(), &[0u32, 1]);
+    }
+
+    #[test]
+    fn argmax_dim_f32_outer_dim() {
+        // input [3, 2]:
+        //   [[1, 4],
+        //    [3, 2],
+        //    [0, 9]]
+        // argmax along dim=0 → output [2]
+        // col 0: max at index 1 (= 3); col 1: max at index 2 (= 9)
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 4.0, 3.0, 2.0, 0.0, 9.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        argmax_dim_f32(&input, &mut out, &[3, 2], 0).expect("argmax");
+        assert_eq!(out.as_slice::<u32>().unwrap(), &[1u32, 2]);
+    }
+
+    #[test]
+    fn argmax_dim_f32_first_index_on_tie() {
+        // All equal — argmax must return index 0 (first occurrence).
+        let input = CpuStorageBytes::from_slice(&[5.0_f32, 5.0, 5.0, 5.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        argmax_dim_f32(&input, &mut out, &[4], 0).expect("argmax");
+        assert_eq!(out.as_slice::<u32>().unwrap(), &[0u32]);
+    }
+
+    #[test]
+    fn argmax_dim_f32_rejects_zero_dim() {
+        let input = CpuStorageBytes::from_zero_bytes(0);
+        let mut out = CpuStorageBytes::from_zero_bytes(0);
+        let r = argmax_dim_f32(&input, &mut out, &[0], 0);
+        assert!(r.is_err());
     }
 
     #[test]

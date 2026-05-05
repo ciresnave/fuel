@@ -160,6 +160,12 @@ pub enum OpKind {
     /// value is added into base at the multi-index where `dim`'s
     /// coord is `indices[p]`.
     ScatterAdd,
+    /// Argmax along one dim — produces a U32 index tensor with
+    /// `dim` removed from the output shape.
+    ArgMaxDim,
+    /// Argmin along one dim — same shape contract as
+    /// [`ArgMaxDim`].
+    ArgMinDim,
 }
 
 impl OpKind {
@@ -205,6 +211,8 @@ impl OpKind {
             OpKind::Rope              => "rope",
             OpKind::IndexAdd          => "index_add",
             OpKind::ScatterAdd        => "scatter_add",
+            OpKind::ArgMaxDim         => "argmax_dim",
+            OpKind::ArgMinDim         => "argmin_dim",
         }
     }
 }
