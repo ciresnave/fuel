@@ -2417,17 +2417,50 @@ fn add_elementwise_f32_cuda_wrapper(
     Ok(())
 }
 
-/// Phase 7.5 first CUDA registration. Wires
-/// `(AddElementwise, F32, Cuda)` to the byte-level CUDA kernel.
-/// Subsequent op families (sub/mul/div, matmul, etc.) extend this
-/// function — same shape as `register_cpu_kernels` but on the Cuda
-/// backend.
+/// Dispatch wrapper for `(SubElementwise, F32, Cuda)`. Same shape
+/// as `add_elementwise_f32_cuda_wrapper`; only the underlying
+/// byte-kernel call differs.
+#[cfg(feature = "cuda")]
+fn sub_elementwise_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "sub_elementwise_f32_cuda_wrapper: expected 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "sub_elementwise_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let lhs_guard = read_storage(&inputs[0])?;
+    let rhs_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let lhs_cuda = cuda_input(&lhs_guard)?;
+    let rhs_cuda = cuda_input(&rhs_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::sub_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
+/// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
+/// into the unified binding table. Same shape as
+/// `register_cpu_kernels` but on the Cuda backend.
 #[cfg(feature = "cuda")]
 pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
     let f32_dt = DType::F32;
     table.register(AddElementwise, f32_dt, cuda, add_elementwise_f32_cuda_wrapper);
+    table.register(SubElementwise, f32_dt, cuda, sub_elementwise_f32_cuda_wrapper);
 }
 
 // =============================================================================

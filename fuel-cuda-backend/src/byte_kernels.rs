@@ -42,17 +42,42 @@ pub fn add_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
 ) -> Result<CudaStorageBytes> {
+    binary_elementwise_f32(lhs, rhs, "badd_f32")
+}
+
+/// Element-wise subtraction (lhs - rhs) of two F32 `CudaStorageBytes`.
+/// Same shape as [`add_elementwise_f32`]; only the launched kernel
+/// name differs.
+pub fn sub_elementwise_f32(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+) -> Result<CudaStorageBytes> {
+    binary_elementwise_f32(lhs, rhs, "bsub_f32")
+}
+
+/// Shared launch path for F32 elementwise binary ops. Validates equal
+/// byte lengths, allocates a fresh device buffer, launches the
+/// fuel-cuda-kernels BINARY function identified by `kernel_name`,
+/// and returns the result. Synchronizes the default stream so the
+/// result is observable on return (sync KernelRef per locked design
+/// decision).
+fn binary_elementwise_f32(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    kernel_name: &'static str,
+) -> Result<CudaStorageBytes> {
     let elem = std::mem::size_of::<f32>();
     if lhs.len_bytes() != rhs.len_bytes() {
         return Err(fuel_core_types::Error::Msg(format!(
-            "add_elementwise_f32: lhs.len_bytes={} != rhs.len_bytes={}",
-            lhs.len_bytes(), rhs.len_bytes(),
+            "{kernel_name}: lhs.len_bytes={} != rhs.len_bytes={}",
+            lhs.len_bytes(),
+            rhs.len_bytes(),
         ))
         .bt());
     }
     if lhs.len_bytes() % elem != 0 {
         return Err(fuel_core_types::Error::Msg(format!(
-            "add_elementwise_f32: lhs.len_bytes={} not a multiple of f32 size",
+            "{kernel_name}: lhs.len_bytes={} not a multiple of f32 size",
             lhs.len_bytes(),
         ))
         .bt());
@@ -60,12 +85,11 @@ pub fn add_elementwise_f32(
     let elem_count = lhs.len_bytes() / elem;
     let device = lhs.device().clone();
     if elem_count == 0 {
-        // Nothing to compute; return a zero-byte storage.
         return CudaStorageBytes::alloc(&device, 0);
     }
     let mut out = device.alloc_zeros::<u8>(lhs.len_bytes())?;
     let cfg = LaunchConfig::for_num_elems(elem_count as u32);
-    let func = device.get_or_load_func("badd_f32", &kernels::BINARY)?;
+    let func = device.get_or_load_func(kernel_name, &kernels::BINARY)?;
     let dims_strides: SlicePtrOrNull<usize> = SlicePtrOrNull::Null;
     let mut builder = func.builder();
     barg!(builder, elem_count);
@@ -78,8 +102,6 @@ pub fn add_elementwise_f32(
     // the existing legacy `Map2::f` for `BinaryOpT`, just on byte
     // buffers. Kernel-side validation is the same.
     unsafe { builder.launch(cfg) }.w()?;
-    // Sync so the result is observable to subsequent CPU readers
-    // and to the next op. Async fences are an A5 follow-on.
     device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out),
