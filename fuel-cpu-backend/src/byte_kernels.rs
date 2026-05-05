@@ -1803,6 +1803,179 @@ pub fn matmul_f64(
 }
 
 // =============================================================================
+// Quantized matmul (Q4_0 / Q8_0 / Q4_K_M weights, F32 activations)
+// =============================================================================
+
+/// Generic batched quantized-matmul kernel parameterized over the
+/// quantized block type `T: GgmlType`. Activations are F32 with
+/// shape `[batch, m, k]`; weights `[n, k / block_size]` blocks
+/// (laid out row-major over `n`, then over `k`-blocks). Output is
+/// F32 with shape `[batch, m, n]`.
+///
+/// fuel-quantized's `matmul` takes (m, k, n) + slices and computes
+/// the inner products via SIMD-friendly per-column dot products.
+/// This kernel iterates batches and calls into it.
+/// SAFETY-WRAPPER: reinterpret a `&[u8]` byte stream as `&[T]`
+/// where `T` is a GGML block type (`#[repr(C)]` with all-Pod
+/// fields, so the cast is sound). Used by the quantized matmul
+/// kernels — fuel-quantized exposes `as_t_slice` for `Cow<[u8]>`
+/// but we need the `&[u8]` flavor here. Returns `Err` on length
+/// or alignment mismatch.
+fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]> {
+    let size = std::mem::size_of::<T>();
+    if size == 0 {
+        return Err(Error::Msg(format!("{name}: zero-sized block type")).bt());
+    }
+    if bytes.len() % size != 0 {
+        return Err(Error::Msg(format!(
+            "{name}: byte length {} not a multiple of block size {size}",
+            bytes.len(),
+        ))
+        .bt());
+    }
+    let ptr = bytes.as_ptr();
+    let align = std::mem::align_of::<T>();
+    if (ptr as usize) % align != 0 {
+        return Err(Error::Msg(format!(
+            "{name}: byte pointer not aligned to block type's alignment {align}",
+        ))
+        .bt());
+    }
+    // Safety: `bytes` lifetime extends through this function's
+    // borrow; T is a GGML block type which is `#[repr(C)]` with
+    // only-Pod fields (f16/u8/u8 arrays), so any byte pattern is
+    // a valid T. Length and alignment have just been validated.
+    Ok(unsafe { std::slice::from_raw_parts(ptr as *const T, bytes.len() / size) })
+}
+
+fn qmatmul_generic_f32<T: fuel_quantized::GgmlType>(
+    name: &str,
+    activations: &CpuStorageBytes,
+    weight_bytes: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    let elements_per_block = T::BLCK_SIZE;
+    if k % elements_per_block != 0 {
+        return Err(Error::Msg(format!(
+            "{name}: k={k} must be a multiple of block size {elements_per_block}",
+        ))
+        .bt());
+    }
+    let blocks_per_row = k / elements_per_block;
+    let total_blocks = n.saturating_mul(blocks_per_row);
+    let bytes_per_block = std::mem::size_of::<T>();
+    let need_w = total_blocks.saturating_mul(bytes_per_block);
+    let need_a = batch_count
+        .saturating_mul(m)
+        .saturating_mul(k)
+        .saturating_mul(std::mem::size_of::<f32>());
+    let need_out = batch_count
+        .saturating_mul(m)
+        .saturating_mul(n)
+        .saturating_mul(std::mem::size_of::<f32>());
+    if activations.len_bytes() != need_a {
+        return Err(Error::Msg(format!(
+            "{name}: activations bytes={} doesn't match batch={batch_count} × m={m} × k={k} × 4",
+            activations.len_bytes(),
+        ))
+        .bt());
+    }
+    if weight_bytes.len_bytes() != need_w {
+        return Err(Error::Msg(format!(
+            "{name}: weight bytes={} doesn't match n={n} × k/block_size={blocks_per_row} × {bytes_per_block}",
+            weight_bytes.len_bytes(),
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_out {
+        return Err(Error::Msg(format!(
+            "{name}: out bytes={} doesn't match batch={batch_count} × m={m} × n={n} × 4",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    if batch_count == 0 || m == 0 || n == 0 {
+        return Ok(());
+    }
+    let act_view: &[f32] = activations.as_slice()?;
+    // Reinterpret the U32-typed weight bytes as `&[T]` blocks via
+    // a safety-wrapper around `from_raw_parts`. The GGML block
+    // types are `#[repr(C)]` POD layouts so the cast is sound.
+    let weight_view: &[T] = block_slice_from_bytes::<T>(name, weight_bytes.bytes())?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let act_per_batch = m * k;
+    let out_per_batch = m * n;
+    for b in 0..batch_count {
+        let act_off = b * act_per_batch;
+        let out_off = b * out_per_batch;
+        fuel_quantized::matmul::<T>(
+            (m, k, n),
+            &act_view[act_off..act_off + act_per_batch],
+            weight_view,
+            &mut out_view[out_off..out_off + out_per_batch],
+        )
+        .map_err(|e| Error::Msg(format!("{name}: {e}")).bt())?;
+    }
+    Ok(())
+}
+
+/// Q4_0 quantized matmul. Activations F32, weights `[n,
+/// k/32]` `BlockQ4_0`s, output F32.
+pub fn qmatmul_q4_0_f32(
+    activations: &CpuStorageBytes,
+    weight_bytes: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    qmatmul_generic_f32::<fuel_quantized::BlockQ4_0>(
+        "qmatmul_q4_0_f32",
+        activations, weight_bytes, out,
+        batch_count, m, n, k,
+    )
+}
+
+/// Q8_0 quantized matmul.
+pub fn qmatmul_q8_0_f32(
+    activations: &CpuStorageBytes,
+    weight_bytes: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    qmatmul_generic_f32::<fuel_quantized::BlockQ8_0>(
+        "qmatmul_q8_0_f32",
+        activations, weight_bytes, out,
+        batch_count, m, n, k,
+    )
+}
+
+/// Q4_K_M (256-element super-block) quantized matmul.
+pub fn qmatmul_q4_k_m_f32(
+    activations: &CpuStorageBytes,
+    weight_bytes: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    qmatmul_generic_f32::<fuel_quantized::BlockQ4K>(
+        "qmatmul_q4_k_m_f32",
+        activations, weight_bytes, out,
+        batch_count, m, n, k,
+    )
+}
+
+// =============================================================================
 // 2D Convolution (f32)
 // =============================================================================
 
@@ -2664,6 +2837,68 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn qmatmul_q4_0_f32_zero_activations_yields_zero() {
+        // Smallest valid shape: n=2, k=32 (one Q4_0 block per row).
+        // With zero activations, the weight contents are irrelevant —
+        // every dot product is 0. Sanity-checks the dispatch + size
+        // validation without needing valid quantized data.
+        let act = CpuStorageBytes::from_slice(&[0.0_f32; 32]);
+        let block_size = std::mem::size_of::<fuel_quantized::BlockQ4_0>();
+        // Must be a multiple of 4 for U32-aligned storage.
+        assert!(block_size % 2 == 0);
+        let w = CpuStorageBytes::from_bytes(&vec![0u8; 2 * block_size]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        qmatmul_q4_0_f32(&act, &w, &mut out, 1, 1, 2, 32).expect("qmatmul");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert_eq!(r, &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn qmatmul_q4_0_f32_unit_weight_sums_activations() {
+        // Construct a Q4_0 weight where every weight = 1.0 by
+        // setting d (scale) = 1.0 and every nibble = 9 (so the
+        // effective weight is 1 * (9 - 8) = 1).
+        // Then A @ W^T computes per-row sum of activations.
+        use half::f16;
+        let block_size = std::mem::size_of::<fuel_quantized::BlockQ4_0>();
+        let mut w_bytes = vec![0u8; 2 * block_size];
+        for block_idx in 0..2 {
+            let off = block_idx * block_size;
+            // d = f16(1.0) — little-endian bytes
+            let d_bytes = f16::from_f32(1.0).to_le_bytes();
+            w_bytes[off..off + 2].copy_from_slice(&d_bytes);
+            // Every nibble = 9 → packed byte = 0x99 (low nibble first)
+            for i in 0..16 {
+                w_bytes[off + 2 + i] = 0x99;
+            }
+        }
+        let w = CpuStorageBytes::from_bytes(&w_bytes);
+
+        // Activations: [1, 2, 3, ..., 32]; sum = 528.
+        let act_vec: Vec<f32> = (1..=32).map(|x| x as f32).collect();
+        let act = CpuStorageBytes::from_slice(&act_vec);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        qmatmul_q4_0_f32(&act, &w, &mut out, 1, 1, 2, 32).expect("qmatmul");
+        let r: &[f32] = out.as_slice().unwrap();
+        // Both output rows = sum over k of activations = 528.
+        // Tolerance ~0.5 — fuel_quantized's matmul re-quantizes the
+        // f32 activations to Q8_1 internally, introducing small
+        // round-trip error.
+        assert!((r[0] - 528.0).abs() < 0.5, "got {}, want 528", r[0]);
+        assert!((r[1] - 528.0).abs() < 0.5, "got {}, want 528", r[1]);
+    }
+
+    #[test]
+    fn qmatmul_q4_0_f32_rejects_bad_k() {
+        // k=33 isn't a multiple of 32 — must error.
+        let act = CpuStorageBytes::from_slice(&[0.0_f32; 33]);
+        let w = CpuStorageBytes::from_bytes(&[0u8; 18]); // one block
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let r = qmatmul_q4_0_f32(&act, &w, &mut out, 1, 1, 1, 33);
+        assert!(r.is_err(), "k must be a multiple of 32 for Q4_0");
     }
 
     #[test]

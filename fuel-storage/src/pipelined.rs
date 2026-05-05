@@ -481,6 +481,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
         Op::ArgMaxDim(_) => Some(OpKind::ArgMaxDim),
         Op::ArgMinDim(_) => Some(OpKind::ArgMinDim),
+        Op::QMatMul { .. } => Some(OpKind::QMatMul),
         _ => None,
     }
 }
@@ -511,6 +512,42 @@ fn op_to_op_params(
             .unwrap_or_else(|| graph.layout(input_id))
     };
     Ok(match &node.op {
+        Op::QMatMul { quant_type, k, n } => {
+            // Inputs: (activations f32 [..., m, k], weight_bytes
+            // u32-typed). Output shape (this Node's shape) is
+            // [..., m, n]. Flatten leading dims into batch_count.
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::QMatMul expects 2 inputs (activations, weight_bytes), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let act_layout = input_layout(node.inputs[0]);
+            let act_dims = act_layout.shape().dims();
+            if act_dims.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "Op::QMatMul: activations must be rank ≥ 2, got {act_dims:?}",
+                ))
+                .bt());
+            }
+            let m = act_dims[act_dims.len() - 2];
+            let k_act = act_dims[act_dims.len() - 1];
+            if k_act != *k {
+                return Err(Error::Msg(format!(
+                    "Op::QMatMul: activation last dim ({k_act}) must equal Op's k ({k})",
+                ))
+                .bt());
+            }
+            let batch_count: usize = act_dims[..act_dims.len() - 2].iter().product();
+            OpParams::QMatMul {
+                quant_type: *quant_type,
+                batch_count,
+                m,
+                n: *n,
+                k: *k,
+            }
+        }
         Op::ArgMaxDim(d) | Op::ArgMinDim(d) => {
             // Reuse OpParams::Reduce — same shape contract; the
             // single reduce dim is the argmax/argmin axis.
@@ -1700,6 +1737,72 @@ mod tests {
         assert_eq!(guard.dtype, DType::F64);
         let crate::BackendStorage::Cpu(c) = &guard.inner;
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
+    }
+
+    /// E2E: Q4_0 QMatMul through the pipelined executor — proves
+    /// quantized weights can flow into the unified path. Activations
+    /// are F32, weights are U32-typed (raw block bytes).
+    /// Construct a Q4_0 weight tensor where every weight = 1.0
+    /// (d=1.0, every nibble=9 → 1*(9-8)=1), so A @ W^T computes
+    /// the per-row sum of activations.
+    #[test]
+    fn pipelined_realize_qmatmul_q4_0_unit_weight_sums_activations() {
+        use fuel_graph::QuantType;
+        use half::f16;
+        let block_size = std::mem::size_of::<fuel_quantized::BlockQ4_0>();
+        let mut w_bytes = vec![0u8; 2 * block_size];
+        for block_idx in 0..2 {
+            let off = block_idx * block_size;
+            let d_bytes = f16::from_f32(1.0).to_le_bytes();
+            w_bytes[off..off + 2].copy_from_slice(&d_bytes);
+            for i in 0..16 {
+                w_bytes[off + 2 + i] = 0x99;
+            }
+        }
+        // Weight tensor is U32-typed (rank-1, length = bytes/4)
+        let w_storage = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
+            ),
+            DType::U32,
+        );
+
+        let act_vec: Vec<f32> = (1..=32).map(|x| x as f32).collect();
+        let act_storage = crate::from_slice_cpu(&act_vec);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (act_id, w_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let act = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 32]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[w_bytes.len() / 4]),
+                dtype: DType::U32,
+            });
+            let mm = g.push(Node {
+                op: Op::QMatMul { quant_type: QuantType::Q4_0, k: 32, n: 2 },
+                inputs: vec![act, w],
+                shape: Shape::from_dims(&[1, 2]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (act, w, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(act_id, Arc::new(RwLock::new(act_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F32);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[f32] = c.as_slice().unwrap();
+        // Both rows = sum(1..=32) = 528, within Q8_1 round-trip
+        // tolerance.
+        assert!((r[0] - 528.0).abs() < 0.5, "got {}, want 528", r[0]);
+        assert!((r[1] - 528.0).abs() < 0.5, "got {}, want 528", r[1]);
     }
 
     /// E2E: BF16 RmsNormLastDim through the pipelined executor.

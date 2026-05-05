@@ -166,6 +166,11 @@ pub enum OpKind {
     /// Argmin along one dim — same shape contract as
     /// [`ArgMaxDim`].
     ArgMinDim,
+    /// Quantized matmul: `C = A @ dequant(W_Q)`. Activations are
+    /// f32 (or eventually bf16); weights are a U32-typed byte
+    /// stream of quantized blocks. The quant format is carried in
+    /// [`OpParams::QMatMul`](super::dispatch::OpKind).
+    QMatMul,
 }
 
 impl OpKind {
@@ -213,6 +218,7 @@ impl OpKind {
             OpKind::ScatterAdd        => "scatter_add",
             OpKind::ArgMaxDim         => "argmax_dim",
             OpKind::ArgMinDim         => "argmin_dim",
+            OpKind::QMatMul           => "qmatmul",
         }
     }
 }

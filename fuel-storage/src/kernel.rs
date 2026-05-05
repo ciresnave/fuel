@@ -38,6 +38,7 @@ use fuel_core_types::conv::{ParamsConv1D, ParamsConvTranspose1D, ParamsConvTrans
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
+use fuel_graph::QuantType;
 
 use crate::Storage;
 
@@ -250,6 +251,18 @@ pub enum OpParams {
         outer_count: usize,
         seq: usize,
         head_dim: usize,
+    },
+
+    /// Quantized matmul shape: `A [batch, m, k] @ dequant(W) [n, k] →
+    /// out [batch, m, n]`. The weight tensor is a flat U32-typed
+    /// byte stream representing `n * k / elements_per_block` blocks
+    /// of `quant_type`. Activations are F32 today; output is F32.
+    QMatMul {
+        quant_type: QuantType,
+        batch_count: usize,
+        m: usize,
+        n: usize,
+        k: usize,
     },
 
     /// Index-add along a single dim with rank-1 U32 indices.
