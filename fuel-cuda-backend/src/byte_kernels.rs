@@ -145,6 +145,11 @@ pub fn cos_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
     unary_elementwise_f32(src, "ucos_f32")
 }
 
+/// Element-wise sigmoid (1 / (1 + exp(-x))) of one F32 `CudaStorageBytes`.
+pub fn sigmoid_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
+    unary_elementwise_f32(src, "usigmoid_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
