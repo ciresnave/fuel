@@ -206,6 +206,77 @@ pub fn min_reduce_f32(
     reduce_f32(src, input_layout, reduce_dims, "fast_min_f32")
 }
 
+/// Mean-reduce one F32 `CudaStorageBytes` along the dims listed in
+/// `reduce_dims`. Composed: launch `fast_sum_f32` (via the shared
+/// reduce helper), then launch `affine_f32` with `mul = 1/divisor`
+/// and `add = 0` to scale the sum into the mean. Mirrors the CPU
+/// `mean_reduce_f32` (sum then in-place scale). The two-launch
+/// shape avoids needing a dedicated `fast_mean_f32` PTX kernel; if
+/// profiling later shows the second launch matters, a fused kernel
+/// is the natural follow-on.
+pub fn mean_reduce_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    reduce_dims: &[usize],
+) -> Result<CudaStorageBytes> {
+    let sum = reduce_f32(src, input_layout, reduce_dims, "fast_sum_f32")?;
+    let src_dims = input_layout.shape().dims();
+    let divisor: usize = reduce_dims.iter().map(|&d| src_dims[d]).product();
+    if divisor == 0 {
+        return Err(fuel_core_types::Error::Msg(
+            "mean_reduce_f32: divisor zero (reduced dim has size 0)".to_string(),
+        )
+        .bt());
+    }
+    let inv = 1.0_f32 / divisor as f32;
+    affine_scale_f32(&sum, inv)
+}
+
+/// Element-wise multiply-by-scalar via `affine_f32` (`mul, add=0`).
+/// Allocates a fresh output buffer (the affine kernel's signature
+/// has separate `inp` and `out` pointers, and our wrapper takes
+/// `&out` mutably so it can't alias `inp`). Output size matches
+/// input size. Used by [`mean_reduce_f32`] to scale the sum result;
+/// callable from other places if a generic scalar-multiply path is
+/// ever needed before a dedicated `Affine` op wrapper lands.
+fn affine_scale_f32(src: &CudaStorageBytes, mul: f32) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    if src.len_bytes() % elem != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "affine_scale_f32: src.len_bytes={} not a multiple of f32 size",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    let elem_count = src.len_bytes() / elem;
+    let device = src.device().clone();
+    if elem_count == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let mut out = device.alloc_zeros::<u8>(src.len_bytes())?;
+    let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+    let func = device.get_or_load_func("affine_f32", &kernels::AFFINE)?;
+    // Affine kernel signature: (numel, num_dims, info, inp, out, mul, add).
+    let dims_strides: SlicePtrOrNull<usize> = SlicePtrOrNull::Null;
+    let mut builder = func.builder();
+    barg!(builder, elem_count);
+    barg!(builder, 1_usize); // ndims (ignored on the contiguous path)
+    dims_strides.builder_arg(&mut builder);
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    barg!(builder, mul);
+    barg!(builder, 0.0_f32); // add
+    // SAFETY: kernel signature matches the args above — same shape
+    // as the legacy `Map1::f` for `Affine`, just on byte buffers.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        src.len_bytes(),
+    ))
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
