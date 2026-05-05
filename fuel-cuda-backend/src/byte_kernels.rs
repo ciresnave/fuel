@@ -63,6 +63,14 @@ pub fn mul_elementwise_f32(
     binary_elementwise_f32(lhs, rhs, "bmul_f32")
 }
 
+/// Element-wise division (lhs / rhs) of two F32 `CudaStorageBytes`.
+pub fn div_elementwise_f32(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+) -> Result<CudaStorageBytes> {
+    binary_elementwise_f32(lhs, rhs, "bdiv_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
