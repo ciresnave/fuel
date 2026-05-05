@@ -3382,6 +3382,218 @@ reduce_sum_to_half_kernel!(reduce_sum_to_bf16, half::bf16);
 reduce_sum_to_half_kernel!(reduce_sum_to_f16, half::f16);
 
 // =============================================================================
+// FusedLinear — matmul + bias-add (3-input)
+// =============================================================================
+//
+// Inputs:
+//   a:    [..., M, K]
+//   b:    [..., K, N]
+//   bias: [N]   (broadcast across all leading dims of the matmul output)
+// Output: [..., M, N] where out[..., i, j] = bias[j] + sum_k a[..., i, k] * b[..., k, j]
+//
+// Shape semantics match `matmul_*` (per-axis GQA broadcasting on the
+// batch prefixes). The fused form simply seeds the accumulator with
+// bias[j] before the inner product.
+
+fn fused_linear_check<T>(
+    name: &str,
+    lhs: &CpuStorageBytes,
+    rhs: &CpuStorageBytes,
+    bias: &CpuStorageBytes,
+    out: &CpuStorageBytes,
+    lhs_batch_dims: &[usize],
+    rhs_batch_dims: &[usize],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<Vec<usize>> {
+    if lhs_batch_dims.len() != rhs_batch_dims.len() {
+        return Err(Error::Msg(format!(
+            "{name}: batch ranks must match (lhs={}, rhs={})",
+            lhs_batch_dims.len(),
+            rhs_batch_dims.len(),
+        ))
+        .bt());
+    }
+    let batch_rank = lhs_batch_dims.len();
+    let mut n_rep: Vec<usize> = Vec::with_capacity(batch_rank);
+    for i in 0..batch_rank {
+        let la = lhs_batch_dims[i];
+        let ra = rhs_batch_dims[i];
+        if la == ra {
+            n_rep.push(1);
+        } else if ra > 0 && la > ra && la % ra == 0 {
+            n_rep.push(la / ra);
+        } else {
+            return Err(Error::Msg(format!(
+                "{name}: batch dim {i} disallowed (lhs={la}, rhs={ra})",
+            ))
+            .bt());
+        }
+    }
+    let elem = std::mem::size_of::<T>();
+    let lhs_per = m.saturating_mul(k);
+    let rhs_per = k.saturating_mul(n);
+    let out_per = m.saturating_mul(n);
+    let lhs_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+    let rhs_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+    if lhs.len_bytes() != lhs_count.saturating_mul(lhs_per).saturating_mul(elem)
+        || rhs.len_bytes() != rhs_count.saturating_mul(rhs_per).saturating_mul(elem)
+        || out.len_bytes() != lhs_count.saturating_mul(out_per).saturating_mul(elem)
+        || bias.len_bytes() != n.saturating_mul(elem)
+    {
+        return Err(Error::Msg(format!(
+            "{name}: bytes mismatch",
+        ))
+        .bt());
+    }
+    Ok(n_rep)
+}
+
+/// FusedLinear for native arithmetic.
+macro_rules! fused_linear_native_kernel {
+    ($name:ident, $T:ty) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            lhs: &CpuStorageBytes,
+            rhs: &CpuStorageBytes,
+            bias: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            lhs_batch_dims: &[usize],
+            rhs_batch_dims: &[usize],
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<()> {
+            let n_rep = fused_linear_check::<$T>(
+                stringify!($name), lhs, rhs, bias, out,
+                lhs_batch_dims, rhs_batch_dims, m, n, k,
+            )?;
+            let lhs_view: &[$T] = lhs.as_slice()?;
+            let rhs_view: &[$T] = rhs.as_slice()?;
+            let bias_view: &[$T] = bias.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let batch_rank = lhs_batch_dims.len();
+            let lhs_per = m * k;
+            let rhs_per = k * n;
+            let out_per = m * n;
+            let lhs_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+            let mut lhs_multi = vec![0_usize; batch_rank];
+            let mut rhs_multi = vec![0_usize; batch_rank];
+            for b in 0..lhs_count {
+                let mut rem = b;
+                for d in (0..batch_rank).rev() {
+                    let s = lhs_batch_dims[d];
+                    lhs_multi[d] = rem % s;
+                    rem /= s;
+                }
+                for d in 0..batch_rank {
+                    rhs_multi[d] = lhs_multi[d] / n_rep[d];
+                }
+                let mut rhs_b = 0_usize;
+                for d in 0..batch_rank {
+                    rhs_b = rhs_b * rhs_batch_dims[d] + rhs_multi[d];
+                }
+                let lhs_off = b * lhs_per;
+                let rhs_off = rhs_b * rhs_per;
+                let out_off = b * out_per;
+                // Seed each output row with the broadcast bias.
+                for i in 0..m {
+                    let row_off = out_off + i * n;
+                    out_view[row_off..row_off + n].copy_from_slice(bias_view);
+                }
+                for i in 0..m {
+                    for kk in 0..k {
+                        let a = lhs_view[lhs_off + i * k + kk];
+                        let rhs_row_off = rhs_off + kk * n;
+                        let out_row_off = out_off + i * n;
+                        for j in 0..n {
+                            out_view[out_row_off + j] += a * rhs_view[rhs_row_off + j];
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+fused_linear_native_kernel!(fused_linear_f32, f32);
+fused_linear_native_kernel!(fused_linear_f64, f64);
+
+/// FusedLinear for half-floats — accumulate in f32, narrow at end.
+macro_rules! fused_linear_half_kernel {
+    ($name:ident, $T:ty) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            lhs: &CpuStorageBytes,
+            rhs: &CpuStorageBytes,
+            bias: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            lhs_batch_dims: &[usize],
+            rhs_batch_dims: &[usize],
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<()> {
+            let n_rep = fused_linear_check::<$T>(
+                stringify!($name), lhs, rhs, bias, out,
+                lhs_batch_dims, rhs_batch_dims, m, n, k,
+            )?;
+            let lhs_view: &[$T] = lhs.as_slice()?;
+            let rhs_view: &[$T] = rhs.as_slice()?;
+            let bias_view: &[$T] = bias.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let bias_f32: Vec<f32> = bias_view.iter().map(|v| v.to_f32()).collect();
+            let batch_rank = lhs_batch_dims.len();
+            let lhs_per = m * k;
+            let rhs_per = k * n;
+            let out_per = m * n;
+            let lhs_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+            let mut lhs_multi = vec![0_usize; batch_rank];
+            let mut rhs_multi = vec![0_usize; batch_rank];
+            let mut row_acc = vec![0.0_f32; n];
+            for b in 0..lhs_count {
+                let mut rem = b;
+                for d in (0..batch_rank).rev() {
+                    let s = lhs_batch_dims[d];
+                    lhs_multi[d] = rem % s;
+                    rem /= s;
+                }
+                for d in 0..batch_rank {
+                    rhs_multi[d] = lhs_multi[d] / n_rep[d];
+                }
+                let mut rhs_b = 0_usize;
+                for d in 0..batch_rank {
+                    rhs_b = rhs_b * rhs_batch_dims[d] + rhs_multi[d];
+                }
+                let lhs_off = b * lhs_per;
+                let rhs_off = rhs_b * rhs_per;
+                let out_off = b * out_per;
+                for i in 0..m {
+                    row_acc.copy_from_slice(&bias_f32);
+                    for kk in 0..k {
+                        let a = lhs_view[lhs_off + i * k + kk].to_f32();
+                        let rhs_row_off = rhs_off + kk * n;
+                        for j in 0..n {
+                            row_acc[j] += a * rhs_view[rhs_row_off + j].to_f32();
+                        }
+                    }
+                    let out_row_off = out_off + i * n;
+                    for j in 0..n {
+                        out_view[out_row_off + j] = <$T>::from_f32(row_acc[j]);
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+fused_linear_half_kernel!(fused_linear_bf16, half::bf16);
+fused_linear_half_kernel!(fused_linear_f16, half::f16);
+
+// =============================================================================
 // 2D Convolution (f32)
 // =============================================================================
 

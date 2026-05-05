@@ -124,6 +124,11 @@ pub enum OpKind {
     /// alignment. Carried by `OpParams::ReduceSumTo` with both the
     /// input and target shapes.
     ReduceSumTo,
+    /// Fused matmul + bias-add. Inputs `[a, b, bias]`, output
+    /// `[..., M, N] = a @ b + bias[None..., :]`. Reuses
+    /// `OpParams::Matmul` for shape (kernel inits accumulator with
+    /// the bias element instead of zero).
+    FusedLinear,
     /// Affine transformation `y = mul * x + add` with scalar
     /// coefficients. `Op::AddScalar(c)` maps as `mul=1, add=c`;
     /// `Op::MulScalar(c)` maps as `mul=c, add=0`.
@@ -215,6 +220,7 @@ impl OpKind {
             OpKind::Conv2D            => "conv2d",
             OpKind::ConvTranspose2D   => "conv_transpose2d",
             OpKind::ReduceSumTo       => "reduce_sum_to",
+            OpKind::FusedLinear       => "fused_linear",
             OpKind::Affine            => "affine",
             OpKind::ClampElementwise  => "clamp",
             OpKind::PowIElementwise   => "powi",
