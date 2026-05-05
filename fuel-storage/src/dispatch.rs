@@ -349,6 +349,68 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Generate a CPU argextremum wrapper. Output dtype is U32; the
+/// binding-table key is keyed on the OUTPUT dtype = U32. The
+/// wrapper validates the input is F32 (only F32 is wired today).
+macro_rules! cpu_arg_dim_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (input_layout, dims) = match params {
+                OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::Reduce, got {other:?}",
+                        $op_name,
+                    ))
+                    .bt())
+                }
+            };
+            if dims.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects exactly 1 reduce dim, got {dims:?}",
+                    $op_name,
+                ))
+                .bt());
+            }
+            let dim = dims[0];
+            let in_guard = read_storage(&inputs[0])?;
+            if in_guard.dtype != DType::F32 {
+                return Err(Error::Msg(format!(
+                    "{}: only F32 input is wired today, got {:?}",
+                    $op_name, in_guard.dtype,
+                ))
+                .bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, input_layout.shape().dims(), dim)
+        }
+    };
+}
+
+cpu_arg_dim_wrapper!(
+    argmax_dim_u32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::argmax_dim_f32,
+    "argmax_dim"
+);
+cpu_arg_dim_wrapper!(
+    argmin_dim_u32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::argmin_dim_f32,
+    "argmin_dim"
+);
+
 /// Dispatch wrapper for `(IndexAdd, F32, Cpu)`. Three inputs:
 /// `(base, indices, src)` (rank-1 U32 indices). Output shape == base.
 fn index_add_f32_cpu_wrapper(
@@ -1113,6 +1175,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
     table.register(IndexAdd,           f32_dt, cpu, index_add_f32_cpu_wrapper);
     table.register(ScatterAdd,         f32_dt, cpu, scatter_add_f32_cpu_wrapper);
+
+    // ArgMax/ArgMin output U32 indices regardless of input dtype.
+    // Binding-table key is keyed on the OUTPUT dtype; the wrapper
+    // dispatches to the right per-input-dtype kernel internally
+    // (only F32 input is wired today).
+    table.register(ArgMaxDim,          DType::U32, cpu, argmax_dim_u32_cpu_wrapper);
+    table.register(ArgMinDim,          DType::U32, cpu, argmin_dim_u32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -1184,6 +1253,10 @@ fn default_cpu_caps() -> BackendCapabilities {
         ScatterAdd,
     ] {
         op_dtype_support.insert((op, f32_dt));
+    }
+    // Argmax/argmin always produce U32 indices.
+    for op in [ArgMaxDim, ArgMinDim] {
+        op_dtype_support.insert((op, DType::U32));
     }
     // Cast advertises every target dtype that has a wrapper
     // registered. The capability matrix says "this backend can
