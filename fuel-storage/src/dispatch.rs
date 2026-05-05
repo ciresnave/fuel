@@ -349,6 +349,45 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Dispatch wrapper for `(Rope, F32, Cpu)`. Three inputs:
+/// `(x, cos, sin)`. `OpParams::Rope` carries the geometry.
+fn rope_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 3 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "rope wrapper expects 3 inputs (x, cos, sin) + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, seq, head_dim) = match params {
+        OpParams::Rope { outer_count, seq, head_dim } => {
+            (*outer_count, *seq, *head_dim)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "rope wrapper expects OpParams::Rope, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let x_guard = read_storage(&inputs[0])?;
+    let cos_guard = read_storage(&inputs[1])?;
+    let sin_guard = read_storage(&inputs[2])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let x_cpu = cpu_input(&x_guard)?;
+    let cos_cpu = cpu_input(&cos_guard)?;
+    let sin_cpu = cpu_input(&sin_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::rope_f32(
+        x_cpu, cos_cpu, sin_cpu, out_cpu,
+        outer_count, seq, head_dim,
+    )
+}
+
 /// Dispatch wrapper for `(Gather, F32, Cpu)`. Two inputs:
 /// source (f32) and indices (U32). Source/output shapes flow
 /// through `OpParams::Gather`.
@@ -981,6 +1020,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(LayerNormLastDim,   f32_dt, cpu, layer_norm_last_dim_f32_cpu_wrapper);
     table.register(IndexSelect,        f32_dt, cpu, index_select_f32_cpu_wrapper);
     table.register(Gather,             f32_dt, cpu, gather_f32_cpu_wrapper);
+    table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -1047,6 +1087,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         LayerNormLastDim,
         IndexSelect,
         Gather,
+        Rope,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
