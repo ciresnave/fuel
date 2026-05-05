@@ -890,6 +890,48 @@ fn sum_reduce_f32_through_binding_table() {
     assert_eq!(host_f32, &[6.0_f32, 15.0]);
 }
 
+/// End-to-end: MaxReduce F32 through the binding table. Reuses the
+/// shared `reduce_f32` helper with `fast_max_f32`. Input `[2, 3]`
+/// of `[1, 5, 2, 4, 3, 6]`, reduce axis `[1]`, expected `[5, 6]`.
+#[test]
+#[ignore]
+fn max_reduce_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs = [1.0_f32, 5.0, 2.0, 4.0, 3.0, 6.0];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MaxReduce, DType::F32, BackendId::Cuda)
+        .expect("lookup (MaxReduce, F32, Cuda)");
+
+    let params = OpParams::Reduce {
+        input_layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+        dims: vec![1],
+        keepdim: false,
+    };
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_f32, &[5.0_f32, 6.0]);
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.

@@ -185,6 +185,17 @@ pub fn sum_reduce_f32(
     reduce_f32(src, input_layout, reduce_dims, "fast_sum_f32")
 }
 
+/// Max-reduce one F32 `CudaStorageBytes` along the dims listed in
+/// `reduce_dims`. Same shape contract as [`sum_reduce_f32`]; only
+/// the launched kernel name differs.
+pub fn max_reduce_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    reduce_dims: &[usize],
+) -> Result<CudaStorageBytes> {
+    reduce_f32(src, input_layout, reduce_dims, "fast_max_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
