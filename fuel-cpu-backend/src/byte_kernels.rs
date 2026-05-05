@@ -388,6 +388,359 @@ pub fn index_add_f32(
     Ok(())
 }
 
+/// Generate an IndexAdd kernel parameterized over native arithmetic
+/// type `$T` (f32 / f64). Accumulates in-place using `$T`'s `+=`.
+macro_rules! index_add_native_kernel {
+    ($name:ident, $T:ty, $T_size:expr) => {
+        pub fn $name(
+            base: &CpuStorageBytes,
+            indices: &CpuStorageBytes,
+            src: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            base_dim_size: usize,
+            n_indices: usize,
+            inner_count: usize,
+        ) -> Result<()> {
+            let elem = $T_size;
+            let need_base = outer_count
+                .saturating_mul(base_dim_size)
+                .saturating_mul(inner_count)
+                .saturating_mul(elem);
+            let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
+            let need_src = outer_count
+                .saturating_mul(n_indices)
+                .saturating_mul(inner_count)
+                .saturating_mul(elem);
+            if base.len_bytes() != need_base || out.len_bytes() != need_base {
+                return Err(Error::Msg(format!(
+                    "{}: base/out bytes don't match outer={outer_count} × base_dim={base_dim_size} × inner={inner_count} × {elem}",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            if indices.len_bytes() != need_idx {
+                return Err(Error::Msg(format!(
+                    "{}: indices bytes={} doesn't match n_indices={n_indices} × 4",
+                    stringify!($name), indices.len_bytes(),
+                ))
+                .bt());
+            }
+            if src.len_bytes() != need_src {
+                return Err(Error::Msg(format!(
+                    "{}: src bytes={} doesn't match outer={outer_count} × n={n_indices} × inner={inner_count} × {elem}",
+                    stringify!($name), src.len_bytes(),
+                ))
+                .bt());
+            }
+            out.bytes_mut().copy_from_slice(base.bytes());
+            if n_indices == 0 {
+                return Ok(());
+            }
+            let idx_view: &[u32] = indices.as_slice()?;
+            let src_view: &[$T] = src.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            for i in 0..n_indices {
+                let target = idx_view[i] as usize;
+                if target >= base_dim_size {
+                    return Err(Error::Msg(format!(
+                        "{}: index {target} at position {i} out of bounds for base dim {base_dim_size}",
+                        stringify!($name),
+                    ))
+                    .bt());
+                }
+                for outer in 0..outer_count {
+                    let src_off = (outer * n_indices + i) * inner_count;
+                    let dst_off = (outer * base_dim_size + target) * inner_count;
+                    for inner in 0..inner_count {
+                        out_view[dst_off + inner] += src_view[src_off + inner];
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+index_add_native_kernel!(index_add_f64, f64, std::mem::size_of::<f64>());
+
+/// IndexAdd kernel for half-float types (`bf16` / `f16`).
+/// Accumulates in f32 (widen → +=  → narrow back).
+macro_rules! index_add_half_kernel {
+    ($name:ident, $T:ty, $T_size:expr) => {
+        pub fn $name(
+            base: &CpuStorageBytes,
+            indices: &CpuStorageBytes,
+            src: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            base_dim_size: usize,
+            n_indices: usize,
+            inner_count: usize,
+        ) -> Result<()> {
+            let elem = $T_size;
+            let need_base = outer_count
+                .saturating_mul(base_dim_size)
+                .saturating_mul(inner_count)
+                .saturating_mul(elem);
+            let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
+            let need_src = outer_count
+                .saturating_mul(n_indices)
+                .saturating_mul(inner_count)
+                .saturating_mul(elem);
+            if base.len_bytes() != need_base || out.len_bytes() != need_base {
+                return Err(Error::Msg(format!(
+                    "{}: base/out bytes don't match",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            if indices.len_bytes() != need_idx {
+                return Err(Error::Msg(format!(
+                    "{}: indices bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if src.len_bytes() != need_src {
+                return Err(Error::Msg(format!(
+                    "{}: src bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            out.bytes_mut().copy_from_slice(base.bytes());
+            if n_indices == 0 {
+                return Ok(());
+            }
+            let idx_view: &[u32] = indices.as_slice()?;
+            let src_view: &[$T] = src.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            for i in 0..n_indices {
+                let target = idx_view[i] as usize;
+                if target >= base_dim_size {
+                    return Err(Error::Msg(format!(
+                        "{}: index {target} OOB for {base_dim_size}",
+                        stringify!($name),
+                    ))
+                    .bt());
+                }
+                for outer in 0..outer_count {
+                    let src_off = (outer * n_indices + i) * inner_count;
+                    let dst_off = (outer * base_dim_size + target) * inner_count;
+                    for inner in 0..inner_count {
+                        let acc = out_view[dst_off + inner].to_f32()
+                            + src_view[src_off + inner].to_f32();
+                        out_view[dst_off + inner] = <$T>::from_f32(acc);
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+index_add_half_kernel!(index_add_bf16, half::bf16, std::mem::size_of::<half::bf16>());
+index_add_half_kernel!(index_add_f16,  half::f16,  std::mem::size_of::<half::f16>());
+
+/// Generate a ScatterAdd kernel parameterized over native arithmetic
+/// type `$T` (f32 / f64). Same shape as `scatter_add_f32`.
+macro_rules! scatter_add_native_kernel {
+    ($name:ident, $T:ty, $T_size:expr) => {
+        pub fn $name(
+            base: &CpuStorageBytes,
+            indices: &CpuStorageBytes,
+            src: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            base_shape: &[usize],
+            src_shape: &[usize],
+            dim: usize,
+        ) -> Result<()> {
+            if base_shape.len() != src_shape.len() {
+                return Err(Error::Msg(format!(
+                    "{}: base rank ({}) != src rank ({})",
+                    stringify!($name), base_shape.len(), src_shape.len(),
+                ))
+                .bt());
+            }
+            let rank = base_shape.len();
+            if dim >= rank {
+                return Err(Error::Msg(format!(
+                    "{}: dim {dim} out of range for rank {rank}",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            for d in 0..rank {
+                if d != dim && base_shape[d] != src_shape[d] {
+                    return Err(Error::Msg(format!(
+                        "{}: base/src disagree at dim {d}",
+                        stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let elem = $T_size;
+            let base_total: usize = base_shape.iter().product();
+            let src_total: usize = src_shape.iter().product();
+            if base.len_bytes() != base_total.saturating_mul(elem)
+                || out.len_bytes() != base_total.saturating_mul(elem)
+            {
+                return Err(Error::Msg(format!(
+                    "{}: base/out bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if indices.len_bytes() != src_total.saturating_mul(std::mem::size_of::<u32>()) {
+                return Err(Error::Msg(format!(
+                    "{}: indices bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if src.len_bytes() != src_total.saturating_mul(elem) {
+                return Err(Error::Msg(format!(
+                    "{}: src bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            out.bytes_mut().copy_from_slice(base.bytes());
+            if src_total == 0 {
+                return Ok(());
+            }
+            let idx_view: &[u32] = indices.as_slice()?;
+            let src_view: &[$T] = src.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let mut base_strides = vec![0usize; rank];
+            let mut s = 1;
+            for d in (0..rank).rev() {
+                base_strides[d] = s;
+                s *= base_shape[d];
+            }
+            let mut multi = vec![0usize; rank];
+            for f in 0..src_total {
+                let mut rem = f;
+                for d in (0..rank).rev() {
+                    multi[d] = rem % src_shape[d];
+                    rem /= src_shape[d];
+                }
+                let dst_dim_idx = idx_view[f] as usize;
+                if dst_dim_idx >= base_shape[dim] {
+                    return Err(Error::Msg(format!(
+                        "{}: index {dst_dim_idx} OOB", stringify!($name),
+                    ))
+                    .bt());
+                }
+                let mut dst_flat = 0;
+                for d in 0..rank {
+                    let coord = if d == dim { dst_dim_idx } else { multi[d] };
+                    dst_flat += coord * base_strides[d];
+                }
+                out_view[dst_flat] += src_view[f];
+            }
+            Ok(())
+        }
+    };
+}
+
+scatter_add_native_kernel!(scatter_add_f64, f64, std::mem::size_of::<f64>());
+
+/// ScatterAdd for half-float types — accumulates in f32 then narrows.
+macro_rules! scatter_add_half_kernel {
+    ($name:ident, $T:ty, $T_size:expr) => {
+        pub fn $name(
+            base: &CpuStorageBytes,
+            indices: &CpuStorageBytes,
+            src: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            base_shape: &[usize],
+            src_shape: &[usize],
+            dim: usize,
+        ) -> Result<()> {
+            if base_shape.len() != src_shape.len() {
+                return Err(Error::Msg(format!(
+                    "{}: rank mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            let rank = base_shape.len();
+            if dim >= rank {
+                return Err(Error::Msg(format!(
+                    "{}: dim OOB", stringify!($name),
+                ))
+                .bt());
+            }
+            for d in 0..rank {
+                if d != dim && base_shape[d] != src_shape[d] {
+                    return Err(Error::Msg(format!(
+                        "{}: shape mismatch at dim {d}", stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let elem = $T_size;
+            let base_total: usize = base_shape.iter().product();
+            let src_total: usize = src_shape.iter().product();
+            if base.len_bytes() != base_total.saturating_mul(elem)
+                || out.len_bytes() != base_total.saturating_mul(elem)
+            {
+                return Err(Error::Msg(format!(
+                    "{}: base/out bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if indices.len_bytes() != src_total.saturating_mul(std::mem::size_of::<u32>()) {
+                return Err(Error::Msg(format!(
+                    "{}: indices bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if src.len_bytes() != src_total.saturating_mul(elem) {
+                return Err(Error::Msg(format!(
+                    "{}: src bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            out.bytes_mut().copy_from_slice(base.bytes());
+            if src_total == 0 {
+                return Ok(());
+            }
+            let idx_view: &[u32] = indices.as_slice()?;
+            let src_view: &[$T] = src.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let mut base_strides = vec![0usize; rank];
+            let mut s = 1;
+            for d in (0..rank).rev() {
+                base_strides[d] = s;
+                s *= base_shape[d];
+            }
+            let mut multi = vec![0usize; rank];
+            for f in 0..src_total {
+                let mut rem = f;
+                for d in (0..rank).rev() {
+                    multi[d] = rem % src_shape[d];
+                    rem /= src_shape[d];
+                }
+                let dst_dim_idx = idx_view[f] as usize;
+                if dst_dim_idx >= base_shape[dim] {
+                    return Err(Error::Msg(format!(
+                        "{}: index OOB", stringify!($name),
+                    ))
+                    .bt());
+                }
+                let mut dst_flat = 0;
+                for d in 0..rank {
+                    let coord = if d == dim { dst_dim_idx } else { multi[d] };
+                    dst_flat += coord * base_strides[d];
+                }
+                let acc = out_view[dst_flat].to_f32() + src_view[f].to_f32();
+                out_view[dst_flat] = <$T>::from_f32(acc);
+            }
+            Ok(())
+        }
+    };
+}
+
+scatter_add_half_kernel!(scatter_add_bf16, half::bf16, std::mem::size_of::<half::bf16>());
+scatter_add_half_kernel!(scatter_add_f16,  half::f16,  std::mem::size_of::<half::f16>());
+
 /// N-dimensional scatter-add — the functional inverse of
 /// [`gather_f32`]. `base_shape` and `src_shape` agree on every
 /// dim except `dim`. For each src/indices position `p`, the
@@ -1375,6 +1728,213 @@ pub fn powi_f32(
 
 binary_f32_kernel!(maximum_f32, |a: f32, b: f32| a.max(b), "Element-wise `f32` maximum: `out[i] = max(lhs[i], rhs[i])`. NaN handling follows `f32::max` (NaN-propagating per IEEE-754).");
 binary_f32_kernel!(minimum_f32, |a: f32, b: f32| a.min(b), "Element-wise `f32` minimum: `out[i] = min(lhs[i], rhs[i])`. NaN handling follows `f32::min`.");
+
+// Native-arithmetic Affine / Clamp / PowI for f64.
+pub fn affine_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    mul: f64,
+    add: f64,
+) -> Result<()> {
+    check_lens_2("affine_f64", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = mul * in_view[i] + add;
+    }
+    Ok(())
+}
+
+pub fn clamp_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    min: f64,
+    max: f64,
+) -> Result<()> {
+    check_lens_2("clamp_f64", input.len_bytes(), out.len_bytes())?;
+    if min > max {
+        return Err(Error::Msg(format!("clamp_f64: min ({min}) > max ({max})")).bt());
+    }
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = in_view[i].clamp(min, max);
+    }
+    Ok(())
+}
+
+pub fn powi_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    exp: i32,
+) -> Result<()> {
+    check_lens_2("powi_f64", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[f64] = input.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = in_view[i].powi(exp);
+    }
+    Ok(())
+}
+
+// Half-float Affine / Clamp / PowI via f32 round-trip.
+macro_rules! affine_half_kernel {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            mul: f32,
+            add: f32,
+        ) -> Result<()> {
+            check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = <$T>::from_f32(mul * in_view[i].to_f32() + add);
+            }
+            Ok(())
+        }
+    };
+}
+
+affine_half_kernel!(affine_bf16, half::bf16);
+affine_half_kernel!(affine_f16, half::f16);
+
+macro_rules! clamp_half_kernel {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            min: f32,
+            max: f32,
+        ) -> Result<()> {
+            check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
+            if min > max {
+                return Err(Error::Msg(format!(
+                    "{}: min ({min}) > max ({max})", stringify!($name),
+                ))
+                .bt());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = <$T>::from_f32(in_view[i].to_f32().clamp(min, max));
+            }
+            Ok(())
+        }
+    };
+}
+
+clamp_half_kernel!(clamp_bf16, half::bf16);
+clamp_half_kernel!(clamp_f16, half::f16);
+
+macro_rules! powi_half_kernel {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            exp: i32,
+        ) -> Result<()> {
+            check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = <$T>::from_f32(in_view[i].to_f32().powi(exp));
+            }
+            Ok(())
+        }
+    };
+}
+
+powi_half_kernel!(powi_bf16, half::bf16);
+powi_half_kernel!(powi_f16, half::f16);
+
+// ArgMax/ArgMin extensions to f64/bf16/f16. The existing
+// `argextremum_dim_f32` operates on f32 directly; for other
+// dtypes we widen to f32 for comparison (uniform NaN handling).
+macro_rules! argextremum_dim_via_f32 {
+    ($name:ident, $T:ty, $T_size:expr, $is_better:expr, $init:expr) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            dim: usize,
+        ) -> Result<()> {
+            if dim >= input_shape.len() {
+                return Err(Error::Msg(format!(
+                    "{}: dim {dim} out of range for rank {}",
+                    stringify!($name), input_shape.len(),
+                ))
+                .bt());
+            }
+            let total_input: usize = input_shape.iter().product();
+            if input.len_bytes() != total_input.saturating_mul($T_size) {
+                return Err(Error::Msg(format!(
+                    "{}: input bytes={} doesn't match shape {input_shape:?}",
+                    stringify!($name), input.len_bytes(),
+                ))
+                .bt());
+            }
+            let outer_count: usize = input_shape[..dim].iter().product();
+            let dim_size = input_shape[dim];
+            let inner_count: usize = input_shape[dim + 1..].iter().product();
+            let output_count = outer_count * inner_count;
+            if output.len_bytes() != output_count.saturating_mul(std::mem::size_of::<u32>()) {
+                return Err(Error::Msg(format!(
+                    "{}: output bytes={} doesn't match",
+                    stringify!($name), output.len_bytes(),
+                ))
+                .bt());
+            }
+            if dim_size == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: dim {dim} has size 0",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [u32] = output.as_slice_mut()?;
+            let is_better: fn(f32, f32) -> bool = $is_better;
+            for outer in 0..outer_count {
+                for inner in 0..inner_count {
+                    let mut best_val: f32 = $init;
+                    let mut best_idx = 0u32;
+                    for d in 0..dim_size {
+                        let off = (outer * dim_size + d) * inner_count + inner;
+                        let v = in_view[off].to_f32();
+                        if d == 0 {
+                            best_val = v;
+                            best_idx = 0;
+                        } else if is_better(v, best_val) {
+                            best_val = v;
+                            best_idx = d as u32;
+                        }
+                    }
+                    out_view[outer * inner_count + inner] = best_idx;
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+// f64 has a native to_f32 method via the `as` cast — wrap it.
+trait ToF32Ext { fn to_f32(self) -> f32; }
+impl ToF32Ext for f64 { fn to_f32(self) -> f32 { self as f32 } }
+
+argextremum_dim_via_f32!(argmax_dim_f64, f64, std::mem::size_of::<f64>(),
+    |new: f32, best: f32| new > best, f32::NEG_INFINITY);
+argextremum_dim_via_f32!(argmin_dim_f64, f64, std::mem::size_of::<f64>(),
+    |new: f32, best: f32| new < best, f32::INFINITY);
+argextremum_dim_via_f32!(argmax_dim_bf16, half::bf16, std::mem::size_of::<half::bf16>(),
+    |new: f32, best: f32| new > best, f32::NEG_INFINITY);
+argextremum_dim_via_f32!(argmin_dim_bf16, half::bf16, std::mem::size_of::<half::bf16>(),
+    |new: f32, best: f32| new < best, f32::INFINITY);
+argextremum_dim_via_f32!(argmax_dim_f16, half::f16, std::mem::size_of::<half::f16>(),
+    |new: f32, best: f32| new > best, f32::NEG_INFINITY);
+argextremum_dim_via_f32!(argmin_dim_f16, half::f16, std::mem::size_of::<half::f16>(),
+    |new: f32, best: f32| new < best, f32::INFINITY);
 
 // =============================================================================
 // Dtype conversion (Cast)
