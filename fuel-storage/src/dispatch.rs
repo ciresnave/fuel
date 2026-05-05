@@ -3123,6 +3123,47 @@ fn max_reduce_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(MinReduce, F32, Cuda)`. Same shape as
+/// `sum_reduce_f32_cuda_wrapper`; only the byte-kernel call differs.
+#[cfg(feature = "cuda")]
+fn min_reduce_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "min_reduce_f32_cuda_wrapper: expected 1 input, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "min_reduce_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (input_layout, dims) = match params {
+        OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+        other => {
+            return Err(Error::Msg(format!(
+                "min_reduce_f32_cuda_wrapper: expected OpParams::Reduce, got {:?}",
+                other,
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::min_reduce_f32(src_cuda, input_layout, dims)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -3156,6 +3197,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(SumReduce,          f32_dt, cuda, sum_reduce_f32_cuda_wrapper);
     table.register(MaxReduce,          f32_dt, cuda, max_reduce_f32_cuda_wrapper);
+    table.register(MinReduce,          f32_dt, cuda, min_reduce_f32_cuda_wrapper);
 }
 
 // =============================================================================
