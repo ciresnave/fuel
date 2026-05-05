@@ -464,6 +464,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::MatMul        => Some(OpKind::MatMul),
         Op::Cast(_)       => Some(OpKind::Cast),
         Op::Conv2D { .. } => Some(OpKind::Conv2D),
+        Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
         Op::AddScalar(_)  => Some(OpKind::Affine),
         Op::MulScalar(_)  => Some(OpKind::Affine),
         Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
@@ -924,6 +925,48 @@ fn op_to_op_params(
                 stride: *stride,
                 padding: *padding,
                 dilation: (1, 1),
+                groups: *groups,
+            }
+        }
+        Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
+            // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
+            // [Cin, Cout/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
+            // Output (this Node's shape) = [N, Cout, Hout, Wout].
+            if node.inputs.len() != 2 && node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::ConvTranspose2D expects 2 or 3 inputs, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let w_layout = input_layout(node.inputs[1]);
+            let x_dims = x_layout.shape().dims();
+            let w_dims = w_layout.shape().dims();
+            if x_dims.len() != 4 || w_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::ConvTranspose2D requires rank-4 x and weight; got x={x_dims:?} w={w_dims:?}",
+                ))
+                .bt());
+            }
+            let out_dims = node.shape.dims();
+            if out_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::ConvTranspose2D output must be rank 4, got {out_dims:?}",
+                ))
+                .bt());
+            }
+            let x_shape = [x_dims[0], x_dims[1], x_dims[2], x_dims[3]];
+            let w_shape = [w_dims[0], w_dims[1], w_dims[2], w_dims[3]];
+            let out_shape = [out_dims[0], out_dims[1], out_dims[2], out_dims[3]];
+            OpParams::ConvTranspose2D {
+                x_shape,
+                w_shape,
+                out_shape,
+                stride: *stride,
+                padding: *padding,
+                output_padding: *output_padding,
+                dilation: *dilation,
                 groups: *groups,
             }
         }
@@ -2970,6 +3013,137 @@ mod tests {
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
+        }
+    }
+
+    /// E2E: Op::ConvTranspose2D — F32 spread test.
+    /// x = [[1, 2], [3, 4]] shape [1,1,2,2], all-ones kernel
+    /// shape [1,1,2,2], stride=1, padding=0, dilation=1, no bias.
+    /// Expected output (3x3):
+    ///   [[1,  3, 2],
+    ///    [4, 10, 6],
+    ///    [3,  7, 4]]
+    #[test]
+    fn pipelined_realize_conv_transpose2d_f32() {
+        let x_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let w_storage = crate::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::ConvTranspose2D {
+                    stride: (1, 1), padding: (0, 0),
+                    output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0],
+        );
+    }
+
+    /// E2E: ConvTranspose2D F64 — same shape test.
+    #[test]
+    fn pipelined_realize_conv_transpose2d_f64() {
+        let x_storage = crate::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0]);
+        let w_storage = crate::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
+            });
+            let c = g.push(Node {
+                op: Op::ConvTranspose2D {
+                    stride: (1, 1), padding: (0, 0),
+                    output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::F64,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(
+            c.as_slice::<f64>().unwrap(),
+            &[1.0, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0],
+        );
+    }
+
+    /// E2E: ConvTranspose2D BF16 — tolerant compare via f32-acc.
+    #[test]
+    fn pipelined_realize_conv_transpose2d_bf16() {
+        let x: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0]
+            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+        let w: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
+            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+        let x_storage = crate::from_slice_cpu(&x);
+        let w_storage = crate::from_slice_cpu(&w);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+            });
+            let c = g.push(Node {
+                op: Op::ConvTranspose2D {
+                    stride: (1, 1), padding: (0, 0),
+                    output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 3, 3]),
+                dtype: DType::BF16,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let want = [1.0_f32, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
         }
     }
 

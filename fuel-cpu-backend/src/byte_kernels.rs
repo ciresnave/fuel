@@ -2985,6 +2985,254 @@ conv2d_half_kernel!(conv2d_bf16, half::bf16);
 conv2d_half_kernel!(conv2d_f16, half::f16);
 
 // =============================================================================
+// 2D Transposed Convolution — multi-dtype
+// =============================================================================
+//
+// Shapes:
+//   x:      [N, Cin, H_in, W_in]
+//   weight: [Cin, Cout/groups, Kh, Kw]   (transposed channel order vs Conv2D)
+//   bias:   optional [Cout]
+//   out:    [N, Cout, H_out, W_out]
+// where:
+//   H_out = (H_in - 1) * stride.0 - 2*pad.0 + dil.0*(Kh - 1) + out_pad.0 + 1
+//   W_out = (W_in - 1) * stride.1 - 2*pad.1 + dil.1*(Kw - 1) + out_pad.1 + 1
+//
+// Strategy: zero output, optionally seed with broadcast bias, then for
+// every input element scatter-accumulate its kernel-shaped contribution
+// into the output. For half-floats we accumulate into a parallel
+// `Vec<f32>` buffer and narrow at the end (same f32-accumulator
+// pattern Conv2D-half uses).
+
+/// ConvTranspose2D for native arithmetic ($T = f32 or f64).
+macro_rules! conv_transpose2d_native_kernel {
+    ($name:ident, $T:ty, $T_size:expr, $zero:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            x: &CpuStorageBytes,
+            weight: &CpuStorageBytes,
+            bias: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            x_shape: [usize; 4],
+            w_shape: [usize; 4],
+            out_shape: [usize; 4],
+            stride: (usize, usize),
+            padding: (usize, usize),
+            dilation: (usize, usize),
+            groups: usize,
+        ) -> Result<()> {
+            let [n, cin, h_in, w_in] = x_shape;
+            let [cin_w, cout_per_group, kh, kw] = w_shape;
+            let [n_out, cout, h_out, w_out] = out_shape;
+            if n != n_out
+                || groups == 0
+                || cin % groups != 0
+                || cout % groups != 0
+                || cin != cin_w
+                || cout / groups != cout_per_group
+            {
+                return Err(Error::Msg(format!(
+                    "{}: shape contract violation (x={x_shape:?}, w={w_shape:?}, out={out_shape:?}, groups={groups})",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = $T_size;
+            if x.len_bytes() != n * cin * h_in * w_in * elem
+                || weight.len_bytes() != cin * cout_per_group * kh * kw * elem
+                || out.len_bytes() != n * cout * h_out * w_out * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if let Some(b) = bias {
+                if b.len_bytes() != cout * elem {
+                    return Err(Error::Msg(format!(
+                        "{}: bias bytes mismatch", stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let x_view: &[$T] = x.as_slice()?;
+            let w_view: &[$T] = weight.as_slice()?;
+            let bias_view: Option<&[$T]> = match bias {
+                Some(b) => Some(b.as_slice()?),
+                None => None,
+            };
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            // Initialize output: bias broadcast across spatial dims, or zero.
+            for n_i in 0..n {
+                for co in 0..cout {
+                    let bias_val = bias_view.map(|bv| bv[co]).unwrap_or($zero);
+                    for oh in 0..h_out {
+                        for ow in 0..w_out {
+                            let idx = ((n_i * cout + co) * h_out + oh) * w_out + ow;
+                            out_view[idx] = bias_val;
+                        }
+                    }
+                }
+            }
+            let (sh, sw) = stride;
+            let (ph, pw) = padding;
+            let (dh, dw) = dilation;
+            let cin_per_group = cin / groups;
+            for n_i in 0..n {
+                for g in 0..groups {
+                    for ci_local in 0..cin_per_group {
+                        let ci = g * cin_per_group + ci_local;
+                        for hi in 0..h_in {
+                            for wi in 0..w_in {
+                                let val = x_view[((n_i * cin + ci) * h_in + hi) * w_in + wi];
+                                if val == $zero { continue; }
+                                for co_local in 0..cout_per_group {
+                                    let co = g * cout_per_group + co_local;
+                                    for kh_i in 0..kh {
+                                        let oh_signed = (hi * sh) as isize + (kh_i * dh) as isize - ph as isize;
+                                        if oh_signed < 0 || oh_signed as usize >= h_out { continue; }
+                                        let oh = oh_signed as usize;
+                                        for kw_i in 0..kw {
+                                            let ow_signed = (wi * sw) as isize + (kw_i * dw) as isize - pw as isize;
+                                            if ow_signed < 0 || ow_signed as usize >= w_out { continue; }
+                                            let ow = ow_signed as usize;
+                                            let w_idx = ((ci * cout_per_group + co_local) * kh + kh_i) * kw + kw_i;
+                                            let out_idx = ((n_i * cout + co) * h_out + oh) * w_out + ow;
+                                            out_view[out_idx] += val * w_view[w_idx];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+conv_transpose2d_native_kernel!(conv_transpose2d_f32, f32, std::mem::size_of::<f32>(), 0.0_f32);
+conv_transpose2d_native_kernel!(conv_transpose2d_f64, f64, std::mem::size_of::<f64>(), 0.0_f64);
+
+/// ConvTranspose2D for half-floats — accumulates into a parallel
+/// `Vec<f32>` buffer, narrows back at the end. Same f32-accumulator
+/// pattern as conv2d_half_kernel!.
+macro_rules! conv_transpose2d_half_kernel {
+    ($name:ident, $T:ty) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            x: &CpuStorageBytes,
+            weight: &CpuStorageBytes,
+            bias: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            x_shape: [usize; 4],
+            w_shape: [usize; 4],
+            out_shape: [usize; 4],
+            stride: (usize, usize),
+            padding: (usize, usize),
+            dilation: (usize, usize),
+            groups: usize,
+        ) -> Result<()> {
+            let [n, cin, h_in, w_in] = x_shape;
+            let [cin_w, cout_per_group, kh, kw] = w_shape;
+            let [n_out, cout, h_out, w_out] = out_shape;
+            if n != n_out
+                || groups == 0
+                || cin % groups != 0
+                || cout % groups != 0
+                || cin != cin_w
+                || cout / groups != cout_per_group
+            {
+                return Err(Error::Msg(format!(
+                    "{}: shape contract violation",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            if x.len_bytes() != n * cin * h_in * w_in * elem
+                || weight.len_bytes() != cin * cout_per_group * kh * kw * elem
+                || out.len_bytes() != n * cout * h_out * w_out * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if let Some(b) = bias {
+                if b.len_bytes() != cout * elem {
+                    return Err(Error::Msg(format!(
+                        "{}: bias bytes mismatch", stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let x_view: &[$T] = x.as_slice()?;
+            let w_view: &[$T] = weight.as_slice()?;
+            let bias_view: Option<&[$T]> = match bias {
+                Some(b) => Some(b.as_slice()?),
+                None => None,
+            };
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            // f32 accumulator buffer; seeded with bias broadcast.
+            let total = n * cout * h_out * w_out;
+            let mut acc = vec![0.0_f32; total];
+            for n_i in 0..n {
+                for co in 0..cout {
+                    let bias_val = bias_view.map(|bv| bv[co].to_f32()).unwrap_or(0.0_f32);
+                    for oh in 0..h_out {
+                        for ow in 0..w_out {
+                            let idx = ((n_i * cout + co) * h_out + oh) * w_out + ow;
+                            acc[idx] = bias_val;
+                        }
+                    }
+                }
+            }
+            let (sh, sw) = stride;
+            let (ph, pw) = padding;
+            let (dh, dw) = dilation;
+            let cin_per_group = cin / groups;
+            for n_i in 0..n {
+                for g in 0..groups {
+                    for ci_local in 0..cin_per_group {
+                        let ci = g * cin_per_group + ci_local;
+                        for hi in 0..h_in {
+                            for wi in 0..w_in {
+                                let val = x_view[((n_i * cin + ci) * h_in + hi) * w_in + wi].to_f32();
+                                if val == 0.0_f32 { continue; }
+                                for co_local in 0..cout_per_group {
+                                    let co = g * cout_per_group + co_local;
+                                    for kh_i in 0..kh {
+                                        let oh_signed = (hi * sh) as isize + (kh_i * dh) as isize - ph as isize;
+                                        if oh_signed < 0 || oh_signed as usize >= h_out { continue; }
+                                        let oh = oh_signed as usize;
+                                        for kw_i in 0..kw {
+                                            let ow_signed = (wi * sw) as isize + (kw_i * dw) as isize - pw as isize;
+                                            if ow_signed < 0 || ow_signed as usize >= w_out { continue; }
+                                            let ow = ow_signed as usize;
+                                            let w_idx = ((ci * cout_per_group + co_local) * kh + kh_i) * kw + kw_i;
+                                            let out_idx = ((n_i * cout + co) * h_out + oh) * w_out + ow;
+                                            acc[out_idx] += val * w_view[w_idx].to_f32();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for (dst, src) in out_view.iter_mut().zip(acc.iter()) {
+                *dst = <$T>::from_f32(*src);
+            }
+            Ok(())
+        }
+    };
+}
+
+conv_transpose2d_half_kernel!(conv_transpose2d_bf16, half::bf16);
+conv_transpose2d_half_kernel!(conv_transpose2d_f16, half::f16);
+
+// =============================================================================
 // 2D Convolution (f32)
 // =============================================================================
 
