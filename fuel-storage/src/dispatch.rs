@@ -377,6 +377,54 @@ cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_
 cpu_binary_wrapper!(maximum_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f64, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f64, "minimum_elementwise");
 
+// bf16 elementwise wrappers (via-f32 round-trip kernels).
+cpu_binary_wrapper!(add_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_bf16, "add_elementwise");
+cpu_binary_wrapper!(sub_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_bf16, "sub_elementwise");
+cpu_binary_wrapper!(mul_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_bf16, "mul_elementwise");
+cpu_binary_wrapper!(div_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_bf16, "div_elementwise");
+cpu_binary_wrapper!(maximum_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_bf16, "maximum_elementwise");
+cpu_binary_wrapper!(minimum_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_bf16, "minimum_elementwise");
+
+cpu_unary_wrapper!(relu_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_bf16, "relu_elementwise");
+cpu_unary_wrapper!(neg_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_bf16, "neg_elementwise");
+cpu_unary_wrapper!(sqr_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_bf16, "sqr_elementwise");
+cpu_unary_wrapper!(sqrt_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_bf16, "sqrt_elementwise");
+cpu_unary_wrapper!(recip_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_bf16, "recip_elementwise");
+cpu_unary_wrapper!(abs_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_bf16, "abs_elementwise");
+cpu_unary_wrapper!(tanh_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_bf16, "tanh_elementwise");
+cpu_unary_wrapper!(exp_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_bf16, "exp_elementwise");
+cpu_unary_wrapper!(log_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_bf16, "log_elementwise");
+cpu_unary_wrapper!(sin_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_bf16, "sin_elementwise");
+cpu_unary_wrapper!(cos_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_bf16, "cos_elementwise");
+cpu_unary_wrapper!(sigmoid_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_bf16, "sigmoid_elementwise");
+cpu_unary_wrapper!(silu_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_bf16, "silu_elementwise");
+cpu_unary_wrapper!(gelu_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_bf16, "gelu_elementwise");
+cpu_unary_wrapper!(step_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_bf16, "step_elementwise");
+
+// f16 elementwise wrappers — direct mirrors of bf16.
+cpu_binary_wrapper!(add_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_f16, "add_elementwise");
+cpu_binary_wrapper!(sub_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_f16, "sub_elementwise");
+cpu_binary_wrapper!(mul_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_f16, "mul_elementwise");
+cpu_binary_wrapper!(div_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_f16, "div_elementwise");
+cpu_binary_wrapper!(maximum_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f16, "maximum_elementwise");
+cpu_binary_wrapper!(minimum_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f16, "minimum_elementwise");
+
+cpu_unary_wrapper!(relu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_f16, "relu_elementwise");
+cpu_unary_wrapper!(neg_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_f16, "neg_elementwise");
+cpu_unary_wrapper!(sqr_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_f16, "sqr_elementwise");
+cpu_unary_wrapper!(sqrt_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_f16, "sqrt_elementwise");
+cpu_unary_wrapper!(recip_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_f16, "recip_elementwise");
+cpu_unary_wrapper!(abs_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_f16, "abs_elementwise");
+cpu_unary_wrapper!(tanh_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_f16, "tanh_elementwise");
+cpu_unary_wrapper!(exp_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_f16, "exp_elementwise");
+cpu_unary_wrapper!(log_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_f16, "log_elementwise");
+cpu_unary_wrapper!(sin_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_f16, "sin_elementwise");
+cpu_unary_wrapper!(cos_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_f16, "cos_elementwise");
+cpu_unary_wrapper!(sigmoid_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_f16, "sigmoid_elementwise");
+cpu_unary_wrapper!(silu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_f16, "silu_elementwise");
+cpu_unary_wrapper!(gelu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f16, "gelu_elementwise");
+cpu_unary_wrapper!(step_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f16, "step_elementwise");
+
 /// Generate a CPU argextremum wrapper. Output dtype is U32; the
 /// binding-table key is keyed on the OUTPUT dtype = U32. The
 /// wrapper validates the input is F32 (only F32 is wired today).
@@ -1272,6 +1320,53 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MaximumElementwise, f64_dt, cpu, maximum_elementwise_f64_cpu_wrapper);
     table.register(MinimumElementwise, f64_dt, cpu, minimum_elementwise_f64_cpu_wrapper);
 
+    // bf16 + f16 elementwise — via-f32 round-trip kernels.
+    let bf16_dt = DType::BF16;
+    let f16_dt  = DType::F16;
+    table.register(AddElementwise,     bf16_dt, cpu, add_elementwise_bf16_cpu_wrapper);
+    table.register(SubElementwise,     bf16_dt, cpu, sub_elementwise_bf16_cpu_wrapper);
+    table.register(MulElementwise,     bf16_dt, cpu, mul_elementwise_bf16_cpu_wrapper);
+    table.register(DivElementwise,     bf16_dt, cpu, div_elementwise_bf16_cpu_wrapper);
+    table.register(MaximumElementwise, bf16_dt, cpu, maximum_elementwise_bf16_cpu_wrapper);
+    table.register(MinimumElementwise, bf16_dt, cpu, minimum_elementwise_bf16_cpu_wrapper);
+    table.register(ReluElementwise,    bf16_dt, cpu, relu_elementwise_bf16_cpu_wrapper);
+    table.register(NegElementwise,     bf16_dt, cpu, neg_elementwise_bf16_cpu_wrapper);
+    table.register(SqrElementwise,     bf16_dt, cpu, sqr_elementwise_bf16_cpu_wrapper);
+    table.register(SqrtElementwise,    bf16_dt, cpu, sqrt_elementwise_bf16_cpu_wrapper);
+    table.register(RecipElementwise,   bf16_dt, cpu, recip_elementwise_bf16_cpu_wrapper);
+    table.register(AbsElementwise,     bf16_dt, cpu, abs_elementwise_bf16_cpu_wrapper);
+    table.register(TanhElementwise,    bf16_dt, cpu, tanh_elementwise_bf16_cpu_wrapper);
+    table.register(ExpElementwise,     bf16_dt, cpu, exp_elementwise_bf16_cpu_wrapper);
+    table.register(LogElementwise,     bf16_dt, cpu, log_elementwise_bf16_cpu_wrapper);
+    table.register(SinElementwise,     bf16_dt, cpu, sin_elementwise_bf16_cpu_wrapper);
+    table.register(CosElementwise,     bf16_dt, cpu, cos_elementwise_bf16_cpu_wrapper);
+    table.register(SigmoidElementwise, bf16_dt, cpu, sigmoid_elementwise_bf16_cpu_wrapper);
+    table.register(SiluElementwise,    bf16_dt, cpu, silu_elementwise_bf16_cpu_wrapper);
+    table.register(GeluElementwise,    bf16_dt, cpu, gelu_elementwise_bf16_cpu_wrapper);
+    table.register(StepElementwise,    bf16_dt, cpu, step_elementwise_bf16_cpu_wrapper);
+
+    table.register(AddElementwise,     f16_dt, cpu, add_elementwise_f16_cpu_wrapper);
+    table.register(SubElementwise,     f16_dt, cpu, sub_elementwise_f16_cpu_wrapper);
+    table.register(MulElementwise,     f16_dt, cpu, mul_elementwise_f16_cpu_wrapper);
+    table.register(DivElementwise,     f16_dt, cpu, div_elementwise_f16_cpu_wrapper);
+    table.register(MaximumElementwise, f16_dt, cpu, maximum_elementwise_f16_cpu_wrapper);
+    table.register(MinimumElementwise, f16_dt, cpu, minimum_elementwise_f16_cpu_wrapper);
+    table.register(ReluElementwise,    f16_dt, cpu, relu_elementwise_f16_cpu_wrapper);
+    table.register(NegElementwise,     f16_dt, cpu, neg_elementwise_f16_cpu_wrapper);
+    table.register(SqrElementwise,     f16_dt, cpu, sqr_elementwise_f16_cpu_wrapper);
+    table.register(SqrtElementwise,    f16_dt, cpu, sqrt_elementwise_f16_cpu_wrapper);
+    table.register(RecipElementwise,   f16_dt, cpu, recip_elementwise_f16_cpu_wrapper);
+    table.register(AbsElementwise,     f16_dt, cpu, abs_elementwise_f16_cpu_wrapper);
+    table.register(TanhElementwise,    f16_dt, cpu, tanh_elementwise_f16_cpu_wrapper);
+    table.register(ExpElementwise,     f16_dt, cpu, exp_elementwise_f16_cpu_wrapper);
+    table.register(LogElementwise,     f16_dt, cpu, log_elementwise_f16_cpu_wrapper);
+    table.register(SinElementwise,     f16_dt, cpu, sin_elementwise_f16_cpu_wrapper);
+    table.register(CosElementwise,     f16_dt, cpu, cos_elementwise_f16_cpu_wrapper);
+    table.register(SigmoidElementwise, f16_dt, cpu, sigmoid_elementwise_f16_cpu_wrapper);
+    table.register(SiluElementwise,    f16_dt, cpu, silu_elementwise_f16_cpu_wrapper);
+    table.register(GeluElementwise,    f16_dt, cpu, gelu_elementwise_f16_cpu_wrapper);
+    table.register(StepElementwise,    f16_dt, cpu, step_elementwise_f16_cpu_wrapper);
+
     table.register(Concat,             f32_dt, cpu, concat_f32_cpu_wrapper);
     table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
     table.register(RmsNormLastDim,     f32_dt, cpu, rms_norm_last_dim_f32_cpu_wrapper);
@@ -1392,6 +1487,35 @@ fn default_cpu_caps() -> BackendCapabilities {
         MatMul,
     ] {
         op_dtype_support.insert((op, DType::F64));
+    }
+    // bf16 and f16 elementwise families. Reductions/matmul/conv/
+    // composed/indexing/Rope/scalar follow as kernels migrate.
+    let half_elementwise_ops = [
+        AddElementwise,
+        SubElementwise,
+        MulElementwise,
+        DivElementwise,
+        MaximumElementwise,
+        MinimumElementwise,
+        ReluElementwise,
+        NegElementwise,
+        SqrElementwise,
+        SqrtElementwise,
+        RecipElementwise,
+        AbsElementwise,
+        TanhElementwise,
+        ExpElementwise,
+        LogElementwise,
+        SinElementwise,
+        CosElementwise,
+        SigmoidElementwise,
+        SiluElementwise,
+        GeluElementwise,
+        StepElementwise,
+    ];
+    for op in half_elementwise_ops {
+        op_dtype_support.insert((op, DType::BF16));
+        op_dtype_support.insert((op, DType::F16));
     }
     // Argmax/argmin always produce U32 indices.
     for op in [ArgMaxDim, ArgMinDim] {
@@ -1708,8 +1832,10 @@ mod tests {
     fn binding_table_lookup_miss_errors() {
         let mut table = KernelBindingTable::new();
         register_cpu_kernels(&mut table);
-        // BF16 isn't registered — error.
-        let result = table.lookup(OpKind::AddElementwise, DType::BF16, BackendId::Cpu);
+        // I64 isn't registered for any elementwise op — must error.
+        // (BF16/F16/F32/F64 all have AddElementwise wrappers as of
+        // Phase C's multi-dtype expansion.)
+        let result = table.lookup(OpKind::AddElementwise, DType::I64, BackendId::Cpu);
         assert!(result.is_err());
     }
 

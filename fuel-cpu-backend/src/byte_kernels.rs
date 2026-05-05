@@ -166,6 +166,94 @@ binary_kernel!(maximum_f64, f64, |a: f64, b: f64| a.max(b), "Elementwise `f64` m
 binary_kernel!(minimum_f64, f64, |a: f64, b: f64| a.min(b), "Elementwise `f64` minimum.");
 
 // =============================================================================
+// bf16 / f16 elementwise — via-f32 round-trip
+// =============================================================================
+//
+// `bf16` and `f16` lack native transcendentals (no `.exp()`,
+// `.sin()`, etc. on `half::{bf16, f16}`), and even arithmetic via
+// the native `Add`/`Sub`/`Mul`/`Div` impls truncates intermediate
+// values. The standard CPU pattern — what NumPy/PyTorch do for
+// these dtypes — is to widen each element to `f32`, do the work,
+// and narrow back. Performance is sub-optimal (3 conversions per
+// op) but correctness-first; vendor backends override this once
+// they're wired.
+
+binary_kernel!(add_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() + b.to_f32()), "Elementwise `bf16` addition (via f32).");
+binary_kernel!(sub_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() - b.to_f32()), "Elementwise `bf16` subtraction (via f32).");
+binary_kernel!(mul_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() * b.to_f32()), "Elementwise `bf16` multiplication (via f32).");
+binary_kernel!(div_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() / b.to_f32()), "Elementwise `bf16` division (via f32).");
+binary_kernel!(maximum_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().max(b.to_f32())), "Elementwise `bf16` maximum (via f32).");
+binary_kernel!(minimum_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().min(b.to_f32())), "Elementwise `bf16` minimum (via f32).");
+
+unary_kernel!(relu_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().max(0.0)), "Elementwise `bf16` ReLU (via f32).");
+unary_kernel!(neg_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(-x.to_f32()), "Elementwise `bf16` negation (via f32).");
+unary_kernel!(sqr_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(f * f) }, "Elementwise `bf16` square (via f32).");
+unary_kernel!(sqrt_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().sqrt()), "Elementwise `bf16` square root (via f32).");
+unary_kernel!(recip_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(1.0 / x.to_f32()), "Elementwise `bf16` reciprocal (via f32).");
+unary_kernel!(abs_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().abs()), "Elementwise `bf16` absolute value (via f32).");
+unary_kernel!(tanh_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().tanh()), "Elementwise `bf16` hyperbolic tangent (via f32).");
+unary_kernel!(exp_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().exp()), "Elementwise `bf16` exponential (via f32).");
+unary_kernel!(log_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().ln()), "Elementwise `bf16` natural log (via f32).");
+unary_kernel!(sin_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().sin()), "Elementwise `bf16` sine (via f32).");
+unary_kernel!(cos_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().cos()), "Elementwise `bf16` cosine (via f32).");
+unary_kernel!(sigmoid_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(1.0 / (1.0 + (-f).exp())) }, "Elementwise `bf16` logistic sigmoid (via f32).");
+unary_kernel!(silu_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(f / (1.0 + (-f).exp())) }, "Elementwise `bf16` SiLU/Swish (via f32).");
+unary_kernel!(step_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(if x.to_f32() > 0.0 { 1.0 } else { 0.0 }), "Elementwise `bf16` Heaviside step (via f32).");
+
+/// `bf16` GELU using the tanh approximation (mirror of [`gelu_f32`]).
+pub fn gelu_bf16(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+    check_lens_2("gelu_bf16", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[half::bf16] = input.as_slice()?;
+    let out_view: &mut [half::bf16] = out.as_slice_mut()?;
+    const COEFF: f32 = 0.797_884_56;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        let x = in_view[i].to_f32();
+        let inner = COEFF * (x + 0.044_715 * x * x * x);
+        *slot = half::bf16::from_f32(0.5 * x * (1.0 + inner.tanh()));
+    }
+    Ok(())
+}
+
+// f16 mirrors of the bf16 set above. Identical patterns; only the
+// concrete type differs.
+
+binary_kernel!(add_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() + b.to_f32()), "Elementwise `f16` addition (via f32).");
+binary_kernel!(sub_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() - b.to_f32()), "Elementwise `f16` subtraction (via f32).");
+binary_kernel!(mul_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() * b.to_f32()), "Elementwise `f16` multiplication (via f32).");
+binary_kernel!(div_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() / b.to_f32()), "Elementwise `f16` division (via f32).");
+binary_kernel!(maximum_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().max(b.to_f32())), "Elementwise `f16` maximum (via f32).");
+binary_kernel!(minimum_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().min(b.to_f32())), "Elementwise `f16` minimum (via f32).");
+
+unary_kernel!(relu_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().max(0.0)), "Elementwise `f16` ReLU (via f32).");
+unary_kernel!(neg_f16, half::f16, |x: half::f16| half::f16::from_f32(-x.to_f32()), "Elementwise `f16` negation (via f32).");
+unary_kernel!(sqr_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(f * f) }, "Elementwise `f16` square (via f32).");
+unary_kernel!(sqrt_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().sqrt()), "Elementwise `f16` square root (via f32).");
+unary_kernel!(recip_f16, half::f16, |x: half::f16| half::f16::from_f32(1.0 / x.to_f32()), "Elementwise `f16` reciprocal (via f32).");
+unary_kernel!(abs_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().abs()), "Elementwise `f16` absolute value (via f32).");
+unary_kernel!(tanh_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().tanh()), "Elementwise `f16` hyperbolic tangent (via f32).");
+unary_kernel!(exp_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().exp()), "Elementwise `f16` exponential (via f32).");
+unary_kernel!(log_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().ln()), "Elementwise `f16` natural log (via f32).");
+unary_kernel!(sin_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().sin()), "Elementwise `f16` sine (via f32).");
+unary_kernel!(cos_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().cos()), "Elementwise `f16` cosine (via f32).");
+unary_kernel!(sigmoid_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(1.0 / (1.0 + (-f).exp())) }, "Elementwise `f16` logistic sigmoid (via f32).");
+unary_kernel!(silu_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(f / (1.0 + (-f).exp())) }, "Elementwise `f16` SiLU/Swish (via f32).");
+unary_kernel!(step_f16, half::f16, |x: half::f16| half::f16::from_f32(if x.to_f32() > 0.0 { 1.0 } else { 0.0 }), "Elementwise `f16` Heaviside step (via f32).");
+
+/// `f16` GELU using the tanh approximation (mirror of [`gelu_f32`]).
+pub fn gelu_f16(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+    check_lens_2("gelu_f16", input.len_bytes(), out.len_bytes())?;
+    let in_view: &[half::f16] = input.as_slice()?;
+    let out_view: &mut [half::f16] = out.as_slice_mut()?;
+    const COEFF: f32 = 0.797_884_56;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        let x = in_view[i].to_f32();
+        let inner = COEFF * (x + 0.044_715 * x * x * x);
+        *slot = half::f16::from_f32(0.5 * x * (1.0 + inner.tanh()));
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 
@@ -2073,6 +2161,103 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn add_bf16_round_trips_through_f32() {
+        let a_vec = vec![half::bf16::from_f32(1.0), half::bf16::from_f32(2.0)];
+        let b_vec = vec![half::bf16::from_f32(10.0), half::bf16::from_f32(20.0)];
+        let a = CpuStorageBytes::from_slice(&a_vec);
+        let b = CpuStorageBytes::from_slice(&b_vec);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
+        add_bf16(&a, &b, &mut out).expect("add bf16");
+        let result: &[half::bf16] = out.as_slice().unwrap();
+        // bf16 has ~3 decimal digits; small integers round-trip exactly.
+        assert_eq!(result[0].to_f32(), 11.0);
+        assert_eq!(result[1].to_f32(), 22.0);
+    }
+
+    #[test]
+    fn relu_bf16_clips_negatives() {
+        let v: Vec<half::bf16> = [-1.0_f32, 0.0, 0.5, -3.5, 7.25]
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_bf16(&input, &mut out).expect("relu bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(result_f32, vec![0.0, 0.0, 0.5, 0.0, 7.25]);
+    }
+
+    #[test]
+    fn exp_log_bf16_round_trip_within_precision() {
+        // bf16 has ~3 decimal digits of mantissa precision. Test
+        // values chosen so exp + log doesn't drift much.
+        let v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0]
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut intermediate = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        exp_bf16(&input, &mut intermediate).expect("exp");
+        log_bf16(&intermediate, &mut out).expect("log");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        for (got, want) in r.iter().zip(&[1.0_f32, 2.0, 3.0]) {
+            assert!(
+                (got.to_f32() - want).abs() < 0.05,
+                "bf16 exp+log lost too much: {} vs {}", got.to_f32(), want,
+            );
+        }
+    }
+
+    #[test]
+    fn add_f16_round_trips_through_f32() {
+        let a_vec = vec![half::f16::from_f32(1.0), half::f16::from_f32(2.5)];
+        let b_vec = vec![half::f16::from_f32(0.5), half::f16::from_f32(-1.0)];
+        let a = CpuStorageBytes::from_slice(&a_vec);
+        let b = CpuStorageBytes::from_slice(&b_vec);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
+        add_f16(&a, &b, &mut out).expect("add f16");
+        let result: &[half::f16] = out.as_slice().unwrap();
+        assert_eq!(result[0].to_f32(), 1.5);
+        assert_eq!(result[1].to_f32(), 1.5);
+    }
+
+    #[test]
+    fn relu_f16_clips_negatives() {
+        let v: Vec<half::f16> = [-2.0_f32, 0.0, 4.0, -0.5]
+            .iter()
+            .map(|&x| half::f16::from_f32(x))
+            .collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_f16(&input, &mut out).expect("relu f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(result_f32, vec![0.0, 0.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn sigmoid_bf16_at_zero_is_half() {
+        let v = vec![half::bf16::from_f32(0.0_f32)];
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        sigmoid_bf16(&input, &mut out).expect("sigmoid bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!((r[0].to_f32() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn gelu_bf16_at_zero_is_zero() {
+        let v = vec![half::bf16::from_f32(0.0_f32)];
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        gelu_bf16(&input, &mut out).expect("gelu bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!(r[0].to_f32().abs() < 0.001);
     }
 
     #[test]

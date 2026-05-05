@@ -1702,6 +1702,86 @@ mod tests {
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
     }
 
+    /// E2E: BF16 elementwise add through the pipelined executor.
+    #[test]
+    fn pipelined_realize_add_bf16() {
+        let lhs_vec: Vec<half::bf16> = [1.0_f32, 2.0, 3.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let rhs_vec: Vec<half::bf16> = [10.0_f32, 20.0, 30.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let lhs = crate::from_slice_cpu(&lhs_vec);
+        let rhs = crate::from_slice_cpu(&rhs_vec);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+            });
+            let op = g.push(Node {
+                op: Op::Add, inputs: vec![l, r],
+                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (l, r, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::BF16);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[half::bf16] = c.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(result_f32, vec![11.0, 22.0, 33.0]);
+    }
+
+    /// E2E: F16 unary chain — Const + Sqr + Sqrt — verifies F16
+    /// dispatch works and the via-f32 round-trip kernels behave
+    /// correctly through the executor.
+    #[test]
+    fn pipelined_realize_sqr_then_sqrt_f16() {
+        let v: Vec<half::f16> = [1.0_f32, 4.0, 9.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let storage = crate::from_slice_cpu(&v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sqrt_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F16,
+            });
+            let sqr_id = g.push(Node {
+                op: Op::Sqr, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F16,
+            });
+            let sqrt_id = g.push(Node {
+                op: Op::Sqrt, inputs: vec![sqr_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F16,
+            });
+            g.set_target_backend(sqr_id, BackendId::Cpu);
+            g.set_target_backend(sqrt_id, BackendId::Cpu);
+            (in_id, sqrt_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F16);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[half::f16] = c.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        // f16 has ~3 decimal digits; sqrt(sqr(x)) = |x| within rounding.
+        for (got, want) in result_f32.iter().zip(&[1.0_f32, 4.0, 9.0]) {
+            assert!((got - want).abs() < 0.05, "got {got}, want {want}");
+        }
+    }
+
     /// E2E: F64 sum-reduce along one dim through the pipelined
     /// executor.
     #[test]
