@@ -2757,6 +2757,35 @@ pub fn qmatmul_q4_k_m_f32(
     )
 }
 
+macro_rules! qmatmul_thin_wrapper {
+    ($name:ident, $blk:ty, $kname:expr) => {
+        pub fn $name(
+            activations: &CpuStorageBytes,
+            weight_bytes: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            batch_count: usize,
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<()> {
+            qmatmul_generic_f32::<$blk>(
+                $kname,
+                activations, weight_bytes, out,
+                batch_count, m, n, k,
+            )
+        }
+    };
+}
+
+qmatmul_thin_wrapper!(qmatmul_q4_1_f32, fuel_quantized::BlockQ4_1, "qmatmul_q4_1_f32");
+qmatmul_thin_wrapper!(qmatmul_q5_0_f32, fuel_quantized::BlockQ5_0, "qmatmul_q5_0_f32");
+qmatmul_thin_wrapper!(qmatmul_q5_1_f32, fuel_quantized::BlockQ5_1, "qmatmul_q5_1_f32");
+qmatmul_thin_wrapper!(qmatmul_q8_1_f32, fuel_quantized::BlockQ8_1, "qmatmul_q8_1_f32");
+qmatmul_thin_wrapper!(qmatmul_q2k_f32,  fuel_quantized::BlockQ2K,  "qmatmul_q2k_f32");
+qmatmul_thin_wrapper!(qmatmul_q3k_f32,  fuel_quantized::BlockQ3K,  "qmatmul_q3k_f32");
+qmatmul_thin_wrapper!(qmatmul_q5k_f32,  fuel_quantized::BlockQ5K,  "qmatmul_q5k_f32");
+qmatmul_thin_wrapper!(qmatmul_q6k_f32,  fuel_quantized::BlockQ6K,  "qmatmul_q6k_f32");
+
 // =============================================================================
 // 2D Convolution — multi-dtype (f64 native, bf16/f16 via f32 acc)
 // =============================================================================

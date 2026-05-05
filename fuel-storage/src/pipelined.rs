@@ -1805,6 +1805,144 @@ mod tests {
         assert!((r[1] - 528.0).abs() < 0.5, "got {}, want 528", r[1]);
     }
 
+    /// E2E: QMatMul with Q5_0 weights — verifies the new quant
+    /// dispatch arm picks `qmatmul_q5_0_f32`. We build weights by
+    /// quantizing all-ones via `BlockQ5_0::from_float`, then
+    /// compare pipelined output against the direct fuel_quantized
+    /// matmul on the same blocks.
+    #[test]
+    fn pipelined_realize_qmatmul_q5_0_against_reference() {
+        use fuel_graph::QuantType;
+        use fuel_quantized::{BlockQ5_0, GgmlType};
+        let n = 2;
+        let k = 64; // 2 blocks per row (Q5_0 vec_dot pairs blocks)
+        // Quantize an all-ones [n, k] weight matrix.
+        let w_f32 = vec![1.0_f32; n * k];
+        let blocks_per_row = k / BlockQ5_0::BLCK_SIZE;
+        let mut w_blocks = vec![BlockQ5_0::zeros(); n * blocks_per_row];
+        BlockQ5_0::from_float(&w_f32, &mut w_blocks);
+        // Reinterpret block slice as bytes (BlockQ5_0 is #[repr(C)]).
+        let bytes_per_block = std::mem::size_of::<BlockQ5_0>();
+        let w_bytes: Vec<u8> = unsafe {
+            std::slice::from_raw_parts(
+                w_blocks.as_ptr() as *const u8,
+                w_blocks.len() * bytes_per_block,
+            )
+        }
+        .to_vec();
+        let w_storage = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
+            ),
+            DType::U32,
+        );
+        let act_vec: Vec<f32> = (1..=k).map(|x| x as f32).collect();
+        let act_storage = crate::from_slice_cpu(&act_vec);
+        // Reference: direct matmul through fuel_quantized.
+        let mut ref_out = vec![0.0_f32; n];
+        fuel_quantized::matmul::<BlockQ5_0>((1, k, n), &act_vec, &w_blocks, &mut ref_out)
+            .expect("ref matmul");
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (act_id, w_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let act = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, k]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[w_bytes.len() / 4]),
+                dtype: DType::U32,
+            });
+            let mm = g.push(Node {
+                op: Op::QMatMul { quant_type: QuantType::Q5_0, k, n },
+                inputs: vec![act, w],
+                shape: Shape::from_dims(&[1, n]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (act, w, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(act_id, Arc::new(RwLock::new(act_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[f32] = c.as_slice().unwrap();
+        // Bit-exact against same kernel via the trait, since both
+        // paths run fuel_quantized::matmul<BlockQ5_0>.
+        assert_eq!(r, ref_out.as_slice(),
+            "pipelined Q5_0 differs from reference: got {r:?}, want {ref_out:?}");
+    }
+
+    /// E2E: QMatMul with Q6K (256-element super-block k-quant).
+    /// Same idea as the Q5_0 test — bit-exact against the
+    /// reference fuel_quantized::matmul<BlockQ6K>. Confirms the
+    /// dispatch arm wires `qmatmul_q6k_f32` correctly.
+    #[test]
+    fn pipelined_realize_qmatmul_q6k_against_reference() {
+        use fuel_graph::QuantType;
+        use fuel_quantized::{BlockQ6K, GgmlType};
+        let n = 2;
+        let k = 256; // 1 super-block per row
+        let w_f32 = vec![1.0_f32; n * k];
+        let blocks_per_row = k / BlockQ6K::BLCK_SIZE;
+        let mut w_blocks = vec![BlockQ6K::zeros(); n * blocks_per_row];
+        BlockQ6K::from_float(&w_f32, &mut w_blocks);
+        let bytes_per_block = std::mem::size_of::<BlockQ6K>();
+        let w_bytes: Vec<u8> = unsafe {
+            std::slice::from_raw_parts(
+                w_blocks.as_ptr() as *const u8,
+                w_blocks.len() * bytes_per_block,
+            )
+        }
+        .to_vec();
+        let w_storage = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
+            ),
+            DType::U32,
+        );
+        let act_vec: Vec<f32> = (1..=k).map(|x| x as f32 / 100.0).collect();
+        let act_storage = crate::from_slice_cpu(&act_vec);
+        let mut ref_out = vec![0.0_f32; n];
+        fuel_quantized::matmul::<BlockQ6K>((1, k, n), &act_vec, &w_blocks, &mut ref_out)
+            .expect("ref matmul");
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (act_id, w_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let act = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, k]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[w_bytes.len() / 4]),
+                dtype: DType::U32,
+            });
+            let mm = g.push(Node {
+                op: Op::QMatMul { quant_type: QuantType::Q6K, k, n },
+                inputs: vec![act, w],
+                shape: Shape::from_dims(&[1, n]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (act, w, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(act_id, Arc::new(RwLock::new(act_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[f32] = c.as_slice().unwrap();
+        assert_eq!(r, ref_out.as_slice(),
+            "pipelined Q6K differs from reference: got {r:?}, want {ref_out:?}");
+    }
+
     /// E2E: BF16 RmsNormLastDim through the pipelined executor.
     /// Verifies that capability-driven dispatch routes the
     /// half-float norm op to the bf16-specific kernel (which

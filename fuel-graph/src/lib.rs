@@ -114,28 +114,61 @@ pub struct NodeId(pub usize);
 pub enum QuantType {
     /// 32-element block = 2 bytes f16 scale + 16 bytes packed u4 quants.
     Q4_0,
+    /// 32-element block = 2 bytes f16 d + 2 bytes f16 m + 16 bytes packed u4 quants.
+    Q4_1,
+    /// 32-element block = 2 bytes f16 d + 4 bytes high-bit + 16 bytes packed u4 quants.
+    Q5_0,
+    /// 32-element block = 2 bytes f16 d + 2 bytes f16 m + 4 bytes high-bit + 16 bytes packed u4.
+    Q5_1,
     /// 32-element block = 2 bytes f16 scale + 32 bytes i8 quants.
     Q8_0,
+    /// 32-element block = 2 bytes f16 d + 2 bytes f16 s + 32 bytes i8 quants.
+    Q8_1,
+    /// 256-element super-block = scales + 64-byte 2-bit packed quants + 4 bytes f16 d/dmin.
+    Q2K,
+    /// 256-element super-block = hmask + 64-byte 2-bit packed quants + 12-byte scales + 2 bytes f16 d.
+    Q3K,
     /// 256-element super-block = 2 bytes f16 d + 2 bytes f16 dmin +
     /// 12 bytes of 6-bit-packed sub-block scales/mins + 128 bytes
     /// of 4-bit-packed quants. GGML k-quant "medium" format.
     Q4_K_M,
+    /// 256-element super-block = d + dmin + 12-byte scales + 32-byte hmask + 128-byte qs.
+    Q5K,
+    /// 256-element super-block = 128-byte ql + 64-byte qh + 16-byte i8 scales + 2 bytes f16 d.
+    Q6K,
 }
 
 impl QuantType {
-    /// Bytes per quantization block.
+    /// Bytes per quantization block. Mirrors `std::mem::size_of::<BlockQ*>()`.
     pub fn bytes_per_block(self) -> usize {
         match self {
             QuantType::Q4_0 => 18,
+            QuantType::Q4_1 => 20,
+            QuantType::Q5_0 => 22,
+            QuantType::Q5_1 => 24,
             QuantType::Q8_0 => 34,
+            QuantType::Q8_1 => 36,
+            QuantType::Q2K => 84,
+            QuantType::Q3K => 110,
             QuantType::Q4_K_M => 144,
+            QuantType::Q5K => 176,
+            QuantType::Q6K => 210,
         }
     }
     /// Elements per quantization block.
     pub fn elements_per_block(self) -> usize {
         match self {
-            QuantType::Q4_0 | QuantType::Q8_0 => 32,
-            QuantType::Q4_K_M => 256,
+            QuantType::Q4_0
+            | QuantType::Q4_1
+            | QuantType::Q5_0
+            | QuantType::Q5_1
+            | QuantType::Q8_0
+            | QuantType::Q8_1 => 32,
+            QuantType::Q2K
+            | QuantType::Q3K
+            | QuantType::Q4_K_M
+            | QuantType::Q5K
+            | QuantType::Q6K => 256,
         }
     }
 }

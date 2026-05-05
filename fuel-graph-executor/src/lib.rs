@@ -1185,6 +1185,14 @@ impl<B: GraphBackend> GraphExecutor<B> {
                         self.backend.matmul_q8_0(&a.storage, &w.storage, *k, *n, &a.layout()),
                     fuel_graph::QuantType::Q4_K_M =>
                         self.backend.matmul_q4_km(&a.storage, &w.storage, *k, *n, &a.layout()),
+                    // Legacy executor only wires the three quant types
+                    // it has trait methods for. New variants
+                    // (Q4_1/Q5_0/Q5_1/Q8_1/Q2K/Q3K/Q5K/Q6K) flow only
+                    // through the pipelined executor for now.
+                    _ => Err(fuel_core_types::Error::Msg(format!(
+                        "legacy executor: QMatMul {:?} not wired (use pipelined executor)",
+                        quant_type
+                    ))),
                 };
                 match result {
                     Ok(s) => s,

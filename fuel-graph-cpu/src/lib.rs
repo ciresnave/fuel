@@ -936,6 +936,9 @@ fn cpu_dequantize_blocks(
                         &mut out[out_base..out_base + 256],
                     );
                 }
+                other => unimplemented!(
+                    "fuel-graph-cpu legacy dequantize_blocks does not support {other:?} yet"
+                ),
             }
         }
     }

@@ -933,10 +933,34 @@ fn qmatmul_f32_cpu_wrapper(
         QuantType::Q4_0 => fuel_cpu_backend::byte_kernels::qmatmul_q4_0_f32(
             act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
         ),
+        QuantType::Q4_1 => fuel_cpu_backend::byte_kernels::qmatmul_q4_1_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q5_0 => fuel_cpu_backend::byte_kernels::qmatmul_q5_0_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q5_1 => fuel_cpu_backend::byte_kernels::qmatmul_q5_1_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
         QuantType::Q8_0 => fuel_cpu_backend::byte_kernels::qmatmul_q8_0_f32(
             act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
         ),
+        QuantType::Q8_1 => fuel_cpu_backend::byte_kernels::qmatmul_q8_1_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q2K => fuel_cpu_backend::byte_kernels::qmatmul_q2k_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q3K => fuel_cpu_backend::byte_kernels::qmatmul_q3k_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
         QuantType::Q4_K_M => fuel_cpu_backend::byte_kernels::qmatmul_q4_k_m_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q5K => fuel_cpu_backend::byte_kernels::qmatmul_q5k_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q6K => fuel_cpu_backend::byte_kernels::qmatmul_q6k_f32(
             act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
         ),
     }

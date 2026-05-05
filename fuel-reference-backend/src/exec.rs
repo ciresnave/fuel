@@ -1025,6 +1025,9 @@ fn dequantize_blocks(
                 fuel_graph::QuantType::Q4_K_M => {
                     dequantize_q4_km_block(&bytes[block_off..block_off + 144], &mut out[out_base..out_base + 256]);
                 }
+                other => unimplemented!(
+                    "fuel-reference-backend dequantize_blocks does not support {other:?} yet"
+                ),
             }
         }
     }
