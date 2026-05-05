@@ -947,6 +947,10 @@ cpu_reduce_wrapper!(sum_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::
 cpu_reduce_wrapper!(max_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f32, "max_reduce");
 cpu_reduce_wrapper!(min_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f32, "min_reduce");
 cpu_reduce_wrapper!(mean_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f32, "mean_reduce");
+cpu_reduce_wrapper!(sum_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_f64, "sum_reduce");
+cpu_reduce_wrapper!(max_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f64, "max_reduce");
+cpu_reduce_wrapper!(min_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f64, "min_reduce");
+cpu_reduce_wrapper!(mean_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f64, "mean_reduce");
 
 /// Generate a dispatch wrapper for `(Cast, <target>, Cpu)`. The
 /// binding-table key is keyed on the *target* dtype (= the
@@ -1140,6 +1144,51 @@ fn matmul_f32_cpu_wrapper(
     )
 }
 
+/// f64 mirror of [`matmul_f32_cpu_wrapper`]. Same OpKind
+/// (MatMul); the binding-table key picks this entry when the
+/// node's dtype is F64.
+fn matmul_f64_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "matmul wrapper expects 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "matmul wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "matmul wrapper expects OpParams::Matmul, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let lhs_guard = read_storage(&inputs[0])?;
+    let rhs_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let lhs_cpu = cpu_input(&lhs_guard)?;
+    let rhs_cpu = cpu_input(&rhs_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::matmul_f64(
+        lhs_cpu, rhs_cpu, out_cpu,
+        lhs_batch_dims, rhs_batch_dims, m, n, k,
+    )
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -1197,8 +1246,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MaxReduce,          f32_dt, cpu, max_reduce_f32_cpu_wrapper);
     table.register(MinReduce,          f32_dt, cpu, min_reduce_f32_cpu_wrapper);
     table.register(MeanReduce,         f32_dt, cpu, mean_reduce_f32_cpu_wrapper);
+    table.register(SumReduce,          f64_dt, cpu, sum_reduce_f64_cpu_wrapper);
+    table.register(MaxReduce,          f64_dt, cpu, max_reduce_f64_cpu_wrapper);
+    table.register(MinReduce,          f64_dt, cpu, min_reduce_f64_cpu_wrapper);
+    table.register(MeanReduce,         f64_dt, cpu, mean_reduce_f64_cpu_wrapper);
 
     table.register(MatMul,             f32_dt, cpu, matmul_f32_cpu_wrapper);
+    table.register(MatMul,             f64_dt, cpu, matmul_f64_cpu_wrapper);
 
     // Cast keys on the *target* dtype; each wrapper handles its
     // supported source dtypes internally. Add new (target, source)
@@ -1331,6 +1385,11 @@ fn default_cpu_caps() -> BackendCapabilities {
         StepElementwise,
         MaximumElementwise,
         MinimumElementwise,
+        SumReduce,
+        MaxReduce,
+        MinReduce,
+        MeanReduce,
+        MatMul,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
