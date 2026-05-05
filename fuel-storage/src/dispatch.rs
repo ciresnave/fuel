@@ -2579,6 +2579,40 @@ fn minimum_elementwise_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(ReluElementwise, F32, Cuda)`. First CUDA
+/// unary op through the unified binding table; subsequent unary
+/// fanout entries reuse the shared `unary_elementwise_f32` helper
+/// in `fuel-cuda-backend::byte_kernels`, so they are one-line
+/// delegations + a wrapper of this exact shape.
+#[cfg(feature = "cuda")]
+fn relu_elementwise_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "relu_elementwise_f32_cuda_wrapper: expected 1 input, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "relu_elementwise_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::relu_elementwise_f32(src_cuda)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -2593,6 +2627,8 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(DivElementwise,     f32_dt, cuda, div_elementwise_f32_cuda_wrapper);
     table.register(MaximumElementwise, f32_dt, cuda, maximum_elementwise_f32_cuda_wrapper);
     table.register(MinimumElementwise, f32_dt, cuda, minimum_elementwise_f32_cuda_wrapper);
+
+    table.register(ReluElementwise,    f32_dt, cuda, relu_elementwise_f32_cuda_wrapper);
 }
 
 // =============================================================================
