@@ -349,6 +349,96 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Dispatch wrapper for `(IndexAdd, F32, Cpu)`. Three inputs:
+/// `(base, indices, src)` (rank-1 U32 indices). Output shape == base.
+fn index_add_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 3 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "index_add wrapper expects 3 inputs (base, indices, src) + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, base_dim_size, n_indices, inner_count) = match params {
+        OpParams::IndexAdd {
+            outer_count, base_dim_size, n_indices, inner_count,
+        } => (*outer_count, *base_dim_size, *n_indices, *inner_count),
+        other => {
+            return Err(Error::Msg(format!(
+                "index_add wrapper expects OpParams::IndexAdd, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let base_guard = read_storage(&inputs[0])?;
+    let idx_guard = read_storage(&inputs[1])?;
+    if idx_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "index_add: indices must be U32, got {:?}",
+            idx_guard.dtype,
+        ))
+        .bt());
+    }
+    let src_guard = read_storage(&inputs[2])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let base_cpu = cpu_input(&base_guard)?;
+    let idx_cpu = cpu_input(&idx_guard)?;
+    let src_cpu = cpu_input(&src_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::index_add_f32(
+        base_cpu, idx_cpu, src_cpu, out_cpu,
+        outer_count, base_dim_size, n_indices, inner_count,
+    )
+}
+
+/// Dispatch wrapper for `(ScatterAdd, F32, Cpu)`. Three inputs:
+/// `(base, indices, src)` (same-rank U32 indices). Output shape == base.
+fn scatter_add_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 3 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "scatter_add wrapper expects 3 inputs (base, indices, src) + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (base_shape, src_shape, dim) = match params {
+        OpParams::ScatterAdd { base_shape, src_shape, dim } => (base_shape, src_shape, *dim),
+        other => {
+            return Err(Error::Msg(format!(
+                "scatter_add wrapper expects OpParams::ScatterAdd, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let base_guard = read_storage(&inputs[0])?;
+    let idx_guard = read_storage(&inputs[1])?;
+    if idx_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "scatter_add: indices must be U32, got {:?}",
+            idx_guard.dtype,
+        ))
+        .bt());
+    }
+    let src_guard = read_storage(&inputs[2])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let base_cpu = cpu_input(&base_guard)?;
+    let idx_cpu = cpu_input(&idx_guard)?;
+    let src_cpu = cpu_input(&src_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::scatter_add_f32(
+        base_cpu, idx_cpu, src_cpu, out_cpu,
+        base_shape, src_shape, dim,
+    )
+}
+
 /// Dispatch wrapper for `(Rope, F32, Cpu)`. Three inputs:
 /// `(x, cos, sin)`. `OpParams::Rope` carries the geometry.
 fn rope_f32_cpu_wrapper(
@@ -1021,6 +1111,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(IndexSelect,        f32_dt, cpu, index_select_f32_cpu_wrapper);
     table.register(Gather,             f32_dt, cpu, gather_f32_cpu_wrapper);
     table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
+    table.register(IndexAdd,           f32_dt, cpu, index_add_f32_cpu_wrapper);
+    table.register(ScatterAdd,         f32_dt, cpu, scatter_add_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -1088,6 +1180,8 @@ fn default_cpu_caps() -> BackendCapabilities {
         IndexSelect,
         Gather,
         Rope,
+        IndexAdd,
+        ScatterAdd,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }

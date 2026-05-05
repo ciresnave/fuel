@@ -171,6 +171,190 @@ pub fn contiguize_cpu(
 }
 
 // =============================================================================
+// Index-add / scatter-add (f32 base + src, U32 indices)
+// =============================================================================
+
+/// Index-add along one dim with a rank-1 `u32` index tensor.
+/// Inputs:
+/// - `base` with shape `[outer, base_dim, inner]` (the destination's
+///   prior contents; the kernel copies these into `out` first).
+/// - `indices` with shape `[n_indices]` (`u32`). Each
+///   `indices[i] ∈ [0, base_dim)` is the destination row.
+/// - `src` with shape `[outer, n_indices, inner]`.
+///
+/// Updates: `out[outer, indices[i], inner] += src[outer, i, inner]`
+/// for each `i ∈ 0..n_indices`. Out-of-bounds indices return a
+/// typed Error.
+pub fn index_add_f32(
+    base: &CpuStorageBytes,
+    indices: &CpuStorageBytes,
+    src: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    base_dim_size: usize,
+    n_indices: usize,
+    inner_count: usize,
+) -> Result<()> {
+    let elem = std::mem::size_of::<f32>();
+    let need_base = outer_count
+        .saturating_mul(base_dim_size)
+        .saturating_mul(inner_count)
+        .saturating_mul(elem);
+    let need_idx = n_indices.saturating_mul(std::mem::size_of::<u32>());
+    let need_src = outer_count
+        .saturating_mul(n_indices)
+        .saturating_mul(inner_count)
+        .saturating_mul(elem);
+    if base.len_bytes() != need_base || out.len_bytes() != need_base {
+        return Err(Error::Msg(format!(
+            "index_add_f32: base bytes={} or out bytes={} doesn't match outer={outer_count} × base_dim={base_dim_size} × inner={inner_count} × {elem}",
+            base.len_bytes(), out.len_bytes(),
+        ))
+        .bt());
+    }
+    if indices.len_bytes() != need_idx {
+        return Err(Error::Msg(format!(
+            "index_add_f32: indices bytes={} doesn't match n_indices={n_indices} × 4",
+            indices.len_bytes(),
+        ))
+        .bt());
+    }
+    if src.len_bytes() != need_src {
+        return Err(Error::Msg(format!(
+            "index_add_f32: src bytes={} doesn't match outer={outer_count} × n={n_indices} × inner={inner_count} × {elem}",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    // Copy base into out as the starting point.
+    out.bytes_mut().copy_from_slice(base.bytes());
+    if n_indices == 0 {
+        return Ok(());
+    }
+    let idx_view: &[u32] = indices.as_slice()?;
+    let src_view: &[f32] = src.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for i in 0..n_indices {
+        let target = idx_view[i] as usize;
+        if target >= base_dim_size {
+            return Err(Error::Msg(format!(
+                "index_add_f32: index {target} at position {i} out of bounds for base dim {base_dim_size}",
+            ))
+            .bt());
+        }
+        for outer in 0..outer_count {
+            let src_off = (outer * n_indices + i) * inner_count;
+            let dst_off = (outer * base_dim_size + target) * inner_count;
+            for inner in 0..inner_count {
+                out_view[dst_off + inner] += src_view[src_off + inner];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// N-dimensional scatter-add — the functional inverse of
+/// [`gather_f32`]. `base_shape` and `src_shape` agree on every
+/// dim except `dim`. For each src/indices position `p`, the
+/// destination multi-index is the same as `p` except `dim`'s
+/// coord is replaced by `indices[p]`, and `src[p]` is added into
+/// `out` at that destination.
+pub fn scatter_add_f32(
+    base: &CpuStorageBytes,
+    indices: &CpuStorageBytes,
+    src: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    base_shape: &[usize],
+    src_shape: &[usize],
+    dim: usize,
+) -> Result<()> {
+    if base_shape.len() != src_shape.len() {
+        return Err(Error::Msg(format!(
+            "scatter_add_f32: base rank ({}) != src rank ({})",
+            base_shape.len(), src_shape.len(),
+        ))
+        .bt());
+    }
+    let rank = base_shape.len();
+    if dim >= rank {
+        return Err(Error::Msg(format!(
+            "scatter_add_f32: dim {dim} out of range for rank {rank}",
+        ))
+        .bt());
+    }
+    for d in 0..rank {
+        if d != dim && base_shape[d] != src_shape[d] {
+            return Err(Error::Msg(format!(
+                "scatter_add_f32: base and src disagree at dim {d} (base={}, src={}); only `dim`={dim} may differ",
+                base_shape[d], src_shape[d],
+            ))
+            .bt());
+        }
+    }
+    let elem = std::mem::size_of::<f32>();
+    let base_total: usize = base_shape.iter().product();
+    let src_total: usize = src_shape.iter().product();
+    if base.len_bytes() != base_total.saturating_mul(elem) || out.len_bytes() != base_total.saturating_mul(elem) {
+        return Err(Error::Msg(format!(
+            "scatter_add_f32: base/out bytes don't match shape {base_shape:?} (f32)",
+        ))
+        .bt());
+    }
+    if indices.len_bytes() != src_total.saturating_mul(std::mem::size_of::<u32>()) {
+        return Err(Error::Msg(format!(
+            "scatter_add_f32: indices bytes don't match src shape {src_shape:?} (u32)",
+        ))
+        .bt());
+    }
+    if src.len_bytes() != src_total.saturating_mul(elem) {
+        return Err(Error::Msg(format!(
+            "scatter_add_f32: src bytes don't match shape {src_shape:?} (f32)",
+        ))
+        .bt());
+    }
+    // Copy base into out as the starting point.
+    out.bytes_mut().copy_from_slice(base.bytes());
+    if src_total == 0 {
+        return Ok(());
+    }
+    let idx_view: &[u32] = indices.as_slice()?;
+    let src_view: &[f32] = src.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    // Base strides (row-major).
+    let mut base_strides = vec![0usize; rank];
+    let mut s = 1;
+    for d in (0..rank).rev() {
+        base_strides[d] = s;
+        s *= base_shape[d];
+    }
+    let mut multi = vec![0usize; rank];
+    for f in 0..src_total {
+        // Decode src multi-index from f (row-major over src_shape).
+        let mut rem = f;
+        for d in (0..rank).rev() {
+            multi[d] = rem % src_shape[d];
+            rem /= src_shape[d];
+        }
+        let dst_dim_idx = idx_view[f] as usize;
+        if dst_dim_idx >= base_shape[dim] {
+            return Err(Error::Msg(format!(
+                "scatter_add_f32: index {dst_dim_idx} at position {f} out of bounds for base dim {} = {}",
+                dim, base_shape[dim],
+            ))
+            .bt());
+        }
+        // Compose destination flat index in base.
+        let mut dst_flat = 0;
+        for d in 0..rank {
+            let coord = if d == dim { dst_dim_idx } else { multi[d] };
+            dst_flat += coord * base_strides[d];
+        }
+        out_view[dst_flat] += src_view[f];
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Index select (f32 source, U32 indices)
 // =============================================================================
 
@@ -1499,6 +1683,110 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn index_add_f32_simple_accumulate() {
+        // base [3] = [10, 20, 30]; indices [2] = [0, 0]; src [2] = [1, 2]
+        // → out = [10 + 1 + 2, 20, 30] = [13, 20, 30]
+        let base = CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 0]);
+        let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        index_add_f32(&base, &indices, &src, &mut out, 1, 3, 2, 1).expect("index_add");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[13.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn index_add_f32_along_inner_dim() {
+        // base [2, 4]; indices [3] = [1, 3, 1]; src [2, 3].
+        // For each row, accumulate src cols at base cols indices.
+        let base = CpuStorageBytes::from_slice(&[
+            10.0_f32, 20.0, 30.0, 40.0,
+            50.0, 60.0, 70.0, 80.0,
+        ]);
+        let indices = CpuStorageBytes::from_slice(&[1u32, 3, 1]);
+        let src = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+        ]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 4);
+        // outer=2, base_dim=4, n_indices=3, inner=1
+        index_add_f32(&base, &indices, &src, &mut out, 2, 4, 3, 1).expect("index_add");
+        // row 0: base [10, 20, 30, 40]. src [1, 2, 3] at indices [1, 3, 1]:
+        //   col 0: 10
+        //   col 1: 20 + 1 + 3 = 24
+        //   col 2: 30
+        //   col 3: 40 + 2 = 42
+        // row 1: base [50, 60, 70, 80]. src [4, 5, 6] at indices [1, 3, 1]:
+        //   col 0: 50
+        //   col 1: 60 + 4 + 6 = 70
+        //   col 2: 70
+        //   col 3: 80 + 5 = 85
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[10.0, 24.0, 30.0, 42.0, 50.0, 70.0, 70.0, 85.0]
+        );
+    }
+
+    #[test]
+    fn index_add_f32_rejects_out_of_bounds_index() {
+        let base = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let indices = CpuStorageBytes::from_slice(&[5u32]);
+        let src = CpuStorageBytes::from_slice(&[10.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        let r = index_add_f32(&base, &indices, &src, &mut out, 1, 3, 1, 1);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn scatter_add_f32_along_outer_dim() {
+        // base [3, 2] = zeros; indices [2, 2]:
+        //   [[0, 1],
+        //    [2, 0]]
+        // src [2, 2] = [[1, 2], [3, 4]]
+        // dim=0:
+        //   src[0, 0]=1 → out[indices[0,0]=0, 0] += 1 → out[0, 0] += 1
+        //   src[0, 1]=2 → out[indices[0,1]=1, 1] += 2 → out[1, 1] += 2
+        //   src[1, 0]=3 → out[indices[1,0]=2, 0] += 3 → out[2, 0] += 3
+        //   src[1, 1]=4 → out[indices[1,1]=0, 1] += 4 → out[0, 1] += 4
+        // → [[1, 4], [0, 2], [3, 0]]
+        let base = CpuStorageBytes::from_slice(&[0.0_f32; 6]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 1, 2, 0]);
+        let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 2 * 4);
+        scatter_add_f32(&base, &indices, &src, &mut out, &[3, 2], &[2, 2], 0)
+            .expect("scatter_add");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn scatter_add_f32_starts_from_base() {
+        // Same as above but base is already nonzero — verifies that
+        // out copies base before accumulating.
+        let base = CpuStorageBytes::from_slice(&[100.0_f32, 200.0, 300.0]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 0, 2]);
+        let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        scatter_add_f32(&base, &indices, &src, &mut out, &[3], &[3], 0).expect("scatter_add");
+        // out[0] = 100 + 1 + 2 = 103
+        // out[1] = 200 (untouched)
+        // out[2] = 300 + 3 = 303
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[103.0, 200.0, 303.0]);
+    }
+
+    #[test]
+    fn scatter_add_f32_rejects_shape_mismatch() {
+        let base = CpuStorageBytes::from_slice(&[0.0_f32; 4]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 1]);
+        let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        // base shape claims [2, 2] but src claims [3] — rank mismatch.
+        let r = scatter_add_f32(&base, &indices, &src, &mut out, &[2, 2], &[3], 0);
+        assert!(r.is_err());
     }
 
     #[test]
