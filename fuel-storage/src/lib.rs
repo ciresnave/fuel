@@ -58,6 +58,11 @@ pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
 use fuel_core_types::{DType, Result};
+#[cfg(any(
+    feature = "vulkan",
+    all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+))]
+use fuel_core_types::Error;
 use fuel_cpu_backend::CpuStorageBytes;
 
 /// Closed enum over backend storage variants. The `Cpu` variant
@@ -118,6 +123,37 @@ impl BackendStorage {
     /// Total addressable byte count, regardless of dtype.
     pub fn len_bytes(&self) -> usize {
         dispatch_storage!(self, inner => inner.len_bytes())
+    }
+
+    /// Phase 7.5 A4 substrate D2H. Read this storage's bytes back
+    /// to host as a fresh `Vec<u8>`. Universal across backends —
+    /// every variant can produce its bytes on demand. Used as the
+    /// host-staging fallback for cross-backend `Op::Copy` /
+    /// `Op::Move` and as the test-side oracle for D2H paths.
+    ///
+    /// CPU is a memcpy from the underlying `Arc<[u8]>`; GPU
+    /// variants run a synchronous D2H. For Vulkan, this is not
+    /// yet wired — the legacy `VulkanBackend::download_*` path
+    /// requires a backend-runtime handle that the byte-storage
+    /// type doesn't carry today; that's a follow-on commit.
+    pub fn read_to_cpu_bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            BackendStorage::Cpu(s) => Ok(s.bytes().to_vec()),
+            #[cfg(feature = "cuda")]
+            BackendStorage::Cuda(s) => s.to_cpu_bytes(),
+            #[cfg(feature = "vulkan")]
+            BackendStorage::Vulkan(_) => Err(Error::Msg(
+                "BackendStorage::read_to_cpu_bytes: Vulkan A4 D2H \
+                 substrate not yet wired (follow-on commit)".to_string(),
+            )
+            .bt()),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            BackendStorage::Metal(_) => Err(Error::Msg(
+                "BackendStorage::read_to_cpu_bytes: Metal A4 D2H \
+                 substrate not yet wired (follow-on commit)".to_string(),
+            )
+            .bt()),
+        }
     }
 }
 
@@ -215,5 +251,27 @@ mod tests {
         assert_eq!(s.dtype(), DType::F32);
         assert_eq!(s.elem_count(), 4);
         assert_eq!(s.len_bytes(), 16);
+    }
+
+    /// A4: BackendStorage::read_to_cpu_bytes returns the exact byte
+    /// stream on the CPU variant.
+    #[test]
+    fn read_to_cpu_bytes_cpu_variant() {
+        let data = [1.0_f32, 2.0, 3.0, 4.0];
+        let s = from_slice_cpu(&data);
+        let bytes = s.inner.read_to_cpu_bytes().expect("d2h");
+        assert_eq!(bytes.len(), 16);
+        let got: &[f32] = bytemuck::cast_slice(&bytes);
+        assert_eq!(got, &data);
+    }
+
+    /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes
+    /// produce the same shape.
+    #[test]
+    fn cpu_storage_alloc_alias() {
+        let a = fuel_cpu_backend::CpuStorageBytes::alloc(24);
+        let b = fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(24);
+        assert_eq!(a.len_bytes(), b.len_bytes());
+        assert_eq!(a.bytes(), b.bytes());
     }
 }

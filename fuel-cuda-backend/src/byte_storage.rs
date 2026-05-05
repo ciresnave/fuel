@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 use baracuda_driver::DeviceBuffer;
 use fuel_core_types::backend::BackendStorage;
+use fuel_core_types::Result;
 
+use crate::error::WrapErr;
 use crate::CudaDevice;
 
 /// Byte-shaped CUDA storage. Holds a raw `DeviceBuffer<u8>` (CUDA-
@@ -69,6 +71,53 @@ impl CudaStorageBytes {
     /// Total byte count.
     pub fn len_bytes(&self) -> usize {
         self.len_bytes
+    }
+
+    /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` zero-
+    /// initialized bytes on `device` via `device.alloc_zeros::<u8>`.
+    pub fn alloc(device: &CudaDevice, byte_count: usize) -> Result<Self> {
+        let buffer = device.alloc_zeros::<u8>(byte_count)?;
+        Ok(Self {
+            buffer: Arc::new(buffer),
+            device: device.clone(),
+            len_bytes: byte_count,
+        })
+    }
+
+    /// Phase 7.5 A4 substrate H2D. Allocates a fresh device buffer
+    /// on `device` of size `src.len()` bytes, then copies the host
+    /// slice into it. Used by `Op::Copy` / `Op::Move` from a CPU
+    /// source and by graph-`Op::Const` upload paths post-migration.
+    pub fn from_cpu_bytes(device: &CudaDevice, src: &[u8]) -> Result<Self> {
+        let storage = Self::alloc(device, src.len())?;
+        if !src.is_empty() {
+            storage.buffer.copy_from_host(src).w()?;
+            // copy_from_host on a DeviceBuffer is async on the
+            // default stream; sync so the result is observable
+            // before we hand the storage off. Async fence handles
+            // are a Phase A5 follow-on.
+            device.synchronize()?;
+        }
+        Ok(storage)
+    }
+
+    /// Phase 7.5 A4 substrate D2H. Reads the device buffer's bytes
+    /// back to host as a fresh `Vec<u8>`. Used by `Op::Copy` /
+    /// `Op::Move` when the destination is CPU and by
+    /// `BackendStorage::read_to_cpu_bytes` for the universal D2H
+    /// fallback.
+    pub fn to_cpu_bytes(&self) -> Result<Vec<u8>> {
+        let mut out = vec![0_u8; self.len_bytes];
+        if self.len_bytes > 0 {
+            self.buffer.copy_to_host(&mut out).w()?;
+            // copy_to_host is sync in baracuda's surface (the
+            // legacy clone_dtoh path uses cuMemcpyDtoH, also sync),
+            // so no extra synchronize call is needed here. We
+            // still sync defensively in case async-paths are wired
+            // upstream of us in the future.
+            self.device.synchronize()?;
+        }
+        Ok(out)
     }
 }
 
