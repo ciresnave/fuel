@@ -166,6 +166,16 @@ pub enum OpParams {
         groups: usize,
     },
 
+    /// Sum-reduce a tensor to a smaller broadcast-compatible target
+    /// shape. The kernel left-pads `output_shape` with 1s to match
+    /// `input_shape`'s rank, then for each axis: if the padded output
+    /// dim equals the input dim that axis carries through; if it's 1
+    /// the axis is summed away.
+    ReduceSumTo {
+        input_shape: Vec<usize>,
+        output_shape: Vec<usize>,
+    },
+
     /// Slice along a single dim with explicit start/end/step. The
     /// dim is implicit in the input Layout's relabeling for
     /// multi-dim slice; this variant covers the simple case.

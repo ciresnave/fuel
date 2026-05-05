@@ -465,6 +465,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Cast(_)       => Some(OpKind::Cast),
         Op::Conv2D { .. } => Some(OpKind::Conv2D),
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
+        Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::AddScalar(_)  => Some(OpKind::Affine),
         Op::MulScalar(_)  => Some(OpKind::Affine),
         Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
@@ -927,6 +928,19 @@ fn op_to_op_params(
                 dilation: (1, 1),
                 groups: *groups,
             }
+        }
+        Op::ReduceSumTo(target_shape) => {
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::ReduceSumTo expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let input_shape: Vec<usize> = in_layout.shape().dims().to_vec();
+            let output_shape: Vec<usize> = target_shape.dims().to_vec();
+            OpParams::ReduceSumTo { input_shape, output_shape }
         }
         Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
@@ -3013,6 +3027,131 @@ mod tests {
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
+        }
+    }
+
+    /// E2E: Op::ReduceSumTo — sum the leading axis of a [2,3] tensor.
+    /// Input [[1,2,3],[4,5,6]] → output [5,7,9].
+    #[test]
+    fn pipelined_realize_reduce_sum_to_f32_drops_leading_axis() {
+        let v = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::ReduceSumTo(Shape::from_dims(&[3])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[5.0, 7.0, 9.0]);
+    }
+
+    /// E2E: Op::ReduceSumTo — keep-dim with 1 in the middle.
+    /// Input [2,3,4] → [2,1,4] sums along dim 1.
+    #[test]
+    fn pipelined_realize_reduce_sum_to_f32_keepdim_middle() {
+        // [2,3,4]: layer 0 = [[1,2,3,4],[5,6,7,8],[9,10,11,12]]
+        //          layer 1 = [[13..16],[17..20],[21..24]]
+        let mut v: Vec<f32> = (1..=24).map(|x| x as f32).collect();
+        let _ = &mut v;
+        let s = crate::from_slice_cpu(&v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::ReduceSumTo(Shape::from_dims(&[2, 1, 4])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 1, 4]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(s)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        // layer0 dim1-sum: col j = 1+5+9, 2+6+10, 3+7+11, 4+8+12 = [15,18,21,24]
+        // layer1 dim1-sum: col j = 13+17+21, 14+18+22, 15+19+23, 16+20+24 = [51,54,57,60]
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[15.0, 18.0, 21.0, 24.0, 51.0, 54.0, 57.0, 60.0],
+        );
+    }
+
+    /// E2E: ReduceSumTo F64 — same drop-leading-axis test on doubles.
+    #[test]
+    fn pipelined_realize_reduce_sum_to_f64() {
+        let v = crate::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F64,
+            });
+            let op_id = g.push(Node {
+                op: Op::ReduceSumTo(Shape::from_dims(&[3])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f64>().unwrap(), &[5.0, 7.0, 9.0]);
+    }
+
+    /// E2E: ReduceSumTo BF16 — tolerant compare via f32-acc.
+    #[test]
+    fn pipelined_realize_reduce_sum_to_bf16() {
+        let v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let s = crate::from_slice_cpu(&v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::BF16,
+            });
+            let op_id = g.push(Node {
+                op: Op::ReduceSumTo(Shape::from_dims(&[3])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::BF16,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(s)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let want = [5.0_f32, 7.0, 9.0];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
         }
     }
 

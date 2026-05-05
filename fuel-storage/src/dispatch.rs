@@ -1666,6 +1666,54 @@ cpu_conv_transpose2d_wrapper!(conv_transpose2d_f64_cpu_wrapper,  fuel_cpu_backen
 cpu_conv_transpose2d_wrapper!(conv_transpose2d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::conv_transpose2d_bf16);
 cpu_conv_transpose2d_wrapper!(conv_transpose2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f16);
 
+/// Dispatch wrapper for `(ReduceSumTo, *, Cpu)`. Single input → single
+/// output; shapes flow through `OpParams::ReduceSumTo`.
+macro_rules! cpu_reduce_sum_to_wrapper {
+    ($name:ident, $kernel:path) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "reduce_sum_to wrapper expects 1 input, got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "reduce_sum_to wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (input_shape, output_shape) = match params {
+                OpParams::ReduceSumTo { input_shape, output_shape } => {
+                    (input_shape.clone(), output_shape.clone())
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "reduce_sum_to wrapper expects OpParams::ReduceSumTo, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, &input_shape, &output_shape)
+        }
+    };
+}
+
+cpu_reduce_sum_to_wrapper!(reduce_sum_to_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f32);
+cpu_reduce_sum_to_wrapper!(reduce_sum_to_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f64);
+cpu_reduce_sum_to_wrapper!(reduce_sum_to_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::reduce_sum_to_bf16);
+cpu_reduce_sum_to_wrapper!(reduce_sum_to_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f16);
+
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
     DType::F32,
@@ -1948,6 +1996,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(ConvTranspose2D, bf16_dt, cpu, conv_transpose2d_bf16_cpu_wrapper);
     table.register(ConvTranspose2D, f16_dt,  cpu, conv_transpose2d_f16_cpu_wrapper);
 
+    table.register(ReduceSumTo, f32_dt,  cpu, reduce_sum_to_f32_cpu_wrapper);
+    table.register(ReduceSumTo, f64_dt,  cpu, reduce_sum_to_f64_cpu_wrapper);
+    table.register(ReduceSumTo, bf16_dt, cpu, reduce_sum_to_bf16_cpu_wrapper);
+    table.register(ReduceSumTo, f16_dt,  cpu, reduce_sum_to_f16_cpu_wrapper);
+
     table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
     table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
@@ -2110,6 +2163,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MatMul,
         Conv2D,
         ConvTranspose2D,
+        ReduceSumTo,
         Affine,
         ClampElementwise,
         PowIElementwise,
@@ -2160,6 +2214,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MatMul,
         Conv2D,
         ConvTranspose2D,
+        ReduceSumTo,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
@@ -2198,8 +2253,9 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((op, DType::F16));
     }
     // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
-    // Rope, Conv2D, ConvTranspose2D) — all use the f32-accumulator pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D] {
+    // Rope, Conv2D, ConvTranspose2D, ReduceSumTo) — all use the
+    // f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
