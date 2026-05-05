@@ -251,6 +251,27 @@ pub enum OpParams {
         seq: usize,
         head_dim: usize,
     },
+
+    /// Index-add along a single dim with rank-1 U32 indices.
+    /// Output is `base` with `src[..., i, ...]` accumulated into
+    /// `base[..., indices[i], ...]` for every i ∈ 0..n_indices.
+    IndexAdd {
+        outer_count: usize,
+        base_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    },
+
+    /// N-dimensional scatter-add. Indices and src share the same
+    /// shape; base may differ only along `dim`. The kernel walks
+    /// every src/indices position, reads `indices[p]` for the
+    /// destination's `dim` coord, and accumulates `src[p]` into
+    /// `base` at that destination.
+    ScatterAdd {
+        base_shape: Vec<usize>,
+        src_shape: Vec<usize>,
+        dim: usize,
+    },
 }
 
 // =============================================================================

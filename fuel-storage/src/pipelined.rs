@@ -477,6 +477,8 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
         Op::Gather { .. } => Some(OpKind::Gather),
         Op::Rope => Some(OpKind::Rope),
+        Op::IndexAdd { .. } => Some(OpKind::IndexAdd),
+        Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
         _ => None,
     }
 }
@@ -604,6 +606,85 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::SoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::IndexAdd { dim } => {
+            // Inputs: (base, indices, src). All same dtype except
+            // indices is U32. Output shape == base shape.
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::IndexAdd expects 3 inputs (base, indices, src), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let base_layout = input_layout(node.inputs[0]);
+            let idx_layout = input_layout(node.inputs[1]);
+            let src_layout = input_layout(node.inputs[2]);
+            let base_dims = base_layout.shape().dims();
+            let idx_dims = idx_layout.shape().dims();
+            let src_dims = src_layout.shape().dims();
+            if *dim >= base_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::IndexAdd: dim {dim} out of range for base rank {}",
+                    base_dims.len(),
+                ))
+                .bt());
+            }
+            if idx_dims.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::IndexAdd: indices must be rank 1, got {idx_dims:?}",
+                ))
+                .bt());
+            }
+            if base_dims.len() != src_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::IndexAdd: base rank ({}) != src rank ({})",
+                    base_dims.len(), src_dims.len(),
+                ))
+                .bt());
+            }
+            let outer_count: usize = base_dims[..*dim].iter().product();
+            let base_dim_size = base_dims[*dim];
+            let inner_count: usize = base_dims[*dim + 1..].iter().product();
+            let n_indices = idx_dims[0];
+            OpParams::IndexAdd {
+                outer_count,
+                base_dim_size,
+                n_indices,
+                inner_count,
+            }
+        }
+        Op::ScatterAdd { dim } => {
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::ScatterAdd expects 3 inputs (base, indices, src), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let base_layout = input_layout(node.inputs[0]);
+            let src_layout = input_layout(node.inputs[2]);
+            let base_shape: Vec<usize> = base_layout.shape().dims().to_vec();
+            let src_shape: Vec<usize> = src_layout.shape().dims().to_vec();
+            if base_shape.len() != src_shape.len() {
+                return Err(Error::Msg(format!(
+                    "Op::ScatterAdd: base rank ({}) != src rank ({})",
+                    base_shape.len(), src_shape.len(),
+                ))
+                .bt());
+            }
+            if *dim >= base_shape.len() {
+                return Err(Error::Msg(format!(
+                    "Op::ScatterAdd: dim {dim} out of range for rank {}",
+                    base_shape.len(),
+                ))
+                .bt());
+            }
+            OpParams::ScatterAdd {
+                base_shape,
+                src_shape,
+                dim: *dim,
+            }
         }
         Op::Rope => {
             // Inputs: (x, cos, sin). x is [..., seq, head_dim];
@@ -1573,6 +1654,88 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: IndexAdd along outer dim — accumulate updates into a
+    /// rank-1 base tensor at indexed positions.
+    #[test]
+    fn pipelined_realize_index_add_simple() {
+        let base = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let indices = crate::from_slice_cpu(&[0u32, 0]);
+        let src = crate::from_slice_cpu(&[1.0_f32, 2.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (b_id, i_id, s_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let i = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::U32,
+            });
+            let s = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::IndexAdd { dim: 0 }, inputs: vec![b, i, s],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (b, i, s, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(b_id, Arc::new(RwLock::new(base)));
+        inputs.insert(i_id, Arc::new(RwLock::new(indices)));
+        inputs.insert(s_id, Arc::new(RwLock::new(src)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        // 10 + 1 + 2 = 13; 20 untouched; 30 untouched.
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[13.0, 20.0, 30.0]);
+    }
+
+    /// E2E: ScatterAdd along outer dim — same-rank indices, base
+    /// starts as zeros, src adds values at scatter positions.
+    #[test]
+    fn pipelined_realize_scatter_add_outer_dim() {
+        // base [3, 2] = zeros; indices [2, 2] = [[0, 1], [2, 0]];
+        // src [2, 2] = [[1, 2], [3, 4]]; dim=0
+        // → out = [[1, 4], [0, 2], [3, 0]]
+        let base = crate::from_slice_cpu(&[0.0_f32; 6]);
+        let indices = crate::from_slice_cpu(&[0u32, 1, 2, 0]);
+        let src = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (b_id, i_id, s_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            let i = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::U32,
+            });
+            let s = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::ScatterAdd { dim: 0 }, inputs: vec![b, i, s],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (b, i, s, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(b_id, Arc::new(RwLock::new(base)));
+        inputs.insert(i_id, Arc::new(RwLock::new(indices)));
+        inputs.insert(s_id, Arc::new(RwLock::new(src)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]);
     }
 
     /// E2E: Rope through the pipelined executor. cos=0, sin=1

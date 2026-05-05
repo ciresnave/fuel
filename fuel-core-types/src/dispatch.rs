@@ -150,6 +150,16 @@ pub enum OpKind {
     /// `cos`/`sin` broadcast across leading dims. Used by every
     /// modern transformer's attention layer.
     Rope,
+    /// Add `src` values into a copy of `base` at positions given
+    /// by a rank-1 U32 `indices` tensor along `dim`. Inputs:
+    /// `(base, indices, src)`. Output shape == base shape.
+    IndexAdd,
+    /// N-dimensional scatter-add: the functional inverse of
+    /// `Gather`. Inputs `(base, indices, src)`; indices and src
+    /// share the same shape; for each position `p`, the source
+    /// value is added into base at the multi-index where `dim`'s
+    /// coord is `indices[p]`.
+    ScatterAdd,
 }
 
 impl OpKind {
@@ -193,6 +203,8 @@ impl OpKind {
             OpKind::IndexSelect       => "index_select",
             OpKind::Gather            => "gather",
             OpKind::Rope              => "rope",
+            OpKind::IndexAdd          => "index_add",
+            OpKind::ScatterAdd        => "scatter_add",
         }
     }
 }
