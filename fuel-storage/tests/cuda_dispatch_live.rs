@@ -765,6 +765,49 @@ fn silu_elementwise_f32_through_binding_table() {
     assert_close(host_f32, &expected, 1e-5);
 }
 
+/// End-to-end: GeluElementwise F32 through the binding table
+/// (tanh approximation, matching `OpKind::GeluElementwise` semantics
+/// and CPU `gelu_f32`).
+#[test]
+#[ignore]
+fn gelu_elementwise_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
+        .expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::GeluElementwise, DType::F32, BackendId::Cuda)
+        .expect("lookup (GeluElementwise, F32, Cuda)");
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    // tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    const COEFF: f32 = 0.797_884_56;
+    let expected: Vec<f32> = xs
+        .iter()
+        .map(|&x| 0.5 * x * (1.0 + (COEFF * (x + 0.044_715 * x * x * x)).tanh()))
+        .collect();
+    assert_close(host_f32, &expected, 1e-5);
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.
