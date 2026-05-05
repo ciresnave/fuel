@@ -135,6 +135,11 @@ pub fn log_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
     unary_elementwise_f32(src, "ulog_f32")
 }
 
+/// Element-wise sin(x) of one F32 `CudaStorageBytes`.
+pub fn sin_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
+    unary_elementwise_f32(src, "usin_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
