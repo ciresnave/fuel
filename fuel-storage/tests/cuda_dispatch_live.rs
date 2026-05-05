@@ -38,6 +38,21 @@ fn build_storage_cuda(dev: &CudaDevice, src_f32: &[f32]) -> Storage {
     Storage::new(BackendStorage::Cuda(cuda_bytes), DType::F32)
 }
 
+/// Element-wise approximate equality for transcendental unary tests.
+/// CUDA's PTX intrinsics for tanh/exp/log/sin/cos/sigmoid/silu/gelu
+/// are not bit-exact with the host `f32::tanh` etc., so the tests
+/// compare against a small epsilon (1e-5 is comfortable for these
+/// kernels at the magnitudes tested).
+fn assert_close(actual: &[f32], expected: &[f32], eps: f32) {
+    assert_eq!(actual.len(), expected.len(), "len mismatch");
+    for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (a - e).abs() <= eps,
+            "idx {i}: |{a} - {e}| > {eps}",
+        );
+    }
+}
+
 /// End-to-end: register the CUDA wrapper, look it up via the
 /// binding table, invoke it on two F32 CUDA inputs, read back via
 /// D2H, assert elementwise sum.
@@ -482,6 +497,44 @@ fn abs_elementwise_f32_through_binding_table() {
     let host = c.to_cpu_bytes().expect("d2h");
     let host_f32: &[f32] = bytemuck::cast_slice(&host);
     assert_eq!(host_f32, &[1.0_f32, 2.0, 3.0, 4.0]);
+}
+
+/// End-to-end: TanhElementwise F32 through the binding table.
+/// Compared with an epsilon since CUDA's `tanhg` PTX intrinsic
+/// isn't bit-exact with the host `f32::tanh`.
+#[test]
+#[ignore]
+fn tanh_elementwise_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
+        .expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::TanhElementwise, DType::F32, BackendId::Cuda)
+        .expect("lookup (TanhElementwise, F32, Cuda)");
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    let expected: Vec<f32> = xs.iter().map(|x| x.tanh()).collect();
+    assert_close(host_f32, &expected, 1e-5);
 }
 
 /// Smoke: looking up a binding before registration returns a clear
