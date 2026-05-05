@@ -1602,6 +1602,70 @@ cpu_conv2d_wrapper!(conv2d_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::con
 cpu_conv2d_wrapper!(conv2d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::conv2d_bf16);
 cpu_conv2d_wrapper!(conv2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f16);
 
+/// Dispatch wrapper for `(ConvTranspose2D, *, Cpu)`. Two or three
+/// inputs (x, weight, [bias]). Geometry flows through
+/// `OpParams::ConvTranspose2D`.
+macro_rules! cpu_conv_transpose2d_wrapper {
+    ($name:ident, $kernel:path) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 && inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "conv_transpose2d wrapper expects 2 or 3 inputs (x, weight, [bias]), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "conv_transpose2d wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) = match params {
+                OpParams::ConvTranspose2D {
+                    x_shape, w_shape, out_shape, stride, padding,
+                    output_padding: _, dilation, groups,
+                } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "conv_transpose2d wrapper expects OpParams::ConvTranspose2D, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let w_guard = read_storage(&inputs[1])?;
+            let bias_guard = match inputs.get(2) {
+                Some(arc) => Some(read_storage(arc)?),
+                None => None,
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let w_cpu = cpu_input(&w_guard)?;
+            let bias_cpu = match &bias_guard {
+                Some(g) => Some(cpu_input(g)?),
+                None => None,
+            };
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                x_cpu, w_cpu, bias_cpu, out_cpu,
+                x_shape, w_shape, out_shape,
+                stride, padding, dilation, groups,
+            )
+        }
+    };
+}
+
+cpu_conv_transpose2d_wrapper!(conv_transpose2d_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f32);
+cpu_conv_transpose2d_wrapper!(conv_transpose2d_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f64);
+cpu_conv_transpose2d_wrapper!(conv_transpose2d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::conv_transpose2d_bf16);
+cpu_conv_transpose2d_wrapper!(conv_transpose2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f16);
+
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
     DType::F32,
@@ -1879,6 +1943,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Conv2D, bf16_dt, cpu, conv2d_bf16_cpu_wrapper);
     table.register(Conv2D, f16_dt,  cpu, conv2d_f16_cpu_wrapper);
 
+    table.register(ConvTranspose2D, f32_dt,  cpu, conv_transpose2d_f32_cpu_wrapper);
+    table.register(ConvTranspose2D, f64_dt,  cpu, conv_transpose2d_f64_cpu_wrapper);
+    table.register(ConvTranspose2D, bf16_dt, cpu, conv_transpose2d_bf16_cpu_wrapper);
+    table.register(ConvTranspose2D, f16_dt,  cpu, conv_transpose2d_f16_cpu_wrapper);
+
     table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
     table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
@@ -2040,6 +2109,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MeanReduce,
         MatMul,
         Conv2D,
+        ConvTranspose2D,
         Affine,
         ClampElementwise,
         PowIElementwise,
@@ -2089,6 +2159,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MeanReduce,
         MatMul,
         Conv2D,
+        ConvTranspose2D,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
@@ -2127,8 +2198,8 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((op, DType::F16));
     }
     // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
-    // Rope, Conv2D) — all use the f32-accumulator pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D] {
+    // Rope, Conv2D, ConvTranspose2D) — all use the f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }

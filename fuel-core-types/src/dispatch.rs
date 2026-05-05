@@ -113,6 +113,11 @@ pub enum OpKind {
     /// case: `(x, weight)`; three-input case adds `bias`. Output
     /// shape `[N, Cout, Hout, Wout]`.
     Conv2D,
+    /// 2D transposed convolution. Shape + geometry flow through
+    /// `OpParams::ConvTranspose2D`. Inputs and bias mirror Conv2D,
+    /// but weight has transposed channel order (`[Cin, Cout/groups,
+    /// Kh, Kw]`) and the variant carries `output_padding`.
+    ConvTranspose2D,
     /// Affine transformation `y = mul * x + add` with scalar
     /// coefficients. `Op::AddScalar(c)` maps as `mul=1, add=c`;
     /// `Op::MulScalar(c)` maps as `mul=c, add=0`.
@@ -202,6 +207,7 @@ impl OpKind {
             OpKind::MeanReduce        => "mean_reduce",
             OpKind::Cast              => "cast",
             OpKind::Conv2D            => "conv2d",
+            OpKind::ConvTranspose2D   => "conv_transpose2d",
             OpKind::Affine            => "affine",
             OpKind::ClampElementwise  => "clamp",
             OpKind::PowIElementwise   => "powi",

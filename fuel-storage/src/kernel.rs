@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use fuel_core_types::conv::{ParamsConv1D, ParamsConvTranspose1D, ParamsConvTranspose2D};
+use fuel_core_types::conv::{ParamsConv1D, ParamsConvTranspose1D};
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
@@ -146,8 +146,25 @@ pub enum OpParams {
     /// 1D transposed-convolution geometry.
     ConvTranspose1D(ParamsConvTranspose1D),
 
-    /// 2D transposed-convolution geometry.
-    ConvTranspose2D(ParamsConvTranspose2D),
+    /// 2D transposed-convolution geometry. Mirrors `OpParams::Conv2D`
+    /// in shape (inline fields, asymmetric stride/padding/dilation,
+    /// `groups`), with the additional `output_padding` parameter that
+    /// transposed conv needs to disambiguate output spatial size.
+    ///
+    /// Inputs: `x` shape `[N, Cin, Hin, Win]`, `weight` shape
+    /// `[Cin, Cout/groups, Kh, Kw]` (note transposed channel order
+    /// vs Conv2D), optional `bias` shape `[Cout]`.
+    /// Output: `[N, Cout, Hout, Wout]`.
+    ConvTranspose2D {
+        x_shape: [usize; 4],
+        w_shape: [usize; 4],
+        out_shape: [usize; 4],
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+    },
 
     /// Slice along a single dim with explicit start/end/step. The
     /// dim is implicit in the input Layout's relabeling for
