@@ -1702,6 +1702,42 @@ mod tests {
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
     }
 
+    /// E2E: BF16 RmsNormLastDim through the pipelined executor.
+    /// Verifies that capability-driven dispatch routes the
+    /// half-float norm op to the bf16-specific kernel (which
+    /// accumulates in f32 internally).
+    #[test]
+    fn pipelined_realize_rms_norm_bf16() {
+        let v: Vec<half::bf16> = [3.0_f32, 4.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let storage = crate::from_slice_cpu(&v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2]), dtype: DType::BF16,
+            });
+            let op_id = g.push(Node {
+                op: Op::RmsNormLastDim { eps: 0.0 }, inputs: vec![in_id],
+                shape: Shape::from_dims(&[1, 2]), dtype: DType::BF16,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::BF16);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[half::bf16] = c.as_slice().unwrap();
+        let rms = (12.5_f32).sqrt();
+        // bf16's ~3-digit mantissa absorbs the divisor; allow ~5%.
+        assert!((r[0].to_f32() - 3.0 / rms).abs() < 0.05);
+        assert!((r[1].to_f32() - 4.0 / rms).abs() < 0.05);
+    }
+
     /// E2E: BF16 matmul through the pipelined executor — proves
     /// the LLM forward-pass blocker (every transformer layer
     /// is dominated by matmul). Identity matmul on bf16 round-
