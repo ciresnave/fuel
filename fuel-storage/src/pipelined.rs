@@ -467,6 +467,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::FusedLinear => Some(OpKind::FusedLinear),
+        Op::FlashAttn { .. } => Some(OpKind::FlashAttn),
         Op::AddScalar(_)  => Some(OpKind::Affine),
         Op::MulScalar(_)  => Some(OpKind::Affine),
         Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
@@ -1000,6 +1001,54 @@ fn op_to_op_params(
                 padding: *padding,
                 dilation: (1, 1),
                 groups: *groups,
+            }
+        }
+        Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
+            // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k [B,Hkv,Sk,D],
+            // inputs[2]=v [B,Hkv,Sk,D], inputs[3]=alibi_slopes [Hq] (optional).
+            if node.inputs.len() != 3 && node.inputs.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::FlashAttn expects 3 or 4 inputs, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let q_layout = input_layout(node.inputs[0]);
+            let k_layout = input_layout(node.inputs[1]);
+            let v_layout = input_layout(node.inputs[2]);
+            let q_dims = q_layout.shape().dims();
+            let k_dims = k_layout.shape().dims();
+            let v_dims = v_layout.shape().dims();
+            if q_dims.len() != 4 || k_dims.len() != 4 || v_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::FlashAttn requires rank-4 q/k/v; got q={q_dims:?} k={k_dims:?} v={v_dims:?}",
+                ))
+                .bt());
+            }
+            if k_dims != v_dims {
+                return Err(Error::Msg(format!(
+                    "Op::FlashAttn: k {k_dims:?} and v {v_dims:?} must share shape",
+                ))
+                .bt());
+            }
+            if q_dims[0] != k_dims[0] || q_dims[3] != k_dims[3] {
+                return Err(Error::Msg(format!(
+                    "Op::FlashAttn: q {q_dims:?} and k {k_dims:?} must share B and D",
+                ))
+                .bt());
+            }
+            OpParams::FlashAttn {
+                b: q_dims[0],
+                hq: q_dims[1],
+                hkv: k_dims[1],
+                sq: q_dims[2],
+                sk: k_dims[2],
+                d: q_dims[3],
+                softmax_scale: *softmax_scale,
+                causal: *causal,
+                window_size_left: *window_size_left,
+                window_size_right: *window_size_right,
+                softcap: *softcap,
             }
         }
         Op::ReduceSumTo(target_shape) => {
@@ -3100,6 +3149,181 @@ mod tests {
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
+        }
+    }
+
+    /// E2E: Op::FlashAttn — F32 single-head, single-batch, no mask.
+    /// q = [[2.0, 0.0]], k = [[1.0, 0.0], [0.0, 1.0]], v = [[10, 0], [0, 10]]
+    /// scale = 1.0
+    /// scores = q · kᵀ = [2.0, 0.0]
+    /// softmax = [e^2/(e^2+1), 1/(e^2+1)] ≈ [0.8808, 0.1192]
+    /// out = softmax @ v = [10*0.8808, 10*0.1192] ≈ [8.808, 1.192]
+    #[test]
+    fn pipelined_realize_flash_attn_f32() {
+        // [B=1, H=1, S=1or2, D=2]
+        let q = crate::from_slice_cpu(&[2.0_f32, 0.0]);
+        let k = crate::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let v = crate::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, k_id, v_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
+            });
+            let k = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let v = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::FlashAttn {
+                    softmax_scale: 1.0,
+                    causal: false,
+                    window_size_left: None,
+                    window_size_right: None,
+                    softcap: None,
+                },
+                inputs: vec![q, k, v],
+                shape: Shape::from_dims(&[1, 1, 1, 2]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, k, v, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(k_id, Arc::new(RwLock::new(k)));
+        inputs.insert(v_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r = c.as_slice::<f32>().unwrap();
+        let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
+        let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
+        assert!((r[0] - 10.0 * expected_p0).abs() < 1e-5,
+            "row[0]: got {} expected {}", r[0], 10.0 * expected_p0);
+        assert!((r[1] - 10.0 * expected_p1).abs() < 1e-5,
+            "row[1]: got {} expected {}", r[1], 10.0 * expected_p1);
+    }
+
+    /// E2E: FlashAttn with causal mask — second query position
+    /// attends to both keys (positions 0 and 1), first only attends
+    /// to key 0 (everything beyond is masked).
+    #[test]
+    fn pipelined_realize_flash_attn_causal_f32() {
+        // q [1,1,2,2]: query 0 = [1, 0], query 1 = [0, 1]
+        // k [1,1,2,2]: keys = [[1, 0], [0, 1]]
+        // v [1,1,2,2]: values = [[5, 6], [7, 8]]
+        // softmax_scale=1, causal:
+        //   query 0: only key 0 admissible → out = v[0] = [5, 6]
+        //   query 1: both admissible. scores = q1·k = [0, 1]
+        //            softmax = [1/(e+1), e/(e+1)]
+        //            out = scores · v = [(5)/(e+1) + 7e/(e+1), 6/(e+1) + 8e/(e+1)]
+        let q = crate::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let k = crate::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let v = crate::from_slice_cpu(&[5.0_f32, 6.0, 7.0, 8.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, k_id, v_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let k = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let v = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::FlashAttn {
+                    softmax_scale: 1.0, causal: true,
+                    window_size_left: None, window_size_right: None,
+                    softcap: None,
+                },
+                inputs: vec![q, k, v],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, k, v, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(k_id, Arc::new(RwLock::new(k)));
+        inputs.insert(v_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r = c.as_slice::<f32>().unwrap();
+        // Query 0 sees only key 0 → output = v[0]
+        assert!((r[0] - 5.0).abs() < 1e-5, "got {}", r[0]);
+        assert!((r[1] - 6.0).abs() < 1e-5, "got {}", r[1]);
+        // Query 1 sees both. softmax([0, 1]) = [1/(e+1), e/(e+1)]
+        let denom = (1.0_f32).exp() + 1.0;
+        let expected_a = 5.0 / denom + 7.0 * (1.0_f32).exp() / denom;
+        let expected_b = 6.0 / denom + 8.0 * (1.0_f32).exp() / denom;
+        assert!((r[2] - expected_a).abs() < 1e-5, "row1[0]: got {} expected {}", r[2], expected_a);
+        assert!((r[3] - expected_b).abs() < 1e-5, "row1[1]: got {} expected {}", r[3], expected_b);
+    }
+
+    /// E2E: FlashAttn BF16 — same single-row test as f32, tolerant.
+    #[test]
+    fn pipelined_realize_flash_attn_bf16() {
+        let q_v: Vec<half::bf16> = [2.0_f32, 0.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let k_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let v_v: Vec<half::bf16> = [10.0_f32, 0.0, 0.0, 10.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let q = crate::from_slice_cpu(&q_v);
+        let k = crate::from_slice_cpu(&k_v);
+        let v = crate::from_slice_cpu(&v_v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, k_id, v_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+            });
+            let k = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+            });
+            let v = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+            });
+            let op = g.push(Node {
+                op: Op::FlashAttn {
+                    softmax_scale: 1.0, causal: false,
+                    window_size_left: None, window_size_right: None,
+                    softcap: None,
+                },
+                inputs: vec![q, k, v],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, k, v, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(k_id, Arc::new(RwLock::new(k)));
+        inputs.insert(v_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
+        let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
+        let want = [10.0 * expected_p0, 10.0 * expected_p1];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
         }
     }
 

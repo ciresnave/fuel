@@ -1769,6 +1769,77 @@ cpu_fused_linear_wrapper!(fused_linear_f64_cpu_wrapper,  fuel_cpu_backend::byte_
 cpu_fused_linear_wrapper!(fused_linear_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::fused_linear_bf16);
 cpu_fused_linear_wrapper!(fused_linear_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f16);
 
+/// Dispatch wrapper for `(FlashAttn, *, Cpu)`. Three or four inputs
+/// (q, k, v, optional alibi_slopes). Geometry + math params flow
+/// through `OpParams::FlashAttn`.
+macro_rules! cpu_flash_attn_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 && inputs.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "flash_attn wrapper expects 3 or 4 inputs (q, k, v, [alibi]), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "flash_attn wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
+                OpParams::FlashAttn {
+                    b, hq, hkv, sq, sk, d,
+                    softmax_scale, causal,
+                    window_size_left, window_size_right, softcap,
+                } => (
+                    *b, *hq, *hkv, *sq, *sk, *d,
+                    *softmax_scale, *causal,
+                    *window_size_left, *window_size_right, *softcap,
+                ),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "flash_attn wrapper expects OpParams::FlashAttn, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let q_guard = read_storage(&inputs[0])?;
+            let k_guard = read_storage(&inputs[1])?;
+            let v_guard = read_storage(&inputs[2])?;
+            let alibi_guard = match inputs.get(3) {
+                Some(arc) => Some(read_storage(arc)?),
+                None => None,
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let q_cpu = cpu_input(&q_guard)?;
+            let k_cpu = cpu_input(&k_guard)?;
+            let v_cpu = cpu_input(&v_guard)?;
+            let alibi_cpu = match &alibi_guard {
+                Some(g) => Some(cpu_input(g)?),
+                None => None,
+            };
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                q_cpu, k_cpu, v_cpu, alibi_cpu, out_cpu,
+                b, hq, hkv, sq, sk, d,
+                scale, causal, wl, wr, softcap,
+            )
+        }
+    };
+}
+
+cpu_flash_attn_wrapper!(flash_attn_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f32);
+cpu_flash_attn_wrapper!(flash_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f64);
+cpu_flash_attn_wrapper!(flash_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_bf16);
+cpu_flash_attn_wrapper!(flash_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f16);
+
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
     DType::F32,
@@ -2061,6 +2132,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(FusedLinear, bf16_dt, cpu, fused_linear_bf16_cpu_wrapper);
     table.register(FusedLinear, f16_dt,  cpu, fused_linear_f16_cpu_wrapper);
 
+    table.register(FlashAttn, f32_dt,  cpu, flash_attn_f32_cpu_wrapper);
+    table.register(FlashAttn, f64_dt,  cpu, flash_attn_f64_cpu_wrapper);
+    table.register(FlashAttn, bf16_dt, cpu, flash_attn_bf16_cpu_wrapper);
+    table.register(FlashAttn, f16_dt,  cpu, flash_attn_f16_cpu_wrapper);
+
     table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
     table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
@@ -2225,6 +2301,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         ConvTranspose2D,
         ReduceSumTo,
         FusedLinear,
+        FlashAttn,
         Affine,
         ClampElementwise,
         PowIElementwise,
@@ -2277,6 +2354,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         ConvTranspose2D,
         ReduceSumTo,
         FusedLinear,
+        FlashAttn,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
@@ -2315,9 +2393,9 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((op, DType::F16));
     }
     // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
-    // Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear) — all
-    // use the f32-accumulator pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear] {
+    // Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear,
+    // FlashAttn) — all use the f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear, FlashAttn] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
