@@ -1301,6 +1301,133 @@ pub fn matmul_f32(
     Ok(())
 }
 
+/// Batched row-major matmul for half-float types (bf16/f16) with
+/// f32 accumulation. The kernel widens each input element to f32,
+/// accumulates the inner-product sum in f32, then narrows the
+/// final output back to the half-float type. Matches the standard
+/// "f16 ops with f32 accumulator" pattern that cuBLAS / TPU /
+/// cuDNN use to keep matmul numerically stable on half floats.
+macro_rules! matmul_half_kernel {
+    ($name:ident, $T:ty, $type_name:literal) => {
+        pub fn $name(
+            lhs: &CpuStorageBytes,
+            rhs: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            lhs_batch_dims: &[usize],
+            rhs_batch_dims: &[usize],
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<()> {
+            if lhs_batch_dims.len() != rhs_batch_dims.len() {
+                return Err(Error::Msg(format!(
+                    "{}: batch ranks must match (lhs={}, rhs={})",
+                    $type_name,
+                    lhs_batch_dims.len(),
+                    rhs_batch_dims.len(),
+                ))
+                .bt());
+            }
+            let batch_rank = lhs_batch_dims.len();
+            let mut n_rep: Vec<usize> = Vec::with_capacity(batch_rank);
+            for i in 0..batch_rank {
+                let la = lhs_batch_dims[i];
+                let ra = rhs_batch_dims[i];
+                if la == ra {
+                    n_rep.push(1);
+                } else if ra > 0 && la > ra && la % ra == 0 {
+                    n_rep.push(la / ra);
+                } else {
+                    return Err(Error::Msg(format!(
+                        "{}: batch dim {i} disallowed combination (lhs={la}, rhs={ra})",
+                        $type_name,
+                    ))
+                    .bt());
+                }
+            }
+            let elem = std::mem::size_of::<$T>();
+            let lhs_per_batch = m.saturating_mul(k);
+            let rhs_per_batch = k.saturating_mul(n);
+            let out_per_batch = m.saturating_mul(n);
+            let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+            let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+            let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
+            let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
+            let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+            if lhs.len_bytes() != need_lhs {
+                return Err(Error::Msg(format!(
+                    "{}: lhs bytes={} doesn't match shape {:?} + [{m}, {k}]",
+                    $type_name, lhs.len_bytes(), lhs_batch_dims,
+                ))
+                .bt());
+            }
+            if rhs.len_bytes() != need_rhs {
+                return Err(Error::Msg(format!(
+                    "{}: rhs bytes={} doesn't match shape {:?} + [{k}, {n}]",
+                    $type_name, rhs.len_bytes(), rhs_batch_dims,
+                ))
+                .bt());
+            }
+            if out.len_bytes() != need_out {
+                return Err(Error::Msg(format!(
+                    "{}: out bytes={} doesn't match shape {:?} + [{m}, {n}]",
+                    $type_name, out.len_bytes(), lhs_batch_dims,
+                ))
+                .bt());
+            }
+            let lhs_view: &[$T] = lhs.as_slice()?;
+            let rhs_view: &[$T] = rhs.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let mut lhs_multi = vec![0usize; batch_rank];
+            let mut rhs_multi = vec![0usize; batch_rank];
+            // Per-batch f32 accumulator buffer (reused across batches).
+            let mut acc = vec![0.0_f32; out_per_batch];
+            for b in 0..lhs_batch_count {
+                let mut rem = b;
+                for d in (0..batch_rank).rev() {
+                    let s = lhs_batch_dims[d];
+                    lhs_multi[d] = rem % s;
+                    rem /= s;
+                }
+                for d in 0..batch_rank {
+                    rhs_multi[d] = lhs_multi[d] / n_rep[d];
+                }
+                let mut rhs_b = 0usize;
+                for d in 0..batch_rank {
+                    rhs_b = rhs_b * rhs_batch_dims[d] + rhs_multi[d];
+                }
+                let lhs_off = b * lhs_per_batch;
+                let rhs_off = rhs_b * rhs_per_batch;
+                let out_off = b * out_per_batch;
+                for slot in acc.iter_mut() {
+                    *slot = 0.0;
+                }
+                for i in 0..m {
+                    for kk in 0..k {
+                        let a = lhs_view[lhs_off + i * k + kk].to_f32();
+                        let rhs_row_off = rhs_off + kk * n;
+                        let acc_row_off = i * n;
+                        for j in 0..n {
+                            acc[acc_row_off + j] +=
+                                a * rhs_view[rhs_row_off + j].to_f32();
+                        }
+                    }
+                }
+                for (slot, &v) in out_view[out_off..out_off + out_per_batch]
+                    .iter_mut()
+                    .zip(&acc)
+                {
+                    *slot = <$T>::from_f32(v);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+matmul_half_kernel!(matmul_bf16, half::bf16, "matmul_bf16");
+matmul_half_kernel!(matmul_f16, half::f16, "matmul_f16");
+
 /// Batched row-major `f64` matrix multiply — a direct mirror of
 /// [`matmul_f32`] with f64 element type and accumulator. Same
 /// per-axis matched/GQA contract; same (i, k, j) inner loop.
@@ -1965,6 +2092,117 @@ pub fn min_reduce_f64(
     )
 }
 
+// =============================================================================
+// Reduction kernels (bf16 / f16) — accumulate in f32 for stability
+// =============================================================================
+//
+// Half-float reductions accumulate in f32: summing many bf16 values
+// in bf16 loses precision rapidly (each add rounds to ~3 decimal
+// digits), but a streaming f32 accumulator gives full f32 precision
+// up to ~16M elements. The result is narrowed to bf16/f16 only at
+// the end. This matches what cuBLAS / TPU / cuDNN do.
+
+macro_rules! sum_reduce_half {
+    ($name:ident, $T:ty, $T_size:expr, $type_name:literal) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            reduce_dims: &[usize],
+        ) -> Result<()> {
+            let (total_input, kept) = check_reduce_shape(
+                concat!(stringify!($name)), input, output, input_shape, reduce_dims, $T_size,
+            )?;
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = output.as_slice_mut()?;
+            let total_output = out_view.len();
+            let mut f32_acc = vec![0.0_f32; total_output];
+            let mut mi = vec![0usize; input_shape.len()];
+            for flat in 0..total_input {
+                decode_multi_index(flat, input_shape, &mut mi);
+                let oi = output_index(input_shape, &kept, &mi);
+                f32_acc[oi] += in_view[flat].to_f32();
+            }
+            for (slot, &v) in out_view.iter_mut().zip(&f32_acc) {
+                *slot = <$T>::from_f32(v);
+            }
+            let _ = $type_name;
+            Ok(())
+        }
+    };
+}
+
+sum_reduce_half!(sum_reduce_bf16, half::bf16, std::mem::size_of::<half::bf16>(), "bf16");
+sum_reduce_half!(sum_reduce_f16, half::f16, std::mem::size_of::<half::f16>(), "f16");
+
+macro_rules! mean_reduce_half {
+    ($name:ident, $sum_kernel:path, $T:ty, $type_name:literal) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            reduce_dims: &[usize],
+        ) -> Result<()> {
+            $sum_kernel(input, output, input_shape, reduce_dims)?;
+            let divisor: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
+            if divisor == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: divisor zero (reduced dim has size 0)",
+                    concat!(stringify!($name)),
+                ))
+                .bt());
+            }
+            let inv = 1.0_f32 / divisor as f32;
+            let out_view: &mut [$T] = output.as_slice_mut()?;
+            for slot in out_view.iter_mut() {
+                *slot = <$T>::from_f32(slot.to_f32() * inv);
+            }
+            let _ = $type_name;
+            Ok(())
+        }
+    };
+}
+
+mean_reduce_half!(mean_reduce_bf16, sum_reduce_bf16, half::bf16, "bf16");
+mean_reduce_half!(mean_reduce_f16, sum_reduce_f16, half::f16, "f16");
+
+macro_rules! reduce_half_extremum {
+    ($name:ident, $T:ty, $T_size:expr, $init:expr, $combine:expr) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            reduce_dims: &[usize],
+        ) -> Result<()> {
+            let (total_input, kept) = check_reduce_shape(
+                concat!(stringify!($name)), input, output, input_shape, reduce_dims, $T_size,
+            )?;
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = output.as_slice_mut()?;
+            let total_output = out_view.len();
+            // Run the reduction in f32 for accuracy + uniform NaN
+            // handling, then narrow back to the half-float type.
+            let mut f32_acc = vec![$init; total_output];
+            let mut mi = vec![0usize; input_shape.len()];
+            let combine: fn(f32, f32) -> f32 = $combine;
+            for flat in 0..total_input {
+                decode_multi_index(flat, input_shape, &mut mi);
+                let oi = output_index(input_shape, &kept, &mi);
+                f32_acc[oi] = combine(f32_acc[oi], in_view[flat].to_f32());
+            }
+            for (slot, &v) in out_view.iter_mut().zip(&f32_acc) {
+                *slot = <$T>::from_f32(v);
+            }
+            Ok(())
+        }
+    };
+}
+
+reduce_half_extremum!(max_reduce_bf16, half::bf16, std::mem::size_of::<half::bf16>(), f32::NEG_INFINITY, |a: f32, b: f32| a.max(b));
+reduce_half_extremum!(max_reduce_f16, half::f16, std::mem::size_of::<half::f16>(), f32::NEG_INFINITY, |a: f32, b: f32| a.max(b));
+reduce_half_extremum!(min_reduce_bf16, half::bf16, std::mem::size_of::<half::bf16>(), f32::INFINITY, |a: f32, b: f32| a.min(b));
+reduce_half_extremum!(min_reduce_f16, half::f16, std::mem::size_of::<half::f16>(), f32::INFINITY, |a: f32, b: f32| a.min(b));
+
 /// Elementwise GELU using the tanh approximation:
 /// `out[i] = 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x^3)))`.
 ///
@@ -2161,6 +2399,110 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sum_reduce_bf16_along_one_dim() {
+        let v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
+        sum_reduce_bf16(&input, &mut out, &[2, 3], &[1]).expect("sum bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(f32_out, vec![6.0, 15.0]);
+    }
+
+    #[test]
+    fn max_min_reduce_bf16() {
+        let v: Vec<half::bf16> = [1.0_f32, -5.0, 3.0, 2.0, 0.0, -1.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
+        max_reduce_bf16(&input, &mut out, &[2, 3], &[1]).expect("max bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(f32_out, vec![3.0, 2.0]);
+
+        min_reduce_bf16(&input, &mut out, &[2, 3], &[1]).expect("min bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(f32_out, vec![-5.0, -1.0]);
+    }
+
+    #[test]
+    fn mean_reduce_f16_divides_by_count() {
+        let v: Vec<half::f16> = [2.0_f32, 4.0, 6.0, 8.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2);
+        mean_reduce_f16(&input, &mut out, &[2, 2], &[1]).expect("mean f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(f32_out, vec![3.0, 7.0]);
+    }
+
+    #[test]
+    fn matmul_bf16_2x3_times_3x2() {
+        let lhs_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let rhs_v: Vec<half::bf16> = [7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let lhs = CpuStorageBytes::from_slice(&lhs_v);
+        let rhs = CpuStorageBytes::from_slice(&rhs_v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 2);
+        matmul_bf16(&lhs, &rhs, &mut out, &[], &[], 2, 2, 3).expect("matmul bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        // bf16 has ~3 decimal digits; the integer values 58, 64, 139,
+        // 154 don't round-trip exactly through bf16 — accept ~1%
+        // tolerance.
+        let expected = [58.0_f32, 64.0, 139.0, 154.0];
+        for (got, want) in f32_out.iter().zip(&expected) {
+            assert!((got - want).abs() / want < 0.01,
+                "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn matmul_f16_identity() {
+        // Identity matmul on f16 — bytes round-trip exactly.
+        let lhs_v: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let rhs_v: Vec<half::f16> = [1.0_f32, 0.0, 0.0, 1.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let lhs = CpuStorageBytes::from_slice(&lhs_v);
+        let rhs = CpuStorageBytes::from_slice(&rhs_v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 2 * 2);
+        matmul_f16(&lhs, &rhs, &mut out, &[], &[], 2, 2, 2).expect("matmul f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(f32_out, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn matmul_bf16_batched_2x_2x2_times_2x2() {
+        let lhs_v: Vec<half::bf16> = [
+            1.0_f32, 2.0, 3.0, 4.0,
+            1.0, 0.0, 0.0, 1.0,
+        ].iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let rhs_v: Vec<half::bf16> = [
+            5.0_f32, 6.0, 7.0, 8.0,
+            10.0, 20.0, 30.0, 40.0,
+        ].iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let lhs = CpuStorageBytes::from_slice(&lhs_v);
+        let rhs = CpuStorageBytes::from_slice(&rhs_v);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4 * 2);
+        matmul_bf16(&lhs, &rhs, &mut out, &[2], &[2], 2, 2, 2).expect("matmul bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        let f32_out: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        // Expected (in f32 reference): [19, 22, 43, 50, 10, 20, 30, 40]
+        let expected = [19.0_f32, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0];
+        for (got, want) in f32_out.iter().zip(&expected) {
+            // Small powers-of-two and integers up to 50 round-trip
+            // through bf16 exactly.
+            assert!((got - want).abs() < 0.5, "got {got}, want {want}");
+        }
     }
 
     #[test]

@@ -1000,6 +1000,16 @@ cpu_reduce_wrapper!(max_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::
 cpu_reduce_wrapper!(min_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f64, "min_reduce");
 cpu_reduce_wrapper!(mean_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f64, "mean_reduce");
 
+cpu_reduce_wrapper!(sum_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_bf16, "sum_reduce");
+cpu_reduce_wrapper!(max_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_bf16, "max_reduce");
+cpu_reduce_wrapper!(min_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_bf16, "min_reduce");
+cpu_reduce_wrapper!(mean_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_bf16, "mean_reduce");
+
+cpu_reduce_wrapper!(sum_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_f16, "sum_reduce");
+cpu_reduce_wrapper!(max_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f16, "max_reduce");
+cpu_reduce_wrapper!(min_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f16, "min_reduce");
+cpu_reduce_wrapper!(mean_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f16, "mean_reduce");
+
 /// Generate a dispatch wrapper for `(Cast, <target>, Cpu)`. The
 /// binding-table key is keyed on the *target* dtype (= the
 /// Node's dtype = the output Storage's dtype); the wrapper reads
@@ -1192,6 +1202,58 @@ fn matmul_f32_cpu_wrapper(
     )
 }
 
+/// Build a CPU matmul wrapper for any element type. The wrapper
+/// shape is identical across dtypes — it just forwards to a typed
+/// kernel that has the matching `(lhs, rhs, out, lhs_batch_dims,
+/// rhs_batch_dims, m, n, k) -> Result<()>` signature.
+macro_rules! cpu_matmul_wrapper {
+    ($wrapper:ident, $kernel:path, $type_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "matmul wrapper expects 2 inputs, got {}", inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "matmul wrapper expects 1 output, got {}", outputs.len(),
+                ))
+                .bt());
+            }
+            let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                    (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "matmul wrapper expects OpParams::Matmul, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let lhs_guard = read_storage(&inputs[0])?;
+            let rhs_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let lhs_cpu = cpu_input(&lhs_guard)?;
+            let rhs_cpu = cpu_input(&rhs_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            let _ = $type_name;
+            $kernel(
+                lhs_cpu, rhs_cpu, out_cpu,
+                lhs_batch_dims, rhs_batch_dims, m, n, k,
+            )
+        }
+    };
+}
+
+cpu_matmul_wrapper!(matmul_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::matmul_bf16, "matmul_bf16");
+cpu_matmul_wrapper!(matmul_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::matmul_f16,  "matmul_f16");
+
 /// f64 mirror of [`matmul_f32_cpu_wrapper`]. Same OpKind
 /// (MatMul); the binding-table key picks this entry when the
 /// node's dtype is F64.
@@ -1268,8 +1330,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GeluElementwise,    f32_dt, cpu, gelu_elementwise_f32_cpu_wrapper);
     table.register(StepElementwise,    f32_dt, cpu, step_elementwise_f32_cpu_wrapper);
 
-    // f64 elementwise: same OpKinds, different (dtype, kernel) pair.
+    // f64/bf16/f16 dtype shorthands — used across all the
+    // multi-dtype registration blocks below.
     let f64_dt = DType::F64;
+    let bf16_dt = DType::BF16;
+    let f16_dt  = DType::F16;
     table.register(AddElementwise,     f64_dt, cpu, add_elementwise_f64_cpu_wrapper);
     table.register(SubElementwise,     f64_dt, cpu, sub_elementwise_f64_cpu_wrapper);
     table.register(MulElementwise,     f64_dt, cpu, mul_elementwise_f64_cpu_wrapper);
@@ -1301,6 +1366,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     table.register(MatMul,             f32_dt, cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             f64_dt, cpu, matmul_f64_cpu_wrapper);
+    table.register(MatMul,             bf16_dt, cpu, matmul_bf16_cpu_wrapper);
+    table.register(MatMul,             f16_dt, cpu, matmul_f16_cpu_wrapper);
+
+    // bf16 + f16 reductions — accumulate in f32 for stability.
+    table.register(SumReduce,          bf16_dt, cpu, sum_reduce_bf16_cpu_wrapper);
+    table.register(MaxReduce,          bf16_dt, cpu, max_reduce_bf16_cpu_wrapper);
+    table.register(MinReduce,          bf16_dt, cpu, min_reduce_bf16_cpu_wrapper);
+    table.register(MeanReduce,         bf16_dt, cpu, mean_reduce_bf16_cpu_wrapper);
+    table.register(SumReduce,          f16_dt, cpu, sum_reduce_f16_cpu_wrapper);
+    table.register(MaxReduce,          f16_dt, cpu, max_reduce_f16_cpu_wrapper);
+    table.register(MinReduce,          f16_dt, cpu, min_reduce_f16_cpu_wrapper);
+    table.register(MeanReduce,         f16_dt, cpu, mean_reduce_f16_cpu_wrapper);
 
     // Cast keys on the *target* dtype; each wrapper handles its
     // supported source dtypes internally. Add new (target, source)
@@ -1321,8 +1398,6 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MinimumElementwise, f64_dt, cpu, minimum_elementwise_f64_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
-    let bf16_dt = DType::BF16;
-    let f16_dt  = DType::F16;
     table.register(AddElementwise,     bf16_dt, cpu, add_elementwise_bf16_cpu_wrapper);
     table.register(SubElementwise,     bf16_dt, cpu, sub_elementwise_bf16_cpu_wrapper);
     table.register(MulElementwise,     bf16_dt, cpu, mul_elementwise_bf16_cpu_wrapper);
@@ -1514,6 +1589,11 @@ fn default_cpu_caps() -> BackendCapabilities {
         StepElementwise,
     ];
     for op in half_elementwise_ops {
+        op_dtype_support.insert((op, DType::BF16));
+        op_dtype_support.insert((op, DType::F16));
+    }
+    // bf16/f16 reductions + matmul (kernels accumulate in f32).
+    for op in [SumReduce, MaxReduce, MinReduce, MeanReduce, MatMul] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }

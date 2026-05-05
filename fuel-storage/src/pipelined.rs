@@ -1702,6 +1702,80 @@ mod tests {
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
     }
 
+    /// E2E: BF16 matmul through the pipelined executor — proves
+    /// the LLM forward-pass blocker (every transformer layer
+    /// is dominated by matmul). Identity matmul on bf16 round-
+    /// trips small integers exactly.
+    #[test]
+    fn pipelined_realize_matmul_bf16_identity() {
+        let lhs_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let rhs_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
+            .iter().map(|&x| half::bf16::from_f32(x)).collect();
+        let lhs = crate::from_slice_cpu(&lhs_v);
+        let rhs = crate::from_slice_cpu(&rhs_v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::BF16,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::BF16,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul, inputs: vec![l, r],
+                shape: Shape::from_dims(&[2, 2]), dtype: DType::BF16,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (l, r, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::BF16);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[half::bf16] = c.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(result_f32, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    /// E2E: F16 sum-reduce — verifies bf16/f16 reduction dispatch
+    /// works through the executor.
+    #[test]
+    fn pipelined_realize_sum_dim_f16() {
+        let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+            .iter().map(|&x| half::f16::from_f32(x)).collect();
+        let storage = crate::from_slice_cpu(&v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, sum_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F16,
+            });
+            let sum_id = g.push(Node {
+                op: Op::SumDim(1), inputs: vec![in_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F16,
+            });
+            g.set_target_backend(sum_id, BackendId::Cpu);
+            (in_id, sum_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F16);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r: &[half::f16] = c.as_slice().unwrap();
+        let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
+        assert_eq!(result_f32, vec![6.0, 15.0]);
+    }
+
     /// E2E: BF16 elementwise add through the pipelined executor.
     #[test]
     fn pipelined_realize_add_bf16() {
