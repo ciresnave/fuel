@@ -245,6 +245,105 @@ pub fn index_select_f32(
 }
 
 // =============================================================================
+// Rotary position embedding (f32, rotate_half convention)
+// =============================================================================
+
+/// Fused rotary position embedding. Inputs `(x, cos, sin)`:
+///
+/// - `x` is laid out as `[outer_count, seq, head_dim]` row-major
+///   (the leading "..." dims fold into `outer_count`).
+/// - `cos` and `sin` are `[seq, head_dim]`, broadcasting across
+///   the outer dims.
+/// - `head_dim` must be even; `h = head_dim / 2`.
+///
+/// rotate_half formula:
+/// ```text
+///   out[..., s, i]     = x[..., s, i]     * cos[s, i]     - x[..., s, i+h] * sin[s, i]
+///   out[..., s, i+h]   = x[..., s, i+h]   * cos[s, i+h]   + x[..., s, i]   * sin[s, i+h]
+/// ```
+/// for `i ∈ 0..h`. Replaces a 9-op decomposition (slice + neg +
+/// concat + broadcast_mul + add + ...) with a single fused kernel.
+pub fn rope_f32(
+    x: &CpuStorageBytes,
+    cos: &CpuStorageBytes,
+    sin: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+) -> Result<()> {
+    if head_dim % 2 != 0 {
+        return Err(Error::Msg(format!(
+            "rope_f32: head_dim ({head_dim}) must be even",
+        ))
+        .bt());
+    }
+    let elem = std::mem::size_of::<f32>();
+    let need_x = outer_count
+        .saturating_mul(seq)
+        .saturating_mul(head_dim)
+        .saturating_mul(elem);
+    let need_cs = seq.saturating_mul(head_dim).saturating_mul(elem);
+    if x.len_bytes() != need_x {
+        return Err(Error::Msg(format!(
+            "rope_f32: x bytes={} doesn't match outer={outer_count} × seq={seq} × head_dim={head_dim} × {elem}",
+            x.len_bytes(),
+        ))
+        .bt());
+    }
+    if cos.len_bytes() != need_cs {
+        return Err(Error::Msg(format!(
+            "rope_f32: cos bytes={} doesn't match seq={seq} × head_dim={head_dim} × {elem}",
+            cos.len_bytes(),
+        ))
+        .bt());
+    }
+    if sin.len_bytes() != need_cs {
+        return Err(Error::Msg(format!(
+            "rope_f32: sin bytes={} doesn't match seq={seq} × head_dim={head_dim} × {elem}",
+            sin.len_bytes(),
+        ))
+        .bt());
+    }
+    if out.len_bytes() != need_x {
+        return Err(Error::Msg(format!(
+            "rope_f32: out bytes={} doesn't match x shape",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    if seq == 0 || head_dim == 0 {
+        return Ok(());
+    }
+    let x_view: &[f32] = x.as_slice()?;
+    let cos_view: &[f32] = cos.as_slice()?;
+    let sin_view: &[f32] = sin.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let h = head_dim / 2;
+    for outer in 0..outer_count {
+        for s in 0..seq {
+            let x_row_off = (outer * seq + s) * head_dim;
+            let cs_row_off = s * head_dim;
+            for i in 0..h {
+                let x_lo_off = x_row_off + i;
+                let x_hi_off = x_row_off + i + h;
+                let cs_lo_off = cs_row_off + i;
+                let cs_hi_off = cs_row_off + i + h;
+                let x_lo = x_view[x_lo_off];
+                let x_hi = x_view[x_hi_off];
+                let cos_lo = cos_view[cs_lo_off];
+                let cos_hi = cos_view[cs_hi_off];
+                let sin_lo = sin_view[cs_lo_off];
+                let sin_hi = sin_view[cs_hi_off];
+                out_view[x_lo_off] = x_lo * cos_lo - x_hi * sin_lo;
+                out_view[x_hi_off] = x_hi * cos_hi + x_lo * sin_hi;
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Gather (f32 source, U32 indices, same-rank)
 // =============================================================================
 
@@ -1400,6 +1499,56 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn rope_f32_identity_when_cos_one_sin_zero() {
+        // cos=1, sin=0 everywhere → out == x.
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let cos = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let sin = CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 0.0, 0.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        // outer=1, seq=1, head_dim=4, h=2
+        rope_f32(&x, &cos, &sin, &mut out, 1, 1, 4).expect("rope");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn rope_f32_pi_over_two_swaps_with_sign() {
+        // cos=0, sin=1 (i.e. θ = π/2 everywhere). Then:
+        //   out[i]   = x[i]*0 - x[i+h]*1 = -x[i+h]
+        //   out[i+h] = x[i+h]*0 + x[i]*1 = x[i]
+        // So [a, b, c, d] (head_dim=4, h=2) → [-c, -d, a, b].
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let cos = CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 0.0, 0.0]);
+        let sin = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        rope_f32(&x, &cos, &sin, &mut out, 1, 1, 4).expect("rope");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[-3.0, -4.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn rope_f32_broadcasts_cos_sin_over_outer() {
+        // outer=2, seq=1, head_dim=2, h=1. Shared cos=[0, 0], sin=[1, 1].
+        // x outer 0: [1, 2] → [-2, 1]
+        // x outer 1: [10, 20] → [-20, 10]
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 10.0, 20.0]);
+        let cos = CpuStorageBytes::from_slice(&[0.0_f32, 0.0]);
+        let sin = CpuStorageBytes::from_slice(&[1.0_f32, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        rope_f32(&x, &cos, &sin, &mut out, 2, 1, 2).expect("rope");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[-2.0, 1.0, -20.0, 10.0]);
+    }
+
+    #[test]
+    fn rope_f32_rejects_odd_head_dim() {
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let cos = CpuStorageBytes::from_slice(&[1.0_f32, 1.0, 1.0]);
+        let sin = CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 0.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        // head_dim=3 is odd
+        let r = rope_f32(&x, &cos, &sin, &mut out, 1, 1, 3);
+        assert!(r.is_err());
     }
 
     #[test]

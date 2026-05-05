@@ -241,6 +241,16 @@ pub enum OpParams {
         output_shape: Vec<usize>,
         dim: usize,
     },
+
+    /// Rotary position embedding parameters. The kernel walks
+    /// `outer_count` × `seq` × `head_dim` elements; `cos`/`sin`
+    /// have `[seq, head_dim]` shape and broadcast across the
+    /// outer dims.
+    Rope {
+        outer_count: usize,
+        seq: usize,
+        head_dim: usize,
+    },
 }
 
 // =============================================================================

@@ -146,6 +146,10 @@ pub enum OpKind {
     /// each output position, source is read at the same multi-index
     /// except `dim`'s coord is read from the indices tensor.
     Gather,
+    /// Fused rotary position embedding. Inputs `(x, cos, sin)`;
+    /// `cos`/`sin` broadcast across leading dims. Used by every
+    /// modern transformer's attention layer.
+    Rope,
 }
 
 impl OpKind {
@@ -188,6 +192,7 @@ impl OpKind {
             OpKind::LayerNormLastDim  => "layer_norm_last_dim",
             OpKind::IndexSelect       => "index_select",
             OpKind::Gather            => "gather",
+            OpKind::Rope              => "rope",
         }
     }
 }

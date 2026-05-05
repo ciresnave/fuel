@@ -476,6 +476,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
         Op::Gather { .. } => Some(OpKind::Gather),
+        Op::Rope => Some(OpKind::Rope),
         _ => None,
     }
 }
@@ -603,6 +604,29 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::SoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::Rope => {
+            // Inputs: (x, cos, sin). x is [..., seq, head_dim];
+            // cos/sin are [seq, head_dim] (validated at graph build).
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::Rope expects 3 inputs (x, cos, sin), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let x_dims = x_layout.shape().dims();
+            if x_dims.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "Op::Rope: x must have rank ≥ 2, got {x_dims:?}",
+                ))
+                .bt());
+            }
+            let head_dim = *x_dims.last().unwrap();
+            let seq = x_dims[x_dims.len() - 2];
+            let outer_count: usize = x_dims[..x_dims.len() - 2].iter().product();
+            OpParams::Rope { outer_count, seq, head_dim }
         }
         Op::Gather { dim } => {
             // inputs[0] = source, inputs[1] = U32 indices (same rank).
@@ -1549,6 +1573,48 @@ mod tests {
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    /// E2E: Rope through the pipelined executor. cos=0, sin=1
+    /// rotates the head_dim halves with sign per the rotate_half
+    /// convention.
+    #[test]
+    fn pipelined_realize_rope_pi_over_two() {
+        // x [1, 1, 4] = [1, 2, 3, 4]. cos=[0,0,0,0], sin=[1,1,1,1].
+        // Expected: [-3, -4, 1, 2].
+        let x = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let cos = crate::from_slice_cpu(&[0.0_f32, 0.0, 0.0, 0.0]);
+        let sin = crate::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, cos_id, sin_id, r_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4]), dtype: DType::F32,
+            });
+            let c = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 4]), dtype: DType::F32,
+            });
+            let s = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 4]), dtype: DType::F32,
+            });
+            let r = g.push(Node {
+                op: Op::Rope, inputs: vec![x, c, s],
+                shape: Shape::from_dims(&[1, 1, 4]), dtype: DType::F32,
+            });
+            g.set_target_backend(r, BackendId::Cpu);
+            (x, c, s, r)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x)));
+        inputs.insert(cos_id, Arc::new(RwLock::new(cos)));
+        inputs.insert(sin_id, Arc::new(RwLock::new(sin)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[-3.0, -4.0, 1.0, 2.0]);
     }
 
     /// E2E: Gather along inner dim. Source [2, 4]; indices [2, 3];
