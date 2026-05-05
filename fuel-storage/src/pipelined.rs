@@ -466,6 +466,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Conv2D { .. } => Some(OpKind::Conv2D),
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
+        Op::FusedLinear => Some(OpKind::FusedLinear),
         Op::AddScalar(_)  => Some(OpKind::Affine),
         Op::MulScalar(_)  => Some(OpKind::Affine),
         Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
@@ -632,6 +633,78 @@ fn op_to_op_params(
                 return Err(Error::Msg(format!(
                     "Op::MatMul: contracting dims disagree — lhs trailing is \
                      [{m}, {k_lhs}], rhs trailing is [{k_rhs}, {n}]",
+                ))
+                .bt());
+            }
+            OpParams::Matmul {
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k: k_lhs,
+            }
+        }
+        Op::FusedLinear => {
+            // Inputs: [a, b, bias]. Same shape semantics as MatMul on
+            // a/b; bias is rank-1 [N] and broadcasts along all leading
+            // dims. We reuse OpParams::Matmul (kernel reads bias from
+            // inputs[2] directly).
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::FusedLinear expects 3 inputs (a, b, bias), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let lhs = input_layout(node.inputs[0]);
+            let rhs = input_layout(node.inputs[1]);
+            let bias = input_layout(node.inputs[2]);
+            let lhs_dims = lhs.shape().dims();
+            let rhs_dims = rhs.shape().dims();
+            let bias_dims = bias.shape().dims();
+            if lhs_dims.len() < 2 || rhs_dims.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "Op::FusedLinear requires both a, b rank ≥ 2; got a={:?} b={:?}",
+                    lhs_dims, rhs_dims,
+                ))
+                .bt());
+            }
+            if lhs_dims.len() != rhs_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::FusedLinear: ranks must match (auto-broadcast happens at \
+                     graph construction time); got a rank {} vs b rank {}",
+                    lhs_dims.len(),
+                    rhs_dims.len(),
+                ))
+                .bt());
+            }
+            let rank = lhs_dims.len();
+            let batch_rank = rank - 2;
+            for i in 0..batch_rank {
+                let la = lhs_dims[i];
+                let ra = rhs_dims[i];
+                let ok = la == ra || (ra > 0 && la > ra && la % ra == 0);
+                if !ok {
+                    return Err(Error::Msg(format!(
+                        "Op::FusedLinear: batch dim {i} disallowed (a={la}, b={ra})",
+                    ))
+                    .bt());
+                }
+            }
+            let lhs_batch_dims: Vec<usize> = lhs_dims[..batch_rank].to_vec();
+            let rhs_batch_dims: Vec<usize> = rhs_dims[..batch_rank].to_vec();
+            let (m, k_lhs) = (lhs_dims[rank - 2], lhs_dims[rank - 1]);
+            let (k_rhs, n) = (rhs_dims[rank - 2], rhs_dims[rank - 1]);
+            if k_lhs != k_rhs {
+                return Err(Error::Msg(format!(
+                    "Op::FusedLinear: contracting dims disagree — a trailing is \
+                     [{m}, {k_lhs}], b trailing is [{k_rhs}, {n}]",
+                ))
+                .bt());
+            }
+            if bias_dims.len() != 1 || bias_dims[0] != n {
+                return Err(Error::Msg(format!(
+                    "Op::FusedLinear: bias must be rank-1 [{n}], got {bias_dims:?}",
                 ))
                 .bt());
             }
@@ -3027,6 +3100,133 @@ mod tests {
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
+        }
+    }
+
+    /// E2E: Op::FusedLinear — F32. a[1,2,3] @ b[1,3,2] + bias[2].
+    /// a = [[[1,2,3],[4,5,6]]], b = [[[1,0],[0,1],[1,1]]], bias=[10,20]
+    /// matmul = [[1+0+3, 0+2+3], [4+0+6, 0+5+6]] = [[4, 5], [10, 11]]
+    /// + bias = [[14, 25], [20, 31]]
+    #[test]
+    fn pipelined_realize_fused_linear_f32() {
+        let a = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = crate::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let bias = crate::from_slice_cpu(&[10.0_f32, 20.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, bias_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 3]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F32,
+            });
+            let bias = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::FusedLinear, inputs: vec![a, b, bias],
+                shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (a, b, bias, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b)));
+        inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[14.0, 25.0, 20.0, 31.0]);
+    }
+
+    /// E2E: FusedLinear F64 — same shape test on doubles.
+    #[test]
+    fn pipelined_realize_fused_linear_f64() {
+        let a = crate::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = crate::from_slice_cpu(&[1.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let bias = crate::from_slice_cpu(&[10.0_f64, 20.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, bias_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 3]), dtype: DType::F64,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F64,
+            });
+            let bias = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F64,
+            });
+            let op = g.push(Node {
+                op: Op::FusedLinear, inputs: vec![a, b, bias],
+                shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::F64,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (a, b, bias, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b)));
+        inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f64>().unwrap(), &[14.0, 25.0, 20.0, 31.0]);
+    }
+
+    /// E2E: FusedLinear BF16 — tolerant compare.
+    #[test]
+    fn pipelined_realize_fused_linear_bf16() {
+        let a_v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let b_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let bias_v: Vec<half::bf16> = [10.0_f32, 20.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let a = crate::from_slice_cpu(&a_v);
+        let b = crate::from_slice_cpu(&b_v);
+        let bias = crate::from_slice_cpu(&bias_v);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, bias_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 3]), dtype: DType::BF16,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::BF16,
+            });
+            let bias = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::BF16,
+            });
+            let op = g.push(Node {
+                op: Op::FusedLinear, inputs: vec![a, b, bias],
+                shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::BF16,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (a, b, bias, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b)));
+        inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let want = [14.0_f32, 25.0, 20.0, 31.0];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
         }
     }
 

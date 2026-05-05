@@ -1714,6 +1714,61 @@ cpu_reduce_sum_to_wrapper!(reduce_sum_to_f64_cpu_wrapper,  fuel_cpu_backend::byt
 cpu_reduce_sum_to_wrapper!(reduce_sum_to_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::reduce_sum_to_bf16);
 cpu_reduce_sum_to_wrapper!(reduce_sum_to_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f16);
 
+/// Dispatch wrapper for `(FusedLinear, *, Cpu)`. Three inputs
+/// (lhs, rhs, bias). Reuses `OpParams::Matmul` for shape.
+macro_rules! cpu_fused_linear_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "fused_linear wrapper expects 3 inputs (lhs, rhs, bias), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "fused_linear wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                    (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "fused_linear wrapper expects OpParams::Matmul, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let lhs_guard = read_storage(&inputs[0])?;
+            let rhs_guard = read_storage(&inputs[1])?;
+            let bias_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let lhs_cpu = cpu_input(&lhs_guard)?;
+            let rhs_cpu = cpu_input(&rhs_guard)?;
+            let bias_cpu = cpu_input(&bias_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                lhs_cpu, rhs_cpu, bias_cpu, out_cpu,
+                lhs_batch_dims, rhs_batch_dims, m, n, k,
+            )
+        }
+    };
+}
+
+cpu_fused_linear_wrapper!(fused_linear_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f32);
+cpu_fused_linear_wrapper!(fused_linear_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f64);
+cpu_fused_linear_wrapper!(fused_linear_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::fused_linear_bf16);
+cpu_fused_linear_wrapper!(fused_linear_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f16);
+
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
     DType::F32,
@@ -2001,6 +2056,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(ReduceSumTo, bf16_dt, cpu, reduce_sum_to_bf16_cpu_wrapper);
     table.register(ReduceSumTo, f16_dt,  cpu, reduce_sum_to_f16_cpu_wrapper);
 
+    table.register(FusedLinear, f32_dt,  cpu, fused_linear_f32_cpu_wrapper);
+    table.register(FusedLinear, f64_dt,  cpu, fused_linear_f64_cpu_wrapper);
+    table.register(FusedLinear, bf16_dt, cpu, fused_linear_bf16_cpu_wrapper);
+    table.register(FusedLinear, f16_dt,  cpu, fused_linear_f16_cpu_wrapper);
+
     table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
     table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
@@ -2164,6 +2224,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         Conv2D,
         ConvTranspose2D,
         ReduceSumTo,
+        FusedLinear,
         Affine,
         ClampElementwise,
         PowIElementwise,
@@ -2215,6 +2276,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         Conv2D,
         ConvTranspose2D,
         ReduceSumTo,
+        FusedLinear,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
@@ -2253,9 +2315,9 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((op, DType::F16));
     }
     // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
-    // Rope, Conv2D, ConvTranspose2D, ReduceSumTo) — all use the
-    // f32-accumulator pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo] {
+    // Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear) — all
+    // use the f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo, FusedLinear] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
