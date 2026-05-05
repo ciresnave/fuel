@@ -21,6 +21,10 @@ thiserror = { workspace = true }
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 fuel-metal-backend = { workspace = true, optional = true }
 
+[dev-dependencies]
+# QMatMul tests construct Q4_0 weight blocks directly.
+fuel-quantized = { workspace = true }
+
 [features]
 default = []
 # Per-backend storage variants. A3.1 wired Metal via

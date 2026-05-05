@@ -869,6 +869,67 @@ macro_rules! cpu_rope_wrapper {
 cpu_rope_wrapper!(rope_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rope_bf16);
 cpu_rope_wrapper!(rope_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f16);
 
+/// Dispatch wrapper for `(QMatMul, F32, Cpu)`. Two inputs:
+/// activations (F32) and quantized weight bytes (U32-typed).
+/// `OpParams::QMatMul` carries the quant_type + (batch, m, n, k);
+/// the wrapper picks the right typed kernel based on quant_type.
+fn qmatmul_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "qmatmul wrapper expects 2 inputs (activations, weight_bytes), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "qmatmul wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (quant_type, batch_count, m, n, k) = match params {
+        OpParams::QMatMul { quant_type, batch_count, m, n, k } => {
+            (*quant_type, *batch_count, *m, *n, *k)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "qmatmul wrapper expects OpParams::QMatMul, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let act_guard = read_storage(&inputs[0])?;
+    let w_guard = read_storage(&inputs[1])?;
+    if w_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "qmatmul: weight bytes must be U32-typed (raw block stream), got {:?}",
+            w_guard.dtype,
+        ))
+        .bt());
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let act_cpu = cpu_input(&act_guard)?;
+    let w_cpu = cpu_input(&w_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    use fuel_graph::QuantType;
+    match quant_type {
+        QuantType::Q4_0 => fuel_cpu_backend::byte_kernels::qmatmul_q4_0_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q8_0 => fuel_cpu_backend::byte_kernels::qmatmul_q8_0_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+        QuantType::Q4_K_M => fuel_cpu_backend::byte_kernels::qmatmul_q4_k_m_f32(
+            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+        ),
+    }
+}
+
 /// Dispatch wrapper for `(Concat, F32, Cpu)`. Variable number of
 /// inputs (≥ 1); shape parameters flow through `OpParams::Concat`.
 fn concat_f32_cpu_wrapper(
@@ -1532,6 +1593,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
     table.register(Rope,               bf16_dt, cpu, rope_bf16_cpu_wrapper);
     table.register(Rope,               f16_dt,  cpu, rope_f16_cpu_wrapper);
+    table.register(QMatMul,            f32_dt, cpu, qmatmul_f32_cpu_wrapper);
     table.register(IndexAdd,           f32_dt, cpu, index_add_f32_cpu_wrapper);
     table.register(ScatterAdd,         f32_dt, cpu, scatter_add_f32_cpu_wrapper);
 
@@ -1610,6 +1672,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         Rope,
         IndexAdd,
         ScatterAdd,
+        QMatMul,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
