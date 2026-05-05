@@ -125,6 +125,11 @@ pub fn tanh_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> 
     unary_elementwise_f32(src, "utanh_f32")
 }
 
+/// Element-wise exp(x) of one F32 `CudaStorageBytes`.
+pub fn exp_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
+    unary_elementwise_f32(src, "uexp_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
