@@ -349,6 +349,59 @@ cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
 cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
 
+/// Dispatch wrapper for `(IndexSelect, F32, Cpu)`. Two inputs:
+/// source (f32) and indices (U32). The binding-table key is the
+/// *output* dtype (= the source's dtype = f32). Indices dtype is
+/// fixed and read at runtime from the input Storage.
+fn index_select_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "index_select wrapper expects 2 inputs (source, indices), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "index_select wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, source_dim_size, n_indices, inner_count) = match params {
+        OpParams::IndexSelect {
+            outer_count, source_dim_size, n_indices, inner_count,
+        } => (*outer_count, *source_dim_size, *n_indices, *inner_count),
+        other => {
+            return Err(Error::Msg(format!(
+                "index_select wrapper expects OpParams::IndexSelect, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let src_guard = read_storage(&inputs[0])?;
+    let idx_guard = read_storage(&inputs[1])?;
+    if idx_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "index_select: indices must be U32, got {:?}",
+            idx_guard.dtype,
+        ))
+        .bt());
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cpu = cpu_input(&src_guard)?;
+    let idx_cpu = cpu_input(&idx_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::index_select_f32(
+        src_cpu, idx_cpu, out_cpu,
+        outer_count, source_dim_size, n_indices, inner_count,
+    )
+}
+
 /// Generate a CPU last-dim norm wrapper that pulls
 /// `(outer_count, last_dim, eps)` from `OpParams::NormLastDim`
 /// and forwards to a typed kernel.
@@ -881,6 +934,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
     table.register(RmsNormLastDim,     f32_dt, cpu, rms_norm_last_dim_f32_cpu_wrapper);
     table.register(LayerNormLastDim,   f32_dt, cpu, layer_norm_last_dim_f32_cpu_wrapper);
+    table.register(IndexSelect,        f32_dt, cpu, index_select_f32_cpu_wrapper);
 }
 
 // =============================================================================
@@ -945,6 +999,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         SoftmaxLastDim,
         RmsNormLastDim,
         LayerNormLastDim,
+        IndexSelect,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }

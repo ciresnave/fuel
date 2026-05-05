@@ -474,6 +474,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::SoftmaxLastDim => Some(OpKind::SoftmaxLastDim),
         Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
+        Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
         _ => None,
     }
 }
@@ -601,6 +602,43 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::SoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::IndexSelect { dim } => {
+            // inputs[0] = source, inputs[1] = U32 indices (rank 1).
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::IndexSelect expects 2 inputs (source, indices), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let src_layout = input_layout(node.inputs[0]);
+            let idx_layout = input_layout(node.inputs[1]);
+            let src_dims = src_layout.shape().dims();
+            let idx_dims = idx_layout.shape().dims();
+            if *dim >= src_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::IndexSelect: dim {dim} out of range for source rank {}",
+                    src_dims.len(),
+                ))
+                .bt());
+            }
+            if idx_dims.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::IndexSelect: indices must be rank 1, got shape {idx_dims:?}",
+                ))
+                .bt());
+            }
+            let outer_count: usize = src_dims[..*dim].iter().product();
+            let source_dim_size = src_dims[*dim];
+            let inner_count: usize = src_dims[*dim + 1..].iter().product();
+            let n_indices = idx_dims[0];
+            OpParams::IndexSelect {
+                outer_count,
+                source_dim_size,
+                n_indices,
+                inner_count,
+            }
         }
         Op::RmsNormLastDim { eps } | Op::LayerNormLastDim { eps } => {
             let il = input_layout(node.inputs[0]);
@@ -1475,6 +1513,50 @@ mod tests {
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
+        );
+    }
+
+    /// E2E: IndexSelect — embedding-table lookup. Source is a
+    /// `[vocab=4, d_model=3]` table; indices are token IDs;
+    /// output is `[seq=3, d_model=3]` with the picked rows.
+    #[test]
+    fn pipelined_realize_index_select_embedding_lookup() {
+        let table = crate::from_slice_cpu(&[
+            10.0_f32, 11.0, 12.0,    // row 0
+            20.0, 21.0, 22.0,        // row 1
+            30.0, 31.0, 32.0,        // row 2
+            40.0, 41.0, 42.0,        // row 3
+        ]);
+        let indices = crate::from_slice_cpu(&[2u32, 0, 2]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (table_id, idx_id, sel_id) = {
+            let mut g = graph.write().unwrap();
+            let t = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4, 3]), dtype: DType::F32,
+            });
+            let i = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::U32,
+            });
+            let s = g.push(Node {
+                op: Op::IndexSelect { dim: 0 }, inputs: vec![t, i],
+                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+            });
+            g.set_target_backend(s, BackendId::Cpu);
+            (t, i, s)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(table_id, Arc::new(RwLock::new(table)));
+        inputs.insert(idx_id, Arc::new(RwLock::new(indices)));
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, sel_id, inputs).expect("realize");
+        assert_eq!(result_layout.shape().dims(), &[3, 3]);
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[30.0, 31.0, 32.0, 10.0, 11.0, 12.0, 30.0, 31.0, 32.0]
         );
     }
 
