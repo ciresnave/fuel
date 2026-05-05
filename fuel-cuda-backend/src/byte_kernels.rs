@@ -95,6 +95,11 @@ pub fn relu_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> 
     unary_elementwise_f32(src, "urelu_f32")
 }
 
+/// Element-wise negation (-x) of one F32 `CudaStorageBytes`.
+pub fn neg_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> {
+    unary_elementwise_f32(src, "uneg_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
