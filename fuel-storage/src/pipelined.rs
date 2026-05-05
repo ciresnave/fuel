@@ -2708,6 +2708,133 @@ mod tests {
         assert_eq!(c.as_slice::<f32>().unwrap(), &[112.0, 116.0, 124.0, 128.0]);
     }
 
+    /// E2E: Conv2D in F64 — same 2x2 sum-kernel test as F32, on doubles.
+    #[test]
+    fn pipelined_realize_conv2d_f64() {
+        let x_storage = crate::from_slice_cpu(&[
+            1.0_f64, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+        let w_storage = crate::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F64,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
+            });
+            let c = g.push(Node {
+                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F64,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f64>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
+    }
+
+    /// E2E: Conv2D in BF16 — f32-accumulator path. Tolerant compare.
+    #[test]
+    fn pipelined_realize_conv2d_bf16() {
+        let x_data: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+        let w_data: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
+            .iter().map(|v| half::bf16::from_f32(*v)).collect();
+        let x_storage = crate::from_slice_cpu(&x_data);
+        let w_storage = crate::from_slice_cpu(&w_data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::BF16,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
+            });
+            let c = g.push(Node {
+                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::BF16,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap()
+            .iter().map(|v| v.to_f32()).collect();
+        let want = [12.0_f32, 16.0, 24.0, 28.0];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
+        }
+    }
+
+    /// E2E: Conv2D in F16 — f32-accumulator path. Tolerant compare.
+    #[test]
+    fn pipelined_realize_conv2d_f16() {
+        let x_data: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+            .iter().map(|v| half::f16::from_f32(*v)).collect();
+        let w_data: Vec<half::f16> = [1.0_f32, 1.0, 1.0, 1.0]
+            .iter().map(|v| half::f16::from_f32(*v)).collect();
+        let x_storage = crate::from_slice_cpu(&x_data);
+        let w_storage = crate::from_slice_cpu(&w_data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, w_id, c_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 3, 3]), dtype: DType::F16,
+            });
+            let w = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F16,
+            });
+            let c = g.push(Node {
+                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                inputs: vec![x, w],
+                shape: Shape::from_dims(&[1, 1, 2, 2]),
+                dtype: DType::F16,
+            });
+            g.set_target_backend(c, BackendId::Cpu);
+            (x, w, c)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::f16>().unwrap()
+            .iter().map(|v| v.to_f32()).collect();
+        let want = [12.0_f32, 16.0, 24.0, 28.0];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
+        }
+    }
+
     /// E2E: GQA-style matmul through the pipelined executor.
     /// lhs has 4 batch heads, rhs has 2; each rhs head is shared
     /// by 2 lhs heads. Output's batch dim follows lhs (4 heads).
