@@ -2973,6 +2973,38 @@ fn silu_elementwise_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(GeluElementwise, F32, Cuda)`.
+/// Maps to the tanh-approximation kernel `ugelu_f32` (matches
+/// the CPU `OpKind::GeluElementwise` semantics).
+#[cfg(feature = "cuda")]
+fn gelu_elementwise_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "gelu_elementwise_f32_cuda_wrapper: expected 1 input, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "gelu_elementwise_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::gelu_elementwise_f32(src_cuda)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -3001,6 +3033,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(CosElementwise,     f32_dt, cuda, cos_elementwise_f32_cuda_wrapper);
     table.register(SigmoidElementwise, f32_dt, cuda, sigmoid_elementwise_f32_cuda_wrapper);
     table.register(SiluElementwise,    f32_dt, cuda, silu_elementwise_f32_cuda_wrapper);
+    table.register(GeluElementwise,    f32_dt, cuda, gelu_elementwise_f32_cuda_wrapper);
 }
 
 // =============================================================================
