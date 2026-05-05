@@ -176,6 +176,43 @@ pub enum OpParams {
         output_shape: Vec<usize>,
     },
 
+    /// Multi-head scaled-dot-product attention shape + math params.
+    /// `q` is `[B, Hq, Sq, D]`, `k` and `v` are `[B, Hkv, Sk, D]`
+    /// (Hkv ≤ Hq, GQA-divisible). Optional 4th input `alibi_slopes`
+    /// has shape `[Hq]` (presence is implicit in `inputs.len() == 4`).
+    FlashAttn {
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+    },
+
+    /// Paged-cache attention. `q` is `[B, Hq, Sq, D]`; `k_cache` and
+    /// `v_cache` are `[num_blocks, block_size, Hkv, D]`. The 4th input
+    /// is `block_table: [B, max_blocks_per_seq]` (U32 — physical block
+    /// index per logical position). The 5th is `context_lens: [B]`
+    /// (U32 — true context length per sequence). Optional 6th is
+    /// `alibi_slopes: [Hq]`.
+    PagedAttn {
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        d: usize,
+        block_size: usize,
+        max_blocks_per_seq: usize,
+        num_blocks: usize,
+        softmax_scale: f32,
+        softcap: Option<f32>,
+    },
+
     /// Slice along a single dim with explicit start/end/step. The
     /// dim is implicit in the input Layout's relabeling for
     /// multi-dim slice; this variant covers the simple case.

@@ -129,6 +129,15 @@ pub enum OpKind {
     /// `OpParams::Matmul` for shape (kernel inits accumulator with
     /// the bias element instead of zero).
     FusedLinear,
+    /// Multi-head scaled-dot-product attention (the math definition,
+    /// not a tiled FlashAttention-2 kernel — naive on CPU). Inputs
+    /// `[q, k, v, optional alibi_slopes]`. Geometry, softmax_scale,
+    /// causal, window, softcap all flow through `OpParams::FlashAttn`.
+    FlashAttn,
+    /// Paged-cache scaled-dot-product attention. Inputs `[q, k_cache,
+    /// v_cache, block_table, context_lens, optional alibi_slopes]`.
+    /// Geometry + scale + softcap flow through `OpParams::PagedAttn`.
+    PagedAttn,
     /// Affine transformation `y = mul * x + add` with scalar
     /// coefficients. `Op::AddScalar(c)` maps as `mul=1, add=c`;
     /// `Op::MulScalar(c)` maps as `mul=c, add=0`.
@@ -221,6 +230,8 @@ impl OpKind {
             OpKind::ConvTranspose2D   => "conv_transpose2d",
             OpKind::ReduceSumTo       => "reduce_sum_to",
             OpKind::FusedLinear       => "fused_linear",
+            OpKind::FlashAttn         => "flash_attn",
+            OpKind::PagedAttn         => "paged_attn",
             OpKind::Affine            => "affine",
             OpKind::ClampElementwise  => "clamp",
             OpKind::PowIElementwise   => "powi",

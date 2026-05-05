@@ -3594,6 +3594,304 @@ fused_linear_half_kernel!(fused_linear_bf16, half::bf16);
 fused_linear_half_kernel!(fused_linear_f16, half::f16);
 
 // =============================================================================
+// FlashAttn — naive multi-head SDPA (math definition)
+// =============================================================================
+//
+// This is the math-definition oracle, not a tiled FlashAttention-2.
+// On CPU the win from tiling is marginal compared to GPU, so we keep
+// the simpler O(Sq*Sk*D) form per head and let backends ship a tiled
+// kernel when one is worth the maintenance cost.
+//
+// Inputs:
+//   q:               [B, Hq,  Sq, D]
+//   k, v:            [B, Hkv, Sk, D]   (GQA: Hq must be a multiple of Hkv)
+//   alibi_slopes:    [Hq] (optional)
+// Output: same shape as q.
+
+#[inline]
+fn flash_attn_admissible(
+    qi: usize, kj: usize,
+    causal: bool,
+    window_left: Option<usize>,
+    window_right: Option<usize>,
+) -> bool {
+    if causal && kj > qi { return false; }
+    if let Some(w) = window_left { if kj + w < qi { return false; } }
+    if let Some(w) = window_right { if kj > qi + w { return false; } }
+    true
+}
+
+/// FlashAttn kernel for native arithmetic ($T = f32 or f64).
+macro_rules! flash_attn_native_kernel {
+    ($name:ident, $T:ty, $T_zero:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            q: &CpuStorageBytes,
+            k: &CpuStorageBytes,
+            v: &CpuStorageBytes,
+            alibi_slopes: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, sk: usize, d: usize,
+            softmax_scale: f32,
+            causal: bool,
+            window_left: Option<usize>,
+            window_right: Option<usize>,
+            softcap: Option<f32>,
+        ) -> Result<()> {
+            if hq % hkv != 0 || hkv == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: Hq={hq} must be a positive multiple of Hkv={hkv}",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            if q.len_bytes()   != b * hq  * sq * d * elem
+                || k.len_bytes()   != b * hkv * sk * d * elem
+                || v.len_bytes()   != b * hkv * sk * d * elem
+                || out.len_bytes() != b * hq  * sq * d * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if let Some(a) = alibi_slopes {
+                if a.len_bytes() != hq * elem {
+                    return Err(Error::Msg(format!(
+                        "{}: alibi_slopes must be [{hq}] {} bytes, got {}",
+                        stringify!($name), hq * elem, a.len_bytes(),
+                    ))
+                    .bt());
+                }
+            }
+            let q_view: &[$T] = q.as_slice()?;
+            let k_view: &[$T] = k.as_slice()?;
+            let v_view: &[$T] = v.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let alibi_view: Option<&[$T]> = match alibi_slopes {
+                Some(a) => Some(a.as_slice()?),
+                None => None,
+            };
+            let groups = hq / hkv;
+            let q_h_stride = sq * d;
+            let q_b_stride = hq * q_h_stride;
+            let k_h_stride = sk * d;
+            let k_b_stride = hkv * k_h_stride;
+            let o_h_stride = sq * d;
+            let o_b_stride = hq * o_h_stride;
+            let scale = softmax_scale as $T;
+            // Zero output up front so masked rows stay zero.
+            for slot in out_view.iter_mut() { *slot = $T_zero; }
+            for bi in 0..b {
+                for hi in 0..hq {
+                    let kv_h = hi / groups;
+                    let q_off = bi * q_b_stride + hi * q_h_stride;
+                    let k_off = bi * k_b_stride + kv_h * k_h_stride;
+                    let v_off = k_off;
+                    let o_off = bi * o_b_stride + hi * o_h_stride;
+                    let alibi_h: Option<$T> = alibi_view.map(|a| a[hi]);
+                    for qi in 0..sq {
+                        // Build admissible scores; track running max.
+                        let mut scores = vec![$T_zero; sk];
+                        let mut admissible = vec![false; sk];
+                        let mut max_score: $T = <$T>::NEG_INFINITY;
+                        for kj in 0..sk {
+                            if !flash_attn_admissible(qi, kj, causal, window_left, window_right) {
+                                continue;
+                            }
+                            admissible[kj] = true;
+                            let mut acc: $T = $T_zero;
+                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                                acc += (*qx) * (*kx);
+                            }
+                            let mut s = acc * scale;
+                            if let Some(c) = softcap {
+                                let cc = c as $T;
+                                s = (s / cc).tanh() * cc;
+                            }
+                            if let Some(slope) = alibi_h {
+                                let delta = (kj as f32 - qi as f32) as $T;
+                                s += slope * delta;
+                            }
+                            scores[kj] = s;
+                            if s > max_score { max_score = s; }
+                        }
+                        if !max_score.is_finite() { continue; }
+                        let mut sum: $T = $T_zero;
+                        for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
+                            if *ad {
+                                *s = (*s - max_score).exp();
+                                sum += *s;
+                            } else {
+                                *s = $T_zero;
+                            }
+                        }
+                        if sum == $T_zero { continue; }
+                        let inv_sum = (1.0 as $T) / sum;
+                        for kj in 0..sk {
+                            if !admissible[kj] { continue; }
+                            let p_ij = scores[kj] * inv_sum;
+                            if p_ij == $T_zero { continue; }
+                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            for (od, vd) in
+                                out_view[o_off + qi * d .. o_off + (qi + 1) * d]
+                                    .iter_mut()
+                                    .zip(v_row.iter())
+                            {
+                                *od += p_ij * (*vd);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+flash_attn_native_kernel!(flash_attn_f32, f32, 0.0_f32);
+flash_attn_native_kernel!(flash_attn_f64, f64, 0.0_f64);
+
+/// FlashAttn for half-floats — accumulates the dot products and
+/// softmax math in f32, narrows back to T for the output.
+macro_rules! flash_attn_half_kernel {
+    ($name:ident, $T:ty) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            q: &CpuStorageBytes,
+            k: &CpuStorageBytes,
+            v: &CpuStorageBytes,
+            alibi_slopes: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, sk: usize, d: usize,
+            softmax_scale: f32,
+            causal: bool,
+            window_left: Option<usize>,
+            window_right: Option<usize>,
+            softcap: Option<f32>,
+        ) -> Result<()> {
+            if hq % hkv != 0 || hkv == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: Hq={hq} must be a positive multiple of Hkv={hkv}",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            if q.len_bytes()   != b * hq  * sq * d * elem
+                || k.len_bytes()   != b * hkv * sk * d * elem
+                || v.len_bytes()   != b * hkv * sk * d * elem
+                || out.len_bytes() != b * hq  * sq * d * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            if let Some(a) = alibi_slopes {
+                if a.len_bytes() != hq * elem {
+                    return Err(Error::Msg(format!(
+                        "{}: alibi_slopes bytes mismatch", stringify!($name),
+                    ))
+                    .bt());
+                }
+            }
+            let q_view: &[$T] = q.as_slice()?;
+            let k_view: &[$T] = k.as_slice()?;
+            let v_view: &[$T] = v.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let alibi_view: Option<&[$T]> = match alibi_slopes {
+                Some(a) => Some(a.as_slice()?),
+                None => None,
+            };
+            let groups = hq / hkv;
+            let q_h_stride = sq * d;
+            let q_b_stride = hq * q_h_stride;
+            let k_h_stride = sk * d;
+            let k_b_stride = hkv * k_h_stride;
+            let o_h_stride = sq * d;
+            let o_b_stride = hq * o_h_stride;
+            for slot in out_view.iter_mut() { *slot = <$T>::from_f32(0.0); }
+            for bi in 0..b {
+                for hi in 0..hq {
+                    let kv_h = hi / groups;
+                    let q_off = bi * q_b_stride + hi * q_h_stride;
+                    let k_off = bi * k_b_stride + kv_h * k_h_stride;
+                    let v_off = k_off;
+                    let o_off = bi * o_b_stride + hi * o_h_stride;
+                    let alibi_h: Option<f32> = alibi_view.map(|a| a[hi].to_f32());
+                    for qi in 0..sq {
+                        let mut scores = vec![0.0_f32; sk];
+                        let mut admissible = vec![false; sk];
+                        let mut max_score = f32::NEG_INFINITY;
+                        for kj in 0..sk {
+                            if !flash_attn_admissible(qi, kj, causal, window_left, window_right) {
+                                continue;
+                            }
+                            admissible[kj] = true;
+                            let mut acc = 0.0_f32;
+                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                                acc += qx.to_f32() * kx.to_f32();
+                            }
+                            let mut s = acc * softmax_scale;
+                            if let Some(c) = softcap {
+                                s = (s / c).tanh() * c;
+                            }
+                            if let Some(slope) = alibi_h {
+                                let delta = kj as f32 - qi as f32;
+                                s += slope * delta;
+                            }
+                            scores[kj] = s;
+                            if s > max_score { max_score = s; }
+                        }
+                        if !max_score.is_finite() { continue; }
+                        let mut sum = 0.0_f32;
+                        for (s, ad) in scores.iter_mut().zip(admissible.iter()) {
+                            if *ad {
+                                *s = (*s - max_score).exp();
+                                sum += *s;
+                            } else {
+                                *s = 0.0;
+                            }
+                        }
+                        if sum == 0.0 { continue; }
+                        let inv_sum = 1.0_f32 / sum;
+                        let mut row_acc = vec![0.0_f32; d];
+                        for kj in 0..sk {
+                            if !admissible[kj] { continue; }
+                            let p_ij = scores[kj] * inv_sum;
+                            if p_ij == 0.0 { continue; }
+                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            for (od, vd) in row_acc.iter_mut().zip(v_row.iter()) {
+                                *od += p_ij * vd.to_f32();
+                            }
+                        }
+                        for (slot, val) in
+                            out_view[o_off + qi * d .. o_off + (qi + 1) * d]
+                                .iter_mut()
+                                .zip(row_acc.iter())
+                        {
+                            *slot = <$T>::from_f32(*val);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+flash_attn_half_kernel!(flash_attn_bf16, half::bf16);
+flash_attn_half_kernel!(flash_attn_f16, half::f16);
+
+// =============================================================================
 // 2D Convolution (f32)
 // =============================================================================
 
