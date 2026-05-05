@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::Result;
+use fuel_core_types::{Layout, Result};
 use fuel_cuda_kernels as kernels;
 
 use crate::builder_arg as barg;
@@ -172,6 +172,19 @@ pub fn step_elementwise_f32(src: &CudaStorageBytes) -> Result<CudaStorageBytes> 
     unary_elementwise_f32(src, "ustep_f32")
 }
 
+/// Sum-reduce one F32 `CudaStorageBytes` along the dims listed in
+/// `reduce_dims`. First reduction op through the unified binding
+/// table; extracts the shared [`reduce_f32`] helper for Max/Min/Mean
+/// to delegate to. Output is freshly allocated, sized
+/// `prod(non-reduced dims) * sizeof(f32)`.
+pub fn sum_reduce_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    reduce_dims: &[usize],
+) -> Result<CudaStorageBytes> {
+    reduce_f32(src, input_layout, reduce_dims, "fast_sum_f32")
+}
+
 /// Shared launch path for F32 elementwise binary ops. Validates equal
 /// byte lengths, allocates a fresh device buffer, launches the
 /// fuel-cuda-kernels BINARY function identified by `kernel_name`,
@@ -270,4 +283,95 @@ fn unary_elementwise_f32(
         device,
         src.len_bytes(),
     ))
+}
+
+/// Shared launch path for F32 reductions (Sum/Max/Min). Mirrors the
+/// legacy `Map1Any` for `FastReduce` (storage.rs:317): reorders dims
+/// so reduced axes come last, builds a `[dims | strides]` device
+/// buffer, and launches with `grid_dim = dst_el` and `block_dim =
+/// next_power_of_two(min(1024, el_to_sum_per_block))`. The kernel
+/// signature is `(src_numel, el_to_sum_per_block, num_dims, info,
+/// src, dst)`.
+///
+/// Auto-Contiguize guarantees the input is contiguous before this
+/// runs, so `input_layout.stride()` is the row-major stride. The
+/// strides side-band is still passed because the kernel uses
+/// `get_strided_index` unconditionally.
+fn reduce_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    reduce_dims: &[usize],
+    kernel_name: &'static str,
+) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    if src.len_bytes() % elem != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: src.len_bytes={} not a multiple of f32 size",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    let src_dims = input_layout.shape().dims();
+    let src_stride = input_layout.stride();
+    let src_el: usize = src_dims.iter().product();
+    if src_el * elem != src.len_bytes() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: src element count {} (from layout shape {:?}) \
+             disagrees with byte length {} / sizeof(f32)",
+            src_el,
+            src_dims,
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+
+    // Reorder dims/strides so the reduced axes are at the end —
+    // matches the legacy `FastReduce::f` precondition that the
+    // kernel iterates over the last `el_to_sum_per_block` elements
+    // per block.
+    let mut dims = Vec::with_capacity(src_dims.len());
+    let mut stride = Vec::with_capacity(src_dims.len());
+    let mut dst_el: usize = 1;
+    for (dim_idx, &d) in src_dims.iter().enumerate() {
+        if !reduce_dims.contains(&dim_idx) {
+            dst_el *= d;
+            dims.push(d);
+            stride.push(src_stride[dim_idx]);
+        }
+    }
+    for &dim_idx in reduce_dims.iter() {
+        dims.push(src_dims[dim_idx]);
+        stride.push(src_stride[dim_idx]);
+    }
+
+    let dst_bytes = dst_el * elem;
+    let device = src.device().clone();
+    if src_el == 0 || dst_el == 0 {
+        return CudaStorageBytes::alloc(&device, dst_bytes);
+    }
+    let el_to_sum_per_block = src_el / dst_el;
+    // Pow-of-two block size so the in-block parallel reduction's
+    // halving loop is well-defined (matches legacy).
+    let block_dim = usize::min(1024, el_to_sum_per_block).next_power_of_two();
+    let cfg = LaunchConfig {
+        grid_dim: (dst_el as u32, 1, 1),
+        block_dim: (block_dim as u32, 1, 1),
+        shared_mem_bytes: 0,
+    };
+
+    let mut out = device.alloc_zeros::<u8>(dst_bytes)?;
+    let ds = device.clone_htod(&[dims.as_slice(), stride.as_slice()].concat())?;
+    let func = device.get_or_load_func(kernel_name, &kernels::REDUCE)?;
+    let mut builder = func.builder();
+    barg!(builder, src_el);
+    barg!(builder, el_to_sum_per_block);
+    barg!(builder, src_dims.len());
+    builder.arg(&ds);
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    // SAFETY: kernel signature matches the args above — same shape as
+    // the legacy `FastReduce::f`, just on byte buffers.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
 }
