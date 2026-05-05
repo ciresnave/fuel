@@ -397,6 +397,176 @@ impl VulkanBackend {
 
     // -- helpers --
 
+    /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` bytes of
+    /// device-local storage and wraps them in a fresh
+    /// `VulkanStorageBytes`. No initialization — caller is responsible
+    /// for filling via [`Self::upload_bytes`] or via a kernel write
+    /// before reading. Mirrors the alloc shape on CUDA / CPU; the
+    /// per-op kernel migration uses this for output allocation.
+    pub fn alloc_bytes(&self, byte_count: usize) -> fuel_core_types::Result<VulkanStorageBytes> {
+        let size = (byte_count as u64).max(1);
+        let _span = debug_span!("vk_alloc_bytes", bytes = byte_count).entered();
+        let (gpu_buf, gpu_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC
+                        | BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        Ok(VulkanStorageBytes::from_device(
+            std::sync::Arc::new(VulkanBuffer {
+                buffer: Some(gpu_buf),
+                allocation: Some(gpu_alloc),
+                byte_size: size,
+                recycle_pool: Some(self.buffer_pool.clone()),
+            }),
+            byte_count,
+        ))
+    }
+
+    /// Phase 7.5 A4 substrate H2D. Stages a host byte slice into a
+    /// fresh device-local `VulkanStorageBytes`. The staging buffer
+    /// is a host-visible mapped sub-allocation; the device copy is
+    /// submitted via `queue.one_shot` which fences before returning,
+    /// so the result is observable to subsequent ops.
+    pub fn upload_bytes(&self, src: &[u8]) -> fuel_core_types::Result<VulkanStorageBytes> {
+        let byte_size = src.len() as u64;
+        let _span = debug_span!("vk_upload_bytes", bytes = byte_size).entered();
+        let (staging_buf, staging_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: byte_size.max(1),
+                    usage: BufferUsage::TRANSFER_SRC,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        if !src.is_empty() {
+            let mapped = staging_alloc
+                .mapped_ptr()
+                .ok_or_else(|| fuel_core_types::Error::Msg(
+                    "upload_bytes: staging alloc not mapped".into()))?;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    mapped as *mut u8,
+                    src.len(),
+                );
+            }
+        }
+        let (gpu_buf, gpu_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: byte_size.max(1),
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC
+                        | BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    &staging_buf,
+                    &gpu_buf,
+                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        drop(staging_buf);
+        drop(staging_alloc);
+        Ok(VulkanStorageBytes::from_device(
+            std::sync::Arc::new(VulkanBuffer {
+                buffer: Some(gpu_buf),
+                allocation: Some(gpu_alloc),
+                byte_size: byte_size.max(1),
+                recycle_pool: Some(self.buffer_pool.clone()),
+            }),
+            src.len(),
+        ))
+    }
+
+    /// Phase 7.5 A4 substrate D2H. Reads a `VulkanStorageBytes`'s
+    /// bytes back to host as a fresh `Vec<u8>`. Flushes any pending
+    /// async ops first, then runs a one-shot device→staging copy
+    /// and reads through the staging buffer's mapped pointer.
+    /// Returns an error if the storage is currently host-evicted
+    /// (caller must fault-back first via the residency machinery).
+    pub fn download_bytes(
+        &self,
+        storage: &VulkanStorageBytes,
+    ) -> fuel_core_types::Result<Vec<u8>> {
+        let byte_size = storage.len_bytes() as u64;
+        let _span = info_span!("vk_download_bytes", bytes = byte_size).entered();
+        let buffer = storage.buffer_opt().ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "download_bytes: storage is host-evicted; \
+                 fault back via residency machinery before reading".into(),
+            )
+        })?;
+        self.flush_pending()?;
+        let (staging_buf, staging_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: byte_size.max(1),
+                    usage: BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    buffer,
+                    &staging_buf,
+                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        let mut out = vec![0_u8; storage.len_bytes()];
+        if !out.is_empty() {
+            let mapped = staging_alloc
+                .mapped_ptr()
+                .ok_or_else(|| fuel_core_types::Error::Msg(
+                    "download_bytes: staging alloc not mapped".into()))?;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    mapped as *const u8,
+                    out.as_mut_ptr(),
+                    out.len(),
+                );
+            }
+        }
+        drop(staging_buf);
+        drop(staging_alloc);
+        Ok(out)
+    }
+
     pub fn upload_slice<T: Copy + 'static>(
         &self, data: &[T], dtype: DType,
     ) -> fuel_core_types::Result<VulkanStorage> {

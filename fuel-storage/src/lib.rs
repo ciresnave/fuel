@@ -143,8 +143,13 @@ impl BackendStorage {
             BackendStorage::Cuda(s) => s.to_cpu_bytes(),
             #[cfg(feature = "vulkan")]
             BackendStorage::Vulkan(_) => Err(Error::Msg(
-                "BackendStorage::read_to_cpu_bytes: Vulkan A4 D2H \
-                 substrate not yet wired (follow-on commit)".to_string(),
+                "BackendStorage::read_to_cpu_bytes: Vulkan D2H requires a \
+                 VulkanBackend handle (allocator + queue) that this \
+                 enum-level method can't reach. Use \
+                 `VulkanBackend::download_bytes(&storage)` directly. \
+                 Cross-backend dispatch through this method will be \
+                 unified at the Router/registry layer in a later phase."
+                .to_string(),
             )
             .bt()),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
