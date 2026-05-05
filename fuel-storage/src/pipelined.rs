@@ -475,6 +475,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
+        Op::Gather { .. } => Some(OpKind::Gather),
         _ => None,
     }
 }
@@ -602,6 +603,40 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::SoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::Gather { dim } => {
+            // inputs[0] = source, inputs[1] = U32 indices (same rank).
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::Gather expects 2 inputs (source, indices), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let src_layout = input_layout(node.inputs[0]);
+            let idx_layout = input_layout(node.inputs[1]);
+            let source_shape: Vec<usize> = src_layout.shape().dims().to_vec();
+            let output_shape: Vec<usize> = idx_layout.shape().dims().to_vec();
+            if source_shape.len() != output_shape.len() {
+                return Err(Error::Msg(format!(
+                    "Op::Gather: source rank ({}) != indices rank ({})",
+                    source_shape.len(),
+                    output_shape.len(),
+                ))
+                .bt());
+            }
+            if *dim >= source_shape.len() {
+                return Err(Error::Msg(format!(
+                    "Op::Gather: dim {dim} out of range for rank {}",
+                    source_shape.len(),
+                ))
+                .bt());
+            }
+            OpParams::Gather {
+                source_shape,
+                output_shape,
+                dim: *dim,
+            }
         }
         Op::IndexSelect { dim } => {
             // inputs[0] = source, inputs[1] = U32 indices (rank 1).
@@ -1513,6 +1548,45 @@ mod tests {
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[19.0, 22.0, 43.0, 50.0, 10.0, 20.0, 30.0, 40.0]
+        );
+    }
+
+    /// E2E: Gather along inner dim. Source [2, 4]; indices [2, 3];
+    /// output [2, 3] = picks from each row by per-row indices.
+    #[test]
+    fn pipelined_realize_gather_inner_dim() {
+        let source = crate::from_slice_cpu(&[
+            10.0_f32, 20.0, 30.0, 40.0,
+            50.0, 60.0, 70.0, 80.0,
+        ]);
+        let indices = crate::from_slice_cpu(&[0u32, 2, 1, 3, 0, 0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, idx_id, g_id) = {
+            let mut g = graph.write().unwrap();
+            let s = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+            });
+            let i = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::U32,
+            });
+            let g_id = g.push(Node {
+                op: Op::Gather { dim: 1 }, inputs: vec![s, i],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            g.set_target_backend(g_id, BackendId::Cpu);
+            (s, i, g_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(src_id, Arc::new(RwLock::new(source)));
+        inputs.insert(idx_id, Arc::new(RwLock::new(indices)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, g_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[10.0, 30.0, 20.0, 80.0, 50.0, 50.0]
         );
     }
 

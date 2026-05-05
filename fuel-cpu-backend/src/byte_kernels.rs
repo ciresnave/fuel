@@ -245,6 +245,116 @@ pub fn index_select_f32(
 }
 
 // =============================================================================
+// Gather (f32 source, U32 indices, same-rank)
+// =============================================================================
+
+/// N-dimensional gather along `dim`. Source and output shapes
+/// agree on every dim except `dim`. The indices tensor has the
+/// output's shape and supplies the source coord for `dim`.
+///
+/// For each output position (i₀, …, iₙ):
+/// `out[i₀, …, iₙ] = source[i₀, …, indices[i₀, …, iₙ], …, iₙ]`.
+///
+/// Out-of-bounds indices return a typed error.
+pub fn gather_f32(
+    source: &CpuStorageBytes,
+    indices: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    source_shape: &[usize],
+    output_shape: &[usize],
+    dim: usize,
+) -> Result<()> {
+    if source_shape.len() != output_shape.len() {
+        return Err(Error::Msg(format!(
+            "gather_f32: source rank ({}) != output rank ({})",
+            source_shape.len(),
+            output_shape.len(),
+        ))
+        .bt());
+    }
+    let rank = source_shape.len();
+    if dim >= rank {
+        return Err(Error::Msg(format!(
+            "gather_f32: dim {dim} out of range for rank {rank}",
+        ))
+        .bt());
+    }
+    for d in 0..rank {
+        if d != dim && source_shape[d] != output_shape[d] {
+            return Err(Error::Msg(format!(
+                "gather_f32: source and output disagree at dim {d} \
+                 (source={}, output={}); only `dim`={dim} may differ",
+                source_shape[d],
+                output_shape[d],
+            ))
+            .bt());
+        }
+    }
+    let elem = std::mem::size_of::<f32>();
+    let source_total: usize = source_shape.iter().product();
+    let output_total: usize = output_shape.iter().product();
+    if source.len_bytes() != source_total.saturating_mul(elem) {
+        return Err(Error::Msg(format!(
+            "gather_f32: source bytes={} doesn't match shape {source_shape:?} (f32)",
+            source.len_bytes(),
+        ))
+        .bt());
+    }
+    if indices.len_bytes() != output_total.saturating_mul(std::mem::size_of::<u32>()) {
+        return Err(Error::Msg(format!(
+            "gather_f32: indices bytes={} doesn't match output shape {output_shape:?} (u32)",
+            indices.len_bytes(),
+        ))
+        .bt());
+    }
+    if out.len_bytes() != output_total.saturating_mul(elem) {
+        return Err(Error::Msg(format!(
+            "gather_f32: out bytes={} doesn't match output shape {output_shape:?} (f32)",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    if output_total == 0 {
+        return Ok(());
+    }
+    let src_view: &[f32] = source.as_slice()?;
+    let idx_view: &[u32] = indices.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    // Source strides (row-major).
+    let mut src_strides = vec![0usize; rank];
+    let mut s = 1;
+    for d in (0..rank).rev() {
+        src_strides[d] = s;
+        s *= source_shape[d];
+    }
+    let mut multi = vec![0usize; rank];
+    for f in 0..output_total {
+        // Decode output multi-index from f (row-major).
+        let mut rem = f;
+        for d in (0..rank).rev() {
+            multi[d] = rem % output_shape[d];
+            rem /= output_shape[d];
+        }
+        let src_dim_idx = idx_view[f] as usize;
+        if src_dim_idx >= source_shape[dim] {
+            return Err(Error::Msg(format!(
+                "gather_f32: index {src_dim_idx} at output position {f} out of bounds for source dim {} = {}",
+                dim, source_shape[dim],
+            ))
+            .bt());
+        }
+        // Compose source flat index.
+        let mut src_flat = 0;
+        for d in 0..rank {
+            let coord = if d == dim { src_dim_idx } else { multi[d] };
+            src_flat += coord * src_strides[d];
+        }
+        out_view[f] = src_view[src_flat];
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Softmax (f32)
 // =============================================================================
 
@@ -1290,6 +1400,76 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
         step_f32(&input, &mut out).expect("step");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn gather_f32_along_inner_dim() {
+        // source [2, 4]:
+        //   row 0: [10, 20, 30, 40]
+        //   row 1: [50, 60, 70, 80]
+        // indices [2, 3]:
+        //   row 0: [0, 2, 1]
+        //   row 1: [3, 0, 0]
+        // gather dim=1:
+        //   out[0, j] = source[0, indices[0, j]]
+        //   out[1, j] = source[1, indices[1, j]]
+        let source = CpuStorageBytes::from_slice(&[
+            10.0_f32, 20.0, 30.0, 40.0,
+            50.0, 60.0, 70.0, 80.0,
+        ]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 2, 1, 3, 0, 0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 3 * 4);
+        gather_f32(&source, &indices, &mut out, &[2, 4], &[2, 3], 1).expect("gather");
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[10.0, 30.0, 20.0, 80.0, 50.0, 50.0]
+        );
+    }
+
+    #[test]
+    fn gather_f32_along_outer_dim() {
+        // source [3, 2]:
+        //   row 0: [1, 2]
+        //   row 1: [3, 4]
+        //   row 2: [5, 6]
+        // indices [4, 2]:
+        //   [[0, 1],
+        //    [1, 0],
+        //    [2, 2],
+        //    [0, 0]]
+        // gather dim=0:
+        //   out[i, j] = source[indices[i, j], j]
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 1, 1, 0, 2, 2, 0, 0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 2 * 4);
+        gather_f32(&source, &indices, &mut out, &[3, 2], &[4, 2], 0).expect("gather");
+        // row 0: source[0,0]=1, source[1,1]=4 → [1, 4]
+        // row 1: source[1,0]=3, source[0,1]=2 → [3, 2]
+        // row 2: source[2,0]=5, source[2,1]=6 → [5, 6]
+        // row 3: source[0,0]=1, source[0,1]=2 → [1, 2]
+        assert_eq!(
+            out.as_slice::<f32>().unwrap(),
+            &[1.0, 4.0, 3.0, 2.0, 5.0, 6.0, 1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn gather_f32_rejects_out_of_bounds_index() {
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 5]); // 5 OOB for dim 3
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        let r = gather_f32(&source, &indices, &mut out, &[3], &[2], 0);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn gather_f32_rejects_rank_mismatch() {
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let indices = CpuStorageBytes::from_slice(&[0u32, 1]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        // source rank=1, output rank=2 → must error
+        let r = gather_f32(&source, &indices, &mut out, &[3], &[1, 2], 0);
+        assert!(r.is_err());
     }
 
     #[test]
