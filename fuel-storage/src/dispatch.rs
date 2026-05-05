@@ -1515,59 +1515,68 @@ macro_rules! cpu_cast_wrapper {
     };
 }
 
-/// Dispatch wrapper for `(Conv2D, F32, Cpu)`. Two or three inputs
+/// Dispatch wrapper for `(Conv2D, *, Cpu)`. Two or three inputs
 /// (x, weight, optional bias). Shapes + geometry flow through
 /// `OpParams::Conv2D`.
-fn conv2d_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 2 && inputs.len() != 3 {
-        return Err(Error::Msg(format!(
-            "conv2d wrapper expects 2 or 3 inputs (x, weight, [bias]), got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "conv2d wrapper expects 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) = match params {
-        OpParams::Conv2D {
-            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
-        } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
-        other => {
-            return Err(Error::Msg(format!(
-                "conv2d wrapper expects OpParams::Conv2D, got {other:?}",
-            ))
-            .bt())
+macro_rules! cpu_conv2d_wrapper {
+    ($name:ident, $kernel:path) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 && inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "conv2d wrapper expects 2 or 3 inputs (x, weight, [bias]), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "conv2d wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) = match params {
+                OpParams::Conv2D {
+                    x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+                } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "conv2d wrapper expects OpParams::Conv2D, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let w_guard = read_storage(&inputs[1])?;
+            let bias_guard = match inputs.get(2) {
+                Some(arc) => Some(read_storage(arc)?),
+                None => None,
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let w_cpu = cpu_input(&w_guard)?;
+            let bias_cpu = match &bias_guard {
+                Some(g) => Some(cpu_input(g)?),
+                None => None,
+            };
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                x_cpu, w_cpu, bias_cpu, out_cpu,
+                x_shape, w_shape, out_shape,
+                stride, padding, dilation, groups,
+            )
         }
     };
-    let x_guard = read_storage(&inputs[0])?;
-    let w_guard = read_storage(&inputs[1])?;
-    let bias_guard = match inputs.get(2) {
-        Some(arc) => Some(read_storage(arc)?),
-        None => None,
-    };
-    let mut out_guard = write_storage(&outputs[0])?;
-    let x_cpu = cpu_input(&x_guard)?;
-    let w_cpu = cpu_input(&w_guard)?;
-    let bias_cpu = match &bias_guard {
-        Some(g) => Some(cpu_input(g)?),
-        None => None,
-    };
-    let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::conv2d_f32(
-        x_cpu, w_cpu, bias_cpu, out_cpu,
-        x_shape, w_shape, out_shape,
-        stride, padding, dilation, groups,
-    )
 }
+
+cpu_conv2d_wrapper!(conv2d_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f32);
+cpu_conv2d_wrapper!(conv2d_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f64);
+cpu_conv2d_wrapper!(conv2d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::conv2d_bf16);
+cpu_conv2d_wrapper!(conv2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f16);
 
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
@@ -1841,7 +1850,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Cast, DType::BF16, cpu, cast_to_bf16_cpu_wrapper);
     table.register(Cast, DType::F16,  cpu, cast_to_f16_cpu_wrapper);
 
-    table.register(Conv2D, f32_dt, cpu, conv2d_f32_cpu_wrapper);
+    table.register(Conv2D, f32_dt,  cpu, conv2d_f32_cpu_wrapper);
+    table.register(Conv2D, f64_dt,  cpu, conv2d_f64_cpu_wrapper);
+    table.register(Conv2D, bf16_dt, cpu, conv2d_bf16_cpu_wrapper);
+    table.register(Conv2D, f16_dt,  cpu, conv2d_f16_cpu_wrapper);
 
     table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
     table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
@@ -2052,6 +2064,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         MinReduce,
         MeanReduce,
         MatMul,
+        Conv2D,
     ] {
         op_dtype_support.insert((op, DType::F64));
     }
@@ -2090,8 +2103,8 @@ fn default_cpu_caps() -> BackendCapabilities {
         op_dtype_support.insert((op, DType::F16));
     }
     // bf16/f16 composed/fused ops (Softmax, RmsNorm, LayerNorm,
-    // Rope) — all use the f32-accumulator pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope] {
+    // Rope, Conv2D) — all use the f32-accumulator pattern.
+    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
