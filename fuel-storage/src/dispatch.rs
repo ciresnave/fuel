@@ -2643,6 +2643,36 @@ fn neg_elementwise_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(SqrElementwise, F32, Cuda)`.
+#[cfg(feature = "cuda")]
+fn sqr_elementwise_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "sqr_elementwise_f32_cuda_wrapper: expected 1 input, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "sqr_elementwise_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::sqr_elementwise_f32(src_cuda)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -2660,6 +2690,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ReluElementwise,    f32_dt, cuda, relu_elementwise_f32_cuda_wrapper);
     table.register(NegElementwise,     f32_dt, cuda, neg_elementwise_f32_cuda_wrapper);
+    table.register(SqrElementwise,     f32_dt, cuda, sqr_elementwise_f32_cuda_wrapper);
 }
 
 // =============================================================================
