@@ -231,6 +231,16 @@ pub enum OpParams {
         n_indices: usize,
         inner_count: usize,
     },
+
+    /// N-dimensional gather along `dim`. Source and output shapes
+    /// agree on every dim except `dim`; the indices tensor (U32)
+    /// has output_shape and supplies the source coord for `dim`
+    /// at every output position.
+    Gather {
+        source_shape: Vec<usize>,
+        output_shape: Vec<usize>,
+        dim: usize,
+    },
 }
 
 // =============================================================================

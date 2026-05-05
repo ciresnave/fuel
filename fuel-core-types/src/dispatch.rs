@@ -141,6 +141,11 @@ pub enum OpKind {
     /// Pick slices from a source tensor along `dim` using a rank-1
     /// U32 index tensor. Output's `dim` size = number of indices.
     IndexSelect,
+    /// N-dimensional gather along `dim`. Source and indices have
+    /// the same rank; output shape equals indices.shape(). For
+    /// each output position, source is read at the same multi-index
+    /// except `dim`'s coord is read from the indices tensor.
+    Gather,
 }
 
 impl OpKind {
@@ -182,6 +187,7 @@ impl OpKind {
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
             OpKind::LayerNormLastDim  => "layer_norm_last_dim",
             OpKind::IndexSelect       => "index_select",
+            OpKind::Gather            => "gather",
         }
     }
 }
