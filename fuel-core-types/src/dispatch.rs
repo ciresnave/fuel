@@ -118,6 +118,12 @@ pub enum OpKind {
     /// but weight has transposed channel order (`[Cin, Cout/groups,
     /// Kh, Kw]`) and the variant carries `output_padding`.
     ConvTranspose2D,
+    /// Sum-reduce a tensor to a smaller broadcast-compatible shape.
+    /// The output rank may be lower than the input's; in that case
+    /// the output shape is implicitly left-padded with 1s for axis
+    /// alignment. Carried by `OpParams::ReduceSumTo` with both the
+    /// input and target shapes.
+    ReduceSumTo,
     /// Affine transformation `y = mul * x + add` with scalar
     /// coefficients. `Op::AddScalar(c)` maps as `mul=1, add=c`;
     /// `Op::MulScalar(c)` maps as `mul=c, add=0`.
@@ -208,6 +214,7 @@ impl OpKind {
             OpKind::Cast              => "cast",
             OpKind::Conv2D            => "conv2d",
             OpKind::ConvTranspose2D   => "conv_transpose2d",
+            OpKind::ReduceSumTo       => "reduce_sum_to",
             OpKind::Affine            => "affine",
             OpKind::ClampElementwise  => "clamp",
             OpKind::PowIElementwise   => "powi",
