@@ -468,6 +468,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::FusedLinear => Some(OpKind::FusedLinear),
         Op::FlashAttn { .. } => Some(OpKind::FlashAttn),
+        Op::PagedAttn { .. } => Some(OpKind::PagedAttn),
         Op::AddScalar(_)  => Some(OpKind::Affine),
         Op::MulScalar(_)  => Some(OpKind::Affine),
         Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
@@ -1001,6 +1002,65 @@ fn op_to_op_params(
                 padding: *padding,
                 dilation: (1, 1),
                 groups: *groups,
+            }
+        }
+        Op::PagedAttn { softmax_scale, block_size, softcap } => {
+            // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k_cache [num_blocks,
+            // block_size, Hkv, D], inputs[2]=v_cache same shape,
+            // inputs[3]=block_table [B, max_blocks_per_seq] U32,
+            // inputs[4]=context_lens [B] U32, inputs[5]=alibi [Hq] (optional).
+            if node.inputs.len() != 5 && node.inputs.len() != 6 {
+                return Err(Error::Msg(format!(
+                    "Op::PagedAttn expects 5 or 6 inputs, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let q_layout = input_layout(node.inputs[0]);
+            let kc_layout = input_layout(node.inputs[1]);
+            let vc_layout = input_layout(node.inputs[2]);
+            let bt_layout = input_layout(node.inputs[3]);
+            let q_dims = q_layout.shape().dims();
+            let kc_dims = kc_layout.shape().dims();
+            let vc_dims = vc_layout.shape().dims();
+            let bt_dims = bt_layout.shape().dims();
+            if q_dims.len() != 4 || kc_dims.len() != 4 || vc_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "Op::PagedAttn requires rank-4 q/k_cache/v_cache; \
+                     got q={q_dims:?} k_cache={kc_dims:?} v_cache={vc_dims:?}",
+                ))
+                .bt());
+            }
+            if kc_dims != vc_dims {
+                return Err(Error::Msg(format!(
+                    "Op::PagedAttn: k_cache {kc_dims:?} and v_cache {vc_dims:?} must match",
+                ))
+                .bt());
+            }
+            if bt_dims.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::PagedAttn: block_table must be rank 2 [B, max_blocks_per_seq], got {bt_dims:?}",
+                ))
+                .bt());
+            }
+            if kc_dims[1] != *block_size {
+                return Err(Error::Msg(format!(
+                    "Op::PagedAttn: k_cache block_size dim ({}) must equal Op's block_size ({})",
+                    kc_dims[1], block_size,
+                ))
+                .bt());
+            }
+            OpParams::PagedAttn {
+                b: q_dims[0],
+                hq: q_dims[1],
+                hkv: kc_dims[2],
+                sq: q_dims[2],
+                d: q_dims[3],
+                block_size: *block_size,
+                max_blocks_per_seq: bt_dims[1],
+                num_blocks: kc_dims[0],
+                softmax_scale: *softmax_scale,
+                softcap: *softcap,
             }
         }
         Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
@@ -3149,6 +3209,159 @@ mod tests {
         let want = [12.0_f32, 16.0, 24.0, 28.0];
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 0.05, "got {got:?} want {want:?}");
+        }
+    }
+
+    /// E2E: Op::PagedAttn — F32, single-head, B=1, Sq=1.
+    /// Same setup as the FlashAttn smoke test, but the K/V live in a
+    /// paged cache that we look up via block_table.
+    /// Layout:
+    ///   block_size=2, num_blocks=1, max_blocks_per_seq=1.
+    ///   k_cache shape [1, 2, 1, 2] = num_blocks × block_size × Hkv × D.
+    ///   k_cache[block 0, slot 0, h 0] = [1, 0]
+    ///   k_cache[block 0, slot 1, h 0] = [0, 1]
+    ///   v_cache values: [10, 0] / [0, 10]
+    ///   block_table[b=0, logical_block 0] = 0 (physical)
+    ///   context_lens[0] = 2
+    ///   q[0, 0, 0] = [2, 0]
+    /// Causal is implicit (q_pos = ctx_len - Sq + sq = 2 - 1 + 0 = 1, both keys admissible).
+    /// Same softmax math as FlashAttn → ~[8.808, 1.192].
+    #[test]
+    fn pipelined_realize_paged_attn_f32() {
+        let q = crate::from_slice_cpu(&[2.0_f32, 0.0]);
+        let k_cache = crate::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let v_cache = crate::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
+        let block_table_u32 = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_slice(&[0_u32]),
+            ),
+            DType::U32,
+        );
+        let context_lens_u32 = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_slice(&[2_u32]),
+            ),
+            DType::U32,
+        );
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, kc_id, vc_id, bt_id, cl_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
+            });
+            let kc = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::F32,
+            });
+            let vc = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::F32,
+            });
+            let bt = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1]), dtype: DType::U32,
+            });
+            let cl = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1]), dtype: DType::U32,
+            });
+            let op = g.push(Node {
+                op: Op::PagedAttn { softmax_scale: 1.0, block_size: 2, softcap: None },
+                inputs: vec![q, kc, vc, bt, cl],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, kc, vc, bt, cl, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(kc_id, Arc::new(RwLock::new(k_cache)));
+        inputs.insert(vc_id, Arc::new(RwLock::new(v_cache)));
+        inputs.insert(bt_id, Arc::new(RwLock::new(block_table_u32)));
+        inputs.insert(cl_id, Arc::new(RwLock::new(context_lens_u32)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let r = c.as_slice::<f32>().unwrap();
+        let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
+        let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
+        assert!((r[0] - 10.0 * expected_p0).abs() < 1e-5,
+            "row[0]: got {} expected {}", r[0], 10.0 * expected_p0);
+        assert!((r[1] - 10.0 * expected_p1).abs() < 1e-5,
+            "row[1]: got {} expected {}", r[1], 10.0 * expected_p1);
+    }
+
+    /// E2E: PagedAttn BF16 — same single-row test, tolerant.
+    #[test]
+    fn pipelined_realize_paged_attn_bf16() {
+        let q_v: Vec<half::bf16> = [2.0_f32, 0.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let kc_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let vc_v: Vec<half::bf16> = [10.0_f32, 0.0, 0.0, 10.0]
+            .iter().map(|x| half::bf16::from_f32(*x)).collect();
+        let q = crate::from_slice_cpu(&q_v);
+        let k_cache = crate::from_slice_cpu(&kc_v);
+        let v_cache = crate::from_slice_cpu(&vc_v);
+        let bt = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_slice(&[0_u32]),
+            ),
+            DType::U32,
+        );
+        let cl = crate::Storage::new(
+            crate::BackendStorage::Cpu(
+                fuel_cpu_backend::CpuStorageBytes::from_slice(&[2_u32]),
+            ),
+            DType::U32,
+        );
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, kc_id, vc_id, bt_id, cl_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+            });
+            let kc = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::BF16,
+            });
+            let vc = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2, 1, 2]), dtype: DType::BF16,
+            });
+            let bt = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1]), dtype: DType::U32,
+            });
+            let cl = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1]), dtype: DType::U32,
+            });
+            let op = g.push(Node {
+                op: Op::PagedAttn { softmax_scale: 1.0, block_size: 2, softcap: None },
+                inputs: vec![q, kc, vc, bt, cl],
+                shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, kc, vc, bt, cl, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(kc_id, Arc::new(RwLock::new(k_cache)));
+        inputs.insert(vc_id, Arc::new(RwLock::new(v_cache)));
+        inputs.insert(bt_id, Arc::new(RwLock::new(bt)));
+        inputs.insert(cl_id, Arc::new(RwLock::new(cl)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
+        let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
+        let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
+        let want = [10.0 * expected_p0, 10.0 * expected_p1];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.5, "got {got:?} want {want:?}");
         }
     }
 
