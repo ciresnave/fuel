@@ -232,6 +232,145 @@ pub fn mean_reduce_f32(
     affine_scale_f32(&sum, inv)
 }
 
+/// Batched row-major F32 matmul through cuBLAS, on byte-shaped inputs.
+/// Shape contract per `OpParams::Matmul`: `lhs [..lhs_batch.., m, k] @
+/// rhs [..rhs_batch.., k, n] → out [..lhs_batch.., m, n]`. Inputs are
+/// guaranteed contiguous by the executor's auto-Contiguize pass, so
+/// per-batch element strides are `m*k`, `k*n`, `m*n` respectively.
+///
+/// The cuBLAS row-major-via-col-major trick: pass our `rhs` as cuBLAS
+/// `A` and our `lhs` as cuBLAS `B`, swap `m` and `n` in the call, and
+/// use no transposes. cuBLAS computes `C^T = B^T × A^T` in col-major
+/// terms, which equals `A_row × B_row` viewed back as row-major. See
+/// the legacy `matmul_via_cublas` (`storage.rs::CudaStorage::matmul`)
+/// — same mechanic.
+///
+/// **Equal-batch only in this commit.** All per-axis lhs and rhs
+/// batch dims must match (after fuel-graph's auto-broadcast equalizes
+/// ranks). GQA-divisible per-axis dims (`lhs_dim = n_rep_axis *
+/// rhs_dim`) hit the same equality check today and return a clear
+/// error; the follow-on commit handles GQA either by per-rhs-batch
+/// gemm grouping or by a pre-expand of rhs into the lhs batch shape.
+pub fn matmul_f32(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    lhs_batch_dims: &[usize],
+    rhs_batch_dims: &[usize],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<CudaStorageBytes> {
+    if lhs_batch_dims.len() != rhs_batch_dims.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "matmul_f32: batch ranks must match (lhs={}, rhs={}); fuel-graph's \
+             auto-broadcast equalizes them at graph construction time",
+            lhs_batch_dims.len(),
+            rhs_batch_dims.len(),
+        ))
+        .bt());
+    }
+    for (i, (&la, &ra)) in lhs_batch_dims.iter().zip(rhs_batch_dims.iter()).enumerate() {
+        if la != ra {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "matmul_f32: GQA-divisible batch dims (axis {i}: lhs={la}, rhs={ra}) \
+                 are not yet supported on the CUDA unified path; equal-batch only \
+                 for now (follow-on commit will add GQA grouping)",
+            ))
+            .bt());
+        }
+    }
+    let elem = std::mem::size_of::<f32>();
+    let lhs_per_batch = m.saturating_mul(k);
+    let rhs_per_batch = k.saturating_mul(n);
+    let out_per_batch = m.saturating_mul(n);
+    let batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+    let need_lhs = batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
+    let need_rhs = batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
+    let need_out = batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    if lhs.len_bytes() != need_lhs {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "matmul_f32: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f32)",
+            lhs.len_bytes(),
+            lhs_batch_dims,
+        ))
+        .bt());
+    }
+    if rhs.len_bytes() != need_rhs {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "matmul_f32: rhs bytes={} doesn't match shape {:?} + [{k}, {n}] (f32)",
+            rhs.len_bytes(),
+            rhs_batch_dims,
+        ))
+        .bt());
+    }
+    let device = lhs.device().clone();
+    if rhs.device().id() != device.id() {
+        return Err(fuel_core_types::Error::Msg(
+            "matmul_f32: lhs and rhs are on different CUDA devices; cross-device \
+             matmul is the caller's responsibility (insert Op::Move first)"
+                .to_string(),
+        )
+        .bt());
+    }
+    if need_out == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out = device.alloc_zeros::<u8>(need_out)?;
+
+    use baracuda_cublas::{cublasComputeType_t, cudaDataType_t, Op};
+    let alpha: f32 = 1.0;
+    let beta: f32 = 0.0;
+    let alpha_ptr = (&alpha) as *const f32 as *const std::ffi::c_void;
+    let beta_ptr = (&beta) as *const f32 as *const std::ffi::c_void;
+    // cuBLAS A = our rhs (logical [k, n] row-major, viewed col-major
+    // as [n, k]). lda = n. cuBLAS B = our lhs (logical [m, k] row-
+    // major, viewed col-major as [k, m]). ldb = k. cuBLAS C = our out
+    // (logical [m, n] row-major, viewed col-major as [n, m]). ldc = n.
+    let lda = n.max(1) as i32;
+    let ldb = k.max(1) as i32;
+    let ldc = n.max(1) as i32;
+    let a_ptr = rhs.buffer().as_raw().0 as *const std::ffi::c_void;
+    let b_ptr = lhs.buffer().as_raw().0 as *const std::ffi::c_void;
+    let c_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let cublas = device.cublas_handle();
+    let compute_type = cublasComputeType_t::Compute32F;
+    // SAFETY: pointers are valid for the durations of the call (lhs,
+    // rhs, and `out` all outlive the launch); shape parameters match
+    // the byte-length validation above. cuBLAS itself launches on the
+    // device's stream; we synchronize after so the result is observable
+    // on return (sync KernelRef per locked design decision).
+    unsafe {
+        baracuda_cublas::gemm_strided_batched_ex(
+            &cublas.0,
+            Op::N,
+            Op::N,
+            n as i32,                       // cuBLAS m (rows of cuBLAS C in col-major)
+            m as i32,                       // cuBLAS n (cols of cuBLAS C in col-major)
+            k as i32,                       // cuBLAS k
+            alpha_ptr,
+            a_ptr,                          // cuBLAS A = our rhs
+            cudaDataType_t::R_32F,
+            lda,
+            rhs_per_batch as i64,           // stride_a
+            b_ptr,                          // cuBLAS B = our lhs
+            cudaDataType_t::R_32F,
+            ldb,
+            lhs_per_batch as i64,           // stride_b
+            beta_ptr,
+            c_ptr,                          // cuBLAS C = our out
+            cudaDataType_t::R_32F,
+            ldc,
+            out_per_batch as i64,           // stride_c
+            batch_count as i32,
+            compute_type,
+            99_i32,                         // CUBLAS_GEMM_DEFAULT
+        )
+    }
+    .map_err(|e| fuel_core_types::Error::Msg(format!("cublas gemm: {e:?}")).bt())?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, need_out))
+}
+
 /// Element-wise multiply-by-scalar via `affine_f32` (`mul, add=0`).
 /// Allocates a fresh output buffer (the affine kernel's signature
 /// has separate `inp` and `out` pointers, and our wrapper takes

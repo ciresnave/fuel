@@ -3207,6 +3207,62 @@ fn mean_reduce_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(MatMul, F32, Cuda)`. First non-PTX, non-
+/// element-wise op through the unified binding table — the underlying
+/// implementation is cuBLAS `gemm_strided_batched_ex`, not a launched
+/// kernel from `fuel-cuda-kernels`. Mirrors the CPU
+/// `matmul_f32_cpu_wrapper` for `OpParams::Matmul` destructuring.
+#[cfg(feature = "cuda")]
+fn matmul_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "matmul_f32_cuda_wrapper: expected 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "matmul_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "matmul_f32_cuda_wrapper: expected OpParams::Matmul, got {:?}",
+                other,
+            ))
+            .bt())
+        }
+    };
+    let lhs_guard = read_storage(&inputs[0])?;
+    let rhs_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let lhs_cuda = cuda_input(&lhs_guard)?;
+    let rhs_cuda = cuda_input(&rhs_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::matmul_f32(
+        lhs_cuda,
+        rhs_cuda,
+        lhs_batch_dims,
+        rhs_batch_dims,
+        m,
+        n,
+        k,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -3242,6 +3298,8 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MaxReduce,          f32_dt, cuda, max_reduce_f32_cuda_wrapper);
     table.register(MinReduce,          f32_dt, cuda, min_reduce_f32_cuda_wrapper);
     table.register(MeanReduce,         f32_dt, cuda, mean_reduce_f32_cuda_wrapper);
+
+    table.register(MatMul,             f32_dt, cuda, matmul_f32_cuda_wrapper);
 }
 
 // =============================================================================
