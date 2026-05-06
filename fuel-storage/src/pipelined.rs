@@ -416,7 +416,12 @@ fn compile_one(
     })?;
 
     let op_params = op_to_op_params(graph, node, layout_cache)?;
-    let compiled = compile_node(op_kind, node.dtype, target_backend, op_params, bindings)?;
+    // Build the per-operand dtype list for the binding-table lookup —
+    // inputs in order, then outputs. Variadic uniform-dtype ops
+    // (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
+    // match how registrations index them.
+    let dtypes = build_lookup_dtypes(graph, node);
+    let compiled = compile_node(op_kind, &dtypes, target_backend, op_params, bindings)?;
     let output_layout = Layout::contiguous(node.shape.clone());
     layout_cache.insert(id, output_layout.clone());
     Ok(WorkItem {
@@ -429,6 +434,30 @@ fn compile_one(
         compiled: Some(compiled),
         output_layout,
     })
+}
+
+/// Build the per-operand dtype list used as the binding-table lookup
+/// key. Inputs in order, then the output. Variadic-uniform ops
+/// (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
+/// match how those wrappers are registered (otherwise an N-way concat
+/// would need N+1 distinct registrations per dtype).
+fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
+    if matches!(node.op, Op::Concat { .. }) {
+        // Concat: all inputs share node.dtype by construction.
+        let in_dt = node
+            .inputs
+            .first()
+            .map(|&id| graph.node(id).dtype)
+            .unwrap_or(node.dtype);
+        return vec![in_dt, node.dtype];
+    }
+    let mut dts: Vec<DType> = node
+        .inputs
+        .iter()
+        .map(|&id| graph.node(id).dtype)
+        .collect();
+    dts.push(node.dtype);
+    dts
 }
 
 /// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.

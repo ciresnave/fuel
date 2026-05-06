@@ -12,11 +12,14 @@
 //! elementwise ops use `OpParams::None`; reductions carry their
 //! reduce dims; conv2d carries kernel/stride/padding; etc.
 //!
-//! [`KernelBindingTable`] (B5) maps `(OpKind, DType, BackendId) ->
-//! KernelRef`. Backends register their dispatch wrappers via the
-//! `dispatch::register_*` functions; op-builder methods consult the
-//! table at DAG construction time using `Graph::target_backend(id)`
-//! as the BackendId key.
+//! [`KernelBindingTable`] (B5) maps
+//! `(OpKind, SmallVec<[DType; N]>, BackendId) -> KernelRef`. The dtype
+//! list carries per-operand types — inputs in order, then outputs —
+//! so mixed-precision ops (e.g. `Cast: src→dst`) and same-dtype ops
+//! (e.g. `Add: [T, T, T]`) share the same key shape. Backends register
+//! their dispatch wrappers via the `dispatch::register_*` functions;
+//! op-builder methods consult the table at DAG construction time using
+//! `Graph::target_backend(id)` as the BackendId key.
 //!
 //! ## Architecture (cycle-avoidance)
 //!
@@ -39,6 +42,14 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
 use fuel_graph::QuantType;
+use smallvec::SmallVec;
+
+/// Inline capacity for the per-operand dtype list in the binding-table
+/// key. 8 covers every op currently in flight without spilling to heap:
+/// PagedAttn (q + 2 caches + block_table + context_lens + alibi + out)
+/// at 7 entries is the worst case in inference; mixed-precision matmul
+/// is ≤ 4. Bumping later is one constant change.
+pub type KernelDTypes = SmallVec<[DType; 8]>;
 
 use crate::Storage;
 
@@ -355,17 +366,25 @@ pub enum OpParams {
 // Phase 7.5 B5 — kernel binding table
 // =============================================================================
 
-/// Maps `(OpKind, DType, BackendId)` triples to dispatch wrapper
-/// functions. Built once at backend registration time (typically a
-/// process-wide `OnceLock` though that's not enforced here for
-/// testability), consulted at execute time via lookup.
+/// Maps `(OpKind, KernelDTypes, BackendId)` triples to dispatch wrapper
+/// functions, where `KernelDTypes` lists per-operand dtypes (inputs in
+/// order, then outputs). Built once at backend registration time
+/// (typically a process-wide `OnceLock` though that's not enforced
+/// here for testability), consulted at execute time via lookup.
+///
+/// Same-dtype ops register `[T, T, ..., T]` for the right operand
+/// count; mixed-precision ops (Cast, future F32×BF16→F32 matmul)
+/// register the exact combo. Variadic ops (Concat) register a
+/// canonical short shape `[T, T]` (one input dtype + output dtype);
+/// the lookup site for those ops collapses its dtypes vector to the
+/// same shorthand.
 ///
 /// Backends register their wrappers via the `dispatch::register_*`
 /// functions in this crate (e.g.
 /// [`crate::dispatch::register_cpu_kernels`]).
 #[derive(Default)]
 pub struct KernelBindingTable {
-    bindings: HashMap<(OpKind, DType, BackendId), KernelRef>,
+    bindings: HashMap<(OpKind, KernelDTypes, BackendId), KernelRef>,
 }
 
 impl KernelBindingTable {
@@ -373,17 +392,32 @@ impl KernelBindingTable {
         Self { bindings: HashMap::new() }
     }
 
-    /// Register a dispatch wrapper for `(op, dtype, backend)`.
+    /// Register a dispatch wrapper for `(op, dtypes, backend)`.
     /// Idempotent: re-registering with the same key overwrites.
-    pub fn register(&mut self, op: OpKind, dtype: DType, backend: BackendId, kernel: KernelRef) {
-        self.bindings.insert((op, dtype, backend), kernel);
+    /// `dtypes` is the per-operand dtype list — inputs in order, then
+    /// outputs.
+    pub fn register(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+    ) {
+        self.bindings
+            .insert((op, SmallVec::from_slice(dtypes), backend), kernel);
     }
 
-    /// Look up the wrapper for `(op, dtype, backend)`. Returns
+    /// Look up the wrapper for `(op, dtypes, backend)`. Returns
     /// [`Error::NoBackendForOp`] if none registered (production-
     /// correct: no panic). The error includes diagnostic data.
-    pub fn lookup(&self, op: OpKind, dtype: DType, backend: BackendId) -> Result<KernelRef> {
-        self.bindings.get(&(op, dtype, backend)).copied().ok_or_else(|| {
+    pub fn lookup(
+        &self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+    ) -> Result<KernelRef> {
+        let key = (op, SmallVec::from_slice(dtypes), backend);
+        self.bindings.get(&key).copied().ok_or_else(|| {
             let available_backends: Vec<BackendId> = self
                 .bindings
                 .keys()
@@ -391,14 +425,14 @@ impl KernelBindingTable {
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .collect();
-            let supported_combinations: Vec<(BackendId, OpKind, DType)> = self
+            let supported_combinations: Vec<(BackendId, OpKind, Vec<DType>)> = self
                 .bindings
                 .keys()
-                .map(|(o, d, b)| (*b, *o, *d))
+                .map(|(o, d, b)| (*b, *o, d.to_vec()))
                 .collect();
             Error::NoBackendForOp {
                 op,
-                dtype,
+                dtypes: dtypes.to_vec(),
                 available_backends,
                 supported_combinations,
             }

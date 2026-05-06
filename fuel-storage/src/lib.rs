@@ -37,7 +37,7 @@ pub mod kernel;
 pub mod pipelined;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
-pub use kernel::{KernelBindingTable, KernelRef, OpParams};
+pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
 
 /// Vulkan storage variant — re-exported from fuel-graph-vulkan when

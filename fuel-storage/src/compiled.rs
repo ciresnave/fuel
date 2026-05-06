@@ -33,7 +33,7 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Result};
 
-use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
+use crate::kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 use crate::Storage;
 
 /// A graph node plus its resolved kernel function pointer and
@@ -43,9 +43,12 @@ use crate::Storage;
 pub struct CompiledNode {
     /// The op family this node implements.
     pub op: OpKind,
-    /// The node's dtype (output dtype; per-input dtypes match the
-    /// inputs' Storage::dtype).
-    pub dtype: DType,
+    /// Per-operand dtypes used as the binding-table lookup key.
+    /// Inputs in order, then outputs. For uniform-precision ops the
+    /// list is `[T, T, ..., T]`; for mixed-precision ops it carries
+    /// the distinguishing combo. The output dtype is always the last
+    /// entry.
+    pub dtypes: KernelDTypes,
     /// Which backend's kernel was selected.
     pub backend: BackendId,
     /// Resolved kernel function pointer. Looked up once at compile
@@ -54,6 +57,18 @@ pub struct CompiledNode {
     /// Op-specific parameters. Most ops use `OpParams::None`;
     /// reductions / conv / slice carry their config here.
     pub op_params: OpParams,
+}
+
+impl CompiledNode {
+    /// The output dtype — last entry in `dtypes`. Convenience accessor
+    /// for callers that only need the output type (e.g. shape inference,
+    /// allocation).
+    pub fn output_dtype(&self) -> DType {
+        *self
+            .dtypes
+            .last()
+            .expect("CompiledNode::dtypes must have at least one entry (the output)")
+    }
 }
 
 /// Resolve a node's kernel from the binding table and return a
@@ -66,15 +81,15 @@ pub struct CompiledNode {
 /// added work happens here. The interface stays the same.
 pub fn compile_node(
     op: OpKind,
-    dtype: DType,
+    dtypes: &[DType],
     backend: BackendId,
     op_params: OpParams,
     bindings: &KernelBindingTable,
 ) -> Result<CompiledNode> {
-    let kernel = bindings.lookup(op, dtype, backend)?;
+    let kernel = bindings.lookup(op, dtypes, backend)?;
     Ok(CompiledNode {
         op,
-        dtype,
+        dtypes: KernelDTypes::from_slice(dtypes),
         backend,
         kernel,
         op_params,
@@ -110,7 +125,7 @@ mod tests {
 
         let compiled = compile_node(
             OpKind::AddElementwise,
-            DType::F32,
+            &[DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
             OpParams::None,
             &bindings,
@@ -118,7 +133,7 @@ mod tests {
         .expect("compile");
 
         assert_eq!(compiled.op, OpKind::AddElementwise);
-        assert_eq!(compiled.dtype, DType::F32);
+        assert_eq!(compiled.output_dtype(), DType::F32);
         assert_eq!(compiled.backend, BackendId::Cpu);
 
         let lhs = crate::from_slice_cpu(&[5.0_f32, 6.0, 7.0]);
@@ -142,7 +157,7 @@ mod tests {
         let bindings = KernelBindingTable::new();  // empty
         let result = compile_node(
             OpKind::AddElementwise,
-            DType::F32,
+            &[DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
             OpParams::None,
             &bindings,
