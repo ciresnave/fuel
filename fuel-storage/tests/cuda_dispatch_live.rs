@@ -1020,6 +1020,120 @@ fn mean_reduce_f32_through_binding_table() {
     assert_close(host_f32, &[2.0_f32, 5.0], 1e-5);
 }
 
+/// End-to-end: rank-2 MatMul F32 through the binding table. First
+/// non-PTX, non-element-wise op — the underlying call is cuBLAS
+/// `gemm_strided_batched_ex` with `batch_count = 1`. lhs `[2, 3]` of
+/// `[1..6]` @ rhs `[3, 2]` of `[1..6]` → `[2, 2]` = `[[22, 28], [49, 64]]`.
+/// `assert_close` with `eps = 1e-4` because cuBLAS isn't bit-exact
+/// with naive CPU matmul.
+#[test]
+#[ignore]
+fn matmul_f32_rank2_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // lhs [2,3] = [[1,2,3],[4,5,6]], rhs [3,2] = [[1,2],[3,4],[5,6]].
+    let lhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let rhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MatMul, DType::F32, BackendId::Cuda)
+        .expect("lookup (MatMul, F32, Cuda)");
+
+    let params = OpParams::Matmul {
+        lhs_batch_dims: vec![],
+        rhs_batch_dims: vec![],
+        m: 2,
+        n: 2,
+        k: 3,
+    };
+
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    // Expected:
+    //   [1*1+2*3+3*5, 1*2+2*4+3*6,
+    //    4*1+5*3+6*5, 4*2+5*4+6*6]
+    // = [22, 28, 49, 64].
+    assert_close(host_f32, &[22.0_f32, 28.0, 49.0, 64.0], 1e-4);
+}
+
+/// End-to-end: equal-batch MatMul F32 through the binding table.
+/// Exercises the cuBLAS `batch_count > 1` code path. lhs `[2, 2, 3]`
+/// (two distinct 2×3 matrices) @ rhs `[2, 3, 2]` (two distinct 3×2
+/// matrices) → `[2, 2, 2]`. Sets up batch 0 to use the same
+/// matrices as the rank-2 test (expected `[22, 28, 49, 64]`) and
+/// batch 1 to use all-ones (expected `[3, 3, 3, 3]`).
+#[test]
+#[ignore]
+fn matmul_f32_batched_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // batch 0: rank-2 inputs from above; batch 1: all ones.
+    let lhs_data = [
+        1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    ];
+    let rhs_data = [
+        1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    ];
+    let lhs = build_storage_cuda(&dev, &lhs_data);
+    let rhs = build_storage_cuda(&dev, &rhs_data);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 2 * 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MatMul, DType::F32, BackendId::Cuda)
+        .expect("lookup (MatMul, F32, Cuda)");
+
+    let params = OpParams::Matmul {
+        lhs_batch_dims: vec![2],
+        rhs_batch_dims: vec![2],
+        m: 2,
+        n: 2,
+        k: 3,
+    };
+
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_close(
+        host_f32,
+        &[22.0_f32, 28.0, 49.0, 64.0, 3.0, 3.0, 3.0, 3.0],
+        1e-4,
+    );
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.
