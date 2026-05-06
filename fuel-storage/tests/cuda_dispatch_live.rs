@@ -78,7 +78,7 @@ fn add_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::AddElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (AddElementwise, F32, Cuda)");
 
     kernel(
@@ -120,7 +120,7 @@ fn sub_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SubElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SubElementwise, F32, Cuda)");
 
     kernel(
@@ -159,7 +159,7 @@ fn mul_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MulElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MulElementwise, F32, Cuda)");
 
     kernel(
@@ -198,7 +198,7 @@ fn div_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::DivElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::DivElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (DivElementwise, F32, Cuda)");
 
     kernel(
@@ -237,7 +237,7 @@ fn maximum_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MaximumElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MaximumElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MaximumElementwise, F32, Cuda)");
 
     kernel(
@@ -276,7 +276,7 @@ fn minimum_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MinimumElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MinimumElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MinimumElementwise, F32, Cuda)");
 
     kernel(
@@ -315,7 +315,7 @@ fn relu_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ReluElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::ReluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (ReluElementwise, F32, Cuda)");
 
     kernel(
@@ -352,7 +352,7 @@ fn neg_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::NegElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::NegElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (NegElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -385,7 +385,7 @@ fn sqr_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SqrElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SqrElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SqrElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -418,7 +418,7 @@ fn sqrt_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SqrtElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SqrtElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SqrtElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -451,7 +451,7 @@ fn recip_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::RecipElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::RecipElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (RecipElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -484,7 +484,7 @@ fn abs_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::AbsElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::AbsElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (AbsElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -521,7 +521,7 @@ fn tanh_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::TanhElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::TanhElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (TanhElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -557,7 +557,7 @@ fn exp_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ExpElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::ExpElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (ExpElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -593,7 +593,7 @@ fn log_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::LogElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::LogElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (LogElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -635,7 +635,7 @@ fn sin_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SinElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SinElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SinElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -677,7 +677,7 @@ fn cos_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::CosElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::CosElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (CosElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -713,7 +713,7 @@ fn sigmoid_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SigmoidElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SigmoidElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SigmoidElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -749,7 +749,7 @@ fn silu_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SiluElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SiluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SiluElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -787,7 +787,7 @@ fn gelu_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::GeluElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::GeluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (GeluElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -830,7 +830,7 @@ fn step_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::StepElementwise, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::StepElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (StepElementwise, F32, Cuda)");
 
     kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
@@ -869,7 +869,7 @@ fn sum_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SumReduce, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::SumReduce, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SumReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -911,7 +911,7 @@ fn max_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MaxReduce, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MaxReduce, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MaxReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -953,7 +953,7 @@ fn min_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MinReduce, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MinReduce, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MinReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -999,7 +999,7 @@ fn mean_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MeanReduce, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MeanReduce, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MeanReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -1046,7 +1046,7 @@ fn matmul_f32_rank2_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MatMul, F32, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1107,7 +1107,7 @@ fn matmul_f32_batched_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MatMul, F32, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1163,7 +1163,7 @@ fn matmul_f32_gqa_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (MatMul, F32, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1229,7 +1229,7 @@ fn affine_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::Affine, DType::F32, BackendId::Cuda)
+        .lookup(OpKind::Affine, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (Affine, F32, Cuda)");
 
     let params = OpParams::Affine { mul: 2.0, add: 10.0 };
@@ -1252,6 +1252,10 @@ fn affine_f32_through_binding_table() {
 #[test]
 fn lookup_without_registration_errors_clean() {
     let table = KernelBindingTable::new();
-    let r = table.lookup(OpKind::AddElementwise, DType::F32, BackendId::Cuda);
+    let r = table.lookup(
+        OpKind::AddElementwise,
+        &[DType::F32, DType::F32, DType::F32],
+        BackendId::Cuda,
+    );
     assert!(r.is_err(), "expected NoBackendForOp error");
 }

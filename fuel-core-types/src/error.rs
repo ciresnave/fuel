@@ -162,22 +162,28 @@ pub enum Error {
     BackwardNotSupported { op: &'static str },
 
     // === Phase 7.5 storage-unification dispatch errors ===
-    /// No registered backend supports `(op, dtype)` for the given
+    /// No registered backend supports `(op, dtypes)` for the given
     /// input residency. Fires at DAG construction (planning time),
     /// not at execution.
+    ///
+    /// `dtypes` is the per-operand dtype list (inputs in order, then
+    /// outputs) used as the binding-table lookup key. For uniform-
+    /// precision ops the list contains a single repeated dtype; for
+    /// mixed-precision ops (e.g. Cast: src→dst) the list distinguishes
+    /// the operands.
     #[error(
-        "no backend supports {op} on {dtype:?}; available backends: \
-         {available_backends:?}; supported (op, dtype) by backend: \
+        "no backend supports {op} on {dtypes:?}; available backends: \
+         {available_backends:?}; supported (op, dtypes) by backend: \
          {supported_combinations:?}"
     )]
     NoBackendForOp {
         op: crate::dispatch::OpKind,
-        dtype: DType,
+        dtypes: Vec<DType>,
         available_backends: Vec<crate::probe::BackendId>,
         supported_combinations: Vec<(
             crate::probe::BackendId,
             crate::dispatch::OpKind,
-            DType,
+            Vec<DType>,
         )>,
     },
 

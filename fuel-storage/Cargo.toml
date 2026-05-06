@@ -16,6 +16,7 @@ fuel-graph = { workspace = true }
 fuel-graph-vulkan = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]

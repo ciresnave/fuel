@@ -28,7 +28,7 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Result};
 
-use crate::kernel::{KernelBindingTable, OpParams};
+use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
 use crate::{BackendStorage, Storage};
 
 /// Collection of backend capabilities, queried during DAG
@@ -80,9 +80,13 @@ impl CapabilityRegistry {
                 return Ok(caps);
             }
         }
+        // Capability-level lookups still operate on a single output
+        // dtype (binding-table multi-dtype keys are an execution-time
+        // concern). Wrap the single dtype in a 1-vec for the error so
+        // both error sites share one variant shape.
         Err(Error::NoBackendForOp {
             op,
-            dtype,
+            dtypes: vec![dtype],
             available_backends: self.backends.iter().map(|c| c.backend_id).collect(),
             supported_combinations: self
                 .backends
@@ -90,7 +94,7 @@ impl CapabilityRegistry {
                 .flat_map(|c| {
                     c.op_dtype_support
                         .iter()
-                        .map(|&(o, d)| (c.backend_id, o, d))
+                        .map(|&(o, d)| (c.backend_id, o, vec![d]))
                 })
                 .collect(),
         }
@@ -2116,221 +2120,292 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cpu = BackendId::Cpu;
     let f32_dt = DType::F32;
-
-    table.register(AddElementwise,   f32_dt, cpu, add_elementwise_f32_cpu_wrapper);
-    table.register(SubElementwise,   f32_dt, cpu, sub_elementwise_f32_cpu_wrapper);
-    table.register(MulElementwise,   f32_dt, cpu, mul_elementwise_f32_cpu_wrapper);
-    table.register(DivElementwise,   f32_dt, cpu, div_elementwise_f32_cpu_wrapper);
-
-    table.register(ReluElementwise,    f32_dt, cpu, relu_elementwise_f32_cpu_wrapper);
-    table.register(NegElementwise,     f32_dt, cpu, neg_elementwise_f32_cpu_wrapper);
-    table.register(SqrElementwise,     f32_dt, cpu, sqr_elementwise_f32_cpu_wrapper);
-    table.register(SqrtElementwise,    f32_dt, cpu, sqrt_elementwise_f32_cpu_wrapper);
-    table.register(RecipElementwise,   f32_dt, cpu, recip_elementwise_f32_cpu_wrapper);
-    table.register(AbsElementwise,     f32_dt, cpu, abs_elementwise_f32_cpu_wrapper);
-    table.register(TanhElementwise,    f32_dt, cpu, tanh_elementwise_f32_cpu_wrapper);
-    table.register(ExpElementwise,     f32_dt, cpu, exp_elementwise_f32_cpu_wrapper);
-    table.register(LogElementwise,     f32_dt, cpu, log_elementwise_f32_cpu_wrapper);
-    table.register(SinElementwise,     f32_dt, cpu, sin_elementwise_f32_cpu_wrapper);
-    table.register(CosElementwise,     f32_dt, cpu, cos_elementwise_f32_cpu_wrapper);
-    table.register(SigmoidElementwise, f32_dt, cpu, sigmoid_elementwise_f32_cpu_wrapper);
-    table.register(SiluElementwise,    f32_dt, cpu, silu_elementwise_f32_cpu_wrapper);
-    table.register(GeluElementwise,    f32_dt, cpu, gelu_elementwise_f32_cpu_wrapper);
-    table.register(StepElementwise,    f32_dt, cpu, step_elementwise_f32_cpu_wrapper);
-
-    // f64/bf16/f16 dtype shorthands — used across all the
-    // multi-dtype registration blocks below.
     let f64_dt = DType::F64;
     let bf16_dt = DType::BF16;
     let f16_dt  = DType::F16;
-    table.register(AddElementwise,     f64_dt, cpu, add_elementwise_f64_cpu_wrapper);
-    table.register(SubElementwise,     f64_dt, cpu, sub_elementwise_f64_cpu_wrapper);
-    table.register(MulElementwise,     f64_dt, cpu, mul_elementwise_f64_cpu_wrapper);
-    table.register(DivElementwise,     f64_dt, cpu, div_elementwise_f64_cpu_wrapper);
-    table.register(ReluElementwise,    f64_dt, cpu, relu_elementwise_f64_cpu_wrapper);
-    table.register(NegElementwise,     f64_dt, cpu, neg_elementwise_f64_cpu_wrapper);
-    table.register(SqrElementwise,     f64_dt, cpu, sqr_elementwise_f64_cpu_wrapper);
-    table.register(SqrtElementwise,    f64_dt, cpu, sqrt_elementwise_f64_cpu_wrapper);
-    table.register(RecipElementwise,   f64_dt, cpu, recip_elementwise_f64_cpu_wrapper);
-    table.register(AbsElementwise,     f64_dt, cpu, abs_elementwise_f64_cpu_wrapper);
-    table.register(TanhElementwise,    f64_dt, cpu, tanh_elementwise_f64_cpu_wrapper);
-    table.register(ExpElementwise,     f64_dt, cpu, exp_elementwise_f64_cpu_wrapper);
-    table.register(LogElementwise,     f64_dt, cpu, log_elementwise_f64_cpu_wrapper);
-    table.register(SinElementwise,     f64_dt, cpu, sin_elementwise_f64_cpu_wrapper);
-    table.register(CosElementwise,     f64_dt, cpu, cos_elementwise_f64_cpu_wrapper);
-    table.register(SigmoidElementwise, f64_dt, cpu, sigmoid_elementwise_f64_cpu_wrapper);
-    table.register(SiluElementwise,    f64_dt, cpu, silu_elementwise_f64_cpu_wrapper);
-    table.register(GeluElementwise,    f64_dt, cpu, gelu_elementwise_f64_cpu_wrapper);
-    table.register(StepElementwise,    f64_dt, cpu, step_elementwise_f64_cpu_wrapper);
+    let u32_dt = DType::U32;
 
-    table.register(SumReduce,          f32_dt, cpu, sum_reduce_f32_cpu_wrapper);
-    table.register(MaxReduce,          f32_dt, cpu, max_reduce_f32_cpu_wrapper);
-    table.register(MinReduce,          f32_dt, cpu, min_reduce_f32_cpu_wrapper);
-    table.register(MeanReduce,         f32_dt, cpu, mean_reduce_f32_cpu_wrapper);
-    table.register(SumReduce,          f64_dt, cpu, sum_reduce_f64_cpu_wrapper);
-    table.register(MaxReduce,          f64_dt, cpu, max_reduce_f64_cpu_wrapper);
-    table.register(MinReduce,          f64_dt, cpu, min_reduce_f64_cpu_wrapper);
-    table.register(MeanReduce,         f64_dt, cpu, mean_reduce_f64_cpu_wrapper);
+    // Per-operand dtype-list shape helpers. The list captures all
+    // operands the kernel sees — inputs in order, then outputs.
+    // Variadic Concat uses the `unary` shape as a canonical
+    // shorthand for "uniform-dtype across N inputs + output."
+    let unary  = |t: DType| [t, t];                             // (in, out)
+    let binary = |t: DType| [t, t, t];                          // (lhs, rhs, out)
+    let rope_dts = |t: DType| [t, t, t, t];                     // (x, cos, sin, out)
+    let conv2d_no_bias   = |t: DType| [t, t, t];                // (x, w, out)
+    let conv2d_with_bias = |t: DType| [t, t, t, t];             // (x, w, bias, out)
+    let fused_linear     = |t: DType| [t, t, t, t];             // (lhs, rhs, bias, out)
+    let flash_attn_no_alibi   = |t: DType| [t, t, t, t];        // (q, k, v, out)
+    let flash_attn_with_alibi = |t: DType| [t, t, t, t, t];     // (q, k, v, alibi, out)
+    let paged_attn_no_alibi   = |t: DType| [t, t, t, u32_dt, u32_dt, t];      // q,kc,vc,bt,cl,out
+    let paged_attn_with_alibi = |t: DType| [t, t, t, u32_dt, u32_dt, t, t];   // +alibi
+    let index_select  = |t: DType| [t, u32_dt, t];              // (data, indices, out)
+    let gather_dts    = |t: DType| [t, u32_dt, t];              // (data, indices, out)
+    let index_add_dts = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
+    let scatter_add   = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
 
-    table.register(MatMul,             f32_dt, cpu, matmul_f32_cpu_wrapper);
-    table.register(MatMul,             f64_dt, cpu, matmul_f64_cpu_wrapper);
-    table.register(MatMul,             bf16_dt, cpu, matmul_bf16_cpu_wrapper);
-    table.register(MatMul,             f16_dt, cpu, matmul_f16_cpu_wrapper);
+    // Elementwise binary / unary — F32.
+    table.register(AddElementwise,   &binary(f32_dt), cpu, add_elementwise_f32_cpu_wrapper);
+    table.register(SubElementwise,   &binary(f32_dt), cpu, sub_elementwise_f32_cpu_wrapper);
+    table.register(MulElementwise,   &binary(f32_dt), cpu, mul_elementwise_f32_cpu_wrapper);
+    table.register(DivElementwise,   &binary(f32_dt), cpu, div_elementwise_f32_cpu_wrapper);
+
+    table.register(ReluElementwise,    &unary(f32_dt), cpu, relu_elementwise_f32_cpu_wrapper);
+    table.register(NegElementwise,     &unary(f32_dt), cpu, neg_elementwise_f32_cpu_wrapper);
+    table.register(SqrElementwise,     &unary(f32_dt), cpu, sqr_elementwise_f32_cpu_wrapper);
+    table.register(SqrtElementwise,    &unary(f32_dt), cpu, sqrt_elementwise_f32_cpu_wrapper);
+    table.register(RecipElementwise,   &unary(f32_dt), cpu, recip_elementwise_f32_cpu_wrapper);
+    table.register(AbsElementwise,     &unary(f32_dt), cpu, abs_elementwise_f32_cpu_wrapper);
+    table.register(TanhElementwise,    &unary(f32_dt), cpu, tanh_elementwise_f32_cpu_wrapper);
+    table.register(ExpElementwise,     &unary(f32_dt), cpu, exp_elementwise_f32_cpu_wrapper);
+    table.register(LogElementwise,     &unary(f32_dt), cpu, log_elementwise_f32_cpu_wrapper);
+    table.register(SinElementwise,     &unary(f32_dt), cpu, sin_elementwise_f32_cpu_wrapper);
+    table.register(CosElementwise,     &unary(f32_dt), cpu, cos_elementwise_f32_cpu_wrapper);
+    table.register(SigmoidElementwise, &unary(f32_dt), cpu, sigmoid_elementwise_f32_cpu_wrapper);
+    table.register(SiluElementwise,    &unary(f32_dt), cpu, silu_elementwise_f32_cpu_wrapper);
+    table.register(GeluElementwise,    &unary(f32_dt), cpu, gelu_elementwise_f32_cpu_wrapper);
+    table.register(StepElementwise,    &unary(f32_dt), cpu, step_elementwise_f32_cpu_wrapper);
+
+    // Elementwise binary / unary — F64.
+    table.register(AddElementwise,     &binary(f64_dt), cpu, add_elementwise_f64_cpu_wrapper);
+    table.register(SubElementwise,     &binary(f64_dt), cpu, sub_elementwise_f64_cpu_wrapper);
+    table.register(MulElementwise,     &binary(f64_dt), cpu, mul_elementwise_f64_cpu_wrapper);
+    table.register(DivElementwise,     &binary(f64_dt), cpu, div_elementwise_f64_cpu_wrapper);
+    table.register(ReluElementwise,    &unary(f64_dt), cpu, relu_elementwise_f64_cpu_wrapper);
+    table.register(NegElementwise,     &unary(f64_dt), cpu, neg_elementwise_f64_cpu_wrapper);
+    table.register(SqrElementwise,     &unary(f64_dt), cpu, sqr_elementwise_f64_cpu_wrapper);
+    table.register(SqrtElementwise,    &unary(f64_dt), cpu, sqrt_elementwise_f64_cpu_wrapper);
+    table.register(RecipElementwise,   &unary(f64_dt), cpu, recip_elementwise_f64_cpu_wrapper);
+    table.register(AbsElementwise,     &unary(f64_dt), cpu, abs_elementwise_f64_cpu_wrapper);
+    table.register(TanhElementwise,    &unary(f64_dt), cpu, tanh_elementwise_f64_cpu_wrapper);
+    table.register(ExpElementwise,     &unary(f64_dt), cpu, exp_elementwise_f64_cpu_wrapper);
+    table.register(LogElementwise,     &unary(f64_dt), cpu, log_elementwise_f64_cpu_wrapper);
+    table.register(SinElementwise,     &unary(f64_dt), cpu, sin_elementwise_f64_cpu_wrapper);
+    table.register(CosElementwise,     &unary(f64_dt), cpu, cos_elementwise_f64_cpu_wrapper);
+    table.register(SigmoidElementwise, &unary(f64_dt), cpu, sigmoid_elementwise_f64_cpu_wrapper);
+    table.register(SiluElementwise,    &unary(f64_dt), cpu, silu_elementwise_f64_cpu_wrapper);
+    table.register(GeluElementwise,    &unary(f64_dt), cpu, gelu_elementwise_f64_cpu_wrapper);
+    table.register(StepElementwise,    &unary(f64_dt), cpu, step_elementwise_f64_cpu_wrapper);
+
+    // Reductions.
+    table.register(SumReduce,          &unary(f32_dt), cpu, sum_reduce_f32_cpu_wrapper);
+    table.register(MaxReduce,          &unary(f32_dt), cpu, max_reduce_f32_cpu_wrapper);
+    table.register(MinReduce,          &unary(f32_dt), cpu, min_reduce_f32_cpu_wrapper);
+    table.register(MeanReduce,         &unary(f32_dt), cpu, mean_reduce_f32_cpu_wrapper);
+    table.register(SumReduce,          &unary(f64_dt), cpu, sum_reduce_f64_cpu_wrapper);
+    table.register(MaxReduce,          &unary(f64_dt), cpu, max_reduce_f64_cpu_wrapper);
+    table.register(MinReduce,          &unary(f64_dt), cpu, min_reduce_f64_cpu_wrapper);
+    table.register(MeanReduce,         &unary(f64_dt), cpu, mean_reduce_f64_cpu_wrapper);
+
+    table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
+    table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
+    table.register(MatMul,             &binary(bf16_dt), cpu, matmul_bf16_cpu_wrapper);
+    table.register(MatMul,             &binary(f16_dt),  cpu, matmul_f16_cpu_wrapper);
 
     // bf16 + f16 reductions — accumulate in f32 for stability.
-    table.register(SumReduce,          bf16_dt, cpu, sum_reduce_bf16_cpu_wrapper);
-    table.register(MaxReduce,          bf16_dt, cpu, max_reduce_bf16_cpu_wrapper);
-    table.register(MinReduce,          bf16_dt, cpu, min_reduce_bf16_cpu_wrapper);
-    table.register(MeanReduce,         bf16_dt, cpu, mean_reduce_bf16_cpu_wrapper);
-    table.register(SumReduce,          f16_dt, cpu, sum_reduce_f16_cpu_wrapper);
-    table.register(MaxReduce,          f16_dt, cpu, max_reduce_f16_cpu_wrapper);
-    table.register(MinReduce,          f16_dt, cpu, min_reduce_f16_cpu_wrapper);
-    table.register(MeanReduce,         f16_dt, cpu, mean_reduce_f16_cpu_wrapper);
+    table.register(SumReduce,          &unary(bf16_dt), cpu, sum_reduce_bf16_cpu_wrapper);
+    table.register(MaxReduce,          &unary(bf16_dt), cpu, max_reduce_bf16_cpu_wrapper);
+    table.register(MinReduce,          &unary(bf16_dt), cpu, min_reduce_bf16_cpu_wrapper);
+    table.register(MeanReduce,         &unary(bf16_dt), cpu, mean_reduce_bf16_cpu_wrapper);
+    table.register(SumReduce,          &unary(f16_dt),  cpu, sum_reduce_f16_cpu_wrapper);
+    table.register(MaxReduce,          &unary(f16_dt),  cpu, max_reduce_f16_cpu_wrapper);
+    table.register(MinReduce,          &unary(f16_dt),  cpu, min_reduce_f16_cpu_wrapper);
+    table.register(MeanReduce,         &unary(f16_dt),  cpu, mean_reduce_f16_cpu_wrapper);
 
-    // Cast keys on the *target* dtype; each wrapper handles its
-    // supported source dtypes internally. Add new (target, source)
-    // pairs by extending the wrapper's match arms.
-    table.register(Cast, DType::F32,  cpu, cast_to_f32_cpu_wrapper);
-    table.register(Cast, DType::F64,  cpu, cast_to_f64_cpu_wrapper);
-    table.register(Cast, DType::BF16, cpu, cast_to_bf16_cpu_wrapper);
-    table.register(Cast, DType::F16,  cpu, cast_to_f16_cpu_wrapper);
+    // Cast — CPU wrappers are still keyed on the *target* dtype and
+    // dispatch internally on the source. Register `[T, T]` for each
+    // target dtype to preserve current behavior; the binding table's
+    // multi-dtype key shape lets callers pass `[src, dst]` and still
+    // hit the right wrapper because src is matched inside.
+    //
+    // TODO(phase 7.5 cast cleanup): split each cast wrapper into
+    // (src, dst) pairs once enough source dtypes are exercised; the
+    // binding key already supports it.
+    table.register(Cast, &unary(DType::F32),  cpu, cast_to_f32_cpu_wrapper);
+    table.register(Cast, &unary(DType::F64),  cpu, cast_to_f64_cpu_wrapper);
+    table.register(Cast, &unary(DType::BF16), cpu, cast_to_bf16_cpu_wrapper);
+    table.register(Cast, &unary(DType::F16),  cpu, cast_to_f16_cpu_wrapper);
 
-    table.register(Conv2D, f32_dt,  cpu, conv2d_f32_cpu_wrapper);
-    table.register(Conv2D, f64_dt,  cpu, conv2d_f64_cpu_wrapper);
-    table.register(Conv2D, bf16_dt, cpu, conv2d_bf16_cpu_wrapper);
-    table.register(Conv2D, f16_dt,  cpu, conv2d_f16_cpu_wrapper);
+    // Conv2D — register both no-bias (3 operands) and with-bias
+    // (4 operands) shapes per dtype; the wrapper handles both.
+    for (dt, w) in [
+        (f32_dt,  conv2d_f32_cpu_wrapper  as KernelRef),
+        (f64_dt,  conv2d_f64_cpu_wrapper),
+        (bf16_dt, conv2d_bf16_cpu_wrapper),
+        (f16_dt,  conv2d_f16_cpu_wrapper),
+    ] {
+        table.register(Conv2D, &conv2d_no_bias(dt),   cpu, w);
+        table.register(Conv2D, &conv2d_with_bias(dt), cpu, w);
+    }
+    for (dt, w) in [
+        (f32_dt,  conv_transpose2d_f32_cpu_wrapper as KernelRef),
+        (f64_dt,  conv_transpose2d_f64_cpu_wrapper),
+        (bf16_dt, conv_transpose2d_bf16_cpu_wrapper),
+        (f16_dt,  conv_transpose2d_f16_cpu_wrapper),
+    ] {
+        table.register(ConvTranspose2D, &conv2d_no_bias(dt),   cpu, w);
+        table.register(ConvTranspose2D, &conv2d_with_bias(dt), cpu, w);
+    }
 
-    table.register(ConvTranspose2D, f32_dt,  cpu, conv_transpose2d_f32_cpu_wrapper);
-    table.register(ConvTranspose2D, f64_dt,  cpu, conv_transpose2d_f64_cpu_wrapper);
-    table.register(ConvTranspose2D, bf16_dt, cpu, conv_transpose2d_bf16_cpu_wrapper);
-    table.register(ConvTranspose2D, f16_dt,  cpu, conv_transpose2d_f16_cpu_wrapper);
+    table.register(ReduceSumTo, &unary(f32_dt),  cpu, reduce_sum_to_f32_cpu_wrapper);
+    table.register(ReduceSumTo, &unary(f64_dt),  cpu, reduce_sum_to_f64_cpu_wrapper);
+    table.register(ReduceSumTo, &unary(bf16_dt), cpu, reduce_sum_to_bf16_cpu_wrapper);
+    table.register(ReduceSumTo, &unary(f16_dt),  cpu, reduce_sum_to_f16_cpu_wrapper);
 
-    table.register(ReduceSumTo, f32_dt,  cpu, reduce_sum_to_f32_cpu_wrapper);
-    table.register(ReduceSumTo, f64_dt,  cpu, reduce_sum_to_f64_cpu_wrapper);
-    table.register(ReduceSumTo, bf16_dt, cpu, reduce_sum_to_bf16_cpu_wrapper);
-    table.register(ReduceSumTo, f16_dt,  cpu, reduce_sum_to_f16_cpu_wrapper);
+    // FusedLinear: 3 inputs (lhs, rhs, bias) → out.
+    table.register(FusedLinear, &fused_linear(f32_dt),  cpu, fused_linear_f32_cpu_wrapper);
+    table.register(FusedLinear, &fused_linear(f64_dt),  cpu, fused_linear_f64_cpu_wrapper);
+    table.register(FusedLinear, &fused_linear(bf16_dt), cpu, fused_linear_bf16_cpu_wrapper);
+    table.register(FusedLinear, &fused_linear(f16_dt),  cpu, fused_linear_f16_cpu_wrapper);
 
-    table.register(FusedLinear, f32_dt,  cpu, fused_linear_f32_cpu_wrapper);
-    table.register(FusedLinear, f64_dt,  cpu, fused_linear_f64_cpu_wrapper);
-    table.register(FusedLinear, bf16_dt, cpu, fused_linear_bf16_cpu_wrapper);
-    table.register(FusedLinear, f16_dt,  cpu, fused_linear_f16_cpu_wrapper);
+    // FlashAttn — register both 3-input (q,k,v) and 4-input
+    // (q,k,v,alibi) shapes per dtype.
+    for (dt, w) in [
+        (f32_dt,  flash_attn_f32_cpu_wrapper  as KernelRef),
+        (f64_dt,  flash_attn_f64_cpu_wrapper),
+        (bf16_dt, flash_attn_bf16_cpu_wrapper),
+        (f16_dt,  flash_attn_f16_cpu_wrapper),
+    ] {
+        table.register(FlashAttn, &flash_attn_no_alibi(dt),   cpu, w);
+        table.register(FlashAttn, &flash_attn_with_alibi(dt), cpu, w);
+    }
 
-    table.register(FlashAttn, f32_dt,  cpu, flash_attn_f32_cpu_wrapper);
-    table.register(FlashAttn, f64_dt,  cpu, flash_attn_f64_cpu_wrapper);
-    table.register(FlashAttn, bf16_dt, cpu, flash_attn_bf16_cpu_wrapper);
-    table.register(FlashAttn, f16_dt,  cpu, flash_attn_f16_cpu_wrapper);
+    // PagedAttn — block_table + ctx_lens are always U32; alibi is
+    // optional.
+    for (dt, w) in [
+        (f32_dt,  paged_attn_f32_cpu_wrapper  as KernelRef),
+        (f64_dt,  paged_attn_f64_cpu_wrapper),
+        (bf16_dt, paged_attn_bf16_cpu_wrapper),
+        (f16_dt,  paged_attn_f16_cpu_wrapper),
+    ] {
+        table.register(PagedAttn, &paged_attn_no_alibi(dt),   cpu, w);
+        table.register(PagedAttn, &paged_attn_with_alibi(dt), cpu, w);
+    }
 
-    table.register(PagedAttn, f32_dt,  cpu, paged_attn_f32_cpu_wrapper);
-    table.register(PagedAttn, f64_dt,  cpu, paged_attn_f64_cpu_wrapper);
-    table.register(PagedAttn, bf16_dt, cpu, paged_attn_bf16_cpu_wrapper);
-    table.register(PagedAttn, f16_dt,  cpu, paged_attn_f16_cpu_wrapper);
-
-    table.register(Affine,             f32_dt, cpu, affine_f32_cpu_wrapper);
-    table.register(ClampElementwise,   f32_dt, cpu, clamp_elementwise_f32_cpu_wrapper);
-    table.register(PowIElementwise,    f32_dt, cpu, powi_elementwise_f32_cpu_wrapper);
-    table.register(MaximumElementwise, f32_dt, cpu, maximum_elementwise_f32_cpu_wrapper);
-    table.register(MinimumElementwise, f32_dt, cpu, minimum_elementwise_f32_cpu_wrapper);
-    table.register(MaximumElementwise, f64_dt, cpu, maximum_elementwise_f64_cpu_wrapper);
-    table.register(MinimumElementwise, f64_dt, cpu, minimum_elementwise_f64_cpu_wrapper);
+    table.register(Affine,             &unary(f32_dt), cpu, affine_f32_cpu_wrapper);
+    table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
+    table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
+    table.register(MaximumElementwise, &binary(f32_dt), cpu, maximum_elementwise_f32_cpu_wrapper);
+    table.register(MinimumElementwise, &binary(f32_dt), cpu, minimum_elementwise_f32_cpu_wrapper);
+    table.register(MaximumElementwise, &binary(f64_dt), cpu, maximum_elementwise_f64_cpu_wrapper);
+    table.register(MinimumElementwise, &binary(f64_dt), cpu, minimum_elementwise_f64_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
-    table.register(AddElementwise,     bf16_dt, cpu, add_elementwise_bf16_cpu_wrapper);
-    table.register(SubElementwise,     bf16_dt, cpu, sub_elementwise_bf16_cpu_wrapper);
-    table.register(MulElementwise,     bf16_dt, cpu, mul_elementwise_bf16_cpu_wrapper);
-    table.register(DivElementwise,     bf16_dt, cpu, div_elementwise_bf16_cpu_wrapper);
-    table.register(MaximumElementwise, bf16_dt, cpu, maximum_elementwise_bf16_cpu_wrapper);
-    table.register(MinimumElementwise, bf16_dt, cpu, minimum_elementwise_bf16_cpu_wrapper);
-    table.register(ReluElementwise,    bf16_dt, cpu, relu_elementwise_bf16_cpu_wrapper);
-    table.register(NegElementwise,     bf16_dt, cpu, neg_elementwise_bf16_cpu_wrapper);
-    table.register(SqrElementwise,     bf16_dt, cpu, sqr_elementwise_bf16_cpu_wrapper);
-    table.register(SqrtElementwise,    bf16_dt, cpu, sqrt_elementwise_bf16_cpu_wrapper);
-    table.register(RecipElementwise,   bf16_dt, cpu, recip_elementwise_bf16_cpu_wrapper);
-    table.register(AbsElementwise,     bf16_dt, cpu, abs_elementwise_bf16_cpu_wrapper);
-    table.register(TanhElementwise,    bf16_dt, cpu, tanh_elementwise_bf16_cpu_wrapper);
-    table.register(ExpElementwise,     bf16_dt, cpu, exp_elementwise_bf16_cpu_wrapper);
-    table.register(LogElementwise,     bf16_dt, cpu, log_elementwise_bf16_cpu_wrapper);
-    table.register(SinElementwise,     bf16_dt, cpu, sin_elementwise_bf16_cpu_wrapper);
-    table.register(CosElementwise,     bf16_dt, cpu, cos_elementwise_bf16_cpu_wrapper);
-    table.register(SigmoidElementwise, bf16_dt, cpu, sigmoid_elementwise_bf16_cpu_wrapper);
-    table.register(SiluElementwise,    bf16_dt, cpu, silu_elementwise_bf16_cpu_wrapper);
-    table.register(GeluElementwise,    bf16_dt, cpu, gelu_elementwise_bf16_cpu_wrapper);
-    table.register(StepElementwise,    bf16_dt, cpu, step_elementwise_bf16_cpu_wrapper);
+    table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);
+    table.register(SubElementwise,     &binary(bf16_dt), cpu, sub_elementwise_bf16_cpu_wrapper);
+    table.register(MulElementwise,     &binary(bf16_dt), cpu, mul_elementwise_bf16_cpu_wrapper);
+    table.register(DivElementwise,     &binary(bf16_dt), cpu, div_elementwise_bf16_cpu_wrapper);
+    table.register(MaximumElementwise, &binary(bf16_dt), cpu, maximum_elementwise_bf16_cpu_wrapper);
+    table.register(MinimumElementwise, &binary(bf16_dt), cpu, minimum_elementwise_bf16_cpu_wrapper);
+    table.register(ReluElementwise,    &unary(bf16_dt),  cpu, relu_elementwise_bf16_cpu_wrapper);
+    table.register(NegElementwise,     &unary(bf16_dt),  cpu, neg_elementwise_bf16_cpu_wrapper);
+    table.register(SqrElementwise,     &unary(bf16_dt),  cpu, sqr_elementwise_bf16_cpu_wrapper);
+    table.register(SqrtElementwise,    &unary(bf16_dt),  cpu, sqrt_elementwise_bf16_cpu_wrapper);
+    table.register(RecipElementwise,   &unary(bf16_dt),  cpu, recip_elementwise_bf16_cpu_wrapper);
+    table.register(AbsElementwise,     &unary(bf16_dt),  cpu, abs_elementwise_bf16_cpu_wrapper);
+    table.register(TanhElementwise,    &unary(bf16_dt),  cpu, tanh_elementwise_bf16_cpu_wrapper);
+    table.register(ExpElementwise,     &unary(bf16_dt),  cpu, exp_elementwise_bf16_cpu_wrapper);
+    table.register(LogElementwise,     &unary(bf16_dt),  cpu, log_elementwise_bf16_cpu_wrapper);
+    table.register(SinElementwise,     &unary(bf16_dt),  cpu, sin_elementwise_bf16_cpu_wrapper);
+    table.register(CosElementwise,     &unary(bf16_dt),  cpu, cos_elementwise_bf16_cpu_wrapper);
+    table.register(SigmoidElementwise, &unary(bf16_dt),  cpu, sigmoid_elementwise_bf16_cpu_wrapper);
+    table.register(SiluElementwise,    &unary(bf16_dt),  cpu, silu_elementwise_bf16_cpu_wrapper);
+    table.register(GeluElementwise,    &unary(bf16_dt),  cpu, gelu_elementwise_bf16_cpu_wrapper);
+    table.register(StepElementwise,    &unary(bf16_dt),  cpu, step_elementwise_bf16_cpu_wrapper);
 
-    table.register(AddElementwise,     f16_dt, cpu, add_elementwise_f16_cpu_wrapper);
-    table.register(SubElementwise,     f16_dt, cpu, sub_elementwise_f16_cpu_wrapper);
-    table.register(MulElementwise,     f16_dt, cpu, mul_elementwise_f16_cpu_wrapper);
-    table.register(DivElementwise,     f16_dt, cpu, div_elementwise_f16_cpu_wrapper);
-    table.register(MaximumElementwise, f16_dt, cpu, maximum_elementwise_f16_cpu_wrapper);
-    table.register(MinimumElementwise, f16_dt, cpu, minimum_elementwise_f16_cpu_wrapper);
-    table.register(ReluElementwise,    f16_dt, cpu, relu_elementwise_f16_cpu_wrapper);
-    table.register(NegElementwise,     f16_dt, cpu, neg_elementwise_f16_cpu_wrapper);
-    table.register(SqrElementwise,     f16_dt, cpu, sqr_elementwise_f16_cpu_wrapper);
-    table.register(SqrtElementwise,    f16_dt, cpu, sqrt_elementwise_f16_cpu_wrapper);
-    table.register(RecipElementwise,   f16_dt, cpu, recip_elementwise_f16_cpu_wrapper);
-    table.register(AbsElementwise,     f16_dt, cpu, abs_elementwise_f16_cpu_wrapper);
-    table.register(TanhElementwise,    f16_dt, cpu, tanh_elementwise_f16_cpu_wrapper);
-    table.register(ExpElementwise,     f16_dt, cpu, exp_elementwise_f16_cpu_wrapper);
-    table.register(LogElementwise,     f16_dt, cpu, log_elementwise_f16_cpu_wrapper);
-    table.register(SinElementwise,     f16_dt, cpu, sin_elementwise_f16_cpu_wrapper);
-    table.register(CosElementwise,     f16_dt, cpu, cos_elementwise_f16_cpu_wrapper);
-    table.register(SigmoidElementwise, f16_dt, cpu, sigmoid_elementwise_f16_cpu_wrapper);
-    table.register(SiluElementwise,    f16_dt, cpu, silu_elementwise_f16_cpu_wrapper);
-    table.register(GeluElementwise,    f16_dt, cpu, gelu_elementwise_f16_cpu_wrapper);
-    table.register(StepElementwise,    f16_dt, cpu, step_elementwise_f16_cpu_wrapper);
+    table.register(AddElementwise,     &binary(f16_dt), cpu, add_elementwise_f16_cpu_wrapper);
+    table.register(SubElementwise,     &binary(f16_dt), cpu, sub_elementwise_f16_cpu_wrapper);
+    table.register(MulElementwise,     &binary(f16_dt), cpu, mul_elementwise_f16_cpu_wrapper);
+    table.register(DivElementwise,     &binary(f16_dt), cpu, div_elementwise_f16_cpu_wrapper);
+    table.register(MaximumElementwise, &binary(f16_dt), cpu, maximum_elementwise_f16_cpu_wrapper);
+    table.register(MinimumElementwise, &binary(f16_dt), cpu, minimum_elementwise_f16_cpu_wrapper);
+    table.register(ReluElementwise,    &unary(f16_dt),  cpu, relu_elementwise_f16_cpu_wrapper);
+    table.register(NegElementwise,     &unary(f16_dt),  cpu, neg_elementwise_f16_cpu_wrapper);
+    table.register(SqrElementwise,     &unary(f16_dt),  cpu, sqr_elementwise_f16_cpu_wrapper);
+    table.register(SqrtElementwise,    &unary(f16_dt),  cpu, sqrt_elementwise_f16_cpu_wrapper);
+    table.register(RecipElementwise,   &unary(f16_dt),  cpu, recip_elementwise_f16_cpu_wrapper);
+    table.register(AbsElementwise,     &unary(f16_dt),  cpu, abs_elementwise_f16_cpu_wrapper);
+    table.register(TanhElementwise,    &unary(f16_dt),  cpu, tanh_elementwise_f16_cpu_wrapper);
+    table.register(ExpElementwise,     &unary(f16_dt),  cpu, exp_elementwise_f16_cpu_wrapper);
+    table.register(LogElementwise,     &unary(f16_dt),  cpu, log_elementwise_f16_cpu_wrapper);
+    table.register(SinElementwise,     &unary(f16_dt),  cpu, sin_elementwise_f16_cpu_wrapper);
+    table.register(CosElementwise,     &unary(f16_dt),  cpu, cos_elementwise_f16_cpu_wrapper);
+    table.register(SigmoidElementwise, &unary(f16_dt),  cpu, sigmoid_elementwise_f16_cpu_wrapper);
+    table.register(SiluElementwise,    &unary(f16_dt),  cpu, silu_elementwise_f16_cpu_wrapper);
+    table.register(GeluElementwise,    &unary(f16_dt),  cpu, gelu_elementwise_f16_cpu_wrapper);
+    table.register(StepElementwise,    &unary(f16_dt),  cpu, step_elementwise_f16_cpu_wrapper);
 
-    // Concat is dtype-agnostic at the byte level — register the
-    // same wrapper for every dtype the executor might allocate.
-    for dt in [DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8, DType::I16, DType::I32, DType::I64] {
-        table.register(Concat, dt, cpu, concat_cpu_wrapper);
+    // Concat is a variadic uniform-dtype op (N inputs, all the same
+    // dtype, plus output). Register the canonical `[T, T]` shorthand
+    // per supported dtype; the lookup site collapses the actual N+1
+    // dtype list to this same shorthand.
+    for dt in [
+        DType::F32, DType::F64, DType::BF16, DType::F16,
+        DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
+    ] {
+        table.register(Concat, &unary(dt), cpu, concat_cpu_wrapper);
     }
-    table.register(SoftmaxLastDim,     f32_dt, cpu, softmax_last_dim_f32_cpu_wrapper);
-    table.register(SoftmaxLastDim,     bf16_dt, cpu, softmax_last_dim_bf16_cpu_wrapper);
-    table.register(SoftmaxLastDim,     f16_dt,  cpu, softmax_last_dim_f16_cpu_wrapper);
-    table.register(RmsNormLastDim,     f32_dt, cpu, rms_norm_last_dim_f32_cpu_wrapper);
-    table.register(RmsNormLastDim,     bf16_dt, cpu, rms_norm_last_dim_bf16_cpu_wrapper);
-    table.register(RmsNormLastDim,     f16_dt,  cpu, rms_norm_last_dim_f16_cpu_wrapper);
-    table.register(LayerNormLastDim,   f32_dt, cpu, layer_norm_last_dim_f32_cpu_wrapper);
-    table.register(LayerNormLastDim,   bf16_dt, cpu, layer_norm_last_dim_bf16_cpu_wrapper);
-    table.register(LayerNormLastDim,   f16_dt,  cpu, layer_norm_last_dim_f16_cpu_wrapper);
-    // IndexSelect and Gather are dtype-agnostic at the byte level —
-    // register the same wrappers across every supported dtype.
-    for dt in [DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8, DType::I16, DType::I32, DType::I64] {
-        table.register(IndexSelect, dt, cpu, index_select_cpu_wrapper);
-        table.register(Gather,      dt, cpu, gather_cpu_wrapper);
+
+    table.register(SoftmaxLastDim,   &unary(f32_dt),  cpu, softmax_last_dim_f32_cpu_wrapper);
+    table.register(SoftmaxLastDim,   &unary(bf16_dt), cpu, softmax_last_dim_bf16_cpu_wrapper);
+    table.register(SoftmaxLastDim,   &unary(f16_dt),  cpu, softmax_last_dim_f16_cpu_wrapper);
+    table.register(SoftmaxLastDim,   &unary(f64_dt),  cpu, softmax_last_dim_f64_cpu_wrapper);
+    table.register(RmsNormLastDim,   &unary(f32_dt),  cpu, rms_norm_last_dim_f32_cpu_wrapper);
+    table.register(RmsNormLastDim,   &unary(bf16_dt), cpu, rms_norm_last_dim_bf16_cpu_wrapper);
+    table.register(RmsNormLastDim,   &unary(f16_dt),  cpu, rms_norm_last_dim_f16_cpu_wrapper);
+    table.register(RmsNormLastDim,   &unary(f64_dt),  cpu, rms_norm_last_dim_f64_cpu_wrapper);
+    table.register(LayerNormLastDim, &unary(f32_dt),  cpu, layer_norm_last_dim_f32_cpu_wrapper);
+    table.register(LayerNormLastDim, &unary(bf16_dt), cpu, layer_norm_last_dim_bf16_cpu_wrapper);
+    table.register(LayerNormLastDim, &unary(f16_dt),  cpu, layer_norm_last_dim_f16_cpu_wrapper);
+    table.register(LayerNormLastDim, &unary(f64_dt),  cpu, layer_norm_last_dim_f64_cpu_wrapper);
+
+    // IndexSelect / Gather: data + U32 indices → data.
+    for dt in [
+        DType::F32, DType::F64, DType::BF16, DType::F16,
+        DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
+    ] {
+        table.register(IndexSelect, &index_select(dt), cpu, index_select_cpu_wrapper);
+        table.register(Gather,      &gather_dts(dt),   cpu, gather_cpu_wrapper);
     }
-    table.register(Rope,               f32_dt, cpu, rope_f32_cpu_wrapper);
-    table.register(Rope,               bf16_dt, cpu, rope_bf16_cpu_wrapper);
-    table.register(Rope,               f16_dt,  cpu, rope_f16_cpu_wrapper);
-    table.register(Rope,               f64_dt,  cpu, rope_f64_cpu_wrapper);
-    table.register(SoftmaxLastDim,     f64_dt, cpu, softmax_last_dim_f64_cpu_wrapper);
-    table.register(RmsNormLastDim,     f64_dt, cpu, rms_norm_last_dim_f64_cpu_wrapper);
-    table.register(LayerNormLastDim,   f64_dt, cpu, layer_norm_last_dim_f64_cpu_wrapper);
-    table.register(QMatMul,            f32_dt, cpu, qmatmul_f32_cpu_wrapper);
-    table.register(IndexAdd,           f32_dt, cpu, index_add_f32_cpu_wrapper);
-    table.register(ScatterAdd,         f32_dt, cpu, scatter_add_f32_cpu_wrapper);
 
-    // ArgMax/ArgMin output U32 indices regardless of input dtype.
-    // Binding-table key is keyed on the OUTPUT dtype; the wrapper
-    // dispatches to the right per-input-dtype kernel internally.
-    table.register(ArgMaxDim,          DType::U32, cpu, argmax_dim_u32_cpu_dispatch);
-    table.register(ArgMinDim,          DType::U32, cpu, argmin_dim_u32_cpu_dispatch);
+    // Rope: x + cos + sin → out, all same dtype.
+    table.register(Rope, &rope_dts(f32_dt),  cpu, rope_f32_cpu_wrapper);
+    table.register(Rope, &rope_dts(bf16_dt), cpu, rope_bf16_cpu_wrapper);
+    table.register(Rope, &rope_dts(f16_dt),  cpu, rope_f16_cpu_wrapper);
+    table.register(Rope, &rope_dts(f64_dt),  cpu, rope_f64_cpu_wrapper);
 
-    // IndexAdd, ScatterAdd, Affine, Clamp, PowI for f64/bf16/f16.
-    table.register(IndexAdd,           f64_dt,  cpu, index_add_f64_cpu_wrapper);
-    table.register(IndexAdd,           bf16_dt, cpu, index_add_bf16_cpu_wrapper);
-    table.register(IndexAdd,           f16_dt,  cpu, index_add_f16_cpu_wrapper);
-    table.register(ScatterAdd,         f64_dt,  cpu, scatter_add_f64_cpu_wrapper);
-    table.register(ScatterAdd,         bf16_dt, cpu, scatter_add_bf16_cpu_wrapper);
-    table.register(ScatterAdd,         f16_dt,  cpu, scatter_add_f16_cpu_wrapper);
-    table.register(Affine,             f64_dt,  cpu, affine_f64_cpu_wrapper);
-    table.register(Affine,             bf16_dt, cpu, affine_bf16_cpu_wrapper);
-    table.register(Affine,             f16_dt,  cpu, affine_f16_cpu_wrapper);
-    table.register(ClampElementwise,   f64_dt,  cpu, clamp_f64_cpu_wrapper);
-    table.register(ClampElementwise,   bf16_dt, cpu, clamp_bf16_cpu_wrapper);
-    table.register(ClampElementwise,   f16_dt,  cpu, clamp_f16_cpu_wrapper);
-    table.register(PowIElementwise,    f64_dt,  cpu, powi_f64_cpu_wrapper);
-    table.register(PowIElementwise,    bf16_dt, cpu, powi_bf16_cpu_wrapper);
-    table.register(PowIElementwise,    f16_dt,  cpu, powi_f16_cpu_wrapper);
+    // QMatMul: F32 activations, U32 weight blocks, F32 output.
+    table.register(QMatMul, &[f32_dt, u32_dt, f32_dt], cpu, qmatmul_f32_cpu_wrapper);
+
+    // IndexAdd / ScatterAdd: base + U32 indices + src → out (base shape).
+    table.register(IndexAdd,   &index_add_dts(f32_dt),  cpu, index_add_f32_cpu_wrapper);
+    table.register(IndexAdd,   &index_add_dts(f64_dt),  cpu, index_add_f64_cpu_wrapper);
+    table.register(IndexAdd,   &index_add_dts(bf16_dt), cpu, index_add_bf16_cpu_wrapper);
+    table.register(IndexAdd,   &index_add_dts(f16_dt),  cpu, index_add_f16_cpu_wrapper);
+    table.register(ScatterAdd, &scatter_add(f32_dt),    cpu, scatter_add_f32_cpu_wrapper);
+    table.register(ScatterAdd, &scatter_add(f64_dt),    cpu, scatter_add_f64_cpu_wrapper);
+    table.register(ScatterAdd, &scatter_add(bf16_dt),   cpu, scatter_add_bf16_cpu_wrapper);
+    table.register(ScatterAdd, &scatter_add(f16_dt),    cpu, scatter_add_f16_cpu_wrapper);
+
+    // ArgMax/ArgMin: input dtype varies, output is U32. The dispatch
+    // wrapper still does its internal input-dtype match (preserves
+    // current behavior). Register `[input_dt, U32]` once per input
+    // dtype the dispatcher handles so the binding table can also
+    // route directly when we collapse the wrapper later.
+    for dt in [f32_dt, f64_dt, bf16_dt, f16_dt] {
+        table.register(ArgMaxDim, &[dt, u32_dt], cpu, argmax_dim_u32_cpu_dispatch);
+        table.register(ArgMinDim, &[dt, u32_dt], cpu, argmin_dim_u32_cpu_dispatch);
+    }
+
+    table.register(Affine,             &unary(f64_dt),  cpu, affine_f64_cpu_wrapper);
+    table.register(Affine,             &unary(bf16_dt), cpu, affine_bf16_cpu_wrapper);
+    table.register(Affine,             &unary(f16_dt),  cpu, affine_f16_cpu_wrapper);
+    table.register(ClampElementwise,   &unary(f64_dt),  cpu, clamp_f64_cpu_wrapper);
+    table.register(ClampElementwise,   &unary(bf16_dt), cpu, clamp_bf16_cpu_wrapper);
+    table.register(ClampElementwise,   &unary(f16_dt),  cpu, clamp_f16_cpu_wrapper);
+    table.register(PowIElementwise,    &unary(f64_dt),  cpu, powi_f64_cpu_wrapper);
+    table.register(PowIElementwise,    &unary(bf16_dt), cpu, powi_bf16_cpu_wrapper);
+    table.register(PowIElementwise,    &unary(f16_dt),  cpu, powi_f16_cpu_wrapper);
 }
 
 // =============================================================================
@@ -3307,36 +3382,39 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
     let f32_dt = DType::F32;
-    table.register(AddElementwise,     f32_dt, cuda, add_elementwise_f32_cuda_wrapper);
-    table.register(SubElementwise,     f32_dt, cuda, sub_elementwise_f32_cuda_wrapper);
-    table.register(MulElementwise,     f32_dt, cuda, mul_elementwise_f32_cuda_wrapper);
-    table.register(DivElementwise,     f32_dt, cuda, div_elementwise_f32_cuda_wrapper);
-    table.register(MaximumElementwise, f32_dt, cuda, maximum_elementwise_f32_cuda_wrapper);
-    table.register(MinimumElementwise, f32_dt, cuda, minimum_elementwise_f32_cuda_wrapper);
+    let unary  = |t: DType| [t, t];
+    let binary = |t: DType| [t, t, t];
 
-    table.register(ReluElementwise,    f32_dt, cuda, relu_elementwise_f32_cuda_wrapper);
-    table.register(NegElementwise,     f32_dt, cuda, neg_elementwise_f32_cuda_wrapper);
-    table.register(SqrElementwise,     f32_dt, cuda, sqr_elementwise_f32_cuda_wrapper);
-    table.register(SqrtElementwise,    f32_dt, cuda, sqrt_elementwise_f32_cuda_wrapper);
-    table.register(RecipElementwise,   f32_dt, cuda, recip_elementwise_f32_cuda_wrapper);
-    table.register(AbsElementwise,     f32_dt, cuda, abs_elementwise_f32_cuda_wrapper);
-    table.register(TanhElementwise,    f32_dt, cuda, tanh_elementwise_f32_cuda_wrapper);
-    table.register(ExpElementwise,     f32_dt, cuda, exp_elementwise_f32_cuda_wrapper);
-    table.register(LogElementwise,     f32_dt, cuda, log_elementwise_f32_cuda_wrapper);
-    table.register(SinElementwise,     f32_dt, cuda, sin_elementwise_f32_cuda_wrapper);
-    table.register(CosElementwise,     f32_dt, cuda, cos_elementwise_f32_cuda_wrapper);
-    table.register(SigmoidElementwise, f32_dt, cuda, sigmoid_elementwise_f32_cuda_wrapper);
-    table.register(SiluElementwise,    f32_dt, cuda, silu_elementwise_f32_cuda_wrapper);
-    table.register(GeluElementwise,    f32_dt, cuda, gelu_elementwise_f32_cuda_wrapper);
-    table.register(StepElementwise,    f32_dt, cuda, step_elementwise_f32_cuda_wrapper);
+    table.register(AddElementwise,     &binary(f32_dt), cuda, add_elementwise_f32_cuda_wrapper);
+    table.register(SubElementwise,     &binary(f32_dt), cuda, sub_elementwise_f32_cuda_wrapper);
+    table.register(MulElementwise,     &binary(f32_dt), cuda, mul_elementwise_f32_cuda_wrapper);
+    table.register(DivElementwise,     &binary(f32_dt), cuda, div_elementwise_f32_cuda_wrapper);
+    table.register(MaximumElementwise, &binary(f32_dt), cuda, maximum_elementwise_f32_cuda_wrapper);
+    table.register(MinimumElementwise, &binary(f32_dt), cuda, minimum_elementwise_f32_cuda_wrapper);
 
-    table.register(SumReduce,          f32_dt, cuda, sum_reduce_f32_cuda_wrapper);
-    table.register(MaxReduce,          f32_dt, cuda, max_reduce_f32_cuda_wrapper);
-    table.register(MinReduce,          f32_dt, cuda, min_reduce_f32_cuda_wrapper);
-    table.register(MeanReduce,         f32_dt, cuda, mean_reduce_f32_cuda_wrapper);
+    table.register(ReluElementwise,    &unary(f32_dt), cuda, relu_elementwise_f32_cuda_wrapper);
+    table.register(NegElementwise,     &unary(f32_dt), cuda, neg_elementwise_f32_cuda_wrapper);
+    table.register(SqrElementwise,     &unary(f32_dt), cuda, sqr_elementwise_f32_cuda_wrapper);
+    table.register(SqrtElementwise,    &unary(f32_dt), cuda, sqrt_elementwise_f32_cuda_wrapper);
+    table.register(RecipElementwise,   &unary(f32_dt), cuda, recip_elementwise_f32_cuda_wrapper);
+    table.register(AbsElementwise,     &unary(f32_dt), cuda, abs_elementwise_f32_cuda_wrapper);
+    table.register(TanhElementwise,    &unary(f32_dt), cuda, tanh_elementwise_f32_cuda_wrapper);
+    table.register(ExpElementwise,     &unary(f32_dt), cuda, exp_elementwise_f32_cuda_wrapper);
+    table.register(LogElementwise,     &unary(f32_dt), cuda, log_elementwise_f32_cuda_wrapper);
+    table.register(SinElementwise,     &unary(f32_dt), cuda, sin_elementwise_f32_cuda_wrapper);
+    table.register(CosElementwise,     &unary(f32_dt), cuda, cos_elementwise_f32_cuda_wrapper);
+    table.register(SigmoidElementwise, &unary(f32_dt), cuda, sigmoid_elementwise_f32_cuda_wrapper);
+    table.register(SiluElementwise,    &unary(f32_dt), cuda, silu_elementwise_f32_cuda_wrapper);
+    table.register(GeluElementwise,    &unary(f32_dt), cuda, gelu_elementwise_f32_cuda_wrapper);
+    table.register(StepElementwise,    &unary(f32_dt), cuda, step_elementwise_f32_cuda_wrapper);
 
-    table.register(MatMul,             f32_dt, cuda, matmul_f32_cuda_wrapper);
-    table.register(Affine,             f32_dt, cuda, affine_f32_cuda_wrapper);
+    table.register(SumReduce,          &unary(f32_dt), cuda, sum_reduce_f32_cuda_wrapper);
+    table.register(MaxReduce,          &unary(f32_dt), cuda, max_reduce_f32_cuda_wrapper);
+    table.register(MinReduce,          &unary(f32_dt), cuda, min_reduce_f32_cuda_wrapper);
+    table.register(MeanReduce,         &unary(f32_dt), cuda, mean_reduce_f32_cuda_wrapper);
+
+    table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
+    table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
 }
 
 // =============================================================================
@@ -3820,7 +3898,7 @@ mod tests {
         assert!(!table.is_empty());
         // The (AddElementwise, F32, Cpu) binding lands.
         let _kernel = table
-            .lookup(OpKind::AddElementwise, DType::F32, BackendId::Cpu)
+            .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
             .expect("registered");
     }
 
@@ -3832,7 +3910,7 @@ mod tests {
         // I64 isn't registered for any elementwise op — must error.
         // (BF16/F16/F32/F64 all have AddElementwise wrappers as of
         // Phase C's multi-dtype expansion.)
-        let result = table.lookup(OpKind::AddElementwise, DType::I64, BackendId::Cpu);
+        let result = table.lookup(OpKind::AddElementwise, &[DType::I64, DType::I64, DType::I64], BackendId::Cpu);
         assert!(result.is_err());
     }
 
@@ -3859,9 +3937,13 @@ mod tests {
         let mut bindings = KernelBindingTable::new();
         register_cpu_kernels(&mut bindings);
 
-        // 4. Look up the kernel for (op, dtype, backend).
+        // 4. Look up the kernel for (op, dtypes, backend).
         let kernel = bindings
-            .lookup(OpKind::AddElementwise, DType::F32, backend)
+            .lookup(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                backend,
+            )
             .expect("lookup");
 
         // 5. Allocate input + output Storages.
@@ -3891,7 +3973,7 @@ mod tests {
         let mut bindings = KernelBindingTable::new();
         register_cpu_kernels(&mut bindings);
         let kernel = bindings
-            .lookup(OpKind::AddElementwise, DType::F32, BackendId::Cpu)
+            .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
             .unwrap();
 
         // Only one input — should error, not panic.
@@ -3920,7 +4002,7 @@ mod tests {
     #[test]
     fn global_bindings_auto_registers_cpu_wrappers() {
         let b = global_bindings();
-        let result = b.lookup(OpKind::AddElementwise, DType::F32, BackendId::Cpu);
+        let result = b.lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
         assert!(result.is_ok(), "CPU AddElementwise+F32 should be registered");
     }
 }
