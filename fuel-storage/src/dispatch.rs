@@ -439,7 +439,7 @@ macro_rules! cpu_arg_dim_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -449,8 +449,8 @@ macro_rules! cpu_arg_dim_wrapper {
                 ))
                 .bt());
             }
-            let (input_layout, dims) = match params {
-                OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+            let dims = match params {
+                OpParams::Reduce { dims, .. } => dims,
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::Reduce, got {other:?}",
@@ -467,6 +467,13 @@ macro_rules! cpu_arg_dim_wrapper {
                 .bt());
             }
             let dim = dims[0];
+            let input_layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    "{} wrapper: layouts empty (executor must pass input layout at [0])",
+                    $op_name,
+                ))
+                .bt()
+            })?;
             let in_guard = read_storage(&inputs[0])?;
             if in_guard.dtype != DType::F32 {
                 return Err(Error::Msg(format!(
@@ -1267,7 +1274,7 @@ macro_rules! cpu_arg_dim_wrapper_typed {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1276,8 +1283,8 @@ macro_rules! cpu_arg_dim_wrapper_typed {
                 ))
                 .bt());
             }
-            let (input_layout, dims) = match params {
-                OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+            let dims = match params {
+                OpParams::Reduce { dims, .. } => dims,
                 other => return Err(Error::Msg(format!(
                     "{}: expects OpParams::Reduce, got {other:?}", $op_name,
                 ))
@@ -1290,6 +1297,13 @@ macro_rules! cpu_arg_dim_wrapper_typed {
                 .bt());
             }
             let dim = dims[0];
+            let input_layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    "{}: layouts empty (executor must pass input layout at [0])",
+                    $op_name,
+                ))
+                .bt()
+            })?;
             let in_guard = read_storage(&inputs[0])?;
             if in_guard.dtype != $expected_in_dtype {
                 return Err(Error::Msg(format!(
@@ -1454,7 +1468,7 @@ macro_rules! cpu_reduce_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 {
@@ -1473,8 +1487,8 @@ macro_rules! cpu_reduce_wrapper {
                 ))
                 .bt());
             }
-            let (input_layout, dims) = match params {
-                OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+            let dims = match params {
+                OpParams::Reduce { dims, .. } => dims,
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::Reduce, got {:?}",
@@ -1483,6 +1497,13 @@ macro_rules! cpu_reduce_wrapper {
                     .bt())
                 }
             };
+            let input_layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    "{} wrapper: layouts empty (executor must pass input layout at [0])",
+                    $op_name,
+                ))
+                .bt()
+            })?;
             // The pipelined executor's auto-Contiguize pass
             // (stage 4 of Layout-on-Node) materializes contiguous
             // bytes for every kernel input before this wrapper is
@@ -3172,14 +3193,15 @@ fn step_elementwise_f32_cuda_wrapper(
 
 /// Dispatch wrapper for `(SumReduce, F32, Cuda)`. First reduction op
 /// through the unified binding table; mirrors the CPU
-/// `cpu_reduce_wrapper` macro by destructuring `OpParams::Reduce`
-/// for `input_layout` + `dims`. Subsequent Max/Min/Mean wrappers are
-/// the same shape with a different byte-kernel call.
+/// `cpu_reduce_wrapper` macro. Reads the input layout from
+/// `layouts[0]` (executor side-channel) and the reduce dims from
+/// `OpParams::Reduce`. Subsequent Max/Min/Mean wrappers share the
+/// same shape.
 #[cfg(feature = "cuda")]
 fn sum_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3196,8 +3218,8 @@ fn sum_reduce_f32_cuda_wrapper(
         ))
         .bt());
     }
-    let (input_layout, dims) = match params {
-        OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+    let dims = match params {
+        OpParams::Reduce { dims, .. } => dims,
         other => {
             return Err(Error::Msg(format!(
                 "sum_reduce_f32_cuda_wrapper: expected OpParams::Reduce, got {:?}",
@@ -3206,6 +3228,9 @@ fn sum_reduce_f32_cuda_wrapper(
             .bt())
         }
     };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg("sum_reduce_f32_cuda_wrapper: layouts empty".to_string()).bt()
+    })?;
     let in_guard = read_storage(&inputs[0])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let src_cuda = cuda_input(&in_guard)?;
@@ -3221,7 +3246,7 @@ fn sum_reduce_f32_cuda_wrapper(
 fn max_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3238,8 +3263,8 @@ fn max_reduce_f32_cuda_wrapper(
         ))
         .bt());
     }
-    let (input_layout, dims) = match params {
-        OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+    let dims = match params {
+        OpParams::Reduce { dims, .. } => dims,
         other => {
             return Err(Error::Msg(format!(
                 "max_reduce_f32_cuda_wrapper: expected OpParams::Reduce, got {:?}",
@@ -3248,6 +3273,9 @@ fn max_reduce_f32_cuda_wrapper(
             .bt())
         }
     };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg("max_reduce_f32_cuda_wrapper: layouts empty".to_string()).bt()
+    })?;
     let in_guard = read_storage(&inputs[0])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let src_cuda = cuda_input(&in_guard)?;
@@ -3263,7 +3291,7 @@ fn max_reduce_f32_cuda_wrapper(
 fn min_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3280,8 +3308,8 @@ fn min_reduce_f32_cuda_wrapper(
         ))
         .bt());
     }
-    let (input_layout, dims) = match params {
-        OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+    let dims = match params {
+        OpParams::Reduce { dims, .. } => dims,
         other => {
             return Err(Error::Msg(format!(
                 "min_reduce_f32_cuda_wrapper: expected OpParams::Reduce, got {:?}",
@@ -3290,6 +3318,9 @@ fn min_reduce_f32_cuda_wrapper(
             .bt())
         }
     };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg("min_reduce_f32_cuda_wrapper: layouts empty".to_string()).bt()
+    })?;
     let in_guard = read_storage(&inputs[0])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let src_cuda = cuda_input(&in_guard)?;
@@ -3307,7 +3338,7 @@ fn min_reduce_f32_cuda_wrapper(
 fn mean_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3324,8 +3355,8 @@ fn mean_reduce_f32_cuda_wrapper(
         ))
         .bt());
     }
-    let (input_layout, dims) = match params {
-        OpParams::Reduce { input_layout, dims, .. } => (input_layout, dims),
+    let dims = match params {
+        OpParams::Reduce { dims, .. } => dims,
         other => {
             return Err(Error::Msg(format!(
                 "mean_reduce_f32_cuda_wrapper: expected OpParams::Reduce, got {:?}",
@@ -3334,6 +3365,9 @@ fn mean_reduce_f32_cuda_wrapper(
             .bt())
         }
     };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg("mean_reduce_f32_cuda_wrapper: layouts empty".to_string()).bt()
+    })?;
     let in_guard = read_storage(&inputs[0])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let src_cuda = cuda_input(&in_guard)?;

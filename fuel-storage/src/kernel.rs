@@ -100,21 +100,16 @@ pub enum OpParams {
     /// sub, div, …), shape-only ops (reshape, transpose), etc.
     None,
 
-    /// Reduction (sum, max, mean, …) along specific dims. Carries
-    /// the input tensor's [`Layout`] because
-    /// [`Storage`](crate::Storage) only holds bytes + dtype — the
-    /// kernel needs the shape (and, eventually, strides) to walk
-    /// the input multi-index. Today's CPU reduce kernels assume
-    /// contiguous layout and use only `input_layout.shape()`; the
-    /// strided case lands when stage 4 inserts an auto-Contiguize
-    /// before non-contiguous inputs.
+    /// Reduction (sum, max, mean, …) along specific dims. The input
+    /// tensor's [`Layout`] flows through the new `layouts` side-channel
+    /// (`layouts[0]`) on `KernelRef`, so this variant carries only the
+    /// op-specific extras: which dims to reduce and the keepdim flag.
     ///
     /// `dims` is the sorted list of dims to reduce; `keepdim`
     /// controls whether reduced dims are retained as size-1 in
     /// the output (today fuel-graph never asks for keepdim, but
     /// the field is reserved for the future).
     Reduce {
-        input_layout: Layout,
         dims: Vec<usize>,
         keepdim: bool,
     },
@@ -500,7 +495,6 @@ mod tests {
     fn op_params_variants_construct() {
         let _ = OpParams::None;
         let _ = OpParams::Reduce {
-            input_layout: Layout::contiguous(fuel_core_types::Shape::from_dims(&[4, 8])),
             dims: vec![0, 1],
             keepdim: false,
         };

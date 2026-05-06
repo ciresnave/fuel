@@ -584,16 +584,15 @@ fn op_to_op_params(
         }
         Op::ArgMaxDim(d) | Op::ArgMinDim(d) => {
             // Reuse OpParams::Reduce — same shape contract; the
-            // single reduce dim is the argmax/argmin axis.
+            // single reduce dim is the argmax/argmin axis. Input
+            // layout flows through KernelRef's `layouts[0]`.
             OpParams::Reduce {
-                input_layout: input_layout(node.inputs[0]),
                 dims: vec![*d],
                 keepdim: false,
             }
         }
         Op::SumDim(d) | Op::MaxDim(d) | Op::MinDim(d) | Op::MeanDim(d) => {
             OpParams::Reduce {
-                input_layout: input_layout(node.inputs[0]),
                 dims: vec![*d],
                 keepdim: false,
             }
@@ -602,7 +601,6 @@ fn op_to_op_params(
             let il = input_layout(node.inputs[0]);
             let rank = il.shape().rank();
             OpParams::Reduce {
-                input_layout: il,
                 dims: (0..rank).collect(),
                 keepdim: false,
             }

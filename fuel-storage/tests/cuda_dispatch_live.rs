@@ -880,12 +880,14 @@ fn sum_reduce_f32_through_binding_table() {
         .expect("lookup (SumReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
-        input_layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
         dims: vec![1],
         keepdim: false,
     };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
+    let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -922,12 +924,14 @@ fn max_reduce_f32_through_binding_table() {
         .expect("lookup (MaxReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
-        input_layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
         dims: vec![1],
         keepdim: false,
     };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
+    let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -964,12 +968,14 @@ fn min_reduce_f32_through_binding_table() {
         .expect("lookup (MinReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
-        input_layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
         dims: vec![1],
         keepdim: false,
     };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
+    let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -1010,12 +1016,14 @@ fn mean_reduce_f32_through_binding_table() {
         .expect("lookup (MeanReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
-        input_layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
         dims: vec![1],
         keepdim: false,
     };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
+    let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
