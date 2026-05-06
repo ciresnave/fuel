@@ -31,7 +31,7 @@ use std::sync::{Arc, RwLock};
 
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Result};
+use fuel_core_types::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 use crate::Storage;
@@ -100,14 +100,21 @@ pub fn compile_node(
 /// `Storage`s must be pre-allocated (the executor's responsibility,
 /// using the node's shape + dtype).
 ///
+/// `layouts` parallels `inputs.append(outputs)` and carries the
+/// stride/shape/offset metadata that stride-aware kernels consume.
+/// Today's contiguous-only kernels ignore it; the executor's
+/// auto-Contiguize pass guarantees every input layout is
+/// `Layout::contiguous(shape)` before this is called.
+///
 /// Production-correct: surfaces kernel errors as `Result`; never
 /// panics on dispatch mismatch (the wrapper functions handle that).
 pub fn execute_compiled(
     compiled: &CompiledNode,
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
 ) -> Result<()> {
-    (compiled.kernel)(inputs, outputs, &compiled.op_params)
+    (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)
 }
 
 #[cfg(test)]
@@ -142,7 +149,9 @@ mod tests {
         let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 
-        execute_compiled(&compiled, &inputs, &mut outputs).expect("execute");
+        let layout_3 = Layout::contiguous(fuel_core_types::Shape::from(vec![3]));
+        let layouts = vec![layout_3.clone(), layout_3.clone(), layout_3];
+        execute_compiled(&compiled, &inputs, &mut outputs, &layouts).expect("execute");
 
         let out_guard = outputs[0].read().unwrap();
         if let crate::BackendStorage::Cpu(c) = &out_guard.inner {

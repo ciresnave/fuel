@@ -1282,7 +1282,15 @@ fn execute_work_item(
             // produced by an upstream metadata-only view op).
             // Today's kernels assume contiguous; this pass keeps
             // that invariant true at every kernel call site.
+            //
+            // We assemble a parallel `kernel_layouts` vec — the layout
+            // of the bytes the kernel actually receives. After
+            // auto-contiguize, that's `Layout::contiguous(shape)` for
+            // the input's shape; for inputs already contiguous we use
+            // the cached layout directly. Output layout comes last.
             let mut input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::with_capacity(item.inputs.len());
+            let mut kernel_layouts: Vec<fuel_core_types::Layout> =
+                Vec::with_capacity(item.inputs.len() + 1);
             for in_id in &item.inputs {
                 let in_arc = cache.get(in_id).cloned().ok_or_else(|| {
                     Error::Msg(format!(
@@ -1302,11 +1310,16 @@ fn execute_work_item(
                     in_layout.is_contiguous() && in_layout.start_offset() == 0;
                 if already_ok {
                     input_arcs.push(in_arc);
+                    kernel_layouts.push(in_layout);
                 } else {
                     let contig_arc = auto_contiguize(&in_arc, &in_layout)?;
                     input_arcs.push(contig_arc);
+                    kernel_layouts.push(fuel_core_types::Layout::contiguous(
+                        in_layout.shape().clone(),
+                    ));
                 }
             }
+            kernel_layouts.push(item.output_layout.clone());
 
             // Allocate output on the target backend.
             let output = match item.target_backend {
@@ -1322,7 +1335,7 @@ fn execute_work_item(
             };
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
 
-            execute_compiled(compiled, &input_arcs, &mut output_arcs)?;
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);

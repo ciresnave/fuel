@@ -60,10 +60,23 @@ use crate::Storage;
 /// `&mut Storage` to handle multi-output ops (topk, var_mean,
 /// custom). Most ops use single-element slices.
 ///
+/// `layouts` is a side-channel that parallels `inputs.append(outputs)`
+/// — i.e. `layouts[0..inputs.len()]` are the input layouts in order,
+/// followed by `layouts[inputs.len()..]` for the output layouts. This
+/// is the load-bearing primitive for stride-aware kernels (broadcast,
+/// transpose, gather-from-strided). Kernels that only support
+/// contiguous-equal-shape inputs (today's default) can ignore
+/// `layouts` because the executor's auto-Contiguize pass guarantees
+/// every input is contiguous before this is called; the layout slice
+/// then carries `Layout::contiguous(shape)` entries that are useful
+/// for shape inference but redundant with `Storage.len_bytes / dtype`.
+///
 /// `OpParams` carries op-family-specific extras (reduce dims,
 /// conv2d geometry, etc.). Most kernels match a specific variant;
 /// mismatches are programming bugs that the dispatch resolver
-/// must prevent.
+/// must prevent. Pure layout/shape duplication that used to live in
+/// `OpParams` (e.g. the old `Reduce::input_layout`) now flows through
+/// `layouts` instead.
 ///
 /// **Output Storage is pre-allocated** by the executor before the
 /// kernel is called. Kernels write into the pre-allocated bytes;
@@ -73,6 +86,7 @@ use crate::Storage;
 pub type KernelRef = fn(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()>;
 
@@ -470,6 +484,7 @@ mod tests {
         fn dummy_kernel(
             _inputs: &[Arc<RwLock<Storage>>],
             _outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             Ok(())
@@ -515,6 +530,7 @@ mod tests {
         fn copy_kernel(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             // Simplest real kernel: copy bytes from inputs[0] to outputs[0].
@@ -543,7 +559,7 @@ mod tests {
         let mut outputs = vec![Arc::new(RwLock::new(output))];
 
         let k: KernelRef = copy_kernel;
-        k(&inputs, &mut outputs, &OpParams::None).unwrap();
+        k(&inputs, &mut outputs, &[], &OpParams::None).unwrap();
 
         // Output bytes match input.
         let out_guard = outputs[0].read().unwrap();
