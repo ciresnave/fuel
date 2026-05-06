@@ -1259,3 +1259,178 @@ fn lookup_without_registration_errors_clean() {
     );
     assert!(r.is_err(), "expected NoBackendForOp error");
 }
+
+// =============================================================================
+// Cast — first op through the unified path with input dtype != output dtype.
+// =============================================================================
+
+/// Helper: build a Storage on CUDA from raw host bytes + dtype.
+/// Lets cast tests upload BF16/F16/U8/etc. without a per-dtype f32
+/// adapter.
+fn build_storage_cuda_from_bytes(dev: &CudaDevice, bytes: &[u8], dtype: DType) -> Storage {
+    let cuda_bytes = CudaStorageBytes::from_cpu_bytes(dev, bytes).expect("h2d");
+    Storage::new(BackendStorage::Cuda(cuda_bytes), dtype)
+}
+
+/// Helper: build a CUDA-resident output Storage of the requested
+/// dtype, sized for `elem_count` elements. Used to receive cast
+/// results.
+fn build_output_cuda(dev: &CudaDevice, dtype: DType, elem_count: usize) -> Storage {
+    let bytes = elem_count * dtype.size_in_bytes();
+    let out_bytes = CudaStorageBytes::alloc(dev, bytes).expect("out alloc");
+    Storage::new(BackendStorage::Cuda(out_bytes), dtype)
+}
+
+/// Run a Cast through the binding table from `src` (dtype `src_dt`)
+/// to `dst_dt`, returning the device output's host bytes.
+fn run_cast(
+    table: &KernelBindingTable,
+    dev: &CudaDevice,
+    src_bytes: &[u8],
+    src_dt: DType,
+    dst_dt: DType,
+    elem_count: usize,
+) -> Vec<u8> {
+    let src = build_storage_cuda_from_bytes(dev, src_bytes, src_dt);
+    let out = build_output_cuda(dev, dst_dt, elem_count);
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+    let kernel = table
+        .lookup(OpKind::Cast, &[src_dt, dst_dt], BackendId::Cuda)
+        .unwrap_or_else(|e| panic!("lookup (Cast, [{src_dt:?}, {dst_dt:?}], Cuda): {e:?}"));
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &OpParams::Cast,
+    )
+    .expect("cast kernel call");
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    c.to_cpu_bytes().expect("d2h")
+}
+
+/// F32 → BF16 round-trip on small integer values. Integers ≤ 256
+/// are bit-exact in BF16 (they fit the 7-bit mantissa with one bit
+/// of headroom for the implicit leading 1), so the cast is lossless
+/// here and the BF16 → F32 path back to the host should reproduce
+/// the originals exactly.
+#[test]
+#[ignore]
+fn cast_f32_to_bf16_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let src_f32: &[f32] = &[1.0, 2.0, 3.0, 4.0, -1.5, 0.0, 100.0, 256.0];
+    let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
+    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::BF16, src_f32.len());
+
+    let bf16_bits: &[u16] = bytemuck::cast_slice(&host);
+    let decoded: Vec<f32> = bf16_bits.iter().map(|&b| half::bf16::from_bits(b).to_f32()).collect();
+    assert_close(&decoded, src_f32, 0.0);
+}
+
+/// BF16 → F32 round-trip — inverse direction of the prior test.
+/// Constructs BF16 source bytes on the host and verifies the
+/// up-converted F32 matches.
+#[test]
+#[ignore]
+fn cast_bf16_to_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let values: &[f32] = &[1.0, 2.0, 3.0, -1.5, 0.0];
+    let bf16_bits: Vec<u16> = values.iter().map(|&v| half::bf16::from_f32(v).to_bits()).collect();
+    let src_bytes: &[u8] = bytemuck::cast_slice(&bf16_bits);
+    let host = run_cast(&table, &dev, src_bytes, DType::BF16, DType::F32, values.len());
+
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_close(host_f32, values, 0.0);
+}
+
+/// F32 → F16 round-trip. Like BF16, small ints are bit-exact in F16
+/// (10-bit mantissa). 1024 is the largest integer with bit-exact
+/// representation; stay well below that.
+#[test]
+#[ignore]
+fn cast_f32_to_f16_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let src_f32: &[f32] = &[1.0, 2.0, 3.0, 4.0, -1.5, 0.0, 100.0, 256.0];
+    let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
+    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::F16, src_f32.len());
+
+    let f16_bits: &[u16] = bytemuck::cast_slice(&host);
+    let decoded: Vec<f32> = f16_bits.iter().map(|&b| half::f16::from_bits(b).to_f32()).collect();
+    assert_close(&decoded, src_f32, 0.0);
+}
+
+/// F32 → F64 widening cast. Lossless; expect bit-exact outputs.
+#[test]
+#[ignore]
+fn cast_f32_to_f64_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let src_f32: &[f32] = &[1.0, 2.0, 3.5, -0.25, 1e6, 1e-6];
+    let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
+    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::F64, src_f32.len());
+
+    let host_f64: &[f64] = bytemuck::cast_slice(&host);
+    let expected: Vec<f64> = src_f32.iter().map(|&v| v as f64).collect();
+    assert_eq!(host_f64, expected.as_slice());
+}
+
+/// U8 → F32 widening cast. Bit-exact; verifies the integer-source
+/// path through the unified binding table.
+#[test]
+#[ignore]
+fn cast_u8_to_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let src_u8: &[u8] = &[0, 1, 2, 127, 128, 255];
+    let host = run_cast(&table, &dev, src_u8, DType::U8, DType::F32, src_u8.len());
+
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    let expected: Vec<f32> = src_u8.iter().map(|&v| v as f32).collect();
+    assert_eq!(host_f32, expected.as_slice());
+}
+
+/// F32 → I64 truncating cast. Verifies negative + positive values
+/// truncate toward zero (or the platform's standard direction; the
+/// kernel uses C `static_cast` semantics which is truncation).
+#[test]
+#[ignore]
+fn cast_f32_to_i64_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let src_f32: &[f32] = &[0.0, 1.5, -1.5, 100.9, -100.9];
+    let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
+    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::I64, src_f32.len());
+
+    let host_i64: &[i64] = bytemuck::cast_slice(&host);
+    // C static_cast<int64_t>(float) truncates toward zero.
+    assert_eq!(host_i64, &[0_i64, 1, -1, 100, -100]);
+}

@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::{Layout, Result};
+use fuel_core_types::{DType, Layout, Result};
 use fuel_cuda_kernels as kernels;
 
 use crate::builder_arg as barg;
@@ -484,6 +484,71 @@ pub fn affine_f32(src: &CudaStorageBytes, mul: f32, add: f32) -> Result<CudaStor
         Arc::new(out),
         device,
         src.len_bytes(),
+    ))
+}
+
+/// Element-wise dtype cast. Element count is preserved; the byte
+/// length of the output differs from the input when source and
+/// destination have different `size_in_bytes`. Picks the
+/// `cast_<src>_<dst>` kernel from `fuel_cuda_kernels::CAST` based on
+/// the dtype pair; missing-kernel cases (e.g. an FP8 cast on a GPU
+/// where FP8 wasn't compiled in) surface at kernel-load time with the
+/// kernel name in the error.
+///
+/// Sub-byte source/destination types (`F4`/`F6E2M3`/`F6E3M2`) are not
+/// supported — they would need a packed-bytes representation that the
+/// unified storage doesn't currently expose. Sub-byte arrives as a
+/// follow-up if/when those dtypes become load-bearing.
+pub fn cast(
+    src: &CudaStorageBytes,
+    src_dtype: DType,
+    dst_dtype: DType,
+) -> Result<CudaStorageBytes> {
+    let src_elem_size = src_dtype.size_in_bytes();
+    let dst_elem_size = dst_dtype.size_in_bytes();
+    if src_elem_size == 0 || dst_elem_size == 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "cast({src_dtype:?} -> {dst_dtype:?}): sub-byte dtypes \
+             are not supported through the unified path"
+        ))
+        .bt());
+    }
+    if src.len_bytes() % src_elem_size != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "cast({src_dtype:?} -> {dst_dtype:?}): src.len_bytes={} \
+             not a multiple of src elem size {}",
+            src.len_bytes(),
+            src_elem_size,
+        ))
+        .bt());
+    }
+    let elem_count = src.len_bytes() / src_elem_size;
+    let device = src.device().clone();
+    if elem_count == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_bytes = elem_count * dst_elem_size;
+    let mut out = device.alloc_zeros::<u8>(out_bytes)?;
+    let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+    let kernel_name = format!("cast_{}_{}", src_dtype.as_str(), dst_dtype.as_str());
+    let func = device.get_or_load_func(&kernel_name, &kernels::CAST)?;
+    // Cast kernel signature: (numel, num_dims, info, inp, out).
+    // info=null selects the contiguous fast path.
+    let dims_strides: SlicePtrOrNull<usize> = SlicePtrOrNull::Null;
+    let mut builder = func.builder();
+    barg!(builder, elem_count);
+    barg!(builder, 1_usize); // ndims (ignored on the contiguous path)
+    dims_strides.builder_arg(&mut builder);
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    // SAFETY: kernel signature matches the args above — same shape as
+    // the legacy `to_dtype` impl in `storage.rs::CudaStorage`.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        out_bytes,
     ))
 }
 
