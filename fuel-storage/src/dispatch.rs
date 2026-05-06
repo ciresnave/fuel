@@ -3318,6 +3318,41 @@ fn affine_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(Cast, [src_dt, dst_dt], Cuda)`. First op
+/// where input dtype != output dtype — exercises the multi-dtype
+/// binding-table key. The dtypes flow from the input/output Storages
+/// (the binding-table lookup already filtered to a registered pair),
+/// so the wrapper just hands them to `byte_kernels::cast`.
+///
+/// One wrapper covers every registered (src, dst) pair: each pair
+/// gets its own binding-table entry pointing at this same function,
+/// so the lookup picks the entry by exact dtype match and the kernel
+/// name is built from the storages' actual dtypes inside the kernel.
+#[cfg(feature = "cuda")]
+fn cast_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "cast_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_dtype = in_guard.dtype;
+    let dst_dtype = out_guard.dtype;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::cast(src_cuda, src_dtype, dst_dtype)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(MatMul, F32, Cuda)`. First non-PTX, non-
 /// element-wise op through the unified binding table — the underlying
 /// implementation is cuBLAS `gemm_strided_batched_ex`, not a launched
@@ -3415,6 +3450,42 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
+
+    // Cast — one binding-table entry per (src, dst) pair the cast.cu
+    // PTX defines. Pairs gated on `__CUDA_ARCH__` in the .cu source
+    // still register here unconditionally; if a specific kernel
+    // wasn't compiled into the in-process PTX (e.g. BF16 paths on a
+    // pre-Ampere GPU) the kernel-load step inside
+    // `byte_kernels::cast` surfaces a clear error with the kernel
+    // name. FP8 pairs are skipped — DType::F8E4M3 isn't yet
+    // exercised through the unified path; trivial follow-up to add.
+    const CAST_PAIRS: &[(DType, DType)] = &[
+        // Always available (sm_500+).
+        (DType::U32, DType::U32), (DType::U32, DType::U8),  (DType::U32, DType::I64),
+        (DType::U32, DType::F32), (DType::U32, DType::F64),
+        (DType::U8,  DType::U32), (DType::U8,  DType::U8),  (DType::U8,  DType::I64),
+        (DType::U8,  DType::F32), (DType::U8,  DType::F64),
+        (DType::I64, DType::U32), (DType::I64, DType::U8),  (DType::I64, DType::I64),
+        (DType::I64, DType::F32), (DType::I64, DType::F64),
+        (DType::F32, DType::U8),  (DType::F32, DType::U32), (DType::F32, DType::I64),
+        (DType::F32, DType::F32), (DType::F32, DType::F64),
+        (DType::F64, DType::U8),  (DType::F64, DType::U32), (DType::F64, DType::I64),
+        (DType::F64, DType::F32), (DType::F64, DType::F64),
+        // sm_530+ (F16).
+        (DType::F16, DType::F16), (DType::F16, DType::U8),  (DType::F16, DType::U32),
+        (DType::F16, DType::F32), (DType::F16, DType::F64),
+        (DType::U8,  DType::F16), (DType::U32, DType::F16), (DType::F32, DType::F16),
+        (DType::F64, DType::F16),
+        // sm_800+ (BF16).
+        (DType::BF16, DType::BF16),
+        (DType::BF16, DType::U32), (DType::BF16, DType::F32), (DType::BF16, DType::F64),
+        (DType::BF16, DType::U8),  (DType::BF16, DType::F16),
+        (DType::U8,   DType::BF16), (DType::U32, DType::BF16), (DType::F32, DType::BF16),
+        (DType::F64,  DType::BF16), (DType::F16, DType::BF16),
+    ];
+    for &(src, dst) in CAST_PAIRS {
+        table.register(Cast, &[src, dst], cuda, cast_cuda_wrapper);
+    }
 }
 
 // =============================================================================
