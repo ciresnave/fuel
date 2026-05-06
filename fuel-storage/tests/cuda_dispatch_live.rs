@@ -1134,6 +1134,77 @@ fn matmul_f32_batched_through_binding_table() {
     );
 }
 
+/// End-to-end: GQA-divisible MatMul F32 through the binding table.
+/// Exercises the per-batch-loop GQA path. lhs `[4, 2, 3]` (4 lhs
+/// batches) @ rhs `[2, 3, 2]` (2 rhs batches) → `[4, 2, 2]`, with
+/// `n_rep = [2]` (each rhs batch shared by 2 consecutive lhs
+/// batches). lhs batches 0,1 share rhs batch 0; lhs batches 2,3
+/// share rhs batch 1. Verifies against a CPU reference for all 4
+/// lhs batches.
+#[test]
+#[ignore]
+fn matmul_f32_gqa_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // 4 distinct 2×3 lhs matrices, 2 distinct 3×2 rhs matrices.
+    let lhs_data: Vec<f32> = (0..(4 * 2 * 3)).map(|i| i as f32).collect();
+    let rhs_data: Vec<f32> = (0..(2 * 3 * 2)).map(|i| (i + 1) as f32).collect();
+    let lhs = build_storage_cuda(&dev, &lhs_data);
+    let rhs = build_storage_cuda(&dev, &rhs_data);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 4 * 2 * 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MatMul, DType::F32, BackendId::Cuda)
+        .expect("lookup (MatMul, F32, Cuda)");
+
+    let params = OpParams::Matmul {
+        lhs_batch_dims: vec![4],
+        rhs_batch_dims: vec![2],
+        m: 2,
+        n: 2,
+        k: 3,
+    };
+
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &params)
+        .expect("kernel call");
+
+    // CPU reference: per-lhs-batch, with rhs_batch = lhs_batch / 2.
+    let mut expected = vec![0.0_f32; 4 * 2 * 2];
+    for b in 0..4_usize {
+        let r = b / 2;
+        let lhs_off = b * (2 * 3);
+        let rhs_off = r * (3 * 2);
+        let out_off = b * (2 * 2);
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut acc = 0.0_f32;
+                for kk in 0..3 {
+                    acc += lhs_data[lhs_off + i * 3 + kk]
+                        * rhs_data[rhs_off + kk * 2 + j];
+                }
+                expected[out_off + i * 2 + j] = acc;
+            }
+        }
+    }
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_close(host_f32, &expected, 1e-4);
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.
