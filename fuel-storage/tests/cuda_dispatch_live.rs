@@ -84,6 +84,7 @@ fn add_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -126,6 +127,7 @@ fn sub_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -165,6 +167,7 @@ fn mul_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -204,6 +207,7 @@ fn div_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -243,6 +247,7 @@ fn maximum_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -282,6 +287,7 @@ fn minimum_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -321,6 +327,7 @@ fn relu_elementwise_f32_through_binding_table() {
     kernel(
         &[src_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::None,
     )
     .expect("kernel call");
@@ -355,7 +362,7 @@ fn neg_elementwise_f32_through_binding_table() {
         .lookup(OpKind::NegElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (NegElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -388,7 +395,7 @@ fn sqr_elementwise_f32_through_binding_table() {
         .lookup(OpKind::SqrElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SqrElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -421,7 +428,7 @@ fn sqrt_elementwise_f32_through_binding_table() {
         .lookup(OpKind::SqrtElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SqrtElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -454,7 +461,7 @@ fn recip_elementwise_f32_through_binding_table() {
         .lookup(OpKind::RecipElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (RecipElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -487,7 +494,7 @@ fn abs_elementwise_f32_through_binding_table() {
         .lookup(OpKind::AbsElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (AbsElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -524,7 +531,7 @@ fn tanh_elementwise_f32_through_binding_table() {
         .lookup(OpKind::TanhElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (TanhElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -560,7 +567,7 @@ fn exp_elementwise_f32_through_binding_table() {
         .lookup(OpKind::ExpElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (ExpElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -596,7 +603,7 @@ fn log_elementwise_f32_through_binding_table() {
         .lookup(OpKind::LogElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (LogElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -638,7 +645,7 @@ fn sin_elementwise_f32_through_binding_table() {
         .lookup(OpKind::SinElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SinElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -680,7 +687,7 @@ fn cos_elementwise_f32_through_binding_table() {
         .lookup(OpKind::CosElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (CosElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -716,7 +723,7 @@ fn sigmoid_elementwise_f32_through_binding_table() {
         .lookup(OpKind::SigmoidElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SigmoidElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -752,7 +759,7 @@ fn silu_elementwise_f32_through_binding_table() {
         .lookup(OpKind::SiluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (SiluElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -790,7 +797,7 @@ fn gelu_elementwise_f32_through_binding_table() {
         .lookup(OpKind::GeluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (GeluElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -833,7 +840,7 @@ fn step_elementwise_f32_through_binding_table() {
         .lookup(OpKind::StepElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (StepElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &OpParams::None)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -878,7 +885,7 @@ fn sum_reduce_f32_through_binding_table() {
         keepdim: false,
     };
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -920,7 +927,7 @@ fn max_reduce_f32_through_binding_table() {
         keepdim: false,
     };
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -962,7 +969,7 @@ fn min_reduce_f32_through_binding_table() {
         keepdim: false,
     };
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -1008,7 +1015,7 @@ fn mean_reduce_f32_through_binding_table() {
         keepdim: false,
     };
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -1057,7 +1064,7 @@ fn matmul_f32_rank2_through_binding_table() {
         k: 3,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -1118,7 +1125,7 @@ fn matmul_f32_batched_through_binding_table() {
         k: 3,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -1174,7 +1181,7 @@ fn matmul_f32_gqa_through_binding_table() {
         k: 3,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     // CPU reference: per-lhs-batch, with rhs_batch = lhs_batch / 2.
@@ -1234,7 +1241,7 @@ fn affine_f32_through_binding_table() {
 
     let params = OpParams::Affine { mul: 2.0, add: 10.0 };
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
         .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
@@ -1301,6 +1308,7 @@ fn run_cast(
     kernel(
         &[src_arc.clone()],
         &mut [out_arc.clone()],
+        &[],
         &OpParams::Cast,
     )
     .expect("cast kernel call");

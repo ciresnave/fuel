@@ -26,7 +26,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use fuel_core_types::backend::{BackendCapabilities, TransferPath};
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Result};
+use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
 use crate::{BackendStorage, Storage};
@@ -266,6 +266,7 @@ macro_rules! cpu_binary_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 2 {
@@ -302,6 +303,7 @@ macro_rules! cpu_unary_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 {
@@ -437,6 +439,7 @@ macro_rules! cpu_arg_dim_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -496,6 +499,7 @@ cpu_arg_dim_wrapper!(
 fn index_add_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 3 || outputs.len() != 1 {
@@ -542,6 +546,7 @@ fn index_add_f32_cpu_wrapper(
 fn scatter_add_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 3 || outputs.len() != 1 {
@@ -586,6 +591,7 @@ fn scatter_add_f32_cpu_wrapper(
 fn rope_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 3 || outputs.len() != 1 {
@@ -625,6 +631,7 @@ fn rope_f32_cpu_wrapper(
 fn gather_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 || outputs.len() != 1 {
@@ -671,6 +678,7 @@ fn gather_cpu_wrapper(
 fn index_select_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -726,6 +734,7 @@ macro_rules! cpu_norm_last_dim_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -808,6 +817,7 @@ macro_rules! cpu_softmax_last_dim_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -848,6 +858,7 @@ macro_rules! cpu_rope_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 3 || outputs.len() != 1 {
@@ -892,6 +903,7 @@ cpu_rope_wrapper!(rope_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f6
 fn qmatmul_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -976,6 +988,7 @@ fn qmatmul_f32_cpu_wrapper(
 fn concat_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.is_empty() {
@@ -1036,6 +1049,7 @@ macro_rules! cpu_index_add_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 3 || outputs.len() != 1 {
@@ -1088,6 +1102,7 @@ macro_rules! cpu_scatter_add_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 3 || outputs.len() != 1 {
@@ -1140,6 +1155,7 @@ macro_rules! cpu_affine_wrapper_native {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1165,6 +1181,7 @@ macro_rules! cpu_affine_wrapper_half {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1191,6 +1208,7 @@ macro_rules! cpu_clamp_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1218,6 +1236,7 @@ macro_rules! cpu_powi_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1248,6 +1267,7 @@ macro_rules! cpu_arg_dim_wrapper_typed {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1292,14 +1312,15 @@ macro_rules! cpu_arg_dim_wrapper_typed {
 fn argmax_dim_u32_cpu_dispatch(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     let in_dtype = read_storage(&inputs[0])?.dtype;
     match in_dtype {
-        DType::F32 => argmax_dim_u32_cpu_wrapper(inputs, outputs, params),
-        DType::F64 => argmax_dim_f64_only_wrapper(inputs, outputs, params),
-        DType::BF16 => argmax_dim_bf16_only_wrapper(inputs, outputs, params),
-        DType::F16 => argmax_dim_f16_only_wrapper(inputs, outputs, params),
+        DType::F32 => argmax_dim_u32_cpu_wrapper(inputs, outputs, _layouts, params),
+        DType::F64 => argmax_dim_f64_only_wrapper(inputs, outputs, _layouts, params),
+        DType::BF16 => argmax_dim_bf16_only_wrapper(inputs, outputs, _layouts, params),
+        DType::F16 => argmax_dim_f16_only_wrapper(inputs, outputs, _layouts, params),
         other => Err(Error::Msg(format!(
             "argmax_dim: unsupported input dtype {other:?}",
         ))
@@ -1310,14 +1331,15 @@ fn argmax_dim_u32_cpu_dispatch(
 fn argmin_dim_u32_cpu_dispatch(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     let in_dtype = read_storage(&inputs[0])?.dtype;
     match in_dtype {
-        DType::F32 => argmin_dim_u32_cpu_wrapper(inputs, outputs, params),
-        DType::F64 => argmin_dim_f64_only_wrapper(inputs, outputs, params),
-        DType::BF16 => argmin_dim_bf16_only_wrapper(inputs, outputs, params),
-        DType::F16 => argmin_dim_f16_only_wrapper(inputs, outputs, params),
+        DType::F32 => argmin_dim_u32_cpu_wrapper(inputs, outputs, _layouts, params),
+        DType::F64 => argmin_dim_f64_only_wrapper(inputs, outputs, _layouts, params),
+        DType::BF16 => argmin_dim_bf16_only_wrapper(inputs, outputs, _layouts, params),
+        DType::F16 => argmin_dim_f16_only_wrapper(inputs, outputs, _layouts, params),
         other => Err(Error::Msg(format!(
             "argmin_dim: unsupported input dtype {other:?}",
         ))
@@ -1337,6 +1359,7 @@ cpu_arg_dim_wrapper_typed!(argmin_dim_f16_only_wrapper,  fuel_cpu_backend::byte_
 fn affine_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
@@ -1366,6 +1389,7 @@ fn affine_f32_cpu_wrapper(
 fn clamp_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
@@ -1395,6 +1419,7 @@ fn clamp_elementwise_f32_cpu_wrapper(
 fn powi_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
@@ -1429,6 +1454,7 @@ macro_rules! cpu_reduce_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 {
@@ -1507,6 +1533,7 @@ macro_rules! cpu_cast_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 {
@@ -1551,6 +1578,7 @@ macro_rules! cpu_conv2d_wrapper {
         fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 2 && inputs.len() != 3 {
@@ -1614,6 +1642,7 @@ macro_rules! cpu_conv_transpose2d_wrapper {
         fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 2 && inputs.len() != 3 {
@@ -1677,6 +1706,7 @@ macro_rules! cpu_reduce_sum_to_wrapper {
         fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 {
@@ -1725,6 +1755,7 @@ macro_rules! cpu_fused_linear_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 3 {
@@ -1781,6 +1812,7 @@ macro_rules! cpu_flash_attn_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 3 && inputs.len() != 4 {
@@ -1851,6 +1883,7 @@ macro_rules! cpu_paged_attn_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 5 && inputs.len() != 6 {
@@ -1969,6 +2002,7 @@ cpu_cast_wrapper!(
 fn matmul_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2023,6 +2057,7 @@ macro_rules! cpu_matmul_wrapper {
         fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 2 {
@@ -2072,6 +2107,7 @@ cpu_matmul_wrapper!(matmul_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::mat
 fn matmul_f64_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2465,6 +2501,7 @@ fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::CudaStorageByt
 fn add_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2499,6 +2536,7 @@ fn add_elementwise_f32_cuda_wrapper(
 fn sub_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2531,6 +2569,7 @@ fn sub_elementwise_f32_cuda_wrapper(
 fn mul_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2563,6 +2602,7 @@ fn mul_elementwise_f32_cuda_wrapper(
 fn div_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2595,6 +2635,7 @@ fn div_elementwise_f32_cuda_wrapper(
 fn maximum_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2627,6 +2668,7 @@ fn maximum_elementwise_f32_cuda_wrapper(
 fn minimum_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2663,6 +2705,7 @@ fn minimum_elementwise_f32_cuda_wrapper(
 fn relu_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2693,6 +2736,7 @@ fn relu_elementwise_f32_cuda_wrapper(
 fn neg_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2723,6 +2767,7 @@ fn neg_elementwise_f32_cuda_wrapper(
 fn sqr_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2753,6 +2798,7 @@ fn sqr_elementwise_f32_cuda_wrapper(
 fn sqrt_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2783,6 +2829,7 @@ fn sqrt_elementwise_f32_cuda_wrapper(
 fn recip_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2813,6 +2860,7 @@ fn recip_elementwise_f32_cuda_wrapper(
 fn abs_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2843,6 +2891,7 @@ fn abs_elementwise_f32_cuda_wrapper(
 fn tanh_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2873,6 +2922,7 @@ fn tanh_elementwise_f32_cuda_wrapper(
 fn exp_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2903,6 +2953,7 @@ fn exp_elementwise_f32_cuda_wrapper(
 fn log_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2933,6 +2984,7 @@ fn log_elementwise_f32_cuda_wrapper(
 fn sin_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2963,6 +3015,7 @@ fn sin_elementwise_f32_cuda_wrapper(
 fn cos_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -2993,6 +3046,7 @@ fn cos_elementwise_f32_cuda_wrapper(
 fn sigmoid_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3023,6 +3077,7 @@ fn sigmoid_elementwise_f32_cuda_wrapper(
 fn silu_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3055,6 +3110,7 @@ fn silu_elementwise_f32_cuda_wrapper(
 fn gelu_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3088,6 +3144,7 @@ fn gelu_elementwise_f32_cuda_wrapper(
 fn step_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3122,6 +3179,7 @@ fn step_elementwise_f32_cuda_wrapper(
 fn sum_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3163,6 +3221,7 @@ fn sum_reduce_f32_cuda_wrapper(
 fn max_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3204,6 +3263,7 @@ fn max_reduce_f32_cuda_wrapper(
 fn min_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3247,6 +3307,7 @@ fn min_reduce_f32_cuda_wrapper(
 fn mean_reduce_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 {
@@ -3289,6 +3350,7 @@ fn mean_reduce_f32_cuda_wrapper(
 fn affine_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
@@ -3332,6 +3394,7 @@ fn affine_f32_cuda_wrapper(
 fn cast_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
@@ -3362,6 +3425,7 @@ fn cast_cuda_wrapper(
 fn matmul_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -4026,7 +4090,7 @@ mod tests {
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 
         // 6. Call the dispatch wrapper.
-        kernel(&inputs, &mut outputs, &OpParams::None).expect("kernel");
+        kernel(&inputs, &mut outputs, &[], &OpParams::None).expect("kernel");
 
         // 7. Verify output bytes match elementwise sum.
         let out_guard = outputs[0].read().unwrap();
@@ -4053,7 +4117,7 @@ mod tests {
         let inputs = vec![Arc::new(RwLock::new(lhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 
-        let result = kernel(&inputs, &mut outputs, &OpParams::None);
+        let result = kernel(&inputs, &mut outputs, &[], &OpParams::None);
         assert!(result.is_err());
     }
 
