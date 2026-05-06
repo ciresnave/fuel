@@ -3207,6 +3207,42 @@ fn mean_reduce_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(Affine, F32, Cuda)`. Element-wise
+/// `y = mul * x + add` via the `affine_f32` PTX kernel, on byte-shaped
+/// CUDA storage. Mirrors the CPU `affine_f32_cpu_wrapper`.
+#[cfg(feature = "cuda")]
+fn affine_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "affine_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (mul, add) = match params {
+        OpParams::Affine { mul, add } => (*mul as f32, *add as f32),
+        other => {
+            return Err(Error::Msg(format!(
+                "affine_f32_cuda_wrapper: expected OpParams::Affine, got {:?}",
+                other,
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::affine_f32(src_cuda, mul, add)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(MatMul, F32, Cuda)`. First non-PTX, non-
 /// element-wise op through the unified binding table — the underlying
 /// implementation is cuBLAS `gemm_strided_batched_ex`, not a launched
@@ -3300,6 +3336,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MeanReduce,         f32_dt, cuda, mean_reduce_f32_cuda_wrapper);
 
     table.register(MatMul,             f32_dt, cuda, matmul_f32_cuda_wrapper);
+    table.register(Affine,             f32_dt, cuda, affine_f32_cuda_wrapper);
 }
 
 // =============================================================================

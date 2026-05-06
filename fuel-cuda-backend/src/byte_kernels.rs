@@ -229,7 +229,7 @@ pub fn mean_reduce_f32(
         .bt());
     }
     let inv = 1.0_f32 / divisor as f32;
-    affine_scale_f32(&sum, inv)
+    affine_f32(&sum, inv, 0.0)
 }
 
 /// Batched row-major F32 matmul through cuBLAS, on byte-shaped inputs.
@@ -439,18 +439,21 @@ pub fn matmul_f32(
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, need_out))
 }
 
-/// Element-wise multiply-by-scalar via `affine_f32` (`mul, add=0`).
+/// Element-wise affine `y = mul * x + add` for one F32 `CudaStorageBytes`.
+/// Backs `OpKind::Affine` (and is the building block `mean_reduce_f32`
+/// uses for its post-sum scaling step). The legacy `Affine` struct
+/// in `storage.rs` provides the same math; this is the byte-level
+/// path through the unified binding table.
+///
 /// Allocates a fresh output buffer (the affine kernel's signature
-/// has separate `inp` and `out` pointers, and our wrapper takes
+/// has separate `inp` and `out` pointers, and the wrapper takes
 /// `&out` mutably so it can't alias `inp`). Output size matches
-/// input size. Used by [`mean_reduce_f32`] to scale the sum result;
-/// callable from other places if a generic scalar-multiply path is
-/// ever needed before a dedicated `Affine` op wrapper lands.
-fn affine_scale_f32(src: &CudaStorageBytes, mul: f32) -> Result<CudaStorageBytes> {
+/// input size.
+pub fn affine_f32(src: &CudaStorageBytes, mul: f32, add: f32) -> Result<CudaStorageBytes> {
     let elem = std::mem::size_of::<f32>();
     if src.len_bytes() % elem != 0 {
         return Err(fuel_core_types::Error::Msg(format!(
-            "affine_scale_f32: src.len_bytes={} not a multiple of f32 size",
+            "affine_f32: src.len_bytes={} not a multiple of f32 size",
             src.len_bytes(),
         ))
         .bt());
@@ -472,7 +475,7 @@ fn affine_scale_f32(src: &CudaStorageBytes, mul: f32) -> Result<CudaStorageBytes
     builder.arg(src.buffer());
     builder.arg(&mut out);
     barg!(builder, mul);
-    barg!(builder, 0.0_f32); // add
+    barg!(builder, add);
     // SAFETY: kernel signature matches the args above — same shape
     // as the legacy `Map1::f` for `Affine`, just on byte buffers.
     unsafe { builder.launch(cfg) }.w()?;

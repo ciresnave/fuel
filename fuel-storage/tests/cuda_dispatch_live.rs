@@ -1205,6 +1205,47 @@ fn matmul_f32_gqa_through_binding_table() {
     assert_close(host_f32, &expected, 1e-4);
 }
 
+/// End-to-end: Affine F32 through the binding table. Element-wise
+/// `y = mul * x + add` via the `affine_f32` PTX kernel — also the
+/// kernel that backs `Op::AddScalar` (mul=1) and `Op::MulScalar`
+/// (add=0) at the graph layer. Inputs `[1, 2, 3, 4]`, mul=2, add=10
+/// → `[12, 14, 16, 18]`.
+#[test]
+#[ignore]
+fn affine_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs = [1.0_f32, 2.0, 3.0, 4.0];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
+        .expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::Affine, DType::F32, BackendId::Cuda)
+        .expect("lookup (Affine, F32, Cuda)");
+
+    let params = OpParams::Affine { mul: 2.0, add: 10.0 };
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_close(host_f32, &[12.0_f32, 14.0, 16.0, 18.0], 1e-5);
+}
+
 /// Smoke: looking up a binding before registration returns a clear
 /// `NoBackendForOp` error rather than panicking. Doesn't need a
 /// live GPU since we never actually invoke a kernel.
