@@ -829,6 +829,62 @@ pub fn reduce_sum_to<T: Float>(x: &RefTensor<T>, target: &Shape) -> RefTensor<T>
     RefTensor::from_vec(out, target.clone())
 }
 
+/// Max-reduce a tensor to a target shape — the max-symmetric counterpart
+/// of [`reduce_sum_to`]. Same alignment rules, different reduction:
+/// every input element contributes to its projected output position via
+/// `max` instead of `+`. Output is initialized to `-infinity`.
+pub fn reduce_max_to<T: Float>(x: &RefTensor<T>, target: &Shape) -> RefTensor<T> {
+    let src_dims = x.shape().dims();
+    let dst_dims = target.dims();
+    assert!(
+        dst_dims.len() <= src_dims.len(),
+        "reduce_max_to: target rank {} exceeds source rank {}",
+        dst_dims.len(),
+        src_dims.len(),
+    );
+    let pad = src_dims.len() - dst_dims.len();
+    for (i, &d) in dst_dims.iter().enumerate() {
+        let s = src_dims[pad + i];
+        assert!(
+            d == s || d == 1,
+            "reduce_max_to: source dim {} ({s}) is not broadcast-compatible with target dim {i} ({d})",
+            pad + i,
+        );
+    }
+
+    let out_count: usize = if dst_dims.is_empty() {
+        1
+    } else {
+        dst_dims.iter().product()
+    };
+    let mut out = vec![T::neg_infinity(); out_count];
+    let src_strides = row_major_strides(src_dims);
+    let dst_strides = row_major_strides(dst_dims);
+    let src = x.as_slice();
+
+    for src_flat in 0..src.len() {
+        let mut remainder = src_flat;
+        let mut src_multi = vec![0_usize; src_dims.len()];
+        for i in 0..src_dims.len() {
+            src_multi[i] = remainder / src_strides[i];
+            remainder %= src_strides[i];
+        }
+        let mut dst_flat = 0_usize;
+        for i in 0..dst_dims.len() {
+            let coord = if dst_dims[i] == 1 {
+                0
+            } else {
+                src_multi[pad + i]
+            };
+            dst_flat += coord * dst_strides[i];
+        }
+        if src[src_flat] > out[dst_flat] {
+            out[dst_flat] = src[src_flat];
+        }
+    }
+    RefTensor::from_vec(out, target.clone())
+}
+
 // ---------- broadcasting to a target shape --------------------------------
 
 /// Broadcast `x` to `target_shape` using NumPy rules: right-align, pad the

@@ -401,6 +401,7 @@ pub fn eval_node_with_op(
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
+        Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
 
         // --- reductions to scalar ---
         Op::SumAll => unary!(inputs, cache, ops::sum_all),
@@ -657,6 +658,21 @@ fn eval_reduce_sum_to(
         AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::reduce_sum_to(t, target)),
         AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::reduce_sum_to(t, target)),
         AnyRefTensor::U32(_) => panic!("reduce_sum_to: not supported on U32 (index) tensors"),
+    }
+}
+
+fn eval_reduce_max_to(
+    target: &Shape,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let src = cache.get(&inputs[0]).expect("topo order missing reduce_max_to input");
+    match src {
+        AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::reduce_max_to(t, target)),
+        AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::reduce_max_to(t, target)),
+        AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::reduce_max_to(t, target)),
+        AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::reduce_max_to(t, target)),
+        AnyRefTensor::U32(_) => panic!("reduce_max_to: not supported on U32 (index) tensors"),
     }
 }
 
@@ -1902,6 +1918,32 @@ mod tests {
         let y = x.reduce_sum_to(Shape::from_dims(&[3, 1]));
         // row sums: 10, 26, 42
         assert_eq!(realize_f32(&y).as_slice(), &[10.0, 26.0, 42.0]);
+    }
+
+    #[test]
+    fn realize_reduce_max_to_along_leading_dim() {
+        // [2, 3] → [3]: max along the leading dim.
+        //   [[1, 5, 3], [4, 2, 6]] → [4, 5, 6]
+        let x = Tensor::from_f32(
+            vec![1.0, 5.0, 3.0, 4.0, 2.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let y = x.reduce_max_to(Shape::from_dims(&[3]));
+        assert_eq!(realize_f32(&y).as_slice(), &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn realize_reduce_max_to_collapses_size_one() {
+        // [3, 4] → [3, 1]: max within each row.
+        let x = Tensor::from_f32(
+            vec![1.0, 7.0, 3.0, 4.0, 12.0, 6.0, 5.0, 8.0, 9.0, 10.0, 11.0, 2.0],
+            Shape::from_dims(&[3, 4]),
+            cpu_dev(),
+        );
+        let y = x.reduce_max_to(Shape::from_dims(&[3, 1]));
+        // row maxes: 7, 12, 11
+        assert_eq!(realize_f32(&y).as_slice(), &[7.0, 12.0, 11.0]);
     }
 
     #[test]
