@@ -29,20 +29,21 @@ use crate::error::WrapErr;
 use crate::storage::SlicePtrOrNull;
 
 /// Phase 7.5 first CUDA kernel through the unified path.
-/// Element-wise add of two F32 `CudaStorageBytes`. Both inputs must
-/// have the same byte length (== same element count for F32). Output
+/// Element-wise add of two F32 `CudaStorageBytes`. Layouts describe how
+/// the kernel walks the input bytes: when both layouts are contiguous +
+/// zero-offset, the contiguous fast path is used; otherwise the kernel
+/// walks input strides explicitly and the result is shaped by
+/// `lhs_layout` (which equals `rhs_layout.shape()` when both come from
+/// the executor — Op::BroadcastTo normalizes shapes upstream). Output
 /// is freshly allocated on the same device as `lhs`; caller is
 /// responsible for storing it where the unified executor expects it.
-///
-/// Auto-Contiguize is assumed: this wrapper passes null for the
-/// dims/strides side-band, selecting the kernel's contiguous fast
-/// path. Strided inputs through the unified path are an A5 follow-on
-/// (Layout-on-KernelRef extension).
 pub fn add_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
 ) -> Result<CudaStorageBytes> {
-    binary_elementwise_f32(lhs, rhs, "badd_f32")
+    binary_elementwise_f32(lhs, rhs, lhs_layout, rhs_layout, "badd_f32")
 }
 
 /// Element-wise subtraction (lhs - rhs) of two F32 `CudaStorageBytes`.
@@ -51,40 +52,50 @@ pub fn add_elementwise_f32(
 pub fn sub_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
 ) -> Result<CudaStorageBytes> {
-    binary_elementwise_f32(lhs, rhs, "bsub_f32")
+    binary_elementwise_f32(lhs, rhs, lhs_layout, rhs_layout, "bsub_f32")
 }
 
 /// Element-wise multiplication (lhs * rhs) of two F32 `CudaStorageBytes`.
 pub fn mul_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
 ) -> Result<CudaStorageBytes> {
-    binary_elementwise_f32(lhs, rhs, "bmul_f32")
+    binary_elementwise_f32(lhs, rhs, lhs_layout, rhs_layout, "bmul_f32")
 }
 
 /// Element-wise division (lhs / rhs) of two F32 `CudaStorageBytes`.
 pub fn div_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
 ) -> Result<CudaStorageBytes> {
-    binary_elementwise_f32(lhs, rhs, "bdiv_f32")
+    binary_elementwise_f32(lhs, rhs, lhs_layout, rhs_layout, "bdiv_f32")
 }
 
 /// Element-wise maximum (max(lhs, rhs)) of two F32 `CudaStorageBytes`.
 pub fn maximum_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
 ) -> Result<CudaStorageBytes> {
-    binary_elementwise_f32(lhs, rhs, "bmaximum_f32")
+    binary_elementwise_f32(lhs, rhs, lhs_layout, rhs_layout, "bmaximum_f32")
 }
 
 /// Element-wise minimum (min(lhs, rhs)) of two F32 `CudaStorageBytes`.
 pub fn minimum_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
 ) -> Result<CudaStorageBytes> {
-    binary_elementwise_f32(lhs, rhs, "bminimum_f32")
+    binary_elementwise_f32(lhs, rhs, lhs_layout, rhs_layout, "bminimum_f32")
 }
 
 /// Element-wise ReLU (max(x, 0)) of one F32 `CudaStorageBytes`.
@@ -552,26 +563,29 @@ pub fn cast(
     ))
 }
 
-/// Shared launch path for F32 elementwise binary ops. Validates equal
-/// byte lengths, allocates a fresh device buffer, launches the
-/// fuel-cuda-kernels BINARY function identified by `kernel_name`,
-/// and returns the result. Synchronizes the default stream so the
-/// result is observable on return (sync KernelRef per locked design
-/// decision).
+/// Shared launch path for F32 elementwise binary ops. Layouts pick the
+/// path: both contiguous + zero-offset → fast path (matches the legacy
+/// pre-Layout-on-Node behavior); otherwise → strided path that hands
+/// the kernel a `[dims | lhs_strides | rhs_strides]` blob and lets it
+/// walk strides itself. The strided path is what enables broadcast (a
+/// dim with stride 0 walks one element repeatedly) and transpose
+/// without prior materialization.
+///
+/// Output element count comes from `lhs_layout.shape()`, which equals
+/// `rhs_layout.shape()` for executor-driven calls (Op::BroadcastTo
+/// normalizes both partners to the broadcast shape). Direct callers
+/// (tests) must uphold the same invariant.
+///
+/// Synchronizes the default stream so the result is observable on
+/// return (sync KernelRef per locked design decision).
 fn binary_elementwise_f32(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
+    lhs_layout: &Layout,
+    rhs_layout: &Layout,
     kernel_name: &'static str,
 ) -> Result<CudaStorageBytes> {
     let elem = std::mem::size_of::<f32>();
-    if lhs.len_bytes() != rhs.len_bytes() {
-        return Err(fuel_core_types::Error::Msg(format!(
-            "{kernel_name}: lhs.len_bytes={} != rhs.len_bytes={}",
-            lhs.len_bytes(),
-            rhs.len_bytes(),
-        ))
-        .bt());
-    }
     if lhs.len_bytes() % elem != 0 {
         return Err(fuel_core_types::Error::Msg(format!(
             "{kernel_name}: lhs.len_bytes={} not a multiple of f32 size",
@@ -579,32 +593,75 @@ fn binary_elementwise_f32(
         ))
         .bt());
     }
-    let elem_count = lhs.len_bytes() / elem;
+    if rhs.len_bytes() % elem != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: rhs.len_bytes={} not a multiple of f32 size",
+            rhs.len_bytes(),
+        ))
+        .bt());
+    }
+    let lhs_dims = lhs_layout.shape().dims();
+    let rhs_dims = rhs_layout.shape().dims();
+    if lhs_dims != rhs_dims {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: layouts disagree on shape (lhs {:?} vs rhs {:?}); \
+             broadcast partners must be normalized to a common shape upstream",
+            lhs_dims, rhs_dims,
+        ))
+        .bt());
+    }
+    let elem_count = lhs_layout.shape().elem_count();
+    let out_bytes = elem_count * elem;
     let device = lhs.device().clone();
     if elem_count == 0 {
         return CudaStorageBytes::alloc(&device, 0);
     }
-    let mut out = device.alloc_zeros::<u8>(lhs.len_bytes())?;
+
+    let lhs_fast = lhs_layout.is_contiguous() && lhs_layout.start_offset() == 0;
+    let rhs_fast = rhs_layout.is_contiguous() && rhs_layout.start_offset() == 0;
+    let take_fast_path = lhs_fast && rhs_fast;
+
+    let mut out = device.alloc_zeros::<u8>(out_bytes)?;
     let cfg = LaunchConfig::for_num_elems(elem_count as u32);
     let func = device.get_or_load_func(kernel_name, &kernels::BINARY)?;
-    let dims_strides: SlicePtrOrNull<usize> = SlicePtrOrNull::Null;
+
+    let dims_strides: SlicePtrOrNull<usize> = if take_fast_path {
+        // Fast path: lhs.len_bytes() must equal out_bytes (the contiguous
+        // fast loop reads `lhs[i]` and `rhs[i]` for i in 0..elem_count).
+        if lhs.len_bytes() != out_bytes || rhs.len_bytes() != out_bytes {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{kernel_name}: contiguous fast path requires byte sizes \
+                 equal to elem_count*4 — got lhs={}, rhs={}, expected={}",
+                lhs.len_bytes(),
+                rhs.len_bytes(),
+                out_bytes,
+            ))
+            .bt());
+        }
+        SlicePtrOrNull::Null
+    } else {
+        // Strided path: kernel reads the [dims | lhs_strides | rhs_strides]
+        // blob and walks indices itself. Stride 0 on any axis collapses
+        // that axis to repeated reads, which is exactly broadcast.
+        SlicePtrOrNull::Ptr(device.clone_htod(
+            &[lhs_dims, lhs_layout.stride(), rhs_layout.stride()].concat(),
+        )?)
+    };
+
     let mut builder = func.builder();
     barg!(builder, elem_count);
-    barg!(builder, 1_usize); // ndims (ignored on the contiguous path)
+    barg!(builder, lhs_dims.len());
     dims_strides.builder_arg(&mut builder);
     builder.arg(lhs.buffer());
     builder.arg(rhs.buffer());
     builder.arg(&mut out);
-    // SAFETY: kernel signature matches the args above — same shape as
-    // the existing legacy `Map2::f` for `BinaryOpT`, just on byte
-    // buffers. Kernel-side validation is the same.
+    // SAFETY: kernel signature matches the args above. Both fast and
+    // strided variants are exposed by the same PTX function via
+    // BINARY_OP_OUT in fuel-cuda-kernels — the kernel branches on
+    // `dims_and_strides == nullptr` internally.
     unsafe { builder.launch(cfg) }.w()?;
     device.synchronize()?;
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out),
-        device,
-        lhs.len_bytes(),
-    ))
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, out_bytes))
 }
 
 /// Shared launch path for F32 elementwise unary ops. Mirrors

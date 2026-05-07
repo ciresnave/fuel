@@ -53,6 +53,17 @@ fn assert_close(actual: &[f32], expected: &[f32], eps: f32) {
     }
 }
 
+/// Build a 3-element layouts slice `[lhs, rhs, output]` for binary-op
+/// direct-invocation tests where all three tensors share the same
+/// contiguous shape. The wrapper reads `layouts[0]` and `layouts[1]`
+/// to decide fast vs strided path; the output layout is unused by the
+/// wrapper today (it allocates from `lhs_layout.shape()`) but must be
+/// present to satisfy the binary-input layouts contract.
+fn binary_layouts(shape: &[usize]) -> Vec<Layout> {
+    let l = Layout::contiguous(Shape::from(shape.to_vec()));
+    vec![l.clone(), l.clone(), l]
+}
+
 /// End-to-end: register the CUDA wrapper, look it up via the
 /// binding table, invoke it on two F32 CUDA inputs, read back via
 /// D2H, assert elementwise sum.
@@ -84,7 +95,7 @@ fn add_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &binary_layouts(&[4]),
         &OpParams::None,
     )
     .expect("kernel call");
@@ -127,7 +138,7 @@ fn sub_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &binary_layouts(&[4]),
         &OpParams::None,
     )
     .expect("kernel call");
@@ -167,7 +178,7 @@ fn mul_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &binary_layouts(&[4]),
         &OpParams::None,
     )
     .expect("kernel call");
@@ -207,7 +218,7 @@ fn div_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &binary_layouts(&[4]),
         &OpParams::None,
     )
     .expect("kernel call");
@@ -247,7 +258,7 @@ fn maximum_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &binary_layouts(&[4]),
         &OpParams::None,
     )
     .expect("kernel call");
@@ -287,7 +298,7 @@ fn minimum_elementwise_f32_through_binding_table() {
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &binary_layouts(&[4]),
         &OpParams::None,
     )
     .expect("kernel call");
@@ -299,6 +310,84 @@ fn minimum_elementwise_f32_through_binding_table() {
     let host = c.to_cpu_bytes().expect("d2h");
     let host_f32: &[f32] = bytemuck::cast_slice(&host);
     assert_eq!(host_f32, &[1.0_f32, 2.0, -2.0, 4.0]);
+}
+
+/// PR 2 broadcast validation. The binary F32 wrapper now reads input
+/// layouts and routes broadcast (non-contiguous) inputs through the
+/// PTX kernel's strided path instead of demanding equal byte lengths.
+/// Direct-invocation test: `lhs` is `[B, N, 1]` actual storage with a
+/// broadcast layout to `[B, N, M]` (stride [N, 1, 0], same start
+/// offset 0); `rhs` is `[B, N, M]` contiguous. Result is element-wise
+/// `lhs[b, n, 0] - rhs[b, n, m]` walked over the broadcasted shape.
+#[test]
+#[ignore]
+fn sub_elementwise_f32_broadcast_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // Shape: B=2, N=3, M=4. lhs is [B, N, 1] with 6 storage elements
+    // that broadcast across M; rhs is [B, N, M] contiguous with 24
+    // elements; output is [B, N, M] (24 elements).
+    const B: usize = 2;
+    const N: usize = 3;
+    const M: usize = 4;
+    let lhs_storage: Vec<f32> = (0..(B * N)).map(|i| (i + 1) as f32).collect();
+    let rhs_storage: Vec<f32> = (0..(B * N * M)).map(|i| (i + 1) as f32 * 0.5).collect();
+
+    let lhs = build_storage_cuda(&dev, &lhs_storage);
+    let rhs = build_storage_cuda(&dev, &rhs_storage);
+    let out_bytes = CudaStorageBytes::alloc(&dev, B * N * M * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    // lhs layout: shape [B, N, M] but strides [N, 1, 0] — the trailing
+    // M axis broadcasts (stride 0 reads the same element repeatedly).
+    // Built by chaining contiguous([B,N,1]) → broadcast_as([B,N,M]).
+    let lhs_layout = Layout::contiguous(Shape::from(vec![B, N, 1]))
+        .broadcast_as(Shape::from(vec![B, N, M]))
+        .expect("broadcast_as");
+    let rhs_layout = Layout::contiguous(Shape::from(vec![B, N, M]));
+    let out_layout = Layout::contiguous(Shape::from(vec![B, N, M]));
+    let layouts = vec![lhs_layout, rhs_layout, out_layout];
+
+    let kernel = table
+        .lookup(OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (SubElementwise, F32, Cuda)");
+
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &OpParams::None,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+
+    // CPU reference — `lhs[b, n, m] = lhs_storage[b*N + n]` (broadcast),
+    // `rhs[b, n, m] = rhs_storage[b*N*M + n*M + m]` (contiguous).
+    let mut expected = Vec::with_capacity(B * N * M);
+    for b in 0..B {
+        for n in 0..N {
+            for m in 0..M {
+                let l = lhs_storage[b * N + n];
+                let r = rhs_storage[b * N * M + n * M + m];
+                expected.push(l - r);
+            }
+        }
+    }
+    assert_eq!(host_f32, expected.as_slice());
 }
 
 /// End-to-end: ReluElementwise F32 through the binding table.
