@@ -392,6 +392,19 @@ pub enum Op {
     /// Backends that don't ship a fused kernel fall back to the
     /// primitive decomposition.
     RmsNormLastDimBackward { eps: f64 },
+    /// Backward for [`Op::ReduceMaxTo`]. Inputs:
+    /// `(original_x, upstream)`. Output shape == `original_x.shape`;
+    /// the upstream's shape is the forward `target_shape`. Routes the
+    /// upstream gradient to the position(s) where x equals its
+    /// per-window max; when multiple positions are tied, the gradient
+    /// is split equally (fair-share subgradient).
+    ///
+    /// Carries no params: both shape contracts (input shape, output
+    /// target shape) flow from the input tensors at execution time.
+    /// Mirrors the structure of [`Op::SoftmaxLastDimBackward`] —
+    /// fused-backward for an op whose IR-level decomposition would
+    /// need an equality primitive that doesn't exist today.
+    ReduceMaxToBackward,
 
     // --- integer-producing reductions ---
     //
@@ -748,6 +761,7 @@ fn op_short_name(op: &Op) -> &'static str {
                                  => "LayerNormLastDimBackward",
         Op::RmsNormLastDimBackward { .. }
                                  => "RmsNormLastDimBackward",
+        Op::ReduceMaxToBackward  => "ReduceMaxToBackward",
         Op::ArgMaxDim(_)         => "ArgMaxDim",
         Op::ArgMinDim(_)         => "ArgMinDim",
         Op::Concat{..}           => "Concat",
@@ -4030,20 +4044,23 @@ impl Tensor {
                     );
                 }
                 Op::ReduceMaxTo(_) => {
-                    // Backward through max-selection routes the upstream
-                    // gradient only to the argmax position, which
-                    // requires holding the original input + recomputing
-                    // an argmax. PR 3.5 ships ReduceMaxTo without
-                    // backward; add the rule when a real consumer needs
-                    // it (e.g. training models that use a max-pool-style
-                    // primitive composed via this op).
-                    panic!(
-                        "backward: ReduceMaxTo is not yet implemented \
-                         (PR 3.5 plumbed the forward op for SoftmaxLastDim \
-                         lowering; the backward routes upstream to the \
-                         argmax position and requires original-input \
-                         retention — add the rule when needed)."
+                    // Forward: y = reduce_max_to(x, target).
+                    // Backward: route upstream to position(s) where
+                    // x equals its per-window max via Op::ReduceMaxToBackward
+                    // (fused; takes (x, upstream) and emits grad_x of
+                    // x.shape). Tied maxes share the gradient equally
+                    // (fair-share subgradient).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::ReduceMaxToBackward,
+                        vec![x, up_id],
+                        x_shape,
+                        dtype,
                     );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::QMatMul { .. } => {
                     // Quantized matmul is only used for frozen weights
@@ -4062,7 +4079,8 @@ impl Tensor {
                 }
                 Op::SoftmaxLastDimBackward
                 | Op::LayerNormLastDimBackward { .. }
-                | Op::RmsNormLastDimBackward { .. } => {
+                | Op::RmsNormLastDimBackward { .. }
+                | Op::ReduceMaxToBackward => {
                     // Higher-order gradients through the backward helper
                     // ops are not supported in the MVP — they'd require
                     // either a full symbolic-derivative pass over the
@@ -4070,8 +4088,8 @@ impl Tensor {
                     // helper. For now, panic with a clear message.
                     panic!(
                         "backward: higher-order gradients through \
-                         softmax/layer_norm backward helpers are not yet \
-                         supported in the MVP."
+                         softmax/layer_norm/rms_norm/reduce_max_to backward \
+                         helpers are not yet supported in the MVP."
                     );
                 }
                 Op::IndexSelect { dim } => {

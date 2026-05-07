@@ -400,6 +400,7 @@ fn eval_node(
         Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
         Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
         Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),
+        Op::ReduceMaxToBackward => eval_reduce_max_to_backward(inputs, cache),
         Op::LayerNormLastDimBackward { eps } => {
             eval_layer_norm_last_dim_backward(*eps, inputs, cache)
         }
@@ -1055,6 +1056,38 @@ fn eval_softmax_last_dim_backward(
             AnyTensor::F16(ops::softmax_last_dim_backward(y, g))
         }
         (a, b) => panic!("softmax_bwd dtype mismatch: {:?} vs {:?}", a.dtype(), b.dtype()),
+    }
+}
+
+fn eval_reduce_max_to_backward(
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let x = cache.get(&inputs[0]).expect("reduce_max_to_bwd missing x");
+    let up = cache.get(&inputs[1]).expect("reduce_max_to_bwd missing upstream");
+    let target = match up {
+        AnyTensor::F32(t) => t.shape().clone(),
+        AnyTensor::F64(t) => t.shape().clone(),
+        AnyTensor::BF16(t) => t.shape().clone(),
+        AnyTensor::F16(t) => t.shape().clone(),
+        AnyTensor::U32(_) => panic!(
+            "reduce_max_to_backward: upstream must be float, got U32"
+        ),
+    };
+    match (x, up) {
+        (AnyTensor::F32(x), AnyTensor::F32(up)) => {
+            AnyTensor::F32(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (AnyTensor::F64(x), AnyTensor::F64(up)) => {
+            AnyTensor::F64(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (AnyTensor::BF16(x), AnyTensor::BF16(up)) => {
+            AnyTensor::BF16(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (AnyTensor::F16(x), AnyTensor::F16(up)) => {
+            AnyTensor::F16(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (a, b) => panic!("reduce_max_to_bwd dtype mismatch: {:?} vs {:?}", a.dtype(), b.dtype()),
     }
 }
 
