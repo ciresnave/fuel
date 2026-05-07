@@ -36,9 +36,497 @@
 //! about and returns the rewritten roots. Callers use these to update
 //! their `Tensor` handles.
 
-use crate::{topo_order_multi, Node, NodeId, Op, SharedGraph};
+use crate::{topo_order_multi, Graph, Node, NodeId, Op, SharedGraph};
 use fuel_core_types::{DeviceLocation, DType, Shape};
 use std::collections::HashMap;
+
+// ---- Rule registry framework ----------------------------------------------
+//
+// Optimization is a pipeline of rule-driven graph rewrites. Two rule
+// families:
+//
+// - `RuleFamily::Lowering` — high-level op → primitive subgraph. Exposes
+//   fusion opportunities and lets backends without a fused kernel run
+//   the composition through whichever primitives they DO have.
+// - `RuleFamily::Fusion` — recognized primitive subgraph → fused op.
+//   Recovers (or improves on) the original-flavour kernel where one
+//   exists.
+//
+// A `Rule` is `(matcher, rewriter)`. The driver in
+// [`RuleRegistry::optimize_to_fixpoint`] runs lowering rules to fixpoint
+// first, then fusion rules to fixpoint. End state is post-fusion: for
+// SoftmaxLastDim (whose lower and fuse rules are inverses of each
+// other) the round-trip is identity. For lowering rules that ship
+// without a fusion partner — RmsNorm, LayerNorm, Affine, Clamp — the
+// post-pipeline graph is the lowered form.
+//
+// PR 3 ships the framework + a single (lower, fuse) rule pair for
+// `Op::SoftmaxLastDim`. The locked design (see ROADMAP.md → Phase 7.5)
+// also covers transactional snapshots, in-flight switching, and budget
+// modes; those are subsequent PRs that wrap this synchronous loop
+// without rewriting it.
+
+/// Which family a [`Rule`] belongs to. Drives the phase ordering in
+/// [`RuleRegistry::optimize_to_fixpoint`]: lowering runs to fixpoint
+/// first, then fusion. This ordering ensures inverse rule pairs
+/// converge cleanly — fusion has the last word, and its output is
+/// what the executor runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuleFamily {
+    /// High-level op → primitive subgraph. Always grows the graph.
+    Lowering,
+    /// Recognized primitive subgraph → fused op. Always shrinks the
+    /// graph (the fused op replaces the canonical subgraph's output;
+    /// the orphaned subgraph nodes remain in the arena but are
+    /// unreachable from the user's roots after consumer rewiring).
+    Fusion,
+}
+
+/// One graph-rewrite rule. A rule pairs a structural matcher with a
+/// rewriter that emits replacement nodes and records the
+/// `(old_id → new_id)` remapping so the driver can rewrite consumer
+/// input edges to point at the replacement.
+///
+/// Rules don't need to update the layout side-table for view nodes
+/// they insert: [`Graph::push`] auto-populates layout for view ops
+/// from the input's layout.
+///
+/// Rules don't express ordering edges for destructive ops they emit
+/// (e.g. `Op::Release`); [`derive_ordering`] does that automatically
+/// at execution-plan time.
+pub trait Rule: Send + Sync {
+    /// Stable, human-readable name. Shows up in panic messages and
+    /// debug traces.
+    fn name(&self) -> &'static str;
+
+    /// Which family this rule belongs to. Determines pass ordering.
+    fn family(&self) -> RuleFamily;
+
+    /// Whether this rule can rewrite the node at `id`. Should be
+    /// pure — same inputs, same answer. Called once per node per
+    /// pass; the first matching rule wins.
+    fn matches(&self, graph: &Graph, id: NodeId) -> bool;
+
+    /// Apply the rewrite: append fresh nodes to the graph, declare
+    /// any side-effect roots if the rewrite emits side-effecting
+    /// ops, and write `remap.insert(id, replacement_id)` so the
+    /// driver can redirect consumer edges. Calling this method
+    /// implies [`matches`](Self::matches) returned `true` for the
+    /// same `(graph, id)` — rewriters can rely on the structure
+    /// the matcher checked for.
+    fn rewrite(&self, graph: &mut Graph, id: NodeId, remap: &mut HashMap<NodeId, NodeId>);
+}
+
+/// A registry of [`Rule`]s. Drives optimize-to-fixpoint via
+/// [`Self::optimize_to_fixpoint`]: lowering rules run to fixpoint,
+/// then fusion rules run to fixpoint. The locked design (ROADMAP.md
+/// Phase 7.5) intends this entry point to be wrapped in transactions
+/// in subsequent PRs without rewriting the loop body — keep this API
+/// stable for that future evolution.
+#[derive(Default)]
+pub struct RuleRegistry {
+    rules: Vec<Box<dyn Rule>>,
+}
+
+impl RuleRegistry {
+    /// Empty registry. Use [`Self::with_rule`] to add rules, or
+    /// [`Self::default_rules`] / [`Self::lowering_only`] for the
+    /// shipped configurations.
+    pub fn new() -> Self { Self { rules: Vec::new() } }
+
+    /// Append a rule. Returns self for builder-style chaining.
+    pub fn with_rule(mut self, rule: Box<dyn Rule>) -> Self {
+        self.rules.push(rule);
+        self
+    }
+
+    /// Lower + fuse rules for everything PR 3 ships. Round-trip is
+    /// identity for canonical SoftmaxLastDim graphs (the lowered
+    /// subgraph is structurally re-fused). Use this in production
+    /// realize paths.
+    pub fn default_rules() -> Self {
+        Self::new()
+            .with_rule(Box::new(SoftmaxLastDimLowerRule))
+            .with_rule(Box::new(SoftmaxLastDimFuseRule))
+    }
+
+    /// Lowering rules only — no fusion. Use this when the test or
+    /// caller wants the lowered form to be the post-pipeline state
+    /// (e.g. equivalence-testing the composed-math path on a
+    /// backend that has the primitives but not the fused kernel).
+    pub fn lowering_only() -> Self {
+        Self::new().with_rule(Box::new(SoftmaxLastDimLowerRule))
+    }
+
+    /// Number of registered rules.
+    pub fn len(&self) -> usize { self.rules.len() }
+
+    /// Whether the registry has any rules.
+    pub fn is_empty(&self) -> bool { self.rules.is_empty() }
+
+    /// Run lowering rules to fixpoint, then fusion rules to fixpoint.
+    /// Returns the (possibly-rewritten) roots — callers use these to
+    /// replace their `Tensor` handles.
+    ///
+    /// The two-phase ordering is important: rules that are inverses
+    /// of each other (e.g. SoftmaxLastDim's lower + fuse pair)
+    /// would oscillate in a single mixed-family fixpoint loop.
+    /// Phase ordering breaks the oscillation and gives fusion the
+    /// last word.
+    pub fn optimize_to_fixpoint(
+        &self,
+        graph: &SharedGraph,
+        roots: &[NodeId],
+    ) -> Vec<NodeId> {
+        let mut roots = roots.to_vec();
+        if self.rules.is_empty() { return roots; }
+        // Phase 1: lowering to fixpoint.
+        loop {
+            let any = self.run_pass(RuleFamily::Lowering, graph, &mut roots);
+            if !any { break; }
+        }
+        // Phase 2: fusion to fixpoint.
+        loop {
+            let any = self.run_pass(RuleFamily::Fusion, graph, &mut roots);
+            if !any { break; }
+        }
+        roots
+    }
+
+    /// One pass over the graph for a single rule family. Returns
+    /// `true` if any rule fired during the pass — caller loops until
+    /// `false` for fixpoint.
+    fn run_pass(
+        &self,
+        family: RuleFamily,
+        graph: &SharedGraph,
+        roots: &mut Vec<NodeId>,
+    ) -> bool {
+        let order = {
+            let g = graph.read().unwrap();
+            topo_order_multi(&g, roots)
+        };
+
+        // Iterate this pass's family-rules in the order they were
+        // registered. First match wins per node.
+        let family_rules: Vec<&Box<dyn Rule>> = self
+            .rules
+            .iter()
+            .filter(|r| r.family() == family)
+            .collect();
+        if family_rules.is_empty() { return false; }
+
+        let mut remap: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut any_fired = false;
+
+        for id in order {
+            // Skip nodes that an earlier rule in this pass already
+            // rewrote — the consumer-edge rewrite happens after the
+            // pass, so the original node's structure still looks
+            // matchable mid-pass; we use `remap` as a "this pass
+            // already handled it" marker.
+            if remap.contains_key(&id) { continue; }
+
+            let firing_rule_idx = {
+                let g = graph.read().unwrap();
+                family_rules.iter().position(|r| r.matches(&g, id))
+            };
+            if let Some(idx) = firing_rule_idx {
+                let mut g = graph.write().unwrap();
+                family_rules[idx].rewrite(&mut g, id, &mut remap);
+                any_fired = true;
+            }
+        }
+
+        if !any_fired { return false; }
+
+        // Apply remap to every consumer's input list, in place. This
+        // is the moment the rewritten nodes become the live ones —
+        // any node whose inputs referenced a remapped id now reads
+        // from its replacement.
+        {
+            let mut g = graph.write().unwrap();
+            let n_nodes = g.len();
+            for nid in 0..n_nodes {
+                let inputs_len = g.node(NodeId(nid)).inputs.len();
+                for i in 0..inputs_len {
+                    let cur = g.node(NodeId(nid)).inputs[i];
+                    if let Some(&new) = remap.get(&cur) {
+                        g.rewrite_input(NodeId(nid), cur, new);
+                    }
+                }
+            }
+        }
+
+        // And update the user's roots so the next phase / the caller
+        // sees the canonical post-rewrite ids.
+        for r in roots.iter_mut() {
+            if let Some(&new) = remap.get(r) { *r = new; }
+        }
+
+        true
+    }
+}
+
+// ---- SoftmaxLastDim lower / fuse rule pair -------------------------------
+//
+// Lowered form (8 nodes, asymmetric — exploits existing Op::ReduceSumTo
+// to save one Reshape on the sum side; max side spends an extra
+// Reshape because Op::ReduceMaxTo doesn't exist yet — that's PR 3.5):
+//
+//   m   = MaxDim(last)(x)            # [..., last] -> [...]
+//   mk  = Reshape([..., 1])(m)       # add keepdim
+//   mb  = BroadcastTo([..., last])(mk)
+//   s   = Sub(x, mb)                 # numerically-stable shift
+//   e   = Exp(s)
+//   d   = ReduceSumTo([..., 1])(e)   # sum-keepdim in one node
+//   db  = BroadcastTo([..., last])(d)
+//   out = Div(e, db)
+//
+// The compile_one auto-Contiguize at the executor catches any backend
+// that doesn't support the strided BroadcastTo output as a kernel
+// input. PR 2-wide lets CUDA binary F32 kernels consume the broadcast
+// strides directly without materialization.
+
+/// Lower `Op::SoftmaxLastDim(x)` to the canonical 8-node primitive
+/// subgraph. Round-trips with [`SoftmaxLastDimFuseRule`] — applying
+/// both to fixpoint yields a graph structurally identical to the
+/// input.
+pub struct SoftmaxLastDimLowerRule;
+
+impl Rule for SoftmaxLastDimLowerRule {
+    fn name(&self) -> &'static str { "SoftmaxLastDimLower" }
+    fn family(&self) -> RuleFamily { RuleFamily::Lowering }
+
+    fn matches(&self, graph: &Graph, id: NodeId) -> bool {
+        let node = graph.node(id);
+        if !matches!(node.op, Op::SoftmaxLastDim) { return false; }
+        if node.inputs.len() != 1 { return false; }
+        // Need rank ≥ 1 for a "last dim" to exist.
+        node.shape.rank() >= 1
+    }
+
+    fn rewrite(&self, graph: &mut Graph, id: NodeId, remap: &mut HashMap<NodeId, NodeId>) {
+        let (x_id, x_shape, dtype) = {
+            let n = graph.node(id);
+            (n.inputs[0], n.shape.clone(), n.dtype)
+        };
+        let dims = x_shape.dims().to_vec();
+        let rank = dims.len();
+        let last = rank - 1;
+        let last_dim = dims[last];
+
+        // Reduced shape: drop the last dim. e.g. [B, N, M] -> [B, N].
+        let reduced_dims: Vec<usize> = dims[..last].to_vec();
+        let reduced_shape = Shape::from_dims(&reduced_dims);
+
+        // Keepdim shape: replace last dim with 1. e.g. [B, N, M] -> [B, N, 1].
+        let mut keepdim_dims = dims.clone();
+        keepdim_dims[last] = 1;
+        let keepdim_shape = Shape::from_dims(&keepdim_dims);
+
+        // Step 1: m = MaxDim(last)(x)
+        let m_id = graph.push(Node {
+            op:     Op::MaxDim(last),
+            inputs: vec![x_id],
+            shape:  reduced_shape.clone(),
+            dtype,
+        });
+        // Step 2: mk = Reshape([..., 1])(m)
+        let mk_id = graph.push(Node {
+            op:     Op::Reshape(keepdim_shape.clone()),
+            inputs: vec![m_id],
+            shape:  keepdim_shape.clone(),
+            dtype,
+        });
+        // Step 3: mb = BroadcastTo([..., last])(mk)  [layout side-table
+        //         auto-populated by Graph::push since BroadcastTo is a
+        //         view op]
+        let mb_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![mk_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        // Step 4: s = Sub(x, mb)
+        let s_id = graph.push(Node {
+            op:     Op::Sub,
+            inputs: vec![x_id, mb_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        // Step 5: e = Exp(s)
+        let e_id = graph.push(Node {
+            op:     Op::Exp,
+            inputs: vec![s_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        // Step 6: d = ReduceSumTo([..., 1])(e) — sum-keepdim in one node
+        let d_id = graph.push(Node {
+            op:     Op::ReduceSumTo(keepdim_shape.clone()),
+            inputs: vec![e_id],
+            shape:  keepdim_shape,
+            dtype,
+        });
+        // Step 7: db = BroadcastTo([..., last])(d)  [layout auto-populated]
+        let db_id = graph.push(Node {
+            op:     Op::BroadcastTo(x_shape.clone()),
+            inputs: vec![d_id],
+            shape:  x_shape.clone(),
+            dtype,
+        });
+        // Step 8: out = Div(e, db)
+        let out_id = graph.push(Node {
+            op:     Op::Div,
+            inputs: vec![e_id, db_id],
+            shape:  x_shape,
+            dtype,
+        });
+        // Mark the explicit-strides note: last_dim is on the input;
+        // we don't need it after construction. Touched here only to
+        // silence unused-warning if/when this rule grows checks.
+        let _ = last_dim;
+
+        remap.insert(id, out_id);
+    }
+}
+
+/// Fuse the canonical 8-node SoftmaxLastDim subgraph back to a single
+/// `Op::SoftmaxLastDim` node. Round-trips with
+/// [`SoftmaxLastDimLowerRule`].
+///
+/// Conservative: only fires when every intermediate is consumed only
+/// within the canonical pattern (reading any intermediate elsewhere
+/// would mean fusing discards a value the user reads). The Exp node
+/// has exactly two consumers (ReduceSumTo on the sum side and Div as
+/// the numerator) — that's expected and not a bail.
+pub struct SoftmaxLastDimFuseRule;
+
+impl Rule for SoftmaxLastDimFuseRule {
+    fn name(&self) -> &'static str { "SoftmaxLastDimFuse" }
+    fn family(&self) -> RuleFamily { RuleFamily::Fusion }
+
+    fn matches(&self, graph: &Graph, id: NodeId) -> bool {
+        canonical_softmax_pattern(graph, id).is_some()
+    }
+
+    fn rewrite(&self, graph: &mut Graph, id: NodeId, remap: &mut HashMap<NodeId, NodeId>) {
+        let pattern = canonical_softmax_pattern(graph, id)
+            .expect("rewrite called with non-matching id — matcher contract violated");
+        let dtype = graph.node(id).dtype;
+        let shape = graph.node(id).shape.clone();
+        let new_id = graph.push(Node {
+            op:     Op::SoftmaxLastDim,
+            inputs: vec![pattern.x],
+            shape,
+            dtype,
+        });
+        remap.insert(id, new_id);
+    }
+}
+
+/// Canonical SoftmaxLastDim subgraph match. Walks back from a `Div`
+/// node and verifies the full asymmetric 8-node lowered structure.
+/// Returns the identified `x` (the original softmax input) on match.
+struct SoftmaxPatternMatch {
+    x: NodeId,
+}
+
+fn canonical_softmax_pattern(graph: &Graph, div_id: NodeId) -> Option<SoftmaxPatternMatch> {
+    let div = graph.node(div_id);
+    if !matches!(div.op, Op::Div) { return None; }
+    if div.inputs.len() != 2 { return None; }
+    let e_id = div.inputs[0];
+    let db_id = div.inputs[1];
+
+    // db = BroadcastTo([..., last])(d)
+    let db = graph.node(db_id);
+    if !matches!(db.op, Op::BroadcastTo(_)) { return None; }
+    if db.inputs.len() != 1 { return None; }
+    let d_id = db.inputs[0];
+
+    // d = ReduceSumTo([..., 1])(e)  — and same e as div.inputs[0]
+    let d = graph.node(d_id);
+    if !matches!(d.op, Op::ReduceSumTo(_)) { return None; }
+    if d.inputs.len() != 1 || d.inputs[0] != e_id { return None; }
+
+    // e = Exp(s)
+    let e = graph.node(e_id);
+    if !matches!(e.op, Op::Exp) { return None; }
+    if e.inputs.len() != 1 { return None; }
+    let s_id = e.inputs[0];
+
+    // s = Sub(x, mb)
+    let s = graph.node(s_id);
+    if !matches!(s.op, Op::Sub) { return None; }
+    if s.inputs.len() != 2 { return None; }
+    let x_id = s.inputs[0];
+    let mb_id = s.inputs[1];
+
+    // mb = BroadcastTo([..., last])(mk)
+    let mb = graph.node(mb_id);
+    if !matches!(mb.op, Op::BroadcastTo(_)) { return None; }
+    if mb.inputs.len() != 1 { return None; }
+    let mk_id = mb.inputs[0];
+
+    // mk = Reshape([..., 1])(m)
+    let mk = graph.node(mk_id);
+    if !matches!(mk.op, Op::Reshape(_)) { return None; }
+    if mk.inputs.len() != 1 { return None; }
+    let m_id = mk.inputs[0];
+
+    // m = MaxDim(last)(x)  — and same x as Sub's first input
+    let m = graph.node(m_id);
+    let last = match m.op {
+        Op::MaxDim(d) => d,
+        _ => return None,
+    };
+    if m.inputs.len() != 1 || m.inputs[0] != x_id { return None; }
+
+    // Cross-check: `last` matches the input rank's last dim.
+    let x_shape = &graph.node(x_id).shape;
+    if x_shape.rank() == 0 { return None; }
+    if last != x_shape.rank() - 1 { return None; }
+
+    // Conservativeness: every intermediate (m, mk, mb, d, db, s) must
+    // be consumed ONLY within this pattern. If any has additional
+    // consumers, fusing would discard a value the user reads. Cheap
+    // check: count consumers of each intermediate across the graph.
+    let intermediates_with_expected_count = [
+        (m_id, 1),  // m -> mk
+        (mk_id, 1), // mk -> mb
+        (mb_id, 1), // mb -> s
+        (d_id, 1),  // d  -> db
+        (db_id, 1), // db -> div
+        (s_id, 1),  // s  -> e
+        // e is consumed twice intentionally (-> d via ReduceSumTo, -> div as numerator)
+        (e_id, 2),
+    ];
+    let consumer_counts = count_consumers(graph);
+    for (nid, expected) in intermediates_with_expected_count {
+        if consumer_counts.get(&nid).copied().unwrap_or(0) != expected {
+            return None;
+        }
+    }
+
+    Some(SoftmaxPatternMatch { x: x_id })
+}
+
+/// Build a consumer-count index across the entire graph. Used by the
+/// fusion matcher to verify intermediates aren't read outside the
+/// canonical pattern.
+fn count_consumers(graph: &Graph) -> HashMap<NodeId, usize> {
+    let mut counts: HashMap<NodeId, usize> = HashMap::new();
+    let n = graph.len();
+    for nid in 0..n {
+        let node = graph.node(NodeId(nid));
+        for &input in &node.inputs {
+            *counts.entry(input).or_insert(0) += 1;
+        }
+    }
+    counts
+}
 
 /// A HashMap-friendly encoding of `Op`. Needed because `Op` carries
 /// `f64` (in `AddScalar`, `MulScalar`, `Clamp`, `LayerNormLastDim`,
@@ -1321,5 +1809,202 @@ mod tests {
         // Both with_bias and also_used are roots.
         let n_fused = fuse_linear(a.graph(), &[with_bias.id(), also_used.id()]);
         assert_eq!(n_fused, 0, "MatMul has 2 consumers — fusion would duplicate work");
+    }
+
+    // ---- Rule registry: SoftmaxLastDim lower / fuse / round-trip ------------
+
+    fn count_op_in_reachable<F: Fn(&Op) -> bool>(
+        graph: &SharedGraph,
+        roots: &[NodeId],
+        pred: F,
+    ) -> usize {
+        let g = graph.read().unwrap();
+        topo_order_multi(&g, roots)
+            .into_iter()
+            .filter(|id| pred(&g.node(*id).op))
+            .count()
+    }
+
+    /// The lower rule, applied to a graph with one `Op::SoftmaxLastDim`,
+    /// produces the canonical 8-node primitive subgraph reachable from
+    /// the rewritten root, with auto-populated layout entries on the
+    /// inserted BroadcastTo nodes.
+    #[test]
+    fn softmax_last_dim_lower_rule_produces_canonical_subgraph() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32; 12],
+            Shape::from_dims(&[2, 3, 2]),
+            cpu_dev(),
+        );
+        let sm = x.softmax_last_dim();
+        let graph = sm.graph().clone();
+
+        let registry = RuleRegistry::lowering_only();
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[sm.id()]);
+        assert_eq!(new_roots.len(), 1);
+        let new_root = new_roots[0];
+
+        // Reachable subgraph from the new root should contain exactly
+        // the 8 lowered nodes (plus the `x` Const leaf — that's 9).
+        // Op composition: 1 MaxDim, 1 Reshape, 2 BroadcastTo, 1 Sub,
+        // 1 Exp, 1 ReduceSumTo, 1 Div, 1 Const = 9 reachable.
+        let g = graph.read().unwrap();
+        let reachable = topo_order_multi(&g, &[new_root]);
+        assert_eq!(reachable.len(), 9, "lowered subgraph: 8 ops + 1 Const = 9 reachable nodes");
+        drop(g);
+
+        // Op-shape sanity checks.
+        let n_max_dim     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::MaxDim(_)));
+        let n_reshape     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Reshape(_)));
+        let n_broadcast   = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::BroadcastTo(_)));
+        let n_sub         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Sub));
+        let n_exp         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Exp));
+        let n_reduce_sum  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceSumTo(_)));
+        let n_div         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Div));
+        let n_softmax     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::SoftmaxLastDim));
+        assert_eq!(n_max_dim, 1);
+        assert_eq!(n_reshape, 1);
+        assert_eq!(n_broadcast, 2);
+        assert_eq!(n_sub, 1);
+        assert_eq!(n_exp, 1);
+        assert_eq!(n_reduce_sum, 1);
+        assert_eq!(n_div, 1);
+        assert_eq!(n_softmax, 0, "no SoftmaxLastDim should remain reachable post-lowering");
+
+        // Layout side-table entries on the inserted BroadcastTo nodes
+        // must be populated and have the expected broadcast strides.
+        let g = graph.read().unwrap();
+        for id in topo_order_multi(&g, &[new_root]) {
+            if let Op::BroadcastTo(_) = g.node(id).op {
+                assert!(
+                    g.has_explicit_layout(id),
+                    "lowered BroadcastTo at {id:?} missing explicit Layout entry — \
+                     Graph::push auto-populate should have set it",
+                );
+                // The inserted BroadcastTo broadcasts shape [2,3,1] -> [2,3,2]
+                // with last-dim stride 0.
+                let l = g.layout(id);
+                assert_eq!(l.shape().dims(), &[2, 3, 2]);
+                assert_eq!(l.stride().last().copied(), Some(0),
+                    "BroadcastTo from [2,3,1] to [2,3,2] should have stride 0 on last dim");
+            }
+        }
+    }
+
+    /// The fuse rule, applied to the canonical lowered subgraph,
+    /// collapses it back to a single `Op::SoftmaxLastDim` reachable
+    /// from the rewritten root.
+    #[test]
+    fn softmax_last_dim_fuse_rule_collapses_canonical_subgraph() {
+        // Build the canonical subgraph by-hand — start from a Const
+        // and apply the same op sequence the lower rule would emit.
+        let x = Tensor::from_f32(
+            vec![1.0_f32; 6],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let m = x.max_dim(1);
+        let mk = m.reshape(Shape::from_dims(&[2, 1]));
+        let mb = mk.broadcast_to(Shape::from_dims(&[2, 3]));
+        let s = x.sub(&mb);
+        let e = s.exp();
+        let d = e.reduce_sum_to(Shape::from_dims(&[2, 1]));
+        let db = d.broadcast_to(Shape::from_dims(&[2, 3]));
+        let out = e.div(&db);
+        let graph = out.graph().clone();
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(SoftmaxLastDimFuseRule));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[out.id()]);
+        assert_eq!(new_roots.len(), 1);
+        let new_root = new_roots[0];
+
+        // Reachable from the new root: SoftmaxLastDim + the x Const = 2 nodes.
+        let g = graph.read().unwrap();
+        let reachable = topo_order_multi(&g, &[new_root]);
+        assert_eq!(reachable.len(), 2,
+            "fused subgraph: 1 SoftmaxLastDim + 1 Const = 2 reachable nodes");
+        // Root should be SoftmaxLastDim.
+        assert!(matches!(g.node(new_root).op, Op::SoftmaxLastDim));
+        // SoftmaxLastDim's input should be the original Const x.
+        assert_eq!(g.node(new_root).inputs, vec![x.id()]);
+    }
+
+    /// Lower then fuse to fixpoint: a graph with one `Op::SoftmaxLastDim`
+    /// returns to a graph that's structurally identical to the input
+    /// (modulo a re-canonicalized root NodeId — the original
+    /// SoftmaxLastDim node remains in the arena but is unreachable
+    /// from the rewritten root).
+    #[test]
+    fn softmax_last_dim_lower_then_fuse_round_trips() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32; 6],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let sm = x.softmax_last_dim();
+        let graph = sm.graph().clone();
+        let original_root = sm.id();
+
+        let registry = RuleRegistry::default_rules();
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[original_root]);
+        assert_eq!(new_roots.len(), 1);
+        let new_root = new_roots[0];
+
+        // Reachable from the new root must look like the original
+        // graph: one SoftmaxLastDim consuming one Const.
+        let g = graph.read().unwrap();
+        let reachable = topo_order_multi(&g, &[new_root]);
+        assert_eq!(reachable.len(), 2,
+            "round-tripped graph: 1 SoftmaxLastDim + 1 Const = 2 reachable nodes");
+        assert!(matches!(g.node(new_root).op, Op::SoftmaxLastDim));
+        assert_eq!(g.node(new_root).inputs, vec![x.id()],
+            "round-tripped SoftmaxLastDim should consume the original input");
+        // Shape and dtype preserved.
+        assert_eq!(g.node(new_root).shape, g.node(original_root).shape);
+        assert_eq!(g.node(new_root).dtype, g.node(original_root).dtype);
+    }
+
+    /// Empty registry is a no-op: roots come back unchanged.
+    #[test]
+    fn empty_registry_is_noop() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let y = x.add(&x);
+        let graph = y.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+        let new_roots = RuleRegistry::new().optimize_to_fixpoint(&graph, &[y.id()]);
+        assert_eq!(new_roots, vec![y.id()]);
+        assert_eq!(graph.read().unwrap().len(), pre_len,
+            "empty registry should add no nodes");
+    }
+
+    /// Lowering rule does not fire on a graph that has no
+    /// SoftmaxLastDim nodes — the registry returns the input
+    /// roots unchanged.
+    #[test]
+    fn lower_rule_does_not_fire_without_softmax() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let y = x.relu();
+        let graph = y.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+        let new_roots = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[y.id()]);
+        assert_eq!(new_roots, vec![y.id()]);
+        assert_eq!(graph.read().unwrap().len(), pre_len);
+    }
+
+    /// Fuse rule does not fire on a non-canonical Div pattern (e.g.,
+    /// a plain `a / b` with no upstream softmax structure).
+    #[test]
+    fn fuse_rule_does_not_fire_on_plain_div() {
+        let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let b = a.const_f32_like(vec![2.0_f32; 4], Shape::from_dims(&[4]));
+        let c = a.div(&b);
+        let graph = c.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+        let new_roots = RuleRegistry::new()
+            .with_rule(Box::new(SoftmaxLastDimFuseRule))
+            .optimize_to_fixpoint(&graph, &[c.id()]);
+        assert_eq!(new_roots, vec![c.id()]);
+        assert_eq!(graph.read().unwrap().len(), pre_len);
     }
 }
