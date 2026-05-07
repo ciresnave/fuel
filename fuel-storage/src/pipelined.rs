@@ -241,50 +241,16 @@ fn compiler_thread_body(
     }
 }
 
-/// Whether this op is a metadata-only view op — a node whose output
-/// shares bytes with its sole input but reinterprets them through
-/// strides + offset.
-fn is_view_op(op: &Op) -> bool {
-    matches!(
-        op,
-        Op::Transpose | Op::Permute(_) | Op::BroadcastTo(_) | Op::Slice { .. }
-    )
-}
-
-/// Compute the output Layout of a metadata-only view op from its
-/// input Layout + the op variant. Returns `Err` if the op variant
-/// isn't a recognized view op (caller's contract).
-fn derive_view_output_layout(op: &Op, input_layout: &Layout) -> Result<Layout> {
-    match op {
-        Op::Transpose => {
-            let rank = input_layout.shape().rank();
-            if rank < 2 {
-                return Err(Error::Msg(format!(
-                    "Op::Transpose requires rank >= 2, input rank is {rank}",
-                ))
-                .bt());
-            }
-            input_layout.transpose(rank - 2, rank - 1)
-        }
-        Op::Permute(axes) => input_layout.permute(axes),
-        Op::BroadcastTo(target_shape) => input_layout.broadcast_as(target_shape.clone()),
-        Op::Slice { dim, start, len } => input_layout.narrow(*dim, *start, *len),
-        other => Err(Error::Msg(format!(
-            "derive_view_output_layout called with non-view op {other:?}",
-        ))
-        .bt()),
-    }
-}
-
 /// Resolve one node into a `WorkItem` and update `layout_cache`
 /// with the node's output layout. Three op shapes:
 ///
 /// - `Op::Const` — adopts the entry from the input cache; layout is
 ///   read from the graph's side-table (or its contiguous fallback).
 ///
-/// - Metadata-only view op — output layout is derived from the
-///   input layout via [`derive_view_output_layout`]; the executor
-///   adopts the input's Storage Arc (no allocation, no kernel).
+/// - Metadata-only view op — output layout is read from the graph's
+///   side-table (populated by `Graph::push` at construction time);
+///   the executor adopts the input's Storage Arc (no allocation, no
+///   kernel).
 ///
 /// - Computational op — output layout is `Layout::contiguous(node.shape)`
 ///   because today's kernels write contiguous output. The compiler
@@ -314,7 +280,7 @@ fn compile_one(
         });
     }
 
-    if is_view_op(&node.op) {
+    if node.op.is_view_op() {
         if inputs.len() != 1 {
             return Err(Error::Msg(format!(
                 "view op {:?} expects 1 input, got {}",
@@ -323,14 +289,12 @@ fn compile_one(
             ))
             .bt());
         }
-        let input_layout = layout_cache.get(&inputs[0]).cloned().ok_or_else(|| {
-            Error::Msg(format!(
-                "view op {:?} input {:?} has no layout in compiler cache",
-                node.op, inputs[0],
-            ))
-            .bt()
-        })?;
-        let output_layout = derive_view_output_layout(&node.op, &input_layout)?;
+        // Layout is read from the graph's side-table — populated by
+        // `Graph::push` at construction time for view ops, and by
+        // graph-rewriting opt passes that emit view nodes. The
+        // compiler does not re-derive: graph.layout(id) is the single
+        // source of truth.
+        let output_layout = graph.layout(id);
         layout_cache.insert(id, output_layout.clone());
         // Inherit the upstream's target_backend (or default CPU) —
         // metadata-only adoption doesn't actually run on a backend,
@@ -360,13 +324,7 @@ fn compile_one(
             ))
             .bt());
         }
-        let input_layout = layout_cache.get(&inputs[0]).cloned().ok_or_else(|| {
-            Error::Msg(format!(
-                "Op::Reshape input {:?} has no layout in compiler cache",
-                inputs[0],
-            ))
-            .bt()
-        })?;
+        let input_layout = graph.layout(inputs[0]);
         // Output is contiguous in the new shape — bytes per element
         // are unchanged, so a contiguous input flows through with
         // zero copy. A non-contiguous input is auto-contiguized at
