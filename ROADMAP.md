@@ -1766,6 +1766,108 @@ is a class of consumer that uses one side and not the other.
 Indexer and scalar helpers have no consumer asking for them
 without `Tensor`, so they stay folded into `fuel-tensor`.
 
+**Graph optimizer architecture: transactional rewrites on a single
+primary graph.**
+
+Optimization is a pipeline of rule-driven graph rewrites. Two rule
+families:
+
+- *Lowering*: high-level op → primitive subgraph (exposes fusion
+  opportunities to later passes).
+- *Fusion*: recognized primitive subgraph → fused op (recovers or
+  improves on the original-flavour kernel).
+
+Lowering and fusion are two halves of one machine. Rules ship as
+`(matcher, rewriter)` in one registry. The lowered form is
+intermediate IR, not an execution form — runs see the
+post-optimization graph.
+
+*When unpaired lowering rules are OK.* A lowering rule may ship
+before its fusion partner only if the lowered form's intermediates
+fit in memory at typical input sizes:
+
+- *Lower now*, primitive intermediates linear in input:
+  SoftmaxLastDim, RmsNorm, LayerNorm, NormLastDim, RoPE,
+  FusedLinear, Affine, Clamp, PowI.
+- *Wait for fusion partner*, intermediates blow up: MatMul →
+  outer-product-then-reduce (×K), Conv2D → im2col+matmul
+  (×Kh×Kw), FlashAttn → softmax(QKᵀ)V (materializes [N,N]
+  attention matrix), QMatMul → dequant+matmul (eats the
+  quantization memory win).
+
+*Transaction model.*
+
+- One primary graph in steady state.
+- A working copy exists only during open transactions or briefly
+  during commit-with-drain.
+- Transaction = unit of consistency: at commit, all touched nodes
+  are in a runnable state. No half-applied rules ever visible.
+- Default granularity: one rule application. Coarser (per-pass,
+  whole-pipeline) allowed when the optimizer can prove correctness
+  across the larger atomic unit.
+- Commit triggers: fixpoint (no more rules apply at current rule
+  set) or budget exhaustion (deadline hit; used for cold-start
+  TTFT).
+
+*Switching semantics on commit.*
+
+- New runs always start on the most-optimized version.
+- In-flight runs switch at the next node-execution boundary if and
+  only if the optimization is entirely ahead of the run's frontier.
+  Otherwise the run finishes on the old graph; the optimization is
+  preserved for subsequent runs.
+- The conservative-ahead-of-frontier rule isn't just for
+  approximate optimizations — lowering and fusion change node
+  count and identity, so cached storage from already-executed
+  nodes can't be remapped to the new graph in general. Switching
+  backward across the frontier would require re-running upstream
+  nodes to rebuild missing storage, which negates the in-flight
+  optimization win.
+- Multi-node device-queue case: when a backend queues N nodes'
+  worth of ops asynchronously, the run's "currently executing"
+  set is N nodes, not 1. Switching is gated on optimization being
+  downstream of all queued nodes.
+- Old graph lifetime ≤ max(longest queued-node duration,
+  transaction duration) post-commit. Dropped once all in-flight
+  runs have switched or finished.
+
+*Concurrency.* Active graph as `Arc<Graph>` for lock-free runner
+reads. Optimizer mutates a working copy uncontended. Commit =
+atomic store on the active reference. No hand-rolled lock-free
+machinery needed beyond `Arc` swap.
+
+*Memory model.* Full-clone-then-mutate per transaction. CoW
+between graph versions is profile-driven future work — only
+attractive when graphs are 100K+ nodes and transactions touch
+few-node deltas, neither of which fuel's typical inference graph
+(low thousands of nodes) satisfies.
+
+*Out of scope.* Approximate optimizations — mixed-precision
+lowering (F32→BF16 hotspots), FP reassociation `(a+b)+c →
+a+(b+c)`, fast/approximate intrinsics. These require explicit
+approximation-budget semantics and don't fit the
+strict-equivalence transaction model. Deferred until that
+semantics layer exists.
+
+*Phasing.*
+
+- **PR 3 (next)**: rule-registry framework + first lowering/fusion
+  rule pair (SoftmaxLastDim ↔ 7-node primitive subgraph) +
+  synchronous "optimize-to-fixpoint, single graph" loop. No
+  transactions, no snapshots, no concurrent optimization. Entry
+  point factored cleanly so wrapping it in transactions later is
+  mechanical.
+- **Subsequent PR**: transaction snapshots, in-flight switching
+  with ahead-of-frontier rule, multi-queued-node frontier
+  accounting.
+- **Later PR**: budget-exhaustion mode + cold-start TTFT path.
+- **Future**: hot-path re-optimization triggered by execution-count
+  or profiling; per-node optimization-tier tracking if needed for
+  finer-grained scheduling decisions.
+
+Work items D (inplace-as-optimization) and F (layout-tracking
+pass) become rule families on this framework once it exists.
+
 #### Work items
 
 **A. `fuel-formats` extraction — transport-independent format
