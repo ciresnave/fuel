@@ -124,6 +124,11 @@ pub enum OpKind {
     /// alignment. Carried by `OpParams::ReduceSumTo` with both the
     /// input and target shapes.
     ReduceSumTo,
+    /// Max-reduce a tensor to a smaller broadcast-compatible shape —
+    /// the max-symmetric counterpart of `ReduceSumTo`. Same axis
+    /// alignment rules; per-axis reduction is `max` instead of `+`.
+    /// Carried by `OpParams::ReduceMaxTo` with both shapes.
+    ReduceMaxTo,
     /// Fused matmul + bias-add. Inputs `[a, b, bias]`, output
     /// `[..., M, N] = a @ b + bias[None..., :]`. Reuses
     /// `OpParams::Matmul` for shape (kernel inits accumulator with
@@ -229,6 +234,7 @@ impl OpKind {
             OpKind::Conv2D            => "conv2d",
             OpKind::ConvTranspose2D   => "conv_transpose2d",
             OpKind::ReduceSumTo       => "reduce_sum_to",
+            OpKind::ReduceMaxTo       => "reduce_max_to",
             OpKind::FusedLinear       => "fused_linear",
             OpKind::FlashAttn         => "flash_attn",
             OpKind::PagedAttn         => "paged_attn",

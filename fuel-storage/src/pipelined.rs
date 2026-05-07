@@ -453,6 +453,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Conv2D { .. } => Some(OpKind::Conv2D),
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
+        Op::ReduceMaxTo(_) => Some(OpKind::ReduceMaxTo),
         Op::FusedLinear => Some(OpKind::FusedLinear),
         Op::FlashAttn { .. } => Some(OpKind::FlashAttn),
         Op::PagedAttn { .. } => Some(OpKind::PagedAttn),
@@ -1108,6 +1109,19 @@ fn op_to_op_params(
             let input_shape: Vec<usize> = in_layout.shape().dims().to_vec();
             let output_shape: Vec<usize> = target_shape.dims().to_vec();
             OpParams::ReduceSumTo { input_shape, output_shape }
+        }
+        Op::ReduceMaxTo(target_shape) => {
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::ReduceMaxTo expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let input_shape: Vec<usize> = in_layout.shape().dims().to_vec();
+            let output_shape: Vec<usize> = target_shape.dims().to_vec();
+            OpParams::ReduceMaxTo { input_shape, output_shape }
         }
         Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
@@ -3764,6 +3778,65 @@ mod tests {
         let guard = result_arc.read().unwrap();
         let crate::BackendStorage::Cpu(c) = &guard.inner;
         assert_eq!(c.as_slice::<f64>().unwrap(), &[5.0, 7.0, 9.0]);
+    }
+
+    /// E2E: Op::ReduceMaxTo F32 — drop the leading axis with max-reduce.
+    #[test]
+    fn pipelined_realize_reduce_max_to_f32_drops_leading_axis() {
+        // Input [2,3]: row 0 = [1, 7, 3], row 1 = [4, 2, 6]. Max along
+        // dim 0: [4, 7, 6].
+        let v = crate::from_slice_cpu(&[1.0_f32, 7.0, 3.0, 4.0, 2.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::ReduceMaxTo(Shape::from_dims(&[3])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[4.0, 7.0, 6.0]);
+    }
+
+    /// E2E: Op::ReduceMaxTo F32 — keep-dim with 1 in the trailing axis.
+    /// Mirrors the SoftmaxLastDim lowering's max-side shape: input
+    /// [..., last] → [..., 1].
+    #[test]
+    fn pipelined_realize_reduce_max_to_f32_keepdim_trailing() {
+        // Input [2, 3]: row maxes = [3, 6].
+        let v = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let op_id = g.push(Node {
+                op: Op::ReduceMaxTo(Shape::from_dims(&[2, 1])),
+                inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 1]), dtype: DType::F32,
+            });
+            g.set_target_backend(op_id, BackendId::Cpu);
+            (in_id, op_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(v)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[3.0, 6.0]);
     }
 
     /// E2E: ReduceSumTo BF16 — tolerant compare via f32-acc.
