@@ -16,7 +16,7 @@
 
 use fuel_core_types::{DType, DimVec, Layout, Shape};
 use fuel_graph::{NodeId, Op, Tensor};
-use fuel_graph::opt::execution_plan;
+use fuel_graph::opt::{execution_plan, RuleRegistry};
 
 /// Merge the graph's side-effect roots into the user's requested roots
 /// for the purposes of executing the plan. Deduplicates; preserves the
@@ -719,7 +719,22 @@ pub struct GraphExecutor<B: GraphBackend> {
     /// walking it. Off by default because it mutates the shared graph
     /// arena (appends canonical nodes), which existing test code may
     /// not expect; opt-in per-executor via `with_optimization(true)`.
+    ///
+    /// When enabled, the rule-registry pipeline (lowering + fusion,
+    /// see [`fuel_graph::opt::RuleRegistry`]) runs *before* CSE: rules
+    /// rewrite the graph first, then CSE canonicalizes whatever the
+    /// rules produced. The shipped `RuleRegistry::default_rules()` is
+    /// inverse-pair only (SoftmaxLastDim lower + fuse), so the
+    /// post-rules graph round-trips to the input for canonical
+    /// SoftmaxLastDim graphs. Other registries (e.g.
+    /// `RuleRegistry::lowering_only()`) leave a different post-rules
+    /// state and are configurable via [`with_rule_registry`](Self::with_rule_registry).
     optimize: bool,
+    /// Rule-registry consulted when `optimize` is enabled. Default is
+    /// [`RuleRegistry::default_rules`]. Tests that want to force the
+    /// lowered form (e.g. live CUDA equivalence checks) replace this
+    /// with [`RuleRegistry::lowering_only`].
+    rule_registry: RuleRegistry,
     /// Phase-1 placement: the device this executor represents. When
     /// set, `validate_placements` checks every graph node's optional
     /// placement hint matches this device. Phase 2 will turn this into
@@ -734,6 +749,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
             const_pool: ConstPool::new(),
             injected: HashMap::new(),
             optimize: false,
+            rule_registry: RuleRegistry::default_rules(),
             default_device: None,
         }
     }
@@ -776,12 +792,24 @@ impl<B: GraphBackend> GraphExecutor<B> {
         Ok(())
     }
 
-    /// Enable or disable graph-level optimization (CSE, algebraic
-    /// simplification) before each realize. Pre-populated / injected
-    /// nodes are preserved — they're leaves from the optimizer's view
-    /// and can't be eliminated.
+    /// Enable or disable graph-level optimization (rule-registry
+    /// pipeline + CSE + algebraic simplification) before each realize.
+    /// Pre-populated / injected nodes are preserved — they're leaves
+    /// from the optimizer's view and can't be eliminated.
     pub fn with_optimization(mut self, enabled: bool) -> Self {
         self.optimize = enabled;
+        self
+    }
+
+    /// Replace the rule-registry consulted when optimization is
+    /// enabled. Default is [`RuleRegistry::default_rules`].
+    ///
+    /// Use [`RuleRegistry::lowering_only`] in tests that want the
+    /// lowered form to reach the executor (so the composed-math
+    /// path is exercised end-to-end). Use [`RuleRegistry::new`] to
+    /// disable just the rules while keeping CSE active.
+    pub fn with_rule_registry(mut self, registry: RuleRegistry) -> Self {
+        self.rule_registry = registry;
         self
     }
 
@@ -858,7 +886,13 @@ impl<B: GraphBackend> GraphExecutor<B> {
             return original;
         }
         let graph = tensors[0].graph();
-        fuel_graph::opt::optimize(graph, &original)
+        // Phase 7.5 PR 3: rule-registry pipeline runs first (lowering
+        // → fusion to fixpoint), then CSE + algebraic simplification
+        // canonicalizes whatever the rules produced. Both phases share
+        // the `optimize` flag so callers opt in once for the whole
+        // pre-realize transform pipeline.
+        let after_rules = self.rule_registry.optimize_to_fixpoint(graph, &original);
+        fuel_graph::opt::optimize(graph, &after_rules)
     }
 
     /// Phase 7.5 G2: slot-first dispatch. If the graph's storage_map
