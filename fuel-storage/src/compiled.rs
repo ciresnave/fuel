@@ -33,7 +33,7 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Layout, Result};
 
-use crate::kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
+use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
 use crate::Storage;
 
 /// A graph node plus its resolved kernel function pointer and
@@ -54,6 +54,10 @@ pub struct CompiledNode {
     /// Resolved kernel function pointer. Looked up once at compile
     /// time; the executor calls this directly.
     pub kernel: KernelRef,
+    /// Capability flags registered alongside the kernel. The executor
+    /// consults `caps.strided_input` to decide whether to skip
+    /// auto-Contiguize for non-contiguous inputs.
+    pub caps: KernelCaps,
     /// Op-specific parameters. Most ops use `OpParams::None`;
     /// reductions / conv / slice carry their config here.
     pub op_params: OpParams,
@@ -86,12 +90,13 @@ pub fn compile_node(
     op_params: OpParams,
     bindings: &KernelBindingTable,
 ) -> Result<CompiledNode> {
-    let kernel = bindings.lookup(op, dtypes, backend)?;
+    let (kernel, caps) = bindings.lookup_with_caps(op, dtypes, backend)?;
     Ok(CompiledNode {
         op,
         dtypes: KernelDTypes::from_slice(dtypes),
         backend,
         kernel,
+        caps,
         op_params,
     })
 }

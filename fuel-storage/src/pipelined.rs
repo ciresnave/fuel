@@ -1289,6 +1289,13 @@ fn execute_work_item(
             let mut input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::with_capacity(item.inputs.len());
             let mut kernel_layouts: Vec<fuel_core_types::Layout> =
                 Vec::with_capacity(item.inputs.len() + 1);
+            // The kernel's `strided_input` cap lets non-contiguous
+            // inputs (broadcast, transpose, etc.) flow through without
+            // materialization — the kernel walks strides itself. Inputs
+            // with non-zero `start_offset` still go through auto-
+            // Contiguize today; offset honoring on the byte buffer is
+            // a separate concern from stride support.
+            let kernel_handles_strided = compiled.caps.strided_input;
             for in_id in &item.inputs {
                 let in_arc = cache.get(in_id).cloned().ok_or_else(|| {
                     Error::Msg(format!(
@@ -1304,9 +1311,11 @@ fn execute_work_item(
                     ))
                     .bt()
                 })?;
-                let already_ok =
+                let already_contig =
                     in_layout.is_contiguous() && in_layout.start_offset() == 0;
-                if already_ok {
+                let strided_ok =
+                    kernel_handles_strided && in_layout.start_offset() == 0;
+                if already_contig || strided_ok {
                     input_arcs.push(in_arc);
                     kernel_layouts.push(in_layout);
                 } else {

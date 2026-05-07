@@ -51,6 +51,42 @@ use smallvec::SmallVec;
 /// is ≤ 4. Bumping later is one constant change.
 pub type KernelDTypes = SmallVec<[DType; 8]>;
 
+/// Per-binding capability flags. Today carries one flag — `strided_input`
+/// — that signals "this kernel walks input strides explicitly and so
+/// can consume non-contiguous input layouts (including stride-0
+/// broadcast axes) without auto-Contiguize materializing them first."
+/// The executor's contiguize gate consults this to skip the materialize
+/// step for capable kernels, so broadcast/transpose/slice layouts can
+/// reach the kernel as metadata-only views.
+///
+/// Default is the conservative all-false; binding sites opt in via
+/// [`KernelBindingTable::register_with_caps`]. Forward-extensible by
+/// adding fields (no enum/bitflags churn).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct KernelCaps {
+    /// Kernel handles non-contiguous input layouts directly (consumes
+    /// the strides side-channel from `KernelRef::layouts`). When true,
+    /// the executor passes non-contiguous inputs through unchanged
+    /// instead of running auto-Contiguize first. Inputs with non-zero
+    /// `start_offset` still go through auto-Contiguize today (slicing
+    /// the device buffer to honor offset is a separate concern).
+    pub strided_input: bool,
+}
+
+impl KernelCaps {
+    /// All flags off. Equivalent to `Default::default()`; provided as a
+    /// const for use in const-context registration tables.
+    pub const fn empty() -> Self {
+        Self { strided_input: false }
+    }
+
+    /// Just `strided_input` on. Ergonomic for binary/unary registrations
+    /// that opt in to the wrapper-side broadcast path.
+    pub const fn strided_input() -> Self {
+        Self { strided_input: true }
+    }
+}
+
 use crate::Storage;
 
 /// Uniform function-pointer signature for per-backend op kernels.
@@ -393,7 +429,7 @@ pub enum OpParams {
 /// [`crate::dispatch::register_cpu_kernels`]).
 #[derive(Default)]
 pub struct KernelBindingTable {
-    bindings: HashMap<(OpKind, KernelDTypes, BackendId), KernelRef>,
+    bindings: HashMap<(OpKind, KernelDTypes, BackendId), (KernelRef, KernelCaps)>,
 }
 
 impl KernelBindingTable {
@@ -401,10 +437,10 @@ impl KernelBindingTable {
         Self { bindings: HashMap::new() }
     }
 
-    /// Register a dispatch wrapper for `(op, dtypes, backend)`.
-    /// Idempotent: re-registering with the same key overwrites.
-    /// `dtypes` is the per-operand dtype list — inputs in order, then
-    /// outputs.
+    /// Register a dispatch wrapper for `(op, dtypes, backend)` with the
+    /// default (all-false) capabilities. Idempotent: re-registering with
+    /// the same key overwrites. `dtypes` is the per-operand dtype list —
+    /// inputs in order, then outputs.
     pub fn register(
         &mut self,
         op: OpKind,
@@ -412,19 +448,46 @@ impl KernelBindingTable {
         backend: BackendId,
         kernel: KernelRef,
     ) {
-        self.bindings
-            .insert((op, SmallVec::from_slice(dtypes), backend), kernel);
+        self.register_with_caps(op, dtypes, backend, kernel, KernelCaps::empty());
     }
 
-    /// Look up the wrapper for `(op, dtypes, backend)`. Returns
-    /// [`Error::NoBackendForOp`] if none registered (production-
-    /// correct: no panic). The error includes diagnostic data.
+    /// Register a dispatch wrapper with explicit capability flags.
+    /// Used by binding sites that opt into kernel-side broadcast or
+    /// other non-default behavior — the executor consults the caps to
+    /// decide whether to auto-Contiguize inputs before kernel call.
+    pub fn register_with_caps(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+        caps: KernelCaps,
+    ) {
+        self.bindings
+            .insert((op, SmallVec::from_slice(dtypes), backend), (kernel, caps));
+    }
+
+    /// Look up the wrapper for `(op, dtypes, backend)`. Returns just
+    /// the [`KernelRef`]; for capability-aware lookup use
+    /// [`Self::lookup_with_caps`].
     pub fn lookup(
         &self,
         op: OpKind,
         dtypes: &[DType],
         backend: BackendId,
     ) -> Result<KernelRef> {
+        self.lookup_with_caps(op, dtypes, backend).map(|(k, _)| k)
+    }
+
+    /// Capability-aware lookup. Returns the wrapper paired with its
+    /// registered [`KernelCaps`]. Surfaces [`Error::NoBackendForOp`] on
+    /// missing binding (production-correct: no panic).
+    pub fn lookup_with_caps(
+        &self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+    ) -> Result<(KernelRef, KernelCaps)> {
         let key = (op, SmallVec::from_slice(dtypes), backend);
         self.bindings.get(&key).copied().ok_or_else(|| {
             let available_backends: Vec<BackendId> = self
