@@ -1992,6 +1992,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::RmsNormLastDimBackward { .. } => "RmsNormLastDimBackward",
         Op::SoftmaxLastDimBackward => "SoftmaxLastDimBackward",
         Op::LayerNormLastDimBackward { .. } => "LayerNormLastDimBackward",
+        Op::ReduceMaxToBackward => "ReduceMaxToBackward",
         Op::Rope => "Rope",
         Op::QMatMul { .. } => "QMatMul",
         _ => "Other",

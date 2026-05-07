@@ -885,6 +885,78 @@ pub fn reduce_max_to<T: Float>(x: &RefTensor<T>, target: &Shape) -> RefTensor<T>
     RefTensor::from_vec(out, target.clone())
 }
 
+/// Backward for [`reduce_max_to`]. Given the original input `x`
+/// (shape S_in), the upstream gradient (shape S_target == the forward
+/// `target` shape, broadcast-compatible into S_in), and the same
+/// `target` shape, returns dL/dx of shape S_in. Routes the upstream
+/// to the position(s) where `x` equals its per-window max; when
+/// multiple positions tie, the gradient is split equally (fair-share
+/// subgradient).
+///
+/// Implementation:
+/// 1. Recompute `y = reduce_max_to(x, target)`.
+/// 2. Build `mask`, shape S_in: 1 where x[i] == y[broadcast(i)], else 0.
+/// 3. Compute `count = reduce_sum_to(mask, target)` — number of tied
+///    positions per output cell.
+/// 4. `count_safe = max(count, 1.0)` (degenerate empty-window guard).
+/// 5. `scaled_upstream = upstream / count_safe` — shape S_target.
+/// 6. `grad_x = broadcast(scaled_upstream) * mask` — shape S_in.
+pub fn reduce_max_to_backward<T: Float>(
+    x: &RefTensor<T>,
+    upstream: &RefTensor<T>,
+    target: &Shape,
+) -> RefTensor<T> {
+    let in_shape = x.shape().clone();
+    let in_dims = in_shape.dims();
+
+    // Step 1: recompute the forward max.
+    let max_y = reduce_max_to(x, target);
+
+    // Step 2: broadcast max_y to S_in and build the mask.
+    let max_b = broadcast_to(&max_y, &in_shape);
+    let n: usize = in_dims.iter().product();
+    let x_data = x.as_slice();
+    let max_data = max_b.as_slice();
+    let mut mask_data = vec![T::zero(); n];
+    for i in 0..n {
+        if x_data[i] == max_data[i] {
+            mask_data[i] = T::one();
+        }
+    }
+    let mask = RefTensor::from_vec(mask_data.clone(), in_shape.clone());
+
+    // Step 3: count ties per output cell.
+    let count = reduce_sum_to(&mask, target);
+
+    // Step 4: clamp count to >= 1 to avoid 0/0. A zero count would
+    // mean no input position equaled the recomputed max, which can
+    // only happen for empty windows or NaN inputs — defensive guard.
+    let count_safe_data: Vec<T> = count
+        .as_slice()
+        .iter()
+        .map(|&c| if c < T::one() { T::one() } else { c })
+        .collect();
+    let count_safe = RefTensor::from_vec(count_safe_data, count.shape().clone());
+
+    // Step 5: scale upstream.
+    let up_data = upstream.as_slice();
+    let cs_data = count_safe.as_slice();
+    let mut scaled_data = Vec::with_capacity(up_data.len());
+    for (u, c) in up_data.iter().zip(cs_data.iter()) {
+        scaled_data.push(*u / *c);
+    }
+    let scaled = RefTensor::from_vec(scaled_data, count_safe.shape().clone());
+
+    // Step 6: broadcast and gate by mask.
+    let scaled_b = broadcast_to(&scaled, &in_shape);
+    let scaled_b_data = scaled_b.as_slice();
+    let mut grad_data = vec![T::zero(); n];
+    for i in 0..n {
+        grad_data[i] = scaled_b_data[i] * mask_data[i];
+    }
+    RefTensor::from_vec(grad_data, in_shape)
+}
+
 // ---------- broadcasting to a target shape --------------------------------
 
 /// Broadcast `x` to `target_shape` using NumPy rules: right-align, pad the

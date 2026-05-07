@@ -428,6 +428,7 @@ pub fn eval_node_with_op(
         Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
         Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
         Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),
+        Op::ReduceMaxToBackward => eval_reduce_max_to_backward(inputs, cache),
         Op::LayerNormLastDimBackward { eps } => {
             eval_layer_norm_last_dim_backward(*eps, inputs, cache)
         }
@@ -1192,6 +1193,45 @@ fn eval_softmax_last_dim_backward(
         }
         (a, b) => panic!(
             "softmax_last_dim_backward: dtype mismatch {:?} vs {:?}",
+            a.dtype(),
+            b.dtype(),
+        ),
+    }
+}
+
+fn eval_reduce_max_to_backward(
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    // Inputs: x (original forward input, shape S_in) + upstream
+    // (gradient w.r.t. y, shape S_target). The forward `target` is
+    // upstream's shape — recover it directly from the second input.
+    let x = cache.get(&inputs[0]).expect("topo order missing x input");
+    let up = cache.get(&inputs[1]).expect("topo order missing upstream");
+    let target = match up {
+        AnyRefTensor::F32(t) => t.shape().clone(),
+        AnyRefTensor::F64(t) => t.shape().clone(),
+        AnyRefTensor::BF16(t) => t.shape().clone(),
+        AnyRefTensor::F16(t) => t.shape().clone(),
+        AnyRefTensor::U32(_) => panic!(
+            "reduce_max_to_backward: upstream cannot be U32 (gradient must be float)"
+        ),
+    };
+    match (x, up) {
+        (AnyRefTensor::F32(x), AnyRefTensor::F32(up)) => {
+            AnyRefTensor::F32(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (AnyRefTensor::F64(x), AnyRefTensor::F64(up)) => {
+            AnyRefTensor::F64(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (AnyRefTensor::BF16(x), AnyRefTensor::BF16(up)) => {
+            AnyRefTensor::BF16(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (AnyRefTensor::F16(x), AnyRefTensor::F16(up)) => {
+            AnyRefTensor::F16(ops::reduce_max_to_backward(x, up, &target))
+        }
+        (a, b) => panic!(
+            "reduce_max_to_backward: dtype mismatch {:?} vs {:?}",
             a.dtype(),
             b.dtype(),
         ),
@@ -1986,6 +2026,78 @@ mod tests {
         let y = x.add(&bias_b);
         // Expected: [11, 21, 31, 12, 22, 32]
         assert_eq!(realize_f32(&y).as_slice(), &[11.0, 21.0, 31.0, 12.0, 22.0, 32.0]);
+    }
+
+    /// Backward of ReduceMaxTo on a scalar reduction with a unique max:
+    /// gradient flows entirely to the argmax position.
+    #[test]
+    fn reduce_max_to_backward_unique_max_routes_full_grad() {
+        // x = [1.0, 5.0, 3.0, 2.0]; reduce-max-to [] gives 5.0 at index 1.
+        // y = max(x); upstream dL/dy = 7.0; expected dL/dx = [0, 7, 0, 0].
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 5.0, 3.0, 2.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let y = x.reduce_max_to(Shape::from_dims(&[]));
+        let grads = y.backward();
+        let grad_x = grads.get(&x).expect("dL/dx exists");
+        // Default backward starts upstream as ones — for a scalar y,
+        // dL/dx is exactly the mask of argmax positions.
+        let got = realize_f32(&grad_x);
+        assert_eq!(got.as_slice(), &[0.0, 1.0, 0.0, 0.0]);
+    }
+
+    /// Backward of ReduceMaxTo with tied maxes: upstream is split
+    /// equally (fair-share subgradient) — the standard convention.
+    #[test]
+    fn reduce_max_to_backward_tied_max_splits_grad_equally() {
+        // x = [5.0, 5.0, 3.0, 5.0]; max = 5.0 at indices {0, 1, 3} (3 ties).
+        // dL/dy = 1 (default seed). Each tied position gets 1/3.
+        let x = Tensor::from_f32(
+            vec![5.0_f32, 5.0, 3.0, 5.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let y = x.reduce_max_to(Shape::from_dims(&[]));
+        let grads = y.backward();
+        let grad_x = grads.get(&x).expect("dL/dx exists");
+        let got = realize_f32(&grad_x);
+        let third = 1.0_f32 / 3.0;
+        for (i, &v) in got.as_slice().iter().enumerate() {
+            let expected = if i == 2 { 0.0 } else { third };
+            assert!(
+                (v - expected).abs() < 1e-6,
+                "grad_x[{i}] = {v}, expected {expected}",
+            );
+        }
+        // Conservation check: sum of grad_x equals upstream (1.0).
+        let sum: f32 = got.as_slice().iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "grad sum = {sum}, want 1.0");
+    }
+
+    /// Backward of ReduceMaxTo over a multi-row reduction: gradient
+    /// per-row routes independently to that row's argmax.
+    #[test]
+    fn reduce_max_to_backward_keepdim_routes_per_row() {
+        // x [2,3]: [[1, 7, 3], [4, 2, 6]]; reduce-max-to [2,1] = [[7],[6]].
+        // upstream = [[2.0], [3.0]].
+        // expected dL/dx = [[0, 2, 0], [0, 0, 3]].
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 7.0, 3.0, 4.0, 2.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let y = x.reduce_max_to(Shape::from_dims(&[2, 1]));
+        // Multiply by an explicit upstream-shaped const so the seeded
+        // upstream is non-uniform: dL/dy = [[2.0], [3.0]].
+        let upstream = x.const_f32_like(vec![2.0, 3.0], Shape::from_dims(&[2, 1]));
+        let scaled = y.mul(&upstream);
+        let loss = scaled.sum_all();
+        let grads = loss.backward();
+        let grad_x = grads.get(&x).expect("dL/dx exists");
+        let got = realize_f32(&grad_x);
+        assert_eq!(got.as_slice(), &[0.0, 2.0, 0.0, 0.0, 0.0, 3.0]);
     }
 
     #[test]
