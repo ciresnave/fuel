@@ -902,6 +902,62 @@ mod tests {
         }
     }
 
+    /// Phase 7.5 PR 3 live CUDA equivalence: realize a graph with
+    /// `Op::SoftmaxLastDim` through the rule-registry pipeline using
+    /// `RuleRegistry::lowering_only()` so the executor sees the
+    /// 8-node lowered subgraph instead of the fused op. The composed
+    /// CUDA execution path (MaxDim + Reshape + BroadcastTo + Sub +
+    /// Exp + ReduceSumTo + BroadcastTo + Div) must match the fused
+    /// CPU baseline within tight epsilon. This is the end-to-end
+    /// validation that the lowered form is numerically equivalent —
+    /// the framework + lowering rule + Layout-side-table migration
+    /// + PR 2-wide broadcast support all working together.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_executor_matches_cpu_on_softmax_via_lowering() {
+        // Use a non-trivial input shape so the broadcast paths and
+        // the ReduceSumTo step both have actual work to do.
+        let n = 24;
+        let last = 5;
+        let data: Vec<f32> = (0..n * last)
+            .map(|i| ((i as f32) * 0.13).sin() * 2.0 - 0.7)
+            .collect();
+        let x = LazyTensor::from_f32(
+            data,
+            Shape::from_dims(&[n, last]),
+            &Device::cpu(),
+        );
+        let y = x.softmax_last_dim();
+
+        // CPU baseline: fused SoftmaxLastDim through the standard
+        // realize_f32 path (no rule-registry pipeline involved).
+        let cpu = y.realize_f32();
+
+        // CUDA via the lowered subgraph: enable optimization + swap
+        // the registry to lowering-only so fusion can't re-collapse
+        // the lowered pattern back to Op::SoftmaxLastDim.
+        let mut exe = GraphExecutor::new(
+            fuel_cuda_backend::CudaBackend::new(
+                fuel_cuda_backend::CudaDevice::new(0).unwrap(),
+            ),
+        )
+        .with_optimization(true)
+        .with_rule_registry(fuel_graph::opt::RuleRegistry::lowering_only());
+        let cuda = y.realize_f32_cuda(&mut exe);
+
+        assert_eq!(cpu.len(), cuda.len());
+        let mut max_abs_err = 0.0_f32;
+        for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
+            let err = (a - b).abs();
+            if err > max_abs_err { max_abs_err = err; }
+            assert!(
+                err < 1e-5,
+                "lowered softmax[{i}]: cpu={a} (fused), cuda={b} (composed), err={err}",
+            );
+        }
+        eprintln!("max_abs_err over lowered-vs-fused softmax: {max_abs_err:.3e}");
+    }
+
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_concat_slice() {
