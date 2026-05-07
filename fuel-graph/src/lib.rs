@@ -263,6 +263,21 @@ pub enum Op {
     /// reduced to `[3, 4]`, the sum is along dim 0; for `[2, 3, 4]` to
     /// `[2, 1, 4]`, the sum is along dim 1 while keeping the dim.
     ReduceSumTo(Shape),
+    /// Max-reduce a tensor to a smaller shape, the maximum-symmetric
+    /// counterpart of [`Op::ReduceSumTo`]. The target shape must be
+    /// broadcast-compatible into the source: along any axis where the
+    /// padded target is 1 (or absent), the input is reduced via max;
+    /// other axes carry through. Used by lowering rules (notably
+    /// SoftmaxLastDim's max-subtract step) and as the keepdim form of
+    /// per-axis max reductions.
+    ///
+    /// Backward through max-selection routes the upstream gradient
+    /// only to the argmax position, which requires holding onto the
+    /// original input and recomputing the argmax. PR 3.5 ships this
+    /// op without a backward rule (panics cleanly on `.backward()`,
+    /// matching `Op::ArgMaxDim`'s precedent); add the backward when a
+    /// real consumer needs it.
+    ReduceMaxTo(Shape),
 
     // --- reductions to a scalar ---
     /// Sum of every element, producing a rank-0 tensor.
@@ -698,6 +713,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::BroadcastTo(_)       => "BroadcastTo",
         Op::Reshape(_)           => "Reshape",
         Op::ReduceSumTo(_)       => "ReduceSumTo",
+        Op::ReduceMaxTo(_)       => "ReduceMaxTo",
         Op::SumAll               => "SumAll",
         Op::MaxAll               => "MaxAll",
         Op::MinAll               => "MinAll",
@@ -2256,6 +2272,27 @@ impl Tensor {
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
             op: Op::ReduceSumTo(target.clone()),
+            inputs: vec![self.id],
+            shape: target,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a `ReduceMaxTo` node that max-reduces `self` to a smaller
+    /// shape — the max-symmetric counterpart of [`Self::reduce_sum_to`].
+    /// The target must be reachable from `self.shape()` via reduction
+    /// of dims (i.e. `self.shape()` could be produced from `target` by
+    /// broadcasting).
+    pub fn reduce_max_to(&self, target: impl Into<Shape>) -> Tensor {
+        let target = target.into();
+        check_broadcast_compatible(target.dims(), self.shape().dims());
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::ReduceMaxTo(target.clone()),
             inputs: vec![self.id],
             shape: target,
             dtype,
@@ -3928,6 +3965,22 @@ impl Tensor {
                          selection."
                     );
                 }
+                Op::ReduceMaxTo(_) => {
+                    // Backward through max-selection routes the upstream
+                    // gradient only to the argmax position, which
+                    // requires holding the original input + recomputing
+                    // an argmax. PR 3.5 ships ReduceMaxTo without
+                    // backward; add the rule when a real consumer needs
+                    // it (e.g. training models that use a max-pool-style
+                    // primitive composed via this op).
+                    panic!(
+                        "backward: ReduceMaxTo is not yet implemented \
+                         (PR 3.5 plumbed the forward op for SoftmaxLastDim \
+                         lowering; the backward routes upstream to the \
+                         argmax position and requires original-input \
+                         retention — add the rule when needed)."
+                    );
+                }
                 Op::QMatMul { .. } => {
                     // Quantized matmul is only used for frozen weights
                     // in the expected serving-inference use case, so
@@ -5535,6 +5588,24 @@ mod tests {
         // [3, 4] cannot reduce to [3, 2] — target must be broadcast-into-source.
         let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reduce_sum_to(Shape::from_dims(&[3, 2]));
+    }
+
+    #[test]
+    fn reduce_max_to_validates_compatibility() {
+        // [3, 4] can reduce to [4] (max along dim 0) or [3, 1] (max along dim 1).
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let r1 = x.reduce_max_to(Shape::from_dims(&[4]));
+        assert_eq!(r1.shape().dims(), &[4]);
+        assert!(matches!(r1.graph().read().unwrap().node(r1.id()).op, Op::ReduceMaxTo(_)));
+        let r2 = x.reduce_max_to(Shape::from_dims(&[3, 1]));
+        assert_eq!(r2.shape().dims(), &[3, 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "incompatible")]
+    fn reduce_max_to_rejects_non_broadcast_target() {
+        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let _ = x.reduce_max_to(Shape::from_dims(&[3, 2]));
     }
 
     #[test]

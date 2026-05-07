@@ -579,6 +579,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::BroadcastTo(s) => (41, vec![], vec![], vec![], Some(s.dims().to_vec()), None),
         Op::Reshape(s) => (42, vec![], vec![], vec![], Some(s.dims().to_vec()), None),
         Op::ReduceSumTo(s) => (43, vec![], vec![], vec![], Some(s.dims().to_vec()), None),
+        Op::ReduceMaxTo(s) => (44, vec![], vec![], vec![], Some(s.dims().to_vec()), None),
 
         Op::SumAll => (50, vec![], vec![], vec![], None, None),
         Op::MaxAll => (51, vec![], vec![], vec![], None, None),

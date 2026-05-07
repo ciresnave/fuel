@@ -377,6 +377,7 @@ fn eval_node(
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
+        Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
 
         // --- reductions ---
         Op::SumAll => unary!(inputs, cache, ops::sum_all),
@@ -745,6 +746,21 @@ fn eval_reduce_sum_to(
         AnyTensor::BF16(t) => AnyTensor::BF16(ops::reduce_sum_to(t, target)),
         AnyTensor::F16(t) => AnyTensor::F16(ops::reduce_sum_to(t, target)),
         AnyTensor::U32(_) => panic!("reduce_sum_to: not supported on U32 tensors"),
+    }
+}
+
+fn eval_reduce_max_to(
+    target: &fuel_core_types::Shape,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let src = cache.get(&inputs[0]).expect("reduce_max_to missing input");
+    match src {
+        AnyTensor::F32(t) => AnyTensor::F32(ops::reduce_max_to(t, target)),
+        AnyTensor::F64(t) => AnyTensor::F64(ops::reduce_max_to(t, target)),
+        AnyTensor::BF16(t) => AnyTensor::BF16(ops::reduce_max_to(t, target)),
+        AnyTensor::F16(t) => AnyTensor::F16(ops::reduce_max_to(t, target)),
+        AnyTensor::U32(_) => panic!("reduce_max_to: not supported on U32 tensors"),
     }
 }
 
