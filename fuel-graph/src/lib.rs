@@ -253,9 +253,18 @@ pub enum Op {
     BroadcastTo(Shape),
     /// Reshape a tensor to a new shape with the same element count. Data
     /// is unchanged; only the shape metadata is replaced. Serves as the
-    /// building block for inserting and removing size-1 dimensions (the
-    /// "unsqueeze"/"squeeze" operations most frameworks expose separately).
+    /// general building block for arbitrary shape changes;
+    /// see [`Op::Unsqueeze`] for the metadata-only-view variant that
+    /// inserts a size-1 dim without ever materializing.
     Reshape(Shape),
+    /// Insert a size-1 dimension at position `dim` (range `0..=rank`,
+    /// where `dim == rank` appends to the end). Strictly more efficient
+    /// than [`Op::Reshape`] for the size-1-insertion case: this is a
+    /// metadata-only view op that shares bytes with its input via the
+    /// Layout side-table, so it preserves any upstream
+    /// strided/transposed/broadcast layout instead of triggering an
+    /// auto-Contiguize.
+    Unsqueeze { dim: usize },
     /// Sum-reduce a tensor to a smaller shape by summing along any dims
     /// where the source was broadcast against the target. This is the
     /// backward rule for `BroadcastTo` and is symmetric with it: both ops
@@ -646,7 +655,11 @@ impl Op {
     pub fn is_view_op(&self) -> bool {
         matches!(
             self,
-            Op::Transpose | Op::Permute(_) | Op::BroadcastTo(_) | Op::Slice { .. }
+            Op::Transpose
+                | Op::Permute(_)
+                | Op::BroadcastTo(_)
+                | Op::Slice { .. }
+                | Op::Unsqueeze { .. }
         )
     }
 }
@@ -679,6 +692,7 @@ pub fn derive_view_output_layout(
         Op::Permute(axes) => input_layout.permute(axes),
         Op::BroadcastTo(target_shape) => input_layout.broadcast_as(target_shape.clone()),
         Op::Slice { dim, start, len } => input_layout.narrow(*dim, *start, *len),
+        Op::Unsqueeze { dim } => input_layout.unsqueeze(*dim),
         other => Err(fuel_core_types::Error::Msg(format!(
             "derive_view_output_layout called with non-view op {other:?}",
         ))
@@ -712,6 +726,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Cast(_)              => "Cast",
         Op::BroadcastTo(_)       => "BroadcastTo",
         Op::Reshape(_)           => "Reshape",
+        Op::Unsqueeze{..}        => "Unsqueeze",
         Op::ReduceSumTo(_)       => "ReduceSumTo",
         Op::ReduceMaxTo(_)       => "ReduceMaxTo",
         Op::SumAll               => "SumAll",
@@ -2234,6 +2249,36 @@ impl Tensor {
         }
     }
 
+    /// Append an `Unsqueeze` node that inserts a size-1 dimension at
+    /// position `dim`. `dim` must be in `0..=rank` (where `dim == rank`
+    /// appends to the end). Pure metadata — the output shares bytes
+    /// with `self`, with a new size-1 axis layered into the Layout
+    /// side-table. Strictly more efficient than `reshape` for the
+    /// size-1-insertion case because non-contiguous (e.g. transposed
+    /// or broadcast) inputs flow through without auto-Contiguize.
+    pub fn unsqueeze(&self, dim: usize) -> Tensor {
+        let in_shape = self.shape();
+        let in_dims = in_shape.dims();
+        let rank = in_dims.len();
+        assert!(
+            dim <= rank,
+            "unsqueeze: dim {dim} out of bounds for rank {rank} (must be <= rank)",
+        );
+        let mut out_dims: Vec<usize> = in_dims.to_vec();
+        out_dims.insert(dim, 1);
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Unsqueeze { dim },
+            inputs: vec![self.id],
+            shape:  Shape::from_dims(&out_dims),
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `Reshape` node producing `self`'s data under a new shape.
     /// The new shape must have the same total element count as the
     /// current shape.
@@ -3645,6 +3690,25 @@ impl Tensor {
                 Op::Reshape(_) => {
                     // Forward: y = reshape(x, target). Data unchanged.
                     // Backward: reshape upstream back to x.shape.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Reshape(x_shape.clone()),
+                        vec![up_id],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Unsqueeze { dim: _ } => {
+                    // Forward: y = unsqueeze(x, dim) — inserts a size-1
+                    // axis without touching bytes. Backward: drop that
+                    // axis. Bytes are unchanged either direction; a
+                    // Reshape to x.shape is the simplest expression of
+                    // "same bytes, different rank" that the executor
+                    // handles natively.
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -5588,6 +5652,52 @@ mod tests {
         // [3, 4] cannot reduce to [3, 2] — target must be broadcast-into-source.
         let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reduce_sum_to(Shape::from_dims(&[3, 2]));
+    }
+
+    #[test]
+    fn unsqueeze_inserts_size_one_dim() {
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                                 Shape::from_dims(&[2, 3]), cpu_dev());
+        // Insert at position 0: [2, 3] -> [1, 2, 3]
+        let y0 = x.unsqueeze(0);
+        assert_eq!(y0.shape().dims(), &[1, 2, 3]);
+        // Insert at position 1: [2, 3] -> [2, 1, 3]
+        let y1 = x.unsqueeze(1);
+        assert_eq!(y1.shape().dims(), &[2, 1, 3]);
+        // Insert at the end (rank): [2, 3] -> [2, 3, 1]
+        let y2 = x.unsqueeze(2);
+        assert_eq!(y2.shape().dims(), &[2, 3, 1]);
+        // Op variant correctness.
+        let g = x.graph().read().unwrap();
+        assert!(matches!(g.node(y0.id()).op, Op::Unsqueeze { dim: 0 }));
+        assert!(matches!(g.node(y1.id()).op, Op::Unsqueeze { dim: 1 }));
+        assert!(matches!(g.node(y2.id()).op, Op::Unsqueeze { dim: 2 }));
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn unsqueeze_rejects_dim_above_rank() {
+        let x = Tensor::from_f32(vec![1.0; 4], Shape::from_dims(&[4]), cpu_dev());
+        // dim=2 > rank=1 → panic.
+        let _ = x.unsqueeze(2);
+    }
+
+    #[test]
+    fn unsqueeze_layout_side_table_populated() {
+        // After Graph::push auto-derives the Layout side-table for view
+        // ops, an unsqueeze node should have an explicit layout entry
+        // with a stride-0 axis at the inserted position.
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0],
+                                 Shape::from_dims(&[2, 2]), cpu_dev());
+        let y = x.unsqueeze(1);
+        let g = x.graph().read().unwrap();
+        assert!(g.has_explicit_layout(y.id()),
+            "Graph::push should auto-populate layout for view ops");
+        let l = g.layout(y.id());
+        assert_eq!(l.shape().dims(), &[2, 1, 2]);
+        // Stride at the inserted axis should be 0 (per the convention
+        // chosen in Layout::unsqueeze).
+        assert_eq!(l.stride()[1], 0);
     }
 
     #[test]

@@ -170,6 +170,36 @@ impl Layout {
         })
     }
 
+    /// Returns a layout with a size-1 dimension inserted at position `dim`.
+    /// `dim` must be in `0..=rank` — `dim == rank` appends to the end.
+    /// Pure metadata: the underlying bytes are unchanged.
+    ///
+    /// Stride for the inserted size-1 axis is set to 0. This stride
+    /// value never affects indexing (the axis only ever has coordinate
+    /// 0, and `0 * stride == 0`), so any value would be correct.
+    /// Choosing 0 matches the convention used by `broadcast_as` for
+    /// size-1 axes broadcast to larger sizes — keeps the convention
+    /// uniform and `Shape::is_contiguous` stays unaffected (it already
+    /// skips dims of size 1).
+    pub fn unsqueeze(&self, dim: usize) -> Result<Self> {
+        let rank = self.shape().rank();
+        if dim > rank {
+            return Err(Error::Msg(format!(
+                "unsqueeze: dim {dim} out of bounds for rank {rank}",
+            ))
+            .bt());
+        }
+        let mut new_dims = DimVec::from_slice(self.shape().dims());
+        new_dims.insert(dim, 1);
+        let mut new_stride = DimVec::from_slice(self.stride());
+        new_stride.insert(dim, 0);
+        Ok(Self {
+            shape: Shape::from(new_dims),
+            stride: new_stride,
+            start_offset: self.start_offset,
+        })
+    }
+
     /// Returns a layout broadcast to the given shape.
     ///
     /// Dimensions of size 1 in `self` are stretched to match the target shape.

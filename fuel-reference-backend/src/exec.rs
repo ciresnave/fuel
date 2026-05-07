@@ -400,6 +400,7 @@ pub fn eval_node_with_op(
         Op::Cast(target) => eval_cast(*target, inputs, cache),
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
+        Op::Unsqueeze { dim } => eval_unsqueeze(*dim, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
         Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
 
@@ -643,6 +644,39 @@ fn eval_reshape(
         AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::reshape(t, target)),
         AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::reshape(t, target)),
         AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::reshape(t, target)),
+    }
+}
+
+fn eval_unsqueeze(
+    dim: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    // Unsqueeze is bytes-identical with reshape; only the metadata
+    // shape differs. Insert a size-1 axis at `dim`, then dispatch
+    // through ops::reshape for each dtype.
+    let src = cache.get(&inputs[0]).expect("topo order missing unsqueeze input");
+    let in_shape = match src {
+        AnyRefTensor::F32(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::F64(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::BF16(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::F16(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::U32(t) => t.shape().dims().to_vec(),
+    };
+    let mut out_dims = in_shape;
+    assert!(
+        dim <= out_dims.len(),
+        "unsqueeze: dim {dim} out of bounds for rank {}",
+        out_dims.len(),
+    );
+    out_dims.insert(dim, 1);
+    let target = Shape::from_dims(&out_dims);
+    match src {
+        AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::reshape(t, &target)),
+        AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::reshape(t, &target)),
+        AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::reshape(t, &target)),
+        AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::reshape(t, &target)),
+        AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::reshape(t, &target)),
     }
 }
 
@@ -1918,6 +1952,40 @@ mod tests {
         let y = x.reduce_sum_to(Shape::from_dims(&[3, 1]));
         // row sums: 10, 26, 42
         assert_eq!(realize_f32(&y).as_slice(), &[10.0, 26.0, 42.0]);
+    }
+
+    #[test]
+    fn realize_unsqueeze_inserts_axis_preserves_data() {
+        // Input [2, 3] with values 1..6, unsqueeze at dim 1 → shape
+        // [2, 1, 3]. Bytes are unchanged; data should round-trip.
+        let x = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let y = x.unsqueeze(1);
+        assert_eq!(y.shape().dims(), &[2, 1, 3]);
+        assert_eq!(realize_f32(&y).as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn realize_unsqueeze_then_broadcast_then_add() {
+        // [3] -unsqueeze(0)→ [1, 3] -broadcast→ [2, 3] -add x→ ...
+        // Composed end-to-end through the reference exec.
+        let bias = Tensor::from_f32(
+            vec![10.0, 20.0, 30.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let x = bias.const_f32_like(
+            vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0],
+            Shape::from_dims(&[2, 3]),
+        );
+        let bias_un = bias.unsqueeze(0);
+        let bias_b = bias_un.broadcast_to(Shape::from_dims(&[2, 3]));
+        let y = x.add(&bias_b);
+        // Expected: [11, 21, 31, 12, 22, 32]
+        assert_eq!(realize_f32(&y).as_slice(), &[11.0, 21.0, 31.0, 12.0, 22.0, 32.0]);
     }
 
     #[test]
