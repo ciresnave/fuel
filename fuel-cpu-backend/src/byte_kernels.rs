@@ -3382,6 +3382,129 @@ reduce_sum_to_half_kernel!(reduce_sum_to_bf16, half::bf16);
 reduce_sum_to_half_kernel!(reduce_sum_to_f16, half::f16);
 
 // =============================================================================
+// ReduceMaxTo — max-reduce to a broadcast-compatible target shape
+// =============================================================================
+//
+// Same alignment + projection logic as ReduceSumTo; the only differences
+// are the reduction operator (`max` instead of `+`) and the output's
+// initial value (negative infinity instead of zero).
+
+/// Reduce-max-to for native arithmetic ($T = f32 or f64).
+macro_rules! reduce_max_to_native_kernel {
+    ($name:ident, $T:ty, $T_size:expr, $neg_inf:expr) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            output_shape: &[usize],
+        ) -> Result<()> {
+            let padded = align_reduce_to(input_shape, output_shape)?;
+            let in_elems = elem_count(input_shape);
+            let out_elems = elem_count(output_shape);
+            let elem = $T_size;
+            if input.len_bytes() != in_elems * elem
+                || output.len_bytes() != out_elems * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch (in {} elems, out {} elems)",
+                    stringify!($name), in_elems, out_elems,
+                ))
+                .bt());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = output.as_slice_mut()?;
+            for slot in out_view.iter_mut() { *slot = $neg_inf; }
+            let rank = input_shape.len();
+            let mut in_strides = vec![1_usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
+            }
+            let mut out_strides_padded = vec![1_usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
+            }
+            for in_flat in 0..in_elems {
+                let mut out_flat = 0_usize;
+                let mut rem = in_flat;
+                for axis in 0..rank {
+                    let coord = rem / in_strides[axis];
+                    rem %= in_strides[axis];
+                    let out_coord = if padded[axis] == 1 { 0 } else { coord };
+                    out_flat += out_coord * out_strides_padded[axis];
+                }
+                if in_view[in_flat] > out_view[out_flat] {
+                    out_view[out_flat] = in_view[in_flat];
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+reduce_max_to_native_kernel!(reduce_max_to_f32, f32, std::mem::size_of::<f32>(), f32::NEG_INFINITY);
+reduce_max_to_native_kernel!(reduce_max_to_f64, f64, std::mem::size_of::<f64>(), f64::NEG_INFINITY);
+
+/// Reduce-max-to for half-floats — accumulate via f32 and narrow.
+/// (The f32 widening is overkill for max — straightforward
+/// half-arithmetic would also work — but it keeps the macro shape
+/// uniform with the sum kernel and avoids edge cases around half-float
+/// total-ordering.)
+macro_rules! reduce_max_to_half_kernel {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            output_shape: &[usize],
+        ) -> Result<()> {
+            let padded = align_reduce_to(input_shape, output_shape)?;
+            let in_elems = elem_count(input_shape);
+            let out_elems = elem_count(output_shape);
+            let elem = std::mem::size_of::<$T>();
+            if input.len_bytes() != in_elems * elem
+                || output.len_bytes() != out_elems * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            let in_view: &[$T] = input.as_slice()?;
+            let out_view: &mut [$T] = output.as_slice_mut()?;
+            let mut acc = vec![f32::NEG_INFINITY; out_elems];
+            let rank = input_shape.len();
+            let mut in_strides = vec![1_usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
+            }
+            let mut out_strides_padded = vec![1_usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
+            }
+            for in_flat in 0..in_elems {
+                let mut out_flat = 0_usize;
+                let mut rem = in_flat;
+                for axis in 0..rank {
+                    let coord = rem / in_strides[axis];
+                    rem %= in_strides[axis];
+                    let out_coord = if padded[axis] == 1 { 0 } else { coord };
+                    out_flat += out_coord * out_strides_padded[axis];
+                }
+                let v = in_view[in_flat].to_f32();
+                if v > acc[out_flat] { acc[out_flat] = v; }
+            }
+            for (dst, src) in out_view.iter_mut().zip(acc.iter()) {
+                *dst = <$T>::from_f32(*src);
+            }
+            Ok(())
+        }
+    };
+}
+
+reduce_max_to_half_kernel!(reduce_max_to_bf16, half::bf16);
+reduce_max_to_half_kernel!(reduce_max_to_f16, half::f16);
+
+// =============================================================================
 // FusedLinear — matmul + bias-add (3-input)
 // =============================================================================
 //
