@@ -1868,6 +1868,14 @@ semantics layer exists.
 Work items D (inplace-as-optimization) and F (layout-tracking
 pass) become rule families on this framework once it exists.
 
+*Forward reference*: the rule registry's hand-written rules
+(SoftmaxLastDim's lower/fuse pair) will become *auto-generated*
+once Phase 7.6 (FusedOpRegistry) lands. Each FusedOpEntry's
+`decompose` + `pattern` produce a lowering rule and a fusion rule
+declaratively. The hand-written form remains as an escape hatch.
+See [Phase 7.6](#phase-76--fusedopregistry-open-registry-for-fused-ops-closed-enum-for-primitives)
+for the registry refactor that consumes this framework.
+
 #### Work items
 
 **A. `fuel-formats` extraction — transport-independent format
@@ -2374,6 +2382,185 @@ This phase should not be attempted concurrently with Phase 8
 kernels/ops and would have to absorb the autograd-rewrite mid-
 flight. Phase 9 (agentic hooks) is gated on a real consumer
 and not in conflict.
+
+---
+
+### Phase 7.6 — FusedOpRegistry: open registry for fused ops, closed enum for primitives
+
+*Architectural refactor of the deepest layer of fuel: splits the
+`Op` enum into a closed primitive-only enum + an open registry of
+fused ops. Enables cost-based multi-backend placement (the Phase 4
+scheduler's prerequisite). Touches every executor, every backend,
+every autograd path. ~2-3 weeks of focused work.*
+
+**Source of truth**: [`docs/fused-op-registry.md`](docs/fused-op-registry.md).
+Read it before starting. Iterate the design doc before code lands.
+
+#### Why Phase 7.6 exists
+
+PR 3 (rule registry) and PR 3.5 (Op::ReduceMaxTo, Unsqueeze,
+ReduceMaxToBackward) surfaced a structural question that earlier
+phases worked around: every fused op fuel adds requires a new `Op`
+enum variant + executor arms in every backend + autograd entry +
+op_short_name + op_key + binding-table registration + (post-PR 3)
+hand-written lowering and fusion rules. The Op enum becomes the
+bottleneck for fusion. Adding ~15 fused ops in one PR (the eventual
+scope) would require ~15× this multiplication of plumbing.
+
+The architectural answer: closed enum for primitives only, open
+registry for fused ops. Each fused op is one registry entry that
+encodes its primitive decomposition (lowering), its canonical
+pattern (fusion recognition), per-backend kernel implementations
+with cost estimates (placement), backward op identity (autograd),
+and shape/dtype rules. Adding a new fused op is one entry + one
+kernel function — zero edits elsewhere.
+
+The other architectural payoff: the Phase 4 cost-based scheduler
+needs cross-backend fusion visibility *before* placement decisions
+to compare e.g. "matmul+bias+relu costs X on CUDA fused, Y on
+Vulkan unfused". Backend-side fusion (XLA's model) doesn't satisfy
+this — fuel's multi-backend Router needs every backend's fusion
+catalog visible to the pre-placement optimizer. A registry is the
+natural shape for that catalog.
+
+#### Architectural decisions
+
+**`Op` enum stays closed and small.** ~80 primitive ops + ~5
+memory/control ops. Stablehlo-sized. Exhaustively matched. This
+includes: arithmetic primitives, view ops, reductions (including
+ReduceSumTo / ReduceMaxTo / SumDim / etc. — they're decomposable
+in principle but first-class at the IR level), and the comparison
+family (Equal/NotEqual/Less/LessEqual/Greater/GreaterEqual) added
+during this phase as part of the primitive-set completion.
+
+**Fused ops live in `FusedOpRegistry`.** ~13 existing fused-op
+variants in `Op` (SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim,
+Rope, FusedLinear, Conv2D, ConvTranspose2D, FlashAttn, PagedAttn,
+QMatMul, plus 4 fused-backward helpers) become registry entries.
+Future fused ops add entries; no `Op` edits.
+
+**`Node` kind enum.** `Node.op: Op` becomes
+`Node.kind: NodeKind::{Primitive(Op), Fused { id, params }}`. The
+executor's eval_node match has two top-level arms; the primitive
+arm is exhaustive on `Op`, the fused arm is registry-dispatched.
+
+**`FusedOpRegistry` is populated at startup, frozen thereafter.**
+Lookups by `FusedOpId` are guaranteed to succeed. Three indices:
+`id → entry`, `name → id` (debug/tooling), `pattern_hash → id`
+(fusion-pass recognition).
+
+**PR 3's hand-written rules become auto-generated.** For each
+`FusedOpEntry`, lowering and fusion rules are derived from
+`entry.decompose` and `entry.pattern`. The PR 3 hand-written
+SoftmaxLastDim rules get deleted; the registry entry produces
+equivalent behavior. Hand-written rules remain available as an
+escape hatch for canonicalization passes that don't end in a
+single fused op.
+
+**Backend registration moves.** fuel-storage's
+`register_*_kernels` functions become "for each FusedOpEntry,
+attach a `BackendImpl` containing kernel + cost estimate." Same
+kernel wrappers; different registration surface. Backend authors
+write `register_fused!(softmax_last_dim, cuda, f32, my_kernel)`
+or similar registration-macro form.
+
+**Cost estimates are advisory.** Each `BackendImpl` carries a
+`cost: fn(shapes, params, capabilities) -> CostEstimate`. Initial
+cost models can be coarse (FLOP count + bandwidth model);
+profile-driven refinement happens in Phase 6b's probe/judge/dispatch
+loop. The scheduler measures actual runtimes and adapts.
+
+#### Sub-tasks
+
+(See `docs/fused-op-registry.md` for the full migration path.
+Summarized here.)
+
+- [ ] **Step 1: registry skeleton.** Add `FusedOpRegistry`,
+      `FusedOpEntry`, `FusedOpParams`, `BackendImpl`,
+      `CostEstimate`, `BackwardKind`, `NodeKind` types in
+      fuel-graph (or fuel-fused-ops if a new crate is preferred —
+      see open question 1 in the design doc). No callers yet.
+- [ ] **Step 2: parallel `Node.kind` field** alongside existing
+      `Node.op: Op`. Both representations coexist throughout the
+      migration window.
+- [ ] **Step 3: migrate first fused op (SoftmaxLastDim).** Create
+      registry entry; teach executor's eval_node to dispatch
+      through registry when `node.kind` is `Fused`; update
+      `Tensor::softmax_last_dim()` builder to set
+      `node.kind = Fused`; auto-generate lowering+fusion rules
+      from the entry; delete PR 3 hand-written rules. Tree
+      compiles green; live CUDA equivalence test still passes.
+- [ ] **Step 4: migrate remaining 12 fused ops.** RmsNormLastDim,
+      LayerNormLastDim, Rope, FusedLinear, Conv2D,
+      ConvTranspose2D, FlashAttn, PagedAttn, QMatMul, plus the 4
+      backward-helper fused ops. Each is its own commit. ~half a
+      day per op; ~6 days total.
+- [ ] **Step 5: drop `Op` variants.** Once nothing emits them,
+      remove the fused-op variants from `Op`. Update op_short_name,
+      op_key, autograd's match-on-Op (which can't reach the dropped
+      variants but rustc requires they be removed from the enum).
+- [ ] **Step 6: drop `Node.op`, rename `Node.kind`.** Old field
+      is dead. Mechanical cleanup.
+- [ ] **Step 7: backend registrations migrate** to the
+      registry-driven surface. Same kernel wrappers; new
+      registration shape. Macro hides boilerplate.
+- [ ] **Step 8: populate cost estimates.** Each `BackendImpl`'s
+      `cost` function gets a real implementation per backend.
+      Initial: FLOP-counting + bandwidth model. Refined with
+      profile data when the Phase 4 scheduler arrives.
+- [ ] **Step 9: comparison family** (Equal/NotEqual/Less/
+      LessEqual/Greater/GreaterEqual) added to `Op` as primitive
+      variants. Bit-exact equality on floats; non-differentiable
+      backward (panic stub, ArgMaxDim precedent). Lands in this
+      phase because the primitive-set completion is part of the
+      same architectural cleanup.
+
+#### Success criteria
+
+- `Op` enum is primitive-only. ~85 variants. No fused-op variants.
+- `FusedOpRegistry` populated with 13 entries (the migrated fused
+  ops). Adding a new fused op is one entry + one kernel function.
+- PR 3's SoftmaxLastDim hand-written rules deleted; auto-generated
+  rules from the registry produce equivalent behavior. Round-trip
+  identity test still passes.
+- Live CUDA equivalence test (`cuda_executor_matches_cpu_on_
+  softmax_via_lowering`) still passes — the lowered subgraph still
+  runs natively on CUDA via the registry-dispatched path.
+- `cost_estimate(SoftmaxLastDim, [B,N,M], CUDA)` query returns a
+  plausible time estimate (the registry surface; the actual
+  scheduler that consumes it lands in Phase 4 refinement).
+- All existing tests green throughout the migration. CSE / op_key
+  handles `NodeKind::Fused` correctly (two fused nodes with same
+  id + params CSE to one).
+- ROADMAP and MEMORY.md updated with post-migration architecture
+  summary.
+
+#### Honest caveats
+
+This refactor touches the deepest layer of fuel — every executor,
+every backend, every autograd path matches on `Op`. Those matches
+all change shape. Mitigation: parallel-introduction-then-drop —
+`Node.op` and `Node.kind` coexist through the migration window, with
+the drop step at the end. Each fused-op migration is independently
+shippable.
+
+PR 3's hand-written rules are easier to read than auto-generated
+rules from registry entries. Debugging a misbehaving fusion
+requires understanding the rule generator, not just the rule.
+Mitigation: keep the hand-written form available as escape hatch
+for canonicalization passes outside the auto-generation pattern.
+
+Cost estimates can mislead a scheduler. A FLOP-counting model
+misses fixed launch overhead, queue-wait latency, bandwidth
+interactions. Mitigation: cost estimates are advisory; the
+scheduler also measures and adapts (Phase 6b pattern). Initial
+estimates can be coarse.
+
+This phase should not run concurrently with Phase 8 (FlashAttention)
+or Phase 8.5 (sparsity); both add new fused ops mid-flight that
+would have to absorb the registry refactor. Phase 7.5 work items
+B/C/E (Tensor/autograd refactor) are orthogonal — they can run
+before, after, or in parallel.
 
 ---
 
