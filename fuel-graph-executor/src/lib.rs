@@ -1497,6 +1497,22 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 let a = self.get_gt_c(inputs, 0, cache);
                 return CacheEntry::Owned(self.do_broadcast(&a, target));
             }
+            Op::Unsqueeze { dim } => {
+                // Metadata-only view: insert a size-1 axis at `dim`.
+                // We use `get_gt` (not `get_gt_c`) to preserve any
+                // upstream strided/transposed/broadcast layout —
+                // unsqueeze on a non-contiguous input stays
+                // non-contiguous via the layered Layout, so downstream
+                // consumers materialize lazily only when they actually
+                // need contiguous bytes.
+                let a = self.get_gt(inputs, 0, cache);
+                let unsqueezed = a.layout().unsqueeze(*dim).expect("unsqueeze layout derive");
+                return CacheEntry::Owned(TrackedTensor {
+                    storage: std::sync::Arc::clone(&a.storage),
+                    shape: shape.clone(),
+                    custom_layout: Some(unsqueezed),
+                });
+            }
             Op::Concat { dim } => {
                 return CacheEntry::Owned(self.do_concat(*dim, inputs, shape, cache));
             }
@@ -1963,7 +1979,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Maximum => "Maximum", Op::Minimum => "Minimum",
         Op::AddScalar(_) => "AddScalar", Op::MulScalar(_) => "MulScalar",
         Op::PowI(_) => "PowI", Op::Cast(_) => "Cast",
-        Op::Reshape(_) => "Reshape", Op::Transpose => "Transpose",
+        Op::Reshape(_) => "Reshape", Op::Unsqueeze{..} => "Unsqueeze", Op::Transpose => "Transpose",
         Op::Permute(_) => "Permute", Op::BroadcastTo(_) => "BroadcastTo",
         Op::SumAll => "SumAll", Op::MeanAll => "MeanAll",
         Op::MaxAll => "MaxAll", Op::MinAll => "MinAll",

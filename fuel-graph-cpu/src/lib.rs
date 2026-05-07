@@ -378,6 +378,7 @@ fn eval_node(
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
         Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
+        Op::Unsqueeze { dim } => eval_unsqueeze(*dim, inputs, cache),
 
         // --- reductions ---
         Op::SumAll => unary!(inputs, cache, ops::sum_all),
@@ -761,6 +762,38 @@ fn eval_reduce_max_to(
         AnyTensor::BF16(t) => AnyTensor::BF16(ops::reduce_max_to(t, target)),
         AnyTensor::F16(t) => AnyTensor::F16(ops::reduce_max_to(t, target)),
         AnyTensor::U32(_) => panic!("reduce_max_to: not supported on U32 tensors"),
+    }
+}
+
+fn eval_unsqueeze(
+    dim: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    // Unsqueeze is bytes-identical with reshape; only the metadata
+    // shape differs.
+    let src = cache.get(&inputs[0]).expect("unsqueeze missing input");
+    let in_dims = match src {
+        AnyTensor::F32(t) => t.shape().dims().to_vec(),
+        AnyTensor::F64(t) => t.shape().dims().to_vec(),
+        AnyTensor::BF16(t) => t.shape().dims().to_vec(),
+        AnyTensor::F16(t) => t.shape().dims().to_vec(),
+        AnyTensor::U32(t) => t.shape().dims().to_vec(),
+    };
+    let mut out_dims = in_dims;
+    assert!(
+        dim <= out_dims.len(),
+        "unsqueeze: dim {dim} out of bounds for rank {}",
+        out_dims.len(),
+    );
+    out_dims.insert(dim, 1);
+    let target = fuel_core_types::Shape::from_dims(&out_dims);
+    match src {
+        AnyTensor::F32(t) => AnyTensor::F32(ops::reshape(t, &target)),
+        AnyTensor::F64(t) => AnyTensor::F64(ops::reshape(t, &target)),
+        AnyTensor::BF16(t) => AnyTensor::BF16(ops::reshape(t, &target)),
+        AnyTensor::F16(t) => AnyTensor::F16(ops::reshape(t, &target)),
+        AnyTensor::U32(t) => AnyTensor::U32(ops::reshape(t, &target)),
     }
 }
 
