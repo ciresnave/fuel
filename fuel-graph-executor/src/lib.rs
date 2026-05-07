@@ -1555,6 +1555,82 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
+
+            // ReduceSumTo / ReduceMaxTo: derive reduce_dims from
+            // (input_shape, target_shape), then dispatch through the
+            // backend's reduce(). Output rank == target rank; the
+            // backend produces rank-shrunk bytes matching the
+            // keepdim-or-shrink byte count, and the executor's
+            // TrackedTensor wraps with the graph node's actual shape.
+            //
+            // Edge case: when input_shape already matches padded
+            // target on every axis, reduce_dims is empty and the
+            // op is an identity. Skipping the backend.reduce call is
+            // important because some backends conventionally treat
+            // empty-dims as "full reduction"; our ReduceSumTo
+            // semantics treat it as "no reduction".
+            // ReduceSumTo / ReduceMaxTo: derive reduce_dims from
+            // (input_shape, target_shape), dispatch through the
+            // backend's reduce(), then relabel the result's internal
+            // shape to match the keepdim target. The relabel matters
+            // because backend.reduce produces a rank-shrunk storage
+            // whose internal shape doesn't match the graph node's
+            // target shape; downstream ops that introspect the
+            // storage's own shape (rather than TrackedTensor.shape)
+            // would see a mismatch otherwise. Mirrors Op::Reshape's
+            // try_clone-with-target-layout pattern.
+            Op::ReduceSumTo(target_shape) | Op::ReduceMaxTo(target_shape) => {
+                let a = self.get_gt_c(inputs, 0, cache);
+                let in_dims = a.shape.dims();
+                let dst_dims = target_shape.dims();
+                if dst_dims.len() > in_dims.len() {
+                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                }
+                let pad = in_dims.len() - dst_dims.len();
+                let mut padded = vec![1_usize; pad];
+                padded.extend_from_slice(dst_dims);
+                let mut reduce_dims: Vec<usize> = Vec::new();
+                let mut shape_ok = true;
+                for (axis, (&s, &t)) in in_dims.iter().zip(padded.iter()).enumerate() {
+                    if t == s {
+                    } else if t == 1 {
+                        if s > 1 { reduce_dims.push(axis); }
+                    } else {
+                        shape_ok = false;
+                        break;
+                    }
+                }
+                if !shape_ok {
+                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                }
+                if reduce_dims.is_empty() {
+                    // Identity: input already matches target. Defer to
+                    // CPU fallback for the trivial copy — keeps the
+                    // empty-reduce-dims convention out of every
+                    // backend's reduce impl.
+                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                }
+                let reduce_op = match op {
+                    Op::ReduceSumTo(_) => fuel_core_types::op::ReduceOp::Sum,
+                    Op::ReduceMaxTo(_) => fuel_core_types::op::ReduceOp::Max,
+                    _ => unreachable!(),
+                };
+                let reduced = match self.backend.reduce(
+                    reduce_op, &a.storage, &a.layout(), &reduce_dims,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                };
+                // Relabel the storage's inner shape to the target
+                // (keepdim) shape. The byte / element count is
+                // unchanged.
+                let target_layout = Layout::contiguous(target_shape.clone());
+                let relabeled = match self.backend.try_clone(&reduced, &target_layout) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                };
+                return CacheEntry::Owned(TrackedTensor::new(relabeled, target_shape.clone()));
+            }
             Op::MinDim(d) => {
                 let a = self.get_gt_c(inputs, 0, cache);
                 match self.backend.reduce(fuel_core_types::op::ReduceOp::Min, &a.storage, &a.layout(), &[*d]) {

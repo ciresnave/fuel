@@ -1539,3 +1539,94 @@ fn cast_f32_to_i64_through_binding_table() {
     // C static_cast<int64_t>(float) truncates toward zero.
     assert_eq!(host_i64, &[0_i64, 1, -1, 100, -100]);
 }
+
+/// PR 3.5 follow-up live test: `(ReduceSumTo, F32, Cuda)` through the
+/// binding table. Input `[2, 3]` of `[1..6]`, target `[2, 1]` —
+/// keepdim sum along the last axis, exactly the shape the lowered
+/// SoftmaxLastDim subgraph emits. Expected `[6, 15]`.
+#[test]
+#[ignore]
+fn reduce_sum_to_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let src = build_storage_cuda(&dev, &xs);
+    // Output: 2 elements, shape [2, 1].
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ReduceSumTo, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (ReduceSumTo, F32, Cuda)");
+
+    let params = OpParams::ReduceSumTo {
+        input_shape: vec![2, 3],
+        output_shape: vec![2, 1],
+    };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 1]));
+    let layouts = vec![in_layout, out_layout];
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_f32, &[6.0_f32, 15.0]);
+}
+
+/// PR 3.5 follow-up live test: `(ReduceMaxTo, F32, Cuda)` through the
+/// binding table. Symmetric of `reduce_sum_to_f32_through_binding_table`.
+/// Input `[2, 3]` of `[1, 5, 2, 4, 3, 6]`, target `[2, 1]` — keepdim
+/// max along the last axis. Expected `[5, 6]`.
+#[test]
+#[ignore]
+fn reduce_max_to_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs = [1.0_f32, 5.0, 2.0, 4.0, 3.0, 6.0];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ReduceMaxTo, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (ReduceMaxTo, F32, Cuda)");
+
+    let params = OpParams::ReduceMaxTo {
+        input_shape: vec![2, 3],
+        output_shape: vec![2, 1],
+    };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 1]));
+    let layouts = vec![in_layout, out_layout];
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_f32, &[5.0_f32, 6.0]);
+}

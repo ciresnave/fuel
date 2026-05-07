@@ -3471,6 +3471,92 @@ fn mean_reduce_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(ReduceSumTo, F32, Cuda)`. Maps the
+/// broadcast-aligned target shape from `OpParams::ReduceSumTo` to
+/// reduce dims and dispatches through the existing `fast_sum_f32`
+/// kernel. PR 3.5-followup: drops the CPU-fallback round-trip cost
+/// the lowered SoftmaxLastDim was paying on CUDA.
+#[cfg(feature = "cuda")]
+fn reduce_sum_to_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "reduce_sum_to_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (input_shape, output_shape) = match params {
+        OpParams::ReduceSumTo { input_shape, output_shape } => {
+            (input_shape.clone(), output_shape.clone())
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "reduce_sum_to_f32_cuda_wrapper: expected OpParams::ReduceSumTo, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg("reduce_sum_to_f32_cuda_wrapper: layouts empty".to_string()).bt()
+    })?;
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::reduce_sum_to_f32(
+        src_cuda, input_layout, &input_shape, &output_shape,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
+/// Dispatch wrapper for `(ReduceMaxTo, F32, Cuda)`. Symmetric of
+/// `reduce_sum_to_f32_cuda_wrapper` — only the byte-kernel call
+/// differs (`fast_max_f32` instead of `fast_sum_f32`).
+#[cfg(feature = "cuda")]
+fn reduce_max_to_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "reduce_max_to_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (input_shape, output_shape) = match params {
+        OpParams::ReduceMaxTo { input_shape, output_shape } => {
+            (input_shape.clone(), output_shape.clone())
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "reduce_max_to_f32_cuda_wrapper: expected OpParams::ReduceMaxTo, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg("reduce_max_to_f32_cuda_wrapper: layouts empty".to_string()).bt()
+    })?;
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::reduce_max_to_f32(
+        src_cuda, input_layout, &input_shape, &output_shape,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(Affine, F32, Cuda)`. Element-wise
 /// `y = mul * x + add` via the `affine_f32` PTX kernel, on byte-shaped
 /// CUDA storage. Mirrors the CPU `affine_f32_cpu_wrapper`.
@@ -3644,6 +3730,9 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MaxReduce,          &unary(f32_dt), cuda, max_reduce_f32_cuda_wrapper);
     table.register(MinReduce,          &unary(f32_dt), cuda, min_reduce_f32_cuda_wrapper);
     table.register(MeanReduce,         &unary(f32_dt), cuda, mean_reduce_f32_cuda_wrapper);
+
+    table.register(ReduceSumTo,        &unary(f32_dt), cuda, reduce_sum_to_f32_cuda_wrapper);
+    table.register(ReduceMaxTo,        &unary(f32_dt), cuda, reduce_max_to_f32_cuda_wrapper);
 
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
