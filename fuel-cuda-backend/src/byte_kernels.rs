@@ -243,6 +243,84 @@ pub fn mean_reduce_f32(
     affine_f32(&sum, inv, 0.0)
 }
 
+/// Compute the list of input axes that need reducing to align with a
+/// broadcast-compatible target shape. Mirrors the CPU
+/// `align_reduce_to` validation: target left-pads with 1s to match
+/// input rank; an axis is reduced when the padded target dim is 1
+/// and the input dim is greater than 1.
+fn reduce_dims_from_shapes(
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<Vec<usize>> {
+    if output_shape.len() > input_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "reduce_to: output rank {} exceeds input rank {}",
+            output_shape.len(), input_shape.len(),
+        )).bt());
+    }
+    let pad = input_shape.len() - output_shape.len();
+    let mut padded = vec![1_usize; pad];
+    padded.extend_from_slice(output_shape);
+    let mut reduce_dims: Vec<usize> = Vec::new();
+    for (axis, (&s, &t)) in input_shape.iter().zip(padded.iter()).enumerate() {
+        if t == s {
+            // Pass-through axis.
+        } else if t == 1 {
+            // Axis being reduced. Only push when input dim > 1; if
+            // input dim is also 1 the reduction is a no-op and the
+            // existing reduce_f32 kernel handles it correctly via the
+            // empty-stride single-element path either way.
+            if s > 1 {
+                reduce_dims.push(axis);
+            }
+        } else {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "reduce_to: axis {axis} target {t} must be 1 or input {s}",
+            )).bt());
+        }
+    }
+    Ok(reduce_dims)
+}
+
+/// Sum-reduce a CUDA F32 tensor to a smaller broadcast-compatible
+/// shape. Maps the broadcast-aligned target shape to a list of
+/// reduce dims and dispatches through the existing `fast_sum_f32`
+/// kernel. The output's byte count matches what the executor
+/// pre-allocates for `output_shape` (since the reduced byte count is
+/// determined entirely by which dims are reduced, regardless of
+/// whether they're dropped or kept as size-1).
+///
+/// Mirrors the CPU `reduce_sum_to_f32` byte kernel; on CUDA the
+/// keepdim form is free because the result bytes are the same as
+/// dropping the reduced dim — only the metadata shape differs and
+/// is set by the wrapper's pre-allocated output.
+pub fn reduce_sum_to_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<CudaStorageBytes> {
+    let reduce_dims = reduce_dims_from_shapes(input_shape, output_shape)?;
+    // Empty reduce_dims is an "identity reduce_to" — input_shape ==
+    // padded(output_shape) on every axis. The reduce kernel handles
+    // it correctly (each output element sums over one input element)
+    // with the cost of one extra kernel launch; not a hot path so
+    // not worth a special-case.
+    reduce_f32(src, input_layout, &reduce_dims, "fast_sum_f32")
+}
+
+/// Max-reduce a CUDA F32 tensor to a smaller broadcast-compatible
+/// shape — the max-symmetric counterpart of [`reduce_sum_to_f32`].
+pub fn reduce_max_to_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<CudaStorageBytes> {
+    let reduce_dims = reduce_dims_from_shapes(input_shape, output_shape)?;
+    reduce_f32(src, input_layout, &reduce_dims, "fast_max_f32")
+}
+
 /// Batched row-major F32 matmul through cuBLAS, on byte-shaped inputs.
 /// Shape contract per `OpParams::Matmul`: `lhs [..lhs_batch.., m, k] @
 /// rhs [..rhs_batch.., k, n] → out [..lhs_batch.., m, n]`. Inputs are
