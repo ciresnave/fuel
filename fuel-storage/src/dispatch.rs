@@ -29,6 +29,8 @@ use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
+#[cfg(feature = "cuda")]
+use crate::kernel::KernelCaps;
 use crate::{BackendStorage, Storage};
 
 /// Collection of backend capabilities, queried during DAG
@@ -2503,6 +2505,26 @@ fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::CudaStorageByt
     }
 }
 
+/// Helper: extract `(lhs_layout, rhs_layout)` from a binary kernel's
+/// `layouts` slice. Layouts is laid out as `[lhs, rhs, output]` for
+/// binary ops; this peels off the two inputs. Errors with `wrapper`
+/// in the message if the slice is too short — direct callers (tests)
+/// must construct a 3-element slice.
+#[cfg(feature = "cuda")]
+fn binary_input_layouts<'a>(
+    wrapper: &'static str,
+    layouts: &'a [Layout],
+) -> Result<(&'a Layout, &'a Layout)> {
+    if layouts.len() < 3 {
+        return Err(Error::Msg(format!(
+            "{wrapper}: expected layouts of len 3 (lhs, rhs, output), got {}",
+            layouts.len(),
+        ))
+        .bt());
+    }
+    Ok((&layouts[0], &layouts[1]))
+}
+
 /// Dispatch wrapper for `(AddElementwise, F32, Cuda)`. Two F32
 /// CUDA inputs of equal byte length, one F32 CUDA output. The
 /// kernel call lives in `fuel-cuda-backend::byte_kernels`; this
@@ -2522,7 +2544,7 @@ fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::CudaStorageByt
 fn add_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2539,12 +2561,15 @@ fn add_elementwise_f32_cuda_wrapper(
         ))
         .bt());
     }
+    let (lhs_layout, rhs_layout) = binary_input_layouts("add_elementwise_f32_cuda_wrapper", layouts)?;
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cuda = cuda_input(&lhs_guard)?;
     let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::add_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let result = fuel_cuda_backend::byte_kernels::add_elementwise_f32(
+        lhs_cuda, rhs_cuda, lhs_layout, rhs_layout,
+    )?;
     let out_cuda = cuda_output(&mut out_guard)?;
     *out_cuda = result;
     Ok(())
@@ -2557,7 +2582,7 @@ fn add_elementwise_f32_cuda_wrapper(
 fn sub_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2574,12 +2599,15 @@ fn sub_elementwise_f32_cuda_wrapper(
         ))
         .bt());
     }
+    let (lhs_layout, rhs_layout) = binary_input_layouts("sub_elementwise_f32_cuda_wrapper", layouts)?;
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cuda = cuda_input(&lhs_guard)?;
     let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::sub_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let result = fuel_cuda_backend::byte_kernels::sub_elementwise_f32(
+        lhs_cuda, rhs_cuda, lhs_layout, rhs_layout,
+    )?;
     let out_cuda = cuda_output(&mut out_guard)?;
     *out_cuda = result;
     Ok(())
@@ -2590,7 +2618,7 @@ fn sub_elementwise_f32_cuda_wrapper(
 fn mul_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2607,12 +2635,15 @@ fn mul_elementwise_f32_cuda_wrapper(
         ))
         .bt());
     }
+    let (lhs_layout, rhs_layout) = binary_input_layouts("mul_elementwise_f32_cuda_wrapper", layouts)?;
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cuda = cuda_input(&lhs_guard)?;
     let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::mul_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let result = fuel_cuda_backend::byte_kernels::mul_elementwise_f32(
+        lhs_cuda, rhs_cuda, lhs_layout, rhs_layout,
+    )?;
     let out_cuda = cuda_output(&mut out_guard)?;
     *out_cuda = result;
     Ok(())
@@ -2623,7 +2654,7 @@ fn mul_elementwise_f32_cuda_wrapper(
 fn div_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2640,12 +2671,15 @@ fn div_elementwise_f32_cuda_wrapper(
         ))
         .bt());
     }
+    let (lhs_layout, rhs_layout) = binary_input_layouts("div_elementwise_f32_cuda_wrapper", layouts)?;
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cuda = cuda_input(&lhs_guard)?;
     let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::div_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let result = fuel_cuda_backend::byte_kernels::div_elementwise_f32(
+        lhs_cuda, rhs_cuda, lhs_layout, rhs_layout,
+    )?;
     let out_cuda = cuda_output(&mut out_guard)?;
     *out_cuda = result;
     Ok(())
@@ -2656,7 +2690,7 @@ fn div_elementwise_f32_cuda_wrapper(
 fn maximum_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2673,12 +2707,15 @@ fn maximum_elementwise_f32_cuda_wrapper(
         ))
         .bt());
     }
+    let (lhs_layout, rhs_layout) = binary_input_layouts("maximum_elementwise_f32_cuda_wrapper", layouts)?;
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cuda = cuda_input(&lhs_guard)?;
     let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::maximum_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let result = fuel_cuda_backend::byte_kernels::maximum_elementwise_f32(
+        lhs_cuda, rhs_cuda, lhs_layout, rhs_layout,
+    )?;
     let out_cuda = cuda_output(&mut out_guard)?;
     *out_cuda = result;
     Ok(())
@@ -2689,7 +2726,7 @@ fn maximum_elementwise_f32_cuda_wrapper(
 fn minimum_elementwise_f32_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
+    layouts: &[Layout],
     _params: &OpParams,
 ) -> Result<()> {
     if inputs.len() != 2 {
@@ -2706,12 +2743,15 @@ fn minimum_elementwise_f32_cuda_wrapper(
         ))
         .bt());
     }
+    let (lhs_layout, rhs_layout) = binary_input_layouts("minimum_elementwise_f32_cuda_wrapper", layouts)?;
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cuda = cuda_input(&lhs_guard)?;
     let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::minimum_elementwise_f32(lhs_cuda, rhs_cuda)?;
+    let result = fuel_cuda_backend::byte_kernels::minimum_elementwise_f32(
+        lhs_cuda, rhs_cuda, lhs_layout, rhs_layout,
+    )?;
     let out_cuda = cuda_output(&mut out_guard)?;
     *out_cuda = result;
     Ok(())
@@ -3518,12 +3558,17 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     let unary  = |t: DType| [t, t];
     let binary = |t: DType| [t, t, t];
 
-    table.register(AddElementwise,     &binary(f32_dt), cuda, add_elementwise_f32_cuda_wrapper);
-    table.register(SubElementwise,     &binary(f32_dt), cuda, sub_elementwise_f32_cuda_wrapper);
-    table.register(MulElementwise,     &binary(f32_dt), cuda, mul_elementwise_f32_cuda_wrapper);
-    table.register(DivElementwise,     &binary(f32_dt), cuda, div_elementwise_f32_cuda_wrapper);
-    table.register(MaximumElementwise, &binary(f32_dt), cuda, maximum_elementwise_f32_cuda_wrapper);
-    table.register(MinimumElementwise, &binary(f32_dt), cuda, minimum_elementwise_f32_cuda_wrapper);
+    // Binary F32 elementwise ops opt in to strided_input — the
+    // PTX BINARY_OP kernels walk per-input strides, so non-contiguous
+    // inputs (broadcast, transpose) reach the wrapper as metadata-only
+    // views rather than going through executor-side auto-Contiguize.
+    let strided = KernelCaps::strided_input();
+    table.register_with_caps(AddElementwise,     &binary(f32_dt), cuda, add_elementwise_f32_cuda_wrapper, strided);
+    table.register_with_caps(SubElementwise,     &binary(f32_dt), cuda, sub_elementwise_f32_cuda_wrapper, strided);
+    table.register_with_caps(MulElementwise,     &binary(f32_dt), cuda, mul_elementwise_f32_cuda_wrapper, strided);
+    table.register_with_caps(DivElementwise,     &binary(f32_dt), cuda, div_elementwise_f32_cuda_wrapper, strided);
+    table.register_with_caps(MaximumElementwise, &binary(f32_dt), cuda, maximum_elementwise_f32_cuda_wrapper, strided);
+    table.register_with_caps(MinimumElementwise, &binary(f32_dt), cuda, minimum_elementwise_f32_cuda_wrapper, strided);
 
     table.register(ReluElementwise,    &unary(f32_dt), cuda, relu_elementwise_f32_cuda_wrapper);
     table.register(NegElementwise,     &unary(f32_dt), cuda, neg_elementwise_f32_cuda_wrapper);
