@@ -902,16 +902,17 @@ mod tests {
         }
     }
 
-    /// Phase 7.5 PR 3 live CUDA equivalence: realize a graph with
+    /// Phase 7.5 PR 3 / 3.5 live CUDA equivalence: realize a graph with
     /// `Op::SoftmaxLastDim` through the rule-registry pipeline using
     /// `RuleRegistry::lowering_only()` so the executor sees the
-    /// 8-node lowered subgraph instead of the fused op. The composed
-    /// CUDA execution path (MaxDim + Reshape + BroadcastTo + Sub +
-    /// Exp + ReduceSumTo + BroadcastTo + Div) must match the fused
-    /// CPU baseline within tight epsilon. This is the end-to-end
+    /// 7-node lowered subgraph instead of the fused op. The composed
+    /// CUDA execution path (ReduceMaxTo + BroadcastTo + Sub + Exp +
+    /// ReduceSumTo + BroadcastTo + Div) must match the fused CPU
+    /// baseline within tight epsilon. This is the end-to-end
     /// validation that the lowered form is numerically equivalent —
     /// the framework + lowering rule + Layout-side-table migration
-    /// + PR 2-wide broadcast support all working together.
+    /// + PR 2-wide broadcast support + PR 3.5 ReduceMaxTo all working
+    /// together.
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_softmax_via_lowering() {

@@ -270,25 +270,28 @@ impl RuleRegistry {
 
 // ---- SoftmaxLastDim lower / fuse rule pair -------------------------------
 //
-// Lowered form (8 nodes, asymmetric — exploits existing Op::ReduceSumTo
-// to save one Reshape on the sum side; max side spends an extra
-// Reshape because Op::ReduceMaxTo doesn't exist yet — that's PR 3.5):
+// Lowered form (7 nodes, symmetric across max/sum sides — both use
+// the keepdim "ReduceXxxTo([..., 1])" form):
 //
-//   m   = MaxDim(last)(x)            # [..., last] -> [...]
-//   mk  = Reshape([..., 1])(m)       # add keepdim
-//   mb  = BroadcastTo([..., last])(mk)
+//   m   = ReduceMaxTo([..., 1])(x)   # max-keepdim in one node
+//   mb  = BroadcastTo([..., last])(m)
 //   s   = Sub(x, mb)                 # numerically-stable shift
 //   e   = Exp(s)
 //   d   = ReduceSumTo([..., 1])(e)   # sum-keepdim in one node
 //   db  = BroadcastTo([..., last])(d)
 //   out = Div(e, db)
 //
+// PR 3 shipped this as 8 nodes (asymmetric — max side used MaxDim +
+// Reshape because Op::ReduceMaxTo didn't exist yet). PR 3.5 added
+// Op::ReduceMaxTo as the symmetric counterpart of Op::ReduceSumTo,
+// dropping the Reshape on the max side.
+//
 // The compile_one auto-Contiguize at the executor catches any backend
 // that doesn't support the strided BroadcastTo output as a kernel
 // input. PR 2-wide lets CUDA binary F32 kernels consume the broadcast
 // strides directly without materialization.
 
-/// Lower `Op::SoftmaxLastDim(x)` to the canonical 8-node primitive
+/// Lower `Op::SoftmaxLastDim(x)` to the canonical 7-node primitive
 /// subgraph. Round-trips with [`SoftmaxLastDimFuseRule`] — applying
 /// both to fixpoint yields a graph structurally identical to the
 /// input.
@@ -314,85 +317,69 @@ impl Rule for SoftmaxLastDimLowerRule {
         let dims = x_shape.dims().to_vec();
         let rank = dims.len();
         let last = rank - 1;
-        let last_dim = dims[last];
-
-        // Reduced shape: drop the last dim. e.g. [B, N, M] -> [B, N].
-        let reduced_dims: Vec<usize> = dims[..last].to_vec();
-        let reduced_shape = Shape::from_dims(&reduced_dims);
 
         // Keepdim shape: replace last dim with 1. e.g. [B, N, M] -> [B, N, 1].
         let mut keepdim_dims = dims.clone();
         keepdim_dims[last] = 1;
         let keepdim_shape = Shape::from_dims(&keepdim_dims);
 
-        // Step 1: m = MaxDim(last)(x)
+        // Step 1: m = ReduceMaxTo([..., 1])(x) — max-keepdim in one node
         let m_id = graph.push(Node {
-            op:     Op::MaxDim(last),
+            op:     Op::ReduceMaxTo(keepdim_shape.clone()),
             inputs: vec![x_id],
-            shape:  reduced_shape.clone(),
-            dtype,
-        });
-        // Step 2: mk = Reshape([..., 1])(m)
-        let mk_id = graph.push(Node {
-            op:     Op::Reshape(keepdim_shape.clone()),
-            inputs: vec![m_id],
             shape:  keepdim_shape.clone(),
             dtype,
         });
-        // Step 3: mb = BroadcastTo([..., last])(mk)  [layout side-table
+        // Step 2: mb = BroadcastTo([..., last])(m)  [layout side-table
         //         auto-populated by Graph::push since BroadcastTo is a
         //         view op]
         let mb_id = graph.push(Node {
             op:     Op::BroadcastTo(x_shape.clone()),
-            inputs: vec![mk_id],
+            inputs: vec![m_id],
             shape:  x_shape.clone(),
             dtype,
         });
-        // Step 4: s = Sub(x, mb)
+        // Step 3: s = Sub(x, mb)
         let s_id = graph.push(Node {
             op:     Op::Sub,
             inputs: vec![x_id, mb_id],
             shape:  x_shape.clone(),
             dtype,
         });
-        // Step 5: e = Exp(s)
+        // Step 4: e = Exp(s)
         let e_id = graph.push(Node {
             op:     Op::Exp,
             inputs: vec![s_id],
             shape:  x_shape.clone(),
             dtype,
         });
-        // Step 6: d = ReduceSumTo([..., 1])(e) — sum-keepdim in one node
+        // Step 5: d = ReduceSumTo([..., 1])(e) — sum-keepdim in one node
         let d_id = graph.push(Node {
             op:     Op::ReduceSumTo(keepdim_shape.clone()),
             inputs: vec![e_id],
             shape:  keepdim_shape,
             dtype,
         });
-        // Step 7: db = BroadcastTo([..., last])(d)  [layout auto-populated]
+        // Step 6: db = BroadcastTo([..., last])(d)  [layout auto-populated]
         let db_id = graph.push(Node {
             op:     Op::BroadcastTo(x_shape.clone()),
             inputs: vec![d_id],
             shape:  x_shape.clone(),
             dtype,
         });
-        // Step 8: out = Div(e, db)
+        // Step 7: out = Div(e, db)
         let out_id = graph.push(Node {
             op:     Op::Div,
             inputs: vec![e_id, db_id],
             shape:  x_shape,
             dtype,
         });
-        // Mark the explicit-strides note: last_dim is on the input;
-        // we don't need it after construction. Touched here only to
-        // silence unused-warning if/when this rule grows checks.
-        let _ = last_dim;
 
         remap.insert(id, out_id);
     }
 }
 
-/// Fuse the canonical 8-node SoftmaxLastDim subgraph back to a single
+/// Fuse the canonical 7-node SoftmaxLastDim subgraph back to a single
 /// `Op::SoftmaxLastDim` node. Round-trips with
 /// [`SoftmaxLastDimLowerRule`].
 ///
@@ -464,38 +451,35 @@ fn canonical_softmax_pattern(graph: &Graph, div_id: NodeId) -> Option<SoftmaxPat
     let x_id = s.inputs[0];
     let mb_id = s.inputs[1];
 
-    // mb = BroadcastTo([..., last])(mk)
+    // mb = BroadcastTo([..., last])(m)
     let mb = graph.node(mb_id);
     if !matches!(mb.op, Op::BroadcastTo(_)) { return None; }
     if mb.inputs.len() != 1 { return None; }
-    let mk_id = mb.inputs[0];
+    let m_id = mb.inputs[0];
 
-    // mk = Reshape([..., 1])(m)
-    let mk = graph.node(mk_id);
-    if !matches!(mk.op, Op::Reshape(_)) { return None; }
-    if mk.inputs.len() != 1 { return None; }
-    let m_id = mk.inputs[0];
-
-    // m = MaxDim(last)(x)  — and same x as Sub's first input
+    // m = ReduceMaxTo([..., 1])(x)  — and same x as Sub's first input
     let m = graph.node(m_id);
-    let last = match m.op {
-        Op::MaxDim(d) => d,
-        _ => return None,
-    };
+    if !matches!(m.op, Op::ReduceMaxTo(_)) { return None; }
     if m.inputs.len() != 1 || m.inputs[0] != x_id { return None; }
 
-    // Cross-check: `last` matches the input rank's last dim.
+    // Cross-check: m's keepdim shape matches "all dims of x except
+    // last set to original size, last set to 1".
     let x_shape = &graph.node(x_id).shape;
     if x_shape.rank() == 0 { return None; }
-    if last != x_shape.rank() - 1 { return None; }
+    let m_shape = &graph.node(m_id).shape;
+    if m_shape.rank() != x_shape.rank() { return None; }
+    let last = x_shape.rank() - 1;
+    for axis in 0..x_shape.rank() {
+        let expected = if axis == last { 1 } else { x_shape.dims()[axis] };
+        if m_shape.dims()[axis] != expected { return None; }
+    }
 
-    // Conservativeness: every intermediate (m, mk, mb, d, db, s) must
-    // be consumed ONLY within this pattern. If any has additional
+    // Conservativeness: every intermediate (m, mb, d, db, s) must be
+    // consumed ONLY within this pattern. If any has additional
     // consumers, fusing would discard a value the user reads. Cheap
     // check: count consumers of each intermediate across the graph.
     let intermediates_with_expected_count = [
-        (m_id, 1),  // m -> mk
-        (mk_id, 1), // mk -> mb
+        (m_id, 1),  // m  -> mb
         (mb_id, 1), // mb -> s
         (d_id, 1),  // d  -> db
         (db_id, 1), // db -> div
@@ -1827,7 +1811,7 @@ mod tests {
     }
 
     /// The lower rule, applied to a graph with one `Op::SoftmaxLastDim`,
-    /// produces the canonical 8-node primitive subgraph reachable from
+    /// produces the canonical 7-node primitive subgraph reachable from
     /// the rewritten root, with auto-populated layout entries on the
     /// inserted BroadcastTo nodes.
     #[test]
@@ -1846,15 +1830,16 @@ mod tests {
         let new_root = new_roots[0];
 
         // Reachable subgraph from the new root should contain exactly
-        // the 8 lowered nodes (plus the `x` Const leaf — that's 9).
-        // Op composition: 1 MaxDim, 1 Reshape, 2 BroadcastTo, 1 Sub,
-        // 1 Exp, 1 ReduceSumTo, 1 Div, 1 Const = 9 reachable.
+        // the 7 lowered nodes (plus the `x` Const leaf — that's 8).
+        // Op composition: 1 ReduceMaxTo, 2 BroadcastTo, 1 Sub, 1 Exp,
+        // 1 ReduceSumTo, 1 Div, 1 Const = 8 reachable.
         let g = graph.read().unwrap();
         let reachable = topo_order_multi(&g, &[new_root]);
-        assert_eq!(reachable.len(), 9, "lowered subgraph: 8 ops + 1 Const = 9 reachable nodes");
+        assert_eq!(reachable.len(), 8, "lowered subgraph: 7 ops + 1 Const = 8 reachable nodes");
         drop(g);
 
         // Op-shape sanity checks.
+        let n_reduce_max  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceMaxTo(_)));
         let n_max_dim     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::MaxDim(_)));
         let n_reshape     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Reshape(_)));
         let n_broadcast   = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::BroadcastTo(_)));
@@ -1863,8 +1848,9 @@ mod tests {
         let n_reduce_sum  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceSumTo(_)));
         let n_div         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Div));
         let n_softmax     = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::SoftmaxLastDim));
-        assert_eq!(n_max_dim, 1);
-        assert_eq!(n_reshape, 1);
+        assert_eq!(n_reduce_max, 1);
+        assert_eq!(n_max_dim, 0, "PR 3.5 max side uses ReduceMaxTo, not MaxDim+Reshape");
+        assert_eq!(n_reshape, 0, "PR 3.5 max side drops the Reshape (ReduceMaxTo carries keepdim)");
         assert_eq!(n_broadcast, 2);
         assert_eq!(n_sub, 1);
         assert_eq!(n_exp, 1);
@@ -1892,7 +1878,7 @@ mod tests {
         }
     }
 
-    /// The fuse rule, applied to the canonical lowered subgraph,
+    /// The fuse rule, applied to the canonical 7-node lowered subgraph,
     /// collapses it back to a single `Op::SoftmaxLastDim` reachable
     /// from the rewritten root.
     #[test]
@@ -1904,9 +1890,8 @@ mod tests {
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
         );
-        let m = x.max_dim(1);
-        let mk = m.reshape(Shape::from_dims(&[2, 1]));
-        let mb = mk.broadcast_to(Shape::from_dims(&[2, 3]));
+        let m = x.reduce_max_to(Shape::from_dims(&[2, 1]));
+        let mb = m.broadcast_to(Shape::from_dims(&[2, 3]));
         let s = x.sub(&mb);
         let e = s.exp();
         let d = e.reduce_sum_to(Shape::from_dims(&[2, 1]));
