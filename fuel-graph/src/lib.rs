@@ -617,6 +617,58 @@ impl Op {
     pub fn short_name(&self) -> &'static str {
         op_short_name(self)
     }
+
+    /// Whether this op is a metadata-only view: its output shares bytes
+    /// with its single input, reinterpreting them through new strides
+    /// and/or offset. Executors realize these without allocating new
+    /// storage — they wrap the input's Storage in a fresh Layout.
+    ///
+    /// Note that `Op::Reshape` is *not* a view op. Reshape produces
+    /// contiguous output: zero-copy when its input is contiguous, but
+    /// it materializes via auto-Contiguize when the input is strided.
+    /// The other shape-altering ops in this set are always view-shaped
+    /// regardless of the input layout.
+    pub fn is_view_op(&self) -> bool {
+        matches!(
+            self,
+            Op::Transpose | Op::Permute(_) | Op::BroadcastTo(_) | Op::Slice { .. }
+        )
+    }
+}
+
+/// Compute the output [`Layout`] of a metadata-only view op from its
+/// input layout + the op variant. Returns `Err` if the op variant
+/// isn't a view op (caller's contract — typically guarded by
+/// [`Op::is_view_op`]).
+///
+/// Used by [`Graph::push`] to auto-populate the layout side-table for
+/// view-op nodes at construction time, and by lowering rules in
+/// [`opt`] that emit view-op nodes and need to populate the side-table
+/// for them. The compiler reads the resulting layouts via
+/// [`Graph::layout`] without re-deriving.
+pub fn derive_view_output_layout(
+    op: &Op,
+    input_layout: &Layout,
+) -> Result<Layout, fuel_core_types::Error> {
+    match op {
+        Op::Transpose => {
+            let rank = input_layout.shape().rank();
+            if rank < 2 {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "Op::Transpose requires rank >= 2, input rank is {rank}",
+                ))
+                .bt());
+            }
+            input_layout.transpose(rank - 2, rank - 1)
+        }
+        Op::Permute(axes) => input_layout.permute(axes),
+        Op::BroadcastTo(target_shape) => input_layout.broadcast_as(target_shape.clone()),
+        Op::Slice { dim, start, len } => input_layout.narrow(*dim, *start, *len),
+        other => Err(fuel_core_types::Error::Msg(format!(
+            "derive_view_output_layout called with non-view op {other:?}",
+        ))
+        .bt()),
+    }
 }
 
 fn op_short_name(op: &Op) -> &'static str {
@@ -983,12 +1035,33 @@ impl Graph {
     /// (fuel-storage's pipelined executor tests, custom-op authors)
     /// that need direct graph construction.
     ///
+    /// For metadata-only view ops (`Op::Transpose`, `Op::Permute`,
+    /// `Op::BroadcastTo`, `Op::Slice`) this also populates the
+    /// [`layouts`](Self::layout) side-table by deriving the output
+    /// layout from the input's layout via
+    /// [`derive_view_output_layout`]. After this call,
+    /// `graph.layout(new_id)` returns the strided/offset view layout
+    /// without any further work — the side-table is the single source
+    /// of truth for layout, with [`Layout::contiguous`] as the
+    /// fallback for kernel-output nodes.
+    ///
     /// Misuse (malformed Node, dangling input ids, etc.) is caught
     /// at execute time as a typed error, not a panic — per project's
     /// no-panic-in-production rule.
     pub fn push(&mut self, node: Node) -> NodeId {
         let id = NodeId(self.nodes.len());
+        let is_view = node.op.is_view_op();
+        let view_input = if is_view { node.inputs.first().copied() } else { None };
+        let op_for_derive = if is_view { Some(node.op.clone()) } else { None };
         self.nodes.push(node);
+        if let (Some(input_id), Some(op)) = (view_input, op_for_derive) {
+            if input_id.0 < self.nodes.len() {
+                let input_layout = self.layout(input_id);
+                if let Ok(out_layout) = derive_view_output_layout(&op, &input_layout) {
+                    self.set_layout(id, out_layout);
+                }
+            }
+        }
         id
     }
 
