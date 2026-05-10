@@ -408,6 +408,100 @@ pub fn index_select_f32(
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
 }
 
+/// N-dimensional gather along `dim` for F32 source + U32 indices, on
+/// byte-shaped CUDA storage. Mirrors the legacy `Gather` map
+/// (storage.rs:494) and the CPU `gather_cpu` byte kernel: source and
+/// indices share rank, output shape equals indices shape, and only
+/// `source_shape[dim]` may differ from `output_shape[dim]`.
+///
+/// The launched kernel is `gather_u32_f32` (from
+/// `fuel-cuda-kernels::INDEXING`); it has no `info`/`num_dims`
+/// parameters (unlike `is_u32_f32`) — it walks the linear output
+/// index directly through `(left_size, src_dim_size, ids_dim_size,
+/// right_size)`. Both `src` and `ids` must be contiguous; auto-
+/// Contiguize on the unified path guarantees this.
+pub fn gather_f32(
+    src: &CudaStorageBytes,
+    ids: &CudaStorageBytes,
+    source_shape: &[usize],
+    output_shape: &[usize],
+    dim: usize,
+) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    if source_shape.len() != output_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "gather_f32: source rank ({}) != output rank ({})",
+            source_shape.len(),
+            output_shape.len(),
+        ))
+        .bt());
+    }
+    let rank = source_shape.len();
+    if dim >= rank {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "gather_f32: dim {dim} out of range for rank {rank}",
+        ))
+        .bt());
+    }
+    for d in 0..rank {
+        if d != dim && source_shape[d] != output_shape[d] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "gather_f32: source and output disagree at dim {d} \
+                 (source={}, output={}); only `dim`={dim} may differ",
+                source_shape[d],
+                output_shape[d],
+            ))
+            .bt());
+        }
+    }
+    let source_total: usize = source_shape.iter().product();
+    let output_total: usize = output_shape.iter().product();
+    if src.len_bytes() != source_total.saturating_mul(elem) {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "gather_f32: source bytes={} doesn't match shape {source_shape:?} (f32)",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    if ids.len_bytes() != output_total.saturating_mul(std::mem::size_of::<u32>()) {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "gather_f32: ids bytes={} doesn't match output shape {output_shape:?} (u32)",
+            ids.len_bytes(),
+        ))
+        .bt());
+    }
+
+    let left_size: usize = source_shape[..dim].iter().product();
+    let src_dim_size = source_shape[dim];
+    let ids_dim_size = output_shape[dim];
+    let right_size: usize = source_shape[dim + 1..].iter().product();
+
+    let device = src.device().clone();
+    let dst_bytes = output_total.saturating_mul(elem);
+    if output_total == 0 {
+        return CudaStorageBytes::alloc(&device, dst_bytes);
+    }
+
+    let mut out = device.alloc_zeros::<u8>(dst_bytes)?;
+    let cfg = LaunchConfig::for_num_elems(output_total as u32);
+    let func = device.get_or_load_func("gather_u32_f32", &kernels::INDEXING)?;
+
+    let mut builder = func.builder();
+    barg!(builder, output_total); // numel
+    builder.arg(ids.buffer());    // ids
+    builder.arg(src.buffer());    // inp
+    builder.arg(&mut out);        // out
+    barg!(builder, left_size);
+    barg!(builder, src_dim_size);
+    barg!(builder, ids_dim_size);
+    barg!(builder, right_size);
+    // SAFETY: kernel signature matches the args above — same shape as
+    // the legacy `Gather::f`, just on byte buffers.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
+}
+
 /// Batched row-major F32 matmul through cuBLAS, on byte-shaped inputs.
 /// Shape contract per `OpParams::Matmul`: `lhs [..lhs_batch.., m, k] @
 /// rhs [..rhs_batch.., k, n] → out [..lhs_batch.., m, n]`. Inputs are
