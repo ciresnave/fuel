@@ -3942,36 +3942,19 @@ impl Tensor {
                 }
                 Op::Abs => {
                     // y = |x|, dy/dx = sign(x), with sign(0)=0 by
-                    // subgradient convention. sign(x) = step(x) - step(-x).
-                    // grad_x = upstream * (step(x) - step(-x)).
+                    // subgradient convention. Simplified to a direct
+                    // `Op::Sign` use after Op::Sign landed in PR B2;
+                    // the previous form synthesized `step(x) - step(-x)`
+                    // (5 backward nodes) but Sign expresses the same
+                    // function in 1 node, so the chain shrinks to
+                    // `Mul(upstream, Sign(x))` — 2 nodes total.
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let step_pos = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let neg_x = push_node(
-                        &graph_handle,
-                        Op::Neg,
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let step_neg = push_node(
-                        &graph_handle,
-                        Op::Step,
-                        vec![neg_x],
-                        x_shape.clone(),
-                        dtype,
-                    );
                     let sign_x = push_node(
                         &graph_handle,
-                        Op::Sub,
-                        vec![step_pos, step_neg],
+                        Op::Sign,
+                        vec![x],
                         x_shape.clone(),
                         dtype,
                     );
@@ -6562,9 +6545,11 @@ mod tests {
     }
 
     #[test]
-    fn backward_of_abs_uses_step_difference() {
-        // y = |x|, dy/dx = step(x) - step(-x). Backward graph: Mul
-        // whose second input is a Sub of two Step nodes.
+    fn backward_of_abs_emits_sign_mul() {
+        // y = |x|, dy/dx = sign(x). After PR B2 landed Op::Sign, the
+        // backward chain shrinks from 5 nodes (step+neg+step+sub+mul)
+        // to 2 (sign+mul): grad_x = upstream * sign(x), where Sign is
+        // a single primitive that returns -1/0/1 directly.
         let a = Tensor::from_f32(vec![-2.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let y = a.abs();
         let grads = y.backward();
@@ -6572,15 +6557,19 @@ mod tests {
         let g = g_a.graph().read().unwrap();
         let mul_node = g.node(g_a.id()).clone();
         assert!(matches!(mul_node.op, Op::Mul));
-        let sub_id = mul_node.inputs.iter().copied().find(|&id| {
-            matches!(g.node(id).op, Op::Sub)
-        }).expect("backward chain must contain a Sub");
-        let sub_node = g.node(sub_id).clone();
-        let step_count = sub_node.inputs.iter().filter(|&&id| {
-            matches!(g.node(id).op, Op::Step)
+        // Exactly one input of the Mul is a Sign node (the other is
+        // the upstream gradient — a Const-rooted ones-tensor here).
+        let sign_count = mul_node.inputs.iter().filter(|&&id| {
+            matches!(g.node(id).op, Op::Sign)
         }).count();
-        assert_eq!(step_count, 2,
-            "Abs backward must reference exactly 2 Step nodes, got {step_count}");
+        assert_eq!(sign_count, 1,
+            "Abs backward must reference exactly 1 Sign node, got {sign_count}");
+        // The Sign node should feed off the original input `a`.
+        let sign_id = mul_node.inputs.iter().copied().find(|&id| {
+            matches!(g.node(id).op, Op::Sign)
+        }).unwrap();
+        assert_eq!(g.node(sign_id).inputs, vec![a.id()],
+            "Sign's input must be the forward input `a`");
     }
 
     #[test]
