@@ -86,6 +86,11 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::DivElementwise,
     OpKind::MaximumElementwise,
     OpKind::MinimumElementwise,
+    // --- reductions along one dim ---
+    OpKind::SumReduce,
+    OpKind::MaxReduce,
+    OpKind::MinReduce,
+    OpKind::MeanReduce,
 ];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
@@ -167,6 +172,19 @@ impl Judge {
                 OpSize::Elementwise(1 << 10),
                 OpSize::Elementwise(1 << 16),
                 OpSize::Elementwise(1 << 20),
+            ],
+            // Per-axis reductions: probe last-dim reductions over a
+            // `[rows, cols]` shape with cols=64 (typical hidden-dim
+            // chunk). Total elements 1 KiB / 64 KiB / 1 MiB to align
+            // with the elementwise size ladder for cross-family
+            // size_class comparison in the dispatch table.
+            OpKind::SumReduce
+            | OpKind::MaxReduce
+            | OpKind::MinReduce
+            | OpKind::MeanReduce => vec![
+                OpSize::Reduce { rows: 1 << 4,  cols: 64 },
+                OpSize::Reduce { rows: 1 << 10, cols: 64 },
+                OpSize::Reduce { rows: 1 << 14, cols: 64 },
             ],
             // OpKind is `#[non_exhaustive]` — future variants land
             // here until the Judge gets a measurement strategy for
@@ -419,6 +437,23 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         //   sigmoid stays away from saturation (more measurable
         //   precision differences across backends).
         // - silu/gelu/relu/tanh/neg/sqr/step/sin/cos all accept any f32.
+        // -------- per-axis reductions --------
+        //
+        // Reduce along the last dim of `[rows, cols]`, producing
+        // `[rows]`. Bucketing on total element count means the
+        // dispatch table groups `Reduce(rows=1024, cols=64)` and
+        // `Elementwise(65536)` in the same size class — fine, the
+        // size_class is the per-op axis, not a cross-op identity.
+        (op, OpSize::Reduce { rows, cols }) if is_reduction(op) => {
+            let n = rows * cols;
+            let data: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.7e-3).sin()).collect();
+            let a = LazyTensor::from_f32(
+                data,
+                Shape::from_dims(&[rows, cols]),
+                &crate::Device::cpu(),
+            );
+            apply_reduction(op, &a)
+        }
         (op, OpSize::Elementwise(n)) if is_unary_elementwise(op) => {
             let raw = unary_input(n);
             let needs_positive = matches!(
@@ -434,6 +469,33 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             apply_unary(op, &a)
         }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
+    }
+}
+
+/// Whether `op` is a per-axis reduction the Judge profiles using the
+/// `Reduce { rows, cols }` size ladder.
+fn is_reduction(op: OpKind) -> bool {
+    matches!(
+        op,
+        OpKind::SumReduce
+        | OpKind::MaxReduce
+        | OpKind::MinReduce
+        | OpKind::MeanReduce,
+    )
+}
+
+/// Dispatch one per-axis reduction along the last dim. The reduced
+/// dim is removed from the output shape.
+fn apply_reduction(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTensor {
+    // Reduce the last dim. Input is rank-2 `[rows, cols]`; output is
+    // rank-1 `[rows]`.
+    let last_dim = a.rank() - 1;
+    match op {
+        OpKind::SumReduce  => a.sum_dim(last_dim),
+        OpKind::MaxReduce  => a.max_dim(last_dim),
+        OpKind::MinReduce  => a.min_dim(last_dim),
+        OpKind::MeanReduce => a.mean_dim(last_dim),
+        _ => unreachable!("apply_reduction called on non-reduction OpKind {op:?}"),
     }
 }
 
@@ -679,6 +741,36 @@ mod tests {
             assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
             let e = cpu_entries[0];
             assert!(e.max_rel_error < 1e-3,
+                "cpu vs reference disagreement on {op}: rel_err={}",
+                e.max_rel_error);
+            assert!(e.latency_ns > 0);
+        }
+    }
+
+    #[test]
+    fn judge_profiles_all_reductions() {
+        let probe = ProbeReport::probe_all();
+        let reduce = [
+            OpKind::SumReduce, OpKind::MaxReduce,
+            OpKind::MinReduce, OpKind::MeanReduce,
+        ];
+        let plan: Vec<_> = reduce.iter()
+            .map(|&op| (op, OpSize::Reduce { rows: 16, cols: 16 }))
+            .collect();
+        let judge = Judge {
+            iterations: 3, warmup: 1,
+            size_plan_override: Some(plan),
+        };
+        let report = judge.run(&probe);
+        for &op in &reduce {
+            let cpu_entries: Vec<_> = report.entries.iter()
+                .filter(|e| e.op == op && e.backend == BackendId::Cpu)
+                .collect();
+            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            let e = cpu_entries[0];
+            // Sum-style reductions accumulate in different order on
+            // backend vs reference; allow up to 5e-3.
+            assert!(e.max_rel_error < 5e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
                 e.max_rel_error);
             assert!(e.latency_ns > 0);
