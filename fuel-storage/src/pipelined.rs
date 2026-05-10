@@ -474,6 +474,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Flip { .. }   => Some(OpKind::Flip),
         Op::Roll { .. }   => Some(OpKind::Roll),
         Op::CumSum { .. } => Some(OpKind::CumSum),
+        Op::Pad { .. }    => Some(OpKind::Pad),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -835,6 +836,41 @@ fn op_to_op_params(
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
             OpParams::CumSum { outer_count, dim_size, inner_count }
+        }
+        Op::Pad { dim, before, after, mode, value } => {
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::Pad expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let in_dims = in_layout.shape().dims();
+            if *dim >= in_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::Pad: dim {dim} out of range for rank {}",
+                    in_dims.len(),
+                ))
+                .bt());
+            }
+            let outer_count: usize = in_dims[..*dim].iter().product();
+            let in_dim_size = in_dims[*dim];
+            let inner_count: usize = in_dims[*dim + 1..].iter().product();
+            let mode_tag: u8 = match mode {
+                fuel_graph::PadMode::Constant => 0,
+                fuel_graph::PadMode::Reflect => 1,
+                fuel_graph::PadMode::Replicate => 2,
+            };
+            OpParams::Pad {
+                outer_count,
+                in_dim: in_dim_size,
+                before: *before,
+                after: *after,
+                inner_count,
+                mode_tag,
+                value: *value,
+            }
         }
         Op::IndexAdd { dim } => {
             // Inputs: (base, indices, src). All same dtype except

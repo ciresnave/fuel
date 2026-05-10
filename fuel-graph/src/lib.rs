@@ -175,6 +175,23 @@ impl QuantType {
     }
 }
 
+/// Fill mode for [`Op::Pad`]. Only [`PadMode::Constant`] is
+/// implemented in the v1 cut; the other variants are accepted at
+/// the IR level so the enum is forward-stable, but the executor
+/// returns a clean error until they ship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PadMode {
+    /// Fill padded slots with the constant `value` parameter on
+    /// the [`Op::Pad`] variant.
+    Constant,
+    /// Reflect input around the padded edges (without repeating the
+    /// edge value). Not yet implemented.
+    Reflect,
+    /// Repeat the edge value into the padded region. Not yet
+    /// implemented.
+    Replicate,
+}
+
 /// The closed enum of operations a graph node can represent.
 ///
 /// This is the API contract between the graph layer and every backend.
@@ -340,6 +357,19 @@ pub enum Op {
     /// Backward: reverse cumsum, expressed as `Flip → CumSum → Flip`
     /// on the same dim using existing primitives.
     CumSum { dim: usize },
+    /// Pad along `dim` with `before`/`after` extra slots; output
+    /// shape == input shape with `dim` extended by `before + after`.
+    /// `mode` selects the fill behavior; `value` is consumed by
+    /// [`PadMode::Constant`] only (ignored otherwise).
+    ///
+    /// Only Constant mode is implemented in the v1 cut. Reflect /
+    /// Replicate are accepted at the IR level but the executor
+    /// returns a clean "not yet implemented" error — additive
+    /// follow-up work, no enum churn needed when they land.
+    ///
+    /// Backward (Constant): slice the gradient to drop the padded
+    /// regions, restoring the input shape.
+    Pad { dim: usize, before: usize, after: usize, mode: PadMode, value: f64 },
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -899,6 +929,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Flip{..}             => "Flip",
         Op::Roll{..}             => "Roll",
         Op::CumSum{..}           => "CumSum",
+        Op::Pad{..}              => "Pad",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2532,6 +2563,39 @@ impl Tensor {
             op:     Op::CumSum { dim },
             inputs: vec![self.id],
             shape:  in_shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a `Pad` node — extends `dim` by `before` slots before
+    /// the input and `after` slots after, filling per `mode`. Output
+    /// shape: input shape with `dim` extended by `before + after`.
+    /// `value` is the fill constant for [`PadMode::Constant`]
+    /// (ignored for other modes).
+    ///
+    /// Only Constant mode is wired through the executor in the v1
+    /// cut; the other modes produce a clean error at realize time.
+    /// Differentiable for Constant (backward slices the gradient
+    /// to drop the padded regions).
+    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: PadMode, value: f64) -> Tensor {
+        let in_shape = self.shape();
+        let in_dims = in_shape.dims();
+        let rank = in_dims.len();
+        assert!(
+            dim < rank,
+            "pad: dim {dim} out of bounds for rank {rank}",
+        );
+        let mut out_dims: Vec<usize> = in_dims.to_vec();
+        out_dims[dim] = in_dims[dim] + before + after;
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Pad { dim, before, after, mode, value },
+            inputs: vec![self.id],
+            shape:  Shape::from_dims(&out_dims),
             dtype,
         });
         Self {
@@ -4249,6 +4313,30 @@ impl Tensor {
                     let grad_x = push_node(
                         &graph_handle, Op::Flip { dim },
                         vec![up_id], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Pad { dim, before, after: _, mode: _, value: _ } => {
+                    // Forward: extend `dim` by before + after slots.
+                    // Backward: slice the padded gradient to drop the
+                    // padded regions, restoring the input shape.
+                    // Same backward shape regardless of mode (Constant
+                    // drops constants; Reflect/Replicate would need
+                    // gradient-accumulation at the mirrored / repeated
+                    // positions when those modes ship — TODO when
+                    // those modes land in the kernel).
+                    let dim = dim;
+                    let before = before;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let in_dim_size = x_shape.dims()[dim];
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Slice { dim, start: before, len: in_dim_size },
+                        vec![up_id],
+                        x_shape,
+                        dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }

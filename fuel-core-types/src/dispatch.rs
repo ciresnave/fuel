@@ -238,6 +238,11 @@ pub enum OpKind {
     /// `out[..., i, ...] = sum(in[..., 0..=i, ...])`. Same shape as
     /// input. Per-dtype kernel (sum needs typed addition).
     CumSum,
+    /// Pad along one dim with `before`/`after` extra slots. Modes:
+    /// Constant (fill with a value), Reflect (mirror edges),
+    /// Replicate (repeat edges). Only Constant is implemented in
+    /// the v1 cut; Reflect/Replicate fall through to a clean error.
+    Pad,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -345,6 +350,7 @@ impl OpKind {
             OpKind::Flip               => "flip",
             OpKind::Roll               => "roll",
             OpKind::CumSum             => "cumsum",
+            OpKind::Pad                => "pad",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
