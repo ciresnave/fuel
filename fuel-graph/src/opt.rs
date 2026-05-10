@@ -527,6 +527,10 @@ fn op_key(op: &Op) -> Option<OpKey> {
         // ops opportunistically.
         Op::Ge => (33, vec![], vec![], vec![], None, None),
 
+        // Ternary select. Slot 34 (next free after the comparison
+        // family's wrap to 33).
+        Op::Where => (34, vec![], vec![], vec![], None, None),
+
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),
         Op::Permute(axes) => (32, vec![], vec![], axes.clone(), None, None),

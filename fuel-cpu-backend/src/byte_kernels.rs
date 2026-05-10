@@ -333,6 +333,54 @@ binary_compare_kernel!(ge_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a 
 binary_compare_kernel!(ge_f16_u8, half::f16, |a: half::f16, b: half::f16| a >= b, "Elementwise `f16 >= f16` → `u8` mask.");
 
 // =============================================================================
+// Ternary select (Op::Where) — U8 cond + T × T → T
+// =============================================================================
+//
+// Where is the natural consumer of the U8 masks the comparison family
+// produces: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`. Cond is
+// always U8; the other two operands and the output share dtype T. The
+// kernel takes 4 byte buffers (cond, a, b, out) — the new
+// `where_kernel!` macro generalizes the binary_kernel pattern to this
+// shape.
+
+macro_rules! where_kernel {
+    ($name:ident, $T:ty, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            cond: &CpuStorageBytes,
+            a: &CpuStorageBytes,
+            b: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+        ) -> Result<()> {
+            let cond_view: &[u8] = cond.as_slice()?;
+            let a_view: &[$T] = a.as_slice()?;
+            let b_view: &[$T] = b.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            if cond_view.len() != a_view.len()
+                || cond_view.len() != b_view.len()
+                || cond_view.len() != out_view.len()
+            {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (cond={}, a={}, b={}, out={})",
+                    stringify!($name),
+                    cond_view.len(), a_view.len(), b_view.len(), out_view.len(),
+                ))
+                .bt());
+            }
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = if cond_view[i] != 0 { a_view[i] } else { b_view[i] };
+            }
+            Ok(())
+        }
+    };
+}
+
+where_kernel!(where_f32, f32, "Ternary select on `f32`: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`. Cond is `U8`.");
+where_kernel!(where_f64, f64, "Ternary select on `f64`.");
+where_kernel!(where_bf16, half::bf16, "Ternary select on `bf16`.");
+where_kernel!(where_f16, half::f16, "Ternary select on `f16`.");
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 

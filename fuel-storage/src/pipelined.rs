@@ -461,6 +461,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Le            => Some(OpKind::LessEqualElementwise),
         Op::Gt            => Some(OpKind::GreaterElementwise),
         Op::Ge            => Some(OpKind::GreaterEqualElementwise),
+        Op::Where         => Some(OpKind::Where),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -2309,6 +2310,109 @@ mod tests {
         let crate::BackendStorage::Cpu(c) = &guard.inner;
         let mask: &[u8] = c.as_slice().expect("u8 view");
         assert_eq!(mask, &[1, 1, 0]);
+    }
+
+    /// E2E: Op::Where ternary select — `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
+    /// Validates (a) the binding-table key `(Where, [U8, F32, F32, F32], Cpu)`
+    /// resolves to the where_f32 wrapper, (b) the U8 cond input drives
+    /// the per-slot pick, (c) outputs preserve the input dtype.
+    #[test]
+    fn pipelined_realize_where_f32_picks_per_slot_from_u8_mask() {
+        // cond = [1, 0, 1, 0, 1]; a = [1, 2, 3, 4, 5]; b = [10, 20, 30, 40, 50]
+        // expected = [1, 20, 3, 40, 5]
+        let cond_storage = crate::from_slice_cpu(&[1u8, 0, 1, 0, 1]);
+        let a_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]);
+        let b_storage = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (cond_id, a_id, b_id, where_id) = {
+            let mut g = graph.write().unwrap();
+            let cond = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+            });
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let w = g.push(Node {
+                op: Op::Where, inputs: vec![cond, a, b],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            g.set_target_backend(w, BackendId::Cpu);
+            (cond, a, b, w)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(cond_id, Arc::new(RwLock::new(cond_storage)));
+        inputs.insert(a_id, Arc::new(RwLock::new(a_storage)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F32);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let out: &[f32] = c.as_slice().expect("f32 view");
+        assert_eq!(out, &[1.0, 20.0, 3.0, 40.0, 5.0]);
+    }
+
+    /// E2E: full chain `eq → where`. Compares two f32 vectors, then
+    /// uses the resulting U8 mask to pick from a third tensor (or a
+    /// fallback). Validates the comparison-family + Where ops compose
+    /// end-to-end.
+    #[test]
+    fn pipelined_realize_eq_then_where_full_chain() {
+        // a = [1, 2, 3]; b = [1, 5, 3] → eq = [1, 0, 1]
+        // pick = [10, 20, 30]; fallback = [99, 99, 99]
+        // result = [10, 99, 30]
+        let a_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let b_storage = crate::from_slice_cpu(&[1.0_f32, 5.0, 3.0]);
+        let pick_storage = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let fb_storage = crate::from_slice_cpu(&[99.0_f32, 99.0, 99.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, pick_id, fb_id, where_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let pick = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let fb = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let eq = g.push(Node {
+                op: Op::Equal, inputs: vec![a, b],
+                shape: Shape::from_dims(&[3]), dtype: DType::U8,
+            });
+            let w = g.push(Node {
+                op: Op::Where, inputs: vec![eq, pick, fb],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(eq, BackendId::Cpu);
+            g.set_target_backend(w, BackendId::Cpu);
+            (a, b, pick, fb, w)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a_storage)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
+        inputs.insert(pick_id, Arc::new(RwLock::new(pick_storage)));
+        inputs.insert(fb_id, Arc::new(RwLock::new(fb_storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let out: &[f32] = c.as_slice().expect("f32 view");
+        assert_eq!(out, &[10.0, 99.0, 30.0]);
     }
 
     /// E2E: Q4_0 QMatMul through the pipelined executor — proves

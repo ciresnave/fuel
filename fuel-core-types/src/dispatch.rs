@@ -179,6 +179,11 @@ pub enum OpKind {
     /// Element-wise greater-or-equal `a >= b`. Same shape contract.
     /// NaN comparisons are unordered → `0`.
     GreaterEqualElementwise,
+    /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
+    /// Inputs `(cond, a, b)` — `cond` is `U8`, `a` and `b` share dtype
+    /// `T` and shape with `cond`. Output is `T` shape `cond.shape()`.
+    /// Binding-table dtype list `[U8, T, T, T]`.
+    Where,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -273,6 +278,7 @@ impl OpKind {
             OpKind::LessEqualElementwise => "le",
             OpKind::GreaterElementwise => "gt",
             OpKind::GreaterEqualElementwise => "ge",
+            OpKind::Where              => "where",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
