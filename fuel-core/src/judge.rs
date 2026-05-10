@@ -80,6 +80,12 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::GeluElementwise,
     OpKind::ReluElementwise,
     OpKind::StepElementwise,
+    // --- elementwise binary fanout ---
+    OpKind::SubElementwise,
+    OpKind::MulElementwise,
+    OpKind::DivElementwise,
+    OpKind::MaximumElementwise,
+    OpKind::MinimumElementwise,
 ];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
@@ -140,6 +146,11 @@ impl Judge {
             // L2 still fits the working set (256 KiB), and DRAM
             // bandwidth dominates (4 MiB).
             OpKind::AddElementwise
+            | OpKind::SubElementwise
+            | OpKind::MulElementwise
+            | OpKind::DivElementwise
+            | OpKind::MaximumElementwise
+            | OpKind::MinimumElementwise
             | OpKind::NegElementwise
             | OpKind::SqrElementwise
             | OpKind::SqrtElementwise
@@ -392,12 +403,11 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
             a.matmul(&b)
         }
-        (OpKind::AddElementwise, OpSize::Elementwise(n)) => {
-            let a_data: Vec<f32> = (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
-            let b_data: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.9e-3).cos()).collect();
+        (op, OpSize::Elementwise(n)) if is_binary_elementwise(op) => {
+            let (a_data, b_data) = binary_inputs(op, n);
             let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[n]), &crate::Device::cpu());
             let b = a.const_f32_like(b_data, Shape::from_dims(&[n]));
-            a.add(&b)
+            apply_binary(op, &a, &b)
         }
         // -------- elementwise unary fanout --------
         //
@@ -424,6 +434,51 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             apply_unary(op, &a)
         }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
+    }
+}
+
+/// Whether `op` is one of the elementwise binary ops the Judge profiles
+/// using the `Elementwise(n)` size ladder.
+fn is_binary_elementwise(op: OpKind) -> bool {
+    matches!(
+        op,
+        OpKind::AddElementwise
+        | OpKind::SubElementwise
+        | OpKind::MulElementwise
+        | OpKind::DivElementwise
+        | OpKind::MaximumElementwise
+        | OpKind::MinimumElementwise,
+    )
+}
+
+/// Deterministic two-input data for binary ops. `a` is `sin(i*2.1e-3)`
+/// and `b` is `cos(i*1.9e-3)` for most ops; for Div, `b` is shifted
+/// away from zero (`+ 1.5`, range `[0.5, 2.5]`) to avoid division by
+/// near-zero values that would saturate `max_rel_err` to infinity on
+/// any tiny precision difference.
+fn binary_inputs(op: OpKind, n: usize) -> (Vec<f32>, Vec<f32>) {
+    let a: Vec<f32> = (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
+    let mut b: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.9e-3).cos()).collect();
+    if matches!(op, OpKind::DivElementwise) {
+        for x in &mut b { *x += 1.5; }
+    }
+    (a, b)
+}
+
+/// Dispatch one elementwise binary op against `(a, b)`.
+fn apply_binary(
+    op: OpKind,
+    a: &crate::lazy::LazyTensor,
+    b: &crate::lazy::LazyTensor,
+) -> crate::lazy::LazyTensor {
+    match op {
+        OpKind::AddElementwise     => a.add(b),
+        OpKind::SubElementwise     => a.sub(b),
+        OpKind::MulElementwise     => a.mul(b),
+        OpKind::DivElementwise     => a.div(b),
+        OpKind::MaximumElementwise => a.maximum(b),
+        OpKind::MinimumElementwise => a.minimum(b),
+        _ => unreachable!("apply_binary called on non-binary OpKind {op:?}"),
     }
 }
 
@@ -595,6 +650,34 @@ mod tests {
             // generous bound so transcendental approximations
             // (tanh/sigmoid/silu/gelu) on different math libs still
             // pass — but a runaway divergence (>1e-3) flags a bug.
+            assert!(e.max_rel_error < 1e-3,
+                "cpu vs reference disagreement on {op}: rel_err={}",
+                e.max_rel_error);
+            assert!(e.latency_ns > 0);
+        }
+    }
+
+    #[test]
+    fn judge_profiles_all_binary_elementwise_ops() {
+        let probe = ProbeReport::probe_all();
+        let binary = [
+            OpKind::AddElementwise, OpKind::SubElementwise, OpKind::MulElementwise,
+            OpKind::DivElementwise, OpKind::MaximumElementwise, OpKind::MinimumElementwise,
+        ];
+        let plan: Vec<_> = binary.iter()
+            .map(|&op| (op, OpSize::Elementwise(1 << 8)))
+            .collect();
+        let judge = Judge {
+            iterations: 3, warmup: 1,
+            size_plan_override: Some(plan),
+        };
+        let report = judge.run(&probe);
+        for &op in &binary {
+            let cpu_entries: Vec<_> = report.entries.iter()
+                .filter(|e| e.op == op && e.backend == BackendId::Cpu)
+                .collect();
+            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            let e = cpu_entries[0];
             assert!(e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
                 e.max_rel_error);
