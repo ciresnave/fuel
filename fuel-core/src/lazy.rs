@@ -295,6 +295,14 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise strictly-greater (`self > other`) producing a
+    /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
+    pub fn gt(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.gt(&other.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.
@@ -514,6 +522,16 @@ impl LazyTensor {
     /// Arithmetic mean of all elements, producing a scalar.
     pub fn mean_all(&self) -> Self {
         Self { inner: self.inner.mean_all() }
+    }
+
+    /// Maximum of every element, producing a scalar.
+    pub fn max_all(&self) -> Self {
+        Self { inner: self.inner.max_all() }
+    }
+
+    /// Minimum of every element, producing a scalar.
+    pub fn min_all(&self) -> Self {
+        Self { inner: self.inner.min_all() }
     }
 
     /// Sum along a single dimension (dim removed from output).
