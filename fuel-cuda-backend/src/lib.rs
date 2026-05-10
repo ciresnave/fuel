@@ -364,6 +364,8 @@ impl CudaGraphExecutor {
             Op::Gelu => self.unary_cuda("ugelu", inputs, cache),
             Op::Relu => self.unary_cuda("urelu", inputs, cache),
             Op::Step => self.unary_cuda("ustep", inputs, cache),
+            Op::Recip => self.unary_cuda("urecip", inputs, cache),
+            Op::Abs => self.unary_cuda("uabs", inputs, cache),
 
             // Binary ops via native CUDA kernels.
             Op::Add => self.binary_cuda("badd", inputs, cache),
