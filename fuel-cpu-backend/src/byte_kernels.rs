@@ -551,6 +551,110 @@ pub fn roll_cpu(
 }
 
 // =============================================================================
+// CumSum — running prefix-sum along one dim, per-dtype
+// =============================================================================
+//
+// `out[outer, j, inner] = sum_{k=0..=j} in[outer, k, inner]`. Per-dtype
+// because the accumulation needs typed `+` (unlike Flip/Roll which only
+// reorder bytes). The bf16/f16 paths widen each accumulation step to f32
+// to avoid catastrophic precision loss on long axes.
+
+macro_rules! cumsum_kernel {
+    ($name:ident, $T:ty, $zero:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer: usize,
+            dim_size: usize,
+            inner: usize,
+        ) -> Result<()> {
+            let inv: &[$T] = input.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let needed = outer * dim_size * inner;
+            if inv.len() != needed || outv.len() != needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (in={}, out={}, expected={needed})",
+                    stringify!($name), inv.len(), outv.len(),
+                ))
+                .bt());
+            }
+            for o in 0..outer {
+                for i in 0..inner {
+                    let mut acc = $zero;
+                    for j in 0..dim_size {
+                        let pos = (o * dim_size + j) * inner + i;
+                        acc = acc + inv[pos];
+                        outv[pos] = acc;
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+cumsum_kernel!(cumsum_f32, f32, 0.0_f32, "Running prefix-sum on `f32` along one dim.");
+cumsum_kernel!(cumsum_f64, f64, 0.0_f64, "Running prefix-sum on `f64` along one dim.");
+
+// bf16/f16: widen accumulator to f32 to avoid precision loss across long axes.
+pub fn cumsum_bf16(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer: usize, dim_size: usize, inner: usize,
+) -> Result<()> {
+    let inv: &[half::bf16] = input.as_slice()?;
+    let outv: &mut [half::bf16] = out.as_slice_mut()?;
+    let needed = outer * dim_size * inner;
+    if inv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "cumsum_bf16: element count mismatch (in={}, out={}, expected={needed})",
+            inv.len(), outv.len(),
+        ))
+        .bt());
+    }
+    for o in 0..outer {
+        for i in 0..inner {
+            let mut acc: f32 = 0.0;
+            for j in 0..dim_size {
+                let pos = (o * dim_size + j) * inner + i;
+                acc += inv[pos].to_f32();
+                outv[pos] = half::bf16::from_f32(acc);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn cumsum_f16(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer: usize, dim_size: usize, inner: usize,
+) -> Result<()> {
+    let inv: &[half::f16] = input.as_slice()?;
+    let outv: &mut [half::f16] = out.as_slice_mut()?;
+    let needed = outer * dim_size * inner;
+    if inv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "cumsum_f16: element count mismatch (in={}, out={}, expected={needed})",
+            inv.len(), outv.len(),
+        ))
+        .bt());
+    }
+    for o in 0..outer {
+        for i in 0..inner {
+            let mut acc: f32 = 0.0;
+            for j in 0..dim_size {
+                let pos = (o * dim_size + j) * inner + i;
+                acc += inv[pos].to_f32();
+                outv[pos] = half::f16::from_f32(acc);
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 

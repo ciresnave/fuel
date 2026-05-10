@@ -379,6 +379,16 @@ fn eval_node(
                 AnyTensor::U32(t) => AnyTensor::U32(ops::roll(t, *dim, *shift)),
             }
         }
+        Op::CumSum { dim } => {
+            let src = cache.get(&inputs[0]).expect("cumsum missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::cumsum(t, *dim)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::cumsum(t, *dim)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::cumsum(t, *dim)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::cumsum(t, *dim)),
+                AnyTensor::U32(_) => panic!("cumsum: not supported on U32 tensors"),
+            }
+        }
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1610,6 +1620,48 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn cumsum_forward_running_sum() {
+        // Shape [2, 4]; cumsum along dim 1 = per-row running sum.
+        // Input:  [[1,2,3,4], [5,6,7,8]]
+        // Output: [[1,3,6,10], [5,11,18,26]]
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            Shape::from_dims(&[2, 4]),
+            cpu_dev(),
+        );
+        let c = a.cumsum(1);
+        let out = realize_f32(&c);
+        assert_eq!(out.shape().dims(), &[2, 4]);
+        assert_eq!(out.as_slice(), &[1.0, 3.0, 6.0, 10.0, 5.0, 11.0, 18.0, 26.0]);
+        // CumSum along dim 0 = per-column running sum.
+        // Output: [[1,2,3,4], [6,8,10,12]]
+        let c0 = a.cumsum(0);
+        let out0 = realize_f32(&c0);
+        assert_eq!(out0.as_slice(), &[1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0]);
+        assert_equivalent_f32(&c);
+    }
+
+    #[test]
+    fn cumsum_backward_is_reverse_cumsum() {
+        // y = cumsum(x, dim).
+        // dL/dx[i] = sum_{k=i..n} dL/dy[k]   (reverse cumsum)
+        // For dL/dy = ones: dL/dx[i] = (n - i)
+        // x = [1,1,1,1] (size 4). With ones-seed gradient on cumsum,
+        // expected dL/dx = [4, 3, 2, 1].
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 1.0, 1.0, 1.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let y = a.cumsum(0);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        assert_eq!(out.as_slice(), &[4.0, 3.0, 2.0, 1.0],
+            "cumsum backward must be reverse-cumsum (sums of suffixes)");
     }
 
     #[test]

@@ -1523,6 +1523,30 @@ pub fn rsqrt<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Running cumulative sum along `dim`:
+/// `y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]`. Same shape as
+/// input. Bound is `T: Float` since the kernel adds element-by-element.
+pub fn cumsum<T: Float>(x: &RefTensor<T>, dim: usize) -> RefTensor<T> {
+    let in_dims = x.shape().dims();
+    assert!(dim < in_dims.len(), "cumsum: dim {dim} out of range");
+    let outer: usize = in_dims[..dim].iter().product();
+    let d = in_dims[dim];
+    let inner: usize = in_dims[dim + 1..].iter().product();
+    let src = x.as_slice();
+    let mut out = vec![T::zero(); outer * d * inner];
+    for o in 0..outer {
+        for i in 0..inner {
+            let mut acc = T::zero();
+            for j in 0..d {
+                let pos = (o * d + j) * inner + i;
+                acc = acc + src[pos];
+                out[pos] = acc;
+            }
+        }
+    }
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
 /// Reverse element order along `dim`. Dtype-agnostic — bound is
 /// `T: Copy + Default` since the kernel does only assignment, no
 /// arithmetic.

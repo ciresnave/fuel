@@ -403,6 +403,16 @@ pub fn eval_node_with_op(
                 AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::roll(t, *dim, *shift)),
             }
         }
+        Op::CumSum { dim } => {
+            let src = cache.get(&inputs[0]).expect("cumsum missing input");
+            match src {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::cumsum(t, *dim)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::cumsum(t, *dim)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::cumsum(t, *dim)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::cumsum(t, *dim)),
+                AnyRefTensor::U32(_) => panic!("cumsum: not supported on U32 tensors"),
+            }
+        }
 
         // --- comparison family (output dtype = U8) ---
         // Output dtype differs from inputs (always U8); AnyRefTensor

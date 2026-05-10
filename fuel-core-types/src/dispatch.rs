@@ -234,6 +234,10 @@ pub enum OpKind {
     /// (e.g. `roll([0,1,2], shift=1) = [2,0,1]`). Materializing op,
     /// dtype-agnostic.
     Roll,
+    /// Running cumulative sum along one dim:
+    /// `out[..., i, ...] = sum(in[..., 0..=i, ...])`. Same shape as
+    /// input. Per-dtype kernel (sum needs typed addition).
+    CumSum,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -340,6 +344,7 @@ impl OpKind {
             OpKind::RemElementwise     => "rem",
             OpKind::Flip               => "flip",
             OpKind::Roll               => "roll",
+            OpKind::CumSum             => "cumsum",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

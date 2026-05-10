@@ -336,6 +336,10 @@ pub enum Op {
     /// shifts move elements to higher indices, wrapping around).
     /// Materializing op. Backward is `Roll { dim, -shift }`.
     Roll { dim: usize, shift: i64 },
+    /// Running cumulative sum along `dim`. Same shape as input.
+    /// Backward: reverse cumsum, expressed as `Flip → CumSum → Flip`
+    /// on the same dim using existing primitives.
+    CumSum { dim: usize },
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -894,6 +898,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Rem                  => "Rem",
         Op::Flip{..}             => "Flip",
         Op::Roll{..}             => "Roll",
+        Op::CumSum{..}           => "CumSum",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2502,6 +2507,29 @@ impl Tensor {
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::Roll { dim, shift },
+            inputs: vec![self.id],
+            shape:  in_shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a `CumSum` node — running cumulative sum along `dim`.
+    /// Output shape == input shape. Differentiable; backward is
+    /// reverse-cumsum (`Flip → CumSum → Flip`).
+    pub fn cumsum(&self, dim: usize) -> Tensor {
+        let in_shape = self.shape();
+        let rank = in_shape.dims().len();
+        assert!(
+            dim < rank,
+            "cumsum: dim {dim} out of bounds for rank {rank}",
+        );
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::CumSum { dim },
             inputs: vec![self.id],
             shape:  in_shape,
             dtype,
@@ -4221,6 +4249,28 @@ impl Tensor {
                     let grad_x = push_node(
                         &graph_handle, Op::Flip { dim },
                         vec![up_id], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::CumSum { dim } => {
+                    // y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]
+                    // dL/dx[..., i, ...] = sum_{k=i..n} dL/dy[..., k, ...]
+                    // i.e. reverse cumsum. Express via Flip → CumSum → Flip.
+                    let dim = dim;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let flip1 = push_node(
+                        &graph_handle, Op::Flip { dim },
+                        vec![up_id], x_shape.clone(), dtype,
+                    );
+                    let cs = push_node(
+                        &graph_handle, Op::CumSum { dim },
+                        vec![flip1], x_shape.clone(), dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle, Op::Flip { dim },
+                        vec![cs], x_shape, dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
