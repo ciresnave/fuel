@@ -103,6 +103,8 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::GeluElementwise,
     OpKind::ReluElementwise,
     OpKind::StepElementwise,
+    OpKind::RecipElementwise,
+    OpKind::AbsElementwise,
     // --- elementwise binary fanout ---
     OpKind::SubElementwise,
     OpKind::MulElementwise,
@@ -199,6 +201,8 @@ impl Judge {
             | OpKind::GeluElementwise
             | OpKind::ReluElementwise
             | OpKind::StepElementwise
+            | OpKind::RecipElementwise
+            | OpKind::AbsElementwise
             | OpKind::Affine
             | OpKind::ClampElementwise
             | OpKind::PowIElementwise => vec![
@@ -536,11 +540,17 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         }
         (op, OpSize::Elementwise(n)) if is_unary_elementwise(op) => {
             let raw = unary_input(n);
-            let needs_positive = matches!(
+            // Sqrt/Log require strictly positive inputs; Recip can't be
+            // measured against zero (1/0 = inf saturates `max_rel_err`).
+            // The +1.5 shift puts unary_input's [-1, 1] range into
+            // [0.5, 2.5] — safe for all three.
+            let needs_nonzero = matches!(
                 op,
-                OpKind::SqrtElementwise | OpKind::LogElementwise,
+                OpKind::SqrtElementwise
+                | OpKind::LogElementwise
+                | OpKind::RecipElementwise,
             );
-            let data: Vec<f32> = if needs_positive {
+            let data: Vec<f32> = if needs_nonzero {
                 raw.into_iter().map(|x| x + 1.5).collect()
             } else {
                 raw
@@ -660,7 +670,9 @@ fn is_unary_elementwise(op: OpKind) -> bool {
         | OpKind::SiluElementwise
         | OpKind::GeluElementwise
         | OpKind::ReluElementwise
-        | OpKind::StepElementwise,
+        | OpKind::StepElementwise
+        | OpKind::RecipElementwise
+        | OpKind::AbsElementwise,
     )
 }
 
@@ -687,6 +699,8 @@ fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTens
         OpKind::SinElementwise     => a.sin(),
         OpKind::CosElementwise     => a.cos(),
         OpKind::StepElementwise    => a.step(),
+        OpKind::RecipElementwise   => a.recip(),
+        OpKind::AbsElementwise     => a.abs(),
         _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
 }
@@ -785,7 +799,7 @@ mod tests {
             OpKind::ExpElementwise, OpKind::LogElementwise, OpKind::SinElementwise,
             OpKind::CosElementwise, OpKind::TanhElementwise, OpKind::SigmoidElementwise,
             OpKind::SiluElementwise, OpKind::GeluElementwise, OpKind::ReluElementwise,
-            OpKind::StepElementwise,
+            OpKind::StepElementwise, OpKind::RecipElementwise, OpKind::AbsElementwise,
         ];
         let plan: Vec<_> = unary.iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))
