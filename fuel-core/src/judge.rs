@@ -111,6 +111,7 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::SignElementwise,
     OpKind::ErfElementwise,
     OpKind::GeluErfElementwise,
+    OpKind::RsqrtElementwise,
     // --- elementwise binary additions ---
     OpKind::PowElementwise,
     // --- elementwise binary fanout ---
@@ -218,6 +219,7 @@ impl Judge {
             | OpKind::SignElementwise
             | OpKind::ErfElementwise
             | OpKind::GeluErfElementwise
+            | OpKind::RsqrtElementwise
             | OpKind::Affine
             | OpKind::ClampElementwise
             | OpKind::PowIElementwise => vec![
@@ -563,7 +565,8 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
                 op,
                 OpKind::SqrtElementwise
                 | OpKind::LogElementwise
-                | OpKind::RecipElementwise,
+                | OpKind::RecipElementwise
+                | OpKind::RsqrtElementwise,
             );
             let data: Vec<f32> = if needs_nonzero {
                 raw.into_iter().map(|x| x + 1.5).collect()
@@ -701,7 +704,8 @@ fn is_unary_elementwise(op: OpKind) -> bool {
         | OpKind::RoundElementwise
         | OpKind::SignElementwise
         | OpKind::ErfElementwise
-        | OpKind::GeluErfElementwise,
+        | OpKind::GeluErfElementwise
+        | OpKind::RsqrtElementwise,
     )
 }
 
@@ -736,6 +740,7 @@ fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTens
         OpKind::SignElementwise    => a.sign(),
         OpKind::ErfElementwise     => a.erf(),
         OpKind::GeluErfElementwise => a.gelu_erf(),
+        OpKind::RsqrtElementwise   => a.rsqrt(),
         _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
 }
@@ -838,6 +843,7 @@ mod tests {
             OpKind::FloorElementwise, OpKind::CeilElementwise,
             OpKind::RoundElementwise, OpKind::SignElementwise,
             OpKind::ErfElementwise,   OpKind::GeluErfElementwise,
+            OpKind::RsqrtElementwise,
         ];
         let plan: Vec<_> = unary.iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))

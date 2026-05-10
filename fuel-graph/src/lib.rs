@@ -310,6 +310,15 @@ pub enum Op {
     /// NaN follows IEEE-754 (`pow(-2, 0.5) = NaN`); ln of negative `a`
     /// in the d/db term yields NaN at those positions.
     Pow,
+    /// Element-wise reciprocal square root: `out = 1 / sqrt(x)`.
+    /// Same dtype as input. Distinct from `Sqrt` followed by `Recip`
+    /// (one op instead of two — saves a kernel launch and matches the
+    /// RMSNorm shape `x * rsqrt(mean(x²)+eps)`). Backward:
+    ///   d/dx (x^(-1/2)) = -0.5 * x^(-3/2) = -0.5 * y³
+    /// where `y = 1/sqrt(x)` is the forward output (so the chain
+    /// reuses the forward node and never touches `x` directly —
+    /// safe near x=0).
+    Rsqrt,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -864,6 +873,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Erf                  => "Erf",
         Op::GeluErf              => "GeluErf",
         Op::Pow                  => "Pow",
+        Op::Rsqrt                => "Rsqrt",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2416,6 +2426,14 @@ impl Tensor {
     /// IEEE-754 (`pow(-2, 0.5) = NaN`).
     pub fn pow(&self, other: &Tensor) -> Tensor {
         self.binary_op("pow", Op::Pow, other, self.shape())
+    }
+
+    /// Append an `Rsqrt` node (`1 / sqrt(self)`). Same dtype as
+    /// input. Single op rather than `sqrt(x).recip()` — one kernel
+    /// launch and matches RMSNorm's `x * rsqrt(...)` shape.
+    /// Differentiable.
+    pub fn rsqrt(&self) -> Tensor {
+        self.unary_op(Op::Rsqrt)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -4113,6 +4131,35 @@ impl Tensor {
                         vec![up_id, scaled],
                         x_shape,
                         dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Rsqrt => {
+                    // y = x^(-1/2). dy/dx = -0.5 * x^(-3/2).
+                    // Identity: y² = 1/x, so x^(-3/2) = y/x = y * y² = y³.
+                    // grad_x = -0.5 * upstream * y³.
+                    // Reuses the forward output id for y; never touches
+                    // x directly (avoids the divide-by-zero singularity
+                    // that the obvious `-0.5 * upstream * y / x` form
+                    // would have).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let y_sq = push_node(
+                        &graph_handle, Op::Sqr,
+                        vec![id], x_shape.clone(), dtype,
+                    );
+                    let y_cu = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![id, y_sq], x_shape.clone(), dtype,
+                    );
+                    let scaled = push_node(
+                        &graph_handle, Op::MulScalar(-0.5),
+                        vec![y_cu], x_shape.clone(), dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![up_id, scaled], x_shape, dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
