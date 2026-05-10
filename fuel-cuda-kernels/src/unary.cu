@@ -91,6 +91,33 @@ extern "C" __global__ void FN_NAME( \
     } \
 } \
 
+#define UNARY_OP2(TYPENAME, FN_NAME, FUNC) \
+extern "C" __global__ void FN_NAME( \
+    const size_t numel, \
+    const size_t num_dims, \
+    const size_t *info, \
+    const TYPENAME lo, \
+    const TYPENAME hi, \
+    const TYPENAME *inp, \
+    TYPENAME *out \
+) { \
+    const size_t *dims = info; \
+    const size_t *strides = info + num_dims; \
+    if (info == nullptr || is_contiguous(num_dims, dims, strides)) { \
+        for (unsigned int i = blockIdx.x * blockDim.x + threadIdx.x; i < numel; i += blockDim.x * gridDim.x) { \
+            TYPENAME x = inp ? inp[i] : out[i]; \
+            out[i] = FUNC; \
+        } \
+    } \
+    else { \
+        for (unsigned int i = blockIdx.x * blockDim.x + threadIdx.x; i < numel; i += blockDim.x * gridDim.x) { \
+            unsigned strided_i = get_strided_index(i, num_dims, dims, strides); \
+            TYPENAME x = inp ? inp[strided_i] : out[i]; \
+            out[i] = FUNC; \
+        } \
+    } \
+} \
+
 template<typename T>
 __device__ T sign_(T t) {
   return static_cast<T>(t > static_cast<T>(0)) - static_cast<T>(t < static_cast<T>(0));
@@ -233,3 +260,5 @@ UNARY_OP(float, usigmoid_f32, sigmoid_fwd(x))
 UNARY_OP(double, usigmoid_f64, sigmoid_fwd(x))
 UNARY_OP(float, ustep_f32, x > static_cast<float>(0) ? static_cast<float>(1) : static_cast<float>(0))
 UNARY_OP(double, ustep_f64, x > static_cast<double>(0) ? static_cast<double>(1) : static_cast<double>(0))
+UNARY_OP2(float, uclamp_f32, ming(maxg(x, lo), hi))
+UNARY_OP2(double, uclamp_f64, ming(maxg(x, lo), hi))
