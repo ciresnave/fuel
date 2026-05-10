@@ -474,6 +474,15 @@ impl LazyTensor {
         Self { inner: self.inner.gelu_erf() }
     }
 
+    /// Element-wise binary power `pow(self, other)` (real exponent).
+    /// Both operands must share dtype + shape. Distinct from
+    /// [`Self::powi`] (scalar `i32` exponent). Differentiable.
+    pub fn pow(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.pow(&other.inner),
+        }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

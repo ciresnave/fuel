@@ -1513,6 +1513,23 @@ pub fn powi<T: Float>(x: &RefTensor<T>, n: i32) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Element-wise binary power: `y[i] = pow(a[i], b[i])`. Real exponent
+/// (`Float::powf`). Distinct from [`powi`] (scalar `i32` exponent
+/// applied uniformly). NaN follows IEEE-754: e.g. `pow(-2, 0.5) =
+/// NaN` (negative base with non-integer exponent).
+pub fn pow<T: Float>(a: &RefTensor<T>, b: &RefTensor<T>) -> RefTensor<T> {
+    assert_eq!(a.shape().dims(), b.shape().dims(),
+        "pow: shape mismatch a={:?} b={:?}",
+        a.shape().dims(), b.shape().dims());
+    let data: Vec<T> = a
+        .as_slice()
+        .iter()
+        .zip(b.as_slice().iter())
+        .map(|(&av, &bv)| av.powf(bv))
+        .collect();
+    RefTensor::from_vec(data, a.shape().clone())
+}
+
 /// Clamp every element to `[min, max]`.
 pub fn clamp<T: Float>(x: &RefTensor<T>, min: f64, max: f64) -> RefTensor<T> {
     let mn: T = cst(min);

@@ -209,6 +209,11 @@ pub enum OpKind {
     /// Backward decomposes into the standard-normal CDF + `x * φ(x)`
     /// (PDF) chain via existing primitives.
     GeluErfElementwise,
+    /// Element-wise binary power: `out[i] = pow(a[i], b[i])`. Both
+    /// inputs share dtype `T` and shape; output is `T` with the same
+    /// shape. Distinct from [`PowIElementwise`] (scalar `i32`
+    /// exponent). NaN follows IEEE-754 (e.g. `pow(-2, 0.5) = NaN`).
+    PowElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -310,6 +315,7 @@ impl OpKind {
             OpKind::SignElementwise    => "sign",
             OpKind::ErfElementwise     => "erf",
             OpKind::GeluErfElementwise => "gelu_erf",
+            OpKind::PowElementwise     => "pow",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

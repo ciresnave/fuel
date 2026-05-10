@@ -302,6 +302,14 @@ pub enum Op {
     /// Differentiable; backward decomposes into the standard-normal
     /// CDF + `x * φ(x)` (PDF) chain via primitives.
     GeluErf,
+    /// Element-wise binary power: `out = pow(a, b)` with real `b`.
+    /// Both inputs share dtype `T` and shape. Distinct from
+    /// [`Op::PowI`] (scalar `i32` exponent). Backward:
+    ///   d/da pow(a,b) = b * pow(a, b-1)
+    ///   d/db pow(a,b) = pow(a,b) * ln(a)
+    /// NaN follows IEEE-754 (`pow(-2, 0.5) = NaN`); ln of negative `a`
+    /// in the d/db term yields NaN at those positions.
+    Pow,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -855,6 +863,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Sign                 => "Sign",
         Op::Erf                  => "Erf",
         Op::GeluErf              => "GeluErf",
+        Op::Pow                  => "Pow",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2399,6 +2408,14 @@ impl Tensor {
     /// Differentiable.
     pub fn gelu_erf(&self) -> Tensor {
         self.unary_op(Op::GeluErf)
+    }
+
+    /// Append a `Pow` node `pow(self, other)` element-wise (real
+    /// exponent). Both operands must share dtype and shape. Distinct
+    /// from [`Self::powi`] (scalar `i32` exponent). NaN follows
+    /// IEEE-754 (`pow(-2, 0.5) = NaN`).
+    pub fn pow(&self, other: &Tensor) -> Tensor {
+        self.binary_op("pow", Op::Pow, other, self.shape())
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -4098,6 +4115,50 @@ impl Tensor {
                         dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Pow => {
+                    // y = pow(a, b).
+                    // d/da = b * pow(a, b-1)
+                    // d/db = y * ln(a)
+                    // grad_a = upstream * b * pow(a, b-1)
+                    // grad_b = upstream * y * ln(a)
+                    // The forward output `id` IS y; we reuse it.
+                    let a = inputs[0];
+                    let b = inputs[1];
+                    let a_shape = node_shape(&graph_handle, a);
+                    let dtype = node_dtype(&graph_handle, a);
+                    // d/da branch: pow(a, b - 1)
+                    let b_minus_one = push_node(
+                        &graph_handle, Op::AddScalar(-1.0),
+                        vec![b], a_shape.clone(), dtype,
+                    );
+                    let pow_a_bm1 = push_node(
+                        &graph_handle, Op::Pow,
+                        vec![a, b_minus_one], a_shape.clone(), dtype,
+                    );
+                    let b_times_pow = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![b, pow_a_bm1], a_shape.clone(), dtype,
+                    );
+                    let grad_a = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![up_id, b_times_pow], a_shape.clone(), dtype,
+                    );
+                    accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
+                    // d/db branch: y * ln(a)
+                    let log_a = push_node(
+                        &graph_handle, Op::Log,
+                        vec![a], a_shape.clone(), dtype,
+                    );
+                    let y_log_a = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![id, log_a], a_shape.clone(), dtype,
+                    );
+                    let grad_b = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![up_id, y_log_a], a_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
                 Op::GeluErf => {
                     // y = 0.5 * x * (1 + erf(x/√2)).
