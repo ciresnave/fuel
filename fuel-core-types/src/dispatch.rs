@@ -199,6 +199,10 @@ pub enum OpKind {
     /// positive). Same dtype as input. Backward drops gradient
     /// (zero almost everywhere; the subgradient at 0 is taken as 0).
     SignElementwise,
+    /// Element-wise Gauss error function (`erf(x)`). Same dtype as
+    /// input. Backward: `d/dx erf(x) = (2/√π) * exp(-x²)` —
+    /// expressed via `Sqr` + `Neg` + `Exp` + `MulScalar`.
+    ErfElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -298,6 +302,7 @@ impl OpKind {
             OpKind::CeilElementwise    => "ceil",
             OpKind::RoundElementwise   => "round",
             OpKind::SignElementwise    => "sign",
+            OpKind::ErfElementwise     => "erf",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

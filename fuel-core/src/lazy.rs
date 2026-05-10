@@ -461,6 +461,12 @@ impl LazyTensor {
         Self { inner: self.inner.sign() }
     }
 
+    /// Element-wise Gauss error function (`erf(x)`). Same dtype as
+    /// input. Differentiable: `d/dx erf(x) = (2/√π) * exp(-x²)`.
+    pub fn erf(&self) -> Self {
+        Self { inner: self.inner.erf() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

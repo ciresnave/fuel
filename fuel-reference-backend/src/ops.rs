@@ -133,6 +133,23 @@ pub fn ceil<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Gauss error function: `y[i] = erf(x[i]) = (2/√π) * ∫₀ˣ e^(-t²) dt`.
+/// Computed by widening to `f64` and calling `libm::erf` — gives correct
+/// IEEE-754 rounding within libm's published bound (typically ≤1 ULP).
+/// The widening matters most for `bf16` / `f16` where the input dynamic
+/// range is narrow but the output is fully `[-1, 1]`.
+pub fn erf<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
+    let data: Vec<T> = x
+        .as_slice()
+        .iter()
+        .map(|&v| {
+            let f = v.to_f64().unwrap();
+            T::from(libm::erf(f)).unwrap()
+        })
+        .collect();
+    RefTensor::from_vec(data, x.shape().clone())
+}
+
 /// Round-to-nearest with **banker's rounding** at exact halves
 /// (round-half-to-even / IEEE 754 roundeven). `num_traits::Float::round`
 /// is half-away-from-zero, so we override the tie case manually:

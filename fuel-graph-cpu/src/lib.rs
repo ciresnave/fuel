@@ -354,6 +354,7 @@ fn eval_node(
         Op::Ceil => unary!(inputs, cache, ops::ceil),
         Op::Round => unary!(inputs, cache, ops::round),
         Op::Sign => unary!(inputs, cache, ops::sign),
+        Op::Erf => unary!(inputs, cache, ops::erf),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1560,6 +1561,54 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[2.0, -2.0, 0.0, -1.0, 5.0]);
         assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn erf_forward_matches_known_values() {
+        // Reference erf values (libm-correct):
+        //   erf(0)   = 0
+        //   erf(1)   ≈ 0.8427007929
+        //   erf(-1)  ≈ -0.8427007929
+        //   erf(2)   ≈ 0.9953222650
+        //   erf(0.5) ≈ 0.5204998778
+        let a = Tensor::from_f32(
+            vec![0.0_f32, 1.0, -1.0, 2.0, 0.5],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let b = a.erf();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        let expected = [0.0_f32, 0.842_700_8, -0.842_700_8, 0.995_322_3, 0.520_499_88];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-6,
+                "erf[{i}] = {got}, want {want}");
+        }
+        // Cross-backend bit-equal: both paths route through libm::erff.
+        assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn erf_backward_matches_two_over_sqrt_pi_times_exp_neg_x_squared() {
+        // d/dx erf(x) = (2/√π) * exp(-x²).
+        // At x=0:  2/√π ≈ 1.1283791671
+        // At x=1:  (2/√π) * e^-1 ≈ 0.4151074974
+        // At x=-1: same as x=1 (even function in the derivative).
+        let a = Tensor::from_f32(
+            vec![0.0_f32, 1.0, -1.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let y = a.erf();
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        let s = out.as_slice();
+        let expected = [1.128_379_2_f32, 0.415_107_5, 0.415_107_5];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-6,
+                "erf'[{i}] = {got}, want {want}");
+        }
     }
 
     #[test]
