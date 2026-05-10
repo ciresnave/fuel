@@ -357,6 +357,16 @@ impl LazyTensor {
         Self { inner: self.inner.step() }
     }
 
+    /// Element-wise reciprocal (`1 / x`).
+    pub fn recip(&self) -> Self {
+        Self { inner: self.inner.recip() }
+    }
+
+    /// Element-wise absolute value (`|x|`).
+    pub fn abs(&self) -> Self {
+        Self { inner: self.inner.abs() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }
