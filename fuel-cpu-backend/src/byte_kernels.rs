@@ -551,66 +551,91 @@ pub fn roll_cpu(
 }
 
 // =============================================================================
-// Pad (Constant mode) — extend `dim` with a typed fill value
+// Pad — multi-dim, dtype-agnostic (Constant mode)
 // =============================================================================
 //
-// `out[outer, j, inner]` is `value` for the padded slots
-// (`j < before` or `j >= before + in_dim`), else `in[outer, j - before, inner]`.
-// Per-dtype because the fill value needs typed coercion from the
-// caller-supplied `f64`.
+// Two-pass: (1) fill the entire output with the dtype-pre-encoded
+// `fill_bytes` pattern; (2) copy the input region into the unpadded
+// slot. Walks input multi-indices via a mixed-radix counter — clean
+// for arbitrary rank without recursion or per-dtype specialization.
 
-macro_rules! pad_const_kernel {
-    ($name:ident, $T:ty, $convert:expr, $doc:literal) => {
-        #[doc = $doc]
-        pub fn $name(
-            input: &CpuStorageBytes,
-            out: &mut CpuStorageBytes,
-            outer: usize,
-            in_dim: usize,
-            before: usize,
-            after: usize,
-            inner: usize,
-            value: f64,
-        ) -> Result<()> {
-            let inv: &[$T] = input.as_slice()?;
-            let outv: &mut [$T] = out.as_slice_mut()?;
-            let out_dim = in_dim + before + after;
-            let in_needed = outer * in_dim * inner;
-            let out_needed = outer * out_dim * inner;
-            if inv.len() != in_needed || outv.len() != out_needed {
-                return Err(Error::Msg(format!(
-                    "{}: element count mismatch (in={}, expected={in_needed}; out={}, expected={out_needed})",
-                    stringify!($name), inv.len(), outv.len(),
-                ))
-                .bt());
-            }
-            let convert: fn(f64) -> $T = $convert;
-            let fill: $T = convert(value);
-            for o in 0..outer {
-                for j in 0..out_dim {
-                    let row_out = (o * out_dim + j) * inner;
-                    if j < before || j >= before + in_dim {
-                        // Padded slot: fill with `value`.
-                        for i in 0..inner {
-                            outv[row_out + i] = fill;
-                        }
-                    } else {
-                        let in_j = j - before;
-                        let row_in = (o * in_dim + in_j) * inner;
-                        outv[row_out..row_out + inner]
-                            .copy_from_slice(&inv[row_in..row_in + inner]);
-                    }
-                }
-            }
-            Ok(())
+/// Multi-dim Pad-Constant. `fill_bytes` is one element's worth of
+/// bytes in the output dtype; the kernel just byte-copies that
+/// pattern into every padded slot, then overwrites the input region
+/// with input bytes (also dtype-agnostic).
+pub fn pad_const_cpu(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    in_shape: &[usize],
+    out_shape: &[usize],
+    padding: &[(usize, usize)],
+    dtype_size: usize,
+    fill_bytes: &[u8],
+) -> Result<()> {
+    let rank = in_shape.len();
+    if out_shape.len() != rank || padding.len() != rank {
+        return Err(Error::Msg(format!(
+            "pad_const_cpu: rank mismatch (in_shape={rank}, out_shape={}, padding={})",
+            out_shape.len(), padding.len(),
+        ))
+        .bt());
+    }
+    if fill_bytes.len() != dtype_size {
+        return Err(Error::Msg(format!(
+            "pad_const_cpu: fill_bytes length {} != dtype_size {dtype_size}",
+            fill_bytes.len(),
+        ))
+        .bt());
+    }
+    let in_elem: usize = in_shape.iter().product();
+    let out_elem: usize = out_shape.iter().product();
+    let in_b = input.bytes();
+    if in_b.len() != in_elem * dtype_size || out.len_bytes() != out_elem * dtype_size {
+        return Err(Error::Msg(format!(
+            "pad_const_cpu: byte length mismatch (in={}, expected={}; out={}, expected={})",
+            in_b.len(), in_elem * dtype_size,
+            out.len_bytes(), out_elem * dtype_size,
+        ))
+        .bt());
+    }
+    let out_buf = out.bytes_mut();
+    // Pass 1: fill every output element with the constant.
+    for i in 0..out_elem {
+        let off = i * dtype_size;
+        out_buf[off..off + dtype_size].copy_from_slice(fill_bytes);
+    }
+    // Pass 2: copy input into the unpadded region. Walk input
+    // multi-indices via a mixed-radix counter; translate each to an
+    // output flat index by adding the per-axis `before` offset.
+    let in_strides = compute_row_major_strides(in_shape);
+    let out_strides = compute_row_major_strides(out_shape);
+    let mut idx = vec![0usize; rank];
+    for _ in 0..in_elem {
+        let in_flat: usize = idx.iter().zip(&in_strides).map(|(&i, &s)| i * s).sum();
+        let out_flat: usize = idx.iter().zip(&out_strides).zip(padding.iter())
+            .map(|((&i, &s), &(b, _))| (i + b) * s).sum();
+        let in_off = in_flat * dtype_size;
+        let out_off = out_flat * dtype_size;
+        out_buf[out_off..out_off + dtype_size]
+            .copy_from_slice(&in_b[in_off..in_off + dtype_size]);
+        // Advance multi-index (last axis varies fastest).
+        for k in (0..rank).rev() {
+            idx[k] += 1;
+            if idx[k] < in_shape[k] { break; }
+            idx[k] = 0;
         }
-    };
+    }
+    Ok(())
 }
 
-pad_const_kernel!(pad_const_f32, f32, |v: f64| v as f32, "Pad (Constant mode) on `f32`.");
-pad_const_kernel!(pad_const_f64, f64, |v: f64| v, "Pad (Constant mode) on `f64`.");
-pad_const_kernel!(pad_const_bf16, half::bf16, |v: f64| half::bf16::from_f32(v as f32), "Pad (Constant mode) on `bf16`.");
-pad_const_kernel!(pad_const_f16, half::f16, |v: f64| half::f16::from_f32(v as f32), "Pad (Constant mode) on `f16`.");
+fn compute_row_major_strides(shape: &[usize]) -> Vec<usize> {
+    let n = shape.len();
+    let mut s = vec![1usize; n];
+    for i in (0..n.saturating_sub(1)).rev() {
+        s[i] = s[i + 1] * shape[i + 1];
+    }
+    s
+}
 
 // =============================================================================
 // CumSum — running prefix-sum along one dim, per-dtype

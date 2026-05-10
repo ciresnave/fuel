@@ -649,59 +649,51 @@ cpu_cumsum_wrapper!(cumsum_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::cums
 cpu_cumsum_wrapper!(cumsum_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_bf16, "cumsum_bf16");
 cpu_cumsum_wrapper!(cumsum_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f16, "cumsum_f16");
 
-/// Build a `(1 input, 1 output)` CPU dispatch wrapper for the
-/// per-dtype Pad-Constant kernels. Reflect / Replicate modes return
-/// a clean error here until their kernels ship.
-macro_rules! cpu_pad_wrapper {
-    ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
-            inputs: &[Arc<RwLock<Storage>>],
-            outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
-            params: &OpParams,
-        ) -> Result<()> {
-            if inputs.len() != 1 || outputs.len() != 1 {
-                return Err(Error::Msg(format!(
-                    "{} wrapper expects 1 input + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
-                ))
-                .bt());
-            }
-            let (outer, in_dim, before, after, inner, mode_tag, value) = match params {
-                OpParams::Pad {
-                    outer_count, in_dim, before, after, inner_count, mode_tag, value,
-                } => (
-                    *outer_count, *in_dim, *before, *after, *inner_count, *mode_tag, *value,
-                ),
-                other => {
-                    return Err(Error::Msg(format!(
-                        "{} wrapper expects OpParams::Pad, got {other:?}",
-                        $op_name,
-                    ))
-                    .bt())
-                }
-            };
-            if mode_tag != 0 {
-                return Err(Error::Msg(format!(
-                    "{}: only Constant mode is implemented (got mode_tag={mode_tag}); \
-                     Reflect / Replicate kernels are follow-up work",
-                    $op_name,
-                ))
-                .bt());
-            }
-            let in_guard = read_storage(&inputs[0])?;
-            let mut out_guard = write_storage(&outputs[0])?;
-            let in_cpu = cpu_input(&in_guard)?;
-            let out_cpu = cpu_output(&mut out_guard)?;
-            $kernel(in_cpu, out_cpu, outer, in_dim, before, after, inner, value)
+/// Single dtype-agnostic dispatch wrapper for Pad. The kernel is
+/// byte-level (`fill_bytes` is pre-encoded for the output dtype in
+/// `op_to_op_params`); this wrapper just reads dtype_size from the
+/// output Storage and passes through. One wrapper covers every
+/// dtype the binding-table is registered for.
+fn pad_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "pad wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (in_shape, out_shape, padding, mode_tag, fill_bytes) = match params {
+        OpParams::Pad { in_shape, out_shape, padding, mode_tag, fill_bytes } => {
+            (in_shape, out_shape, padding, *mode_tag, fill_bytes)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "pad wrapper expects OpParams::Pad, got {other:?}",
+            ))
+            .bt())
         }
     };
+    if mode_tag != 0 {
+        return Err(Error::Msg(format!(
+            "pad: only Constant mode is implemented (got mode_tag={mode_tag}); \
+             Reflect / Replicate kernels are follow-up work",
+        ))
+        .bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::pad_const_cpu(
+        in_cpu, out_cpu, in_shape, out_shape, padding, dtype_size, fill_bytes,
+    )
 }
-
-cpu_pad_wrapper!(pad_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_const_f32, "pad_f32");
-cpu_pad_wrapper!(pad_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_const_f64, "pad_f64");
-cpu_pad_wrapper!(pad_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_const_bf16, "pad_bf16");
-cpu_pad_wrapper!(pad_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_const_f16, "pad_f16");
 
 /// Dispatch wrapper for `(Roll, *, Cpu)`. Dtype-agnostic at the byte
 /// level. Same shape as Flip plus a signed `shift`.
@@ -2822,11 +2814,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(CumSum, &unary(f16_dt),  cpu, cumsum_f16_cpu_wrapper);
 
     // Pad (Constant mode wired; Reflect/Replicate fall through to a
-    // clean error inside the wrapper).
-    table.register(Pad, &unary(f32_dt),  cpu, pad_f32_cpu_wrapper);
-    table.register(Pad, &unary(f64_dt),  cpu, pad_f64_cpu_wrapper);
-    table.register(Pad, &unary(bf16_dt), cpu, pad_bf16_cpu_wrapper);
-    table.register(Pad, &unary(f16_dt),  cpu, pad_f16_cpu_wrapper);
+    // clean error inside the wrapper). Single dtype-agnostic wrapper
+    // registered per dtype — kernel reads dtype_size from output.
+    table.register(Pad, &unary(f32_dt),  cpu, pad_cpu_wrapper);
+    table.register(Pad, &unary(f64_dt),  cpu, pad_cpu_wrapper);
+    table.register(Pad, &unary(bf16_dt), cpu, pad_cpu_wrapper);
+    table.register(Pad, &unary(f16_dt),  cpu, pad_cpu_wrapper);
+    table.register(Pad, &unary(u32_dt),  cpu, pad_cpu_wrapper);
+    table.register(Pad, &unary(u8_dt),   cpu, pad_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);

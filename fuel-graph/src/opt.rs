@@ -546,14 +546,21 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Flip { dim } => (56, vec![*dim as i64], vec![], vec![], None, None),
         Op::Roll { dim, shift } => (57, vec![*dim as i64, *shift], vec![], vec![], None, None),
         Op::CumSum { dim } => (58, vec![*dim as i64], vec![], vec![], None, None),
-        Op::Pad { dim, before, after, mode, value } => {
+        Op::Pad { padding, mode, value } => {
             let mode_tag = match mode {
                 crate::PadMode::Constant => 0_i64,
                 crate::PadMode::Reflect => 1,
                 crate::PadMode::Replicate => 2,
             };
-            (59, vec![*dim as i64, *before as i64, *after as i64, mode_tag],
-                vec![value.to_bits()], vec![], None, None)
+            // Flatten padding pairs into [b0, a0, b1, a1, ...] + the
+            // mode tag. Multi-dim padding keys uniquely off this vec.
+            let mut ints: Vec<i64> = Vec::with_capacity(padding.len() * 2 + 1);
+            for &(b, a) in padding {
+                ints.push(b as i64);
+                ints.push(a as i64);
+            }
+            ints.push(mode_tag);
+            (59, ints, vec![value.to_bits()], vec![], None, None)
         }
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),

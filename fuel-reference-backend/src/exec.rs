@@ -413,15 +413,15 @@ pub fn eval_node_with_op(
                 AnyRefTensor::U32(_) => panic!("cumsum: not supported on U32 tensors"),
             }
         }
-        Op::Pad { dim, before, after, mode, value } => {
+        Op::Pad { padding, mode, value } => {
             assert!(matches!(mode, fuel_graph::PadMode::Constant),
                 "pad: only Constant mode is implemented in v1, got {mode:?}");
             let src = cache.get(&inputs[0]).expect("pad missing input");
             match src {
-                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::pad_const(t, *dim, *before, *after, *value)),
-                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::pad_const(t, *dim, *before, *after, *value)),
-                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::pad_const(t, *dim, *before, *after, *value)),
-                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::pad_const(t, *dim, *before, *after, *value)),
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::pad_const(t, padding, *value)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::pad_const(t, padding, *value)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::pad_const(t, padding, *value)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::pad_const(t, padding, *value)),
                 AnyRefTensor::U32(_) => panic!("pad: not supported on U32 tensors"),
             }
         }

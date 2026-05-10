@@ -532,6 +532,23 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
 /// Phase C — extends as op families migrate. Returns Err if a
 /// graph-shape lookup fails (currently can't, but the signature is
 /// `Result` so future cases needing validation slot in cleanly).
+/// Encode an `f64` value into the byte pattern of `dtype`. Used by
+/// `Op::Pad` (Constant mode) to pre-convert the fill value once at
+/// op_params time, so the kernel itself stays dtype-agnostic.
+fn encode_value_to_bytes(dtype: DType, value: f64) -> Result<Vec<u8>> {
+    match dtype {
+        DType::F32 => Ok((value as f32).to_le_bytes().to_vec()),
+        DType::F64 => Ok(value.to_le_bytes().to_vec()),
+        DType::BF16 => Ok(half::bf16::from_f32(value as f32).to_le_bytes().to_vec()),
+        DType::F16 => Ok(half::f16::from_f32(value as f32).to_le_bytes().to_vec()),
+        DType::U8 => Ok(vec![value as u8]),
+        DType::U32 => Ok((value as u32).to_le_bytes().to_vec()),
+        other => Err(Error::Msg(format!(
+            "encode_value_to_bytes: dtype {other:?} not yet supported for Pad fill",
+        )).bt()),
+    }
+}
+
 fn op_to_op_params(
     graph: &Graph,
     node: &Node,
@@ -837,7 +854,7 @@ fn op_to_op_params(
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
             OpParams::CumSum { outer_count, dim_size, inner_count }
         }
-        Op::Pad { dim, before, after, mode, value } => {
+        Op::Pad { padding, mode, value } => {
             if node.inputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "Op::Pad expects 1 input, got {}",
@@ -846,30 +863,33 @@ fn op_to_op_params(
                 .bt());
             }
             let in_layout = input_layout(node.inputs[0]);
-            let in_dims = in_layout.shape().dims();
-            if *dim >= in_dims.len() {
+            let in_dims: Vec<usize> = in_layout.shape().dims().to_vec();
+            if padding.len() != in_dims.len() {
                 return Err(Error::Msg(format!(
-                    "Op::Pad: dim {dim} out of range for rank {}",
-                    in_dims.len(),
+                    "Op::Pad: padding.len() ({}) != input rank ({})",
+                    padding.len(), in_dims.len(),
                 ))
                 .bt());
             }
-            let outer_count: usize = in_dims[..*dim].iter().product();
-            let in_dim_size = in_dims[*dim];
-            let inner_count: usize = in_dims[*dim + 1..].iter().product();
+            let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+                .map(|(&d, &(b, a))| d + b + a)
+                .collect();
             let mode_tag: u8 = match mode {
                 fuel_graph::PadMode::Constant => 0,
                 fuel_graph::PadMode::Reflect => 1,
                 fuel_graph::PadMode::Replicate => 2,
             };
+            // Encode fill value as bytes for the output dtype. The
+            // kernel is dtype-agnostic — it just memcopies the
+            // pattern. Conversion happens once here per node, not
+            // per element in the kernel.
+            let fill_bytes = encode_value_to_bytes(node.dtype, *value)?;
             OpParams::Pad {
-                outer_count,
-                in_dim: in_dim_size,
-                before: *before,
-                after: *after,
-                inner_count,
+                in_shape: in_dims,
+                out_shape: out_dims,
+                padding: padding.clone(),
                 mode_tag,
-                value: *value,
+                fill_bytes,
             }
         }
         Op::IndexAdd { dim } => {
