@@ -379,6 +379,7 @@ pub fn eval_node_with_op(
         Op::Round => unary!(inputs, cache, ops::round),
         Op::Sign => unary!(inputs, cache, ops::sign),
         Op::Erf => unary!(inputs, cache, ops::erf),
+        Op::GeluErf => unary!(inputs, cache, ops::gelu_erf),
 
         // --- comparison family (output dtype = U8) ---
         // Output dtype differs from inputs (always U8); AnyRefTensor

@@ -150,6 +150,27 @@ pub fn erf<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// GELU activation, **exact erf formulation**:
+/// `gelu_erf(x) = 0.5 * x * (1 + erf(x/√2))`. Distinct from the
+/// existing `gelu` (the tanh approximation `0.5 * x * (1 + tanh(...))`)
+/// — this form is the one PyTorch's `torch.nn.GELU(approximate='none')`
+/// uses by default. Slightly more accurate at the cost of an erf call;
+/// transformers that fine-tune from BERT-era checkpoints expect this
+/// variant.
+pub fn gelu_erf<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
+    let data: Vec<T> = x
+        .as_slice()
+        .iter()
+        .map(|&v| {
+            let f = v.to_f64().unwrap();
+            let erf_arg = f * std::f64::consts::FRAC_1_SQRT_2;
+            let erf_val = libm::erf(erf_arg);
+            T::from(0.5 * f * (1.0 + erf_val)).unwrap()
+        })
+        .collect();
+    RefTensor::from_vec(data, x.shape().clone())
+}
+
 /// Round-to-nearest with **banker's rounding** at exact halves
 /// (round-half-to-even / IEEE 754 roundeven). `num_traits::Float::round`
 /// is half-away-from-zero, so we override the tie case manually:

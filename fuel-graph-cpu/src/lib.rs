@@ -355,6 +355,7 @@ fn eval_node(
         Op::Round => unary!(inputs, cache, ops::round),
         Op::Sign => unary!(inputs, cache, ops::sign),
         Op::Erf => unary!(inputs, cache, ops::erf),
+        Op::GeluErf => unary!(inputs, cache, ops::gelu_erf),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1561,6 +1562,54 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[2.0, -2.0, 0.0, -1.0, 5.0]);
         assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn gelu_erf_forward_matches_known_values() {
+        // gelu_erf(x) = 0.5 * x * (1 + erf(x/√2)).
+        //   gelu_erf(0)  = 0
+        //   gelu_erf(1)  = 0.5 * (1 + erf(1/√2)) ≈ 0.8413447461
+        //   gelu_erf(-1) ≈ -0.1586552540
+        //   gelu_erf(2)  = 1.0 * (1 + erf(√2))   ≈ 1.9544997361
+        //   gelu_erf(0.5) ≈ 0.34573123
+        let a = Tensor::from_f32(
+            vec![0.0_f32, 1.0, -1.0, 2.0, 0.5],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let b = a.gelu_erf();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        let expected = [0.0_f32, 0.841_344_75, -0.158_655_25, 1.954_499_7, 0.345_731_23];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-6,
+                "gelu_erf[{i}] = {got}, want {want}");
+        }
+        assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn gelu_erf_backward_matches_cdf_plus_x_pdf() {
+        // d/dx gelu_erf(x) = Φ(x) + x * φ(x), where Φ is the standard
+        // normal CDF and φ the PDF.
+        //   x=0:  0.5 + 0          = 0.5
+        //   x=1:  Φ(1) + φ(1)      ≈ 0.84134 + 0.24197 ≈ 1.08332
+        //   x=-1: Φ(-1) - φ(-1)    ≈ 0.15866 - 0.24197 ≈ -0.08332
+        let a = Tensor::from_f32(
+            vec![0.0_f32, 1.0, -1.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let y = a.gelu_erf();
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        let s = out.as_slice();
+        let expected = [0.5_f32, 1.083_315_47, -0.083_315_47];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-5,
+                "gelu_erf'[{i}] = {got}, want {want}");
+        }
     }
 
     #[test]
