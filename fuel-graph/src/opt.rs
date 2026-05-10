@@ -511,6 +511,8 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Gelu => (20, vec![], vec![], vec![], None, None),
         Op::Relu => (21, vec![], vec![], vec![], None, None),
         Op::Step => (22, vec![], vec![], vec![], None, None),
+        Op::Recip => (23, vec![], vec![], vec![], None, None),
+        Op::Abs => (24, vec![], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),
