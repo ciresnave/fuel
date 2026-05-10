@@ -259,6 +259,16 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise equality (`self == other`) producing a `U8` mask:
+    /// `1` where equal, `0` otherwise. Both operands must share dtype
+    /// and shape. NaN follows IEEE-754 (`NaN == NaN` is false). The
+    /// resulting tensor's dtype is `DType::U8`. Non-differentiable.
+    pub fn eq(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.eq(&other.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.

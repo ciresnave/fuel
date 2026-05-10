@@ -70,6 +70,8 @@ pub fn dispatch_gradient(
         Op::Add => Some(AddRule.backward(graph, op, inputs, output, upstream)),
         Op::Mul => Some(MulRule.backward(graph, op, inputs, output, upstream)),
         Op::Relu => Some(ReluRule.backward(graph, op, inputs, output, upstream)),
+        // --- comparison family: non-differentiable, terminate cleanly ---
+        Op::Equal => Some(NoGradientBinaryRule.backward(graph, op, inputs, output, upstream)),
         _ => None,
     }
 }
@@ -109,6 +111,26 @@ impl GradientRule for MulRule {
         let grad_a = push_node(graph, Op::Mul, vec![upstream, b], a_shape.clone(), dtype);
         let grad_b = push_node(graph, Op::Mul, vec![upstream, a], a_shape, dtype);
         vec![Some(grad_a), Some(grad_b)]
+    }
+}
+
+/// Backward rule for non-differentiable two-input ops (the comparison
+/// family: `Equal`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`). Returns `None` for
+/// both input slots so the autograd traversal terminates without
+/// extending the gradient graph through the op. Comparison-on-loss-
+/// path is a user error; the missing gradient downstream surfaces it
+/// rather than panicking.
+pub struct NoGradientBinaryRule;
+impl GradientRule for NoGradientBinaryRule {
+    fn backward(
+        &self,
+        _graph: &SharedGraph,
+        _op: &Op,
+        _inputs: &[NodeId],
+        _output: NodeId,
+        _upstream: NodeId,
+    ) -> GradientList {
+        vec![None, None]
     }
 }
 
@@ -180,5 +202,23 @@ mod tests {
         let dummy = NodeId(0);
         let result = dispatch_gradient(&g, &Op::MatMul, &[dummy, dummy], dummy, dummy);
         assert!(result.is_none(), "MatMul should not have a registered rule yet");
+    }
+
+    /// Comparison family terminates the autograd traversal cleanly:
+    /// the dispatcher returns Some(vec![None, None]) so the caller
+    /// extends nothing into the gradient graph for either input.
+    /// Without this rule, the legacy fallthrough would emit a U8 gradient
+    /// (impossible) or panic.
+    #[test]
+    fn dispatch_returns_none_gradients_for_eq() {
+        use crate::SharedGraph;
+        use std::sync::{Arc, RwLock};
+        let g: SharedGraph = Arc::new(RwLock::new(crate::Graph::new()));
+        let dummy = NodeId(0);
+        let result = dispatch_gradient(&g, &Op::Equal, &[dummy, dummy], dummy, dummy)
+            .expect("Op::Equal must have a registered GradientRule");
+        assert_eq!(result.len(), 2, "Op::Equal has 2 inputs");
+        assert!(result[0].is_none(), "lhs gradient must be None (non-differentiable)");
+        assert!(result[1].is_none(), "rhs gradient must be None (non-differentiable)");
     }
 }

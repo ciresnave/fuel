@@ -514,6 +514,9 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Recip => (23, vec![], vec![], vec![], None, None),
         Op::Abs => (24, vec![], vec![], vec![], None, None),
 
+        // --- comparison family (output dtype is U8) ---
+        Op::Equal => (25, vec![], vec![], vec![], None, None),
+
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),
         Op::Permute(axes) => (32, vec![], vec![], axes.clone(), None, None),

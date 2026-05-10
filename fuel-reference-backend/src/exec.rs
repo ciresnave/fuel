@@ -375,6 +375,19 @@ pub fn eval_node_with_op(
         Op::Recip => unary!(inputs, cache, ops::recip),
         Op::Abs => unary!(inputs, cache, ops::abs),
 
+        // --- comparison family (output dtype = U8) ---
+        // Output dtype differs from inputs (always U8); AnyRefTensor
+        // doesn't carry a U8 variant, so realize-via-reference-backend
+        // can't represent the result. Comparison ops are validated via
+        // the storage-path executor (`PipelinedExecutor`), which
+        // natively handles U8 output through the binding-table key
+        // `[T, T, U8]`.
+        Op::Equal => panic!(
+            "Op::Equal: legacy fuel-reference-backend executor doesn't \
+             support U8-output ops; use the storage-path \
+             PipelinedExecutor instead",
+        ),
+
         // --- linear algebra ---
         Op::MatMul => eval_matmul(inputs, cache),
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),

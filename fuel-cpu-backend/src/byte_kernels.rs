@@ -254,6 +254,60 @@ pub fn gelu_f16(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()
 }
 
 // =============================================================================
+// Elementwise comparison kernels — typed input, U8 output
+// =============================================================================
+//
+// Comparison ops break the same-dtype-as-input convention the binary/
+// unary kernels follow: the output is always a `U8` mask (`1` where
+// the predicate holds, `0` otherwise). The wrapper signature is still
+// `(lhs: &CpuStorageBytes, rhs: &CpuStorageBytes, out: &mut CpuStorageBytes)`
+// — same as `binary_kernel!` — but the kernel internally casts the
+// inputs to `&[T]` and the output to `&mut [u8]`. This mirrors the
+// ArgMax pattern (typed input, U32 output) and is what the binding-
+// table dispatch keys on `[T, T, U8]` resolve to.
+
+/// Generate a binary comparison kernel parameterized over the input
+/// element type `$T`: `out[i] = if predicate(lhs[i], rhs[i]) { 1 } else { 0 }`.
+///
+/// Output is `&mut [u8]`; the caller pre-allocates it sized as
+/// `lhs.len_bytes() / size_of::<T>()` bytes (one byte per element).
+/// Per-input lengths must match in element count, not byte count.
+macro_rules! binary_compare_kernel {
+    ($name:ident, $T:ty, $op:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            lhs: &CpuStorageBytes,
+            rhs: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+        ) -> Result<()> {
+            let lhs_view: &[$T] = lhs.as_slice()?;
+            let rhs_view: &[$T] = rhs.as_slice()?;
+            let out_view: &mut [u8] = out.as_slice_mut()?;
+            if lhs_view.len() != rhs_view.len() || lhs_view.len() != out_view.len() {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (lhs={}, rhs={}, out={})",
+                    stringify!($name),
+                    lhs_view.len(),
+                    rhs_view.len(),
+                    out_view.len(),
+                ))
+                .bt());
+            }
+            let op: fn($T, $T) -> bool = $op;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = if op(lhs_view[i], rhs_view[i]) { 1 } else { 0 };
+            }
+            Ok(())
+        }
+    };
+}
+
+binary_compare_kernel!(eq_f32_u8, f32, |a: f32, b: f32| a == b, "Elementwise `f32 == f32` → `u8` mask: `out[i] = 1 if lhs[i] == rhs[i] else 0`. NaN follows IEEE-754 (`NaN != NaN`).");
+binary_compare_kernel!(eq_f64_u8, f64, |a: f64, b: f64| a == b, "Elementwise `f64 == f64` → `u8` mask.");
+binary_compare_kernel!(eq_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a == b, "Elementwise `bf16 == bf16` → `u8` mask. Comparison is bitwise on the bf16 representation, matching IEEE-754 semantics widened to f32.");
+binary_compare_kernel!(eq_f16_u8, half::f16, |a: half::f16, b: half::f16| a == b, "Elementwise `f16 == f16` → `u8` mask.");
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 

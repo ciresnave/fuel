@@ -433,6 +433,16 @@ cpu_unary_wrapper!(silu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_unary_wrapper!(gelu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f16, "gelu_elementwise");
 cpu_unary_wrapper!(step_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f16, "step_elementwise");
 
+// Comparison family — typed input, U8 output. The wrapper signature
+// is identical to a regular binary wrapper (3 byte buffers); only the
+// kernel internally casts inputs to `&[T]` and output to `&mut [u8]`.
+// Binding-table key is `[T, T, U8]` so the executor allocates a U8-
+// sized output buffer (1 byte per element) instead of T-sized.
+cpu_binary_wrapper!(eq_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_f32_u8, "eq_elementwise");
+cpu_binary_wrapper!(eq_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_f64_u8, "eq_elementwise");
+cpu_binary_wrapper!(eq_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_bf16_u8, "eq_elementwise");
+cpu_binary_wrapper!(eq_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_f16_u8, "eq_elementwise");
+
 /// Generate a CPU argextremum wrapper. Output dtype is U32; the
 /// binding-table key is keyed on the OUTPUT dtype = U32. The
 /// wrapper validates the input is F32 (only F32 is wired today).
@@ -2239,6 +2249,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // shorthand for "uniform-dtype across N inputs + output."
     let unary  = |t: DType| [t, t];                             // (in, out)
     let binary = |t: DType| [t, t, t];                          // (lhs, rhs, out)
+    let u8_dt  = DType::U8;
+    let compare = |t: DType| [t, t, u8_dt];                     // (lhs, rhs, U8 mask)
     let rope_dts = |t: DType| [t, t, t, t];                     // (x, cos, sin, out)
     let conv2d_no_bias   = |t: DType| [t, t, t];                // (x, w, out)
     let conv2d_with_bias = |t: DType| [t, t, t, t];             // (x, w, bias, out)
@@ -2402,6 +2414,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MinimumElementwise, &binary(f32_dt), cpu, minimum_elementwise_f32_cpu_wrapper);
     table.register(MaximumElementwise, &binary(f64_dt), cpu, maximum_elementwise_f64_cpu_wrapper);
     table.register(MinimumElementwise, &binary(f64_dt), cpu, minimum_elementwise_f64_cpu_wrapper);
+
+    // Comparison family (output dtype = U8). Each kernel produces a
+    // U8 mask (`1` where the predicate holds, `0` otherwise).
+    table.register(EqualElementwise, &compare(f32_dt),  cpu, eq_elementwise_f32_cpu_wrapper);
+    table.register(EqualElementwise, &compare(f64_dt),  cpu, eq_elementwise_f64_cpu_wrapper);
+    table.register(EqualElementwise, &compare(bf16_dt), cpu, eq_elementwise_bf16_cpu_wrapper);
+    table.register(EqualElementwise, &compare(f16_dt),  cpu, eq_elementwise_f16_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);

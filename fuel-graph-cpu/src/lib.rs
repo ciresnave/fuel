@@ -351,6 +351,18 @@ fn eval_node(
         Op::Recip => unary!(inputs, cache, ops::recip),
         Op::Abs => unary!(inputs, cache, ops::abs),
 
+        // --- comparison family (output dtype = U8) ---
+        // Comparison ops produce a U8 mask; the legacy AnyTensor enum
+        // here only carries float + U32 variants, so realize-via-graph-cpu
+        // can't represent the result. The storage-path executor
+        // (`PipelinedExecutor`) is the canonical implementation; tests
+        // and downstream consumers should route through it for
+        // comparison-op coverage.
+        Op::Equal => panic!(
+            "Op::Equal: legacy fuel-graph-cpu executor doesn't support \
+             U8-output ops; use the storage-path PipelinedExecutor instead",
+        ),
+
         // --- linear algebra & shape ---
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),
         Op::Permute(axes) => eval_permute(axes, inputs, cache),
