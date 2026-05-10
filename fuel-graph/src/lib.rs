@@ -357,6 +357,25 @@ pub enum Op {
     /// Backward: reverse cumsum, expressed as `Flip → CumSum → Flip`
     /// on the same dim using existing primitives.
     CumSum { dim: usize },
+    /// Backward helper for [`Op::Pad`]. Single input is the upstream
+    /// gradient (shape == padded forward output shape); output is the
+    /// gradient with respect to the original input (shape ==
+    /// `in_shape`). Mode determines accumulation behavior:
+    /// - Constant: gradient at padded slots is dropped; the unpadded
+    ///   region is the input gradient.
+    /// - Reflect / Replicate: gradient accumulates from output
+    ///   positions that map back to each input position via the
+    ///   forward index function.
+    ///
+    /// Carries `in_shape` so the kernel can size the output tensor
+    /// (Op output shape isn't enough — Op::Pad's output shape
+    /// derivation needs reversing).
+    PadBackward {
+        in_shape: Shape,
+        padding: Vec<(usize, usize)>,
+        mode: PadMode,
+    },
+
     /// Multi-dim Pad: per-axis `(before, after)` extends each
     /// dimension. Output shape: `out[i] = in[i] + padding[i].0 + padding[i].1`.
     /// `mode` selects the fill behavior; `value` is the fill
@@ -936,6 +955,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Roll{..}             => "Roll",
         Op::CumSum{..}           => "CumSum",
         Op::Pad{..}              => "Pad",
+        Op::PadBackward{..}      => "PadBackward",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -4518,47 +4538,32 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::Pad { padding, mode: _, value: _ } => {
-                    // Forward: extend each axis i by padding[i].0 + padding[i].1
-                    // slots. Backward (Constant): slice along each padded axis
-                    // to drop the padded regions and restore input shape.
-                    // Multi-dim Pad backward = chain of single-dim Slices,
-                    // one per axis with non-zero padding.
-                    //
-                    // Reflect/Replicate would also need gradient accumulation
-                    // at the mirrored / repeated positions — that lands when
-                    // those modes' kernels do.
-                    let padding = padding;  // capture by value (already &Vec)
+                Op::Pad { padding, mode, value: _ } => {
+                    // Backward delegates to Op::PadBackward — a single
+                    // node that handles all three modes uniformly via
+                    // its kernel. Constant: slice the unpadded region.
+                    // Reflect/Replicate: accumulate gradient at the
+                    // mirrored / replicated positions.
+                    let padding = padding.clone();
+                    let mode = mode;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
-                    let in_dims: Vec<usize> = x_shape.dims().to_vec();
                     let dtype = node_dtype(&graph_handle, x);
-                    // Walk axes in order; emit a Slice per axis where padding
-                    // is non-zero. The intermediate-shape tracking matches
-                    // each progressive slice's output shape.
-                    let mut current = up_id;
-                    let mut current_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
-                        .map(|(&d, &(b, a))| d + b + a)
-                        .collect();
-                    for (dim, &(before, after)) in padding.iter().enumerate() {
-                        if before == 0 && after == 0 {
-                            continue;  // No padding on this axis → skip slice.
-                        }
-                        let in_d = in_dims[dim];
-                        // After this slice, current_dims[dim] becomes in_d.
-                        let mut next_dims = current_dims.clone();
-                        next_dims[dim] = in_d;
-                        let next_shape = Shape::from_dims(&next_dims);
-                        current = push_node(
-                            &graph_handle,
-                            Op::Slice { dim, start: before, len: in_d },
-                            vec![current],
-                            next_shape,
-                            dtype,
-                        );
-                        current_dims = next_dims;
-                    }
-                    accumulate_grad(&mut upstream, x, current, &graph_handle);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::PadBackward { in_shape: x_shape.clone(), padding, mode },
+                        vec![up_id],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::PadBackward { .. } => {
+                    // Backward helper — typically a leaf in autograd
+                    // (the upstream gradient itself never gets a
+                    // higher-order backward in v1). No-op arm for
+                    // exhaustiveness; if higher-order autograd needs
+                    // PadBackward's backward, that's its own scope.
                 }
                 Op::CumSum { dim } => {
                     // y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]

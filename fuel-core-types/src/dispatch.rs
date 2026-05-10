@@ -243,6 +243,10 @@ pub enum OpKind {
     /// Replicate (repeat edges). Only Constant is implemented in
     /// the v1 cut; Reflect/Replicate fall through to a clean error.
     Pad,
+    /// Backward helper for `Pad`. Per-dtype since accumulation is
+    /// typed addition. Routes all 3 modes uniformly — the kernel
+    /// switches on `mode_tag`.
+    PadBackward,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -351,6 +355,7 @@ impl OpKind {
             OpKind::Roll               => "roll",
             OpKind::CumSum             => "cumsum",
             OpKind::Pad                => "pad",
+            OpKind::PadBackward        => "pad_backward",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

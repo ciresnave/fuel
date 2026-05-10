@@ -678,22 +678,83 @@ fn pad_cpu_wrapper(
             .bt())
         }
     };
-    if mode_tag != 0 {
-        return Err(Error::Msg(format!(
-            "pad: only Constant mode is implemented (got mode_tag={mode_tag}); \
-             Reflect / Replicate kernels are follow-up work",
-        ))
-        .bt());
-    }
     let in_guard = read_storage(&inputs[0])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let dtype_size = out_guard.dtype.size_in_bytes();
     let in_cpu = cpu_input(&in_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::pad_const_cpu(
-        in_cpu, out_cpu, in_shape, out_shape, padding, dtype_size, fill_bytes,
-    )
+    // Per-mode forward dispatch.
+    match mode_tag {
+        0 => fuel_cpu_backend::byte_kernels::pad_const_cpu(
+            in_cpu, out_cpu, in_shape, out_shape, padding, dtype_size, fill_bytes,
+        ),
+        1 => {
+            // Reflect: validate before/after <= n-1 per axis (otherwise
+            // the reflection runs off the input).
+            for (k, (&n, &(b, a))) in in_shape.iter().zip(padding.iter()).enumerate() {
+                if n > 0 && (b > n - 1 || a > n - 1) {
+                    return Err(Error::Msg(format!(
+                        "pad reflect: axis {k} has dim_size {n}; before ({b}) and \
+                         after ({a}) must each be <= dim_size - 1",
+                    )).bt());
+                }
+            }
+            fuel_cpu_backend::byte_kernels::pad_reflect_cpu(
+                in_cpu, out_cpu, in_shape, out_shape, padding, dtype_size,
+            )
+        }
+        2 => fuel_cpu_backend::byte_kernels::pad_replicate_cpu(
+            in_cpu, out_cpu, in_shape, out_shape, padding, dtype_size,
+        ),
+        other => Err(Error::Msg(format!(
+            "pad: unknown mode_tag {other}",
+        )).bt()),
+    }
 }
+
+/// Build a `(1 input, 1 output)` per-dtype dispatch wrapper for
+/// `Op::PadBackward`. Per-dtype (unlike forward Pad) because the
+/// backward kernel does typed addition (accumulation per input slot).
+macro_rules! cpu_pad_backward_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (in_shape, out_shape, padding, mode_tag) = match params {
+                OpParams::PadBackward { in_shape, out_shape, padding, mode_tag } => {
+                    (in_shape, out_shape, padding, *mode_tag)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::PadBackward, got {other:?}",
+                        $op_name,
+                    ))
+                    .bt())
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, in_shape, out_shape, padding, mode_tag)
+        }
+    };
+}
+
+cpu_pad_backward_wrapper!(pad_backward_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_f32, "pad_backward_f32");
+cpu_pad_backward_wrapper!(pad_backward_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_f64, "pad_backward_f64");
+cpu_pad_backward_wrapper!(pad_backward_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_bf16, "pad_backward_bf16");
+cpu_pad_backward_wrapper!(pad_backward_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_f16, "pad_backward_f16");
 
 /// Dispatch wrapper for `(Roll, *, Cpu)`. Dtype-agnostic at the byte
 /// level. Same shape as Flip plus a signed `shift`.
@@ -2822,6 +2883,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Pad, &unary(f16_dt),  cpu, pad_cpu_wrapper);
     table.register(Pad, &unary(u32_dt),  cpu, pad_cpu_wrapper);
     table.register(Pad, &unary(u8_dt),   cpu, pad_cpu_wrapper);
+
+    // PadBackward — per-dtype since accumulation is typed.
+    table.register(PadBackward, &unary(f32_dt),  cpu, pad_backward_f32_cpu_wrapper);
+    table.register(PadBackward, &unary(f64_dt),  cpu, pad_backward_f64_cpu_wrapper);
+    table.register(PadBackward, &unary(bf16_dt), cpu, pad_backward_bf16_cpu_wrapper);
+    table.register(PadBackward, &unary(f16_dt),  cpu, pad_backward_f16_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);

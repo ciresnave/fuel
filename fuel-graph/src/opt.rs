@@ -546,6 +546,20 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Flip { dim } => (56, vec![*dim as i64], vec![], vec![], None, None),
         Op::Roll { dim, shift } => (57, vec![*dim as i64, *shift], vec![], vec![], None, None),
         Op::CumSum { dim } => (58, vec![*dim as i64], vec![], vec![], None, None),
+        Op::PadBackward { in_shape, padding, mode } => {
+            let mode_tag = match mode {
+                crate::PadMode::Constant => 0_i64,
+                crate::PadMode::Reflect => 1,
+                crate::PadMode::Replicate => 2,
+            };
+            let mut ints: Vec<i64> = Vec::with_capacity(padding.len() * 2 + 1);
+            for &(b, a) in padding {
+                ints.push(b as i64);
+                ints.push(a as i64);
+            }
+            ints.push(mode_tag);
+            (60, ints, vec![], vec![], Some(in_shape.dims().to_vec()), None)
+        }
         Op::Pad { padding, mode, value } => {
             let mode_tag = match mode {
                 crate::PadMode::Constant => 0_i64,
