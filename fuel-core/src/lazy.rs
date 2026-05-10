@@ -500,6 +500,19 @@ impl LazyTensor {
         }
     }
 
+    /// Reverse element order along `dim`. Materializing op (real
+    /// byte shuffle). Differentiable; backward is itself.
+    pub fn flip(&self, dim: usize) -> Self {
+        Self { inner: self.inner.flip(dim) }
+    }
+
+    /// Cyclic shift along `dim` by `shift` positions (positive →
+    /// higher indices, wrapping). Differentiable; backward is
+    /// `roll(dim, -shift)`.
+    pub fn roll(&self, dim: usize, shift: i64) -> Self {
+        Self { inner: self.inner.roll(dim, shift) }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

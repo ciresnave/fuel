@@ -414,6 +414,26 @@ pub enum OpParams {
         src_shape: Vec<usize>,
         dim: usize,
     },
+
+    /// Flip the order of elements along one dim. The flat-3-axis
+    /// view (outer × dim × inner) lets the kernel walk a tight loop
+    /// without re-deriving the axis split per call.
+    Flip {
+        outer_count: usize,
+        dim_size: usize,
+        inner_count: usize,
+    },
+
+    /// Cyclic shift along one dim by `shift` positions (positive
+    /// shifts move elements to higher indices, wrapping around).
+    /// Same flat-3-axis view as `Flip`. `shift` is signed: negative
+    /// shifts move elements to lower indices.
+    Roll {
+        outer_count: usize,
+        dim_size: usize,
+        inner_count: usize,
+        shift: i64,
+    },
 }
 
 // =============================================================================

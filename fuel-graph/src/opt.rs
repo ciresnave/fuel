@@ -543,6 +543,8 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Pow => (49, vec![], vec![], vec![], None, None),
         Op::Rsqrt => (54, vec![], vec![], vec![], None, None),
         Op::Rem => (55, vec![], vec![], vec![], None, None),
+        Op::Flip { dim } => (56, vec![*dim as i64], vec![], vec![], None, None),
+        Op::Roll { dim, shift } => (57, vec![*dim as i64, *shift], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),

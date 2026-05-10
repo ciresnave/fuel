@@ -465,6 +465,92 @@ binary_kernel!(rem_bf16, half::bf16, |a: half::bf16, b: half::bf16| { let af = a
 binary_kernel!(rem_f16, half::f16, |a: half::f16, b: half::f16| { let af = a.to_f32(); let bf = b.to_f32(); half::f16::from_f32(af - (af / bf).floor() * bf) }, "Elementwise `f16` remainder (PyTorch convention, via f32).");
 
 // =============================================================================
+// Flip / Roll along one dim — dtype-agnostic byte reorder
+// =============================================================================
+//
+// Both ops walk a flat (outer × dim × inner) view of the input and
+// re-permute the `dim` axis. Bytes-only — `dtype_size` carries the
+// per-element width so one kernel covers every dtype.
+
+/// Flip the order of elements along one dim.
+/// `out[outer, j, inner] = in[outer, dim_size - 1 - j, inner]`.
+pub fn flip_cpu(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer: usize,
+    dim_size: usize,
+    inner: usize,
+    dtype_size: usize,
+) -> Result<()> {
+    let row_bytes = inner * dtype_size;
+    let in_b = input.bytes();
+    let needed = outer * dim_size * row_bytes;
+    if in_b.len() != needed || out.len_bytes() != needed {
+        return Err(Error::Msg(format!(
+            "flip_cpu: byte length mismatch (in={}, out={}, expected={needed})",
+            in_b.len(), out.len_bytes(),
+        ))
+        .bt());
+    }
+    let mut out_buf = vec![0u8; needed];
+    for o in 0..outer {
+        for j in 0..dim_size {
+            let src_j = dim_size - 1 - j;
+            let in_off = (o * dim_size + src_j) * row_bytes;
+            let out_off = (o * dim_size + j) * row_bytes;
+            out_buf[out_off..out_off + row_bytes]
+                .copy_from_slice(&in_b[in_off..in_off + row_bytes]);
+        }
+    }
+    out.bytes_mut().copy_from_slice(&out_buf);
+    Ok(())
+}
+
+/// Cyclic shift along one dim by `shift` positions.
+/// `out[outer, j, inner] = in[outer, (j - shift) mod dim_size, inner]`.
+/// Positive `shift` moves elements to higher indices; negative the
+/// opposite. Always wraps.
+pub fn roll_cpu(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer: usize,
+    dim_size: usize,
+    inner: usize,
+    shift: i64,
+    dtype_size: usize,
+) -> Result<()> {
+    let row_bytes = inner * dtype_size;
+    let in_b = input.bytes();
+    let needed = outer * dim_size * row_bytes;
+    if in_b.len() != needed || out.len_bytes() != needed {
+        return Err(Error::Msg(format!(
+            "roll_cpu: byte length mismatch (in={}, out={}, expected={needed})",
+            in_b.len(), out.len_bytes(),
+        ))
+        .bt());
+    }
+    if dim_size == 0 {
+        return Ok(());
+    }
+    let d = dim_size as i64;
+    // Normalize `shift` into [0, dim_size) once.
+    let s = ((shift % d) + d) % d;  // Python-style modulo
+    let mut out_buf = vec![0u8; needed];
+    for o in 0..outer {
+        for j in 0..dim_size {
+            // out[j] = in[(j - s) mod d]
+            let src_j = (j as i64 - s).rem_euclid(d) as usize;
+            let in_off = (o * dim_size + src_j) * row_bytes;
+            let out_off = (o * dim_size + j) * row_bytes;
+            out_buf[out_off..out_off + row_bytes]
+                .copy_from_slice(&in_b[in_off..in_off + row_bytes]);
+        }
+    }
+    out.bytes_mut().copy_from_slice(&out_buf);
+    Ok(())
+}
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 

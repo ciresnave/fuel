@@ -359,6 +359,26 @@ fn eval_node(
         Op::Pow => binary!(inputs, cache, ops::pow),
         Op::Rsqrt => unary!(inputs, cache, ops::rsqrt),
         Op::Rem => binary!(inputs, cache, ops::rem),
+        Op::Flip { dim } => {
+            let src = cache.get(&inputs[0]).expect("flip missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::flip(t, *dim)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::flip(t, *dim)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::flip(t, *dim)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::flip(t, *dim)),
+                AnyTensor::U32(t) => AnyTensor::U32(ops::flip(t, *dim)),
+            }
+        }
+        Op::Roll { dim, shift } => {
+            let src = cache.get(&inputs[0]).expect("roll missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::roll(t, *dim, *shift)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::roll(t, *dim, *shift)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::roll(t, *dim, *shift)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::roll(t, *dim, *shift)),
+                AnyTensor::U32(t) => AnyTensor::U32(ops::roll(t, *dim, *shift)),
+            }
+        }
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1590,6 +1610,99 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn flip_reverses_along_dim() {
+        // Shape [2, 3]; flip dim 1 reverses each row independently.
+        // Input:  [[1,2,3], [4,5,6]]
+        // Output: [[3,2,1], [6,5,4]]
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let f = a.flip(1);
+        let out = realize_f32(&f);
+        assert_eq!(out.shape().dims(), &[2, 3]);
+        assert_eq!(out.as_slice(), &[3.0, 2.0, 1.0, 6.0, 5.0, 4.0]);
+        assert_equivalent_f32(&f);
+        // Flip on dim 0 reverses the row order.
+        let f0 = a.flip(0);
+        let out0 = realize_f32(&f0);
+        assert_eq!(out0.as_slice(), &[4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn flip_backward_is_flip_again() {
+        // y = flip(x, 1). dy/dx is another flip on the same dim
+        // (flip is involutive). Gradient values should be the
+        // ones-tensor flipped — but ones flipped is still ones.
+        // Verify via shape preservation.
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let y = a.flip(0);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        assert_eq!(out.as_slice(), &[1.0, 1.0, 1.0],
+            "ones-tensor flipped is still ones");
+        // Structural check: backward should be Op::Flip on dim 0.
+        let g_node = g_a.graph().read().unwrap().node(g_a.id()).clone();
+        assert!(matches!(g_node.op, Op::Flip { dim: 0 }),
+            "Flip backward must be another Flip on the same dim");
+    }
+
+    #[test]
+    fn roll_shifts_with_wrap() {
+        // Shape [5]; roll by +1 = [last_elem, first..penultimate]
+        //  Input: [1, 2, 3, 4, 5]
+        //  Roll +1: [5, 1, 2, 3, 4]
+        //  Roll -1: [2, 3, 4, 5, 1]
+        //  Roll +2: [4, 5, 1, 2, 3]
+        //  Roll +5 (full): identity
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let r1 = a.roll(0, 1);
+        let r1_out = realize_f32(&r1);
+        assert_eq!(r1_out.as_slice(), &[5.0, 1.0, 2.0, 3.0, 4.0]);
+
+        let r_neg = a.roll(0, -1);
+        let r_neg_out = realize_f32(&r_neg);
+        assert_eq!(r_neg_out.as_slice(), &[2.0, 3.0, 4.0, 5.0, 1.0]);
+
+        let r2 = a.roll(0, 2);
+        let r2_out = realize_f32(&r2);
+        assert_eq!(r2_out.as_slice(), &[4.0, 5.0, 1.0, 2.0, 3.0]);
+
+        let r5 = a.roll(0, 5);
+        let r5_out = realize_f32(&r5);
+        assert_eq!(r5_out.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0],
+            "full-period roll is identity");
+        assert_equivalent_f32(&r1);
+    }
+
+    #[test]
+    fn roll_backward_is_negated_shift() {
+        // y = roll(x, 0, 2). Backward: roll(grad, 0, -2).
+        // Verify the backward node is Roll with shift=-2.
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let y = a.roll(0, 2);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let g_node = g_a.graph().read().unwrap().node(g_a.id()).clone();
+        assert!(matches!(g_node.op, Op::Roll { dim: 0, shift: -2 }),
+            "Roll backward must negate the shift");
     }
 
     #[test]
