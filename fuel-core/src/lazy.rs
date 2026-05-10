@@ -440,6 +440,12 @@ impl LazyTensor {
         Self { inner: self.inner.floor() }
     }
 
+    /// Element-wise ceiling (`⌈x⌉`). Same dtype as input.
+    /// Backward is silently zero.
+    pub fn ceil(&self) -> Self {
+        Self { inner: self.inner.ceil() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }
