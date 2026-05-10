@@ -2333,6 +2333,44 @@ impl Tensor {
         }
     }
 
+    /// Result-returning sibling of [`Self::permute`]. Surfaces bad
+    /// axes (wrong length, out-of-bounds entry, or duplicate) as a
+    /// typed error rather than panicking.
+    pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let in_shape = self.shape();
+        let in_dims = in_shape.dims();
+        let rank = in_dims.len();
+        if axes.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "permute: axes length {} must equal tensor rank {}",
+                axes.len(), rank,
+            )).bt());
+        }
+        let mut seen = vec![false; rank];
+        for &ax in axes {
+            if ax >= rank {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "permute: axis {ax} out of bounds for rank {rank}",
+                )).bt());
+            }
+            if seen[ax] {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "permute: duplicate axis {ax} in axes",
+                )).bt());
+            }
+            seen[ax] = true;
+        }
+        let out_dims: Vec<usize> = axes.iter().map(|&ax| in_dims[ax]).collect();
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Permute(axes.to_vec()),
+            inputs: vec![self.id],
+            shape: Shape::from_dims(&out_dims),
+            dtype,
+        });
+        Ok(Self { graph: self.graph.clone(), id })
+    }
+
     /// Append a `Transpose` node that swaps the last two dimensions of a
     /// tensor of rank ≥ 2. Leading dims are unchanged. For a rank-2
     /// tensor this is the ordinary matrix transpose; for higher ranks,
@@ -2359,6 +2397,30 @@ impl Tensor {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Result-returning sibling of [`Self::transpose`]. Surfaces
+    /// rank < 2 as a typed error rather than panicking.
+    pub fn try_transpose(&self) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let in_dims = self.shape();
+        let d = in_dims.dims();
+        if d.len() < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "transpose: input must be rank ≥ 2, got shape {d:?}",
+            )).bt());
+        }
+        let rank = d.len();
+        let mut out: Vec<usize> = d.to_vec();
+        out.swap(rank - 2, rank - 1);
+        let out_shape = Shape::from_dims(&out);
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Transpose,
+            inputs: vec![self.id],
+            shape: out_shape,
+            dtype,
+        });
+        Ok(Self { graph: self.graph.clone(), id })
     }
 
     // --- additional element-wise binary ops ---
@@ -2760,6 +2822,22 @@ impl Tensor {
         }
     }
 
+    /// Result-returning sibling of [`Self::broadcast_to`]. Surfaces
+    /// shape incompatibility as a typed error rather than panicking.
+    pub fn try_broadcast_to(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let target = target.into();
+        let src_dims = self.shape();
+        try_check_broadcast_compatible(src_dims.dims(), target.dims())?;
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::BroadcastTo(target.clone()),
+            inputs: vec![self.id],
+            shape: target,
+            dtype,
+        });
+        Ok(Self { graph: self.graph.clone(), id })
+    }
+
     /// Append an `Unsqueeze` node that inserts a size-1 dimension at
     /// position `dim`. `dim` must be in `0..=rank` (where `dim == rank`
     /// appends to the end). Pure metadata — the output shares bytes
@@ -2788,6 +2866,29 @@ impl Tensor {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Result-returning sibling of [`Self::unsqueeze`]. Surfaces
+    /// `dim > rank` as a typed error rather than panicking.
+    pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let in_shape = self.shape();
+        let in_dims = in_shape.dims();
+        let rank = in_dims.len();
+        if dim > rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "unsqueeze: dim {dim} out of bounds for rank {rank} (must be <= rank)",
+            )).bt());
+        }
+        let mut out_dims: Vec<usize> = in_dims.to_vec();
+        out_dims.insert(dim, 1);
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Unsqueeze { dim },
+            inputs: vec![self.id],
+            shape:  Shape::from_dims(&out_dims),
+            dtype,
+        });
+        Ok(Self { graph: self.graph.clone(), id })
     }
 
     /// Append a `Squeeze` node that drops the size-1 dimension at
@@ -2852,6 +2953,27 @@ impl Tensor {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Result-returning sibling of [`Self::reshape`]. Surfaces
+    /// element-count mismatch as a typed error rather than panicking.
+    pub fn try_reshape(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let target = target.into();
+        let from = self.shape().elem_count();
+        let to = target.elem_count();
+        if from != to {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "reshape: element count mismatch: from {from} to {to}",
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Reshape(target.clone()),
+            inputs: vec![self.id],
+            shape: target,
+            dtype,
+        });
+        Ok(Self { graph: self.graph.clone(), id })
     }
 
     /// Append a `ReduceSumTo` node that sum-reduces `self` to a smaller
@@ -5950,6 +6072,29 @@ fn check_broadcast_compatible(src: &[usize], dst: &[usize]) {
     }
 }
 
+/// Result-returning sibling of [`check_broadcast_compatible`].
+fn try_check_broadcast_compatible(
+    src: &[usize], dst: &[usize],
+) -> std::result::Result<(), fuel_core_types::Error> {
+    if src.len() > dst.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "broadcast_to: source rank {} exceeds target rank {}",
+            src.len(), dst.len(),
+        )).bt());
+    }
+    let pad = dst.len() - src.len();
+    for (i, &s) in src.iter().enumerate() {
+        let d = dst[pad + i];
+        if s != d && s != 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "broadcast_to: dim {i} of source ({s}) is incompatible with dim {} of target ({d})",
+                pad + i,
+            )).bt());
+        }
+    }
+    Ok(())
+}
+
 /// Compute the NumPy broadcast shape of two input shapes. Right-align,
 /// pad the shorter with leading 1s, and take the element-wise max at
 /// each position. Panics if the shapes are incompatible (neither can
@@ -7253,6 +7398,69 @@ mod tests {
         let m_node = m.graph().read().unwrap().node(m.id()).clone();
         assert!(matches!(m_node.op, Op::Equal));
         assert_eq!(m_node.inputs, vec![a.id(), b.id()]);
+    }
+
+    #[test]
+    fn try_unsqueeze_returns_err_on_dim_above_rank() {
+        // try_unsqueeze surfaces bad dim as Err; unsqueeze panics
+        // on the same input. Both share the validation message.
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let err = a.try_unsqueeze(5).expect_err("dim above rank must error");
+        assert!(format!("{err:?}").contains("out of bounds"),
+            "error must mention bounds, got: {err:?}");
+        // Happy path still works.
+        let ok = a.try_unsqueeze(0).expect("dim=0 valid for any rank");
+        assert_eq!(ok.shape().dims(), &[1, 3]);
+    }
+
+    #[test]
+    fn try_reshape_returns_err_on_count_mismatch() {
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let err = a.try_reshape(Shape::from_dims(&[3])).expect_err("count mismatch must error");
+        assert!(format!("{err:?}").contains("element count mismatch"),
+            "error must mention count mismatch, got: {err:?}");
+        let ok = a.try_reshape(Shape::from_dims(&[2, 2])).expect("matching count is ok");
+        assert_eq!(ok.shape().dims(), &[2, 2]);
+    }
+
+    #[test]
+    fn try_broadcast_to_returns_err_on_incompatible_shape() {
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let err = a.try_broadcast_to(Shape::from_dims(&[2, 4]))
+            .expect_err("source dim 3 cannot broadcast to dim 4");
+        assert!(format!("{err:?}").contains("incompatible"),
+            "error must mention incompatibility, got: {err:?}");
+        let ok = a.try_broadcast_to(Shape::from_dims(&[2, 3])).expect("dim 3 broadcasts to dim 3");
+        assert_eq!(ok.shape().dims(), &[2, 3]);
+    }
+
+    #[test]
+    fn try_transpose_returns_err_on_rank_below_2() {
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let err = a.try_transpose().expect_err("rank-1 input cannot transpose");
+        assert!(format!("{err:?}").contains("rank ≥ 2"),
+            "error must mention rank requirement, got: {err:?}");
+        let m = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let mt = m.try_transpose().expect("rank-2 transposes ok");
+        assert_eq!(mt.shape().dims(), &[3, 2]);
+    }
+
+    #[test]
+    fn try_permute_returns_err_on_bad_axes() {
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        // Wrong axes length:
+        let err = a.try_permute(&[0]).expect_err("axes length mismatch");
+        assert!(format!("{err:?}").contains("must equal tensor rank"),
+            "error must mention length, got: {err:?}");
+        // Out-of-bounds axis:
+        let err = a.try_permute(&[0, 5]).expect_err("axis 5 out of rank 2");
+        assert!(format!("{err:?}").contains("out of bounds"));
+        // Duplicate axis:
+        let err = a.try_permute(&[0, 0]).expect_err("duplicate axis");
+        assert!(format!("{err:?}").contains("duplicate"));
+        // Happy path:
+        let ok = a.try_permute(&[1, 0]).expect("valid permutation");
+        assert_eq!(ok.shape().dims(), &[3, 2]);
     }
 
     #[test]
