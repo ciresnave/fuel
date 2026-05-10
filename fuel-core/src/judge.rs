@@ -500,9 +500,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         }
         // -------- reduce-to-broadcast-target --------
         //
-        // Reduce `[rows, cols]` to `[1, cols]`. Op::ReduceSumTo and
-        // Op::ReduceMaxTo aren't on the LazyTensor surface yet, so
-        // we drop down to fuel_graph::Tensor for the call.
+        // Reduce `[rows, cols]` to `[1, cols]`.
         (op, OpSize::ReduceTo { rows, cols }) if is_reduce_to(op) => {
             let n = rows * cols;
             let data: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.7e-3).sin()).collect();
@@ -512,12 +510,11 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
                 &crate::Device::cpu(),
             );
             let target = Shape::from_dims(&[1, cols]);
-            let inner = match op {
-                OpKind::ReduceSumTo => a.graph_tensor().reduce_sum_to(target),
-                OpKind::ReduceMaxTo => a.graph_tensor().reduce_max_to(target),
+            match op {
+                OpKind::ReduceSumTo => a.reduce_sum_to(target),
+                OpKind::ReduceMaxTo => a.reduce_max_to(target),
                 _ => unreachable!(),
-            };
-            LazyTensor::from_graph_tensor(inner)
+            }
         }
         // -------- scalar / clamp / powi (one-input non-unary) --------
         //
@@ -533,7 +530,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             match op {
                 OpKind::Affine           => a.mul_scalar(2.0),
                 OpKind::ClampElementwise => a.clamp(-0.5, 0.5),
-                OpKind::PowIElementwise  => LazyTensor::from_graph_tensor(a.graph_tensor().powi(3)),
+                OpKind::PowIElementwise  => a.powi(3),
                 _ => unreachable!(),
             }
         }
@@ -674,12 +671,8 @@ fn unary_input(n: usize) -> Vec<f32> {
     (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect()
 }
 
-/// Dispatch one elementwise unary op against `a`. Three of the ops
-/// (sin, cos, step) aren't yet exposed on `LazyTensor`'s surface and
-/// drop down to the underlying `fuel_graph::Tensor` to avoid expanding
-/// LazyTensor's API just for the Judge.
+/// Dispatch one elementwise unary op against `a`.
 fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTensor {
-    use crate::lazy::LazyTensor;
     match op {
         OpKind::NegElementwise     => a.neg(),
         OpKind::SqrElementwise     => a.sqr(),
@@ -691,9 +684,9 @@ fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTens
         OpKind::SiluElementwise    => a.silu(),
         OpKind::GeluElementwise    => a.gelu(),
         OpKind::ReluElementwise    => a.relu(),
-        OpKind::SinElementwise  => LazyTensor::from_graph_tensor(a.graph_tensor().sin()),
-        OpKind::CosElementwise  => LazyTensor::from_graph_tensor(a.graph_tensor().cos()),
-        OpKind::StepElementwise => LazyTensor::from_graph_tensor(a.graph_tensor().step()),
+        OpKind::SinElementwise     => a.sin(),
+        OpKind::CosElementwise     => a.cos(),
+        OpKind::StepElementwise    => a.step(),
         _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
 }

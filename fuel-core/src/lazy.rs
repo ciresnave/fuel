@@ -341,6 +341,27 @@ impl LazyTensor {
         Self { inner: self.inner.tanh() }
     }
 
+    /// Element-wise sine.
+    pub fn sin(&self) -> Self {
+        Self { inner: self.inner.sin() }
+    }
+
+    /// Element-wise cosine.
+    pub fn cos(&self) -> Self {
+        Self { inner: self.inner.cos() }
+    }
+
+    /// Heaviside step (`1` where `x > 0`, else `0`) — the derivative
+    /// of [`Self::relu`].
+    pub fn step(&self) -> Self {
+        Self { inner: self.inner.step() }
+    }
+
+    /// Element-wise integer power (`x.powi(n)`).
+    pub fn powi(&self, n: i32) -> Self {
+        Self { inner: self.inner.powi(n) }
+    }
+
     // ---- linear algebra & shape ----
 
     /// N-D batched matrix multiply with automatic rank-2 broadcasting.
@@ -480,6 +501,19 @@ impl LazyTensor {
         Self {
             inner: self.inner.mean_dim(dim),
         }
+    }
+
+    /// Sum-reduce to a smaller broadcast-compatible shape. Inverse of
+    /// [`Self::broadcast_to`]; reduces over any dim where the source
+    /// was broadcast against the target.
+    pub fn reduce_sum_to(&self, target: impl Into<Shape>) -> Self {
+        Self { inner: self.inner.reduce_sum_to(target) }
+    }
+
+    /// Max-reduce to a smaller broadcast-compatible shape — the
+    /// max-symmetric counterpart of [`Self::reduce_sum_to`].
+    pub fn reduce_max_to(&self, target: impl Into<Shape>) -> Self {
+        Self { inner: self.inner.reduce_max_to(target) }
     }
 
     // ---- compositions ----
