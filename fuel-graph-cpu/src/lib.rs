@@ -1446,6 +1446,67 @@ mod tests {
     }
 
     #[test]
+    fn recip_forward_returns_inverse() {
+        // recip(2.0) == 0.5, recip(4.0) == 0.25 — IEEE-correct 1/x.
+        let a = Tensor::from_f32(vec![2.0_f32, 4.0, 8.0], Shape::from_dims(&[3]), cpu_dev());
+        let r = a.recip();
+        let out = realize_f32(&r);
+        let s = out.as_slice();
+        assert!((s[0] - 0.5).abs()  < 1e-7, "recip(2.0)  = {}", s[0]);
+        assert!((s[1] - 0.25).abs() < 1e-7, "recip(4.0)  = {}", s[1]);
+        assert!((s[2] - 0.125).abs() < 1e-7, "recip(8.0) = {}", s[2]);
+        // Cross-backend bit-for-bit (cpu_fast and reference both run 1.0/x).
+        assert_equivalent_f32(&r);
+    }
+
+    #[test]
+    fn abs_forward_returns_magnitude() {
+        // abs(-3.0) == 3.0, abs(0.0) == 0.0, abs(3.0) == 3.0.
+        let a = Tensor::from_f32(
+            vec![-3.0_f32, 0.0, 3.0, -1.5],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let b = a.abs();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        assert_eq!(s, &[3.0, 0.0, 3.0, 1.5]);
+        assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn recip_backward_matches_minus_one_over_x_squared() {
+        // y = 1/x. dy/dx = -1/x². At x = 2.0, gradient = -0.25.
+        // At x = 4.0, gradient = -1/16 = -0.0625.
+        let a = Tensor::from_f32(vec![2.0_f32, 4.0], Shape::from_dims(&[2]), cpu_dev());
+        let y = a.recip();
+        let grads = y.backward();
+        let g_a = grads.get(&a).unwrap();
+        let out = realize_f32(&g_a);
+        let s = out.as_slice();
+        assert!((s[0] - (-0.25)).abs()   < 1e-6, "grad at x=2 = {}", s[0]);
+        assert!((s[1] - (-0.0625)).abs() < 1e-6, "grad at x=4 = {}", s[1]);
+    }
+
+    #[test]
+    fn abs_backward_matches_sign() {
+        // y = |x|. dy/dx = sign(x), with sign(0) = 0 by convention.
+        // x = -2 → -1, x = 2 → +1, x = 0 → 0.
+        let a = Tensor::from_f32(
+            vec![-2.0_f32, 2.0, 0.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let y = a.abs();
+        let grads = y.backward();
+        let g_a = grads.get(&a).unwrap();
+        let out = realize_f32(&g_a);
+        let s = out.as_slice();
+        assert_eq!(s, &[-1.0, 1.0, 0.0],
+            "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
     fn deep_matmul_chain_doesnt_explode() {
         // Chain 20 small matmuls; verifies that the executor handles
         // deep dependency graphs without issues and produces the same
