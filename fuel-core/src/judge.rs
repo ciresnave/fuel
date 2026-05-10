@@ -66,6 +66,20 @@ pub const PROFILE_REPORT_FILENAME: &str = "judge.json";
 const PROFILED_OPS: &[OpKind] = &[
     OpKind::MatMul,
     OpKind::AddElementwise,
+    // --- elementwise unary fanout ---
+    OpKind::NegElementwise,
+    OpKind::SqrElementwise,
+    OpKind::SqrtElementwise,
+    OpKind::ExpElementwise,
+    OpKind::LogElementwise,
+    OpKind::SinElementwise,
+    OpKind::CosElementwise,
+    OpKind::TanhElementwise,
+    OpKind::SigmoidElementwise,
+    OpKind::SiluElementwise,
+    OpKind::GeluElementwise,
+    OpKind::ReluElementwise,
+    OpKind::StepElementwise,
 ];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
@@ -121,7 +135,24 @@ impl Judge {
                 OpSize::MatMul { m: 256, n: 256, k: 256 },
                 OpSize::MatMul { m: 1024, n: 1024, k: 1024 },
             ],
-            OpKind::AddElementwise => vec![
+            // Element-wise binary + unary share one ladder. Three sizes
+            // span the regime where launch overhead dominates (1 KiB),
+            // L2 still fits the working set (256 KiB), and DRAM
+            // bandwidth dominates (4 MiB).
+            OpKind::AddElementwise
+            | OpKind::NegElementwise
+            | OpKind::SqrElementwise
+            | OpKind::SqrtElementwise
+            | OpKind::ExpElementwise
+            | OpKind::LogElementwise
+            | OpKind::SinElementwise
+            | OpKind::CosElementwise
+            | OpKind::TanhElementwise
+            | OpKind::SigmoidElementwise
+            | OpKind::SiluElementwise
+            | OpKind::GeluElementwise
+            | OpKind::ReluElementwise
+            | OpKind::StepElementwise => vec![
                 OpSize::Elementwise(1 << 10),
                 OpSize::Elementwise(1 << 16),
                 OpSize::Elementwise(1 << 20),
@@ -368,7 +399,83 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             let b = a.const_f32_like(b_data, Shape::from_dims(&[n]));
             a.add(&b)
         }
+        // -------- elementwise unary fanout --------
+        //
+        // Domain notes:
+        // - sqrt/log require strictly positive inputs; inputs are in
+        //   `[0.5, 2.5]` after the +1.5 offset.
+        // - exp/sigmoid saturate quickly; inputs are bounded
+        //   `[-1, 1]` (sin output) so exp stays in `[0.36, 2.72]` and
+        //   sigmoid stays away from saturation (more measurable
+        //   precision differences across backends).
+        // - silu/gelu/relu/tanh/neg/sqr/step/sin/cos all accept any f32.
+        (op, OpSize::Elementwise(n)) if is_unary_elementwise(op) => {
+            let raw = unary_input(n);
+            let needs_positive = matches!(
+                op,
+                OpKind::SqrtElementwise | OpKind::LogElementwise,
+            );
+            let data: Vec<f32> = if needs_positive {
+                raw.into_iter().map(|x| x + 1.5).collect()
+            } else {
+                raw
+            };
+            let a = LazyTensor::from_f32(data, Shape::from_dims(&[n]), &crate::Device::cpu());
+            apply_unary(op, &a)
+        }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
+    }
+}
+
+/// Whether `op` is one of the elementwise unary ops the Judge profiles
+/// using the `Elementwise(n)` size ladder.
+fn is_unary_elementwise(op: OpKind) -> bool {
+    matches!(
+        op,
+        OpKind::NegElementwise
+        | OpKind::SqrElementwise
+        | OpKind::SqrtElementwise
+        | OpKind::ExpElementwise
+        | OpKind::LogElementwise
+        | OpKind::SinElementwise
+        | OpKind::CosElementwise
+        | OpKind::TanhElementwise
+        | OpKind::SigmoidElementwise
+        | OpKind::SiluElementwise
+        | OpKind::GeluElementwise
+        | OpKind::ReluElementwise
+        | OpKind::StepElementwise,
+    )
+}
+
+/// Deterministic unary-op input. `sin(i * 2.1e-3)` produces values in
+/// `[-1, 1]`, varied enough that argmax/argmin/relu/step all see a
+/// realistic mix of positive and negative values.
+fn unary_input(n: usize) -> Vec<f32> {
+    (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect()
+}
+
+/// Dispatch one elementwise unary op against `a`. Three of the ops
+/// (sin, cos, step) aren't yet exposed on `LazyTensor`'s surface and
+/// drop down to the underlying `fuel_graph::Tensor` to avoid expanding
+/// LazyTensor's API just for the Judge.
+fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTensor {
+    use crate::lazy::LazyTensor;
+    match op {
+        OpKind::NegElementwise     => a.neg(),
+        OpKind::SqrElementwise     => a.sqr(),
+        OpKind::SqrtElementwise    => a.sqrt(),
+        OpKind::ExpElementwise     => a.exp(),
+        OpKind::LogElementwise     => a.log(),
+        OpKind::TanhElementwise    => a.tanh(),
+        OpKind::SigmoidElementwise => a.sigmoid(),
+        OpKind::SiluElementwise    => a.silu(),
+        OpKind::GeluElementwise    => a.gelu(),
+        OpKind::ReluElementwise    => a.relu(),
+        OpKind::SinElementwise  => LazyTensor::from_graph_tensor(a.graph_tensor().sin()),
+        OpKind::CosElementwise  => LazyTensor::from_graph_tensor(a.graph_tensor().cos()),
+        OpKind::StepElementwise => LazyTensor::from_graph_tensor(a.graph_tensor().step()),
+        _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
 }
 
@@ -450,6 +557,47 @@ mod tests {
         for e in report.entries.iter().filter(|e| e.backend == BackendId::Cpu) {
             assert!(e.max_rel_error < 5e-3,
                 "cpu fast path diverges too far from reference: {e:?}");
+            assert!(e.latency_ns > 0);
+        }
+    }
+
+    #[test]
+    fn judge_profiles_all_unary_elementwise_ops() {
+        // Exercise every elementwise-unary OpKind on cpu + reference at
+        // a tiny size. Confirms the size_plan / build_input_graph /
+        // apply_unary wiring is complete and that no unary kernel
+        // diverges wildly from reference on the cpu backend.
+        let probe = ProbeReport::probe_all();
+        let unary = [
+            OpKind::NegElementwise, OpKind::SqrElementwise, OpKind::SqrtElementwise,
+            OpKind::ExpElementwise, OpKind::LogElementwise, OpKind::SinElementwise,
+            OpKind::CosElementwise, OpKind::TanhElementwise, OpKind::SigmoidElementwise,
+            OpKind::SiluElementwise, OpKind::GeluElementwise, OpKind::ReluElementwise,
+            OpKind::StepElementwise,
+        ];
+        let plan: Vec<_> = unary.iter()
+            .map(|&op| (op, OpSize::Elementwise(1 << 8)))
+            .collect();
+        let judge = Judge {
+            iterations: 3, warmup: 1,
+            size_plan_override: Some(plan),
+        };
+        let report = judge.run(&probe);
+        for &op in &unary {
+            let cpu_entries: Vec<_> = report.entries.iter()
+                .filter(|e| e.op == op && e.backend == BackendId::Cpu)
+                .collect();
+            assert_eq!(cpu_entries.len(), 1,
+                "expected one cpu entry for {op}, got {}", cpu_entries.len());
+            let e = cpu_entries[0];
+            // Elementwise unary ops are bit-stable on cpu vs reference
+            // (no accumulation order to worry about). Allow a
+            // generous bound so transcendental approximations
+            // (tanh/sigmoid/silu/gelu) on different math libs still
+            // pass — but a runaway divergence (>1e-3) flags a bug.
+            assert!(e.max_rel_error < 1e-3,
+                "cpu vs reference disagreement on {op}: rel_err={}",
+                e.max_rel_error);
             assert!(e.latency_ns > 0);
         }
     }
