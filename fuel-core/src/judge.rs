@@ -681,8 +681,12 @@ fn apply_binary(
         OpKind::DivElementwise     => a.div(b),
         OpKind::MaximumElementwise => a.maximum(b),
         OpKind::MinimumElementwise => a.minimum(b),
-        OpKind::PowElementwise     => a.pow(b),
-        OpKind::RemElementwise     => a.rem(b),
+        // Pow/Rem return Result; expect() in Judge's measurement
+        // path is fine — inputs are constructed locally here, so a
+        // shape/dtype mismatch is a programming bug in the test
+        // harness, not a runtime user input.
+        OpKind::PowElementwise     => a.pow(b).expect("judge: pow shape/dtype invariant"),
+        OpKind::RemElementwise     => a.rem(b).expect("judge: rem shape/dtype invariant"),
         _ => unreachable!("apply_binary called on non-binary OpKind {op:?}"),
     }
 }

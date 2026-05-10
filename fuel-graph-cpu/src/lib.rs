@@ -1644,7 +1644,7 @@ mod tests {
             Shape::from_dims(&[3]),
             cpu_dev(),
         );
-        let p = a.pad(0, 2, 1, fuel_graph::PadMode::Constant, 0.0);
+        let p = a.pad(0, 2, 1, fuel_graph::PadMode::Constant, 0.0).unwrap();
         let out = realize_f32(&p);
         assert_eq!(out.shape().dims(), &[6]);
         assert_eq!(out.as_slice(), &[0.0, 0.0, 1.0, 2.0, 3.0, 0.0]);
@@ -1661,7 +1661,7 @@ mod tests {
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
         );
-        let p2 = b.pad(1, 1, 1, fuel_graph::PadMode::Constant, -1.0);
+        let p2 = b.pad(1, 1, 1, fuel_graph::PadMode::Constant, -1.0).unwrap();
         let out2 = realize_f32(&p2);
         assert_eq!(out2.shape().dims(), &[2, 4]);
         assert_eq!(out2.as_slice(), &[-1.0, 1.0, 2.0, -1.0, -1.0, 3.0, 4.0, -1.0]);
@@ -1677,7 +1677,7 @@ mod tests {
             Shape::from_dims(&[3]),
             cpu_dev(),
         );
-        let y = a.pad(0, 2, 1, fuel_graph::PadMode::Constant, 0.0);
+        let y = a.pad(0, 2, 1, fuel_graph::PadMode::Constant, 0.0).unwrap();
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         let out = realize_f32(&g_a);
@@ -1696,13 +1696,13 @@ mod tests {
             Shape::from_dims(&[2, 4]),
             cpu_dev(),
         );
-        let c = a.cumsum(1);
+        let c = a.cumsum(1).unwrap();
         let out = realize_f32(&c);
         assert_eq!(out.shape().dims(), &[2, 4]);
         assert_eq!(out.as_slice(), &[1.0, 3.0, 6.0, 10.0, 5.0, 11.0, 18.0, 26.0]);
         // CumSum along dim 0 = per-column running sum.
         // Output: [[1,2,3,4], [6,8,10,12]]
-        let c0 = a.cumsum(0);
+        let c0 = a.cumsum(0).unwrap();
         let out0 = realize_f32(&c0);
         assert_eq!(out0.as_slice(), &[1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0]);
         assert_equivalent_f32(&c);
@@ -1720,7 +1720,7 @@ mod tests {
             Shape::from_dims(&[4]),
             cpu_dev(),
         );
-        let y = a.cumsum(0);
+        let y = a.cumsum(0).unwrap();
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         let out = realize_f32(&g_a);
@@ -1738,13 +1738,13 @@ mod tests {
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
         );
-        let f = a.flip(1);
+        let f = a.flip(1).unwrap();
         let out = realize_f32(&f);
         assert_eq!(out.shape().dims(), &[2, 3]);
         assert_eq!(out.as_slice(), &[3.0, 2.0, 1.0, 6.0, 5.0, 4.0]);
         assert_equivalent_f32(&f);
         // Flip on dim 0 reverses the row order.
-        let f0 = a.flip(0);
+        let f0 = a.flip(0).unwrap();
         let out0 = realize_f32(&f0);
         assert_eq!(out0.as_slice(), &[4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
     }
@@ -1760,7 +1760,7 @@ mod tests {
             Shape::from_dims(&[3]),
             cpu_dev(),
         );
-        let y = a.flip(0);
+        let y = a.flip(0).unwrap();
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         let out = realize_f32(&g_a);
@@ -1785,19 +1785,19 @@ mod tests {
             Shape::from_dims(&[5]),
             cpu_dev(),
         );
-        let r1 = a.roll(0, 1);
+        let r1 = a.roll(0, 1).unwrap();
         let r1_out = realize_f32(&r1);
         assert_eq!(r1_out.as_slice(), &[5.0, 1.0, 2.0, 3.0, 4.0]);
 
-        let r_neg = a.roll(0, -1);
+        let r_neg = a.roll(0, -1).unwrap();
         let r_neg_out = realize_f32(&r_neg);
         assert_eq!(r_neg_out.as_slice(), &[2.0, 3.0, 4.0, 5.0, 1.0]);
 
-        let r2 = a.roll(0, 2);
+        let r2 = a.roll(0, 2).unwrap();
         let r2_out = realize_f32(&r2);
         assert_eq!(r2_out.as_slice(), &[4.0, 5.0, 1.0, 2.0, 3.0]);
 
-        let r5 = a.roll(0, 5);
+        let r5 = a.roll(0, 5).unwrap();
         let r5_out = realize_f32(&r5);
         assert_eq!(r5_out.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0],
             "full-period roll is identity");
@@ -1813,7 +1813,7 @@ mod tests {
             Shape::from_dims(&[4]),
             cpu_dev(),
         );
-        let y = a.roll(0, 2);
+        let y = a.roll(0, 2).unwrap();
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         let g_node = g_a.graph().read().unwrap().node(g_a.id()).clone();
@@ -1839,7 +1839,7 @@ mod tests {
             vec![3.0_f32,  3.0, -3.0, -3.0, 2.5, 2.0],
             Shape::from_dims(&[6]),
         );
-        let r = a.rem(&b);
+        let r = a.rem(&b).unwrap();
         let out = realize_f32(&r);
         let s = out.as_slice();
         let expected = [2.0_f32, 1.0, -1.0, -2.0, 0.0, 1.3];
@@ -1858,7 +1858,7 @@ mod tests {
         // At (a=7, b=4):  grad_a = 1,    grad_b = -floor(7/4) = -1
         let a = Tensor::from_f32(vec![5.0_f32, -5.0, 7.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![3.0_f32, 3.0, 4.0], Shape::from_dims(&[3]));
-        let y = a.rem(&b);
+        let y = a.rem(&b).unwrap();
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         let g_b = grads.get(&b).expect("gradient for b");
@@ -1929,7 +1929,7 @@ mod tests {
             vec![3.0_f32, 0.5, 0.5, 2.0, 7.5],
             Shape::from_dims(&[5]),
         );
-        let y = a.pow(&b);
+        let y = a.pow(&b).unwrap();
         let out = realize_f32(&y);
         let s = out.as_slice();
         let expected = [8.0_f32, 2.0, 3.0, 6.25, 1.0];
@@ -1950,7 +1950,7 @@ mod tests {
         // At a=4, b=2:  dy/da = 2 * 4^1 = 8;   dy/db = 16 * ln(4) ≈ 22.181
         let a = Tensor::from_f32(vec![2.0_f32, 4.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0_f32, 2.0], Shape::from_dims(&[2]));
-        let y = a.pow(&b);
+        let y = a.pow(&b).unwrap();
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         let g_b = grads.get(&b).expect("gradient for b");
@@ -1981,7 +1981,7 @@ mod tests {
             Shape::from_dims(&[2, 1, 3]),
             cpu_dev(),
         );
-        let squeezed = a.squeeze(1);
+        let squeezed = a.squeeze(1).unwrap();
         assert_eq!(squeezed.shape().dims(), &[2, 3]);
         let restored = squeezed.unsqueeze(1);
         let out = realize_f32(&restored);
