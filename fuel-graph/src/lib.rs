@@ -291,6 +291,11 @@ pub enum Op {
     /// uses). Same dtype as input. Backward drops gradient (zero
     /// almost everywhere).
     Sign,
+    /// Element-wise Gauss error function (`erf(x)`). Same dtype as
+    /// input. Differentiable: `d/dx erf(x) = (2/√π) * exp(-x²)`.
+    /// Backward emitted via existing primitives (Sqr → Neg → Exp →
+    /// MulScalar(2/√π) → Mul(upstream, .)).
+    Erf,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -834,6 +839,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Ceil                 => "Ceil",
         Op::Round                => "Round",
         Op::Sign                 => "Sign",
+        Op::Erf                  => "Erf",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2363,6 +2369,12 @@ impl Tensor {
     /// drops gradient.
     pub fn sign(&self) -> Tensor {
         self.unary_op(Op::Sign)
+    }
+
+    /// Append an `Erf` node (Gauss error function). Output dtype =
+    /// input dtype. Differentiable.
+    pub fn erf(&self) -> Tensor {
+        self.unary_op(Op::Erf)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -3978,6 +3990,54 @@ impl Tensor {
                     // that has no finite representation). Treat the
                     // derivative as 0 and stop propagation — mirrors
                     // `Op::Step`'s backward.
+                }
+                Op::Erf => {
+                    // y = erf(x). dy/dx = (2/√π) * exp(-x²).
+                    // grad_x = upstream * (2/√π) * exp(-x²).
+                    // Decomposes to: Sqr(x) → Neg → Exp → MulScalar(2/√π)
+                    //                → Mul(upstream, .).
+                    // 2/√π = 1.1283791670955125738961589031...
+                    const TWO_OVER_SQRT_PI: f64 =
+                        1.128_379_167_095_512_6_f64;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let x_sq = push_node(
+                        &graph_handle,
+                        Op::Sqr,
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let neg_x_sq = push_node(
+                        &graph_handle,
+                        Op::Neg,
+                        vec![x_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let exp_neg_x_sq = push_node(
+                        &graph_handle,
+                        Op::Exp,
+                        vec![neg_x_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let scaled = push_node(
+                        &graph_handle,
+                        Op::MulScalar(TWO_OVER_SQRT_PI),
+                        vec![exp_neg_x_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, scaled],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`

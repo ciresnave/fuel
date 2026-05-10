@@ -466,6 +466,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Ceil          => Some(OpKind::CeilElementwise),
         Op::Round         => Some(OpKind::RoundElementwise),
         Op::Sign          => Some(OpKind::SignElementwise),
+        Op::Erf           => Some(OpKind::ErfElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),

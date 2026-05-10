@@ -420,6 +420,15 @@ unary_kernel!(sign_f64, f64, |x: f64| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 
 unary_kernel!(sign_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(if f > 0.0 { 1.0 } else if f < 0.0 { -1.0 } else { 0.0 }) }, "Elementwise `bf16` sign (via f32).");
 unary_kernel!(sign_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(if f > 0.0 { 1.0 } else if f < 0.0 { -1.0 } else { 0.0 }) }, "Elementwise `f16` sign (via f32).");
 
+// Gauss error function. f32 uses `libm::erff` (single precision); f64
+// uses `libm::erf`. bf16/f16 widen to f32 and use `erff`. libm gives
+// correctly-rounded results within its published bound (typically ≤1
+// ULP for `erff`/`erf`).
+unary_f32_kernel!(erf_f32, |x: f32| libm::erff(x), "Elementwise `f32` Gauss error function via libm::erff.");
+unary_kernel!(erf_f64, f64, |x: f64| libm::erf(x), "Elementwise `f64` Gauss error function via libm::erf.");
+unary_kernel!(erf_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(libm::erff(x.to_f32())), "Elementwise `bf16` Gauss error function (via f32).");
+unary_kernel!(erf_f16, half::f16, |x: half::f16| half::f16::from_f32(libm::erff(x.to_f32())), "Elementwise `f16` Gauss error function (via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
