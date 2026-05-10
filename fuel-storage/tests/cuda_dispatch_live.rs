@@ -1630,3 +1630,86 @@ fn reduce_max_to_f32_through_binding_table() {
     let host_f32: &[f32] = bytemuck::cast_slice(&host);
     assert_eq!(host_f32, &[5.0_f32, 6.0]);
 }
+
+/// End-to-end: gather rows from an F32 source via U32 indices through
+/// the unified binding-table dispatch on CUDA. Source is a 4×3 row
+/// matrix; indices `[2, 0, 3, 1]` permute the rows; output is the
+/// 4×3 permuted matrix. Exercises the `(IndexSelect, [F32, U32, F32],
+/// Cuda)` entry, which dispatches `is_u32_f32` from the INDEXING PTX
+/// module on byte-shaped CUDA storage.
+#[test]
+#[ignore]
+fn index_select_f32_u32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // Source: 4 rows × 3 columns of F32, distinct values per row so a
+    // permutation of rows is easy to verify.
+    let src_f32: [f32; 12] = [
+        100.0, 101.0, 102.0,  // row 0
+        200.0, 201.0, 202.0,  // row 1
+        300.0, 301.0, 302.0,  // row 2
+        400.0, 401.0, 402.0,  // row 3
+    ];
+    let src = build_storage_cuda(&dev, &src_f32);
+
+    // Indices: select rows in the order [2, 0, 3, 1].
+    let ids_u32: [u32; 4] = [2, 0, 3, 1];
+    let ids_bytes: &[u8] = bytemuck::cast_slice(&ids_u32);
+    let ids = build_storage_cuda_from_bytes(&dev, ids_bytes, DType::U32);
+
+    // Output: 4 selected rows × 3 columns of F32 (16 elements * 4 bytes).
+    let out_bytes = CudaStorageBytes::alloc(&dev, 4 * 3 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let ids_arc = Arc::new(RwLock::new(ids));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(
+            OpKind::IndexSelect,
+            &[DType::F32, DType::U32, DType::F32],
+            BackendId::Cuda,
+        )
+        .expect("lookup (IndexSelect, [F32, U32, F32], Cuda)");
+
+    // OpParams::IndexSelect — selecting along dim 0 of a [4, 3] source
+    // with 4 indices: outer_count=1, source_dim_size=4, n_indices=4,
+    // inner_count=3.
+    let params = OpParams::IndexSelect {
+        outer_count: 1,
+        source_dim_size: 4,
+        n_indices: 4,
+        inner_count: 3,
+    };
+    let src_layout = Layout::contiguous(Shape::from_dims(&[4, 3]));
+    let ids_layout = Layout::contiguous(Shape::from_dims(&[4]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[4, 3]));
+    let layouts = vec![src_layout, ids_layout, out_layout];
+
+    kernel(
+        &[src_arc.clone(), ids_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    let expected: [f32; 12] = [
+        300.0, 301.0, 302.0,  // row 2
+        100.0, 101.0, 102.0,  // row 0
+        400.0, 401.0, 402.0,  // row 3
+        200.0, 201.0, 202.0,  // row 1
+    ];
+    assert_eq!(host_f32, &expected);
+}

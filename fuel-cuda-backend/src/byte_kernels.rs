@@ -321,6 +321,93 @@ pub fn reduce_max_to_f32(
     reduce_f32(src, input_layout, &reduce_dims, "fast_max_f32")
 }
 
+/// Index-select an F32 `CudaStorageBytes` along one dim using a U32
+/// index tensor. Mirrors the legacy `IndexSelect` map (storage.rs:441)
+/// but on byte buffers, and parameterized by the four counts the
+/// executor pre-computes into `OpParams::IndexSelect`.
+///
+/// Shape contract: source has shape `[..outer_count, source_dim_size,
+/// ..inner_count]` and the rank-1 `ids` tensor has `n_indices`
+/// elements; the output has shape `[..outer_count, n_indices,
+/// ..inner_count]` (rank preserved). `outer_count` and `inner_count`
+/// are the products of dims before/after the selected axis.
+///
+/// The launched kernel is `is_u32_f32` (from
+/// `fuel-cuda-kernels::INDEXING`); both `src` and `ids` must be
+/// contiguous (auto-Contiguize guarantees this on the unified path).
+/// The kernel's `info` parameter passes `[n_indices, 1]` so its
+/// internal `is_contiguous` check selects the contiguous fast path —
+/// the strided fallback would only fire if a non-contiguous src
+/// reached us, which the executor's auto-Contiguize prevents.
+pub fn index_select_f32(
+    src: &CudaStorageBytes,
+    ids: &CudaStorageBytes,
+    outer_count: usize,
+    source_dim_size: usize,
+    n_indices: usize,
+    inner_count: usize,
+) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    let expected_src_bytes = outer_count
+        .saturating_mul(source_dim_size)
+        .saturating_mul(inner_count)
+        .saturating_mul(elem);
+    if src.len_bytes() != expected_src_bytes {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "index_select_f32: src bytes {} disagrees with \
+             outer_count*source_dim_size*inner_count*4 = {}",
+            src.len_bytes(),
+            expected_src_bytes,
+        ))
+        .bt());
+    }
+    let expected_ids_bytes = n_indices.saturating_mul(std::mem::size_of::<u32>());
+    if ids.len_bytes() != expected_ids_bytes {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "index_select_f32: ids bytes {} disagrees with n_indices*4 = {}",
+            ids.len_bytes(),
+            expected_ids_bytes,
+        ))
+        .bt());
+    }
+
+    let device = src.device().clone();
+    let dst_el = outer_count
+        .saturating_mul(n_indices)
+        .saturating_mul(inner_count);
+    let dst_bytes = dst_el.saturating_mul(elem);
+    if dst_el == 0 {
+        return CudaStorageBytes::alloc(&device, dst_bytes);
+    }
+
+    let mut out = device.alloc_zeros::<u8>(dst_bytes)?;
+    let cfg = LaunchConfig::for_num_elems(dst_el as u32);
+    let func = device.get_or_load_func("is_u32_f32", &kernels::INDEXING)?;
+
+    // info = [dims | strides] for a 1D contiguous "view" of the source —
+    // is_contiguous(num_dims=1, dims=[n_indices], strides=[1]) returns
+    // true so the kernel takes its fast path. The kernel's strided arm
+    // is dead code on the unified path (auto-Contiguize); these values
+    // exist purely to satisfy the parameter shape.
+    let info = device.clone_htod(&[n_indices, 1_usize])?;
+    let mut builder = func.builder();
+    barg!(builder, dst_el);
+    barg!(builder, 1_usize); // num_dims (matches the 1D info above)
+    builder.arg(&info);
+    builder.arg(ids.buffer());
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    barg!(builder, outer_count);     // left_size
+    barg!(builder, source_dim_size); // src_dim_size
+    barg!(builder, n_indices);       // ids_dim_size
+    barg!(builder, inner_count);     // right_size
+    // SAFETY: kernel signature matches the args above — same shape as
+    // the legacy `IndexSelect::f`, just on byte buffers.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
+}
+
 /// Batched row-major F32 matmul through cuBLAS, on byte-shaped inputs.
 /// Shape contract per `OpParams::Matmul`: `lhs [..lhs_batch.., m, k] @
 /// rhs [..rhs_batch.., k, n] → out [..lhs_batch.., m, n]`. Inputs are

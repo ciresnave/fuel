@@ -3557,6 +3557,67 @@ fn reduce_max_to_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(IndexSelect, [F32, U32, F32], Cuda)`. The
+/// `OpParams::IndexSelect` carries the four pre-computed counts the
+/// kernel needs (`outer_count`, `source_dim_size`, `n_indices`,
+/// `inner_count`) — the executor's `OpParams::for_node` derives these
+/// from the source layout and selected dim before dispatch reaches us.
+/// Mirrors the CPU `index_select_cpu_wrapper`; the indices must be U32
+/// (matches the `is_u32_f32` PTX kernel; the U8/I64 index variants
+/// have their own kernel symbols and would register as separate
+/// binding-table entries when needed).
+#[cfg(feature = "cuda")]
+fn index_select_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "index_select_f32_cuda_wrapper: expected 2 inputs (source, indices), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "index_select_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, source_dim_size, n_indices, inner_count) = match params {
+        OpParams::IndexSelect {
+            outer_count, source_dim_size, n_indices, inner_count,
+        } => (*outer_count, *source_dim_size, *n_indices, *inner_count),
+        other => {
+            return Err(Error::Msg(format!(
+                "index_select_f32_cuda_wrapper: expected OpParams::IndexSelect, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let src_guard = read_storage(&inputs[0])?;
+    let ids_guard = read_storage(&inputs[1])?;
+    if ids_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "index_select_f32_cuda_wrapper: indices must be U32, got {:?}",
+            ids_guard.dtype,
+        ))
+        .bt());
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&src_guard)?;
+    let ids_cuda = cuda_input(&ids_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::index_select_f32(
+        src_cuda, ids_cuda, outer_count, source_dim_size, n_indices, inner_count,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(Affine, F32, Cuda)`. Element-wise
 /// `y = mul * x + add` via the `affine_f32` PTX kernel, on byte-shaped
 /// CUDA storage. Mirrors the CPU `affine_f32_cpu_wrapper`.
@@ -3736,6 +3797,14 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
+
+    // IndexSelect: gather rows from F32 source via U32 indices.
+    // Dtype binding key matches the CPU `index_select(F32)` shape:
+    // `[source_dt, U32, source_dt]`. Other (source, index) pairs
+    // (F32×U8, F32×I64, F64×U32, …) register as their own entries
+    // when their PTX kernels and CPU mirrors are wired through.
+    let u32_dt = DType::U32;
+    table.register(IndexSelect, &[f32_dt, u32_dt, f32_dt], cuda, index_select_f32_cuda_wrapper);
 
     // Cast — one binding-table entry per (src, dst) pair the cast.cu
     // PTX defines. Pairs gated on `__CUDA_ARCH__` in the .cu source
