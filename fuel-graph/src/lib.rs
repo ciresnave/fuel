@@ -319,6 +319,14 @@ pub enum Op {
     /// reuses the forward node and never touches `x` directly —
     /// safe near x=0).
     Rsqrt,
+    /// Element-wise remainder, **PyTorch convention**:
+    /// `out = a - floor(a / b) * b`. The result has the sign of the
+    /// divisor (matches `torch.remainder`). Distinct from C99 fmod
+    /// (sign of dividend) and `f32::rem_euclid` (always non-negative).
+    /// Backward:
+    ///   d/da = 1
+    ///   d/db = -floor(a/b)
+    Rem,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -874,6 +882,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::GeluErf              => "GeluErf",
         Op::Pow                  => "Pow",
         Op::Rsqrt                => "Rsqrt",
+        Op::Rem                  => "Rem",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2434,6 +2443,14 @@ impl Tensor {
     /// Differentiable.
     pub fn rsqrt(&self) -> Tensor {
         self.unary_op(Op::Rsqrt)
+    }
+
+    /// Append a `Rem` node `self % other` element-wise (PyTorch
+    /// convention: `a - floor(a/b) * b`, sign of result matches
+    /// divisor). Both operands must share dtype and shape.
+    /// Differentiable.
+    pub fn rem(&self, other: &Tensor) -> Tensor {
+        self.binary_op("rem", Op::Rem, other, self.shape())
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -4133,6 +4150,39 @@ impl Tensor {
                         dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Rem => {
+                    // y = a - floor(a/b) * b (PyTorch convention).
+                    // d/da = 1 (the floor term is treated as a constant
+                    //          w.r.t. a almost everywhere; the actual
+                    //          derivative has a Dirac component at
+                    //          integer a/b ratios that we drop, matching
+                    //          PyTorch's autograd convention).
+                    // d/db = -floor(a/b)
+                    // grad_a = upstream
+                    // grad_b = upstream * (-floor(a/b))
+                    let a = inputs[0];
+                    let b = inputs[1];
+                    let a_shape = node_shape(&graph_handle, a);
+                    let dtype = node_dtype(&graph_handle, a);
+                    accumulate_grad(&mut upstream, a, up_id, &graph_handle);
+                    let div_ab = push_node(
+                        &graph_handle, Op::Div,
+                        vec![a, b], a_shape.clone(), dtype,
+                    );
+                    let floor_div = push_node(
+                        &graph_handle, Op::Floor,
+                        vec![div_ab], a_shape.clone(), dtype,
+                    );
+                    let neg_floor = push_node(
+                        &graph_handle, Op::Neg,
+                        vec![floor_div], a_shape.clone(), dtype,
+                    );
+                    let grad_b = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![up_id, neg_floor], a_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
                 Op::Rsqrt => {
                     // y = x^(-1/2). dy/dx = -0.5 * x^(-3/2).

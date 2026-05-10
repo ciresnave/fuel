@@ -1523,6 +1523,23 @@ pub fn rsqrt<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Element-wise remainder, **PyTorch convention** (matches
+/// `torch.remainder`): `y[i] = a[i] - floor(a[i] / b[i]) * b[i]`.
+/// The result has the sign of the divisor — distinct from C99 fmod
+/// (sign of dividend) and from `f32::rem_euclid` (always non-negative).
+pub fn rem<T: Float>(a: &RefTensor<T>, b: &RefTensor<T>) -> RefTensor<T> {
+    assert_eq!(a.shape().dims(), b.shape().dims(),
+        "rem: shape mismatch a={:?} b={:?}",
+        a.shape().dims(), b.shape().dims());
+    let data: Vec<T> = a
+        .as_slice()
+        .iter()
+        .zip(b.as_slice().iter())
+        .map(|(&av, &bv)| av - (av / bv).floor() * bv)
+        .collect();
+    RefTensor::from_vec(data, a.shape().clone())
+}
+
 /// Element-wise binary power: `y[i] = pow(a[i], b[i])`. Real exponent
 /// (`Float::powf`). Distinct from [`powi`] (scalar `i32` exponent
 /// applied uniformly). NaN follows IEEE-754: e.g. `pow(-2, 0.5) =
