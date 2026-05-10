@@ -516,6 +516,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
 
         // --- comparison family (output dtype is U8) ---
         Op::Equal => (25, vec![], vec![], vec![], None, None),
+        Op::Ne => (26, vec![], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),

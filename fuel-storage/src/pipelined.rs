@@ -456,6 +456,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Recip         => Some(OpKind::RecipElementwise),
         Op::Abs           => Some(OpKind::AbsElementwise),
         Op::Equal         => Some(OpKind::EqualElementwise),
+        Op::Ne            => Some(OpKind::NotEqualElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -2072,6 +2073,46 @@ mod tests {
         // Index 3: NaN == NaN → 0 (IEEE-754).
         // Index 4: 0.0 == -0.0 → 1 (IEEE-754 zero equality).
         assert_eq!(mask, &[1, 0, 1, 0, 1]);
+    }
+
+    /// E2E: Op::Ne F32 → U8 mask. Mirrors the Eq F32 test with
+    /// inverted predicate; NaN-vs-NaN slot now yields `1` (since
+    /// `NaN != NaN` per IEEE-754).
+    #[test]
+    fn pipelined_realize_ne_f32_to_u8_mask() {
+        let lhs = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
+        let rhs = crate::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, ne_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let ne = g.push(Node {
+                op: Op::Ne, inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+            });
+            g.set_target_backend(ne, BackendId::Cpu);
+            (l, r, ne)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, ne_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::U8);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let mask: &[u8] = c.as_slice().expect("u8 view");
+        // Inverse of the Eq test:
+        // 1.0 != 1.0 → 0;  2.0 != 5.0 → 1;  3.0 != 3.0 → 0;
+        // NaN != NaN → 1 (IEEE-754);  0.0 != -0.0 → 0 (IEEE-754).
+        assert_eq!(mask, &[0, 1, 0, 1, 0]);
     }
 
     /// E2E: Op::Equal F64 → U8 mask. Confirms the F64 wrapper is

@@ -161,6 +161,11 @@ pub enum OpKind {
     /// ArgMax convention of carrying the output dtype explicitly when
     /// it differs from the inputs.
     EqualElementwise,
+    /// Element-wise inequality `a != b`. Same shape contract as
+    /// [`EqualElementwise`]; output `U8` mask (`1` where unequal,
+    /// `0` otherwise). NaN follows IEEE-754: `NaN != NaN` is true,
+    /// so `ne` returns `1` on NaN-vs-NaN positions.
+    NotEqualElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -250,6 +255,7 @@ impl OpKind {
             OpKind::MaximumElementwise => "maximum",
             OpKind::MinimumElementwise => "minimum",
             OpKind::EqualElementwise   => "eq",
+            OpKind::NotEqualElementwise => "ne",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
