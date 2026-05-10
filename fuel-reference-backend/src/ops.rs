@@ -133,6 +133,43 @@ pub fn ceil<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Round-to-nearest with **banker's rounding** at exact halves
+/// (round-half-to-even / IEEE 754 roundeven). `num_traits::Float::round`
+/// is half-away-from-zero, so we override the tie case manually:
+/// when `|x.fract()| == 0.5`, pick whichever neighbouring integer is
+/// even. Non-tie cases delegate to `Float::round` (which agrees with
+/// roundeven everywhere except at the ties).
+pub fn round<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
+    let half = T::from(0.5).unwrap();
+    let two = T::from(2.0).unwrap();
+    let data: Vec<T> = x
+        .as_slice()
+        .iter()
+        .map(|&v| {
+            let truncated = v.trunc();
+            let frac = (v - truncated).abs();
+            if frac == half {
+                // Exact tie. The two integer candidates are
+                // `truncated` and `truncated ± 1` (sign of v). Pick
+                // whichever is even.
+                let candidate = if v >= T::zero() {
+                    truncated + T::one()
+                } else {
+                    truncated - T::one()
+                };
+                if (truncated / two).fract() == T::zero() {
+                    truncated
+                } else {
+                    candidate
+                }
+            } else {
+                v.round()
+            }
+        })
+        .collect();
+    RefTensor::from_vec(data, x.shape().clone())
+}
+
 /// Logistic sigmoid: `y[i] = 1 / (1 + exp(-x[i]))`. Implemented in the
 /// numerically stable split form to avoid overflow in `exp(-x)` for large
 /// negative `x`.

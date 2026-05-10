@@ -446,6 +446,14 @@ impl LazyTensor {
         Self { inner: self.inner.ceil() }
     }
 
+    /// Element-wise round-to-nearest with **banker's rounding**
+    /// (round-half-to-even, IEEE 754 roundeven). Backward is silently
+    /// zero. Differs from C99 `round()` at exact halves: 0.5 → 0,
+    /// 2.5 → 2, etc.
+    pub fn round(&self) -> Self {
+        Self { inner: self.inner.round() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

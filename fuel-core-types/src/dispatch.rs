@@ -191,6 +191,10 @@ pub enum OpKind {
     /// Element-wise ceiling (`⌈x⌉`). Same dtype as input. Backward
     /// drops gradient (mirrors Floor).
     CeilElementwise,
+    /// Element-wise round-to-nearest with **banker's rounding**
+    /// (round-half-to-even, IEEE 754 roundeven). Backward drops
+    /// gradient (mirrors Floor/Ceil).
+    RoundElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -288,6 +292,7 @@ impl OpKind {
             OpKind::Where              => "where",
             OpKind::FloorElementwise   => "floor",
             OpKind::CeilElementwise    => "ceil",
+            OpKind::RoundElementwise   => "round",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

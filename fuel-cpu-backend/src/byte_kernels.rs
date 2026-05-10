@@ -400,6 +400,17 @@ unary_kernel!(ceil_f64, f64, |x: f64| x.ceil(), "Elementwise `f64` ceiling.");
 unary_kernel!(ceil_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().ceil()), "Elementwise `bf16` ceiling (via f32).");
 unary_kernel!(ceil_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().ceil()), "Elementwise `f16` ceiling (via f32).");
 
+// Round uses **banker's rounding** (IEEE 754 roundeven / round-half-to-
+// even), via stable `f32::round_ties_even` / `f64::round_ties_even`
+// (Rust 1.77+). This is the convention NumPy's `np.round` uses by
+// default and matches PyTorch's `torch.round`. It differs from
+// `f32::round` (half-away-from-zero) at exact halves: 0.5 → 0 (not 1),
+// 1.5 → 2, 2.5 → 2 (not 3), 3.5 → 4, etc.
+unary_f32_kernel!(round_f32, |x: f32| x.round_ties_even(), "Elementwise `f32` round-half-to-even (banker's rounding, IEEE 754 roundeven).");
+unary_kernel!(round_f64, f64, |x: f64| x.round_ties_even(), "Elementwise `f64` round-half-to-even.");
+unary_kernel!(round_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().round_ties_even()), "Elementwise `bf16` round-half-to-even (via f32).");
+unary_kernel!(round_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().round_ties_even()), "Elementwise `f16` round-half-to-even (via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================

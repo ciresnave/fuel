@@ -352,6 +352,7 @@ fn eval_node(
         Op::Abs => unary!(inputs, cache, ops::abs),
         Op::Floor => unary!(inputs, cache, ops::floor),
         Op::Ceil => unary!(inputs, cache, ops::ceil),
+        Op::Round => unary!(inputs, cache, ops::round),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1557,6 +1558,33 @@ mod tests {
         let out = realize_f32(&b);
         let s = out.as_slice();
         assert_eq!(s, &[2.0, -2.0, 0.0, -1.0, 5.0]);
+        assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn round_forward_uses_bankers_rounding_at_ties() {
+        // Banker's rounding (round-half-to-even / IEEE 754 roundeven):
+        //   0.5 → 0    (NOT 1, the C99-default)
+        //   1.5 → 2
+        //   2.5 → 2    (NOT 3 — round to even)
+        //   3.5 → 4
+        //  -0.5 → 0    (NOT -1 — even is 0)
+        //  -1.5 → -2
+        //  Non-tie cases match the obvious answer:
+        //   0.4 → 0
+        //   0.6 → 1
+        //  -0.6 → -1
+        let a = Tensor::from_f32(
+            vec![0.5_f32, 1.5, 2.5, 3.5, -0.5, -1.5, 0.4, 0.6, -0.6],
+            Shape::from_dims(&[9]),
+            cpu_dev(),
+        );
+        let b = a.round();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        assert_eq!(s, &[0.0, 2.0, 2.0, 4.0, 0.0, -2.0, 0.0, 1.0, -1.0]);
+        // Cross-backend bit-equal: both legacy and storage paths use
+        // the same `round_ties_even` / manual roundeven impl.
         assert_equivalent_f32(&b);
     }
 
