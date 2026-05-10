@@ -394,6 +394,11 @@ fn eval_node(
 
         // --- compositions ---
         Op::SoftmaxLastDim => unary!(inputs, cache, ops::softmax_last_dim),
+        // Phase 7.6 step 3: dispatch the registry-extended fused arm to
+        // the same primitive kernel as the legacy variant.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM => {
+            unary!(inputs, cache, ops::softmax_last_dim)
+        }
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),
@@ -440,12 +445,12 @@ fn eval_node(
                 fuel_core_types::Shape::from_dims(&[0]),
             ))
         }
-        Op::Fused(_id, _params) => {
-            // Phase 7.6 step 2: arm exists but no builder emits it.
-            // Step 3 wires registry-driven dispatch through this site.
+        Op::Fused(fid, _params) => {
+            // Phase 7.6 step 3: per-id arms handle the migrated fused
+            // ops (only SoftmaxLastDim today; step 4 adds the rest).
             unreachable!(
-                "fuel-graph-cpu eval_node: Op::Fused arm not yet wired \
-                 (Phase 7.6 step 3). Reaching here is a programming bug.",
+                "fuel-graph-cpu eval_node: Op::Fused id {fid:?} has no \
+                 dispatch arm wired yet. Step 4 extends this match.",
             );
         }
     }

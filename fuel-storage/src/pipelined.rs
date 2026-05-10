@@ -418,6 +418,19 @@ fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
     dts
 }
 
+/// Phase 7.6 step 3: SoftmaxLastDim flows through both the legacy
+/// `Op::SoftmaxLastDim` variant and the registry-extended
+/// `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, _)` form. Both dispatch to
+/// the same `OpKind::SoftmaxLastDim` binding-table entry; this helper
+/// collapses the two shapes for op-to-OpKind/OpParams call sites.
+fn op_is_softmax_last_dim(op: &Op) -> bool {
+    match op {
+        Op::SoftmaxLastDim => true,
+        Op::Fused(fid, _) => *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM,
+        _ => false,
+    }
+}
+
 /// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.
 /// Returns `None` for ops that haven't been wired into the new
 /// dispatch path yet — Phase C extends this as op families migrate.
@@ -465,6 +478,15 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Minimum       => Some(OpKind::MinimumElementwise),
         Op::Concat { .. } => Some(OpKind::Concat),
         Op::SoftmaxLastDim => Some(OpKind::SoftmaxLastDim),
+        // Phase 7.6 step 3: route the registry-extended fused arm
+        // through the same OpKind binding; the per-dtype CPU/CUDA
+        // wrappers registered against OpKind::SoftmaxLastDim continue
+        // to handle dispatch.
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
+        {
+            Some(OpKind::SoftmaxLastDim)
+        }
         Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
@@ -704,8 +726,13 @@ fn op_to_op_params(
                 k: k_lhs,
             }
         }
-        Op::SoftmaxLastDim => {
-            // Input shape == output shape == [outer_dims..., last_dim].
+        // Phase 7.6 step 3: SoftmaxLastDim flows in either the legacy
+        // `Op::SoftmaxLastDim` shape or the new
+        // `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, _)` shape; both share
+        // the same shape contract (input == output == [..., last_dim]),
+        // and the params are derived from the input layout (not the op
+        // variant), so collapse to one body.
+        op if op_is_softmax_last_dim(op) => {
             let il = input_layout(node.inputs[0]);
             let dims = il.shape().dims();
             if dims.is_empty() {

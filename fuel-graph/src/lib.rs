@@ -2473,12 +2473,20 @@ impl Tensor {
     // --- compositions ---
 
     /// Append a `SoftmaxLastDim` node. Shape is preserved.
+    ///
+    /// Phase 7.6 step 3: emits `Op::Fused(FusedOps::SOFTMAX_LAST_DIM,
+    /// FusedOpParams::SoftmaxLastDim)` — the registry-extended arm.
+    /// The legacy `Op::SoftmaxLastDim` variant remains in the enum
+    /// during the migration; step 5 drops it once nothing emits it.
     pub fn softmax_last_dim(&self) -> Tensor {
         assert!(
             !self.shape().dims().is_empty(),
             "softmax_last_dim: input must be rank >= 1",
         );
-        self.unary_op(Op::SoftmaxLastDim)
+        self.unary_op(Op::Fused(
+            crate::registry::FusedOps::SOFTMAX_LAST_DIM,
+            crate::registry::FusedOpParams::SoftmaxLastDim,
+        ))
     }
 
     /// Append a `LayerNormLastDim` node with the given epsilon. Shape is
@@ -4792,20 +4800,40 @@ impl Tensor {
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                     accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
                 }
-                Op::Fused(_id, _params) => {
-                    // Phase 7.6 step 2: the Op::Fused arm exists in the
-                    // enum but no graph builder emits it yet (step 3
-                    // wires Tensor::softmax_last_dim to Op::Fused as the
-                    // proof-of-concept first migration). Step 3 also
-                    // implements per-id backward dispatch through the
-                    // registry's BackwardKind. Until then this arm is
-                    // unreachable; make that loud rather than silent.
-                    panic!(
-                        "Tensor::backward: Op::Fused arm reached before \
-                         step 3 wired any builder to emit it. This is a \
-                         programming bug — fused-op nodes should still \
-                         be appearing as Op::SoftmaxLastDim etc.",
-                    );
+                Op::Fused(fid, _) => {
+                    // Phase 7.6 step 3: per-id backward dispatch. Each
+                    // migrated fused op gets a backward arm here that
+                    // emits the appropriate gradient subgraph for its
+                    // single input. Step 4 grows this match as more
+                    // fused ops migrate; step 5 drops the legacy
+                    // per-fused-op `Op` variants and their existing
+                    // backward arms above.
+                    if fid == crate::registry::FusedOps::SOFTMAX_LAST_DIM {
+                        // grad_x = softmax_last_dim_backward(y, upstream)
+                        // — same formula as the legacy Op::SoftmaxLastDim
+                        // arm above. The backward fused-op
+                        // (Op::SoftmaxLastDimBackward) is itself migrated
+                        // to a registry entry in step 4; until then we
+                        // emit the legacy variant.
+                        let x = inputs[0];
+                        let y_shape = node_shape(&graph_handle, id);
+                        let dtype = node_dtype(&graph_handle, id);
+                        let grad_x = push_node(
+                            &graph_handle,
+                            Op::SoftmaxLastDimBackward,
+                            vec![id, up_id],
+                            y_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    } else {
+                        panic!(
+                            "Tensor::backward: Op::Fused id {fid:?} has no \
+                             backward arm wired yet. This is a programming \
+                             bug — extend the match in step 4 when the op \
+                             migrates to the registry.",
+                        );
+                    }
                 }
             }
         }
