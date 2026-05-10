@@ -71,7 +71,7 @@ pub fn dispatch_gradient(
         Op::Mul => Some(MulRule.backward(graph, op, inputs, output, upstream)),
         Op::Relu => Some(ReluRule.backward(graph, op, inputs, output, upstream)),
         // --- comparison family: non-differentiable, terminate cleanly ---
-        Op::Equal | Op::Ne | Op::Lt | Op::Le => Some(NoGradientBinaryRule.backward(graph, op, inputs, output, upstream)),
+        Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt => Some(NoGradientBinaryRule.backward(graph, op, inputs, output, upstream)),
         _ => None,
     }
 }

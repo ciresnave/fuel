@@ -519,6 +519,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Ne => (26, vec![], vec![], vec![], None, None),
         Op::Lt => (27, vec![], vec![], vec![], None, None),
         Op::Le => (28, vec![], vec![], vec![], None, None),
+        Op::Gt => (29, vec![], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),

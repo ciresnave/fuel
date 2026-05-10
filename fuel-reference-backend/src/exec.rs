@@ -402,6 +402,11 @@ pub fn eval_node_with_op(
              support U8-output ops; use the storage-path \
              PipelinedExecutor instead",
         ),
+        Op::Gt => panic!(
+            "Op::Gt: legacy fuel-reference-backend executor doesn't \
+             support U8-output ops; use the storage-path \
+             PipelinedExecutor instead",
+        ),
 
         // --- linear algebra ---
         Op::MatMul => eval_matmul(inputs, cache),

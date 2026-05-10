@@ -173,6 +173,9 @@ pub enum OpKind {
     /// Element-wise less-or-equal `a <= b`. Same shape contract.
     /// NaN comparisons are unordered → `0`.
     LessEqualElementwise,
+    /// Element-wise strictly-greater `a > b`. Same shape contract.
+    /// NaN comparisons are unordered → `0`.
+    GreaterElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -265,6 +268,7 @@ impl OpKind {
             OpKind::NotEqualElementwise => "ne",
             OpKind::LessElementwise    => "lt",
             OpKind::LessEqualElementwise => "le",
+            OpKind::GreaterElementwise => "gt",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

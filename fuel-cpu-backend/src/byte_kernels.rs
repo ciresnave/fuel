@@ -322,6 +322,11 @@ binary_compare_kernel!(le_f64_u8, f64, |a: f64, b: f64| a <= b, "Elementwise `f6
 binary_compare_kernel!(le_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a <= b, "Elementwise `bf16 <= bf16` → `u8` mask.");
 binary_compare_kernel!(le_f16_u8, half::f16, |a: half::f16, b: half::f16| a <= b, "Elementwise `f16 <= f16` → `u8` mask.");
 
+binary_compare_kernel!(gt_f32_u8, f32, |a: f32, b: f32| a > b, "Elementwise `f32 > f32` → `u8` mask. NaN comparisons are always false.");
+binary_compare_kernel!(gt_f64_u8, f64, |a: f64, b: f64| a > b, "Elementwise `f64 > f64` → `u8` mask.");
+binary_compare_kernel!(gt_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a > b, "Elementwise `bf16 > bf16` → `u8` mask.");
+binary_compare_kernel!(gt_f16_u8, half::f16, |a: half::f16, b: half::f16| a > b, "Elementwise `f16 > f16` → `u8` mask.");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
