@@ -414,15 +414,37 @@ pub fn eval_node_with_op(
             }
         }
         Op::Pad { padding, mode, value } => {
-            assert!(matches!(mode, fuel_graph::PadMode::Constant),
-                "pad: only Constant mode is implemented in v1, got {mode:?}");
             let src = cache.get(&inputs[0]).expect("pad missing input");
-            match src {
-                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::pad_const(t, padding, *value)),
-                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::pad_const(t, padding, *value)),
-                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::pad_const(t, padding, *value)),
-                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::pad_const(t, padding, *value)),
-                AnyRefTensor::U32(_) => panic!("pad: not supported on U32 tensors"),
+            match (src, mode) {
+                (AnyRefTensor::F32(t), fuel_graph::PadMode::Constant) => AnyRefTensor::F32(ops::pad_const(t, padding, *value)),
+                (AnyRefTensor::F32(t), fuel_graph::PadMode::Reflect) => AnyRefTensor::F32(ops::pad_reflect(t, padding)),
+                (AnyRefTensor::F32(t), fuel_graph::PadMode::Replicate) => AnyRefTensor::F32(ops::pad_replicate(t, padding)),
+                (AnyRefTensor::F64(t), fuel_graph::PadMode::Constant) => AnyRefTensor::F64(ops::pad_const(t, padding, *value)),
+                (AnyRefTensor::F64(t), fuel_graph::PadMode::Reflect) => AnyRefTensor::F64(ops::pad_reflect(t, padding)),
+                (AnyRefTensor::F64(t), fuel_graph::PadMode::Replicate) => AnyRefTensor::F64(ops::pad_replicate(t, padding)),
+                (AnyRefTensor::BF16(t), fuel_graph::PadMode::Constant) => AnyRefTensor::BF16(ops::pad_const(t, padding, *value)),
+                (AnyRefTensor::BF16(t), fuel_graph::PadMode::Reflect) => AnyRefTensor::BF16(ops::pad_reflect(t, padding)),
+                (AnyRefTensor::BF16(t), fuel_graph::PadMode::Replicate) => AnyRefTensor::BF16(ops::pad_replicate(t, padding)),
+                (AnyRefTensor::F16(t), fuel_graph::PadMode::Constant) => AnyRefTensor::F16(ops::pad_const(t, padding, *value)),
+                (AnyRefTensor::F16(t), fuel_graph::PadMode::Reflect) => AnyRefTensor::F16(ops::pad_reflect(t, padding)),
+                (AnyRefTensor::F16(t), fuel_graph::PadMode::Replicate) => AnyRefTensor::F16(ops::pad_replicate(t, padding)),
+                (AnyRefTensor::U32(_), _) => panic!("pad: not supported on U32 tensors"),
+            }
+        }
+        Op::PadBackward { in_shape, padding, mode } => {
+            let mode_tag: u8 = match mode {
+                fuel_graph::PadMode::Constant => 0,
+                fuel_graph::PadMode::Reflect => 1,
+                fuel_graph::PadMode::Replicate => 2,
+            };
+            let in_dims = in_shape.dims().to_vec();
+            let go = cache.get(&inputs[0]).expect("pad_backward missing grad_out");
+            match go {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyRefTensor::U32(_) => panic!("pad_backward: not supported on U32"),
             }
         }
 

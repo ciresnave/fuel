@@ -475,6 +475,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Roll { .. }   => Some(OpKind::Roll),
         Op::CumSum { .. } => Some(OpKind::CumSum),
         Op::Pad { .. }    => Some(OpKind::Pad),
+        Op::PadBackward { .. } => Some(OpKind::PadBackward),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -853,6 +854,34 @@ fn op_to_op_params(
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
             OpParams::CumSum { outer_count, dim_size, inner_count }
+        }
+        Op::PadBackward { in_shape, padding, mode } => {
+            // Single input is the upstream gradient; output is the
+            // input gradient (shape == `in_shape`).
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::PadBackward expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_dims: Vec<usize> = in_shape.dims().to_vec();
+            // Output of the original forward Pad is the input shape
+            // of the backward (== upstream's shape).
+            let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+                .map(|(&d, &(b, a))| d + b + a)
+                .collect();
+            let mode_tag: u8 = match mode {
+                fuel_graph::PadMode::Constant => 0,
+                fuel_graph::PadMode::Reflect => 1,
+                fuel_graph::PadMode::Replicate => 2,
+            };
+            OpParams::PadBackward {
+                in_shape: in_dims,
+                out_shape: out_dims,
+                padding: padding.clone(),
+                mode_tag,
+            }
         }
         Op::Pad { padding, mode, value } => {
             if node.inputs.len() != 1 {

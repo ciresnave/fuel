@@ -390,15 +390,37 @@ fn eval_node(
             }
         }
         Op::Pad { padding, mode, value } => {
-            assert!(matches!(mode, fuel_graph::PadMode::Constant),
-                "pad: only Constant mode is implemented in v1, got {mode:?}");
             let src = cache.get(&inputs[0]).expect("pad missing input");
-            match src {
-                AnyTensor::F32(t) => AnyTensor::F32(ops::pad_const(t, padding, *value)),
-                AnyTensor::F64(t) => AnyTensor::F64(ops::pad_const(t, padding, *value)),
-                AnyTensor::BF16(t) => AnyTensor::BF16(ops::pad_const(t, padding, *value)),
-                AnyTensor::F16(t) => AnyTensor::F16(ops::pad_const(t, padding, *value)),
-                AnyTensor::U32(_) => panic!("pad: not supported on U32 tensors"),
+            match (src, mode) {
+                (AnyTensor::F32(t), fuel_graph::PadMode::Constant) => AnyTensor::F32(ops::pad_const(t, padding, *value)),
+                (AnyTensor::F32(t), fuel_graph::PadMode::Reflect) => AnyTensor::F32(ops::pad_reflect(t, padding)),
+                (AnyTensor::F32(t), fuel_graph::PadMode::Replicate) => AnyTensor::F32(ops::pad_replicate(t, padding)),
+                (AnyTensor::F64(t), fuel_graph::PadMode::Constant) => AnyTensor::F64(ops::pad_const(t, padding, *value)),
+                (AnyTensor::F64(t), fuel_graph::PadMode::Reflect) => AnyTensor::F64(ops::pad_reflect(t, padding)),
+                (AnyTensor::F64(t), fuel_graph::PadMode::Replicate) => AnyTensor::F64(ops::pad_replicate(t, padding)),
+                (AnyTensor::BF16(t), fuel_graph::PadMode::Constant) => AnyTensor::BF16(ops::pad_const(t, padding, *value)),
+                (AnyTensor::BF16(t), fuel_graph::PadMode::Reflect) => AnyTensor::BF16(ops::pad_reflect(t, padding)),
+                (AnyTensor::BF16(t), fuel_graph::PadMode::Replicate) => AnyTensor::BF16(ops::pad_replicate(t, padding)),
+                (AnyTensor::F16(t), fuel_graph::PadMode::Constant) => AnyTensor::F16(ops::pad_const(t, padding, *value)),
+                (AnyTensor::F16(t), fuel_graph::PadMode::Reflect) => AnyTensor::F16(ops::pad_reflect(t, padding)),
+                (AnyTensor::F16(t), fuel_graph::PadMode::Replicate) => AnyTensor::F16(ops::pad_replicate(t, padding)),
+                (AnyTensor::U32(_), _) => panic!("pad: not supported on U32 tensors"),
+            }
+        }
+        Op::PadBackward { in_shape, padding, mode } => {
+            let mode_tag: u8 = match mode {
+                fuel_graph::PadMode::Constant => 0,
+                fuel_graph::PadMode::Reflect => 1,
+                fuel_graph::PadMode::Replicate => 2,
+            };
+            let in_dims = in_shape.dims().to_vec();
+            let go = cache.get(&inputs[0]).expect("pad_backward missing grad_out");
+            match go {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::pad_backward(t, &in_dims, padding, mode_tag)),
+                AnyTensor::U32(_) => panic!("pad_backward: not supported on U32"),
             }
         }
 
@@ -1632,6 +1654,119 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn pad_reflect_mirrors_input_around_edges() {
+        // Reflect, no edge repetition. For input [1, 2, 3, 4]:
+        //   pad (2, 1) reflect → [3, 2, 1, 2, 3, 4, 3]
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let p = a.pad(vec![(2, 1)], fuel_graph::PadMode::Reflect, 0.0).unwrap();
+        let out = realize_f32(&p);
+        assert_eq!(out.shape().dims(), &[7]);
+        assert_eq!(out.as_slice(), &[3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0]);
+        assert_equivalent_f32(&p);
+    }
+
+    #[test]
+    fn pad_reflect_2d_per_axis() {
+        // Reflect on a [3, 3] image padded by (1, 1) on both axes.
+        //   in:  [[1, 2, 3],
+        //         [4, 5, 6],
+        //         [7, 8, 9]]
+        //   After dim-1 reflect (1,1): each row becomes [b, a, b, c, b]
+        //                              with the row's edge-mirror behavior.
+        //         row 0: [2, 1, 2, 3, 2]
+        //         row 1: [5, 4, 5, 6, 5]
+        //         row 2: [8, 7, 8, 9, 8]
+        //   After dim-0 reflect (1,1) on the [5, 5]-target intermediate:
+        //         row -1 (reflected from row 1): [5, 4, 5, 6, 5]
+        //         row 0:                          [2, 1, 2, 3, 2]
+        //         row 1:                          [5, 4, 5, 6, 5]
+        //         row 2:                          [8, 7, 8, 9, 8]
+        //         row 3 (reflected from row 1):  [5, 4, 5, 6, 5]
+        let a = Tensor::from_f32(
+            (1..=9).map(|x| x as f32).collect::<Vec<f32>>(),
+            Shape::from_dims(&[3, 3]),
+            cpu_dev(),
+        );
+        let p = a.pad(
+            vec![(1, 1), (1, 1)],
+            fuel_graph::PadMode::Reflect,
+            0.0,
+        ).unwrap();
+        let out = realize_f32(&p);
+        assert_eq!(out.shape().dims(), &[5, 5]);
+        assert_eq!(out.as_slice(), &[
+            5.0, 4.0, 5.0, 6.0, 5.0,
+            2.0, 1.0, 2.0, 3.0, 2.0,
+            5.0, 4.0, 5.0, 6.0, 5.0,
+            8.0, 7.0, 8.0, 9.0, 8.0,
+            5.0, 4.0, 5.0, 6.0, 5.0,
+        ]);
+    }
+
+    #[test]
+    fn pad_reflect_backward_accumulates_at_mirrored_positions() {
+        // Forward: input [a, b, c, d] padded (2, 1) reflect →
+        //          [c, b, a, b, c, d, c]
+        // For ones-seed gradient [1; 7], backward sums per input
+        // position from every output that maps to it:
+        //   a (input 0): out[2] only → 1
+        //   b (input 1): out[1] + out[3] → 2
+        //   c (input 2): out[0] + out[4] + out[6] → 3
+        //   d (input 3): out[5] only → 1
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let y = a.pad(vec![(2, 1)], fuel_graph::PadMode::Reflect, 0.0).unwrap();
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        assert_eq!(out.shape().dims(), &[4]);
+        assert_eq!(out.as_slice(), &[1.0, 2.0, 3.0, 1.0]);
+    }
+
+    #[test]
+    fn pad_replicate_repeats_edge_values() {
+        // Replicate (edge-repeat). For input [1, 2, 3, 4]:
+        //   pad (2, 1) replicate → [1, 1, 1, 2, 3, 4, 4]
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let p = a.pad(vec![(2, 1)], fuel_graph::PadMode::Replicate, 0.0).unwrap();
+        let out = realize_f32(&p);
+        assert_eq!(out.shape().dims(), &[7]);
+        assert_eq!(out.as_slice(), &[1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 4.0]);
+        assert_equivalent_f32(&p);
+    }
+
+    #[test]
+    fn pad_replicate_backward_accumulates_at_edge_positions() {
+        // Forward: [a, b, c, d] padded (2, 1) replicate → [a, a, a, b, c, d, d]
+        // For ones-seed gradient [1; 7]:
+        //   a (input 0): out[0] + out[1] + out[2] → 3
+        //   b (input 1): out[3] → 1
+        //   c (input 2): out[4] → 1
+        //   d (input 3): out[5] + out[6] → 2
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        );
+        let y = a.pad(vec![(2, 1)], fuel_graph::PadMode::Replicate, 0.0).unwrap();
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        assert_eq!(out.as_slice(), &[3.0, 1.0, 1.0, 2.0]);
     }
 
     #[test]

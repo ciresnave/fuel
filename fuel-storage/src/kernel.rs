@@ -440,6 +440,16 @@ pub enum OpParams {
         inner_count: usize,
     },
 
+    /// Backward helper for Pad. Carries the input shape so the kernel
+    /// can size its scatter-add buffer; the output shape is implicit
+    /// from the input shape + padding.
+    PadBackward {
+        in_shape: Vec<usize>,
+        out_shape: Vec<usize>,
+        padding: Vec<(usize, usize)>,
+        mode_tag: u8,
+    },
+
     /// Multi-dim Pad: per-axis (before, after) plus a `mode_tag`
     /// (0=Constant, 1=Reflect, 2=Replicate) and pre-encoded
     /// `fill_bytes` for Constant fill. Dtype-agnostic at the byte

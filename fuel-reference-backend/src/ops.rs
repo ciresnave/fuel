@@ -1566,6 +1566,130 @@ pub fn pad_const<T: Float>(
 
 // (row_major_strides already exists at the top of this file; reuse it.)
 
+/// Multi-dim Pad-Reflect. Per-axis: `before <= n-1` and `after <= n-1`.
+pub fn pad_reflect<T: Float>(
+    x: &RefTensor<T>,
+    padding: &[(usize, usize)],
+) -> RefTensor<T> {
+    pad_walk(x, padding, |i, n| {
+        if i < 0 { (-i) as usize }
+        else if i as usize >= n { 2 * (n - 1) - i as usize }
+        else { i as usize }
+    })
+}
+
+/// Multi-dim Pad-Replicate.
+pub fn pad_replicate<T: Float>(
+    x: &RefTensor<T>,
+    padding: &[(usize, usize)],
+) -> RefTensor<T> {
+    pad_walk(x, padding, |i, n| {
+        if i < 0 { 0 }
+        else if i as usize >= n { n - 1 }
+        else { i as usize }
+    })
+}
+
+fn pad_walk<T: Float, F>(
+    x: &RefTensor<T>,
+    padding: &[(usize, usize)],
+    map_index: F,
+) -> RefTensor<T>
+where
+    F: Fn(i64, usize) -> usize,
+{
+    let in_dims = x.shape().dims();
+    assert_eq!(padding.len(), in_dims.len());
+    let rank = in_dims.len();
+    let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+        .map(|(&d, &(b, a))| d + b + a)
+        .collect();
+    let in_strides = row_major_strides(in_dims);
+    let out_strides = row_major_strides(&out_dims);
+    let out_elem: usize = out_dims.iter().product();
+    let src = x.as_slice();
+    let mut out = vec![T::zero(); out_elem];
+    let mut out_idx = vec![0usize; rank];
+    for _ in 0..out_elem {
+        let mut in_off: usize = 0;
+        for k in 0..rank {
+            let i = out_idx[k] as i64 - padding[k].0 as i64;
+            let m = map_index(i, in_dims[k]);
+            in_off += m * in_strides[k];
+        }
+        let out_flat: usize = out_idx.iter().zip(&out_strides).map(|(&i, &s)| i * s).sum();
+        out[out_flat] = src[in_off];
+        for k in (0..rank).rev() {
+            out_idx[k] += 1;
+            if out_idx[k] < out_dims[k] { break; }
+            out_idx[k] = 0;
+        }
+    }
+    RefTensor::from_vec(out, Shape::from_dims(&out_dims))
+}
+
+/// Pad backward — reverses any of the three padding modes by
+/// accumulating gradient at the input position each output slot
+/// originally read from. `mode_tag`: 0=Constant, 1=Reflect, 2=Replicate.
+pub fn pad_backward<T: Float>(
+    grad_out: &RefTensor<T>,
+    in_shape: &[usize],
+    padding: &[(usize, usize)],
+    mode_tag: u8,
+) -> RefTensor<T> {
+    let rank = in_shape.len();
+    assert_eq!(padding.len(), rank);
+    let out_dims: Vec<usize> = in_shape.iter().zip(padding.iter())
+        .map(|(&d, &(b, a))| d + b + a)
+        .collect();
+    let in_strides = row_major_strides(in_shape);
+    let out_strides = row_major_strides(&out_dims);
+    let in_elem: usize = in_shape.iter().product();
+    let out_elem: usize = out_dims.iter().product();
+    let go = grad_out.as_slice();
+    // Widened accumulator avoids precision loss when many output
+    // positions feed one input slot (e.g. Replicate corner case).
+    let mut acc: Vec<f64> = vec![0.0; in_elem];
+    let mut out_idx = vec![0usize; rank];
+    for _ in 0..out_elem {
+        let mut in_off: usize = 0;
+        let mut skip = false;
+        for k in 0..rank {
+            let i = out_idx[k] as i64 - padding[k].0 as i64;
+            let n = in_shape[k];
+            let m = match mode_tag {
+                0 => {
+                    if i < 0 || i as usize >= n { skip = true; break; }
+                    i as usize
+                }
+                1 => {
+                    if i < 0 { (-i) as usize }
+                    else if i as usize >= n { 2 * (n - 1) - i as usize }
+                    else { i as usize }
+                }
+                2 => {
+                    if i < 0 { 0 }
+                    else if i as usize >= n { n - 1 }
+                    else { i as usize }
+                }
+                _ => panic!("pad_backward: unknown mode_tag {mode_tag}"),
+            };
+            in_off += m * in_strides[k];
+        }
+        if !skip {
+            let out_flat: usize = out_idx.iter().zip(&out_strides).map(|(&i, &s)| i * s).sum();
+            acc[in_off] += go[out_flat].to_f64().unwrap();
+        }
+        for k in (0..rank).rev() {
+            out_idx[k] += 1;
+            if out_idx[k] < out_dims[k] { break; }
+            out_idx[k] = 0;
+        }
+    }
+    let out: Vec<T> = acc.iter().map(|&v| T::from(v).unwrap()).collect();
+    RefTensor::from_vec(out, Shape::from_dims(in_shape))
+}
+
 /// Running cumulative sum along `dim`:
 /// `y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]`. Same shape as
 /// input. Bound is `T: Float` since the kernel adds element-by-element.

@@ -637,6 +637,227 @@ fn compute_row_major_strides(shape: &[usize]) -> Vec<usize> {
     s
 }
 
+/// Reflect padding (without repeating the edge). Per-axis mapping:
+/// for output axis `j` and input dim size `n`, let `i = j - before`.
+/// - `i < 0`: out = in[-i]
+/// - `0 <= i < n`: out = in[i]
+/// - `i >= n`: out = in[2*(n-1) - i]
+///
+/// Caller must validate `before <= n-1` and `after <= n-1` for every
+/// axis (the dispatch wrapper does this); otherwise the reflection
+/// would run off the other side and produce garbage indices.
+pub fn pad_reflect_cpu(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    in_shape: &[usize],
+    out_shape: &[usize],
+    padding: &[(usize, usize)],
+    dtype_size: usize,
+) -> Result<()> {
+    pad_walk_cpu(input, out, in_shape, out_shape, padding, dtype_size, reflect_index)
+}
+
+/// Replicate (edge-repeat) padding. Per-axis mapping:
+/// - `i < 0`:    out = in[0]
+/// - `0..n`:     out = in[i]
+/// - `i >= n`:   out = in[n-1]
+pub fn pad_replicate_cpu(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    in_shape: &[usize],
+    out_shape: &[usize],
+    padding: &[(usize, usize)],
+    dtype_size: usize,
+) -> Result<()> {
+    pad_walk_cpu(input, out, in_shape, out_shape, padding, dtype_size, replicate_index)
+}
+
+fn reflect_index(i: i64, n: usize) -> usize {
+    if i < 0 {
+        (-i) as usize
+    } else if (i as usize) >= n {
+        2 * (n - 1) - (i as usize)
+    } else {
+        i as usize
+    }
+}
+
+fn replicate_index(i: i64, n: usize) -> usize {
+    if i < 0 {
+        0
+    } else if (i as usize) >= n {
+        n - 1
+    } else {
+        i as usize
+    }
+}
+
+/// Generic multi-dim Pad walker. Walks every output position; for
+/// each position computes the corresponding input position via the
+/// per-axis `map_index` function and copies bytes. Used by both
+/// Reflect and Replicate kernels (Constant has its own simpler
+/// two-pass shape since the padded slots don't index into input).
+fn pad_walk_cpu<F>(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    in_shape: &[usize],
+    out_shape: &[usize],
+    padding: &[(usize, usize)],
+    dtype_size: usize,
+    map_index: F,
+) -> Result<()>
+where
+    F: Fn(i64, usize) -> usize,
+{
+    let rank = in_shape.len();
+    if out_shape.len() != rank || padding.len() != rank {
+        return Err(Error::Msg(format!(
+            "pad_walk_cpu: rank mismatch (in_shape={rank}, out_shape={}, padding={})",
+            out_shape.len(), padding.len(),
+        ))
+        .bt());
+    }
+    let in_elem: usize = in_shape.iter().product();
+    let out_elem: usize = out_shape.iter().product();
+    let in_b = input.bytes();
+    if in_b.len() != in_elem * dtype_size || out.len_bytes() != out_elem * dtype_size {
+        return Err(Error::Msg(format!(
+            "pad_walk_cpu: byte length mismatch (in={}, expected={}; out={}, expected={})",
+            in_b.len(), in_elem * dtype_size,
+            out.len_bytes(), out_elem * dtype_size,
+        ))
+        .bt());
+    }
+    let in_strides = compute_row_major_strides(in_shape);
+    let out_strides = compute_row_major_strides(out_shape);
+    let out_buf = out.bytes_mut();
+    let mut out_idx = vec![0usize; rank];
+    for _ in 0..out_elem {
+        // Compute input flat offset via per-axis mapping.
+        let mut in_off: usize = 0;
+        for k in 0..rank {
+            let i = out_idx[k] as i64 - padding[k].0 as i64;
+            let m = map_index(i, in_shape[k]);
+            in_off += m * in_strides[k];
+        }
+        let out_flat: usize = out_idx.iter().zip(&out_strides).map(|(&i, &s)| i * s).sum();
+        let in_byte = in_off * dtype_size;
+        let out_byte = out_flat * dtype_size;
+        out_buf[out_byte..out_byte + dtype_size]
+            .copy_from_slice(&in_b[in_byte..in_byte + dtype_size]);
+        for k in (0..rank).rev() {
+            out_idx[k] += 1;
+            if out_idx[k] < out_shape[k] { break; }
+            out_idx[k] = 0;
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Pad backward — gradient accumulation per mode (per-dtype since adds)
+// =============================================================================
+//
+// For each output position, the forward maps to some input position.
+// Backward: walk output positions, accumulate grad_out[j] into
+// grad_in[map(j)]. Constant-mode backward is the special case where
+// padded positions don't index into input — they're skipped.
+//
+// Per-dtype because accumulation is typed addition. bf16/f16 widen
+// the accumulator to f32 to avoid precision loss when many output
+// positions accumulate into the same input slot (e.g. all 4 corners
+// of a Replicate-padded image map to the same input corner).
+
+macro_rules! pad_backward_kernel {
+    ($name:ident, $T:ty, $zero:expr, $widen:expr, $narrow:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            grad_out: &CpuStorageBytes,
+            grad_in: &mut CpuStorageBytes,
+            in_shape: &[usize],
+            out_shape: &[usize],
+            padding: &[(usize, usize)],
+            mode_tag: u8,
+        ) -> Result<()> {
+            let rank = in_shape.len();
+            if out_shape.len() != rank || padding.len() != rank {
+                return Err(Error::Msg(format!(
+                    "{}: rank mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            let go: &[$T] = grad_out.as_slice()?;
+            let gi: &mut [$T] = grad_in.as_slice_mut()?;
+            let in_elem: usize = in_shape.iter().product();
+            let out_elem: usize = out_shape.iter().product();
+            if go.len() != out_elem || gi.len() != in_elem {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (grad_out={}, expected={out_elem}; \
+                     grad_in={}, expected={in_elem})",
+                    stringify!($name), go.len(), gi.len(),
+                ))
+                .bt());
+            }
+            let widen: fn($T) -> f64 = $widen;
+            let narrow: fn(f64) -> $T = $narrow;
+            let in_strides = compute_row_major_strides(in_shape);
+            let out_strides = compute_row_major_strides(out_shape);
+            // Accumulator scratch widened to f64 (one slot per input
+            // element). Initialized to zero; final pass narrows back
+            // to T.
+            let _ = $zero;
+            let mut acc: Vec<f64> = vec![0.0; in_elem];
+            let mut out_idx = vec![0usize; rank];
+            for _ in 0..out_elem {
+                // For each axis, compute either the input index this
+                // output position maps to, OR signal "skip" (Constant
+                // padded slot).
+                let mut in_off: usize = 0;
+                let mut skip = false;
+                for k in 0..rank {
+                    let i = out_idx[k] as i64 - padding[k].0 as i64;
+                    let n = in_shape[k];
+                    let m = match mode_tag {
+                        0 => {
+                            // Constant: skip if outside input region.
+                            if i < 0 || (i as usize) >= n {
+                                skip = true;
+                                break;
+                            }
+                            i as usize
+                        }
+                        1 => reflect_index(i, n),
+                        2 => replicate_index(i, n),
+                        _ => return Err(Error::Msg(format!(
+                            "{}: unknown mode_tag {mode_tag}", stringify!($name),
+                        )).bt()),
+                    };
+                    in_off += m * in_strides[k];
+                }
+                if !skip {
+                    let out_flat: usize = out_idx.iter().zip(&out_strides)
+                        .map(|(&i, &s)| i * s).sum();
+                    acc[in_off] += widen(go[out_flat]);
+                }
+                for k in (0..rank).rev() {
+                    out_idx[k] += 1;
+                    if out_idx[k] < out_shape[k] { break; }
+                    out_idx[k] = 0;
+                }
+            }
+            for (slot, v) in gi.iter_mut().zip(acc.iter()) {
+                *slot = narrow(*v);
+            }
+            Ok(())
+        }
+    };
+}
+
+pad_backward_kernel!(pad_backward_f32, f32, 0.0_f32, |x: f32| x as f64, |x: f64| x as f32, "Pad backward (Constant/Reflect/Replicate) on `f32`.");
+pad_backward_kernel!(pad_backward_f64, f64, 0.0_f64, |x: f64| x, |x: f64| x, "Pad backward on `f64`.");
+pad_backward_kernel!(pad_backward_bf16, half::bf16, half::bf16::ZERO, |x: half::bf16| x.to_f32() as f64, |x: f64| half::bf16::from_f32(x as f32), "Pad backward on `bf16` (acc widened to f64).");
+pad_backward_kernel!(pad_backward_f16, half::f16, half::f16::ZERO, |x: half::f16| x.to_f32() as f64, |x: f64| half::f16::from_f32(x as f32), "Pad backward on `f16` (acc widened to f64).");
+
 // =============================================================================
 // CumSum — running prefix-sum along one dim, per-dtype
 // =============================================================================
