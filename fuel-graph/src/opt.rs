@@ -607,6 +607,21 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Maximum => (100, vec![], vec![], vec![], None, None),
         Op::Minimum => (101, vec![], vec![], vec![], None, None),
 
+        // Phase 7.6 step 2: registry-extended fused ops. CSE folds two
+        // Op::Fused nodes with identical (id, params) to one. Encoding:
+        // base tag 200; ints = [id.0, params.tag, ...params.ints]; bits
+        // = params.bits. Mirrors the FusedOpParamsKey shape from
+        // crate::registry so the encoding tracks any future param
+        // variants without rewriting this arm.
+        Op::Fused(fid, fparams) => {
+            let pk = fparams.key();
+            let mut ints: Vec<i64> = Vec::with_capacity(2 + pk.ints.len());
+            ints.push(fid.0 as i64);
+            ints.push(pk.tag as i64);
+            ints.extend_from_slice(&pk.ints);
+            (200, ints, pk.bits, vec![], None, None)
+        }
+
         // Indexing and anything else we haven't explicitly listed:
         // fall back to a unique tag that includes a structural
         // discriminant. These ops rarely appear more than once with

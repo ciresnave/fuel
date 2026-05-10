@@ -440,6 +440,14 @@ fn eval_node(
                 fuel_core_types::Shape::from_dims(&[0]),
             ))
         }
+        Op::Fused(_id, _params) => {
+            // Phase 7.6 step 2: arm exists but no builder emits it.
+            // Step 3 wires registry-driven dispatch through this site.
+            unreachable!(
+                "fuel-graph-cpu eval_node: Op::Fused arm not yet wired \
+                 (Phase 7.6 step 3). Reaching here is a programming bug.",
+            );
+        }
     }
 }
 
