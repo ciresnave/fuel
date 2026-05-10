@@ -350,6 +350,12 @@ pub enum Op {
     /// strided/transposed/broadcast layout instead of triggering an
     /// auto-Contiguize.
     Unsqueeze { dim: usize },
+    /// Drop a size-1 dimension at position `dim` (range `0..rank`).
+    /// Inverse of [`Op::Unsqueeze`]; metadata-only view that shares
+    /// bytes with its input via the Layout side-table. Panics at build
+    /// time if the dim's size isn't 1 (mirrors Unsqueeze's bounds
+    /// check — graph-builder validation, not runtime).
+    Squeeze { dim: usize },
     /// Sum-reduce a tensor to a smaller shape by summing along any dims
     /// where the source was broadcast against the target. This is the
     /// backward rule for `BroadcastTo` and is symmetric with it: both ops
@@ -772,6 +778,7 @@ impl Op {
                 | Op::BroadcastTo(_)
                 | Op::Slice { .. }
                 | Op::Unsqueeze { .. }
+                | Op::Squeeze { .. }
         )
     }
 }
@@ -805,6 +812,7 @@ pub fn derive_view_output_layout(
         Op::BroadcastTo(target_shape) => input_layout.broadcast_as(target_shape.clone()),
         Op::Slice { dim, start, len } => input_layout.narrow(*dim, *start, *len),
         Op::Unsqueeze { dim } => input_layout.unsqueeze(*dim),
+        Op::Squeeze { dim } => input_layout.squeeze(*dim),
         other => Err(fuel_core_types::Error::Msg(format!(
             "derive_view_output_layout called with non-view op {other:?}",
         ))
@@ -854,6 +862,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::BroadcastTo(_)       => "BroadcastTo",
         Op::Reshape(_)           => "Reshape",
         Op::Unsqueeze{..}        => "Unsqueeze",
+        Op::Squeeze{..}          => "Squeeze",
         Op::ReduceSumTo(_)       => "ReduceSumTo",
         Op::ReduceMaxTo(_)       => "ReduceMaxTo",
         Op::SumAll               => "SumAll",
@@ -2558,6 +2567,42 @@ impl Tensor {
         }
     }
 
+    /// Append a `Squeeze` node that drops the size-1 dimension at
+    /// position `dim` (range `0..rank`). Inverse of [`Self::unsqueeze`].
+    /// Metadata-only view: the output shares bytes with `self`, with
+    /// the named dim pruned from the Layout side-table. Panics at
+    /// build time if `dim` is out of bounds or the dim's size isn't 1
+    /// — mirrors Unsqueeze's bounds-check pattern (these are graph-
+    /// builder validation, not runtime errors).
+    pub fn squeeze(&self, dim: usize) -> Tensor {
+        let in_shape = self.shape();
+        let in_dims = in_shape.dims();
+        let rank = in_dims.len();
+        assert!(
+            dim < rank,
+            "squeeze: dim {dim} out of bounds for rank {rank} (must be < rank)",
+        );
+        assert_eq!(
+            in_dims[dim], 1,
+            "squeeze: dim {dim} has size {}, expected 1",
+            in_dims[dim],
+        );
+        let out_dims: Vec<usize> = in_dims.iter().enumerate()
+            .filter_map(|(i, &d)| if i == dim { None } else { Some(d) })
+            .collect();
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Squeeze { dim },
+            inputs: vec![self.id],
+            shape:  Shape::from_dims(&out_dims),
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `Reshape` node producing `self`'s data under a new shape.
     /// The new shape must have the same total element count as the
     /// current shape.
@@ -4248,6 +4293,24 @@ impl Tensor {
                     let grad_x = push_node(
                         &graph_handle,
                         Op::Reshape(x_shape.clone()),
+                        vec![up_id],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Squeeze { dim } => {
+                    // Forward: y = squeeze(x, dim) — drops a size-1 axis,
+                    // metadata-only. Backward: re-insert the axis at the
+                    // same position via Unsqueeze. Both directions are
+                    // metadata-only views (no bytes touched).
+                    let dim = dim;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Unsqueeze { dim },
                         vec![up_id],
                         x_shape,
                         dtype,
@@ -6740,6 +6803,62 @@ mod tests {
         let m_node = m.graph().read().unwrap().node(m.id()).clone();
         assert!(matches!(m_node.op, Op::Equal));
         assert_eq!(m_node.inputs, vec![a.id(), b.id()]);
+    }
+
+    #[test]
+    fn squeeze_drops_size_one_dim_metadata_only() {
+        // Build [2, 1, 3] → squeeze(1) → [2, 3]. Op::Squeeze, view-op,
+        // shape pruned, dtype preserved, single input slot.
+        let a = Tensor::from_f32(
+            vec![1.0; 6],
+            Shape::from_dims(&[2, 1, 3]),
+            cpu_dev(),
+        );
+        let s = a.squeeze(1);
+        assert_eq!(s.shape().dims(), &[2, 3]);
+        assert_eq!(s.dtype(), DType::F32);
+        let node = s.graph().read().unwrap().node(s.id()).clone();
+        assert!(matches!(node.op, Op::Squeeze { dim: 1 }));
+        assert_eq!(node.inputs, vec![a.id()]);
+        // Squeeze joins the view-op set so the Layout side-table is
+        // populated automatically.
+        assert!(node.op.is_view_op(),
+            "Op::Squeeze must register as a view op");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected 1")]
+    fn squeeze_rejects_non_size_one_dim() {
+        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let _ = a.squeeze(1);  // dim 1 has size 3, not 1
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn squeeze_rejects_dim_above_rank() {
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let _ = a.squeeze(5);
+    }
+
+    #[test]
+    fn backward_through_squeeze_emits_unsqueeze() {
+        // y = squeeze(x, 1). Backward: re-insert dim 1 via Unsqueeze.
+        // Gradient shape must equal x.shape exactly.
+        let a = Tensor::from_f32(
+            vec![1.0; 6],
+            Shape::from_dims(&[2, 1, 3]),
+            cpu_dev(),
+        );
+        let y = a.squeeze(1);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        assert_eq!(g_a.shape().dims(), &[2, 1, 3],
+            "Squeeze backward gradient must restore the original shape");
+        // The chain is: ones-seed (post-squeeze, shape [2,3])
+        //               → Unsqueeze(dim=1) → shape [2, 1, 3].
+        let g_node = g_a.graph().read().unwrap().node(g_a.id()).clone();
+        assert!(matches!(g_node.op, Op::Unsqueeze { dim: 1 }),
+            "Squeeze backward must be Unsqueeze at the same dim");
     }
 
     #[test]

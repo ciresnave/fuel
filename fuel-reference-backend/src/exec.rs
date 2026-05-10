@@ -452,6 +452,7 @@ pub fn eval_node_with_op(
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
         Op::Unsqueeze { dim } => eval_unsqueeze(*dim, inputs, cache),
+        Op::Squeeze { dim } => eval_squeeze(*dim, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
         Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
 
@@ -742,6 +743,46 @@ fn eval_unsqueeze(
         out_dims.len(),
     );
     out_dims.insert(dim, 1);
+    let target = Shape::from_dims(&out_dims);
+    match src {
+        AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::reshape(t, &target)),
+        AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::reshape(t, &target)),
+        AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::reshape(t, &target)),
+        AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::reshape(t, &target)),
+        AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::reshape(t, &target)),
+    }
+}
+
+/// Inverse of [`eval_unsqueeze`]: drop the size-1 dimension at `dim`
+/// from the metadata shape. Bytes unchanged. The builder validates the
+/// preconditions (`dim < rank`, `shape[dim] == 1`); the executor just
+/// dispatches.
+fn eval_squeeze(
+    dim: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyRefTensor>,
+) -> AnyRefTensor {
+    let src = cache.get(&inputs[0]).expect("topo order missing squeeze input");
+    let in_dims: Vec<usize> = match src {
+        AnyRefTensor::F32(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::F64(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::BF16(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::F16(t) => t.shape().dims().to_vec(),
+        AnyRefTensor::U32(t) => t.shape().dims().to_vec(),
+    };
+    assert!(
+        dim < in_dims.len(),
+        "squeeze: dim {dim} out of bounds for rank {}",
+        in_dims.len(),
+    );
+    assert_eq!(
+        in_dims[dim], 1,
+        "squeeze: dim {dim} has size {}, expected 1",
+        in_dims[dim],
+    );
+    let out_dims: Vec<usize> = in_dims.iter().enumerate()
+        .filter_map(|(i, &d)| if i == dim { None } else { Some(d) })
+        .collect();
     let target = Shape::from_dims(&out_dims);
     match src {
         AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::reshape(t, &target)),
