@@ -45,6 +45,7 @@ pub mod grad;
 pub mod opt;
 pub mod registry;
 
+use crate::registry::{FusedOpId, FusedOpParams};
 use fuel_core_types::{DeviceLocation, DType, Layout, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
@@ -633,6 +634,20 @@ pub enum Op {
     /// op to run after every non-destructive reader of the source via
     /// [`opt::derive_ordering`].
     Move { target: DeviceLocation },
+
+    /// Phase 7.6 single-arm delegate to the open
+    /// [`crate::registry::FusedOpRegistry`]. The id selects which
+    /// fused op (SoftmaxLastDim, RmsNormLastDim, FlashAttn, ...) and
+    /// the params carry per-instance data. The registry's metadata
+    /// side (decompose, backward identity, shape/dtype rules) lives in
+    /// `fuel-graph::registry`; the kernel side (per-backend `KernelRef`
+    /// + cost + precision) lives in `fuel-storage::fused`.
+    ///
+    /// Adding a new fused op is one registry entry plus one kernel
+    /// function per backend that supports it — no new `Op` variant.
+    /// Step 3 of Phase 7.6 migrates SoftmaxLastDim through this arm
+    /// as the proof of concept.
+    Fused(FusedOpId, FusedOpParams),
 }
 
 impl Op {
@@ -785,6 +800,11 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
+        // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
+        // names through a static lookup; until then, all fused ops
+        // share one short name. Distinguishing in error messages is
+        // future work — `id` is in the Debug repr.
+        Op::Fused(_, _)          => "Fused",
     }
 }
 
@@ -4771,6 +4791,21 @@ impl Tensor {
                     accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                     accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
+                }
+                Op::Fused(_id, _params) => {
+                    // Phase 7.6 step 2: the Op::Fused arm exists in the
+                    // enum but no graph builder emits it yet (step 3
+                    // wires Tensor::softmax_last_dim to Op::Fused as the
+                    // proof-of-concept first migration). Step 3 also
+                    // implements per-id backward dispatch through the
+                    // registry's BackwardKind. Until then this arm is
+                    // unreachable; make that loud rather than silent.
+                    panic!(
+                        "Tensor::backward: Op::Fused arm reached before \
+                         step 3 wired any builder to emit it. This is a \
+                         programming bug — fused-op nodes should still \
+                         be appearing as Op::SoftmaxLastDim etc.",
+                    );
                 }
             }
         }

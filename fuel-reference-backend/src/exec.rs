@@ -504,6 +504,19 @@ pub fn eval_node_with_op(
                 Shape::from_dims(&[0]),
             ))
         }
+        Op::Fused(_id, _params) => {
+            // Phase 7.6 step 2: the Op::Fused arm exists in the enum but
+            // no graph builder emits it yet (step 3 wires the
+            // SoftmaxLastDim builder). The reference backend will gain
+            // registry-driven dispatch in step 3 alongside the executor
+            // change. Until then, no Op::Fused node should reach here.
+            let _ = shape;
+            unreachable!(
+                "fuel-reference-backend eval_node: Op::Fused arm not yet \
+                 wired (Phase 7.6 step 3). No graph builder emits it; \
+                 reaching here is a programming bug.",
+            );
+        }
     }
 }
 
