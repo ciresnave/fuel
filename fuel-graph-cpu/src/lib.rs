@@ -423,6 +423,7 @@ fn eval_node(
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
         Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
         Op::Unsqueeze { dim } => eval_unsqueeze(*dim, inputs, cache),
+        Op::Squeeze { dim } => eval_squeeze(*dim, inputs, cache),
 
         // --- reductions ---
         Op::SumAll => unary!(inputs, cache, ops::sum_all),
@@ -845,6 +846,46 @@ fn eval_unsqueeze(
         out_dims.len(),
     );
     out_dims.insert(dim, 1);
+    let target = fuel_core_types::Shape::from_dims(&out_dims);
+    match src {
+        AnyTensor::F32(t) => AnyTensor::F32(ops::reshape(t, &target)),
+        AnyTensor::F64(t) => AnyTensor::F64(ops::reshape(t, &target)),
+        AnyTensor::BF16(t) => AnyTensor::BF16(ops::reshape(t, &target)),
+        AnyTensor::F16(t) => AnyTensor::F16(ops::reshape(t, &target)),
+        AnyTensor::U32(t) => AnyTensor::U32(ops::reshape(t, &target)),
+    }
+}
+
+/// Inverse of [`eval_unsqueeze`]: drop a size-1 dimension. Bytes are
+/// unchanged; only the metadata shape differs. The builder already
+/// validates `dim < rank` and `shape[dim] == 1`, so the executor just
+/// reshapes.
+fn eval_squeeze(
+    dim: usize,
+    inputs: &[NodeId],
+    cache: &HashMap<NodeId, AnyTensor>,
+) -> AnyTensor {
+    let src = cache.get(&inputs[0]).expect("squeeze missing input");
+    let in_dims: Vec<usize> = match src {
+        AnyTensor::F32(t) => t.shape().dims().to_vec(),
+        AnyTensor::F64(t) => t.shape().dims().to_vec(),
+        AnyTensor::BF16(t) => t.shape().dims().to_vec(),
+        AnyTensor::F16(t) => t.shape().dims().to_vec(),
+        AnyTensor::U32(t) => t.shape().dims().to_vec(),
+    };
+    assert!(
+        dim < in_dims.len(),
+        "squeeze: dim {dim} out of bounds for rank {}",
+        in_dims.len(),
+    );
+    assert_eq!(
+        in_dims[dim], 1,
+        "squeeze: dim {dim} has size {}, expected 1",
+        in_dims[dim],
+    );
+    let out_dims: Vec<usize> = in_dims.iter().enumerate()
+        .filter_map(|(i, &d)| if i == dim { None } else { Some(d) })
+        .collect();
     let target = fuel_core_types::Shape::from_dims(&out_dims);
     match src {
         AnyTensor::F32(t) => AnyTensor::F32(ops::reshape(t, &target)),
@@ -1546,6 +1587,26 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn squeeze_round_trip_preserves_data() {
+        // squeeze(x, dim) is metadata-only; bytes unchanged. Verify by
+        // building x → squeeze(1) → unsqueeze(1) and confirming the
+        // round-trip output matches x exactly.
+        let data: Vec<f32> = (0..6).map(|i| i as f32).collect();
+        let a = Tensor::from_f32(
+            data.clone(),
+            Shape::from_dims(&[2, 1, 3]),
+            cpu_dev(),
+        );
+        let squeezed = a.squeeze(1);
+        assert_eq!(squeezed.shape().dims(), &[2, 3]);
+        let restored = squeezed.unsqueeze(1);
+        let out = realize_f32(&restored);
+        assert_eq!(out.shape().dims(), &[2, 1, 3]);
+        assert_eq!(out.as_slice(), data.as_slice());
+        assert_equivalent_f32(&restored);
     }
 
     #[test]

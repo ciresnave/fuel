@@ -525,6 +525,17 @@ impl LazyTensor {
         }
     }
 
+    /// Drop the size-1 dimension at position `dim` (range `0..rank`).
+    /// Inverse of nothing-currently-exposed; for Phase B/C use the
+    /// underlying graph's `Tensor::squeeze` directly. Metadata-only
+    /// view; bytes shared with `self`. Panics at build time if the
+    /// dim's size isn't 1.
+    pub fn squeeze(&self, dim: usize) -> Self {
+        Self {
+            inner: self.inner.squeeze(dim),
+        }
+    }
+
     /// Broadcast to a larger shape.
     pub fn broadcast_to(&self, shape: impl Into<Shape>) -> Self {
         Self {

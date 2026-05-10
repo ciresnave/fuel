@@ -200,6 +200,36 @@ impl Layout {
         })
     }
 
+    /// Drop a size-1 dimension at position `dim`. Inverse of
+    /// [`Self::unsqueeze`]. The pruned dim's stride is discarded —
+    /// it's irrelevant for indexing because the dim has size 1.
+    /// Errors if `dim` is out of bounds or its size isn't 1.
+    pub fn squeeze(&self, dim: usize) -> Result<Self> {
+        let rank = self.shape().rank();
+        if dim >= rank {
+            return Err(Error::Msg(format!(
+                "squeeze: dim {dim} out of bounds for rank {rank}",
+            ))
+            .bt());
+        }
+        if self.shape().dims()[dim] != 1 {
+            return Err(Error::Msg(format!(
+                "squeeze: dim {dim} has size {}, expected 1",
+                self.shape().dims()[dim],
+            ))
+            .bt());
+        }
+        let mut new_dims = DimVec::from_slice(self.shape().dims());
+        new_dims.remove(dim);
+        let mut new_stride = DimVec::from_slice(self.stride());
+        new_stride.remove(dim);
+        Ok(Self {
+            shape: Shape::from(new_dims),
+            stride: new_stride,
+            start_offset: self.start_offset,
+        })
+    }
+
     /// Returns a layout broadcast to the given shape.
     ///
     /// Dimensions of size 1 in `self` are stretched to match the target shape.
