@@ -91,6 +91,9 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::MaxReduce,
     OpKind::MinReduce,
     OpKind::MeanReduce,
+    // --- reduce-to-broadcast-target ---
+    OpKind::ReduceSumTo,
+    OpKind::ReduceMaxTo,
 ];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
@@ -185,6 +188,17 @@ impl Judge {
                 OpSize::Reduce { rows: 1 << 4,  cols: 64 },
                 OpSize::Reduce { rows: 1 << 10, cols: 64 },
                 OpSize::Reduce { rows: 1 << 14, cols: 64 },
+            ],
+            // Reduce-to-broadcast-target — reduces a `[rows, cols]`
+            // input to a `[1, cols]` output (sum/max along leading
+            // dim). The canonical autograd-backward shape; broader
+            // patterns (multi-axis, mid-rank insertion) follow once
+            // the dispatch tables can carry them.
+            OpKind::ReduceSumTo
+            | OpKind::ReduceMaxTo => vec![
+                OpSize::ReduceTo { rows: 1 << 4,  cols: 64 },
+                OpSize::ReduceTo { rows: 1 << 10, cols: 64 },
+                OpSize::ReduceTo { rows: 1 << 14, cols: 64 },
             ],
             // OpKind is `#[non_exhaustive]` — future variants land
             // here until the Judge gets a measurement strategy for
@@ -454,6 +468,27 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             );
             apply_reduction(op, &a)
         }
+        // -------- reduce-to-broadcast-target --------
+        //
+        // Reduce `[rows, cols]` to `[1, cols]`. Op::ReduceSumTo and
+        // Op::ReduceMaxTo aren't on the LazyTensor surface yet, so
+        // we drop down to fuel_graph::Tensor for the call.
+        (op, OpSize::ReduceTo { rows, cols }) if is_reduce_to(op) => {
+            let n = rows * cols;
+            let data: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.7e-3).sin()).collect();
+            let a = LazyTensor::from_f32(
+                data,
+                Shape::from_dims(&[rows, cols]),
+                &crate::Device::cpu(),
+            );
+            let target = Shape::from_dims(&[1, cols]);
+            let inner = match op {
+                OpKind::ReduceSumTo => a.graph_tensor().reduce_sum_to(target),
+                OpKind::ReduceMaxTo => a.graph_tensor().reduce_max_to(target),
+                _ => unreachable!(),
+            };
+            LazyTensor::from_graph_tensor(inner)
+        }
         (op, OpSize::Elementwise(n)) if is_unary_elementwise(op) => {
             let raw = unary_input(n);
             let needs_positive = matches!(
@@ -470,6 +505,12 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
     }
+}
+
+/// Whether `op` is a reduce-to-broadcast-target op the Judge profiles
+/// using the `ReduceTo { rows, cols }` size ladder.
+fn is_reduce_to(op: OpKind) -> bool {
+    matches!(op, OpKind::ReduceSumTo | OpKind::ReduceMaxTo)
 }
 
 /// Whether `op` is a per-axis reduction the Judge profiles using the
@@ -770,6 +811,31 @@ mod tests {
             let e = cpu_entries[0];
             // Sum-style reductions accumulate in different order on
             // backend vs reference; allow up to 5e-3.
+            assert!(e.max_rel_error < 5e-3,
+                "cpu vs reference disagreement on {op}: rel_err={}",
+                e.max_rel_error);
+            assert!(e.latency_ns > 0);
+        }
+    }
+
+    #[test]
+    fn judge_profiles_all_reduce_to() {
+        let probe = ProbeReport::probe_all();
+        let reduce_to = [OpKind::ReduceSumTo, OpKind::ReduceMaxTo];
+        let plan: Vec<_> = reduce_to.iter()
+            .map(|&op| (op, OpSize::ReduceTo { rows: 16, cols: 16 }))
+            .collect();
+        let judge = Judge {
+            iterations: 3, warmup: 1,
+            size_plan_override: Some(plan),
+        };
+        let report = judge.run(&probe);
+        for &op in &reduce_to {
+            let cpu_entries: Vec<_> = report.entries.iter()
+                .filter(|e| e.op == op && e.backend == BackendId::Cpu)
+                .collect();
+            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            let e = cpu_entries[0];
             assert!(e.max_rel_error < 5e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
                 e.max_rel_error);
