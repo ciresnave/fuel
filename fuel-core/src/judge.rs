@@ -94,6 +94,10 @@ const PROFILED_OPS: &[OpKind] = &[
     // --- reduce-to-broadcast-target ---
     OpKind::ReduceSumTo,
     OpKind::ReduceMaxTo,
+    // --- scalar / clamp / powi ---
+    OpKind::Affine,
+    OpKind::ClampElementwise,
+    OpKind::PowIElementwise,
 ];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
@@ -171,7 +175,10 @@ impl Judge {
             | OpKind::SiluElementwise
             | OpKind::GeluElementwise
             | OpKind::ReluElementwise
-            | OpKind::StepElementwise => vec![
+            | OpKind::StepElementwise
+            | OpKind::Affine
+            | OpKind::ClampElementwise
+            | OpKind::PowIElementwise => vec![
                 OpSize::Elementwise(1 << 10),
                 OpSize::Elementwise(1 << 16),
                 OpSize::Elementwise(1 << 20),
@@ -489,6 +496,24 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             };
             LazyTensor::from_graph_tensor(inner)
         }
+        // -------- scalar / clamp / powi (one-input non-unary) --------
+        //
+        // Affine here is the canonical MulScalar form (mul=2.0); the
+        // dispatch key OpKind::Affine covers AddScalar too. Clamp uses
+        // bounds [-0.5, 0.5] so roughly half the [-1, 1] sin input
+        // gets clipped, exercising both branches of the kernel. PowI
+        // uses exp=3 so the kernel iterates rather than degenerating
+        // to sqr/identity.
+        (op, OpSize::Elementwise(n)) if is_scalar_op(op) => {
+            let data: Vec<f32> = unary_input(n);
+            let a = LazyTensor::from_f32(data, Shape::from_dims(&[n]), &crate::Device::cpu());
+            match op {
+                OpKind::Affine           => a.mul_scalar(2.0),
+                OpKind::ClampElementwise => a.clamp(-0.5, 0.5),
+                OpKind::PowIElementwise  => LazyTensor::from_graph_tensor(a.graph_tensor().powi(3)),
+                _ => unreachable!(),
+            }
+        }
         (op, OpSize::Elementwise(n)) if is_unary_elementwise(op) => {
             let raw = unary_input(n);
             let needs_positive = matches!(
@@ -505,6 +530,19 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
     }
+}
+
+/// Whether `op` is a one-input scalar / clamp / powi op the Judge
+/// profiles using the `Elementwise(n)` size ladder. These differ
+/// from the unary ops only in carrying static parameters on the op
+/// itself (scalar coefficient, clamp bounds, integer exponent).
+fn is_scalar_op(op: OpKind) -> bool {
+    matches!(
+        op,
+        OpKind::Affine
+        | OpKind::ClampElementwise
+        | OpKind::PowIElementwise,
+    )
 }
 
 /// Whether `op` is a reduce-to-broadcast-target op the Judge profiles
@@ -837,6 +875,33 @@ mod tests {
             assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
             let e = cpu_entries[0];
             assert!(e.max_rel_error < 5e-3,
+                "cpu vs reference disagreement on {op}: rel_err={}",
+                e.max_rel_error);
+            assert!(e.latency_ns > 0);
+        }
+    }
+
+    #[test]
+    fn judge_profiles_all_scalar_ops() {
+        let probe = ProbeReport::probe_all();
+        let scalar = [
+            OpKind::Affine, OpKind::ClampElementwise, OpKind::PowIElementwise,
+        ];
+        let plan: Vec<_> = scalar.iter()
+            .map(|&op| (op, OpSize::Elementwise(1 << 8)))
+            .collect();
+        let judge = Judge {
+            iterations: 3, warmup: 1,
+            size_plan_override: Some(plan),
+        };
+        let report = judge.run(&probe);
+        for &op in &scalar {
+            let cpu_entries: Vec<_> = report.entries.iter()
+                .filter(|e| e.op == op && e.backend == BackendId::Cpu)
+                .collect();
+            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            let e = cpu_entries[0];
+            assert!(e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
                 e.max_rel_error);
             assert!(e.latency_ns > 0);
