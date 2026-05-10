@@ -269,6 +269,15 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise inequality (`self != other`) producing a `U8`
+    /// mask. NaN follows IEEE-754 (`NaN != NaN` is true → `1`).
+    /// Non-differentiable.
+    pub fn ne(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.ne(&other.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.

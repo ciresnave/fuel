@@ -248,6 +248,11 @@ pub enum Op {
     /// Non-differentiable: backward returns `None` for both inputs
     /// (registered via [`crate::grad::NoGradientBinaryRule`]).
     Equal,
+    /// Element-wise inequality (`a != b`) producing a `U8` mask: `1`
+    /// where unequal, `0` otherwise. Same shape/dtype contract as
+    /// [`Op::Equal`]. NaN follows IEEE-754 (`NaN != NaN` is true →
+    /// `1`). Non-differentiable.
+    Ne,
 
     // --- linear algebra and shape ---
     /// Rank-2 matrix multiply.
@@ -769,6 +774,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Recip                => "Recip",
         Op::Abs                  => "Abs",
         Op::Equal                => "Equal",
+        Op::Ne                   => "Ne",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2279,6 +2285,13 @@ impl Tensor {
     /// (`NaN == NaN` is false). Non-differentiable.
     pub fn eq(&self, other: &Tensor) -> Tensor {
         self.binary_compare_op("eq", Op::Equal, other)
+    }
+
+    /// Append a `Ne` node (`self != other`) producing a `U8` mask.
+    /// Same shape/dtype contract as [`Self::eq`]. NaN follows
+    /// IEEE-754 (`NaN != NaN` is true → `1`). Non-differentiable.
+    pub fn ne(&self, other: &Tensor) -> Tensor {
+        self.binary_compare_op("ne", Op::Ne, other)
     }
 
     // --- dtype and broadcasting ---
@@ -3805,7 +3818,7 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::Equal => {
+                Op::Equal | Op::Ne => {
                     // Comparison family: handled by `NoGradientBinaryRule`
                     // via `dispatch_gradient`. The `if let Some(grads) =
                     // dispatch_gradient(...) { continue; }` block above
