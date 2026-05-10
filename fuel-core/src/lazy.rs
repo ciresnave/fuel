@@ -278,6 +278,15 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise strictly-less (`self < other`) producing a `U8`
+    /// mask. NaN-on-either-side is `0` (IEEE-754 unordered).
+    /// Non-differentiable.
+    pub fn lt(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.lt(&other.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.
