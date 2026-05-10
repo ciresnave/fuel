@@ -520,6 +520,12 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Lt => (27, vec![], vec![], vec![], None, None),
         Op::Le => (28, vec![], vec![], vec![], None, None),
         Op::Gt => (29, vec![], vec![], vec![], None, None),
+        // Tag 30 already taken by Op::MatMul below; the comparison
+        // family wraps to 33 (the next free slot above linear-algebra)
+        // for Op::Ge. The family sits at 25-29 + 33 — a small
+        // contiguity break tolerated rather than renumbering existing
+        // ops opportunistically.
+        Op::Ge => (33, vec![], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),
