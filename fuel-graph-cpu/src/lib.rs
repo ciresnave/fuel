@@ -357,6 +357,7 @@ fn eval_node(
         Op::Erf => unary!(inputs, cache, ops::erf),
         Op::GeluErf => unary!(inputs, cache, ops::gelu_erf),
         Op::Pow => binary!(inputs, cache, ops::pow),
+        Op::Rsqrt => unary!(inputs, cache, ops::rsqrt),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1588,6 +1589,52 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn rsqrt_forward_returns_one_over_sqrt() {
+        // rsqrt(1)  = 1
+        // rsqrt(4)  = 0.5
+        // rsqrt(0.25) = 2
+        // rsqrt(9)  ≈ 0.3333333
+        // rsqrt(100) = 0.1
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 4.0, 0.25, 9.0, 100.0],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let r = a.rsqrt();
+        let out = realize_f32(&r);
+        let s = out.as_slice();
+        let expected = [1.0_f32, 0.5, 2.0, 0.333_333_34, 0.1];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-6,
+                "rsqrt[{i}] = {got}, want {want}");
+        }
+        assert_equivalent_f32(&r);
+    }
+
+    #[test]
+    fn rsqrt_backward_matches_minus_half_y_cubed() {
+        // y = x^(-1/2). dy/dx = -0.5 * x^(-3/2) = -0.5 * y³.
+        // At x=1:  y=1,    grad = -0.5 * 1   = -0.5
+        // At x=4:  y=0.5,  grad = -0.5 * 0.125 = -0.0625
+        // At x=0.25: y=2,  grad = -0.5 * 8   = -4.0
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 4.0, 0.25],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let y = a.rsqrt();
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        let s = out.as_slice();
+        let expected = [-0.5_f32, -0.0625, -4.0];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-6,
+                "rsqrt'[{i}] = {got}, want {want}");
+        }
     }
 
     #[test]

@@ -214,6 +214,11 @@ pub enum OpKind {
     /// shape. Distinct from [`PowIElementwise`] (scalar `i32`
     /// exponent). NaN follows IEEE-754 (e.g. `pow(-2, 0.5) = NaN`).
     PowElementwise,
+    /// Element-wise reciprocal square root: `out[i] = 1 / sqrt(x[i])`.
+    /// Single op (vs Sqrt + Recip — combining loses precision and
+    /// doubles kernel launches). Critical for RMSNorm (`x / sqrt(mean(x²)+eps)`
+    /// → `x * rsqrt(mean(x²)+eps)`).
+    RsqrtElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -316,6 +321,7 @@ impl OpKind {
             OpKind::ErfElementwise     => "erf",
             OpKind::GeluErfElementwise => "gelu_erf",
             OpKind::PowElementwise     => "pow",
+            OpKind::RsqrtElementwise   => "rsqrt",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

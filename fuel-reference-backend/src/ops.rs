@@ -1513,6 +1513,16 @@ pub fn powi<T: Float>(x: &RefTensor<T>, n: i32) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Element-wise reciprocal square root: `y[i] = 1 / sqrt(x[i])`.
+/// Single op for the RMSNorm pattern (`x * rsqrt(mean(x²) + eps)`)
+/// — keeping it as one op rather than `sqrt(x).recip()` avoids
+/// the extra kernel launch the planner would otherwise see.
+pub fn rsqrt<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
+    let one = T::one();
+    let data: Vec<T> = x.as_slice().iter().map(|&v| one / v.sqrt()).collect();
+    RefTensor::from_vec(data, x.shape().clone())
+}
+
 /// Element-wise binary power: `y[i] = pow(a[i], b[i])`. Real exponent
 /// (`Float::powf`). Distinct from [`powi`] (scalar `i32` exponent
 /// applied uniformly). NaN follows IEEE-754: e.g. `pow(-2, 0.5) =

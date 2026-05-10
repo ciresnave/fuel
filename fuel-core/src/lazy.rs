@@ -483,6 +483,13 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise reciprocal square root (`1 / sqrt(x)`). Same
+    /// dtype as input. One op rather than `sqrt(x).recip()` — saves
+    /// a kernel launch and matches the RMSNorm shape. Differentiable.
+    pub fn rsqrt(&self) -> Self {
+        Self { inner: self.inner.rsqrt() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

@@ -445,6 +445,16 @@ binary_kernel!(pow_f64, f64, |a: f64, b: f64| a.powf(b), "Elementwise `f64` bina
 binary_kernel!(pow_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().powf(b.to_f32())), "Elementwise `bf16` binary power (via f32).");
 binary_kernel!(pow_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().powf(b.to_f32())), "Elementwise `f16` binary power (via f32).");
 
+// Reciprocal square root. `1 / sqrt(x)` directly; `Float::sqrt`
+// followed by reciprocal is bit-equivalent on IEEE-754, but expressing
+// it as one op (rather than Sqrt + Recip) saves one kernel launch and
+// matches the RMSNorm pattern that drives the demand. Negative inputs
+// give NaN per IEEE.
+unary_f32_kernel!(rsqrt_f32, |x: f32| 1.0 / x.sqrt(), "Elementwise `f32` reciprocal square root: `out[i] = 1 / sqrt(input[i])`.");
+unary_kernel!(rsqrt_f64, f64, |x: f64| 1.0 / x.sqrt(), "Elementwise `f64` reciprocal square root.");
+unary_kernel!(rsqrt_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(1.0 / x.to_f32().sqrt()), "Elementwise `bf16` reciprocal square root (via f32).");
+unary_kernel!(rsqrt_f16, half::f16, |x: half::f16| half::f16::from_f32(1.0 / x.to_f32().sqrt()), "Elementwise `f16` reciprocal square root (via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
