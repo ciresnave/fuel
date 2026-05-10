@@ -422,6 +422,13 @@ pub fn eval_node_with_op(
 
         // --- compositions ---
         Op::SoftmaxLastDim => unary!(inputs, cache, ops::softmax_last_dim),
+        // Phase 7.6 step 3: registry-extended SoftmaxLastDim dispatches to
+        // the same kernel as the legacy variant. The Op::Fused arm handles
+        // the new Tensor::softmax_last_dim builder output directly so the
+        // reference backend doesn't require a pre-lowering pass.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM => {
+            unary!(inputs, cache, ops::softmax_last_dim)
+        }
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),
@@ -504,17 +511,17 @@ pub fn eval_node_with_op(
                 Shape::from_dims(&[0]),
             ))
         }
-        Op::Fused(_id, _params) => {
-            // Phase 7.6 step 2: the Op::Fused arm exists in the enum but
-            // no graph builder emits it yet (step 3 wires the
-            // SoftmaxLastDim builder). The reference backend will gain
-            // registry-driven dispatch in step 3 alongside the executor
-            // change. Until then, no Op::Fused node should reach here.
+        Op::Fused(fid, _params) => {
+            // Phase 7.6 step 3: per-id arms handle the migrated fused
+            // ops (only SoftmaxLastDim today; step 4 adds the rest).
+            // Any unmigrated id reaching here is a programming bug —
+            // the lowering rule should have decomposed it before
+            // execute, or its dispatch arm above should have caught it.
             let _ = shape;
             unreachable!(
-                "fuel-reference-backend eval_node: Op::Fused arm not yet \
-                 wired (Phase 7.6 step 3). No graph builder emits it; \
-                 reaching here is a programming bug.",
+                "fuel-reference-backend eval_node: Op::Fused id {:?} has \
+                 no dispatch arm wired yet. Step 4 extends this match.",
+                fid,
             );
         }
     }

@@ -30,6 +30,8 @@ use crate::{Graph, NodeId};
 use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
+pub mod softmax_last_dim;
+
 /// Stable identifier for a registered fused op. Indexes into
 /// [`FusedOpRegistry::entries`]. Newtype over `u16` (~65K capacity is
 /// plenty; today's catalog is 13-14 entries).
@@ -296,6 +298,16 @@ impl FusedOpRegistry {
         self.by_name.get(name).copied()
     }
 
+    /// Iterate over every registered (non-placeholder) entry. Used by
+    /// [`crate::opt::RuleRegistry::default_rules`] to auto-generate
+    /// one [`crate::opt::LoweringRule`] + [`crate::opt::FusionRule`]
+    /// pair per fused op without naming each entry by hand.
+    pub fn entries_iter(&self) -> impl Iterator<Item = &FusedOpEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.id != FusedOpId::UNASSIGNED)
+    }
+
     /// Number of registered (non-placeholder) entries.
     pub fn len(&self) -> usize {
         self.entries
@@ -344,6 +356,21 @@ impl FusedOps {
     // Step 4 adds: RMS_NORM_LAST_DIM, LAYER_NORM_LAST_DIM, ROPE,
     // FUSED_LINEAR, CONV2D, CONV_TRANSPOSE2D, FLASH_ATTN, PAGED_ATTN,
     // QMATMUL, plus the 4 backward helpers.
+}
+
+/// Process-wide default registry: the union of every fused op's
+/// metadata-side entry. Built once on first access via
+/// [`std::sync::OnceLock`]; immutable thereafter (architecture v1.0:
+/// no runtime extensibility).
+///
+/// Step 3 populates only SoftmaxLastDim; step 4 fills in the other
+/// 12 fused ops as they migrate.
+pub fn default_registry() -> &'static FusedOpRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<FusedOpRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        FusedOpRegistry::new().with_entry(softmax_last_dim::entry())
+    })
 }
 
 #[cfg(test)]

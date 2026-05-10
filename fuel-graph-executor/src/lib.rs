@@ -1656,9 +1656,24 @@ impl<B: GraphBackend> GraphExecutor<B> {
             }
 
             // -- softmax --
+            // Phase 7.6 step 3: dispatch the new Op::Fused(SOFTMAX_LAST_DIM, _)
+            // through the same backend.softmax_last_dim path as the legacy
+            // Op::SoftmaxLastDim variant. The fused-op registry's
+            // BackendImpl is the architecture-target shape; this match arm
+            // is the step-3 bridge that keeps the legacy GraphBackend trait
+            // dispatch working until the binding-table planning-time
+            // refactor (step 9) replaces it with pre-resolved KernelRefs.
             Op::SoftmaxLastDim => {
                 let a = self.get_gt_c(inputs, 0, cache);
                 self.backend.softmax_last_dim(&a.storage, &a.layout()).expect("SoftmaxLastDim")
+            }
+            Op::Fused(fid, _params)
+                if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
+            {
+                let a = self.get_gt_c(inputs, 0, cache);
+                self.backend
+                    .softmax_last_dim(&a.storage, &a.layout())
+                    .expect("Op::Fused(SOFTMAX_LAST_DIM)")
             }
 
             // -- rms norm (fused) --
