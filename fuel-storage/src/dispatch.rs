@@ -3557,6 +3557,43 @@ fn reduce_max_to_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(PowIElementwise, F32, Cuda)`. Element-wise
+/// `y = x^exp` for an integer `exp`, via the `upowi_f32` PTX kernel
+/// (square-and-multiply for bit-exact parity with `f32::powi`).
+/// Mirrors the CPU `powi_elementwise_f32_cpu_wrapper`.
+#[cfg(feature = "cuda")]
+fn powi_elementwise_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "powi_elementwise_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let exp = match params {
+        OpParams::PowI { exp } => *exp,
+        other => {
+            return Err(Error::Msg(format!(
+                "powi_elementwise_f32_cuda_wrapper: expected OpParams::PowI, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::powi_f32(src_cuda, exp)?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(ClampElementwise, F32, Cuda)`. Element-wise
 /// `y = min(max(x, lo), hi)` via the `uclamp_f32` PTX kernel (UNARY_OP2),
 /// on byte-shaped CUDA storage. Mirrors the CPU
@@ -3885,6 +3922,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
     table.register(ClampElementwise,   &unary(f32_dt),  cuda, clamp_elementwise_f32_cuda_wrapper);
+    table.register(PowIElementwise,    &unary(f32_dt),  cuda, powi_elementwise_f32_cuda_wrapper);
 
     // IndexSelect / Gather: gather data from an F32 source via U32
     // indices. Dtype binding key matches the CPU shape:

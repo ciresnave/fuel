@@ -1839,3 +1839,49 @@ fn clamp_elementwise_f32_through_binding_table() {
     let expected: [f32; 7] = [-1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 1.5];
     assert_eq!(host_f32, &expected);
 }
+
+/// End-to-end: integer-power through the unified binding-table
+/// dispatch on CUDA. Tests both positive (exp=3) and the rust-std
+/// f32::powi parity for negatives via square-and-multiply.
+/// Exercises the `(PowIElementwise, F32, Cuda)` entry, which
+/// dispatches `upowi_f32` from the UNARY PTX module via the new
+/// UPOWI_OP macro.
+#[test]
+#[ignore]
+fn powi_elementwise_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs: [f32; 5] = [-2.0, -1.0, 0.0, 1.5, 3.0];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 5 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::PowIElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (PowIElementwise, F32, Cuda)");
+
+    let params = OpParams::PowI { exp: 3 };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[5]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[5]));
+    let layouts = vec![in_layout, out_layout];
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    // Expected: (-2)^3 = -8, (-1)^3 = -1, 0^3 = 0, 1.5^3 = 3.375, 3^3 = 27
+    let expected: [f32; 5] = [-8.0, -1.0, 0.0, 3.375, 27.0];
+    assert_eq!(host_f32, &expected);
+}
