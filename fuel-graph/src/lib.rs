@@ -266,6 +266,11 @@ pub enum Op {
     /// Same shape/dtype contract as [`Op::Equal`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
     Gt,
+    /// Element-wise greater-or-equal (`a >= b`) producing a `U8` mask.
+    /// Same shape/dtype contract as [`Op::Equal`]. NaN-on-either-side
+    /// is always `0`. Non-differentiable. Final variant of the
+    /// comparison family (`Equal`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`).
+    Ge,
 
     // --- linear algebra and shape ---
     /// Rank-2 matrix multiply.
@@ -791,6 +796,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Lt                   => "Lt",
         Op::Le                   => "Le",
         Op::Gt                   => "Gt",
+        Op::Ge                   => "Ge",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2331,6 +2337,13 @@ impl Tensor {
         self.binary_compare_op("gt", Op::Gt, other)
     }
 
+    /// Append a `Ge` node (`self >= other`) producing a `U8` mask.
+    /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
+    /// is always `0`. Non-differentiable.
+    pub fn ge(&self, other: &Tensor) -> Tensor {
+        self.binary_compare_op("ge", Op::Ge, other)
+    }
+
     // --- dtype and broadcasting ---
 
     /// Append a `Cast` node converting this tensor's element type to
@@ -3855,7 +3868,7 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt => {
+                Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`
                     // via `dispatch_gradient`. The `if let Some(grads) =
                     // dispatch_gradient(...) { continue; }` block above

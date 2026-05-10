@@ -303,6 +303,16 @@ impl LazyTensor {
         }
     }
 
+    /// Element-wise greater-or-equal (`self >= other`) producing a
+    /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
+    /// Final variant of the comparison family (`eq` / `ne` / `lt` /
+    /// `le` / `gt` / `ge`).
+    pub fn ge(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.ge(&other.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.

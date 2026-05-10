@@ -460,6 +460,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Lt            => Some(OpKind::LessElementwise),
         Op::Le            => Some(OpKind::LessEqualElementwise),
         Op::Gt            => Some(OpKind::GreaterElementwise),
+        Op::Ge            => Some(OpKind::GreaterEqualElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -2231,6 +2232,46 @@ mod tests {
         // 3.0 > 2.0 → 1;  5.0 > 5.0 → 0 (strict);  2.0 > 3.0 → 0;
         // NaN > 0.0 → 0 (unordered);  1.0 > 0.0 → 1.
         assert_eq!(mask, &[1, 0, 0, 0, 1]);
+    }
+
+    /// E2E: Op::Ge F32 → U8 mask. Greater-or-equal: equality slot
+    /// is `1` (distinguishes from Gt). NaN unordered → `0`. Closes
+    /// the comparison family with full `[Eq, Ne, Lt, Le, Gt, Ge]`
+    /// coverage.
+    #[test]
+    fn pipelined_realize_ge_f32_to_u8_mask() {
+        let lhs = crate::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 0.0]);
+        let rhs = crate::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, ge_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let ge = g.push(Node {
+                op: Op::Ge, inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+            });
+            g.set_target_backend(ge, BackendId::Cpu);
+            (l, r, ge)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, ge_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::U8);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let mask: &[u8] = c.as_slice().expect("u8 view");
+        // 3.0 >= 2.0 → 1;  5.0 >= 5.0 → 1 (key Gt difference);
+        // 2.0 >= 3.0 → 0;  NaN >= 0.0 → 0 (unordered);  0.0 >= 0.0 → 1.
+        assert_eq!(mask, &[1, 1, 0, 0, 1]);
     }
 
     /// E2E: Op::Equal F64 → U8 mask. Confirms the F64 wrapper is
