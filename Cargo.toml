@@ -161,21 +161,21 @@ criterion = { version = "0.8", default-features = false }
 # yolov8 anchor (it loaded the 12.9 cudnn_adv64_9.dll which delay-references
 # cublasLt64_12.dll, which doesn't exist on a CUDA-13 install). Strict
 # superset of alpha.4 — Linux + single-CUDA hosts unchanged.
-baracuda-types      = { version = "0.0.1-alpha.5", features = ["half-crate", "f8-crate"] }
-baracuda-core       = { version = "0.0.1-alpha.5" }
-baracuda-cuda-sys   = { version = "0.0.1-alpha.5" }
-baracuda-driver     = { version = "0.0.1-alpha.5" }
-baracuda-runtime    = { version = "0.0.1-alpha.5" }
-baracuda-cublas-sys = { version = "0.0.1-alpha.5" }
-baracuda-cublas     = { version = "0.0.1-alpha.5" }
-baracuda-cudnn-sys  = { version = "0.0.1-alpha.5" }
-baracuda-cudnn      = { version = "0.0.1-alpha.5", features = ["half-crate"] }
-baracuda-curand-sys = { version = "0.0.1-alpha.5" }
-baracuda-curand     = { version = "0.0.1-alpha.5" }
-baracuda-nvrtc-sys  = { version = "0.0.1-alpha.5" }
-baracuda-nvrtc      = { version = "0.0.1-alpha.5" }
-baracuda-nccl-sys   = { version = "0.0.1-alpha.5" }
-baracuda-nccl       = { version = "0.0.1-alpha.5", features = ["half-crate"] }
+baracuda-types      = { version = "0.0.1-alpha.7", features = ["half-crate", "f8-crate"] }
+baracuda-core       = { version = "0.0.1-alpha.7" }
+baracuda-cuda-sys   = { version = "0.0.1-alpha.7" }
+baracuda-driver     = { version = "0.0.1-alpha.7" }
+baracuda-runtime    = { version = "0.0.1-alpha.7" }
+baracuda-cublas-sys = { version = "0.0.1-alpha.7" }
+baracuda-cublas     = { version = "0.0.1-alpha.7" }
+baracuda-cudnn-sys  = { version = "0.0.1-alpha.7" }
+baracuda-cudnn      = { version = "0.0.1-alpha.7", features = ["half-crate"] }
+baracuda-curand-sys = { version = "0.0.1-alpha.7" }
+baracuda-curand     = { version = "0.0.1-alpha.7" }
+baracuda-nvrtc-sys  = { version = "0.0.1-alpha.7" }
+baracuda-nvrtc      = { version = "0.0.1-alpha.7" }
+baracuda-nccl-sys   = { version = "0.0.1-alpha.7" }
+baracuda-nccl       = { version = "0.0.1-alpha.7", features = ["half-crate"] }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 hf-hub = "0.5.0"
