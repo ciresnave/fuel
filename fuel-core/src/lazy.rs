@@ -477,10 +477,12 @@ impl LazyTensor {
     /// Element-wise binary power `pow(self, other)` (real exponent).
     /// Both operands must share dtype + shape. Distinct from
     /// [`Self::powi`] (scalar `i32` exponent). Differentiable.
-    pub fn pow(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.pow(&other.inner),
-        }
+    /// **Returns `Result`**: dtype/shape mismatch surfaces as a
+    /// typed error.
+    pub fn pow(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self {
+            inner: self.inner.pow(&other.inner)?,
+        })
     }
 
     /// Element-wise reciprocal square root (`1 / sqrt(x)`). Same
@@ -493,31 +495,35 @@ impl LazyTensor {
     /// Element-wise remainder, **PyTorch convention**:
     /// `a - floor(a/b) * b` (sign of result matches divisor; matches
     /// `torch.remainder`, not C99 fmod). Differentiable through `a`
-    /// and `b`.
-    pub fn rem(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.rem(&other.inner),
-        }
+    /// and `b`. **Returns `Result`**: dtype/shape mismatch surfaces
+    /// as a typed error.
+    pub fn rem(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self {
+            inner: self.inner.rem(&other.inner)?,
+        })
     }
 
     /// Reverse element order along `dim`. Materializing op (real
     /// byte shuffle). Differentiable; backward is itself.
-    pub fn flip(&self, dim: usize) -> Self {
-        Self { inner: self.inner.flip(dim) }
+    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
+    pub fn flip(&self, dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.flip(dim)? })
     }
 
     /// Cyclic shift along `dim` by `shift` positions (positive →
     /// higher indices, wrapping). Differentiable; backward is
-    /// `roll(dim, -shift)`.
-    pub fn roll(&self, dim: usize, shift: i64) -> Self {
-        Self { inner: self.inner.roll(dim, shift) }
+    /// `roll(dim, -shift)`. **Returns `Result`**: bad `dim` surfaces
+    /// as a typed error.
+    pub fn roll(&self, dim: usize, shift: i64) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.roll(dim, shift)? })
     }
 
     /// Running cumulative sum along `dim`. Same shape as input.
     /// Differentiable; backward is reverse cumsum (`flip → cumsum
-    /// → flip`).
-    pub fn cumsum(&self, dim: usize) -> Self {
-        Self { inner: self.inner.cumsum(dim) }
+    /// → flip`). **Returns `Result`**: bad `dim` surfaces as a
+    /// typed error.
+    pub fn cumsum(&self, dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.cumsum(dim)? })
     }
 
     /// Pad along `dim` with `before` slots before and `after` slots
@@ -525,10 +531,11 @@ impl LazyTensor {
     /// `dim` extended by `before + after`. Only Constant mode is
     /// implemented; Reflect / Replicate exist as enum stubs that
     /// error at realize time. Differentiable for Constant.
-    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: fuel_graph::PadMode, value: f64) -> Self {
-        Self {
-            inner: self.inner.pad(dim, before, after, mode, value),
-        }
+    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
+    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: fuel_graph::PadMode, value: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self {
+            inner: self.inner.pad(dim, before, after, mode, value)?,
+        })
     }
 
     /// Element-wise integer power (`x.powi(n)`).
@@ -583,14 +590,13 @@ impl LazyTensor {
     }
 
     /// Drop the size-1 dimension at position `dim` (range `0..rank`).
-    /// Inverse of nothing-currently-exposed; for Phase B/C use the
-    /// underlying graph's `Tensor::squeeze` directly. Metadata-only
-    /// view; bytes shared with `self`. Panics at build time if the
-    /// dim's size isn't 1.
-    pub fn squeeze(&self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.squeeze(dim),
-        }
+    /// Metadata-only view; bytes shared with `self`. **Returns
+    /// `Result`** rather than panicking — bad `dim` (out of bounds
+    /// or `shape[dim] != 1`) surfaces as a typed error.
+    pub fn squeeze(&self, dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self {
+            inner: self.inner.squeeze(dim)?,
+        })
     }
 
     /// Broadcast to a larger shape.

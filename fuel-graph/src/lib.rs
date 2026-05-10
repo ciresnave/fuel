@@ -2480,8 +2480,12 @@ impl Tensor {
     /// exponent). Both operands must share dtype and shape. Distinct
     /// from [`Self::powi`] (scalar `i32` exponent). NaN follows
     /// IEEE-754 (`pow(-2, 0.5) = NaN`).
-    pub fn pow(&self, other: &Tensor) -> Tensor {
-        self.binary_op("pow", Op::Pow, other, self.shape())
+    ///
+    /// **Returns `Result`**: dtype/shape mismatch surfaces as a
+    /// typed error, not a panic.
+    pub fn pow(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let out_shape = self.shape();
+        self.try_binary_op("pow", Op::Pow, other, out_shape)
     }
 
     /// Append an `Rsqrt` node (`1 / sqrt(self)`). Same dtype as
@@ -2496,21 +2500,28 @@ impl Tensor {
     /// convention: `a - floor(a/b) * b`, sign of result matches
     /// divisor). Both operands must share dtype and shape.
     /// Differentiable.
-    pub fn rem(&self, other: &Tensor) -> Tensor {
-        self.binary_op("rem", Op::Rem, other, self.shape())
+    ///
+    /// **Returns `Result`**: dtype/shape mismatch surfaces as a
+    /// typed error, not a panic.
+    pub fn rem(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let out_shape = self.shape();
+        self.try_binary_op("rem", Op::Rem, other, out_shape)
     }
 
     /// Append a `Flip` node — reverses element order along `dim`.
     /// Output shape == input shape. Materializing op (real byte
     /// shuffle; not a metadata-only view). Differentiable
     /// (involutive: backward is another Flip on the same dim).
-    pub fn flip(&self, dim: usize) -> Tensor {
+    ///
+    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
+    pub fn flip(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
-        assert!(
-            dim < rank,
-            "flip: dim {dim} out of bounds for rank {rank}",
-        );
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flip: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::Flip { dim },
@@ -2518,23 +2529,26 @@ impl Tensor {
             shape:  in_shape,
             dtype,
         });
-        Self {
+        Ok(Self {
             graph: self.graph.clone(),
             id,
-        }
+        })
     }
 
     /// Append a `Roll` node — cyclic shift along `dim` by `shift`
     /// positions. Positive `shift` moves elements to higher indices
     /// (wrapping); negative the opposite. Output shape == input
     /// shape. Differentiable (backward is `Roll { dim, -shift }`).
-    pub fn roll(&self, dim: usize, shift: i64) -> Tensor {
+    ///
+    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
+    pub fn roll(&self, dim: usize, shift: i64) -> std::result::Result<Tensor, fuel_core_types::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
-        assert!(
-            dim < rank,
-            "roll: dim {dim} out of bounds for rank {rank}",
-        );
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "roll: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::Roll { dim, shift },
@@ -2542,22 +2556,25 @@ impl Tensor {
             shape:  in_shape,
             dtype,
         });
-        Self {
+        Ok(Self {
             graph: self.graph.clone(),
             id,
-        }
+        })
     }
 
     /// Append a `CumSum` node — running cumulative sum along `dim`.
     /// Output shape == input shape. Differentiable; backward is
     /// reverse-cumsum (`Flip → CumSum → Flip`).
-    pub fn cumsum(&self, dim: usize) -> Tensor {
+    ///
+    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
+    pub fn cumsum(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
-        assert!(
-            dim < rank,
-            "cumsum: dim {dim} out of bounds for rank {rank}",
-        );
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "cumsum: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::CumSum { dim },
@@ -2565,10 +2582,10 @@ impl Tensor {
             shape:  in_shape,
             dtype,
         });
-        Self {
+        Ok(Self {
             graph: self.graph.clone(),
             id,
-        }
+        })
     }
 
     /// Append a `Pad` node — extends `dim` by `before` slots before
@@ -2581,14 +2598,17 @@ impl Tensor {
     /// cut; the other modes produce a clean error at realize time.
     /// Differentiable for Constant (backward slices the gradient
     /// to drop the padded regions).
-    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: PadMode, value: f64) -> Tensor {
+    ///
+    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
+    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: PadMode, value: f64) -> std::result::Result<Tensor, fuel_core_types::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
-        assert!(
-            dim < rank,
-            "pad: dim {dim} out of bounds for rank {rank}",
-        );
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "pad: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
         let mut out_dims: Vec<usize> = in_dims.to_vec();
         out_dims[dim] = in_dims[dim] + before + after;
         let dtype = self.dtype();
@@ -2598,10 +2618,10 @@ impl Tensor {
             shape:  Shape::from_dims(&out_dims),
             dtype,
         });
-        Self {
+        Ok(Self {
             graph: self.graph.clone(),
             id,
-        }
+        })
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -2773,23 +2793,26 @@ impl Tensor {
     /// Append a `Squeeze` node that drops the size-1 dimension at
     /// position `dim` (range `0..rank`). Inverse of [`Self::unsqueeze`].
     /// Metadata-only view: the output shares bytes with `self`, with
-    /// the named dim pruned from the Layout side-table. Panics at
-    /// build time if `dim` is out of bounds or the dim's size isn't 1
-    /// — mirrors Unsqueeze's bounds-check pattern (these are graph-
-    /// builder validation, not runtime errors).
-    pub fn squeeze(&self, dim: usize) -> Tensor {
+    /// the named dim pruned from the Layout side-table.
+    ///
+    /// **Returns `Result`** rather than panicking — production paths
+    /// can recover from a bad `dim` instead of crashing. Bad `dim`
+    /// (out of bounds OR `shape[dim] != 1`) surfaces as a typed error.
+    pub fn squeeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
-        assert!(
-            dim < rank,
-            "squeeze: dim {dim} out of bounds for rank {rank} (must be < rank)",
-        );
-        assert_eq!(
-            in_dims[dim], 1,
-            "squeeze: dim {dim} has size {}, expected 1",
-            in_dims[dim],
-        );
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "squeeze: dim {dim} out of bounds for rank {rank} (must be < rank)",
+            )).bt());
+        }
+        if in_dims[dim] != 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "squeeze: dim {dim} has size {}, expected 1",
+                in_dims[dim],
+            )).bt());
+        }
         let out_dims: Vec<usize> = in_dims.iter().enumerate()
             .filter_map(|(i, &d)| if i == dim { None } else { Some(d) })
             .collect();
@@ -2800,10 +2823,10 @@ impl Tensor {
             shape:  Shape::from_dims(&out_dims),
             dtype,
         });
-        Self {
+        Ok(Self {
             graph: self.graph.clone(),
             id,
-        }
+        })
     }
 
     /// Append a `Reshape` node producing `self`'s data under a new shape.
@@ -3565,6 +3588,50 @@ impl Tensor {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Result-returning sibling of [`Self::binary_op`]. Validates the
+    /// graph/dtype/shape preconditions and returns `Err` rather than
+    /// panicking — the production-correct shape new builders should
+    /// use. Existing panicking sites are kept for back-compat; new
+    /// ops should call this directly.
+    fn try_binary_op(
+        &self,
+        name: &'static str,
+        op: Op,
+        other: &Tensor,
+        out_shape: Shape,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        if !Arc::ptr_eq(&self.graph, &other.graph) {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{name}: tensors must live on the same graph",
+            )).bt());
+        }
+        if self.dtype() != other.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{name}: dtype mismatch: lhs={:?}, rhs={:?}",
+                self.dtype(),
+                other.dtype(),
+            )).bt());
+        }
+        if self.shape().dims() != other.shape().dims() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{name}: shape mismatch: lhs={:?}, rhs={:?}",
+                self.shape().dims(),
+                other.shape().dims(),
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op,
+            inputs: vec![self.id, other.id],
+            shape: out_shape,
+            dtype,
+        });
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
     }
 
     fn unary_op(&self, op: Op) -> Tensor {
@@ -7197,7 +7264,7 @@ mod tests {
             Shape::from_dims(&[2, 1, 3]),
             cpu_dev(),
         );
-        let s = a.squeeze(1);
+        let s = a.squeeze(1).expect("squeeze on size-1 dim");
         assert_eq!(s.shape().dims(), &[2, 3]);
         assert_eq!(s.dtype(), DType::F32);
         let node = s.graph().read().unwrap().node(s.id()).clone();
@@ -7210,17 +7277,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "expected 1")]
     fn squeeze_rejects_non_size_one_dim() {
+        // Result-returning: bad dim surfaces as Err, not panic.
         let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
-        let _ = a.squeeze(1);  // dim 1 has size 3, not 1
+        let err = a.squeeze(1).expect_err("squeezing a non-size-1 dim must error");
+        assert!(format!("{err:?}").contains("expected 1"),
+            "error message should mention the size-1 expectation, got: {err:?}");
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds")]
     fn squeeze_rejects_dim_above_rank() {
         let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
-        let _ = a.squeeze(5);
+        let err = a.squeeze(5).expect_err("dim above rank must error");
+        assert!(format!("{err:?}").contains("out of bounds"),
+            "error message should mention bounds, got: {err:?}");
     }
 
     #[test]
@@ -7232,7 +7302,7 @@ mod tests {
             Shape::from_dims(&[2, 1, 3]),
             cpu_dev(),
         );
-        let y = a.squeeze(1);
+        let y = a.squeeze(1).expect("squeeze on size-1 dim");
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
         assert_eq!(g_a.shape().dims(), &[2, 1, 3],
