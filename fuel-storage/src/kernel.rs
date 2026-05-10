@@ -434,6 +434,15 @@ pub enum OpParams {
         inner_count: usize,
         shift: i64,
     },
+
+    /// Running cumulative sum along one dim. Same flat-3-axis view
+    /// as `Flip`/`Roll`. Output is always the same dtype as input;
+    /// kernel needs typed addition so it's per-dtype (unlike Flip/Roll).
+    CumSum {
+        outer_count: usize,
+        dim_size: usize,
+        inner_count: usize,
+    },
 }
 
 // =============================================================================

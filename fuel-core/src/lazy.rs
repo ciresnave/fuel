@@ -513,6 +513,13 @@ impl LazyTensor {
         Self { inner: self.inner.roll(dim, shift) }
     }
 
+    /// Running cumulative sum along `dim`. Same shape as input.
+    /// Differentiable; backward is reverse cumsum (`flip → cumsum
+    /// → flip`).
+    pub fn cumsum(&self, dim: usize) -> Self {
+        Self { inner: self.inner.cumsum(dim) }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

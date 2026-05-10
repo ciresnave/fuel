@@ -605,6 +605,50 @@ fn flip_cpu_wrapper(
     )
 }
 
+/// Build a `(1 input, 1 output)` CPU dispatch wrapper for the
+/// per-dtype CumSum kernels. The kernel name is bound at macro
+/// invocation; geometry comes from `OpParams::CumSum`.
+macro_rules! cpu_cumsum_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer, dim_size, inner) = match params {
+                OpParams::CumSum { outer_count, dim_size, inner_count } => {
+                    (*outer_count, *dim_size, *inner_count)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::CumSum, got {other:?}",
+                        $op_name,
+                    ))
+                    .bt())
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, outer, dim_size, inner)
+        }
+    };
+}
+
+cpu_cumsum_wrapper!(cumsum_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f32, "cumsum_f32");
+cpu_cumsum_wrapper!(cumsum_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f64, "cumsum_f64");
+cpu_cumsum_wrapper!(cumsum_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_bf16, "cumsum_bf16");
+cpu_cumsum_wrapper!(cumsum_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f16, "cumsum_f16");
+
 /// Dispatch wrapper for `(Roll, *, Cpu)`. Dtype-agnostic at the byte
 /// level. Same shape as Flip plus a signed `shift`.
 fn roll_cpu_wrapper(
@@ -2716,6 +2760,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Roll, &unary(f16_dt),  cpu, roll_cpu_wrapper);
     table.register(Roll, &unary(u32_dt),  cpu, roll_cpu_wrapper);
     table.register(Roll, &unary(u8_dt),   cpu, roll_cpu_wrapper);
+
+    // CumSum is per-dtype (typed accumulation, not byte copy).
+    table.register(CumSum, &unary(f32_dt),  cpu, cumsum_f32_cpu_wrapper);
+    table.register(CumSum, &unary(f64_dt),  cpu, cumsum_f64_cpu_wrapper);
+    table.register(CumSum, &unary(bf16_dt), cpu, cumsum_bf16_cpu_wrapper);
+    table.register(CumSum, &unary(f16_dt),  cpu, cumsum_f16_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);
