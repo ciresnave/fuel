@@ -219,6 +219,12 @@ pub enum OpKind {
     /// doubles kernel launches). Critical for RMSNorm (`x / sqrt(mean(x²)+eps)`
     /// → `x * rsqrt(mean(x²)+eps)`).
     RsqrtElementwise,
+    /// Element-wise remainder, **PyTorch convention**:
+    /// `out[i] = a[i] - floor(a[i] / b[i]) * b[i]`. The sign of the
+    /// result matches the sign of the divisor (differs from C99 `fmod`
+    /// which has the sign of the dividend; `f32::%` is also fmod-style).
+    /// Same dtype + shape on both inputs.
+    RemElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -322,6 +328,7 @@ impl OpKind {
             OpKind::GeluErfElementwise => "gelu_erf",
             OpKind::PowElementwise     => "pow",
             OpKind::RsqrtElementwise   => "rsqrt",
+            OpKind::RemElementwise     => "rem",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

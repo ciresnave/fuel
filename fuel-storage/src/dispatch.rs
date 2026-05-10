@@ -562,6 +562,11 @@ cpu_unary_wrapper!(rsqrt_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_ker
 cpu_unary_wrapper!(rsqrt_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rsqrt_bf16, "rsqrt_elementwise");
 cpu_unary_wrapper!(rsqrt_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rsqrt_f16, "rsqrt_elementwise");
 
+cpu_binary_wrapper!(rem_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f32, "rem_elementwise");
+cpu_binary_wrapper!(rem_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f64, "rem_elementwise");
+cpu_binary_wrapper!(rem_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_bf16, "rem_elementwise");
+cpu_binary_wrapper!(rem_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f16, "rem_elementwise");
+
 /// Generate a CPU argextremum wrapper. Output dtype is U32; the
 /// binding-table key is keyed on the OUTPUT dtype = U32. The
 /// wrapper validates the input is F32 (only F32 is wired today).
@@ -2614,6 +2619,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(RsqrtElementwise, &unary(f64_dt),  cpu, rsqrt_elementwise_f64_cpu_wrapper);
     table.register(RsqrtElementwise, &unary(bf16_dt), cpu, rsqrt_elementwise_bf16_cpu_wrapper);
     table.register(RsqrtElementwise, &unary(f16_dt),  cpu, rsqrt_elementwise_f16_cpu_wrapper);
+
+    table.register(RemElementwise, &binary(f32_dt),  cpu, rem_elementwise_f32_cpu_wrapper);
+    table.register(RemElementwise, &binary(f64_dt),  cpu, rem_elementwise_f64_cpu_wrapper);
+    table.register(RemElementwise, &binary(bf16_dt), cpu, rem_elementwise_bf16_cpu_wrapper);
+    table.register(RemElementwise, &binary(f16_dt),  cpu, rem_elementwise_f16_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);

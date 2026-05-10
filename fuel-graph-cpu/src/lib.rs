@@ -358,6 +358,7 @@ fn eval_node(
         Op::GeluErf => unary!(inputs, cache, ops::gelu_erf),
         Op::Pow => binary!(inputs, cache, ops::pow),
         Op::Rsqrt => unary!(inputs, cache, ops::rsqrt),
+        Op::Rem => binary!(inputs, cache, ops::rem),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1589,6 +1590,55 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn rem_forward_uses_pytorch_convention() {
+        // PyTorch: result has sign of divisor (a - floor(a/b) * b).
+        //   rem( 5,  3) =  2
+        //   rem(-5,  3) =  1     (NOT -2 like C99 fmod)
+        //   rem( 5, -3) = -1     (NOT 2 like rem_euclid)
+        //   rem(-5, -3) = -2
+        //   rem( 7.5, 2.5) = 0
+        //   rem( 7.3, 2.0) = 1.3 (within float precision)
+        let a = Tensor::from_f32(
+            vec![5.0_f32, -5.0,  5.0, -5.0, 7.5, 7.3],
+            Shape::from_dims(&[6]),
+            cpu_dev(),
+        );
+        let b = a.const_f32_like(
+            vec![3.0_f32,  3.0, -3.0, -3.0, 2.5, 2.0],
+            Shape::from_dims(&[6]),
+        );
+        let r = a.rem(&b);
+        let out = realize_f32(&r);
+        let s = out.as_slice();
+        let expected = [2.0_f32, 1.0, -1.0, -2.0, 0.0, 1.3];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-5,
+                "rem[{i}] = {got}, want {want}");
+        }
+        assert_equivalent_f32(&r);
+    }
+
+    #[test]
+    fn rem_backward_da_is_identity_db_is_neg_floor_div() {
+        // d/da = 1, d/db = -floor(a/b).
+        // At (a=5, b=3):  grad_a = 1,    grad_b = -floor(5/3) = -1
+        // At (a=-5, b=3): grad_a = 1,    grad_b = -floor(-5/3) = -(-2) = 2
+        // At (a=7, b=4):  grad_a = 1,    grad_b = -floor(7/4) = -1
+        let a = Tensor::from_f32(vec![5.0_f32, -5.0, 7.0], Shape::from_dims(&[3]), cpu_dev());
+        let b = a.const_f32_like(vec![3.0_f32, 3.0, 4.0], Shape::from_dims(&[3]));
+        let y = a.rem(&b);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let g_b = grads.get(&b).expect("gradient for b");
+        let g_a_out = realize_f32(&g_a);
+        let g_b_out = realize_f32(&g_b);
+        assert_eq!(g_a_out.as_slice(), &[1.0_f32, 1.0, 1.0],
+            "rem grad_a is identity");
+        assert_eq!(g_b_out.as_slice(), &[-1.0_f32, 2.0, -1.0],
+            "rem grad_b is -floor(a/b)");
     }
 
     #[test]

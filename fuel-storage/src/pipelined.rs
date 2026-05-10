@@ -470,6 +470,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::GeluErf       => Some(OpKind::GeluErfElementwise),
         Op::Pow           => Some(OpKind::PowElementwise),
         Op::Rsqrt         => Some(OpKind::RsqrtElementwise),
+        Op::Rem           => Some(OpKind::RemElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),

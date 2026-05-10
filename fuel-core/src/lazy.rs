@@ -490,6 +490,16 @@ impl LazyTensor {
         Self { inner: self.inner.rsqrt() }
     }
 
+    /// Element-wise remainder, **PyTorch convention**:
+    /// `a - floor(a/b) * b` (sign of result matches divisor; matches
+    /// `torch.remainder`, not C99 fmod). Differentiable through `a`
+    /// and `b`.
+    pub fn rem(&self, other: &Self) -> Self {
+        Self {
+            inner: self.inner.rem(&other.inner),
+        }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

@@ -455,6 +455,15 @@ unary_kernel!(rsqrt_f64, f64, |x: f64| 1.0 / x.sqrt(), "Elementwise `f64` recipr
 unary_kernel!(rsqrt_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(1.0 / x.to_f32().sqrt()), "Elementwise `bf16` reciprocal square root (via f32).");
 unary_kernel!(rsqrt_f16, half::f16, |x: half::f16| half::f16::from_f32(1.0 / x.to_f32().sqrt()), "Elementwise `f16` reciprocal square root (via f32).");
 
+// Remainder, PyTorch convention: `a - floor(a/b) * b`. Sign of result
+// matches sign of divisor — distinct from `f32::%` (C99 fmod, sign of
+// dividend) and from `f32::rem_euclid` (always non-negative). Picked
+// to match `torch.remainder` for cross-framework compatibility.
+binary_kernel!(rem_f32, f32, |a: f32, b: f32| a - (a / b).floor() * b, "Elementwise `f32` remainder (PyTorch convention: sign of divisor).");
+binary_kernel!(rem_f64, f64, |a: f64, b: f64| a - (a / b).floor() * b, "Elementwise `f64` remainder (PyTorch convention).");
+binary_kernel!(rem_bf16, half::bf16, |a: half::bf16, b: half::bf16| { let af = a.to_f32(); let bf = b.to_f32(); half::bf16::from_f32(af - (af / bf).floor() * bf) }, "Elementwise `bf16` remainder (PyTorch convention, via f32).");
+binary_kernel!(rem_f16, half::f16, |a: half::f16, b: half::f16| { let af = a.to_f32(); let bf = b.to_f32(); half::f16::from_f32(af - (af / bf).floor() * bf) }, "Elementwise `f16` remainder (PyTorch convention, via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================

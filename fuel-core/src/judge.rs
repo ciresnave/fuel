@@ -114,6 +114,7 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::RsqrtElementwise,
     // --- elementwise binary additions ---
     OpKind::PowElementwise,
+    OpKind::RemElementwise,
     // --- elementwise binary fanout ---
     OpKind::SubElementwise,
     OpKind::MulElementwise,
@@ -198,6 +199,7 @@ impl Judge {
             | OpKind::MaximumElementwise
             | OpKind::MinimumElementwise
             | OpKind::PowElementwise
+            | OpKind::RemElementwise
             | OpKind::NegElementwise
             | OpKind::SqrElementwise
             | OpKind::SqrtElementwise
@@ -637,7 +639,8 @@ fn is_binary_elementwise(op: OpKind) -> bool {
         | OpKind::DivElementwise
         | OpKind::MaximumElementwise
         | OpKind::MinimumElementwise
-        | OpKind::PowElementwise,
+        | OpKind::PowElementwise
+        | OpKind::RemElementwise,
     )
 }
 
@@ -658,6 +661,10 @@ fn binary_inputs(op: OpKind, n: usize) -> (Vec<f32>, Vec<f32>) {
         for x in &mut a { *x += 1.5; }
         for x in &mut b { *x += 1.5; }
     }
+    if matches!(op, OpKind::RemElementwise) {
+        // Divisor must be away from zero (`a / b` blows up otherwise).
+        for x in &mut b { *x += 1.5; }
+    }
     (a, b)
 }
 
@@ -675,6 +682,7 @@ fn apply_binary(
         OpKind::MaximumElementwise => a.maximum(b),
         OpKind::MinimumElementwise => a.minimum(b),
         OpKind::PowElementwise     => a.pow(b),
+        OpKind::RemElementwise     => a.rem(b),
         _ => unreachable!("apply_binary called on non-binary OpKind {op:?}"),
     }
 }
@@ -878,7 +886,7 @@ mod tests {
         let binary = [
             OpKind::AddElementwise, OpKind::SubElementwise, OpKind::MulElementwise,
             OpKind::DivElementwise, OpKind::MaximumElementwise, OpKind::MinimumElementwise,
-            OpKind::PowElementwise,
+            OpKind::PowElementwise, OpKind::RemElementwise,
         ];
         let plan: Vec<_> = binary.iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))
