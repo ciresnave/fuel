@@ -383,6 +383,26 @@ pub fn eval_node_with_op(
         Op::Pow => binary!(inputs, cache, ops::pow),
         Op::Rsqrt => unary!(inputs, cache, ops::rsqrt),
         Op::Rem => binary!(inputs, cache, ops::rem),
+        Op::Flip { dim } => {
+            let src = cache.get(&inputs[0]).expect("flip missing input");
+            match src {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::flip(t, *dim)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::flip(t, *dim)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::flip(t, *dim)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::flip(t, *dim)),
+                AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::flip(t, *dim)),
+            }
+        }
+        Op::Roll { dim, shift } => {
+            let src = cache.get(&inputs[0]).expect("roll missing input");
+            match src {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::roll(t, *dim, *shift)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::roll(t, *dim, *shift)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::roll(t, *dim, *shift)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::roll(t, *dim, *shift)),
+                AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::roll(t, *dim, *shift)),
+            }
+        }
 
         // --- comparison family (output dtype = U8) ---
         // Output dtype differs from inputs (always U8); AnyRefTensor

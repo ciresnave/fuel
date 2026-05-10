@@ -225,6 +225,15 @@ pub enum OpKind {
     /// which has the sign of the dividend; `f32::%` is also fmod-style).
     /// Same dtype + shape on both inputs.
     RemElementwise,
+    /// Reverse the order of elements along one dim. Dtype-agnostic
+    /// at the byte level. Materializing op (Layout strides are
+    /// unsigned; the negative-stride view path requires a wider
+    /// stride representation that's a separate scope).
+    Flip,
+    /// Cyclic shift along one dim by a signed `shift`. Wraps
+    /// (e.g. `roll([0,1,2], shift=1) = [2,0,1]`). Materializing op,
+    /// dtype-agnostic.
+    Roll,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -329,6 +338,8 @@ impl OpKind {
             OpKind::PowElementwise     => "pow",
             OpKind::RsqrtElementwise   => "rsqrt",
             OpKind::RemElementwise     => "rem",
+            OpKind::Flip               => "flip",
+            OpKind::Roll               => "roll",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

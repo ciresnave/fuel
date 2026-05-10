@@ -327,6 +327,15 @@ pub enum Op {
     ///   d/da = 1
     ///   d/db = -floor(a/b)
     Rem,
+    /// Reverse the order of elements along `dim`. Materializing op
+    /// (not a view) — `Layout`'s strides are `usize` so the
+    /// negative-stride view path isn't representable. Backward is
+    /// `Flip { dim }` itself (involutive).
+    Flip { dim: usize },
+    /// Cyclic shift along `dim` by `shift` positions (positive
+    /// shifts move elements to higher indices, wrapping around).
+    /// Materializing op. Backward is `Roll { dim, -shift }`.
+    Roll { dim: usize, shift: i64 },
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -883,6 +892,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Pow                  => "Pow",
         Op::Rsqrt                => "Rsqrt",
         Op::Rem                  => "Rem",
+        Op::Flip{..}             => "Flip",
+        Op::Roll{..}             => "Roll",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2451,6 +2462,54 @@ impl Tensor {
     /// Differentiable.
     pub fn rem(&self, other: &Tensor) -> Tensor {
         self.binary_op("rem", Op::Rem, other, self.shape())
+    }
+
+    /// Append a `Flip` node — reverses element order along `dim`.
+    /// Output shape == input shape. Materializing op (real byte
+    /// shuffle; not a metadata-only view). Differentiable
+    /// (involutive: backward is another Flip on the same dim).
+    pub fn flip(&self, dim: usize) -> Tensor {
+        let in_shape = self.shape();
+        let rank = in_shape.dims().len();
+        assert!(
+            dim < rank,
+            "flip: dim {dim} out of bounds for rank {rank}",
+        );
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Flip { dim },
+            inputs: vec![self.id],
+            shape:  in_shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a `Roll` node — cyclic shift along `dim` by `shift`
+    /// positions. Positive `shift` moves elements to higher indices
+    /// (wrapping); negative the opposite. Output shape == input
+    /// shape. Differentiable (backward is `Roll { dim, -shift }`).
+    pub fn roll(&self, dim: usize, shift: i64) -> Tensor {
+        let in_shape = self.shape();
+        let rank = in_shape.dims().len();
+        assert!(
+            dim < rank,
+            "roll: dim {dim} out of bounds for rank {rank}",
+        );
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Roll { dim, shift },
+            inputs: vec![self.id],
+            shape:  in_shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -4148,6 +4207,34 @@ impl Tensor {
                         vec![up_id, scaled],
                         x_shape,
                         dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Flip { dim } => {
+                    // y = flip(x, dim). Backward is another Flip on
+                    // the same dim — Flip is its own inverse
+                    // (involutive). One backward node, exact gradient.
+                    let dim = dim;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle, Op::Flip { dim },
+                        vec![up_id], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Roll { dim, shift } => {
+                    // y = roll(x, dim, shift). Backward is the opposite
+                    // shift along the same dim. One backward node.
+                    let dim = dim;
+                    let shift = shift;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle, Op::Roll { dim, shift: -shift },
+                        vec![up_id], x_shape, dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }

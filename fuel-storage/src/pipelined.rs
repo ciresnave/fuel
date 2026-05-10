@@ -471,6 +471,8 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Pow           => Some(OpKind::PowElementwise),
         Op::Rsqrt         => Some(OpKind::RsqrtElementwise),
         Op::Rem           => Some(OpKind::RemElementwise),
+        Op::Flip { .. }   => Some(OpKind::Flip),
+        Op::Roll { .. }   => Some(OpKind::Roll),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -762,6 +764,54 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::SoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::Flip { dim } => {
+            // Single input. Precompute the flat-3-axis split
+            // (outer × dim × inner) from the input shape.
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::Flip expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let in_dims = in_layout.shape().dims();
+            if *dim >= in_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::Flip: dim {dim} out of range for rank {}",
+                    in_dims.len(),
+                ))
+                .bt());
+            }
+            let outer_count: usize = in_dims[..*dim].iter().product();
+            let dim_size = in_dims[*dim];
+            let inner_count: usize = in_dims[*dim + 1..].iter().product();
+            OpParams::Flip { outer_count, dim_size, inner_count }
+        }
+        Op::Roll { dim, shift } => {
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::Roll expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let in_dims = in_layout.shape().dims();
+            if *dim >= in_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::Roll: dim {dim} out of range for rank {}",
+                    in_dims.len(),
+                ))
+                .bt());
+            }
+            let outer_count: usize = in_dims[..*dim].iter().product();
+            let dim_size = in_dims[*dim];
+            let inner_count: usize = in_dims[*dim + 1..].iter().product();
+            OpParams::Roll {
+                outer_count, dim_size, inner_count, shift: *shift,
+            }
         }
         Op::IndexAdd { dim } => {
             // Inputs: (base, indices, src). All same dtype except

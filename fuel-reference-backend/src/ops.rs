@@ -1523,6 +1523,56 @@ pub fn rsqrt<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Reverse element order along `dim`. Dtype-agnostic — bound is
+/// `T: Copy + Default` since the kernel does only assignment, no
+/// arithmetic.
+pub fn flip<T: Copy + Default>(x: &RefTensor<T>, dim: usize) -> RefTensor<T> {
+    let in_dims = x.shape().dims();
+    assert!(dim < in_dims.len(), "flip: dim {dim} out of range");
+    let outer: usize = in_dims[..dim].iter().product();
+    let d = in_dims[dim];
+    let inner: usize = in_dims[dim + 1..].iter().product();
+    let src = x.as_slice();
+    let mut out = vec![T::default(); outer * d * inner];
+    for o in 0..outer {
+        for j in 0..d {
+            let src_j = d - 1 - j;
+            let in_off = (o * d + src_j) * inner;
+            let out_off = (o * d + j) * inner;
+            out[out_off..out_off + inner]
+                .copy_from_slice(&src[in_off..in_off + inner]);
+        }
+    }
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
+/// Cyclic shift along `dim` by `shift` positions (wraps). Positive
+/// `shift` moves elements to higher indices.
+pub fn roll<T: Copy + Default>(x: &RefTensor<T>, dim: usize, shift: i64) -> RefTensor<T> {
+    let in_dims = x.shape().dims();
+    assert!(dim < in_dims.len(), "roll: dim {dim} out of range");
+    let outer: usize = in_dims[..dim].iter().product();
+    let d = in_dims[dim];
+    let inner: usize = in_dims[dim + 1..].iter().product();
+    let src = x.as_slice();
+    let mut out = vec![T::default(); outer * d * inner];
+    if d == 0 {
+        return RefTensor::from_vec(out, x.shape().clone());
+    }
+    let dd = d as i64;
+    let s = ((shift % dd) + dd) % dd;
+    for o in 0..outer {
+        for j in 0..d {
+            let src_j = (j as i64 - s).rem_euclid(dd) as usize;
+            let in_off = (o * d + src_j) * inner;
+            let out_off = (o * d + j) * inner;
+            out[out_off..out_off + inner]
+                .copy_from_slice(&src[in_off..in_off + inner]);
+        }
+    }
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
 /// Element-wise remainder, **PyTorch convention** (matches
 /// `torch.remainder`): `y[i] = a[i] - floor(a[i] / b[i]) * b[i]`.
 /// The result has the sign of the divisor — distinct from C99 fmod

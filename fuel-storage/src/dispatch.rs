@@ -567,6 +567,80 @@ cpu_binary_wrapper!(rem_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kern
 cpu_binary_wrapper!(rem_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_bf16, "rem_elementwise");
 cpu_binary_wrapper!(rem_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f16, "rem_elementwise");
 
+/// Dispatch wrapper for `(Flip, *, Cpu)`. Dtype-agnostic at the byte
+/// level — `dtype_size` flows from the output Storage. Geometry
+/// (`outer_count`, `dim_size`, `inner_count`) is precomputed by
+/// `op_to_op_params` from the input shape + flip dim.
+fn flip_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "flip wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer, dim_size, inner) = match params {
+        OpParams::Flip { outer_count, dim_size, inner_count } => {
+            (*outer_count, *dim_size, *inner_count)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "flip wrapper expects OpParams::Flip, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::flip_cpu(
+        in_cpu, out_cpu, outer, dim_size, inner, dtype_size,
+    )
+}
+
+/// Dispatch wrapper for `(Roll, *, Cpu)`. Dtype-agnostic at the byte
+/// level. Same shape as Flip plus a signed `shift`.
+fn roll_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "roll wrapper expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer, dim_size, inner, shift) = match params {
+        OpParams::Roll { outer_count, dim_size, inner_count, shift } => {
+            (*outer_count, *dim_size, *inner_count, *shift)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "roll wrapper expects OpParams::Roll, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::roll_cpu(
+        in_cpu, out_cpu, outer, dim_size, inner, shift, dtype_size,
+    )
+}
+
 /// Generate a CPU argextremum wrapper. Output dtype is U32; the
 /// binding-table key is keyed on the OUTPUT dtype = U32. The
 /// wrapper validates the input is F32 (only F32 is wired today).
@@ -2624,6 +2698,24 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(RemElementwise, &binary(f64_dt),  cpu, rem_elementwise_f64_cpu_wrapper);
     table.register(RemElementwise, &binary(bf16_dt), cpu, rem_elementwise_bf16_cpu_wrapper);
     table.register(RemElementwise, &binary(f16_dt),  cpu, rem_elementwise_f16_cpu_wrapper);
+
+    // Flip and Roll are dtype-agnostic at the byte level — the
+    // wrappers read `dtype_size` from the output Storage. Register
+    // one wrapper per dtype so the binding-table key matches the
+    // execute-time dtype list.
+    table.register(Flip, &unary(f32_dt),  cpu, flip_cpu_wrapper);
+    table.register(Flip, &unary(f64_dt),  cpu, flip_cpu_wrapper);
+    table.register(Flip, &unary(bf16_dt), cpu, flip_cpu_wrapper);
+    table.register(Flip, &unary(f16_dt),  cpu, flip_cpu_wrapper);
+    table.register(Flip, &unary(u32_dt),  cpu, flip_cpu_wrapper);
+    table.register(Flip, &unary(u8_dt),   cpu, flip_cpu_wrapper);
+
+    table.register(Roll, &unary(f32_dt),  cpu, roll_cpu_wrapper);
+    table.register(Roll, &unary(f64_dt),  cpu, roll_cpu_wrapper);
+    table.register(Roll, &unary(bf16_dt), cpu, roll_cpu_wrapper);
+    table.register(Roll, &unary(f16_dt),  cpu, roll_cpu_wrapper);
+    table.register(Roll, &unary(u32_dt),  cpu, roll_cpu_wrapper);
+    table.register(Roll, &unary(u8_dt),   cpu, roll_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);
