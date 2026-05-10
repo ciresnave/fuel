@@ -280,6 +280,12 @@ pub enum Op {
     /// Element-wise ceiling (`⌈x⌉`). Same dtype as input. Backward
     /// drops gradient (mirrors [`Op::Floor`]).
     Ceil,
+    /// Element-wise round-to-nearest with **banker's rounding**
+    /// (round-half-to-even, IEEE 754 roundeven). 0.5 → 0, 1.5 → 2,
+    /// 2.5 → 2 (NOT 3), 3.5 → 4. Matches NumPy/PyTorch defaults and
+    /// differs from C99 `round()` (half-away-from-zero) at exact ties.
+    /// Backward drops gradient (mirrors [`Op::Floor`]).
+    Round,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -821,6 +827,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Where                => "Where",
         Op::Floor                => "Floor",
         Op::Ceil                 => "Ceil",
+        Op::Round                => "Round",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2336,6 +2343,13 @@ impl Tensor {
     /// Backward drops gradient (non-differentiable almost everywhere).
     pub fn ceil(&self) -> Tensor {
         self.unary_op(Op::Ceil)
+    }
+
+    /// Append a `Round` node — banker's rounding (round-half-to-even,
+    /// IEEE 754 roundeven). 0.5 → 0, 1.5 → 2, 2.5 → 2, 3.5 → 4.
+    /// Output dtype = input dtype. Backward drops gradient.
+    pub fn round(&self) -> Tensor {
+        self.unary_op(Op::Round)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -3961,12 +3975,12 @@ impl Tensor {
                     // Handled by `WhereRule` via `dispatch_gradient`;
                     // this arm only exists for exhaustiveness.
                 }
-                Op::Floor | Op::Ceil => {
-                    // d(floor(x))/dx and d(ceil(x))/dx are 0 almost
-                    // everywhere (Dirac train at integer x has no
-                    // finite representation). Treat the derivative as
-                    // 0 and stop propagation — mirrors `Op::Step`'s
-                    // backward.
+                Op::Floor | Op::Ceil | Op::Round => {
+                    // d(floor(x))/dx, d(ceil(x))/dx, d(round(x))/dx
+                    // are all 0 almost everywhere (Dirac train at
+                    // integer / half-integer x has no finite
+                    // representation). Treat the derivative as 0 and
+                    // stop propagation — mirrors `Op::Step`'s backward.
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`
