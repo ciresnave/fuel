@@ -14,6 +14,15 @@ and ease of use. Try our online demos:
 [Segment
 Anything](https://huggingface.co/spaces/radames/fuel-segment-anything-wasm).
 
+## Architecture
+
+For the durable description of what fuel is and how it's structured, see
+[`docs/architecture/`](docs/architecture/00-index.md). The architecture set
+covers the IR, the optimization model, the backend contract, runtime,
+tolerance, persistence, and what fuel deliberately doesn't try to be.
+For the in-flight phase work and the planned order, see
+[`ROADMAP.md`](ROADMAP.md).
+
 ## Get started
 
 Make sure that you have [`fuel-core`](https://github.com/huggingface/fuel/tree/main/fuel-core) correctly installed as described in [**Installation**](https://huggingface.github.io/fuel/guide/installation.html).

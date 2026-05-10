@@ -2,6 +2,15 @@
 
 **Status**: design v1, 2026-05-03. Iterating before code lands.
 
+> **2026-05-09 update — anchored to architecture v1.0**: this design doc was drafted before the architecture set in [`docs/architecture/`](architecture/00-index.md) was established. Most of its commitments survive unchanged in the v1.0 architecture and should be read alongside the relevant architecture sections:
+>
+> - **Storage as `(bytes, dtype, device)` substrate**: aligned with [03-ir](architecture/03-ir.md) and [05-backend-contract](architecture/05-backend-contract.md).
+> - **Backend capability advertisement** (`(op, dtype)` support matrix, required alignment, transfer paths): aligned with [05-backend-contract §What every backend provides](architecture/05-backend-contract.md#what-every-backend-provides). Architecture v1.0 adds two more advertised dimensions: per-kernel `PrecisionGuarantee` (replaces the OracleGrade-style flag) and slot capacity (the per-device parallelism advertisement).
+> - **CPU as universal fallback**: aligned with the architecture v1.0 "always-built backend coverage commitment" — the always-built backend (fuel-cpu-backend by convention) provides at least one `bit_stable_on_same_hardware: true` kernel for every primitive op as the architectural coverage guarantee.
+> - **Phase A/B/C/D phasing**: still applicable; resume against the v1.0-aligned target.
+>
+> Where this doc and the architecture set conflict, the architecture set wins. This doc carries the implementation-side detail (Phase A through D migration steps); the architecture set carries the durable architectural commitments.
+
 ## TL;DR
 
 Today's storage architecture is asymmetric: GPU backends already store data as bytes addressable through opaque handles (`CUdeviceptr`, `VkBuffer`), while CPU storage is over-typed via the 14-variant `HostBuffer` enum. Realize bridges, executor caches, and dispatch logic each separately re-derive what dtype a chunk of memory holds.

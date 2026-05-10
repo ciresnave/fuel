@@ -3,6 +3,10 @@
 This document routes you to the right crate based on what you are trying to do.
 Read the section that matches your goal, then follow the links.
 
+For the architectural context (what fuel is, how it's structured, what it
+commits to), see [`docs/architecture/`](docs/architecture/00-index.md). This
+guide describes *the API surface*; the architecture set describes *the system*.
+
 ---
 
 ## "I just want to do tensor math"
