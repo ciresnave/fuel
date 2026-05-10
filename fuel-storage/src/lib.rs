@@ -33,6 +33,7 @@
 
 pub mod compiled;
 pub mod dispatch;
+pub mod fused;
 pub mod kernel;
 pub mod pipelined;
 

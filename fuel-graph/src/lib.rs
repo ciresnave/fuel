@@ -43,6 +43,7 @@
 
 pub mod grad;
 pub mod opt;
+pub mod registry;
 
 use fuel_core_types::{DeviceLocation, DType, Layout, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
