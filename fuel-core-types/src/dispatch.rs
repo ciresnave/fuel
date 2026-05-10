@@ -155,6 +155,12 @@ pub enum OpKind {
     MaximumElementwise,
     /// Element-wise tensor minimum: `y[i] = min(lhs[i], rhs[i])`.
     MinimumElementwise,
+    /// Element-wise equality `a == b`. Both inputs share dtype `T`;
+    /// output is a `U8` mask (`1` where equal, `0` otherwise). The
+    /// binding-table dtype list is keyed `[T, T, U8]`, mirroring the
+    /// ArgMax convention of carrying the output dtype explicitly when
+    /// it differs from the inputs.
+    EqualElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -243,6 +249,7 @@ impl OpKind {
             OpKind::PowIElementwise   => "powi",
             OpKind::MaximumElementwise => "maximum",
             OpKind::MinimumElementwise => "minimum",
+            OpKind::EqualElementwise   => "eq",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

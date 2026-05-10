@@ -455,6 +455,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Step          => Some(OpKind::StepElementwise),
         Op::Recip         => Some(OpKind::RecipElementwise),
         Op::Abs           => Some(OpKind::AbsElementwise),
+        Op::Equal         => Some(OpKind::EqualElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),
@@ -2026,6 +2027,88 @@ mod tests {
         assert_eq!(guard.dtype, DType::F64);
         let crate::BackendStorage::Cpu(c) = &guard.inner;
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
+    }
+
+    /// E2E: Op::Equal F32 → U8 mask through the pipelined executor.
+    /// Verifies (a) the binding-table key `(EqualElementwise, [F32, F32, U8],
+    /// Cpu)` resolves, (b) the executor allocates a U8-sized output
+    /// buffer (1 byte per element, not 4), (c) the kernel writes the
+    /// expected mask bits including IEEE-754 NaN handling
+    /// (`NaN == NaN` is false).
+    #[test]
+    fn pipelined_realize_eq_f32_to_u8_mask() {
+        let lhs = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
+        let rhs = crate::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, eq_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[5]), dtype: DType::F32,
+            });
+            let eq = g.push(Node {
+                op: Op::Equal, inputs: vec![l, r],
+                shape: Shape::from_dims(&[5]), dtype: DType::U8,
+            });
+            g.set_target_backend(eq, BackendId::Cpu);
+            (l, r, eq)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::U8);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let mask: &[u8] = c.as_slice().expect("u8 view");
+        // Index 0: 1.0 == 1.0 → 1.
+        // Index 1: 2.0 != 5.0 → 0.
+        // Index 2: 3.0 == 3.0 → 1.
+        // Index 3: NaN == NaN → 0 (IEEE-754).
+        // Index 4: 0.0 == -0.0 → 1 (IEEE-754 zero equality).
+        assert_eq!(mask, &[1, 0, 1, 0, 1]);
+    }
+
+    /// E2E: Op::Equal F64 → U8 mask. Confirms the F64 wrapper is
+    /// independently registered and routed (binding-table key
+    /// `(EqualElementwise, [F64, F64, U8], Cpu)`).
+    #[test]
+    fn pipelined_realize_eq_f64_to_u8_mask() {
+        let lhs = crate::from_slice_cpu(&[1.0_f64, 2.0, 3.0]);
+        let rhs = crate::from_slice_cpu(&[1.0_f64, 2.0, 4.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, eq_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+            });
+            let r = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F64,
+            });
+            let eq = g.push(Node {
+                op: Op::Equal, inputs: vec![l, r],
+                shape: Shape::from_dims(&[3]), dtype: DType::U8,
+            });
+            g.set_target_backend(eq, BackendId::Cpu);
+            (l, r, eq)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(r_id, Arc::new(RwLock::new(rhs)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::U8);
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let mask: &[u8] = c.as_slice().expect("u8 view");
+        assert_eq!(mask, &[1, 1, 0]);
     }
 
     /// E2E: Q4_0 QMatMul through the pipelined executor — proves

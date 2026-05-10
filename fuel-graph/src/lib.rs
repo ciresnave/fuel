@@ -238,6 +238,17 @@ pub enum Op {
     /// Element-wise absolute value (`|x|`).
     Abs,
 
+    // --- element-wise comparison (output is U8 mask) ---
+    /// Element-wise equality (`a == b`) producing a `U8` mask: `1`
+    /// where the inputs are equal, `0` otherwise. Both operands must
+    /// share dtype and shape. NaN follows IEEE-754 (`NaN == NaN` is
+    /// false). Output dtype is always `U8`, regardless of input dtype
+    /// — the binding-table key is `[T, T, U8]`.
+    ///
+    /// Non-differentiable: backward returns `None` for both inputs
+    /// (registered via [`crate::grad::NoGradientBinaryRule`]).
+    Equal,
+
     // --- linear algebra and shape ---
     /// Rank-2 matrix multiply.
     MatMul,
@@ -757,6 +768,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Step                 => "Step",
         Op::Recip                => "Recip",
         Op::Abs                  => "Abs",
+        Op::Equal                => "Equal",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2261,6 +2273,14 @@ impl Tensor {
         self.unary_op(Op::Abs)
     }
 
+    /// Append an `Equal` node (`self == other`) producing a `U8` mask.
+    /// Both operands must share dtype and shape; output dtype is `U8`
+    /// (`1` where equal, `0` otherwise). NaN follows IEEE-754
+    /// (`NaN == NaN` is false). Non-differentiable.
+    pub fn eq(&self, other: &Tensor) -> Tensor {
+        self.binary_compare_op("eq", Op::Equal, other)
+    }
+
     // --- dtype and broadcasting ---
 
     /// Append a `Cast` node converting this tensor's element type to
@@ -3108,6 +3128,43 @@ impl Tensor {
         }
     }
 
+    /// Binary builder for ops whose inputs share dtype/shape but whose
+    /// output is a `U8` mask (`Op::Equal` and the rest of the
+    /// comparison family). Differs from [`Self::binary_op`] only in the
+    /// node's output dtype: always `DType::U8` regardless of input
+    /// dtype.
+    fn binary_compare_op(&self, name: &'static str, op: Op, other: &Tensor) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &other.graph),
+            "{name}: tensors must live on the same graph",
+        );
+        assert_eq!(
+            self.dtype(),
+            other.dtype(),
+            "{name}: dtype mismatch: lhs={:?}, rhs={:?}",
+            self.dtype(),
+            other.dtype(),
+        );
+        assert_eq!(
+            self.shape().dims(),
+            other.shape().dims(),
+            "{name}: shape mismatch: lhs={:?}, rhs={:?}",
+            self.shape().dims(),
+            other.shape().dims(),
+        );
+        let shape = self.shape();
+        let id = self.graph.write().unwrap().push(Node {
+            op,
+            inputs: vec![self.id, other.id],
+            shape,
+            dtype: DType::U8,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Build the backward graph from `self`, treating `self` as the output
     /// whose gradient drives the rest of the computation.
     ///
@@ -3747,6 +3804,17 @@ impl Tensor {
                         dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Equal => {
+                    // Comparison family: handled by `NoGradientBinaryRule`
+                    // via `dispatch_gradient`. The `if let Some(grads) =
+                    // dispatch_gradient(...) { continue; }` block above
+                    // intercepts before we get here. This arm exists only
+                    // for exhaustiveness; it should be unreachable in
+                    // practice. Keeping it as a no-op rather than
+                    // `unreachable!()` defends against a future hand-edit
+                    // that removes the dispatcher arm by mistake — the
+                    // graph still terminates traversal cleanly.
                 }
                 Op::Cast(_) => {
                     // Forward: y = cast(x, target_dtype).
@@ -6322,6 +6390,20 @@ mod tests {
         }).count();
         assert_eq!(step_count, 2,
             "Abs backward must reference exactly 2 Step nodes, got {step_count}");
+    }
+
+    #[test]
+    fn eq_builder_produces_u8_output_with_input_shape() {
+        // Tensor::eq builds a binary node whose dtype is U8 regardless
+        // of input dtype, with shape == lhs.shape() (and == rhs.shape()).
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
+        let m = a.eq(&b);
+        assert_eq!(m.shape().dims(), &[3]);
+        assert_eq!(m.dtype(), DType::U8, "eq output must be U8");
+        let m_node = m.graph().read().unwrap().node(m.id()).clone();
+        assert!(matches!(m_node.op, Op::Equal));
+        assert_eq!(m_node.inputs, vec![a.id(), b.id()]);
     }
 
     #[test]
