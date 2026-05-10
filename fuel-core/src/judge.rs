@@ -43,6 +43,7 @@
 use crate::probe::ProbeReport;
 use fuel_core_types::probe::{BackendId, DeviceDescriptor};
 use fuel_core_types::{DType, Result, Shape};
+use std::panic::AssertUnwindSafe;
 use std::time::Instant;
 
 // Re-export the dispatch types (moved to fuel-core-types so
@@ -56,6 +57,16 @@ pub use fuel_core_types::dispatch::{
 
 /// Default filename for the persisted profile report.
 pub const PROFILE_REPORT_FILENAME: &str = "judge.json";
+
+/// Op kinds the Judge currently profiles. Each entry must have a
+/// matching `size_plan` arm (returning a non-empty ladder) and a
+/// matching `build_input_graph` arm. New families land here as they
+/// ship; the order here is the order entries appear in the persisted
+/// report (deterministic for diff-friendly output).
+const PROFILED_OPS: &[OpKind] = &[
+    OpKind::MatMul,
+    OpKind::AddElementwise,
+];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
     crate::probe::default_report_path()
@@ -140,7 +151,7 @@ impl Judge {
             // profile entries carry their own device_index so dispatch
             // lookups are by full identity, not by index).
             let rep = devs[0];
-            for &op in &[OpKind::MatMul, OpKind::AddElementwise] {
+            for &op in PROFILED_OPS {
                 for sz in self.size_plan(op) {
                     if let Some(entry) = self.measure_on_device(op, DType::F32, &sz, rep) {
                         // Replicate the (latency, error) across every
@@ -206,6 +217,12 @@ impl Judge {
 
     /// Build the op's input graph, realize it for warmup+timed runs,
     /// measure latency, compare against reference for precision.
+    ///
+    /// Both the reference realize and the backend's realize are wrapped
+    /// in `catch_unwind` — a backend that doesn't yet implement the op
+    /// (or panics on a corner-case input) is logged and skipped, not
+    /// fatal to the run. This is what makes the Judge safe to expand
+    /// across the full op surface ahead of every backend's coverage.
     fn time_op(
         &self,
         op: OpKind,
@@ -214,17 +231,48 @@ impl Judge {
         size_class: SizeClass,
         realizer: &mut dyn crate::factories::LazyRealizer,
     ) -> Option<ProfileEntry> {
-        let tensor = build_input_graph(op, size);
+        let tensor = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+            build_input_graph(op, size)
+        })) {
+            Ok(t) => t,
+            Err(_) => {
+                eprintln!(
+                    "judge: skipping {op}@{size:?} — build_input_graph panicked",
+                );
+                return None;
+            }
+        };
 
         // Precision check — do this first while the reference
         // backend's output is fresh (avoids fighting the compiler
         // over closure borrows later).
-        let reference_out = tensor.realize_f32_reference();
+        let reference_out = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+            tensor.realize_f32_reference()
+        })) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "judge: skipping {op}@{size:?} — reference realize panicked",
+                );
+                return None;
+            }
+        };
 
         // Warmup — discard timings; stabilize kernel caches, warm up
-        // any BLAS internal state, fault-in heap.
+        // any BLAS internal state, fault-in heap. If any warmup call
+        // panics (e.g. backend doesn't support this op), skip the
+        // entire (op, backend) cell.
         for _ in 0..self.warmup {
-            let _ = realizer.realize_f32(&tensor);
+            let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                realizer.realize_f32(&tensor)
+            }));
+            if r.is_err() {
+                eprintln!(
+                    "judge: skipping {op}@{size:?} on {}:{} — backend realize panicked",
+                    device.backend, device.device_index,
+                );
+                return None;
+            }
         }
 
         // Timed iterations — record each and take the median so one
@@ -233,7 +281,18 @@ impl Judge {
         let mut max_rel_error: f32 = 0.0;
         for _ in 0..self.iterations {
             let t0 = Instant::now();
-            let out = realizer.realize_f32(&tensor);
+            let out = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                realizer.realize_f32(&tensor)
+            })) {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!(
+                        "judge: skipping {op}@{size:?} on {}:{} — backend realize panicked mid-run",
+                        device.backend, device.device_index,
+                    );
+                    return None;
+                }
+            };
             let elapsed_ns = t0.elapsed().as_nanos() as u64;
             timings_ns.push(elapsed_ns);
 
@@ -264,8 +323,18 @@ impl Judge {
 /// report shape — the report uses the bucketed [`SizeClass`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpSize {
+    /// Dense matmul `[m, k] @ [k, n] -> [m, n]`.
     MatMul { m: usize, n: usize, k: usize },
+    /// Flat 1-D shape used by unary, binary, scalar/affine, clamp, powi
+    /// kernels. Probe builds inputs of shape `[n]`.
     Elementwise(usize),
+    /// Reduction along the last dim of a 2-D shape `[rows, cols]`.
+    /// Total element count = rows × cols. Used for `SumReduce` /
+    /// `MaxReduce` / `MinReduce` / `MeanReduce`.
+    Reduce { rows: usize, cols: usize },
+    /// Reduce-to-broadcast-target from `[rows, cols]` → `[1, cols]`
+    /// (sum-reduce-along-rows). Used for `ReduceSumTo` / `ReduceMaxTo`.
+    ReduceTo { rows: usize, cols: usize },
 }
 
 impl OpSize {
@@ -273,6 +342,8 @@ impl OpSize {
         match *self {
             OpSize::MatMul { m, n, k: _ } => m * n,
             OpSize::Elementwise(n) => n,
+            OpSize::Reduce { rows, cols } => rows * cols,
+            OpSize::ReduceTo { rows, cols } => rows * cols,
         }
     }
 }
