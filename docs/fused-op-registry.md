@@ -1,10 +1,12 @@
-# Phase 7.6 — FusedOpRegistry implementation design (v2)
+# Phase 7.6 — FusedOpRegistry implementation design (v3)
 
-**Status**: design v2, 2026-05-09. Anchored to architecture v1.0 (see [`docs/architecture/`](architecture/00-index.md)).
+**Status**: design v3, 2026-05-09. Anchored to architecture v1.0 (see [`docs/architecture/`](architecture/00-index.md)). Steps 1-3 shipped on `feature/storage-unification` (commits `408ff57a`, `e15f0ce9`, `10f04b87`); step 4+ pending.
 
 This document is the implementation-side design for Phase 7.6. Architectural commitments live in the architecture set; this document carries the *how* — type shapes, file layouts, migration steps, code-shape examples, open implementation questions.
 
-**v2 supersedes the original Phase 7.6 design** (which used a `NodeKind::{Primitive | Fused}` discriminator and treated the registry crate location as an open question). Architecture v1.0 made several decisions that change the implementation-side picture:
+**v3 corrects v2's crate-placement of `FusedOpEntry::backend_impls`**: v2 wrote a single `FusedOpEntry` struct in `fuel-graph` carrying `SmallVec<[(BackendId, BackendImpl); 4]>`, but `BackendImpl` carries `KernelRef` (in `fuel-storage`) and `fuel-storage` already depends on `fuel-graph`, not the reverse. The correct shape — described in architecture v1.0 §03-ir's "What lives where" table but only loosely in v2 — is a **two-half registry joined by `FusedOpId`**: metadata in `fuel-graph::registry`, kernel payloads in `fuel-storage::fused`. v3 makes the split explicit and updates the type shapes + migration steps accordingly. Surfaced during step-1 implementation 2026-05-09.
+
+**v2 superseded the original Phase 7.6 design** (which used a `NodeKind::{Primitive | Fused}` discriminator and treated the registry crate location as an open question). Architecture v1.0 made several decisions that change the implementation-side picture:
 
 - **Op-shape A locked**: single `Op` enum with primitive variants + one `Op::Fused(FusedOpId, FusedOpParams)` arm. No separate `NodeKind` discriminator type.
 - **Pre-resolved `KernelRef` per node**: binding table is a planning-time catalog, not a runtime lookup.
@@ -72,17 +74,23 @@ pub enum Op {
 }
 ```
 
-### Registry types
+### Registry types — split across two crates, joined by `FusedOpId`
 
-In `fuel-graph` (metadata side):
+The registry is two halves: graph-side metadata in `fuel-graph::registry` and kernel-side payload in `fuel-storage::fused`. The split exists because `KernelRef` lives in `fuel-storage` (which already depends on `fuel-graph`), so a single struct holding both pattern callables and `KernelRef` cannot live in either crate without inverting the dependency. `FusedOpId` is the runtime join key: the optimizer reads the metadata-side entry to reason about decomposition / shape / backward, then asks the kernel-side `FusedKernelRegistry` for the per-backend `BackendImpl` when it needs to pre-resolve a `KernelRef`.
+
+#### Graph-side metadata in `fuel-graph::registry`
 
 ```rust
 pub struct FusedOpId(pub u16);  // newtype; ~65K capacity is plenty
 
+impl FusedOpId {
+    pub const UNASSIGNED: FusedOpId = FusedOpId(0);  // reserved sentinel; slot 0
+}
+
 pub struct FusedOpRegistry {
-    entries:         Vec<FusedOpEntry>,
+    entries:         Vec<FusedOpEntry>,                  // id-indexed; slot 0 = UNASSIGNED placeholder
     by_name:         HashMap<&'static str, FusedOpId>,
-    by_pattern_hash: HashMap<PatternHash, FusedOpId>,  // for fusion-pass anchoring
+    by_pattern_hash: HashMap<PatternHash, FusedOpId>,    // reserved for the step-4 declarative pattern engine
 }
 
 pub struct FusedOpEntry {
@@ -104,30 +112,32 @@ pub struct FusedOpEntry {
     /// the backward from the primitive decomposition), or `NotDifferentiable`.
     pub backward: BackwardKind,
 
-    /// Per-backend kernel implementations. Each carries the kernel function
-    /// pointer, cost estimate, and PrecisionGuarantee.
-    pub backend_impls: SmallVec<[(BackendId, BackendImpl); 4]>,
-
     /// Shape/dtype rules for graph builders + autograd + cost evaluation.
     pub shape_rule: fn(&[Shape], &FusedOpParams) -> Shape,
     pub dtype_rule: fn(&[DType], &FusedOpParams) -> DType,
+
+    // Per-backend kernel implementations live in fuel-storage::fused
+    // (FusedKernelRegistry, keyed by FusedOpId). They are NOT a field on
+    // this struct because BackendImpl carries KernelRef which lives in
+    // fuel-storage (which already depends on fuel-graph). See "split"
+    // note above.
 }
 
 pub enum FusedOpParams {
-    SoftmaxLastDim,
-    RmsNormLastDim       { eps: f64 },
-    LayerNormLastDim     { eps: f64 },
-    Rope,
-    FusedLinear,
-    Conv2D               { stride: (usize, usize), padding: (usize, usize), groups: usize },
-    ConvTranspose2D      { /* ... */ },
-    FlashAttn            { softmax_scale: f32, causal: bool, /* ... */ },
-    PagedAttn            { /* ... */ },
-    QMatMul              { quant_type: QuantType, k: usize, n: usize },
-    SoftmaxLastDimBackward,
-    LayerNormLastDimBackward { eps: f64 },
-    RmsNormLastDimBackward   { eps: f64 },
-    ReduceMaxToBackward,
+    SoftmaxLastDim,                      // step 3 (shipped)
+    RmsNormLastDim       { eps: f64 },   // step 4
+    LayerNormLastDim     { eps: f64 },   // step 4
+    Rope,                                // step 4
+    FusedLinear,                         // step 4
+    Conv2D               { stride: (usize, usize), padding: (usize, usize), groups: usize },  // step 4
+    ConvTranspose2D      { /* ... */ },  // step 4
+    FlashAttn            { softmax_scale: f32, causal: bool, /* ... */ },  // step 4
+    PagedAttn            { /* ... */ },  // step 4
+    QMatMul              { quant_type: QuantType, k: usize, n: usize },    // step 4
+    SoftmaxLastDimBackward,                                                 // step 4
+    LayerNormLastDimBackward { eps: f64 },                                  // step 4
+    RmsNormLastDimBackward   { eps: f64 },                                  // step 4
+    ReduceMaxToBackward,                                                    // step 4
     // Future fused ops add a variant here. The variant is the single point
     // of growth in fuel-graph for fused-op extension.
 }
@@ -137,9 +147,21 @@ pub enum BackwardKind {
     Decompose,                 // autograd derives backward from primitive decomposition
     NotDifferentiable,         // panics in backward (like ArgMaxDim)
 }
+
+pub enum SubgraphPattern {
+    Declarative(PatternTree),                                       // step 4 wires the engine
+    Callable(fn(&Graph, NodeId) -> Option<PatternMatch>),           // step 3 ships this arm
+}
+
+pub struct PatternMatch {
+    pub bindings: Vec<(usize, NodeId)>,   // var-id → resolved NodeId
+}
+
+/// Process-wide default registry. Built once via `OnceLock`; immutable thereafter.
+pub fn default_registry() -> &'static FusedOpRegistry { /* ... */ }
 ```
 
-In `fuel-storage` (BackendImpl payload side; lives here because it carries `KernelRef`):
+#### Kernel-side payload in `fuel-storage::fused`
 
 ```rust
 pub struct BackendImpl {
@@ -162,6 +184,29 @@ pub struct PrecisionGuarantee {  // see docs/architecture/05-backend-contract.md
     pub max_relative: Option<f64>,
     pub max_absolute: Option<f64>,
     pub notes:        &'static str,
+}
+
+impl PrecisionGuarantee {
+    pub const REFERENCE: Self = /* ... */;   // bit-stable, ULP=0; reference IEEE-754
+    pub const UNKNOWN:   Self = /* ... */;   // step-7 lint replaces every UNKNOWN with a real claim
+}
+
+pub struct KernelRevisionHash(pub u64);
+
+impl KernelRevisionHash {
+    pub const UNTRACKED: Self = KernelRevisionHash(0);  // step-9 wires real hashing
+}
+
+/// Kernel-side registry: FusedOpId → list of per-backend BackendImpls.
+/// Joined to fuel-graph::registry::FusedOpRegistry by id at runtime.
+pub struct FusedKernelRegistry {
+    by_id: HashMap<FusedOpId, SmallVec<[(BackendId, BackendImpl); 4]>>,
+}
+
+impl FusedKernelRegistry {
+    pub fn register(&mut self, id: FusedOpId, backend: BackendId, impl_: BackendImpl);
+    pub fn lookup(&self, id: FusedOpId, backend: BackendId) -> Option<BackendImpl>;
+    pub fn impls_for(&self, id: FusedOpId) -> &[(BackendId, BackendImpl)];
 }
 ```
 
@@ -265,41 +310,53 @@ Today's lookup happens per node per realize. Post-migration, the route picker re
 
 Eleven steps. Each is independently shippable. Tree compiles green at every commit boundary.
 
-### Step 1: registry skeleton (no callers)
+### Step 1: registry skeleton (no callers) — **shipped 2026-05-09 (`408ff57a`)**
 
-In fuel-graph:
+In `fuel-graph::registry` (graph-side metadata):
 
-- `FusedOpId(u16)` newtype.
-- `FusedOpRegistry` struct with `entries` Vec + the two indices.
-- `FusedOpEntry` struct.
+- `FusedOpId(u16)` newtype + `FusedOpId::UNASSIGNED` sentinel.
+- `FusedOps` associated-constants struct (`SOFTMAX_LAST_DIM = FusedOpId(1)`).
+- `FusedOpRegistry` struct with id-indexed `entries` Vec + `by_name` index + reserved `by_pattern_hash` index.
+- `FusedOpEntry` struct (without `backend_impls` — see split note above).
 - `FusedOpParams` enum (start with one variant: `SoftmaxLastDim`; extend per migration).
-- `FusedOpFamily`, `BackwardKind`, `SubgraphPattern` types.
+- `FusedOpFamily`, `BackwardKind`, `SubgraphPattern { Declarative(PatternTree), Callable(fn) }`, `PatternMatch`, `PatternTree` (placeholder), `FusedOpParamsKey` (for CSE/op_key dedup).
 
-In fuel-storage:
+In `fuel-storage::fused` (kernel-side payload):
 
 - `BackendImpl` struct.
-- `PrecisionGuarantee` struct (per architecture v1.0).
+- `PrecisionGuarantee` struct (per architecture v1.0) with `REFERENCE` and `UNKNOWN` consts.
 - `CostEstimate` struct.
+- `KernelRevisionHash` newtype with `UNTRACKED` sentinel.
+- `FusedKernelRegistry` struct (id → `SmallVec<[(BackendId, BackendImpl); 4]>`).
 
 No callers; types compile; no behavior change. Tree green.
 
-### Step 2: extend `Op` enum with `Op::Fused(FusedOpId, FusedOpParams)` arm
+### Step 2: extend `Op` enum with `Op::Fused(FusedOpId, FusedOpParams)` arm — **shipped 2026-05-09 (`e15f0ce9`)**
 
-Add the variant to `Op`. Existing variants (`Op::SoftmaxLastDim`, etc.) coexist with the new arm during migration. Update `op_short_name`, `op_key`, autograd's match, and any other exhaustive consumers to handle the new arm (initially as an unreachable `match` arm or a delegation to the registry).
+Added the variant to `Op`. Existing variants (`Op::SoftmaxLastDim`, etc.) coexist with the new arm during migration. Updated `op_short_name`, `op_key` (CSE keyed on `(id, FusedOpParamsKey)`), autograd's match (panic stub until step 3), and the four exhaustive executor consumers (`fuel-graph-executor`, `fuel-graph-cpu`, `fuel-reference-backend` — `unreachable!()` arms; `fuel-storage::pipelined::op_to_op_kind` and `op_to_op_params` — wildcard catch-all needed no edit).
 
 Tree compiles green; no behavior change yet (no nodes use `Op::Fused`).
 
-### Step 3: migrate first fused op (SoftmaxLastDim) end-to-end
+### Step 3: migrate first fused op (SoftmaxLastDim) end-to-end — **shipped 2026-05-09 (`10f04b87`)**
 
 The proof-of-concept commit. After this step, one fused op flows through the registry; the others use the legacy variants.
 
-- Create the SoftmaxLastDim registry entry: name, params, pattern, decompose function, backward (`BackwardKind::Fused(SOFTMAX_BACKWARD_ID)`), backend_impls (initially CPU only; CUDA / Vulkan added in step 4 alongside the per-backend coverage migration).
-- Teach the executor's eval_node to dispatch `Op::Fused(SOFTMAX_LAST_DIM_ID, _)` through the registry's BackendImpl + KernelRef.
-- Update `Tensor::softmax_last_dim()` builder to emit `Op::Fused(SOFTMAX_LAST_DIM_ID, FusedOpParams::SoftmaxLastDim)` instead of `Op::SoftmaxLastDim`.
-- Auto-generate the SoftmaxLastDim lowering and fusion rules from the registry entry.
-- Delete PR 3's hand-written `SoftmaxLastDimLowerRule` and `SoftmaxLastDimFuseRule`.
+- Created the SoftmaxLastDim registry entry in `fuel-graph::registry::softmax_last_dim`: pattern (`SubgraphPattern::Callable`), decompose fn (port of PR 3's `SoftmaxLastDimLowerRule::rewrite`), shape/dtype passthrough rules, `BackwardKind::NotDifferentiable` (the *backward* fused-op itself migrates in step 4; `Tensor::backward` dispatches the SoftmaxLastDim arm directly until then).
+- Process-wide `default_registry()` factory (`OnceLock`-backed).
+- Auto-generated `LoweringRule` and `FusionRule` types in `fuel-graph::opt` that read `decompose` / pattern from a `FusedOpEntry`. `RuleRegistry::default_rules` and `RuleRegistry::lowering_only` iterate `default_registry().entries_iter()` and produce one rule pair per registered fused op.
+- Deleted PR 3's hand-written `SoftmaxLastDimLowerRule` and `SoftmaxLastDimFuseRule`.
+- `Tensor::softmax_last_dim()` builder emits `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim)` instead of `Op::SoftmaxLastDim`. Legacy variant stays in the enum during migration; step 5 drops it.
+- `Tensor::backward` per-id arm: `Op::Fused(SOFTMAX_LAST_DIM, _)` emits `Op::SoftmaxLastDimBackward` (legacy variant); the proper `BackwardKind::Fused(SOFTMAX_LAST_DIM_BACKWARD)` connection lands when the backward fused-op migrates in step 4.
+- Executor dispatch arms in `fuel-graph-executor`, `fuel-graph-cpu`, `fuel-reference-backend`: each routes `Op::Fused(SOFTMAX_LAST_DIM, _)` to the same softmax-last-dim kernel as the legacy variant. Step-3 bridge pattern; step 9 replaces these with pre-resolved KernelRefs from the route picker.
+- `fuel-storage::pipelined::op_to_op_kind` + `op_to_op_params`: both shapes resolve to `OpKind::SoftmaxLastDim` and `OpParams::SoftmaxLastDim`, so existing per-dtype CPU/CUDA wrappers continue to handle dispatch unchanged.
 
-Tree compiles green; live CUDA equivalence test (`cuda_executor_matches_cpu_on_softmax_via_lowering`) still passes via the registry-dispatched path. **This is the natural pause point if the session needs to end early.**
+Tree compiles green; live CUDA equivalence test (`cuda_executor_matches_cpu_on_softmax_via_lowering`) passes via the registry-dispatched path (max abs err `4.47e-8` vs `1e-5` tolerance). **This is the natural pause point if the session needs to end early.**
+
+#### Honest caveats from step 3 (carry into step 4)
+
+- `FusionRule::rewrite` reconstructs `FusedOpParams` by hard-coding the SoftmaxLastDim variant. Step 4 generalizes — either by extending `PatternMatch` with a params-binding field, or by adding a sibling `extract_params: fn(&Graph, &PatternMatch) -> FusedOpParams` to `FusedOpEntry`.
+- `LoweringRule` continues to fire on the legacy `Op::SoftmaxLastDim` variant (alongside `Op::Fused(SOFTMAX_LAST_DIM, _)`) so emission sites that haven't migrated (the pipelined-executor test that constructs the node directly) keep working. The legacy fallback comes out with step 5.
+- `BackwardKind::Fused(...)` is wired but unused: the SoftmaxLastDim entry uses `BackwardKind::NotDifferentiable` because `Tensor::backward` dispatches the registry arm directly. The proper `BackwardKind::Fused(SOFTMAX_LAST_DIM_BACKWARD)` connection lands when the backward fused-op migrates in step 4.
 
 ### Step 4: migrate remaining 12 fused ops
 
@@ -486,13 +543,15 @@ This phase should not run concurrently with Phase 8 (FlashAttention) or Phase 8.
 
 ## Success criteria
 
-- `Op` enum is primitive variants + one `Op::Fused(FusedOpId, FusedOpParams)` arm. ~85 primitive variants. No per-fused-op variants remain.
-- `FusedOpRegistry` populated with 13-14 entries. Adding a new fused op is one entry + one kernel function.
-- PR 3's hand-written SoftmaxLastDim rules deleted; auto-generated rules from registry entries produce equivalent behavior. Round-trip identity test still passes.
-- Live CUDA equivalence test (`cuda_executor_matches_cpu_on_softmax_via_lowering`) still passes through the registry-dispatched path.
-- Every registered kernel carries a `PrecisionGuarantee`; the always-built backend's coverage commitment (one `bit_stable_on_same_hardware: true` kernel per primitive op) is testable as a CI lint.
-- All existing tests green throughout the migration. CSE / op_key handles `Op::Fused(id, params)` correctly.
-- ROADMAP updated post-migration.
+End-state criteria for the full Phase 7.6 (steps 1-11). Steps 1-3 met the subset already (marked ✓); the rest land as later sessions ship the remaining steps.
+
+- ✓ `Op` enum carries `Op::Fused(FusedOpId, FusedOpParams)` arm (step 2). *Pending step 5*: drop the per-fused-op `Op` variants once nothing emits them; ~85 primitive variants remain.
+- *Pending step 4*: `FusedOpRegistry` populated with 13-14 entries. Step 3 ships exactly one entry (SoftmaxLastDim) as proof-of-concept.
+- ✓ PR 3's hand-written SoftmaxLastDim rules deleted; auto-generated `LoweringRule` + `FusionRule` from the registry entry produce equivalent behavior. Round-trip identity test (`softmax_last_dim_lower_then_fuse_round_trips`) still passes (step 3).
+- ✓ Live CUDA equivalence test `cuda_executor_matches_cpu_on_softmax_via_lowering` passes through the registry-dispatched lowered subgraph (step 3; max abs err `4.47e-8` vs `1e-5` tolerance).
+- *Pending steps 6-7*: every registered kernel carries a `PrecisionGuarantee`; the always-built backend's coverage commitment (one `bit_stable_on_same_hardware: true` kernel per primitive op) is testable as a CI lint.
+- ✓ All existing tests green throughout the migration. CSE / op_key handles `Op::Fused(id, params)` correctly via `FusedOpParamsKey` encoding (step 2).
+- *Pending step 11*: ROADMAP updated post-migration.
 
 ---
 
