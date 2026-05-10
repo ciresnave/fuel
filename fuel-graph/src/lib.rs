@@ -272,6 +272,12 @@ pub enum Op {
     /// comparison family (`Equal`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`).
     Ge,
 
+    // --- rounding family (non-differentiable) ---
+    /// Element-wise floor (`⌊x⌋`). Same dtype as input. Backward is
+    /// the zero distribution almost everywhere; gradient is dropped
+    /// silently (treated like `Op::Step`'s no-grad backward).
+    Floor,
+
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
     /// Inputs `(cond, a, b)`: `cond` is `U8` (typically the output of
@@ -810,6 +816,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gt                   => "Gt",
         Op::Ge                   => "Ge",
         Op::Where                => "Where",
+        Op::Floor                => "Floor",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2312,6 +2319,13 @@ impl Tensor {
     /// Append an `Abs` node (`|self|`).
     pub fn abs(&self) -> Tensor {
         self.unary_op(Op::Abs)
+    }
+
+    /// Append a `Floor` node (`⌊self⌋`). Output dtype = input dtype.
+    /// Backward is the zero distribution almost everywhere; gradient
+    /// is dropped silently.
+    pub fn floor(&self) -> Tensor {
+        self.unary_op(Op::Floor)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -3936,6 +3950,12 @@ impl Tensor {
                 Op::Where => {
                     // Handled by `WhereRule` via `dispatch_gradient`;
                     // this arm only exists for exhaustiveness.
+                }
+                Op::Floor => {
+                    // d(floor(x))/dx is 0 almost everywhere (Dirac
+                    // train at integer x has no finite representation).
+                    // Treat the derivative as 0 and stop propagation —
+                    // mirrors `Op::Step`'s backward.
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`
@@ -6536,6 +6556,32 @@ mod tests {
         let m_node = m.graph().read().unwrap().node(m.id()).clone();
         assert!(matches!(m_node.op, Op::Equal));
         assert_eq!(m_node.inputs, vec![a.id(), b.id()]);
+    }
+
+    #[test]
+    fn floor_builder_produces_unary_node_same_dtype() {
+        // Tensor::floor builds a unary node preserving shape + dtype.
+        let a = Tensor::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
+        let f = a.floor();
+        assert_eq!(f.shape().dims(), &[3]);
+        assert_eq!(f.dtype(), DType::F32);
+        let node = f.graph().read().unwrap().node(f.id()).clone();
+        assert!(matches!(node.op, Op::Floor));
+        assert_eq!(node.inputs, vec![a.id()]);
+    }
+
+    #[test]
+    fn backward_through_floor_drops_gradient_silently() {
+        // Op::Floor has zero gradient almost everywhere; the inline
+        // backward arm is a no-op. backward() must succeed and the
+        // input gets no gradient (the input's upstream is never
+        // populated through the Floor node).
+        let a = Tensor::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
+        let y = a.floor();
+        let grads = y.backward();
+        // a's gradient is dropped — no entry in the GradMap.
+        assert!(grads.get(&a).is_none(),
+            "Floor must not propagate gradient to its input");
     }
 
     #[test]

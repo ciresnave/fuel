@@ -531,6 +531,9 @@ fn op_key(op: &Op) -> Option<OpKey> {
         // family's wrap to 33).
         Op::Where => (34, vec![], vec![], vec![], None, None),
 
+        // --- rounding family (non-differentiable) ---
+        Op::Floor => (35, vec![], vec![], vec![], None, None),
+
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),
         Op::Permute(axes) => (32, vec![], vec![], axes.clone(), None, None),

@@ -381,6 +381,21 @@ where_kernel!(where_bf16, half::bf16, "Ternary select on `bf16`.");
 where_kernel!(where_f16, half::f16, "Ternary select on `f16`.");
 
 // =============================================================================
+// Rounding family (Floor / Ceil / Round) — same-dtype unary kernels
+// =============================================================================
+//
+// Rounding ops are non-differentiable almost everywhere; the GradientRule
+// drops their gradient silently. Forward is straightforward: `f32::floor`,
+// `f32::ceil`, `f32::round_ties_even` (IEEE roundeven / banker's rounding,
+// stable since Rust 1.77). The bf16/f16 variants widen to f32 first since
+// the half crate doesn't expose roundeven natively.
+
+unary_f32_kernel!(floor_f32, |x: f32| x.floor(), "Elementwise `f32` floor: `out[i] = ⌊input[i]⌋`.");
+unary_kernel!(floor_f64, f64, |x: f64| x.floor(), "Elementwise `f64` floor.");
+unary_kernel!(floor_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().floor()), "Elementwise `bf16` floor (via f32).");
+unary_kernel!(floor_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().floor()), "Elementwise `f16` floor (via f32).");
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 

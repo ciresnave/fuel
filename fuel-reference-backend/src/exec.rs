@@ -374,6 +374,7 @@ pub fn eval_node_with_op(
         Op::Step => unary!(inputs, cache, ops::step),
         Op::Recip => unary!(inputs, cache, ops::recip),
         Op::Abs => unary!(inputs, cache, ops::abs),
+        Op::Floor => unary!(inputs, cache, ops::floor),
 
         // --- comparison family (output dtype = U8) ---
         // Output dtype differs from inputs (always U8); AnyRefTensor

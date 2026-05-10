@@ -184,6 +184,10 @@ pub enum OpKind {
     /// `T` and shape with `cond`. Output is `T` shape `cond.shape()`.
     /// Binding-table dtype list `[U8, T, T, T]`.
     Where,
+    /// Element-wise floor (`⌊x⌋`). Same dtype as input. Backward is
+    /// the zero distribution almost everywhere; gradient through
+    /// rounding ops is dropped silently.
+    FloorElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -279,6 +283,7 @@ impl OpKind {
             OpKind::GreaterElementwise => "gt",
             OpKind::GreaterEqualElementwise => "ge",
             OpKind::Where              => "where",
+            OpKind::FloorElementwise   => "floor",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
