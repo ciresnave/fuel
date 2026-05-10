@@ -440,19 +440,23 @@ pub enum OpParams {
         inner_count: usize,
     },
 
-    /// Pad along one dim with `before` slots before the input and
-    /// `after` slots after, plus a `mode_tag` (0=Constant, 1=Reflect,
-    /// 2=Replicate — only Constant is wired in v1) and a `value` for
-    /// Constant fill. Same flat-3-axis view as the others, but the
-    /// output's `dim` axis is `in_dim + before + after`.
+    /// Multi-dim Pad: per-axis (before, after) plus a `mode_tag`
+    /// (0=Constant, 1=Reflect, 2=Replicate) and pre-encoded
+    /// `fill_bytes` for Constant fill. Dtype-agnostic at the byte
+    /// level: the kernel just copies bytes per the input/output shapes,
+    /// which is why fill is bytes (already encoded in the output's
+    /// dtype) rather than `f64` (which would force the kernel to
+    /// know its dtype).
+    ///
+    /// `in_shape.len() == out_shape.len() == padding.len()`, and
+    /// `out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1`.
+    /// `fill_bytes.len() == dtype_size_in_bytes` (one element's worth).
     Pad {
-        outer_count: usize,
-        in_dim: usize,
-        before: usize,
-        after: usize,
-        inner_count: usize,
+        in_shape: Vec<usize>,
+        out_shape: Vec<usize>,
+        padding: Vec<(usize, usize)>,
         mode_tag: u8,
-        value: f64,
+        fill_bytes: Vec<u8>,
     },
 }
 

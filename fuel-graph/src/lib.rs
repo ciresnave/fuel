@@ -357,19 +357,25 @@ pub enum Op {
     /// Backward: reverse cumsum, expressed as `Flip → CumSum → Flip`
     /// on the same dim using existing primitives.
     CumSum { dim: usize },
-    /// Pad along `dim` with `before`/`after` extra slots; output
-    /// shape == input shape with `dim` extended by `before + after`.
-    /// `mode` selects the fill behavior; `value` is consumed by
-    /// [`PadMode::Constant`] only (ignored otherwise).
+    /// Multi-dim Pad: per-axis `(before, after)` extends each
+    /// dimension. Output shape: `out[i] = in[i] + padding[i].0 + padding[i].1`.
+    /// `mode` selects the fill behavior; `value` is the fill
+    /// constant for [`PadMode::Constant`] (ignored otherwise — see
+    /// the variant docs for those modes).
     ///
-    /// Only Constant mode is implemented in the v1 cut. Reflect /
+    /// Multi-dim shape is the form PyTorch's `F.pad` exposes — a
+    /// single call covers e.g. "pad an image by 1 px on every side"
+    /// (`padding = [(0,0), (0,0), (1,1), (1,1)]` for `[N,C,H,W]`).
+    /// Single-dim is just the special case `padding[i] = (0,0)`
+    /// everywhere except one axis.
+    ///
+    /// Only Constant mode is fully implemented in v1. Reflect /
     /// Replicate are accepted at the IR level but the executor
-    /// returns a clean "not yet implemented" error — additive
-    /// follow-up work, no enum churn needed when they land.
+    /// returns a clean "not yet implemented" error.
     ///
-    /// Backward (Constant): slice the gradient to drop the padded
-    /// regions, restoring the input shape.
-    Pad { dim: usize, before: usize, after: usize, mode: PadMode, value: f64 },
+    /// Backward (Constant): slice along each padded axis to drop
+    /// the padded regions, restoring the input shape.
+    Pad { padding: Vec<(usize, usize)>, mode: PadMode, value: f64 },
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -2650,32 +2656,39 @@ impl Tensor {
         })
     }
 
-    /// Append a `Pad` node — extends `dim` by `before` slots before
-    /// the input and `after` slots after, filling per `mode`. Output
-    /// shape: input shape with `dim` extended by `before + after`.
+    /// Append a `Pad` node — multi-dim padding. `padding[i] = (before, after)`
+    /// for axis `i`; `padding.len()` must equal `self.rank()`.
+    /// Output shape: `out[i] = in[i] + padding[i].0 + padding[i].1`.
     /// `value` is the fill constant for [`PadMode::Constant`]
     /// (ignored for other modes).
     ///
     /// Only Constant mode is wired through the executor in the v1
     /// cut; the other modes produce a clean error at realize time.
     /// Differentiable for Constant (backward slices the gradient
-    /// to drop the padded regions).
+    /// along each padded axis to restore the input shape).
     ///
-    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: PadMode, value: f64) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    /// **Returns `Result`**: rank mismatch surfaces as a typed error.
+    pub fn pad(
+        &self,
+        padding: Vec<(usize, usize)>,
+        mode: PadMode,
+        value: f64,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
-        if dim >= rank {
+        if padding.len() != rank {
             return Err(fuel_core_types::Error::Msg(format!(
-                "pad: dim {dim} out of bounds for rank {rank}",
+                "pad: padding.len() ({}) must equal tensor rank ({rank})",
+                padding.len(),
             )).bt());
         }
-        let mut out_dims: Vec<usize> = in_dims.to_vec();
-        out_dims[dim] = in_dims[dim] + before + after;
+        let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+            .map(|(&d, &(b, a))| d + b + a)
+            .collect();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Pad { dim, before, after, mode, value },
+            op:     Op::Pad { padding, mode, value },
             inputs: vec![self.id],
             shape:  Shape::from_dims(&out_dims),
             dtype,
@@ -4505,29 +4518,47 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::Pad { dim, before, after: _, mode: _, value: _ } => {
-                    // Forward: extend `dim` by before + after slots.
-                    // Backward: slice the padded gradient to drop the
-                    // padded regions, restoring the input shape.
-                    // Same backward shape regardless of mode (Constant
-                    // drops constants; Reflect/Replicate would need
-                    // gradient-accumulation at the mirrored / repeated
-                    // positions when those modes ship — TODO when
-                    // those modes land in the kernel).
-                    let dim = dim;
-                    let before = before;
+                Op::Pad { padding, mode: _, value: _ } => {
+                    // Forward: extend each axis i by padding[i].0 + padding[i].1
+                    // slots. Backward (Constant): slice along each padded axis
+                    // to drop the padded regions and restore input shape.
+                    // Multi-dim Pad backward = chain of single-dim Slices,
+                    // one per axis with non-zero padding.
+                    //
+                    // Reflect/Replicate would also need gradient accumulation
+                    // at the mirrored / repeated positions — that lands when
+                    // those modes' kernels do.
+                    let padding = padding;  // capture by value (already &Vec)
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
-                    let in_dim_size = x_shape.dims()[dim];
+                    let in_dims: Vec<usize> = x_shape.dims().to_vec();
                     let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Slice { dim, start: before, len: in_dim_size },
-                        vec![up_id],
-                        x_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    // Walk axes in order; emit a Slice per axis where padding
+                    // is non-zero. The intermediate-shape tracking matches
+                    // each progressive slice's output shape.
+                    let mut current = up_id;
+                    let mut current_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+                        .map(|(&d, &(b, a))| d + b + a)
+                        .collect();
+                    for (dim, &(before, after)) in padding.iter().enumerate() {
+                        if before == 0 && after == 0 {
+                            continue;  // No padding on this axis → skip slice.
+                        }
+                        let in_d = in_dims[dim];
+                        // After this slice, current_dims[dim] becomes in_d.
+                        let mut next_dims = current_dims.clone();
+                        next_dims[dim] = in_d;
+                        let next_shape = Shape::from_dims(&next_dims);
+                        current = push_node(
+                            &graph_handle,
+                            Op::Slice { dim, start: before, len: in_d },
+                            vec![current],
+                            next_shape,
+                            dtype,
+                        );
+                        current_dims = next_dims;
+                    }
+                    accumulate_grad(&mut upstream, x, current, &graph_handle);
                 }
                 Op::CumSum { dim } => {
                     // y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]

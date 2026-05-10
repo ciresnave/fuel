@@ -526,15 +526,15 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.cumsum(dim)? })
     }
 
-    /// Pad along `dim` with `before` slots before and `after` slots
-    /// after, filling per `mode`. Output shape: input shape with
-    /// `dim` extended by `before + after`. Only Constant mode is
-    /// implemented; Reflect / Replicate exist as enum stubs that
-    /// error at realize time. Differentiable for Constant.
-    /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: fuel_graph::PadMode, value: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+    /// Multi-dim Pad: `padding[i] = (before, after)` for axis `i`,
+    /// length must equal tensor rank. Output shape:
+    /// `out[i] = in[i] + padding[i].0 + padding[i].1`. Only Constant
+    /// mode is implemented; Reflect / Replicate exist as enum stubs
+    /// that error at realize time. Differentiable for Constant.
+    /// **Returns `Result`**: rank mismatch surfaces as a typed error.
+    pub fn pad(&self, padding: Vec<(usize, usize)>, mode: fuel_graph::PadMode, value: f64) -> std::result::Result<Self, fuel_core_types::Error> {
         Ok(Self {
-            inner: self.inner.pad(dim, before, after, mode, value)?,
+            inner: self.inner.pad(padding, mode, value)?,
         })
     }
 

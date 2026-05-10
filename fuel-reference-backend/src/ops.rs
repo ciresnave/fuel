@@ -1523,39 +1523,48 @@ pub fn rsqrt<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
-/// Pad along `dim` with `before` slots before and `after` slots after,
-/// filling the padded region with the `value` parameter. **Constant
-/// mode only** — Reflect / Replicate variants are documented at the
-/// IR level and live as enum variants on `Op::Pad` but the v1 cut
-/// only ships the Constant kernel.
+/// Multi-dim Pad-Constant. `padding[i] = (before, after)` for axis `i`;
+/// `padding.len()` must equal input rank. Fills padded slots with
+/// `value` coerced to `T`. The two-pass shape mirrors the byte
+/// kernel: pre-fill the output with the constant, then copy the
+/// input into the unpadded region (positions offset by per-axis
+/// `before`).
 pub fn pad_const<T: Float>(
     x: &RefTensor<T>,
-    dim: usize,
-    before: usize,
-    after: usize,
+    padding: &[(usize, usize)],
     value: f64,
 ) -> RefTensor<T> {
     let in_dims = x.shape().dims();
-    assert!(dim < in_dims.len(), "pad: dim {dim} out of range");
-    let outer: usize = in_dims[..dim].iter().product();
-    let in_d = in_dims[dim];
-    let inner: usize = in_dims[dim + 1..].iter().product();
-    let out_d = in_d + before + after;
-    let src = x.as_slice();
+    assert_eq!(padding.len(), in_dims.len(),
+        "pad: padding.len() ({}) != input rank ({})",
+        padding.len(), in_dims.len());
+    let rank = in_dims.len();
+    let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
+        .map(|(&d, &(b, a))| d + b + a)
+        .collect();
+    let in_strides = row_major_strides(in_dims);
+    let out_strides = row_major_strides(&out_dims);
+    let in_elem: usize = in_dims.iter().product();
+    let out_elem: usize = out_dims.iter().product();
     let fill = T::from(value).unwrap();
-    let mut out = vec![fill; outer * out_d * inner];
-    for o in 0..outer {
-        for j in 0..in_d {
-            let row_in = (o * in_d + j) * inner;
-            let row_out = (o * out_d + (j + before)) * inner;
-            out[row_out..row_out + inner]
-                .copy_from_slice(&src[row_in..row_in + inner]);
+    let mut out = vec![fill; out_elem];
+    let src = x.as_slice();
+    let mut idx = vec![0usize; rank];
+    for _ in 0..in_elem {
+        let in_flat: usize = idx.iter().zip(&in_strides).map(|(&i, &s)| i * s).sum();
+        let out_flat: usize = idx.iter().zip(&out_strides).zip(padding.iter())
+            .map(|((&i, &s), &(b, _))| (i + b) * s).sum();
+        out[out_flat] = src[in_flat];
+        for k in (0..rank).rev() {
+            idx[k] += 1;
+            if idx[k] < in_dims[k] { break; }
+            idx[k] = 0;
         }
     }
-    let mut out_dims: Vec<usize> = in_dims.to_vec();
-    out_dims[dim] = out_d;
     RefTensor::from_vec(out, Shape::from_dims(&out_dims))
 }
+
+// (row_major_strides already exists at the top of this file; reuse it.)
 
 /// Running cumulative sum along `dim`:
 /// `y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]`. Same shape as
