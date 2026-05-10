@@ -296,6 +296,12 @@ pub enum Op {
     /// Backward emitted via existing primitives (Sqr → Neg → Exp →
     /// MulScalar(2/√π) → Mul(upstream, .)).
     Erf,
+    /// Element-wise GELU activation, **exact erf formulation**:
+    /// `0.5 * x * (1 + erf(x/√2))`. Distinct from [`Op::Gelu`]
+    /// (tanh approximation, faster but slightly less accurate).
+    /// Differentiable; backward decomposes into the standard-normal
+    /// CDF + `x * φ(x)` (PDF) chain via primitives.
+    GeluErf,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -840,6 +846,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Round                => "Round",
         Op::Sign                 => "Sign",
         Op::Erf                  => "Erf",
+        Op::GeluErf              => "GeluErf",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2375,6 +2382,14 @@ impl Tensor {
     /// input dtype. Differentiable.
     pub fn erf(&self) -> Tensor {
         self.unary_op(Op::Erf)
+    }
+
+    /// Append a `GeluErf` node — exact-erf formulation of GELU
+    /// (`0.5 * x * (1 + erf(x/√2))`). Distinct from [`Self::gelu`]
+    /// (tanh approximation). Output dtype = input dtype.
+    /// Differentiable.
+    pub fn gelu_erf(&self) -> Tensor {
+        self.unary_op(Op::GeluErf)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -4036,6 +4051,87 @@ impl Tensor {
                         vec![up_id, scaled],
                         x_shape,
                         dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::GeluErf => {
+                    // y = 0.5 * x * (1 + erf(x/√2)).
+                    // dy/dx = Φ(x) + x · φ(x)
+                    //       = 0.5 * (1 + erf(x/√2))
+                    //       + x * (1/√(2π)) * exp(-x²/2)
+                    // where Φ is the standard-normal CDF (= y/x for x≠0;
+                    // we recompute it explicitly so the backward stays
+                    // safe at x=0) and φ is the PDF.
+                    //
+                    // Chain (12 nodes):
+                    //   x_over_sqrt2 = MulScalar(1/√2)(x)
+                    //   erf_arg      = Erf(x_over_sqrt2)
+                    //   plus_one     = AddScalar(1.0)(erf_arg)
+                    //   cdf_term     = MulScalar(0.5)(plus_one)
+                    //   x_sq         = Sqr(x)
+                    //   half_x_sq    = MulScalar(0.5)(x_sq)
+                    //   neg_half_x_sq= Neg(half_x_sq)
+                    //   exp_term     = Exp(neg_half_x_sq)
+                    //   phi          = MulScalar(1/√(2π))(exp_term)
+                    //   pdf_term     = Mul(x, phi)
+                    //   d_gelu       = Add(cdf_term, pdf_term)
+                    //   grad_x       = Mul(upstream, d_gelu)
+                    const INV_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
+                    // 1/√(2π) = 0.39894228040143267793994605993...
+                    const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7_f64;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    // CDF half: 0.5 * (1 + erf(x/√2)).
+                    let x_over_sqrt2 = push_node(
+                        &graph_handle, Op::MulScalar(INV_SQRT_2),
+                        vec![x], x_shape.clone(), dtype,
+                    );
+                    let erf_arg = push_node(
+                        &graph_handle, Op::Erf,
+                        vec![x_over_sqrt2], x_shape.clone(), dtype,
+                    );
+                    let plus_one = push_node(
+                        &graph_handle, Op::AddScalar(1.0),
+                        vec![erf_arg], x_shape.clone(), dtype,
+                    );
+                    let cdf_term = push_node(
+                        &graph_handle, Op::MulScalar(0.5),
+                        vec![plus_one], x_shape.clone(), dtype,
+                    );
+                    // PDF half: x * (1/√(2π)) * exp(-x²/2).
+                    let x_sq = push_node(
+                        &graph_handle, Op::Sqr,
+                        vec![x], x_shape.clone(), dtype,
+                    );
+                    let half_x_sq = push_node(
+                        &graph_handle, Op::MulScalar(0.5),
+                        vec![x_sq], x_shape.clone(), dtype,
+                    );
+                    let neg_half_x_sq = push_node(
+                        &graph_handle, Op::Neg,
+                        vec![half_x_sq], x_shape.clone(), dtype,
+                    );
+                    let exp_term = push_node(
+                        &graph_handle, Op::Exp,
+                        vec![neg_half_x_sq], x_shape.clone(), dtype,
+                    );
+                    let phi = push_node(
+                        &graph_handle, Op::MulScalar(INV_SQRT_2PI),
+                        vec![exp_term], x_shape.clone(), dtype,
+                    );
+                    let pdf_term = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![x, phi], x_shape.clone(), dtype,
+                    );
+                    // Sum the two halves and apply upstream.
+                    let d_gelu = push_node(
+                        &graph_handle, Op::Add,
+                        vec![cdf_term, pdf_term], x_shape.clone(), dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle, Op::Mul,
+                        vec![up_id, d_gelu], x_shape, dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }

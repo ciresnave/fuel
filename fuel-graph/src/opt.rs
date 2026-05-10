@@ -537,6 +537,9 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Round => (37, vec![], vec![], vec![], None, None),
         Op::Sign => (38, vec![], vec![], vec![], None, None),
         Op::Erf => (39, vec![], vec![], vec![], None, None),
+        // Tag 40 was Op::Cast; the unary fanout wraps to 47 (next
+        // free slot above the 40-46 cast/shape/reduce cluster).
+        Op::GeluErf => (47, vec![], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),

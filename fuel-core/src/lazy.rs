@@ -467,6 +467,13 @@ impl LazyTensor {
         Self { inner: self.inner.erf() }
     }
 
+    /// GELU activation, **exact erf form** (`0.5 * x * (1 + erf(x/√2))`).
+    /// Distinct from [`Self::gelu`] (tanh approximation). Same dtype
+    /// as input. Differentiable.
+    pub fn gelu_erf(&self) -> Self {
+        Self { inner: self.inner.gelu_erf() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

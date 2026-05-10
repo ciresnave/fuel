@@ -429,6 +429,14 @@ unary_kernel!(erf_f64, f64, |x: f64| libm::erf(x), "Elementwise `f64` Gauss erro
 unary_kernel!(erf_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(libm::erff(x.to_f32())), "Elementwise `bf16` Gauss error function (via f32).");
 unary_kernel!(erf_f16, half::f16, |x: half::f16| half::f16::from_f32(libm::erff(x.to_f32())), "Elementwise `f16` Gauss error function (via f32).");
 
+// GELU exact-erf formulation: `0.5 * x * (1 + erf(x/√2))`.
+// Distinct from the existing `gelu_*` (tanh approximation). The
+// 1/√2 constant is `std::f32::consts::FRAC_1_SQRT_2` (0.7071067...).
+unary_f32_kernel!(gelu_erf_f32, |x: f32| 0.5 * x * (1.0 + libm::erff(x * std::f32::consts::FRAC_1_SQRT_2)), "Elementwise `f32` GELU (exact erf form): `0.5 * x * (1 + erf(x/√2))`.");
+unary_kernel!(gelu_erf_f64, f64, |x: f64| 0.5 * x * (1.0 + libm::erf(x * std::f64::consts::FRAC_1_SQRT_2)), "Elementwise `f64` GELU (exact erf form).");
+unary_kernel!(gelu_erf_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(0.5 * f * (1.0 + libm::erff(f * std::f32::consts::FRAC_1_SQRT_2))) }, "Elementwise `bf16` GELU (exact erf form, via f32).");
+unary_kernel!(gelu_erf_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(0.5 * f * (1.0 + libm::erff(f * std::f32::consts::FRAC_1_SQRT_2))) }, "Elementwise `f16` GELU (exact erf form, via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================

@@ -203,6 +203,12 @@ pub enum OpKind {
     /// input. Backward: `d/dx erf(x) = (2/√π) * exp(-x²)` —
     /// expressed via `Sqr` + `Neg` + `Exp` + `MulScalar`.
     ErfElementwise,
+    /// Element-wise GELU activation, **exact erf formulation**:
+    /// `0.5 * x * (1 + erf(x/√2))`. Distinct from
+    /// [`GeluElementwise`] (tanh approximation). Same dtype as input.
+    /// Backward decomposes into the standard-normal CDF + `x * φ(x)`
+    /// (PDF) chain via existing primitives.
+    GeluErfElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -303,6 +309,7 @@ impl OpKind {
             OpKind::RoundElementwise   => "round",
             OpKind::SignElementwise    => "sign",
             OpKind::ErfElementwise     => "erf",
+            OpKind::GeluErfElementwise => "gelu_erf",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
