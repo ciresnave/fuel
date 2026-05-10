@@ -453,6 +453,8 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Silu          => Some(OpKind::SiluElementwise),
         Op::Gelu          => Some(OpKind::GeluElementwise),
         Op::Step          => Some(OpKind::StepElementwise),
+        Op::Recip         => Some(OpKind::RecipElementwise),
+        Op::Abs           => Some(OpKind::AbsElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),

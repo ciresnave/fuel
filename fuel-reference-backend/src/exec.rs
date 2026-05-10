@@ -372,6 +372,8 @@ pub fn eval_node_with_op(
         Op::Gelu => unary!(inputs, cache, ops::gelu),
         Op::Relu => unary!(inputs, cache, ops::relu),
         Op::Step => unary!(inputs, cache, ops::step),
+        Op::Recip => unary!(inputs, cache, ops::recip),
+        Op::Abs => unary!(inputs, cache, ops::abs),
 
         // --- linear algebra ---
         Op::MatMul => eval_matmul(inputs, cache),

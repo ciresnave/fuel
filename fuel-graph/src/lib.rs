@@ -231,6 +231,12 @@ pub enum Op {
     /// as the derivative of `Relu` and as a building block for other
     /// comparison-based gradients.
     Step,
+    /// Element-wise reciprocal (`1 / x`). On `x = 0` the IEEE-754 result
+    /// is `±inf`; the kernel matches the obvious `1.0 / x` expression
+    /// rather than treating the input as an error.
+    Recip,
+    /// Element-wise absolute value (`|x|`).
+    Abs,
 
     // --- linear algebra and shape ---
     /// Rank-2 matrix multiply.
@@ -749,6 +755,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gelu                 => "Gelu",
         Op::Relu                 => "Relu",
         Op::Step                 => "Step",
+        Op::Recip                => "Recip",
+        Op::Abs                  => "Abs",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2243,6 +2251,16 @@ impl Tensor {
         self.unary_op(Op::Step)
     }
 
+    /// Append a `Recip` node (`1 / self`).
+    pub fn recip(&self) -> Tensor {
+        self.unary_op(Op::Recip)
+    }
+
+    /// Append an `Abs` node (`|self|`).
+    pub fn abs(&self) -> Tensor {
+        self.unary_op(Op::Abs)
+    }
+
     // --- dtype and broadcasting ---
 
     /// Append a `Cast` node converting this tensor's element type to
@@ -3655,6 +3673,80 @@ impl Tensor {
                     // stop propagation — Step's backward is silently a
                     // no-op. Callers that need a smooth surrogate should
                     // use Sigmoid or Tanh instead.
+                }
+                Op::Recip => {
+                    // y = 1/x, dy/dx = -1/x² = -y².
+                    // grad_x = -upstream * y * y. Reuse forward output (id)
+                    // so we don't recompute the reciprocal.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let y_sq = push_node(
+                        &graph_handle,
+                        Op::Sqr,
+                        vec![id],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let up_y_sq = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, y_sq],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Neg,
+                        vec![up_y_sq],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Abs => {
+                    // y = |x|, dy/dx = sign(x), with sign(0)=0 by
+                    // subgradient convention. sign(x) = step(x) - step(-x).
+                    // grad_x = upstream * (step(x) - step(-x)).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let step_pos = push_node(
+                        &graph_handle,
+                        Op::Step,
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let neg_x = push_node(
+                        &graph_handle,
+                        Op::Neg,
+                        vec![x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let step_neg = push_node(
+                        &graph_handle,
+                        Op::Step,
+                        vec![neg_x],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let sign_x = push_node(
+                        &graph_handle,
+                        Op::Sub,
+                        vec![step_pos, step_neg],
+                        x_shape.clone(),
+                        dtype,
+                    );
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Mul,
+                        vec![up_id, sign_x],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Cast(_) => {
                     // Forward: y = cast(x, target_dtype).
@@ -6166,6 +6258,70 @@ mod tests {
             )
         });
         assert!(any_step, "Relu backward must reference a Step node");
+    }
+
+    #[test]
+    fn recip_and_abs_builders_produce_unary_nodes() {
+        // Smoke test: Tensor::recip()/abs() build single-input nodes
+        // with the expected op variant and shape passthrough.
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let r = a.recip();
+        let b = a.abs();
+        assert_eq!(r.shape().dims(), &[3]);
+        assert_eq!(b.shape().dims(), &[3]);
+        let r_node = r.graph().read().unwrap().node(r.id()).clone();
+        let b_node = b.graph().read().unwrap().node(b.id()).clone();
+        assert!(matches!(r_node.op, Op::Recip));
+        assert!(matches!(b_node.op, Op::Abs));
+        assert_eq!(r_node.inputs, vec![a.id()]);
+        assert_eq!(b_node.inputs, vec![a.id()]);
+    }
+
+    #[test]
+    fn backward_of_recip_is_neg_of_upstream_times_y_squared() {
+        // y = 1/x ⇒ dy/dx = -y². The backward graph should be a Neg
+        // wrapping a Mul whose inputs include a Sqr node — and the Sqr
+        // should reference the forward Recip output, not a fresh recompute.
+        let a = Tensor::from_f32(vec![2.0, 4.0], Shape::from_dims(&[2]), cpu_dev());
+        let y = a.recip();
+        let y_id = y.id();
+        let grads = y.backward();
+        let g_a = grads.get(&a).unwrap();
+        let g = g_a.graph().read().unwrap();
+        let neg_node = g.node(g_a.id()).clone();
+        assert!(matches!(neg_node.op, Op::Neg), "outermost backward op must be Neg");
+        let mul_id = neg_node.inputs[0];
+        let mul_node = g.node(mul_id).clone();
+        assert!(matches!(mul_node.op, Op::Mul));
+        // One of the Mul's inputs is a Sqr node fed by the forward Recip.
+        let sqr_id = mul_node.inputs.iter().copied().find(|&id| {
+            matches!(g.node(id).op, Op::Sqr)
+        }).expect("backward chain must contain a Sqr node");
+        let sqr_node = g.node(sqr_id).clone();
+        assert_eq!(sqr_node.inputs, vec![y_id],
+            "Sqr's input must be the forward Recip output, not a recompute");
+    }
+
+    #[test]
+    fn backward_of_abs_uses_step_difference() {
+        // y = |x|, dy/dx = step(x) - step(-x). Backward graph: Mul
+        // whose second input is a Sub of two Step nodes.
+        let a = Tensor::from_f32(vec![-2.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let y = a.abs();
+        let grads = y.backward();
+        let g_a = grads.get(&a).unwrap();
+        let g = g_a.graph().read().unwrap();
+        let mul_node = g.node(g_a.id()).clone();
+        assert!(matches!(mul_node.op, Op::Mul));
+        let sub_id = mul_node.inputs.iter().copied().find(|&id| {
+            matches!(g.node(id).op, Op::Sub)
+        }).expect("backward chain must contain a Sub");
+        let sub_node = g.node(sub_id).clone();
+        let step_count = sub_node.inputs.iter().filter(|&&id| {
+            matches!(g.node(id).op, Op::Step)
+        }).count();
+        assert_eq!(step_count, 2,
+            "Abs backward must reference exactly 2 Step nodes, got {step_count}");
     }
 
     #[test]
