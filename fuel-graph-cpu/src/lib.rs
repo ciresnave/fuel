@@ -370,6 +370,10 @@ fn eval_node(
             "Op::Lt: legacy fuel-graph-cpu executor doesn't support \
              U8-output ops; use the storage-path PipelinedExecutor instead",
         ),
+        Op::Le => panic!(
+            "Op::Le: legacy fuel-graph-cpu executor doesn't support \
+             U8-output ops; use the storage-path PipelinedExecutor instead",
+        ),
 
         // --- linear algebra & shape ---
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),

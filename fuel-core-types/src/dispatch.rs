@@ -170,6 +170,9 @@ pub enum OpKind {
     /// [`EqualElementwise`]; output `U8` mask. NaN-on-either-side is
     /// always false (IEEE-754 unordered comparison).
     LessElementwise,
+    /// Element-wise less-or-equal `a <= b`. Same shape contract.
+    /// NaN comparisons are unordered → `0`.
+    LessEqualElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -261,6 +264,7 @@ impl OpKind {
             OpKind::EqualElementwise   => "eq",
             OpKind::NotEqualElementwise => "ne",
             OpKind::LessElementwise    => "lt",
+            OpKind::LessEqualElementwise => "le",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
