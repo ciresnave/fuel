@@ -1885,3 +1885,88 @@ fn powi_elementwise_f32_through_binding_table() {
     let expected: [f32; 5] = [-8.0, -1.0, 0.0, 3.375, 27.0];
     assert_eq!(host_f32, &expected);
 }
+
+/// End-to-end: 3-input concat along the inner dim through the
+/// unified binding-table dispatch on CUDA. Each input has shape
+/// [2, dim_i, 2] with dim_i ∈ {1, 2, 1}; the output shape is
+/// [2, 4, 2]. Exercises `(Concat, [F32, F32], Cuda)` which dispatches
+/// `concat_f32` from the INDEXING PTX module (one launch per input).
+#[test]
+#[ignore]
+fn concat_f32_three_inputs_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // Three inputs with shapes [2, 1, 2], [2, 2, 2], [2, 1, 2].
+    // outer_count=2, input_dim_sizes=[1, 2, 1], inner_count=2.
+    let a_f32: [f32; 4] = [
+        1.0, 2.0,    // outer 0, dim 0
+        9.0, 9.0,    // outer 1, dim 0
+    ];
+    let b_f32: [f32; 8] = [
+        3.0, 4.0,    // outer 0, dim 0
+        5.0, 6.0,    // outer 0, dim 1
+        7.0, 8.0,    // outer 1, dim 0
+        7.5, 8.5,    // outer 1, dim 1
+    ];
+    let c_f32: [f32; 4] = [
+        100.0, 200.0,  // outer 0, dim 0
+        300.0, 400.0,  // outer 1, dim 0
+    ];
+    let a = build_storage_cuda(&dev, &a_f32);
+    let b = build_storage_cuda(&dev, &b_f32);
+    let c = build_storage_cuda(&dev, &c_f32);
+
+    // Output: [2, 4, 2] → 16 elements * 4 bytes.
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4 * 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let a_arc = Arc::new(RwLock::new(a));
+    let b_arc = Arc::new(RwLock::new(b));
+    let c_arc = Arc::new(RwLock::new(c));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::Concat, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (Concat, [F32, F32], Cuda)");
+
+    let params = OpParams::Concat {
+        outer_count: 2,
+        input_dim_sizes: vec![1, 2, 1],
+        inner_count: 2,
+    };
+    // Layouts: per-input + output. Per-input shapes are [2, dim_i, 2].
+    let a_layout = Layout::contiguous(Shape::from_dims(&[2, 1, 2]));
+    let b_layout = Layout::contiguous(Shape::from_dims(&[2, 2, 2]));
+    let c_layout = Layout::contiguous(Shape::from_dims(&[2, 1, 2]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 4, 2]));
+    let layouts = vec![a_layout, b_layout, c_layout, out_layout];
+
+    kernel(
+        &[a_arc.clone(), b_arc.clone(), c_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    // Expected output [2, 4, 2]:
+    // outer 0: a[0,0,*], b[0,0,*], b[0,1,*], c[0,0,*]
+    //         = 1,2 | 3,4 | 5,6 | 100,200
+    // outer 1: a[1,0,*], b[1,0,*], b[1,1,*], c[1,0,*]
+    //         = 9,9 | 7,8 | 7.5,8.5 | 300,400
+    let expected: [f32; 16] = [
+        1.0, 2.0,  3.0, 4.0,  5.0, 6.0,  100.0, 200.0,
+        9.0, 9.0,  7.0, 8.0,  7.5, 8.5,  300.0, 400.0,
+    ];
+    assert_eq!(host_f32, &expected);
+}

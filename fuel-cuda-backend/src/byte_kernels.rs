@@ -408,6 +408,97 @@ pub fn index_select_f32(
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
 }
 
+/// Concatenate N F32 inputs along one dim. Each input has shape
+/// `[..outer_count, input_dim_sizes[i], ..inner_count]`; output has
+/// shape `[..outer_count, sum(input_dim_sizes), ..inner_count]`.
+/// Mirrors the CPU `concat_cpu` byte kernel.
+///
+/// Implementation: launches `concat_f32` (from
+/// `fuel-cuda-kernels::INDEXING`) once per input. Each launch writes
+/// the input's contribution to the right slice of the pre-allocated
+/// output, advancing `input_idx_offset` by `input_dim_sizes[i]`
+/// between launches. The kernel walks the input's element count and
+/// scatters into the right output slot per element.
+pub fn concat_f32(
+    inputs: &[&CudaStorageBytes],
+    outer_count: usize,
+    input_dim_sizes: &[usize],
+    inner_count: usize,
+) -> Result<CudaStorageBytes> {
+    if inputs.is_empty() {
+        return Err(fuel_core_types::Error::Msg(
+            "concat_f32: at least one input required".to_string(),
+        )
+        .bt());
+    }
+    if inputs.len() != input_dim_sizes.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "concat_f32: inputs count ({}) != input_dim_sizes len ({})",
+            inputs.len(),
+            input_dim_sizes.len(),
+        ))
+        .bt());
+    }
+    let elem = std::mem::size_of::<f32>();
+    let total_dim: usize = input_dim_sizes.iter().sum();
+    let out_elem = outer_count
+        .saturating_mul(total_dim)
+        .saturating_mul(inner_count);
+    let dst_bytes = out_elem.saturating_mul(elem);
+    let device = inputs[0].device().clone();
+
+    // Validate per-input byte counts match their declared dim_size.
+    for (i, input) in inputs.iter().enumerate() {
+        let need = outer_count
+            .saturating_mul(input_dim_sizes[i])
+            .saturating_mul(inner_count)
+            .saturating_mul(elem);
+        if input.len_bytes() != need {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "concat_f32: input[{i}] bytes={} doesn't match outer={outer_count} × dim={} × inner={inner_count} × 4",
+                input.len_bytes(),
+                input_dim_sizes[i],
+            ))
+            .bt());
+        }
+    }
+
+    if out_elem == 0 {
+        return CudaStorageBytes::alloc(&device, dst_bytes);
+    }
+
+    let mut out = device.alloc_zeros::<u8>(dst_bytes)?;
+    let func = device.get_or_load_func("concat_f32", &kernels::INDEXING)?;
+
+    let mut dim_offset: usize = 0;
+    for (i, input) in inputs.iter().enumerate() {
+        let input_dim_size = input_dim_sizes[i];
+        let in_elem = outer_count
+            .saturating_mul(input_dim_size)
+            .saturating_mul(inner_count);
+        if in_elem == 0 {
+            dim_offset += input_dim_size;
+            continue;
+        }
+        let cfg = LaunchConfig::for_num_elems(in_elem as u32);
+        let mut builder = func.builder();
+        barg!(builder, in_elem);          // numel for this input
+        barg!(builder, outer_count);
+        barg!(builder, inner_count);
+        barg!(builder, total_dim);
+        barg!(builder, dim_offset);       // input_idx_offset
+        barg!(builder, input_dim_size);
+        builder.arg(input.buffer());
+        builder.arg(&mut out);
+        // SAFETY: kernel signature matches the args above (CONCAT_OP
+        // macro in indexing.cu).
+        unsafe { builder.launch(cfg) }.w()?;
+        dim_offset += input_dim_size;
+    }
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
+}
+
 /// N-dimensional gather along `dim` for F32 source + U32 indices, on
 /// byte-shaped CUDA storage. Mirrors the legacy `Gather` map
 /// (storage.rs:494) and the CPU `gather_cpu` byte kernel: source and

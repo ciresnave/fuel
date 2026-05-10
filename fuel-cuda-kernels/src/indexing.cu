@@ -307,6 +307,58 @@ extern "C" __global__ void FN_NAME(  \
 ) { scatter_add_f8(ids, inp, out, left_size, src_dim_size, dst_dim_size, right_size); } \
 
 
+// Concat: write one input's contribution to the output along `dim`.
+// For each output element this input owns at the slot
+// `[outer, input_idx_offset .. input_idx_offset + input_dim_size,
+// inner]`, copy from the input at `[outer, dim_pos, inner]` (the
+// input's own contiguous shape `[outer_count, input_dim_size,
+// inner_count]`).
+//
+// Launched once per input — caller accumulates `input_idx_offset`
+// across inputs. Numel parameter is this input's element count
+// (`outer_count * input_dim_size * inner_count`), not the output
+// total.
+template<typename T>
+__device__ void concat_input(
+    const size_t numel,
+    const size_t outer_count,
+    const size_t inner_count,
+    const size_t total_dim,
+    const size_t input_idx_offset,
+    const size_t input_dim_size,
+    const T *inp,
+    T *out
+) {
+    for (unsigned int i = blockIdx.x * blockDim.x + threadIdx.x; i < numel; i += blockDim.x * gridDim.x) {
+        size_t outer = i / (input_dim_size * inner_count);
+        size_t rem = i % (input_dim_size * inner_count);
+        size_t dim_pos = rem / inner_count;
+        size_t inner_pos = rem % inner_count;
+        size_t dst = outer * (total_dim * inner_count)
+                   + (input_idx_offset + dim_pos) * inner_count
+                   + inner_pos;
+        out[dst] = inp[i];
+    }
+}
+
+#define CONCAT_OP(TYPENAME, FN_NAME) \
+extern "C" __global__ void FN_NAME( \
+    const size_t numel, \
+    const size_t outer_count, \
+    const size_t inner_count, \
+    const size_t total_dim, \
+    const size_t input_idx_offset, \
+    const size_t input_dim_size, \
+    const TYPENAME *inp, \
+    TYPENAME *out \
+) { concat_input(numel, outer_count, inner_count, total_dim, input_idx_offset, input_dim_size, inp, out); }
+
+CONCAT_OP(float, concat_f32)
+CONCAT_OP(double, concat_f64)
+CONCAT_OP(uint8_t, concat_u8)
+CONCAT_OP(uint32_t, concat_u32)
+CONCAT_OP(int64_t, concat_i64)
+
 #if __CUDA_ARCH__ >= 800
 IS_OP(__nv_bfloat16, int64_t, is_i64_bf16)
 IS_OP(__nv_bfloat16, uint32_t, is_u32_bf16)

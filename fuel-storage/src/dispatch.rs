@@ -3557,6 +3557,66 @@ fn reduce_max_to_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(Concat, F32, Cuda)`. Concatenate N F32
+/// inputs along one dim via the `concat_f32` PTX kernel (one launch
+/// per input, accumulating `input_idx_offset`). Mirrors the CPU
+/// `concat_cpu_wrapper`.
+#[cfg(feature = "cuda")]
+fn concat_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.is_empty() {
+        return Err(Error::Msg(
+            "concat_f32_cuda_wrapper: at least 1 input required".to_string(),
+        )
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "concat_f32_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (outer_count, input_dim_sizes, inner_count) = match params {
+        OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+            (*outer_count, input_dim_sizes.clone(), *inner_count)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "concat_f32_cuda_wrapper: expected OpParams::Concat, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    if input_dim_sizes.len() != inputs.len() {
+        return Err(Error::Msg(format!(
+            "concat_f32_cuda_wrapper: OpParams declares {} inputs but the work item carries {}",
+            input_dim_sizes.len(),
+            inputs.len(),
+        ))
+        .bt());
+    }
+    let in_guards: Vec<_> = inputs
+        .iter()
+        .map(read_storage)
+        .collect::<Result<Vec<_>>>()?;
+    let mut in_cudas: Vec<&fuel_cuda_backend::CudaStorageBytes> = Vec::with_capacity(in_guards.len());
+    for g in &in_guards {
+        in_cudas.push(cuda_input(g)?);
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let result = fuel_cuda_backend::byte_kernels::concat_f32(
+        &in_cudas, outer_count, &input_dim_sizes, inner_count,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(PowIElementwise, F32, Cuda)`. Element-wise
 /// `y = x^exp` for an integer `exp`, via the `upowi_f32` PTX kernel
 /// (square-and-multiply for bit-exact parity with `f32::powi`).
@@ -3923,6 +3983,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
     table.register(ClampElementwise,   &unary(f32_dt),  cuda, clamp_elementwise_f32_cuda_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt),  cuda, powi_elementwise_f32_cuda_wrapper);
+    table.register(Concat,             &unary(f32_dt),  cuda, concat_f32_cuda_wrapper);
 
     // IndexSelect / Gather: gather data from an F32 source via U32
     // indices. Dtype binding key matches the CPU shape:
