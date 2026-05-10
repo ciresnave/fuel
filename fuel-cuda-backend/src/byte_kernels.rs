@@ -808,6 +808,54 @@ pub fn clamp_f32(src: &CudaStorageBytes, lo: f32, hi: f32) -> Result<CudaStorage
     ))
 }
 
+/// Element-wise integer power `y = x^exp` for one F32
+/// `CudaStorageBytes`. Mirrors `f32::powi(i32)` semantics via
+/// square-and-multiply on the absolute exponent (with reciprocal for
+/// negative exponents). The launched kernel `upowi_f32` is a unary
+/// kernel with a single `int` scalar param (UPOWI_OP macro in
+/// unary.cu); its signature is `(numel, num_dims, info, exp, inp,
+/// out)` with `info=null` selecting the contiguous fast path.
+///
+/// This is distinct from the existing `upowf_f32` (UNARY_OP1 with
+/// float exponent → `powf(x, exp)`); using `upowf_f32` for integer
+/// exponents would route through CUDA's `powf` approximation and lose
+/// bit-exact parity with the CPU `f32::powi` for some shapes.
+pub fn powi_f32(src: &CudaStorageBytes, exp: i32) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    if src.len_bytes() % elem != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "powi_f32: src.len_bytes={} not a multiple of f32 size",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    let elem_count = src.len_bytes() / elem;
+    let device = src.device().clone();
+    if elem_count == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let mut out = device.alloc_zeros::<u8>(src.len_bytes())?;
+    let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+    let func = device.get_or_load_func("upowi_f32", &kernels::UNARY)?;
+    // upowi signature: (numel, num_dims, info, exp, inp, out).
+    let dims_strides: SlicePtrOrNull<usize> = SlicePtrOrNull::Null;
+    let mut builder = func.builder();
+    barg!(builder, elem_count);
+    barg!(builder, 1_usize); // ndims (ignored on the contiguous path)
+    dims_strides.builder_arg(&mut builder);
+    barg!(builder, exp);
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    // SAFETY: kernel signature matches the args above — UPOWI_OP.
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        src.len_bytes(),
+    ))
+}
+
 /// Element-wise dtype cast. Element count is preserved; the byte
 /// length of the output differs from the input when source and
 /// destination have different `size_in_bytes`. Picks the

@@ -262,3 +262,39 @@ UNARY_OP(float, ustep_f32, x > static_cast<float>(0) ? static_cast<float>(1) : s
 UNARY_OP(double, ustep_f64, x > static_cast<double>(0) ? static_cast<double>(1) : static_cast<double>(0))
 UNARY_OP2(float, uclamp_f32, ming(maxg(x, lo), hi))
 UNARY_OP2(double, uclamp_f64, ming(maxg(x, lo), hi))
+
+// Integer power via square-and-multiply, matching Rust's
+// `f32::powi(i32)` / `f64::powi(i32)` semantics. The unary-op shape
+// is the same as UNARY_OP1 (one scalar param) but the param is `int`
+// instead of TYPENAME — float input, float output, int exponent.
+#define UPOWI_OP(TYPENAME, FN_NAME) \
+extern "C" __global__ void FN_NAME( \
+    const size_t numel, \
+    const size_t num_dims, \
+    const size_t *info, \
+    const int exp, \
+    const TYPENAME *inp, \
+    TYPENAME *out \
+) { \
+    const size_t *dims = info; \
+    const size_t *strides = info + num_dims; \
+    const bool fast = (info == nullptr) || is_contiguous(num_dims, dims, strides); \
+    for (unsigned int i = blockIdx.x * blockDim.x + threadIdx.x; i < numel; i += blockDim.x * gridDim.x) { \
+        const unsigned int idx = fast ? i : get_strided_index(i, num_dims, dims, strides); \
+        TYPENAME x = inp ? inp[idx] : out[i]; \
+        int e = exp; \
+        bool neg = e < 0; \
+        if (neg) e = -e; \
+        TYPENAME r = static_cast<TYPENAME>(1); \
+        TYPENAME p = x; \
+        while (e > 0) { \
+            if (e & 1) r = r * p; \
+            p = p * p; \
+            e >>= 1; \
+        } \
+        out[i] = neg ? (static_cast<TYPENAME>(1) / r) : r; \
+    } \
+}
+
+UPOWI_OP(float, upowi_f32)
+UPOWI_OP(double, upowi_f64)
