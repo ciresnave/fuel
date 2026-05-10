@@ -313,6 +313,19 @@ impl LazyTensor {
         }
     }
 
+    /// Ternary select (typically used to consume a comparison-op
+    /// mask): `result[i] = if self[i] != 0 { a[i] } else { b[i] }`.
+    /// `self` is the cond mask (must be `DType::U8`); `a` and `b`
+    /// share dtype + shape with `self`. Output dtype matches `a`/`b`,
+    /// shape matches `self`.
+    ///
+    /// Differentiable through `a` and `b` only.
+    pub fn where_cond(&self, a: &Self, b: &Self) -> Self {
+        Self {
+            inner: self.inner.where_cond(&a.inner, &b.inner),
+        }
+    }
+
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.

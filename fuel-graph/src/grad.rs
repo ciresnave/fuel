@@ -72,6 +72,8 @@ pub fn dispatch_gradient(
         Op::Relu => Some(ReluRule.backward(graph, op, inputs, output, upstream)),
         // --- comparison family: non-differentiable, terminate cleanly ---
         Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => Some(NoGradientBinaryRule.backward(graph, op, inputs, output, upstream)),
+        // --- ternary select: differentiable through `a` and `b` ---
+        Op::Where => Some(WhereRule.backward(graph, op, inputs, output, upstream)),
         _ => None,
     }
 }
@@ -131,6 +133,54 @@ impl GradientRule for NoGradientBinaryRule {
         _upstream: NodeId,
     ) -> GradientList {
         vec![None, None]
+    }
+}
+
+/// Backward rule for [`Op::Where`] (ternary select).
+///
+/// Forward: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
+/// Inputs: `(cond, a, b)` where `cond` is `U8`, `a` and `b` share
+/// dtype `T`.
+///
+/// Gradients:
+/// - `cond`: `None` (`U8` mask is non-differentiable).
+/// - `a`: `upstream * cast(cond, T)` — gradient flows only at the
+///   slots where `a` was picked.
+/// - `b`: `upstream * cast(1 - cond, T)` — gradient flows only at
+///   the slots where `b` was picked.
+///
+/// The `1 - cond` mask is built via `Op::AddScalar(-1.0)` followed by
+/// `Op::Neg`: `m_b = -(m_a - 1) = 1 - m_a`. This avoids needing a
+/// `Const(1)` factory inside the rule (which would require synthesizing
+/// a slot-populated leaf via the device handle).
+pub struct WhereRule;
+impl GradientRule for WhereRule {
+    fn backward(
+        &self,
+        graph: &SharedGraph,
+        _op: &Op,
+        inputs: &[NodeId],
+        _output: NodeId,
+        upstream: NodeId,
+    ) -> GradientList {
+        let cond = inputs[0];
+        let a = inputs[1];
+        let b = inputs[2];
+        let shape = node_shape(graph, a);
+        let dtype = node_dtype(graph, a);
+        // m_a = cast(cond, dtype) — the "pick a" mask in float space.
+        // Op::Cast is keyed on the target dtype; the source dtype
+        // (U8 here) flows from the input node's dtype.
+        let m_a = push_node(graph, Op::Cast(dtype), vec![cond], shape.clone(), dtype);
+        // m_b = -(m_a + (-1)) = 1 - m_a — the complementary mask.
+        // AddScalar(-1.0) produces (m_a - 1); Neg flips the sign.
+        let m_a_minus_one =
+            push_node(graph, Op::AddScalar(-1.0), vec![m_a], shape.clone(), dtype);
+        let m_b = push_node(graph, Op::Neg, vec![m_a_minus_one], shape.clone(), dtype);
+        // grad_a = upstream * m_a; grad_b = upstream * m_b.
+        let grad_a = push_node(graph, Op::Mul, vec![upstream, m_a], shape.clone(), dtype);
+        let grad_b = push_node(graph, Op::Mul, vec![upstream, m_b], shape, dtype);
+        vec![None, Some(grad_a), Some(grad_b)]
     }
 }
 
@@ -202,6 +252,55 @@ mod tests {
         let dummy = NodeId(0);
         let result = dispatch_gradient(&g, &Op::MatMul, &[dummy, dummy], dummy, dummy);
         assert!(result.is_none(), "MatMul should not have a registered rule yet");
+    }
+
+    /// `WhereRule` returns 3 entries: `None` for cond (non-differentiable
+    /// U8), `Some(grad_a)` reaching `a` only at picked positions,
+    /// `Some(grad_b)` reaching `b` at non-picked positions. The
+    /// per-input grads are built from `Op::Cast`, `Op::AddScalar`,
+    /// `Op::Neg`, `Op::Mul` — all primitives.
+    #[test]
+    fn dispatch_where_returns_none_for_cond_some_for_a_and_b() {
+        use crate::SharedGraph;
+        use std::sync::{Arc, RwLock};
+        use fuel_core_types::{DType, Shape};
+        // Build a real graph so push_node calls inside the rule have
+        // somewhere to land. Three placeholder Const nodes for the
+        // three inputs.
+        let g: SharedGraph = Arc::new(RwLock::new(crate::Graph::new()));
+        let (cond, a, b, output, upstream) = {
+            let mut gw = g.write().unwrap();
+            let cond = gw.push(crate::Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::U8,
+            });
+            let a = gw.push(crate::Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let b = gw.push(crate::Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let output = gw.push(crate::Node {
+                op: Op::Where, inputs: vec![cond, a, b],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let upstream = gw.push(crate::Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            (cond, a, b, output, upstream)
+        };
+        let result = dispatch_gradient(&g, &Op::Where, &[cond, a, b], output, upstream)
+            .expect("Op::Where must have a registered GradientRule");
+        assert_eq!(result.len(), 3, "Where has 3 inputs");
+        assert!(result[0].is_none(), "cond gradient must be None (U8 non-differentiable)");
+        assert!(result[1].is_some(), "a gradient must be Some (differentiable through pick)");
+        assert!(result[2].is_some(), "b gradient must be Some (differentiable through fallback)");
+        // Sanity: the two grads should reference different nodes.
+        assert_ne!(result[1].unwrap(), result[2].unwrap(),
+            "grad_a and grad_b should be distinct backward nodes");
     }
 
     /// Comparison family terminates the autograd traversal cleanly:

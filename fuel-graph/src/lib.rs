@@ -272,6 +272,18 @@ pub enum Op {
     /// comparison family (`Equal`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`).
     Ge,
 
+    // --- ternary select ---
+    /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
+    /// Inputs `(cond, a, b)`: `cond` is `U8` (typically the output of
+    /// a comparison op), `a` and `b` share dtype `T` and shape with
+    /// `cond`. Output dtype = `T`, shape = `cond.shape()`.
+    ///
+    /// Differentiable through `a` and `b` (gradient flows only to
+    /// the picked positions); `cond` is non-differentiable. Backward
+    /// rule expressed via `Op::Cast` + scalar arithmetic on existing
+    /// primitives, registered in [`crate::grad::WhereRule`].
+    Where,
+
     // --- linear algebra and shape ---
     /// Rank-2 matrix multiply.
     MatMul,
@@ -797,6 +809,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Le                   => "Le",
         Op::Gt                   => "Gt",
         Op::Ge                   => "Ge",
+        Op::Where                => "Where",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2344,6 +2357,58 @@ impl Tensor {
         self.binary_compare_op("ge", Op::Ge, other)
     }
 
+    /// Ternary select: `result[i] = if self[i] != 0 { a[i] } else { b[i] }`.
+    /// Receiver is the `cond` mask (must be `DType::U8`); `a` and `b`
+    /// must share dtype with each other and shape with `self`. Output
+    /// dtype matches `a`/`b`. Returning a new tensor where each slot is
+    /// picked from `a` (cond=1) or `b` (cond=0).
+    ///
+    /// Named `where_cond` because `where` is a Rust reserved keyword.
+    /// Common spelling in Candle/PyTorch families.
+    ///
+    /// Differentiable through `a` and `b` only; gradient through the
+    /// cond mask is `None` (registered in
+    /// [`crate::grad::WhereRule`]).
+    pub fn where_cond(&self, a: &Tensor, b: &Tensor) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &a.graph) && Arc::ptr_eq(&self.graph, &b.graph),
+            "where_cond: tensors must live on the same graph",
+        );
+        assert_eq!(
+            self.dtype(),
+            DType::U8,
+            "where_cond: cond must be U8, got {:?}",
+            self.dtype(),
+        );
+        assert_eq!(
+            a.dtype(), b.dtype(),
+            "where_cond: a/b dtype mismatch: a={:?}, b={:?}",
+            a.dtype(), b.dtype(),
+        );
+        assert_eq!(
+            self.shape().dims(), a.shape().dims(),
+            "where_cond: cond/a shape mismatch: cond={:?}, a={:?}",
+            self.shape().dims(), a.shape().dims(),
+        );
+        assert_eq!(
+            self.shape().dims(), b.shape().dims(),
+            "where_cond: cond/b shape mismatch: cond={:?}, b={:?}",
+            self.shape().dims(), b.shape().dims(),
+        );
+        let shape = self.shape();
+        let dtype = a.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Where,
+            inputs: vec![self.id, a.id, b.id],
+            shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     // --- dtype and broadcasting ---
 
     /// Append a `Cast` node converting this tensor's element type to
@@ -3867,6 +3932,10 @@ impl Tensor {
                         dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Where => {
+                    // Handled by `WhereRule` via `dispatch_gradient`;
+                    // this arm only exists for exhaustiveness.
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`
@@ -6467,6 +6536,24 @@ mod tests {
         let m_node = m.graph().read().unwrap().node(m.id()).clone();
         assert!(matches!(m_node.op, Op::Equal));
         assert_eq!(m_node.inputs, vec![a.id(), b.id()]);
+    }
+
+    #[test]
+    fn where_cond_builder_produces_ternary_with_a_dtype() {
+        // self is U8 cond; a/b are F32. Output dtype = F32 (= a's dtype),
+        // shape = self.shape() (= a.shape() = b.shape()). Op::Where
+        // node carries 3 inputs in order (cond, a, b).
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
+        let eq_a_b = a.eq(&b);  // U8 mask
+        let picked = eq_a_b.where_cond(&a, &b);
+        assert_eq!(picked.shape().dims(), &[3]);
+        assert_eq!(picked.dtype(), DType::F32, "Where output dtype = a/b dtype");
+        let node = picked.graph().read().unwrap().node(picked.id()).clone();
+        assert!(matches!(node.op, Op::Where));
+        assert_eq!(node.inputs.len(), 3);
+        assert_eq!(node.inputs, vec![eq_a_b.id(), a.id(), b.id()],
+            "Where input order: (cond, a, b)");
     }
 
     #[test]

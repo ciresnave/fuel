@@ -468,6 +468,58 @@ cpu_binary_wrapper!(ge_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kerne
 cpu_binary_wrapper!(ge_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ge_bf16_u8, "ge_elementwise");
 cpu_binary_wrapper!(ge_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ge_f16_u8, "ge_elementwise");
 
+/// Build a `(3 inputs, 1 output)` CPU dispatch wrapper for the
+/// ternary [`Op::Where`] family. Inputs are `(cond, a, b)` byte
+/// buffers; output is the typed `T` result. The wrapper signature
+/// matches [`KernelRef`]; the kernel itself does the typed casts
+/// internally.
+macro_rules! cpu_where_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 3 inputs (cond, a, b), got {}",
+                    $op_name, inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 output, got {}",
+                    $op_name, outputs.len(),
+                ))
+                .bt());
+            }
+            let cond_guard = read_storage(&inputs[0])?;
+            if cond_guard.dtype != DType::U8 {
+                return Err(Error::Msg(format!(
+                    "{}: cond must be U8, got {:?}",
+                    $op_name, cond_guard.dtype,
+                ))
+                .bt());
+            }
+            let a_guard = read_storage(&inputs[1])?;
+            let b_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let cond_cpu = cpu_input(&cond_guard)?;
+            let a_cpu = cpu_input(&a_guard)?;
+            let b_cpu = cpu_input(&b_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(cond_cpu, a_cpu, b_cpu, out_cpu)
+        }
+    };
+}
+
+cpu_where_wrapper!(where_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f32, "where");
+cpu_where_wrapper!(where_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f64, "where");
+cpu_where_wrapper!(where_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_bf16, "where");
+cpu_where_wrapper!(where_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f16, "where");
+
 /// Generate a CPU argextremum wrapper. Output dtype is U32; the
 /// binding-table key is keyed on the OUTPUT dtype = U32. The
 /// wrapper validates the input is F32 (only F32 is wired today).
@@ -2471,6 +2523,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GreaterEqualElementwise, &compare(f64_dt),  cpu, ge_elementwise_f64_cpu_wrapper);
     table.register(GreaterEqualElementwise, &compare(bf16_dt), cpu, ge_elementwise_bf16_cpu_wrapper);
     table.register(GreaterEqualElementwise, &compare(f16_dt),  cpu, ge_elementwise_f16_cpu_wrapper);
+
+    // Ternary select. Binding-table dtype list is `[U8, T, T, T]`:
+    // cond + lhs + rhs + output. Per-dtype kernel for each `T`.
+    let where_dts = |t: DType| [u8_dt, t, t, t];
+    table.register(Where, &where_dts(f32_dt),  cpu, where_f32_cpu_wrapper);
+    table.register(Where, &where_dts(f64_dt),  cpu, where_f64_cpu_wrapper);
+    table.register(Where, &where_dts(bf16_dt), cpu, where_bf16_cpu_wrapper);
+    table.register(Where, &where_dts(f16_dt),  cpu, where_f16_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);
