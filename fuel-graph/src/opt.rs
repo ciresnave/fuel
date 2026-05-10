@@ -533,6 +533,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
 
         // --- rounding family (non-differentiable) ---
         Op::Floor => (35, vec![], vec![], vec![], None, None),
+        Op::Ceil => (36, vec![], vec![], vec![], None, None),
 
         Op::MatMul => (30, vec![], vec![], vec![], None, None),
         Op::Transpose => (31, vec![], vec![], vec![], None, None),

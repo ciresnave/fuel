@@ -463,6 +463,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Ge            => Some(OpKind::GreaterEqualElementwise),
         Op::Where         => Some(OpKind::Where),
         Op::Floor         => Some(OpKind::FloorElementwise),
+        Op::Ceil          => Some(OpKind::CeilElementwise),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
         Op::MaxDim(_)     => Some(OpKind::MaxReduce),
         Op::MinDim(_)     => Some(OpKind::MinReduce),

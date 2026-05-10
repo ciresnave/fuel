@@ -351,6 +351,7 @@ fn eval_node(
         Op::Recip => unary!(inputs, cache, ops::recip),
         Op::Abs => unary!(inputs, cache, ops::abs),
         Op::Floor => unary!(inputs, cache, ops::floor),
+        Op::Ceil => unary!(inputs, cache, ops::ceil),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1556,6 +1557,22 @@ mod tests {
         let out = realize_f32(&b);
         let s = out.as_slice();
         assert_eq!(s, &[2.0, -2.0, 0.0, -1.0, 5.0]);
+        assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn ceil_forward_returns_round_up() {
+        // ceil(2.3) = 3, ceil(-1.7) = -1, ceil(0.0) = 0,
+        // ceil(0.5) = 1, ceil(5.0) = 5.
+        let a = Tensor::from_f32(
+            vec![2.3_f32, -1.7, 0.0, 0.5, 5.0],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let b = a.ceil();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        assert_eq!(s, &[3.0, -1.0, 0.0, 1.0, 5.0]);
         assert_equivalent_f32(&b);
     }
 

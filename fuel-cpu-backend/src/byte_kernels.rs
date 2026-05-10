@@ -395,6 +395,11 @@ unary_kernel!(floor_f64, f64, |x: f64| x.floor(), "Elementwise `f64` floor.");
 unary_kernel!(floor_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().floor()), "Elementwise `bf16` floor (via f32).");
 unary_kernel!(floor_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().floor()), "Elementwise `f16` floor (via f32).");
 
+unary_f32_kernel!(ceil_f32, |x: f32| x.ceil(), "Elementwise `f32` ceiling: `out[i] = ⌈input[i]⌉`.");
+unary_kernel!(ceil_f64, f64, |x: f64| x.ceil(), "Elementwise `f64` ceiling.");
+unary_kernel!(ceil_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().ceil()), "Elementwise `bf16` ceiling (via f32).");
+unary_kernel!(ceil_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().ceil()), "Elementwise `f16` ceiling (via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================

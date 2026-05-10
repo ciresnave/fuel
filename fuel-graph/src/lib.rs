@@ -277,6 +277,9 @@ pub enum Op {
     /// the zero distribution almost everywhere; gradient is dropped
     /// silently (treated like `Op::Step`'s no-grad backward).
     Floor,
+    /// Element-wise ceiling (`⌈x⌉`). Same dtype as input. Backward
+    /// drops gradient (mirrors [`Op::Floor`]).
+    Ceil,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -817,6 +820,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Ge                   => "Ge",
         Op::Where                => "Where",
         Op::Floor                => "Floor",
+        Op::Ceil                 => "Ceil",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2326,6 +2330,12 @@ impl Tensor {
     /// is dropped silently.
     pub fn floor(&self) -> Tensor {
         self.unary_op(Op::Floor)
+    }
+
+    /// Append a `Ceil` node (`⌈self⌉`). Output dtype = input dtype.
+    /// Backward drops gradient (non-differentiable almost everywhere).
+    pub fn ceil(&self) -> Tensor {
+        self.unary_op(Op::Ceil)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -3951,11 +3961,12 @@ impl Tensor {
                     // Handled by `WhereRule` via `dispatch_gradient`;
                     // this arm only exists for exhaustiveness.
                 }
-                Op::Floor => {
-                    // d(floor(x))/dx is 0 almost everywhere (Dirac
-                    // train at integer x has no finite representation).
-                    // Treat the derivative as 0 and stop propagation —
-                    // mirrors `Op::Step`'s backward.
+                Op::Floor | Op::Ceil => {
+                    // d(floor(x))/dx and d(ceil(x))/dx are 0 almost
+                    // everywhere (Dirac train at integer x has no
+                    // finite representation). Treat the derivative as
+                    // 0 and stop propagation — mirrors `Op::Step`'s
+                    // backward.
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`
