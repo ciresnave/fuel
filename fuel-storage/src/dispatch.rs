@@ -3557,6 +3557,56 @@ fn reduce_max_to_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(Gather, [F32, U32, F32], Cuda)`. Mirrors
+/// the CPU `gather_cpu_wrapper`; pulls `(source_shape, output_shape,
+/// dim)` from `OpParams::Gather`. Indices must be U32 (matches the
+/// `gather_u32_f32` PTX kernel symbol).
+#[cfg(feature = "cuda")]
+fn gather_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "gather_f32_cuda_wrapper: expected 2 inputs + 1 output, got {} + {}",
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (source_shape, output_shape, dim) = match params {
+        OpParams::Gather { source_shape, output_shape, dim } => {
+            (source_shape.clone(), output_shape.clone(), *dim)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "gather_f32_cuda_wrapper: expected OpParams::Gather, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let src_guard = read_storage(&inputs[0])?;
+    let ids_guard = read_storage(&inputs[1])?;
+    if ids_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "gather_f32_cuda_wrapper: indices must be U32, got {:?}",
+            ids_guard.dtype,
+        ))
+        .bt());
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&src_guard)?;
+    let ids_cuda = cuda_input(&ids_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::gather_f32(
+        src_cuda, ids_cuda, &source_shape, &output_shape, dim,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(IndexSelect, [F32, U32, F32], Cuda)`. The
 /// `OpParams::IndexSelect` carries the four pre-computed counts the
 /// kernel needs (`outer_count`, `source_dim_size`, `n_indices`,
@@ -3798,13 +3848,14 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
 
-    // IndexSelect: gather rows from F32 source via U32 indices.
-    // Dtype binding key matches the CPU `index_select(F32)` shape:
+    // IndexSelect / Gather: gather data from an F32 source via U32
+    // indices. Dtype binding key matches the CPU shape:
     // `[source_dt, U32, source_dt]`. Other (source, index) pairs
     // (F32×U8, F32×I64, F64×U32, …) register as their own entries
     // when their PTX kernels and CPU mirrors are wired through.
     let u32_dt = DType::U32;
     table.register(IndexSelect, &[f32_dt, u32_dt, f32_dt], cuda, index_select_f32_cuda_wrapper);
+    table.register(Gather,      &[f32_dt, u32_dt, f32_dt], cuda, gather_f32_cuda_wrapper);
 
     // Cast — one binding-table entry per (src, dst) pair the cast.cu
     // PTX defines. Pairs gated on `__CUDA_ARCH__` in the .cu source

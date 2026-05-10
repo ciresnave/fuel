@@ -1713,3 +1713,83 @@ fn index_select_f32_u32_through_binding_table() {
     ];
     assert_eq!(host_f32, &expected);
 }
+
+/// End-to-end: N-dimensional gather along dim 1 through the unified
+/// binding-table dispatch on CUDA. Source [2, 4]; indices [2, 3]
+/// (same rank as source, output_shape == indices_shape, only the
+/// gathered dim differs); output [2, 3] picks per-row columns via
+/// the per-element index. Exercises the `(Gather, [F32, U32, F32],
+/// Cuda)` entry, which dispatches `gather_u32_f32` from the INDEXING
+/// PTX module.
+#[test]
+#[ignore]
+fn gather_f32_u32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // Source: 2 rows × 4 columns of F32.
+    let src_f32: [f32; 8] = [
+        10.0, 11.0, 12.0, 13.0,  // row 0
+        20.0, 21.0, 22.0, 23.0,  // row 1
+    ];
+    let src = build_storage_cuda(&dev, &src_f32);
+
+    // Indices: 2 rows × 3 columns of U32. Per row, picks 3 source
+    // columns by index. Note that indices and source share rank
+    // (matching the Gather contract); only `dim` (=1) varies.
+    let ids_u32: [u32; 6] = [
+        3, 0, 2,  // row 0 picks src[0,3], src[0,0], src[0,2]
+        1, 2, 0,  // row 1 picks src[1,1], src[1,2], src[1,0]
+    ];
+    let ids_bytes: &[u8] = bytemuck::cast_slice(&ids_u32);
+    let ids = build_storage_cuda_from_bytes(&dev, ids_bytes, DType::U32);
+
+    // Output: 2 rows × 3 columns of F32 (6 elements * 4 bytes).
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 3 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let ids_arc = Arc::new(RwLock::new(ids));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(
+            OpKind::Gather,
+            &[DType::F32, DType::U32, DType::F32],
+            BackendId::Cuda,
+        )
+        .expect("lookup (Gather, [F32, U32, F32], Cuda)");
+
+    let params = OpParams::Gather {
+        source_shape: vec![2, 4],
+        output_shape: vec![2, 3],
+        dim: 1,
+    };
+    let src_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    let ids_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let layouts = vec![src_layout, ids_layout, out_layout];
+
+    kernel(
+        &[src_arc.clone(), ids_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    let expected: [f32; 6] = [
+        13.0, 10.0, 12.0,  // row 0: src[0,3], src[0,0], src[0,2]
+        21.0, 22.0, 20.0,  // row 1: src[1,1], src[1,2], src[1,0]
+    ];
+    assert_eq!(host_f32, &expected);
+}
