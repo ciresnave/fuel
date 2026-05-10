@@ -9,21 +9,44 @@
 //!
 //! # Scope of this revision
 //!
-//! Ships the types, the runner skeleton, and profiling for two
-//! op kinds and three dtypes so the end-to-end pipeline is wired:
+//! Ships the types, the runner skeleton, and per-family probe
+//! coverage spanning the inference op surface in F32:
 //!
-//! - **Ops**: [`OpKind::MatMul`] and [`OpKind::AddElementwise`]. MatMul
-//!   is the headline op; AddElementwise exercises the cheapest path
-//!   to make sure the Judge doesn't accidentally skew its timing on
-//!   tiny work.
+//! - **Ops**: see [`PROFILED_OPS`] for the canonical list. Currently:
+//!   - dense linear algebra: [`OpKind::MatMul`]
+//!   - elementwise binary: Add / Sub / Mul / Div / Maximum / Minimum
+//!   - elementwise unary: Neg / Sqr / Sqrt / Exp / Log / Sin / Cos /
+//!     Tanh / Sigmoid / Silu / Gelu / Relu / Step
+//!   - per-axis reductions: SumReduce / MaxReduce / MinReduce /
+//!     MeanReduce (probed as last-dim reduction over `[rows, 64]`)
+//!   - reduce-to-broadcast-target: ReduceSumTo / ReduceMaxTo
+//!   - parametric one-input: Affine / Clamp / PowI
+//!   - 28 OpKind variants total, 84 (op, size) cells per backend
+//!     class.
 //! - **Dtypes**: f32 for now. f64 / bf16 / f16 are a mechanical
 //!   extension once the dispatch table surfaces the dtype axis.
-//! - **Backends**: CPU (fast path via `fuel-graph-cpu`), reference,
-//!   and CUDA (gated on the `cuda` feature). Vulkan is identified in
-//!   the probe but not yet profiled here — needs a
-//!   `LazyTensor::realize_f32_vulkan` helper equivalent to the CUDA
-//!   one. Skipped with a stderr note so the runner is explicit about
-//!   the gap.
+//! - **Backends**: every backend in the [`crate::factories`] registry.
+//!   A backend that doesn't implement an op is skipped per cell with
+//!   a stderr note (the realize call is wrapped in `catch_unwind`),
+//!   not fatal to the run — what makes the Judge safe to expand
+//!   ahead of every backend's coverage.
+//!
+//! Op kinds *not yet profiled* (build_input_graph would `panic!` if
+//! the size_plan returned a non-empty ladder for them; the size_plan's
+//! catch-all `_ => Vec::new()` arm silently skips):
+//!
+//! - composition / fused ops: SoftmaxLastDim / RmsNormLastDim /
+//!   LayerNormLastDim / Rope / FlashAttn / PagedAttn / FusedLinear.
+//!   These are slated for Phase 7.6 fused-op profiling (per ROADMAP),
+//!   not the primitive-OpKind sweep this module covers.
+//! - shape-rearranging: Cast / IndexSelect / Gather / Concat /
+//!   IndexAdd / ScatterAdd / ArgMaxDim / ArgMinDim.
+//! - convolutions: Conv2D / ConvTranspose2D.
+//! - quantized: QMatMul.
+//!
+//! Each of those is a separable add: extend [`PROFILED_OPS`], add a
+//! `size_plan` arm with a representative size ladder, add a
+//! `build_input_graph` arm that constructs the input graph.
 //!
 //! # Equivalence-class discipline
 //!
@@ -906,6 +929,56 @@ mod tests {
                 e.max_rel_error);
             assert!(e.latency_ns > 0);
         }
+    }
+
+    #[test]
+    fn dispatch_table_built_from_expanded_report_serves_multiple_kinds() {
+        // Confirms the DispatchTable's O(1) lookup path handles the
+        // expanded OpKind coverage. The route picker can now pick
+        // among many more (op, size_class) cells than the original
+        // matmul + add report supported.
+        use fuel_core_types::dispatch::{Criterion, DispatchTable};
+
+        let probe = ProbeReport::probe_all();
+        let judge = Judge {
+            iterations: 3, warmup: 1,
+            size_plan_override: Some(vec![
+                (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
+                (OpKind::AddElementwise, OpSize::Elementwise(1 << 8)),
+                (OpKind::ReluElementwise, OpSize::Elementwise(1 << 8)),
+                (OpKind::SumReduce, OpSize::Reduce { rows: 16, cols: 16 }),
+                (OpKind::ReduceSumTo, OpSize::ReduceTo { rows: 16, cols: 16 }),
+                (OpKind::Affine, OpSize::Elementwise(1 << 8)),
+            ]),
+        };
+        let report = judge.run(&probe);
+        let table = DispatchTable::build(&report);
+
+        // Every kind in the plan should yield a Pick at every
+        // criterion. SizeClass(8) covers the elementwise plan
+        // (256 elems = 2^8) and the reductions (16*16 = 2^8); the
+        // matmul cell is at SizeClass(10) (32*32 = 2^10).
+        let elementwise_kinds = [
+            OpKind::AddElementwise, OpKind::ReluElementwise,
+            OpKind::SumReduce, OpKind::ReduceSumTo, OpKind::Affine,
+        ];
+        for &op in &elementwise_kinds {
+            for &crit in &[Criterion::Fastest, Criterion::MostAccurate, Criterion::Balanced] {
+                let pick = table.pick(op, DType::F32, SizeClass(8), crit);
+                assert!(pick.is_some(),
+                    "DispatchTable missing pick for {op}@2^8 / {crit:?}");
+            }
+        }
+        let matmul_pick = table.pick(OpKind::MatMul, DType::F32, SizeClass(10), Criterion::Fastest);
+        assert!(matmul_pick.is_some(), "DispatchTable missing matmul pick");
+
+        // The table's keys() should include every (op, dtype,
+        // size_class) tuple exercised by the plan.
+        let keys = table.keys();
+        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::ReluElementwise && sc.0 == 8));
+        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::SumReduce && sc.0 == 8));
+        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::ReduceSumTo && sc.0 == 8));
+        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::Affine && sc.0 == 8));
     }
 
     #[test]
