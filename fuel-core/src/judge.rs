@@ -111,6 +111,8 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::SignElementwise,
     OpKind::ErfElementwise,
     OpKind::GeluErfElementwise,
+    // --- elementwise binary additions ---
+    OpKind::PowElementwise,
     // --- elementwise binary fanout ---
     OpKind::SubElementwise,
     OpKind::MulElementwise,
@@ -194,6 +196,7 @@ impl Judge {
             | OpKind::DivElementwise
             | OpKind::MaximumElementwise
             | OpKind::MinimumElementwise
+            | OpKind::PowElementwise
             | OpKind::NegElementwise
             | OpKind::SqrElementwise
             | OpKind::SqrtElementwise
@@ -630,7 +633,8 @@ fn is_binary_elementwise(op: OpKind) -> bool {
         | OpKind::MulElementwise
         | OpKind::DivElementwise
         | OpKind::MaximumElementwise
-        | OpKind::MinimumElementwise,
+        | OpKind::MinimumElementwise
+        | OpKind::PowElementwise,
     )
 }
 
@@ -640,9 +644,15 @@ fn is_binary_elementwise(op: OpKind) -> bool {
 /// near-zero values that would saturate `max_rel_err` to infinity on
 /// any tiny precision difference.
 fn binary_inputs(op: OpKind, n: usize) -> (Vec<f32>, Vec<f32>) {
-    let a: Vec<f32> = (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
+    let mut a: Vec<f32> = (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
     let mut b: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.9e-3).cos()).collect();
     if matches!(op, OpKind::DivElementwise) {
+        for x in &mut b { *x += 1.5; }
+    }
+    if matches!(op, OpKind::PowElementwise) {
+        // Both inputs must be positive: pow(neg, non-int) = NaN under
+        // IEEE-754 and saturates max_rel_err. Shift both to [0.5, 2.5].
+        for x in &mut a { *x += 1.5; }
         for x in &mut b { *x += 1.5; }
     }
     (a, b)
@@ -661,6 +671,7 @@ fn apply_binary(
         OpKind::DivElementwise     => a.div(b),
         OpKind::MaximumElementwise => a.maximum(b),
         OpKind::MinimumElementwise => a.minimum(b),
+        OpKind::PowElementwise     => a.pow(b),
         _ => unreachable!("apply_binary called on non-binary OpKind {op:?}"),
     }
 }
@@ -861,6 +872,7 @@ mod tests {
         let binary = [
             OpKind::AddElementwise, OpKind::SubElementwise, OpKind::MulElementwise,
             OpKind::DivElementwise, OpKind::MaximumElementwise, OpKind::MinimumElementwise,
+            OpKind::PowElementwise,
         ];
         let plan: Vec<_> = binary.iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))

@@ -356,6 +356,7 @@ fn eval_node(
         Op::Sign => unary!(inputs, cache, ops::sign),
         Op::Erf => unary!(inputs, cache, ops::erf),
         Op::GeluErf => unary!(inputs, cache, ops::gelu_erf),
+        Op::Pow => binary!(inputs, cache, ops::pow),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1587,6 +1588,60 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn pow_forward_matches_powf() {
+        // pow(2, 3) = 8, pow(4, 0.5) = 2, pow(9, 0.5) = 3,
+        // pow(2.5, 2) = 6.25, pow(1, anything) = 1.
+        let a = Tensor::from_f32(
+            vec![2.0_f32, 4.0, 9.0, 2.5, 1.0],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let b = a.const_f32_like(
+            vec![3.0_f32, 0.5, 0.5, 2.0, 7.5],
+            Shape::from_dims(&[5]),
+        );
+        let y = a.pow(&b);
+        let out = realize_f32(&y);
+        let s = out.as_slice();
+        let expected = [8.0_f32, 2.0, 3.0, 6.25, 1.0];
+        for (i, (&got, &want)) in s.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-5,
+                "pow[{i}] = {got}, want {want}");
+        }
+        assert_equivalent_f32(&y);
+    }
+
+    #[test]
+    fn pow_backward_matches_partials() {
+        // y = pow(a, b).
+        // dy/da = b * pow(a, b-1)
+        // dy/db = pow(a, b) * ln(a) = y * ln(a)
+        //
+        // At a=2, b=3:  dy/da = 3 * 2^2 = 12;  dy/db = 8 * ln(2) ≈ 5.5452
+        // At a=4, b=2:  dy/da = 2 * 4^1 = 8;   dy/db = 16 * ln(4) ≈ 22.181
+        let a = Tensor::from_f32(vec![2.0_f32, 4.0], Shape::from_dims(&[2]), cpu_dev());
+        let b = a.const_f32_like(vec![3.0_f32, 2.0], Shape::from_dims(&[2]));
+        let y = a.pow(&b);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let g_b = grads.get(&b).expect("gradient for b");
+        let g_a_out = realize_f32(&g_a);
+        let g_b_out = realize_f32(&g_b);
+        let sa = g_a_out.as_slice();
+        let sb = g_b_out.as_slice();
+        let expected_a = [12.0_f32, 8.0];
+        let expected_b = [5.545_177_4_f32, 22.180_71];
+        for (i, (&got, &want)) in sa.iter().zip(expected_a.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-4,
+                "pow grad_a[{i}] = {got}, want {want}");
+        }
+        for (i, (&got, &want)) in sb.iter().zip(expected_b.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-4,
+                "pow grad_b[{i}] = {got}, want {want}");
+        }
     }
 
     #[test]

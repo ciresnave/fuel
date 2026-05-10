@@ -437,6 +437,14 @@ unary_kernel!(gelu_erf_f64, f64, |x: f64| 0.5 * x * (1.0 + libm::erf(x * std::f6
 unary_kernel!(gelu_erf_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(0.5 * f * (1.0 + libm::erff(f * std::f32::consts::FRAC_1_SQRT_2))) }, "Elementwise `bf16` GELU (exact erf form, via f32).");
 unary_kernel!(gelu_erf_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(0.5 * f * (1.0 + libm::erff(f * std::f32::consts::FRAC_1_SQRT_2))) }, "Elementwise `f16` GELU (exact erf form, via f32).");
 
+// Binary pow with real exponent. `f32::powf` / `f64::powf` are
+// stdlib; bf16/f16 widen to f32. NaN follows IEEE-754 (e.g.
+// `pow(-2, 0.5) = NaN`).
+binary_kernel!(pow_f32, f32, |a: f32, b: f32| a.powf(b), "Elementwise `f32` binary power: `out[i] = pow(lhs[i], rhs[i])`.");
+binary_kernel!(pow_f64, f64, |a: f64, b: f64| a.powf(b), "Elementwise `f64` binary power.");
+binary_kernel!(pow_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().powf(b.to_f32())), "Elementwise `bf16` binary power (via f32).");
+binary_kernel!(pow_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().powf(b.to_f32())), "Elementwise `f16` binary power (via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
