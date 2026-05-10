@@ -350,6 +350,7 @@ fn eval_node(
         Op::Step => unary!(inputs, cache, ops::step),
         Op::Recip => unary!(inputs, cache, ops::recip),
         Op::Abs => unary!(inputs, cache, ops::abs),
+        Op::Floor => unary!(inputs, cache, ops::floor),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1540,6 +1541,22 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn floor_forward_returns_round_down() {
+        // floor(2.7) = 2, floor(-1.2) = -2, floor(0.0) = 0,
+        // floor(-0.5) = -1 (round-half-to-floor by definition).
+        let a = Tensor::from_f32(
+            vec![2.7_f32, -1.2, 0.0, -0.5, 5.0],
+            Shape::from_dims(&[5]),
+            cpu_dev(),
+        );
+        let b = a.floor();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        assert_eq!(s, &[2.0, -2.0, 0.0, -1.0, 5.0]);
+        assert_equivalent_f32(&b);
     }
 
     #[test]

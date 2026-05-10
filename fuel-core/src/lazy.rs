@@ -434,6 +434,12 @@ impl LazyTensor {
         Self { inner: self.inner.abs() }
     }
 
+    /// Element-wise floor (`⌊x⌋`). Same dtype as input.
+    /// Backward is silently zero (non-differentiable almost everywhere).
+    pub fn floor(&self) -> Self {
+        Self { inner: self.inner.floor() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }

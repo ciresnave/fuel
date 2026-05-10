@@ -520,6 +520,13 @@ cpu_where_wrapper!(where_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_
 cpu_where_wrapper!(where_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_bf16, "where");
 cpu_where_wrapper!(where_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f16, "where");
 
+// Rounding family (Floor / Ceil / Round) — same-dtype unary; standard
+// `cpu_unary_wrapper!`.
+cpu_unary_wrapper!(floor_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_f32, "floor_elementwise");
+cpu_unary_wrapper!(floor_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_f64, "floor_elementwise");
+cpu_unary_wrapper!(floor_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_bf16, "floor_elementwise");
+cpu_unary_wrapper!(floor_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_f16, "floor_elementwise");
+
 /// Generate a CPU argextremum wrapper. Output dtype is U32; the
 /// binding-table key is keyed on the OUTPUT dtype = U32. The
 /// wrapper validates the input is F32 (only F32 is wired today).
@@ -2531,6 +2538,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Where, &where_dts(f64_dt),  cpu, where_f64_cpu_wrapper);
     table.register(Where, &where_dts(bf16_dt), cpu, where_bf16_cpu_wrapper);
     table.register(Where, &where_dts(f16_dt),  cpu, where_f16_cpu_wrapper);
+
+    // Rounding family — standard unary shape `[T, T]`.
+    table.register(FloorElementwise, &unary(f32_dt),  cpu, floor_elementwise_f32_cpu_wrapper);
+    table.register(FloorElementwise, &unary(f64_dt),  cpu, floor_elementwise_f64_cpu_wrapper);
+    table.register(FloorElementwise, &unary(bf16_dt), cpu, floor_elementwise_bf16_cpu_wrapper);
+    table.register(FloorElementwise, &unary(f16_dt),  cpu, floor_elementwise_f16_cpu_wrapper);
 
     // bf16 + f16 elementwise — via-f32 round-trip kernels.
     table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);
