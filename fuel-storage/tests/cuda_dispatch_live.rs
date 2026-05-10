@@ -1793,3 +1793,49 @@ fn gather_f32_u32_through_binding_table() {
     ];
     assert_eq!(host_f32, &expected);
 }
+
+/// End-to-end: element-wise clamp through the unified binding-table
+/// dispatch on CUDA. Source contains values both inside and outside
+/// the clamp range; clamp(-1.0, 2.0) folds them to the boundary.
+/// Exercises the `(ClampElementwise, F32, Cuda)` entry, which
+/// dispatches `uclamp_f32` from the UNARY PTX module via the new
+/// UNARY_OP2 macro.
+#[test]
+#[ignore]
+fn clamp_elementwise_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let xs: [f32; 7] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0, 1.5];
+    let src = build_storage_cuda(&dev, &xs);
+
+    let out_bytes = CudaStorageBytes::alloc(&dev, 7 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ClampElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (ClampElementwise, F32, Cuda)");
+
+    let params = OpParams::Clamp { min: -1.0, max: 2.0 };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[7]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[7]));
+    let layouts = vec![in_layout, out_layout];
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    let expected: [f32; 7] = [-1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 1.5];
+    assert_eq!(host_f32, &expected);
+}
