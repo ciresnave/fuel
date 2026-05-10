@@ -408,6 +408,127 @@ pub fn index_select_f32(
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
 }
 
+/// Shared launch path for F32 argmax/argmin along one dim.
+/// Mirrors [`reduce_f32`] but the output is `dst_el * sizeof(u32)`
+/// bytes (not f32) and the kernel writes `uint32_t *dst`. The reduce
+/// dim is reordered to last and the existing parallel argmax/argmin
+/// kernels (which compute `idx % dims[last]` for the per-block
+/// index) work as-is — they were written for the "reduce over last
+/// dim" shape, and the dim-reorder normalizes any dim to that shape.
+fn arg_extremum_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    dim: usize,
+    kernel_name: &'static str,
+) -> Result<CudaStorageBytes> {
+    let f32_size = std::mem::size_of::<f32>();
+    let u32_size = std::mem::size_of::<u32>();
+    if src.len_bytes() % f32_size != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: src.len_bytes={} not a multiple of f32 size",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    let src_dims = input_layout.shape().dims();
+    let src_stride = input_layout.stride();
+    let src_el: usize = src_dims.iter().product();
+    if src_el * f32_size != src.len_bytes() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: src element count {} (from layout shape {:?}) \
+             disagrees with byte length {} / sizeof(f32)",
+            src_el,
+            src_dims,
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    if dim >= src_dims.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: dim {dim} out of range for rank {}",
+            src_dims.len(),
+        ))
+        .bt());
+    }
+    if src_dims[dim] == 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{kernel_name}: dim {dim} has size 0 — argmax/argmin undefined",
+        ))
+        .bt());
+    }
+
+    // Reorder so the reduce dim is last (mirrors reduce_f32). The
+    // fast_argmax/fast_argmin kernels expect the contiguous reduce-
+    // axis to be last and compute the per-block index as
+    // `idx % dims[num_dims - 1]`.
+    let mut dims = Vec::with_capacity(src_dims.len());
+    let mut stride = Vec::with_capacity(src_dims.len());
+    let mut dst_el: usize = 1;
+    for (dim_idx, &d) in src_dims.iter().enumerate() {
+        if dim_idx != dim {
+            dst_el *= d;
+            dims.push(d);
+            stride.push(src_stride[dim_idx]);
+        }
+    }
+    dims.push(src_dims[dim]);
+    stride.push(src_stride[dim]);
+
+    let dst_bytes = dst_el * u32_size;
+    let device = src.device().clone();
+    if src_el == 0 || dst_el == 0 {
+        return CudaStorageBytes::alloc(&device, dst_bytes);
+    }
+    let el_to_sum_per_block = src_el / dst_el;
+    let block_dim = usize::min(1024, el_to_sum_per_block).next_power_of_two();
+    let cfg = LaunchConfig {
+        grid_dim: (dst_el as u32, 1, 1),
+        block_dim: (block_dim as u32, 1, 1),
+        shared_mem_bytes: 0,
+    };
+
+    let mut out = device.alloc_zeros::<u8>(dst_bytes)?;
+    let ds = device.clone_htod(&[dims.as_slice(), stride.as_slice()].concat())?;
+    let func = device.get_or_load_func(kernel_name, &kernels::REDUCE)?;
+    let mut builder = func.builder();
+    barg!(builder, src_el);
+    barg!(builder, el_to_sum_per_block);
+    barg!(builder, src_dims.len());
+    builder.arg(&ds);
+    builder.arg(src.buffer());
+    builder.arg(&mut out);
+    // SAFETY: kernel signature matches the args above — same shape as
+    // reduce_f32 but with `uint32_t *dst` output (FAST_OP macro,
+    // ARGMIN/ARGMAX entries).
+    unsafe { builder.launch(cfg) }.w()?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
+}
+
+/// Argmax over one dim of an F32 `CudaStorageBytes`. Output is U32
+/// indices into the reduce dim, with the reduce dim removed from the
+/// output shape (same shape contract as the CPU `argmax_dim_f32`).
+/// Launches the existing `fast_argmax_f32` parallel-reduction kernel
+/// after reordering the reduce axis to last; tie-breaking is "first
+/// index encountered" within the per-block stride pattern.
+pub fn argmax_dim_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    dim: usize,
+) -> Result<CudaStorageBytes> {
+    arg_extremum_f32(src, input_layout, dim, "fast_argmax_f32")
+}
+
+/// Argmin over one dim — sister of [`argmax_dim_f32`]. Same shape
+/// contract; only the launched kernel name differs.
+pub fn argmin_dim_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    dim: usize,
+) -> Result<CudaStorageBytes> {
+    arg_extremum_f32(src, input_layout, dim, "fast_argmin_f32")
+}
+
 /// Concatenate N F32 inputs along one dim. Each input has shape
 /// `[..outer_count, input_dim_sizes[i], ..inner_count]`; output has
 /// shape `[..outer_count, sum(input_dim_sizes), ..inner_count]`.

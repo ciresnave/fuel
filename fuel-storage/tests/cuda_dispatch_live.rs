@@ -1970,3 +1970,95 @@ fn concat_f32_three_inputs_through_binding_table() {
     ];
     assert_eq!(host_f32, &expected);
 }
+
+/// End-to-end: ArgMaxDim along the inner dim through the unified
+/// binding-table dispatch on CUDA. Source [2, 3] of F32; output [2]
+/// of U32 (indices into the reduced axis). Exercises
+/// `(ArgMaxDim, [F32, U32], Cuda)` which dispatches `fast_argmax_f32`
+/// from the REDUCE PTX module after dim-reordering.
+#[test]
+#[ignore]
+fn argmax_dim_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // [2, 3]: row 0 max at idx 1 (5.0), row 1 max at idx 2 (6.0).
+    let xs: [f32; 6] = [
+        1.0, 5.0, 2.0,
+        4.0, 3.0, 6.0,
+    ];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::U32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ArgMaxDim, &[DType::F32, DType::U32], BackendId::Cuda)
+        .expect("lookup (ArgMaxDim, [F32, U32], Cuda)");
+
+    let params = OpParams::Reduce { dims: vec![1], keepdim: false };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
+    let layouts = vec![in_layout, out_layout];
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_u32: &[u32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_u32, &[1_u32, 2]);
+}
+
+/// End-to-end: ArgMinDim along the inner dim — sister of the
+/// argmax test. `(ArgMinDim, [F32, U32], Cuda)` dispatches
+/// `fast_argmin_f32`.
+#[test]
+#[ignore]
+fn argmin_dim_f32_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    // [2, 3]: row 0 min at idx 0 (1.0), row 1 min at idx 1 (3.0).
+    let xs: [f32; 6] = [
+        1.0, 5.0, 2.0,
+        4.0, 3.0, 6.0,
+    ];
+    let src = build_storage_cuda(&dev, &xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::U32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ArgMinDim, &[DType::F32, DType::U32], BackendId::Cuda)
+        .expect("lookup (ArgMinDim, [F32, U32], Cuda)");
+
+    let params = OpParams::Reduce { dims: vec![1], keepdim: false };
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
+    let layouts = vec![in_layout, out_layout];
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_u32: &[u32] = bytemuck::cast_slice(&host);
+    assert_eq!(host_u32, &[0_u32, 1]);
+}

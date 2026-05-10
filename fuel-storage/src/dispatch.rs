@@ -3557,6 +3557,85 @@ fn reduce_max_to_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(ArgMaxDim, [F32, U32], Cuda)`. Output is
+/// U32 indices into the reduce dim; the reduce dim is dropped from
+/// the output shape. Mirrors the CPU `argmax_dim_u32_cpu_dispatch`
+/// but specialized to F32 source dtype.
+#[cfg(feature = "cuda")]
+fn argmax_dim_u32_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    arg_extremum_dim_f32_cuda_wrapper(inputs, outputs, layouts, params, true)
+}
+
+/// Dispatch wrapper for `(ArgMinDim, [F32, U32], Cuda)`. Sister of
+/// `argmax_dim_u32_f32_cuda_wrapper`.
+#[cfg(feature = "cuda")]
+fn argmin_dim_u32_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    arg_extremum_dim_f32_cuda_wrapper(inputs, outputs, layouts, params, false)
+}
+
+/// Shared body for argmax/argmin F32 wrappers. Flag picks between
+/// the byte-kernel entry; the rest of the validation + decoding is
+/// identical.
+#[cfg(feature = "cuda")]
+fn arg_extremum_dim_f32_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
+    params: &OpParams,
+    is_argmax: bool,
+) -> Result<()> {
+    let op_name = if is_argmax { "argmax_dim" } else { "argmin_dim" };
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "{op_name}_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let dim = match params {
+        OpParams::Reduce { dims, keepdim: _ } => {
+            if dims.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{op_name}_f32_cuda_wrapper: argmax/argmin reduces a single dim; got {dims:?}",
+                ))
+                .bt());
+            }
+            dims[0]
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "{op_name}_f32_cuda_wrapper: expected OpParams::Reduce, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let input_layout = layouts.first().ok_or_else(|| {
+        Error::Msg(format!("{op_name}_f32_cuda_wrapper: layouts empty")).bt()
+    })?;
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let src_cuda = cuda_input(&in_guard)?;
+    let result = if is_argmax {
+        fuel_cuda_backend::byte_kernels::argmax_dim_f32(src_cuda, input_layout, dim)?
+    } else {
+        fuel_cuda_backend::byte_kernels::argmin_dim_f32(src_cuda, input_layout, dim)?
+    };
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Dispatch wrapper for `(Concat, F32, Cuda)`. Concatenate N F32
 /// inputs along one dim via the `concat_f32` PTX kernel (one launch
 /// per input, accumulating `input_idx_offset`). Mirrors the CPU
@@ -3993,6 +4072,13 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     let u32_dt = DType::U32;
     table.register(IndexSelect, &[f32_dt, u32_dt, f32_dt], cuda, index_select_f32_cuda_wrapper);
     table.register(Gather,      &[f32_dt, u32_dt, f32_dt], cuda, gather_f32_cuda_wrapper);
+
+    // ArgMaxDim / ArgMinDim: F32 source → U32 indices into the reduce dim.
+    // Dtype binding key matches the CPU `argmax_dim_u32_cpu_dispatch` shape:
+    // `[source_dt, U32]`. Other source dtypes (F64 / BF16 / F16) register
+    // as their own entries when their PTX paths are wired through.
+    table.register(ArgMaxDim, &[f32_dt, u32_dt], cuda, argmax_dim_u32_f32_cuda_wrapper);
+    table.register(ArgMinDim, &[f32_dt, u32_dt], cuda, argmin_dim_u32_f32_cuda_wrapper);
 
     // Cast — one binding-table entry per (src, dst) pair the cast.cu
     // PTX defines. Pairs gated on `__CUDA_ARCH__` in the .cu source
