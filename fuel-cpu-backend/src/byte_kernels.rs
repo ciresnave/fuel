@@ -411,6 +411,15 @@ unary_kernel!(round_f64, f64, |x: f64| x.round_ties_even(), "Elementwise `f64` r
 unary_kernel!(round_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().round_ties_even()), "Elementwise `bf16` round-half-to-even (via f32).");
 unary_kernel!(round_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().round_ties_even()), "Elementwise `f16` round-half-to-even (via f32).");
 
+// Sign function: -1 / 0 / 1 by sign of input. `sign(0)` = 0 by
+// convention (subgradient of `|x|` at the origin). `f32::signum`
+// returns +1 for +0 and -1 for -0; we special-case zero to match the
+// math convention that the reference impl uses.
+unary_f32_kernel!(sign_f32, |x: f32| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }, "Elementwise `f32` sign: -1 / 0 / 1; sign(0) = 0 by subgradient convention.");
+unary_kernel!(sign_f64, f64, |x: f64| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }, "Elementwise `f64` sign.");
+unary_kernel!(sign_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(if f > 0.0 { 1.0 } else if f < 0.0 { -1.0 } else { 0.0 }) }, "Elementwise `bf16` sign (via f32).");
+unary_kernel!(sign_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(if f > 0.0 { 1.0 } else if f < 0.0 { -1.0 } else { 0.0 }) }, "Elementwise `f16` sign (via f32).");
+
 // =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
