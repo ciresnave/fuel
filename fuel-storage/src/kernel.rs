@@ -288,15 +288,11 @@ pub enum OpParams {
         step: usize,
     },
 
-    /// Pad with a constant value along one or more dims.
-    Pad {
-        /// Per-dim (left, right) padding pairs.
-        padding: Vec<(usize, usize)>,
-        /// Constant fill value, encoded as a little-endian byte
-        /// pattern matching the output dtype's `size_in_bytes()`.
-        /// Kernels reinterpret per their dtype.
-        fill_bytes: Vec<u8>,
-    },
+        // (Earlier `OpParams::Pad { padding: Vec<(usize, usize)>, fill_bytes: Vec<u8> }`
+    // was a speculative multi-dim shape with no consumers. The single-
+    // dim shape that Op::Pad actually emits lives at the bottom of this
+    // enum; if multi-dim padding lands later, it can extend either
+    // shape additively.)
 
     /// Cast input dtype → target dtype. The target lives on the
     /// output Storage's `dtype` field; this variant signals the
@@ -442,6 +438,21 @@ pub enum OpParams {
         outer_count: usize,
         dim_size: usize,
         inner_count: usize,
+    },
+
+    /// Pad along one dim with `before` slots before the input and
+    /// `after` slots after, plus a `mode_tag` (0=Constant, 1=Reflect,
+    /// 2=Replicate — only Constant is wired in v1) and a `value` for
+    /// Constant fill. Same flat-3-axis view as the others, but the
+    /// output's `dim` axis is `in_dim + before + after`.
+    Pad {
+        outer_count: usize,
+        in_dim: usize,
+        before: usize,
+        after: usize,
+        inner_count: usize,
+        mode_tag: u8,
+        value: f64,
     },
 }
 

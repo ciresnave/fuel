@@ -1523,6 +1523,40 @@ pub fn rsqrt<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
     RefTensor::from_vec(data, x.shape().clone())
 }
 
+/// Pad along `dim` with `before` slots before and `after` slots after,
+/// filling the padded region with the `value` parameter. **Constant
+/// mode only** — Reflect / Replicate variants are documented at the
+/// IR level and live as enum variants on `Op::Pad` but the v1 cut
+/// only ships the Constant kernel.
+pub fn pad_const<T: Float>(
+    x: &RefTensor<T>,
+    dim: usize,
+    before: usize,
+    after: usize,
+    value: f64,
+) -> RefTensor<T> {
+    let in_dims = x.shape().dims();
+    assert!(dim < in_dims.len(), "pad: dim {dim} out of range");
+    let outer: usize = in_dims[..dim].iter().product();
+    let in_d = in_dims[dim];
+    let inner: usize = in_dims[dim + 1..].iter().product();
+    let out_d = in_d + before + after;
+    let src = x.as_slice();
+    let fill = T::from(value).unwrap();
+    let mut out = vec![fill; outer * out_d * inner];
+    for o in 0..outer {
+        for j in 0..in_d {
+            let row_in = (o * in_d + j) * inner;
+            let row_out = (o * out_d + (j + before)) * inner;
+            out[row_out..row_out + inner]
+                .copy_from_slice(&src[row_in..row_in + inner]);
+        }
+    }
+    let mut out_dims: Vec<usize> = in_dims.to_vec();
+    out_dims[dim] = out_d;
+    RefTensor::from_vec(out, Shape::from_dims(&out_dims))
+}
+
 /// Running cumulative sum along `dim`:
 /// `y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]`. Same shape as
 /// input. Bound is `T: Float` since the kernel adds element-by-element.

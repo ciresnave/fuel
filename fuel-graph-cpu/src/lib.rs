@@ -389,6 +389,18 @@ fn eval_node(
                 AnyTensor::U32(_) => panic!("cumsum: not supported on U32 tensors"),
             }
         }
+        Op::Pad { dim, before, after, mode, value } => {
+            assert!(matches!(mode, fuel_graph::PadMode::Constant),
+                "pad: only Constant mode is implemented in v1, got {mode:?}");
+            let src = cache.get(&inputs[0]).expect("pad missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::pad_const(t, *dim, *before, *after, *value)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::pad_const(t, *dim, *before, *after, *value)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::pad_const(t, *dim, *before, *after, *value)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::pad_const(t, *dim, *before, *after, *value)),
+                AnyTensor::U32(_) => panic!("pad: not supported on U32 tensors"),
+            }
+        }
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1620,6 +1632,58 @@ mod tests {
         let s = out.as_slice();
         assert_eq!(s, &[-1.0, 1.0, 0.0],
             "Abs backward: sign(-2)=-1, sign(2)=+1, sign(0)=0; got {s:?}");
+    }
+
+    #[test]
+    fn pad_constant_extends_dim_with_fill_value() {
+        // Shape [3] padded by (before=2, after=1) with value=0:
+        //   in:  [1, 2, 3]
+        //   out: [0, 0, 1, 2, 3, 0]
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let p = a.pad(0, 2, 1, fuel_graph::PadMode::Constant, 0.0);
+        let out = realize_f32(&p);
+        assert_eq!(out.shape().dims(), &[6]);
+        assert_eq!(out.as_slice(), &[0.0, 0.0, 1.0, 2.0, 3.0, 0.0]);
+        assert_equivalent_f32(&p);
+
+        // Multi-dim: shape [2, 2] padded along dim 1 with (1, 1)
+        // and fill -1:
+        //   in:  [[1, 2],
+        //         [3, 4]]
+        //   out: [[-1, 1, 2, -1],
+        //         [-1, 3, 4, -1]]
+        let b = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            cpu_dev(),
+        );
+        let p2 = b.pad(1, 1, 1, fuel_graph::PadMode::Constant, -1.0);
+        let out2 = realize_f32(&p2);
+        assert_eq!(out2.shape().dims(), &[2, 4]);
+        assert_eq!(out2.as_slice(), &[-1.0, 1.0, 2.0, -1.0, -1.0, 3.0, 4.0, -1.0]);
+    }
+
+    #[test]
+    fn pad_backward_slices_to_input_shape() {
+        // y = pad(x, dim=0, before=2, after=1, Constant, 0.0).
+        // dL/dx = slice(dL/dy, dim=0, start=2, len=in_dim).
+        // For ones-seed dL/dy (shape [6]), dL/dx = ones[2..5] = [1,1,1].
+        let a = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0],
+            Shape::from_dims(&[3]),
+            cpu_dev(),
+        );
+        let y = a.pad(0, 2, 1, fuel_graph::PadMode::Constant, 0.0);
+        let grads = y.backward();
+        let g_a = grads.get(&a).expect("gradient for a");
+        let out = realize_f32(&g_a);
+        assert_eq!(out.shape().dims(), &[3]);
+        assert_eq!(out.as_slice(), &[1.0, 1.0, 1.0],
+            "Pad-Constant backward must slice the gradient back to input shape");
     }
 
     #[test]

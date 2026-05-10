@@ -551,6 +551,68 @@ pub fn roll_cpu(
 }
 
 // =============================================================================
+// Pad (Constant mode) — extend `dim` with a typed fill value
+// =============================================================================
+//
+// `out[outer, j, inner]` is `value` for the padded slots
+// (`j < before` or `j >= before + in_dim`), else `in[outer, j - before, inner]`.
+// Per-dtype because the fill value needs typed coercion from the
+// caller-supplied `f64`.
+
+macro_rules! pad_const_kernel {
+    ($name:ident, $T:ty, $convert:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer: usize,
+            in_dim: usize,
+            before: usize,
+            after: usize,
+            inner: usize,
+            value: f64,
+        ) -> Result<()> {
+            let inv: &[$T] = input.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let out_dim = in_dim + before + after;
+            let in_needed = outer * in_dim * inner;
+            let out_needed = outer * out_dim * inner;
+            if inv.len() != in_needed || outv.len() != out_needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (in={}, expected={in_needed}; out={}, expected={out_needed})",
+                    stringify!($name), inv.len(), outv.len(),
+                ))
+                .bt());
+            }
+            let convert: fn(f64) -> $T = $convert;
+            let fill: $T = convert(value);
+            for o in 0..outer {
+                for j in 0..out_dim {
+                    let row_out = (o * out_dim + j) * inner;
+                    if j < before || j >= before + in_dim {
+                        // Padded slot: fill with `value`.
+                        for i in 0..inner {
+                            outv[row_out + i] = fill;
+                        }
+                    } else {
+                        let in_j = j - before;
+                        let row_in = (o * in_dim + in_j) * inner;
+                        outv[row_out..row_out + inner]
+                            .copy_from_slice(&inv[row_in..row_in + inner]);
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+pad_const_kernel!(pad_const_f32, f32, |v: f64| v as f32, "Pad (Constant mode) on `f32`.");
+pad_const_kernel!(pad_const_f64, f64, |v: f64| v, "Pad (Constant mode) on `f64`.");
+pad_const_kernel!(pad_const_bf16, half::bf16, |v: f64| half::bf16::from_f32(v as f32), "Pad (Constant mode) on `bf16`.");
+pad_const_kernel!(pad_const_f16, half::f16, |v: f64| half::f16::from_f32(v as f32), "Pad (Constant mode) on `f16`.");
+
+// =============================================================================
 // CumSum — running prefix-sum along one dim, per-dtype
 // =============================================================================
 //

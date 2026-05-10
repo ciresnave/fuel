@@ -520,6 +520,17 @@ impl LazyTensor {
         Self { inner: self.inner.cumsum(dim) }
     }
 
+    /// Pad along `dim` with `before` slots before and `after` slots
+    /// after, filling per `mode`. Output shape: input shape with
+    /// `dim` extended by `before + after`. Only Constant mode is
+    /// implemented; Reflect / Replicate exist as enum stubs that
+    /// error at realize time. Differentiable for Constant.
+    pub fn pad(&self, dim: usize, before: usize, after: usize, mode: fuel_graph::PadMode, value: f64) -> Self {
+        Self {
+            inner: self.inner.pad(dim, before, after, mode, value),
+        }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }
