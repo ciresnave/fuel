@@ -353,6 +353,7 @@ fn eval_node(
         Op::Floor => unary!(inputs, cache, ops::floor),
         Op::Ceil => unary!(inputs, cache, ops::ceil),
         Op::Round => unary!(inputs, cache, ops::round),
+        Op::Sign => unary!(inputs, cache, ops::sign),
 
         // --- comparison family (output dtype = U8) ---
         // Comparison ops produce a U8 mask; the legacy AnyTensor enum
@@ -1558,6 +1559,23 @@ mod tests {
         let out = realize_f32(&b);
         let s = out.as_slice();
         assert_eq!(s, &[2.0, -2.0, 0.0, -1.0, 5.0]);
+        assert_equivalent_f32(&b);
+    }
+
+    #[test]
+    fn sign_forward_returns_minus_one_zero_or_one() {
+        // sign(-3.0) = -1, sign(0.0) = 0, sign(2.5) = 1, sign(-0.0) = 0,
+        // sign(0.5) = 1.
+        let a = Tensor::from_f32(
+            vec![-3.0_f32, 0.0, 2.5, -0.0, 0.5, -1e-30],
+            Shape::from_dims(&[6]),
+            cpu_dev(),
+        );
+        let b = a.sign();
+        let out = realize_f32(&b);
+        let s = out.as_slice();
+        // -0.0 compares equal to 0.0 with `<` and `>`, so sign(-0.0) = 0.
+        assert_eq!(s, &[-1.0, 0.0, 1.0, 0.0, 1.0, -1.0]);
         assert_equivalent_f32(&b);
     }
 

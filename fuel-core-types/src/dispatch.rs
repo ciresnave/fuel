@@ -195,6 +195,10 @@ pub enum OpKind {
     /// (round-half-to-even, IEEE 754 roundeven). Backward drops
     /// gradient (mirrors Floor/Ceil).
     RoundElementwise,
+    /// Element-wise sign (`-1` if negative, `0` if zero, `1` if
+    /// positive). Same dtype as input. Backward drops gradient
+    /// (zero almost everywhere; the subgradient at 0 is taken as 0).
+    SignElementwise,
     /// Concatenate N inputs along one dim. Inputs must agree on
     /// every dim except the concat dim; output's concat-dim size
     /// is the sum of inputs' concat-dim sizes.
@@ -293,6 +297,7 @@ impl OpKind {
             OpKind::FloorElementwise   => "floor",
             OpKind::CeilElementwise    => "ceil",
             OpKind::RoundElementwise   => "round",
+            OpKind::SignElementwise    => "sign",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

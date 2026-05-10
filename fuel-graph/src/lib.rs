@@ -286,6 +286,11 @@ pub enum Op {
     /// differs from C99 `round()` (half-away-from-zero) at exact ties.
     /// Backward drops gradient (mirrors [`Op::Floor`]).
     Round,
+    /// Element-wise sign (`-1` / `0` / `1`). `sign(0) = 0` by
+    /// subgradient convention (same convention `Op::Abs`'s backward
+    /// uses). Same dtype as input. Backward drops gradient (zero
+    /// almost everywhere).
+    Sign,
 
     // --- ternary select ---
     /// Ternary select: `out[i] = if cond[i] != 0 { a[i] } else { b[i] }`.
@@ -828,6 +833,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Floor                => "Floor",
         Op::Ceil                 => "Ceil",
         Op::Round                => "Round",
+        Op::Sign                 => "Sign",
         Op::MatMul               => "MatMul",
         Op::Transpose            => "Transpose",
         Op::Permute(_)           => "Permute",
@@ -2350,6 +2356,13 @@ impl Tensor {
     /// Output dtype = input dtype. Backward drops gradient.
     pub fn round(&self) -> Tensor {
         self.unary_op(Op::Round)
+    }
+
+    /// Append a `Sign` node (`-1` / `0` / `1`). `sign(0) = 0` by
+    /// subgradient convention. Output dtype = input dtype. Backward
+    /// drops gradient.
+    pub fn sign(&self) -> Tensor {
+        self.unary_op(Op::Sign)
     }
 
     /// Append an `Equal` node (`self == other`) producing a `U8` mask.
@@ -3975,12 +3988,13 @@ impl Tensor {
                     // Handled by `WhereRule` via `dispatch_gradient`;
                     // this arm only exists for exhaustiveness.
                 }
-                Op::Floor | Op::Ceil | Op::Round => {
-                    // d(floor(x))/dx, d(ceil(x))/dx, d(round(x))/dx
-                    // are all 0 almost everywhere (Dirac train at
-                    // integer / half-integer x has no finite
-                    // representation). Treat the derivative as 0 and
-                    // stop propagation — mirrors `Op::Step`'s backward.
+                Op::Floor | Op::Ceil | Op::Round | Op::Sign => {
+                    // d(floor(x))/dx, d(ceil(x))/dx, d(round(x))/dx,
+                    // d(sign(x))/dx are all 0 almost everywhere (with
+                    // a Dirac train at integer / half-integer / zero
+                    // that has no finite representation). Treat the
+                    // derivative as 0 and stop propagation — mirrors
+                    // `Op::Step`'s backward.
                 }
                 Op::Equal | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     // Comparison family: handled by `NoGradientBinaryRule`

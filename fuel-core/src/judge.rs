@@ -108,6 +108,7 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::FloorElementwise,
     OpKind::CeilElementwise,
     OpKind::RoundElementwise,
+    OpKind::SignElementwise,
     // --- elementwise binary fanout ---
     OpKind::SubElementwise,
     OpKind::MulElementwise,
@@ -209,6 +210,7 @@ impl Judge {
             | OpKind::FloorElementwise
             | OpKind::CeilElementwise
             | OpKind::RoundElementwise
+            | OpKind::SignElementwise
             | OpKind::Affine
             | OpKind::ClampElementwise
             | OpKind::PowIElementwise => vec![
@@ -681,7 +683,8 @@ fn is_unary_elementwise(op: OpKind) -> bool {
         | OpKind::AbsElementwise
         | OpKind::FloorElementwise
         | OpKind::CeilElementwise
-        | OpKind::RoundElementwise,
+        | OpKind::RoundElementwise
+        | OpKind::SignElementwise,
     )
 }
 
@@ -713,6 +716,7 @@ fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTens
         OpKind::FloorElementwise   => a.floor(),
         OpKind::CeilElementwise    => a.ceil(),
         OpKind::RoundElementwise   => a.round(),
+        OpKind::SignElementwise    => a.sign(),
         _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
 }
@@ -813,7 +817,7 @@ mod tests {
             OpKind::SiluElementwise, OpKind::GeluElementwise, OpKind::ReluElementwise,
             OpKind::StepElementwise, OpKind::RecipElementwise, OpKind::AbsElementwise,
             OpKind::FloorElementwise, OpKind::CeilElementwise,
-            OpKind::RoundElementwise,
+            OpKind::RoundElementwise, OpKind::SignElementwise,
         ];
         let plan: Vec<_> = unary.iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))

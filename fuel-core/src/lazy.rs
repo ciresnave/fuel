@@ -454,6 +454,13 @@ impl LazyTensor {
         Self { inner: self.inner.round() }
     }
 
+    /// Element-wise sign (`-1` / `0` / `1`); `sign(0) = 0` by
+    /// subgradient convention. Same dtype as input. Backward is
+    /// silently zero.
+    pub fn sign(&self) -> Self {
+        Self { inner: self.inner.sign() }
+    }
+
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
         Self { inner: self.inner.powi(n) }
