@@ -17,17 +17,18 @@
 //! alongside cuBLAS automatically.
 
 use baracuda_cutlass::{
-    EpilogueKind, GemmArgs, GemmDescriptor, GemmPlan, LayoutSku, MatrixMut, MatrixRef,
-    PlanPreference, Workspace,
+    CutlassElement, EpilogueKind, GemmArgs, GemmDescriptor, GemmPlan, LayoutSku, MatrixMut,
+    MatrixRef, PlanPreference, Workspace,
 };
+use baracuda_types::DeviceRepr;
 use fuel_core_types::{Error, Result};
-use half::bf16;
+use half::{bf16, f16};
 
 use crate::byte_storage::CudaStorageBytes;
 
-/// CUTLASS bf16 matmul on the byte-storage substrate. Equal-batch
-/// path only — caller is responsible for splitting GQA / unequal
-/// batches into multiple invocations.
+/// Generic CUTLASS Rrr matmul on the byte-storage substrate. Equal-
+/// batch path only — caller is responsible for splitting GQA /
+/// unequal batches into multiple invocations.
 ///
 /// Layout is `LayoutSku::Rrr`: A row-major `[M, K]`, B row-major
 /// `[K, N]`, D row-major `[M, N]` — matches `Op::MatMul`'s natural
@@ -37,24 +38,31 @@ use crate::byte_storage::CudaStorageBytes;
 /// `batch_count × M × N` output. Stream is sync'd before return so
 /// the result is observable through the byte buffer (sync KernelRef
 /// per architecture v1.0).
-pub fn cutlass_matmul_bf16(
+///
+/// `T` must be a CUTLASS-supported Rrr element type — alpha.13 ships
+/// kernels for `f16` and `bf16`. f32 input is Rcr-only (see B5).
+fn cutlass_matmul_rrr<T>(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
     batch_count: usize,
     m: usize,
     n: usize,
     k: usize,
-) -> Result<CudaStorageBytes> {
+) -> Result<CudaStorageBytes>
+where
+    T: CutlassElement + DeviceRepr,
+{
+    let dtype_label = std::any::type_name::<T>();
     let device = lhs.device().clone();
     if rhs.device().id() != device.id() {
-        return Err(Error::Msg(
-            "cutlass_matmul_bf16: lhs and rhs are on different CUDA devices; cross-device \
-             matmul is the caller's responsibility (insert Op::Move first)"
-                .to_string(),
-        )
+        return Err(Error::Msg(format!(
+            "cutlass_matmul_rrr<{dtype_label}>: lhs and rhs are on different CUDA \
+             devices; cross-device matmul is the caller's responsibility (insert \
+             Op::Move first)"
+        ))
         .bt());
     }
-    let elem = std::mem::size_of::<bf16>();
+    let elem = std::mem::size_of::<T>();
     let lhs_per_batch = m.saturating_mul(k);
     let rhs_per_batch = k.saturating_mul(n);
     let out_per_batch = m.saturating_mul(n);
@@ -65,19 +73,22 @@ pub fn cutlass_matmul_bf16(
         return CudaStorageBytes::alloc(&device, 0);
     }
     let m_i32: i32 = i32::try_from(m).map_err(|_| {
-        Error::Msg(format!("cutlass_matmul_bf16: M={m} exceeds i32 range")).bt()
+        Error::Msg(format!("cutlass_matmul_rrr<{dtype_label}>: M={m} exceeds i32 range"))
+            .bt()
     })?;
     let n_i32: i32 = i32::try_from(n).map_err(|_| {
-        Error::Msg(format!("cutlass_matmul_bf16: N={n} exceeds i32 range")).bt()
+        Error::Msg(format!("cutlass_matmul_rrr<{dtype_label}>: N={n} exceeds i32 range"))
+            .bt()
     })?;
     let k_i32: i32 = i32::try_from(k).map_err(|_| {
-        Error::Msg(format!("cutlass_matmul_bf16: K={k} exceeds i32 range")).bt()
+        Error::Msg(format!("cutlass_matmul_rrr<{dtype_label}>: K={k} exceeds i32 range"))
+            .bt()
     })?;
 
     let mut out = device.alloc_zeros::<u8>(need_out_bytes)?;
-    let lhs_view = lhs.view_as::<bf16>()?;
-    let rhs_view = rhs.view_as::<bf16>()?;
-    let mut out_view = out.view_as_mut::<bf16>();
+    let lhs_view = lhs.view_as::<T>()?;
+    let rhs_view = rhs.view_as::<T>()?;
+    let mut out_view = out.view_as_mut::<T>();
     let stream = device.stream();
 
     let desc = GemmDescriptor {
@@ -87,8 +98,8 @@ pub fn cutlass_matmul_bf16(
         layout: LayoutSku::Rrr,
         epilogue: EpilogueKind::Identity,
     };
-    let plan = GemmPlan::<bf16>::select(stream, &desc, PlanPreference::default())
-        .map_err(|e| Error::Msg(format!("cutlass plan select (bf16 Rrr): {e}")).bt())?;
+    let plan = GemmPlan::<T>::select(stream, &desc, PlanPreference::default())
+        .map_err(|e| Error::Msg(format!("cutlass plan select ({dtype_label} Rrr): {e}")).bt())?;
 
     for b in 0..batch_count {
         let a_off = b * lhs_per_batch;
@@ -99,7 +110,7 @@ pub fn cutlass_matmul_bf16(
         let b_slice = rhs_view.slice(b_off..b_off + rhs_per_batch);
         let d_slice = out_view.slice_mut(d_off..d_off + out_per_batch);
 
-        let args = GemmArgs::<bf16> {
+        let args = GemmArgs::<T> {
             a: MatrixRef {
                 data: a_slice,
                 rows: m_i32,
@@ -124,10 +135,10 @@ pub fn cutlass_matmul_bf16(
             beta: 0.0,
         };
         plan.can_implement(&args).map_err(|e| {
-            Error::Msg(format!("cutlass can_implement (bf16 Rrr): {e}")).bt()
+            Error::Msg(format!("cutlass can_implement ({dtype_label} Rrr): {e}")).bt()
         })?;
         plan.run(stream, Workspace::None, args).map_err(|e| {
-            Error::Msg(format!("cutlass run (bf16 Rrr): {e}")).bt()
+            Error::Msg(format!("cutlass run ({dtype_label} Rrr): {e}")).bt()
         })?;
     }
     drop(out_view);
@@ -138,4 +149,30 @@ pub fn cutlass_matmul_bf16(
         device,
         need_out_bytes,
     ))
+}
+
+/// CUTLASS bf16 matmul. Thin instantiation of [`cutlass_matmul_rrr`]
+/// at `T = bf16`. Public entry from byte_kernels::matmul_bf16.
+pub fn cutlass_matmul_bf16(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<CudaStorageBytes> {
+    cutlass_matmul_rrr::<bf16>(lhs, rhs, batch_count, m, n, k)
+}
+
+/// CUTLASS f16 matmul. Thin instantiation of [`cutlass_matmul_rrr`]
+/// at `T = f16`. Public entry from byte_kernels::matmul_f16.
+pub fn cutlass_matmul_f16(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<CudaStorageBytes> {
+    cutlass_matmul_rrr::<f16>(lhs, rhs, batch_count, m, n, k)
 }

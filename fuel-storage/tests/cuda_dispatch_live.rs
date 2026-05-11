@@ -1473,6 +1473,85 @@ fn matmul_bf16_batched_through_binding_table() {
     assert_close(&got, &expected, tol);
 }
 
+/// CPU f16 matmul reference (row-major Rrr). Mirrors
+/// [`cpu_bf16_matmul_rrr`] at `f16` dtype; accumulates in f32 to
+/// match the GEMM kernel's accumulator.
+fn cpu_f16_matmul_rrr(
+    a: &[half::f16],
+    b: &[half::f16],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Vec<half::f16> {
+    let mut out = vec![half::f16::ZERO; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut acc = 0.0_f32;
+            for kk in 0..k {
+                acc += a[i * k + kk].to_f32() * b[kk * n + j].to_f32();
+            }
+            out[i * n + j] = half::f16::from_f32(acc);
+        }
+    }
+    out
+}
+
+/// End-to-end: rank-2 MatMul F16 through the binding table. Mirror
+/// of [`matmul_bf16_rank2_through_binding_table`] at `f16` dtype;
+/// same CUTLASS `LayoutSku::Rrr` path. F16 has more mantissa than
+/// bf16 (11-bit vs 8-bit) so tolerances are tighter — `K * 1e-3`.
+#[test]
+#[ignore]
+fn matmul_f16_rank2_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let (m, n, k) = (16_usize, 16_usize, 32_usize);
+    let a_f32: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
+    let b_f32: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
+    let a_f16: Vec<half::f16> = a_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let b_f16: Vec<half::f16> = b_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let expected_f16 = cpu_f16_matmul_rrr(&a_f16, &b_f16, m, n, k);
+    let expected: Vec<f32> = expected_f16.iter().map(|x| x.to_f32()).collect();
+
+    let lhs = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&a_f16), DType::F16);
+    let rhs = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&b_f16), DType::F16);
+    let out_bytes = CudaStorageBytes::alloc(&dev, m * n * 2).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F16);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MatMul, &[DType::F16, DType::F16, DType::F16], BackendId::Cuda)
+        .expect("lookup (MatMul, F16, Cuda)");
+
+    let params = OpParams::Matmul {
+        lhs_batch_dims: vec![],
+        rhs_batch_dims: vec![],
+        m,
+        n,
+        k,
+    };
+
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let got_f16: &[half::f16] = bytemuck::cast_slice(&host);
+    let got: Vec<f32> = got_f16.iter().map(|x| x.to_f32()).collect();
+    let tol = (k as f32) * 1e-3;
+    assert_close(&got, &expected, tol);
+}
+
 /// End-to-end: Affine F32 through the binding table. Element-wise
 /// `y = mul * x + add` via the `affine_f32` PTX kernel — also the
 /// kernel that backs `Op::AddScalar` (mul=1) and `Op::MulScalar`
