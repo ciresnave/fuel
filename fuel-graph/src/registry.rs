@@ -30,6 +30,7 @@ use crate::{Graph, NodeId};
 use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
+pub mod fused_linear;
 pub mod softmax_last_dim;
 
 /// Stable identifier for a registered fused op. Indexes into
@@ -395,7 +396,9 @@ pub fn default_registry() -> &'static FusedOpRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<FusedOpRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        FusedOpRegistry::new().with_entry(softmax_last_dim::entry())
+        FusedOpRegistry::new()
+            .with_entry(softmax_last_dim::entry())
+            .with_entry(fused_linear::entry())
     })
 }
 

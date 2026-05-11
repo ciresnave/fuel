@@ -1115,11 +1115,18 @@ pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
         }
         let a = *remap.get(&mm_inputs[0]).unwrap_or(&mm_inputs[0]);
         let b = *remap.get(&mm_inputs[1]).unwrap_or(&mm_inputs[1]);
+        // Phase 7.6 step 4: emit the registry-extended shape. The
+        // executor's `Op::Fused(FUSED_LINEAR, _)` arm dispatches to
+        // the same fused-linear kernel as the legacy variant. Step 5
+        // drops the legacy `Op::FusedLinear` variant entirely.
         let new_id = g.push(Node {
-            op: Op::FusedLinear,
+            op: Op::Fused(
+                crate::registry::FusedOps::FUSED_LINEAR,
+                crate::registry::FusedOpParams::FusedLinear,
+            ),
             // FusedLinear takes the *original* rank-1 bias, not the
-            // BroadcastTo'd one — the executor's arm broadcasts it
-            // internally to the matmul output shape.
+            // BroadcastTo'd one — the kernel broadcasts it internally
+            // to the matmul output shape.
             inputs: vec![a, b, bias_src_id],
             shape,
             dtype,
@@ -1803,8 +1810,12 @@ mod tests {
         let g = out.graph().read().unwrap();
         // Walk consumers of the original Add: any leftover Add should
         // be unreferenced; the new FusedLinear should be present.
-        let any_fused = g.nodes.iter().any(|n| matches!(n.op, Op::FusedLinear));
-        assert!(any_fused, "graph should contain a FusedLinear node");
+        // Phase 7.6 step 4: emission is the registry-extended shape.
+        let any_fused = g.nodes.iter().any(|n| matches!(
+            n.op,
+            Op::Fused(fid, _) if fid == crate::registry::FusedOps::FUSED_LINEAR,
+        ));
+        assert!(any_fused, "graph should contain an Op::Fused(FUSED_LINEAR) node");
     }
 
     #[test]
