@@ -33,6 +33,11 @@ pub mod byte_storage;
 /// calls these kernels.
 pub mod byte_kernels;
 
+/// Trait-chassis surface shared by elementwise + reduction CPU
+/// kernels. One shape/loop pass per kernel family; op-specific math
+/// lives in tiny trait impls. See [`chassis::reduction`].
+pub mod chassis;
+
 pub use byte_storage::{CpuStorageBytes, CPU_ALIGN_BYTES};
 pub use dyn_impl::CpuStorage;
 pub use ops::*;

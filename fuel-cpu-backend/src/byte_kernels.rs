@@ -5520,128 +5520,190 @@ pub fn conv2d_f32(
 }
 
 // =============================================================================
-// Reduction kernels (f32)
+// Reduction kernels — Sum / Max / Min / Mean across f32 / f64 / bf16 / f16
 // =============================================================================
+//
+// All sixteen entry points (4 ops × 4 dtypes) are 1-line thunks over
+// the trait-chassis in [`crate::chassis::reduction`]. The trait
+// carries the loop / shape / index math once per kernel family; the
+// per-(op, dtype) impl carries only what changes per dtype — most
+// notably the f32 accumulator promotion for bf16 / f16 sums and
+// means (encoded as the trait's `Acc` associated type so a future
+// contributor adding a new low-precision dtype cannot forget it).
 
-/// Validate a reduction's shape contract: `input_shape`'s product
-/// equals `input` element count; reduce_dims are in-range and
-/// sorted; output element count equals the product of kept dims.
-fn check_reduce_shape(
-    name: &str,
-    input: &CpuStorageBytes,
-    output: &CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-    elem_size: usize,
-) -> Result<(usize, Vec<usize>)> {
-    let total_input: usize = input_shape.iter().product();
-    if input.len_bytes() != total_input.saturating_mul(elem_size) {
-        return Err(Error::Msg(format!(
-            "{name}: input bytes={} doesn't match shape {:?}",
-            input.len_bytes(),
-            input_shape,
-        ))
-        .bt());
-    }
-    let rank = input_shape.len();
-    for &d in reduce_dims {
-        if d >= rank {
-            return Err(Error::Msg(format!(
-                "{name}: reduce dim {d} out of range for rank {rank}",
-            ))
-            .bt());
-        }
-    }
-    // dims must be sorted ascending and unique — caller's contract.
-    if reduce_dims.windows(2).any(|w| w[0] >= w[1]) {
-        return Err(Error::Msg(format!(
-            "{name}: reduce dims {reduce_dims:?} must be sorted ascending + unique",
-        ))
-        .bt());
-    }
-    let kept: Vec<usize> = (0..rank).filter(|d| !reduce_dims.contains(d)).collect();
-    let output_count: usize = kept.iter().map(|&d| input_shape[d]).product();
-    if output.len_bytes() != output_count.saturating_mul(elem_size) {
-        return Err(Error::Msg(format!(
-            "{name}: output bytes={} doesn't match reduced shape (kept dims {:?}, count {output_count})",
-            output.len_bytes(),
-            kept,
-        ))
-        .bt());
-    }
-    Ok((total_input, kept))
-}
+use crate::chassis::reduction::{reduce, Max, Mean, Min, Sum};
 
-/// Build the row-major flat index in the output tensor for a given
-/// input multi-index, by reading only the kept dims.
-fn output_index(input_shape: &[usize], kept: &[usize], multi_index: &[usize]) -> usize {
-    let mut out_flat = 0;
-    for &d in kept {
-        out_flat = out_flat * input_shape[d] + multi_index[d];
-    }
-    out_flat
-}
-
-/// Decode a row-major flat index into a multi-index in `multi_index`
-/// (must be the right rank).
-fn decode_multi_index(flat: usize, input_shape: &[usize], multi_index: &mut [usize]) {
-    let mut rem = flat;
-    for d in (0..input_shape.len()).rev() {
-        let s = input_shape[d];
-        multi_index[d] = rem % s;
-        rem /= s;
-    }
-}
-
-/// Sum-reduce `f32`: walks every input element and accumulates into
-/// the output slot determined by the kept dims of the input
-/// multi-index. Output is written from scratch (zeroed first); the
-/// caller's pre-allocated bytes need not be zeroed.
+/// Sum-reduce `f32`. Output is the input with the listed `reduce_dims`
+/// removed; each remaining slot holds the sum over the reduced axes.
 pub fn sum_reduce_f32(
     input: &CpuStorageBytes,
     output: &mut CpuStorageBytes,
     input_shape: &[usize],
     reduce_dims: &[usize],
 ) -> Result<()> {
-    let (total_input, kept) =
-        check_reduce_shape("sum_reduce_f32", input, output, input_shape, reduce_dims, std::mem::size_of::<f32>())?;
-    let in_view: &[f32] = input.as_slice()?;
-    let out_view: &mut [f32] = output.as_slice_mut()?;
-    for slot in out_view.iter_mut() {
-        *slot = 0.0;
-    }
-    let mut mi = vec![0usize; input_shape.len()];
-    for flat in 0..total_input {
-        decode_multi_index(flat, input_shape, &mut mi);
-        let oi = output_index(input_shape, &kept, &mi);
-        out_view[oi] += in_view[flat];
-    }
-    Ok(())
+    reduce::<f32, Sum>("sum_reduce_f32", input, output, input_shape, reduce_dims)
 }
 
-/// Mean-reduce `f32`: sum-reduce divided by the product of reduced
-/// dim sizes.
+/// Mean-reduce `f32` — sum-reduce divided by the product of
+/// reduced-dim sizes.
 pub fn mean_reduce_f32(
     input: &CpuStorageBytes,
     output: &mut CpuStorageBytes,
     input_shape: &[usize],
     reduce_dims: &[usize],
 ) -> Result<()> {
-    sum_reduce_f32(input, output, input_shape, reduce_dims)?;
-    let divisor: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
-    if divisor == 0 {
-        return Err(Error::Msg(
-            "mean_reduce_f32: divisor zero (reduced dim has size 0)".to_string(),
-        )
-        .bt());
-    }
-    let inv = 1.0_f32 / divisor as f32;
-    let out_view: &mut [f32] = output.as_slice_mut()?;
-    for slot in out_view.iter_mut() {
-        *slot *= inv;
-    }
-    Ok(())
+    reduce::<f32, Mean>("mean_reduce_f32", input, output, input_shape, reduce_dims)
 }
+
+/// Max-reduce `f32`. Output slots initialize to `-inf`.
+pub fn max_reduce_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<f32, Max>("max_reduce_f32", input, output, input_shape, reduce_dims)
+}
+
+/// Min-reduce `f32`. Output slots initialize to `+inf`.
+pub fn min_reduce_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<f32, Min>("min_reduce_f32", input, output, input_shape, reduce_dims)
+}
+
+/// Sum-reduce `f64`.
+pub fn sum_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<f64, Sum>("sum_reduce_f64", input, output, input_shape, reduce_dims)
+}
+
+/// Mean-reduce `f64`.
+pub fn mean_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<f64, Mean>("mean_reduce_f64", input, output, input_shape, reduce_dims)
+}
+
+/// Max-reduce `f64`.
+pub fn max_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<f64, Max>("max_reduce_f64", input, output, input_shape, reduce_dims)
+}
+
+/// Min-reduce `f64`.
+pub fn min_reduce_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<f64, Min>("min_reduce_f64", input, output, input_shape, reduce_dims)
+}
+
+/// Sum-reduce `bf16`. Accumulator runs in f32 (load-bearing
+/// invariant: summing many bf16 values in bf16 loses precision
+/// rapidly; an f32 accumulator preserves full f32 precision up to
+/// ~16M elements).
+pub fn sum_reduce_bf16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::bf16, Sum>("sum_reduce_bf16", input, output, input_shape, reduce_dims)
+}
+
+/// Mean-reduce `bf16` — f32 accumulator + divide by count.
+pub fn mean_reduce_bf16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::bf16, Mean>("mean_reduce_bf16", input, output, input_shape, reduce_dims)
+}
+
+/// Max-reduce `bf16`. Extremum runs in f32 space for uniform NaN
+/// handling, narrows back to bf16.
+pub fn max_reduce_bf16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::bf16, Max>("max_reduce_bf16", input, output, input_shape, reduce_dims)
+}
+
+/// Min-reduce `bf16`.
+pub fn min_reduce_bf16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::bf16, Min>("min_reduce_bf16", input, output, input_shape, reduce_dims)
+}
+
+/// Sum-reduce `f16`. Accumulator runs in f32.
+pub fn sum_reduce_f16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::f16, Sum>("sum_reduce_f16", input, output, input_shape, reduce_dims)
+}
+
+/// Mean-reduce `f16`.
+pub fn mean_reduce_f16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::f16, Mean>("mean_reduce_f16", input, output, input_shape, reduce_dims)
+}
+
+/// Max-reduce `f16`.
+pub fn max_reduce_f16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::f16, Max>("max_reduce_f16", input, output, input_shape, reduce_dims)
+}
+
+/// Min-reduce `f16`.
+pub fn min_reduce_f16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    reduce_dims: &[usize],
+) -> Result<()> {
+    reduce::<half::f16, Min>("min_reduce_f16", input, output, input_shape, reduce_dims)
+}
+
+// =============================================================================
+// Argmax / argmin along one dim (f32) — distinct from the value-
+// reducing kernels above because the output dtype is U32 (the
+// index of the extremum within each row), not the input dtype.
+// =============================================================================
 
 /// Argmax / argmin along a single dim — same shape contract as
 /// the value-reducing kernels (output's `dim` is removed) but the
@@ -5755,286 +5817,6 @@ pub fn argmin_dim_f32(
         f32::INFINITY,
     )
 }
-
-/// Generic reduction with a custom accumulator init + combine fn.
-/// Used by max/min reduce; not exposed (kept private to keep the
-/// kernel surface tight).
-fn reduce_f32_generic(
-    name: &str,
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-    init: f32,
-    combine: fn(f32, f32) -> f32,
-) -> Result<()> {
-    let (total_input, kept) =
-        check_reduce_shape(name, input, output, input_shape, reduce_dims, std::mem::size_of::<f32>())?;
-    let in_view: &[f32] = input.as_slice()?;
-    let out_view: &mut [f32] = output.as_slice_mut()?;
-    for slot in out_view.iter_mut() {
-        *slot = init;
-    }
-    let mut mi = vec![0usize; input_shape.len()];
-    for flat in 0..total_input {
-        decode_multi_index(flat, input_shape, &mut mi);
-        let oi = output_index(input_shape, &kept, &mi);
-        out_view[oi] = combine(out_view[oi], in_view[flat]);
-    }
-    Ok(())
-}
-
-/// Max-reduce `f32`. Output slots initialize to `-inf`.
-pub fn max_reduce_f32(
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-) -> Result<()> {
-    reduce_f32_generic(
-        "max_reduce_f32",
-        input,
-        output,
-        input_shape,
-        reduce_dims,
-        f32::NEG_INFINITY,
-        |a, b| a.max(b),
-    )
-}
-
-/// Min-reduce `f32`. Output slots initialize to `+inf`.
-pub fn min_reduce_f32(
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-) -> Result<()> {
-    reduce_f32_generic(
-        "min_reduce_f32",
-        input,
-        output,
-        input_shape,
-        reduce_dims,
-        f32::INFINITY,
-        |a, b| a.min(b),
-    )
-}
-
-// =============================================================================
-// Reduction kernels (f64) — direct mirrors of the f32 versions
-// =============================================================================
-
-/// Sum-reduce `f64` — same algorithm as [`sum_reduce_f32`] with
-/// f64 element type and accumulator.
-pub fn sum_reduce_f64(
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-) -> Result<()> {
-    let (total_input, kept) = check_reduce_shape(
-        "sum_reduce_f64", input, output, input_shape, reduce_dims, std::mem::size_of::<f64>(),
-    )?;
-    let in_view: &[f64] = input.as_slice()?;
-    let out_view: &mut [f64] = output.as_slice_mut()?;
-    for slot in out_view.iter_mut() {
-        *slot = 0.0;
-    }
-    let mut mi = vec![0usize; input_shape.len()];
-    for flat in 0..total_input {
-        decode_multi_index(flat, input_shape, &mut mi);
-        let oi = output_index(input_shape, &kept, &mi);
-        out_view[oi] += in_view[flat];
-    }
-    Ok(())
-}
-
-/// Mean-reduce `f64`.
-pub fn mean_reduce_f64(
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-) -> Result<()> {
-    sum_reduce_f64(input, output, input_shape, reduce_dims)?;
-    let divisor: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
-    if divisor == 0 {
-        return Err(Error::Msg(
-            "mean_reduce_f64: divisor zero (reduced dim has size 0)".to_string(),
-        )
-        .bt());
-    }
-    let inv = 1.0_f64 / divisor as f64;
-    let out_view: &mut [f64] = output.as_slice_mut()?;
-    for slot in out_view.iter_mut() {
-        *slot *= inv;
-    }
-    Ok(())
-}
-
-/// Generic reduce helper for max/min on `f64`.
-fn reduce_f64_generic(
-    name: &str,
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-    init: f64,
-    combine: fn(f64, f64) -> f64,
-) -> Result<()> {
-    let (total_input, kept) = check_reduce_shape(
-        name, input, output, input_shape, reduce_dims, std::mem::size_of::<f64>(),
-    )?;
-    let in_view: &[f64] = input.as_slice()?;
-    let out_view: &mut [f64] = output.as_slice_mut()?;
-    for slot in out_view.iter_mut() {
-        *slot = init;
-    }
-    let mut mi = vec![0usize; input_shape.len()];
-    for flat in 0..total_input {
-        decode_multi_index(flat, input_shape, &mut mi);
-        let oi = output_index(input_shape, &kept, &mi);
-        out_view[oi] = combine(out_view[oi], in_view[flat]);
-    }
-    Ok(())
-}
-
-/// Max-reduce `f64`.
-pub fn max_reduce_f64(
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-) -> Result<()> {
-    reduce_f64_generic(
-        "max_reduce_f64", input, output, input_shape, reduce_dims,
-        f64::NEG_INFINITY, |a, b| a.max(b),
-    )
-}
-
-/// Min-reduce `f64`.
-pub fn min_reduce_f64(
-    input: &CpuStorageBytes,
-    output: &mut CpuStorageBytes,
-    input_shape: &[usize],
-    reduce_dims: &[usize],
-) -> Result<()> {
-    reduce_f64_generic(
-        "min_reduce_f64", input, output, input_shape, reduce_dims,
-        f64::INFINITY, |a, b| a.min(b),
-    )
-}
-
-// =============================================================================
-// Reduction kernels (bf16 / f16) — accumulate in f32 for stability
-// =============================================================================
-//
-// Half-float reductions accumulate in f32: summing many bf16 values
-// in bf16 loses precision rapidly (each add rounds to ~3 decimal
-// digits), but a streaming f32 accumulator gives full f32 precision
-// up to ~16M elements. The result is narrowed to bf16/f16 only at
-// the end. This matches what cuBLAS / TPU / cuDNN do.
-
-macro_rules! sum_reduce_half {
-    ($name:ident, $T:ty, $T_size:expr, $type_name:literal) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            reduce_dims: &[usize],
-        ) -> Result<()> {
-            let (total_input, kept) = check_reduce_shape(
-                concat!(stringify!($name)), input, output, input_shape, reduce_dims, $T_size,
-            )?;
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            let total_output = out_view.len();
-            let mut f32_acc = vec![0.0_f32; total_output];
-            let mut mi = vec![0usize; input_shape.len()];
-            for flat in 0..total_input {
-                decode_multi_index(flat, input_shape, &mut mi);
-                let oi = output_index(input_shape, &kept, &mi);
-                f32_acc[oi] += in_view[flat].to_f32();
-            }
-            for (slot, &v) in out_view.iter_mut().zip(&f32_acc) {
-                *slot = <$T>::from_f32(v);
-            }
-            let _ = $type_name;
-            Ok(())
-        }
-    };
-}
-
-sum_reduce_half!(sum_reduce_bf16, half::bf16, std::mem::size_of::<half::bf16>(), "bf16");
-sum_reduce_half!(sum_reduce_f16, half::f16, std::mem::size_of::<half::f16>(), "f16");
-
-macro_rules! mean_reduce_half {
-    ($name:ident, $sum_kernel:path, $T:ty, $type_name:literal) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            reduce_dims: &[usize],
-        ) -> Result<()> {
-            $sum_kernel(input, output, input_shape, reduce_dims)?;
-            let divisor: usize = reduce_dims.iter().map(|&d| input_shape[d]).product();
-            if divisor == 0 {
-                return Err(Error::Msg(format!(
-                    "{}: divisor zero (reduced dim has size 0)",
-                    concat!(stringify!($name)),
-                ))
-                .bt());
-            }
-            let inv = 1.0_f32 / divisor as f32;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            for slot in out_view.iter_mut() {
-                *slot = <$T>::from_f32(slot.to_f32() * inv);
-            }
-            let _ = $type_name;
-            Ok(())
-        }
-    };
-}
-
-mean_reduce_half!(mean_reduce_bf16, sum_reduce_bf16, half::bf16, "bf16");
-mean_reduce_half!(mean_reduce_f16, sum_reduce_f16, half::f16, "f16");
-
-macro_rules! reduce_half_extremum {
-    ($name:ident, $T:ty, $T_size:expr, $init:expr, $combine:expr) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            reduce_dims: &[usize],
-        ) -> Result<()> {
-            let (total_input, kept) = check_reduce_shape(
-                concat!(stringify!($name)), input, output, input_shape, reduce_dims, $T_size,
-            )?;
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            let total_output = out_view.len();
-            // Run the reduction in f32 for accuracy + uniform NaN
-            // handling, then narrow back to the half-float type.
-            let mut f32_acc = vec![$init; total_output];
-            let mut mi = vec![0usize; input_shape.len()];
-            let combine: fn(f32, f32) -> f32 = $combine;
-            for flat in 0..total_input {
-                decode_multi_index(flat, input_shape, &mut mi);
-                let oi = output_index(input_shape, &kept, &mi);
-                f32_acc[oi] = combine(f32_acc[oi], in_view[flat].to_f32());
-            }
-            for (slot, &v) in out_view.iter_mut().zip(&f32_acc) {
-                *slot = <$T>::from_f32(v);
-            }
-            Ok(())
-        }
-    };
-}
-
-reduce_half_extremum!(max_reduce_bf16, half::bf16, std::mem::size_of::<half::bf16>(), f32::NEG_INFINITY, |a: f32, b: f32| a.max(b));
-reduce_half_extremum!(max_reduce_f16, half::f16, std::mem::size_of::<half::f16>(), f32::NEG_INFINITY, |a: f32, b: f32| a.max(b));
-reduce_half_extremum!(min_reduce_bf16, half::bf16, std::mem::size_of::<half::bf16>(), f32::INFINITY, |a: f32, b: f32| a.min(b));
-reduce_half_extremum!(min_reduce_f16, half::f16, std::mem::size_of::<half::f16>(), f32::INFINITY, |a: f32, b: f32| a.min(b));
 
 /// Elementwise GELU using the tanh approximation:
 /// `out[i] = 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x^3)))`.
