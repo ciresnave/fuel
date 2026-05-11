@@ -655,6 +655,42 @@ pub fn eval_node_with_op(
         Op::LayerNormLastDimBackward { eps } => {
             eval_layer_norm_last_dim_backward(*eps, inputs, cache)
         }
+        // Phase 7.6 step 4 (backward-helper batch): registry-extended
+        // backward helpers route to the same reference kernels.
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD =>
+        {
+            eval_softmax_last_dim_backward(inputs, cache)
+        }
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD =>
+        {
+            let eps = match params {
+                fuel_graph::registry::FusedOpParams::LayerNormLastDimBackward { eps } => *eps,
+                _ => panic!(
+                    "Op::Fused(LAYER_NORM_LAST_DIM_BACKWARD, _) expected \
+                     FusedOpParams::LayerNormLastDimBackward, got {params:?}",
+                ),
+            };
+            eval_layer_norm_last_dim_backward(eps, inputs, cache)
+        }
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD =>
+        {
+            let eps = match params {
+                fuel_graph::registry::FusedOpParams::RmsNormLastDimBackward { eps } => *eps,
+                _ => panic!(
+                    "Op::Fused(RMS_NORM_LAST_DIM_BACKWARD, _) expected \
+                     FusedOpParams::RmsNormLastDimBackward, got {params:?}",
+                ),
+            };
+            eval_rms_norm_last_dim_backward(eps, inputs, cache)
+        }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD =>
+        {
+            eval_reduce_max_to_backward(inputs, cache)
+        }
 
         // --- indexing ---
         Op::IndexSelect { dim } => eval_index_select(*dim, inputs, cache),

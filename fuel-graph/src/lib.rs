@@ -5414,13 +5414,19 @@ impl Tensor {
                 }
                 Op::SoftmaxLastDim => {
                     // grad_x = softmax_last_dim_backward(y, upstream)
-                    // where y is this forward node's output.
+                    // where y is this forward node's output. Phase 7.6
+                    // step 4 (backward-helper batch): emits the
+                    // registry form, matching the new
+                    // Tensor::softmax_last_dim builder path.
                     let x = inputs[0];
                     let y_shape = node_shape(&graph_handle, id);
                     let dtype = node_dtype(&graph_handle, id);
                     let grad_x = push_node(
                         &graph_handle,
-                        Op::SoftmaxLastDimBackward,
+                        Op::Fused(
+                            crate::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                            crate::registry::FusedOpParams::SoftmaxLastDimBackward,
+                        ),
                         vec![id, up_id],
                         y_shape,
                         dtype,
@@ -5428,16 +5434,21 @@ impl Tensor {
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::LayerNormLastDim { eps } => {
-                    // grad_x = layer_norm_last_dim_backward(x, upstream, eps)
-                    // Uses the original input x rather than the forward
-                    // output because the backward formula needs both
-                    // mean/variance statistics and the centered values.
+                    // grad_x = layer_norm_last_dim_backward(x, upstream, eps).
+                    // Phase 7.6 step 4 (backward-helper batch): emits
+                    // the registry form. The backward formula needs
+                    // both mean/variance statistics and the centered
+                    // values, so the original x flows through (not the
+                    // forward output).
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
                         &graph_handle,
-                        Op::LayerNormLastDimBackward { eps },
+                        Op::Fused(
+                            crate::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+                            crate::registry::FusedOpParams::LayerNormLastDimBackward { eps },
+                        ),
                         vec![x, up_id],
                         x_shape,
                         dtype,
@@ -5445,19 +5456,19 @@ impl Tensor {
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::RmsNormLastDim { eps } => {
-                    // Emit a single Op::RmsNormLastDimBackward node so
-                    // backends can dispatch a fused kernel. Backends
-                    // without one fall through to the executor's
-                    // cpu_fallback path, which resolves via the
-                    // reference implementation (still one op in the
-                    // graph — the executor does the decomposition
-                    // transparently via the op dispatch).
+                    // Phase 7.6 step 4 (backward-helper batch): emits
+                    // the registry form Op::Fused(RMS_NORM_LAST_DIM_BACKWARD,
+                    // _). Backends without a fused kernel fall through
+                    // to GraphExecutor::cpu_fallback.
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
                         &graph_handle,
-                        Op::RmsNormLastDimBackward { eps },
+                        Op::Fused(
+                            crate::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                            crate::registry::FusedOpParams::RmsNormLastDimBackward { eps },
+                        ),
                         vec![x, up_id],
                         x_shape,
                         dtype,
@@ -5497,16 +5508,28 @@ impl Tensor {
                 Op::ReduceMaxTo(_) => {
                     // Forward: y = reduce_max_to(x, target).
                     // Backward: route upstream to position(s) where
-                    // x equals its per-window max via Op::ReduceMaxToBackward
-                    // (fused; takes (x, upstream) and emits grad_x of
-                    // x.shape). Tied maxes share the gradient equally
-                    // (fair-share subgradient).
+                    // x equals its per-window max via the fused
+                    // backward helper (takes (x, upstream) and emits
+                    // grad_x of x.shape). Tied maxes share the
+                    // gradient equally (fair-share subgradient).
+                    //
+                    // Phase 7.6 step 4 (backward-helper batch): emits
+                    // the registry form Op::Fused(REDUCE_MAX_TO_BACKWARD,
+                    // _). Note this is the backward of a *primitive*
+                    // (Op::ReduceMaxTo), not a fused op — so there's
+                    // no BackwardKind::Fused edge driving this; the
+                    // legacy direct emission stays, just shaped as
+                    // the registry form for executor-routing
+                    // consistency.
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
                         &graph_handle,
-                        Op::ReduceMaxToBackward,
+                        Op::Fused(
+                            crate::registry::FusedOps::REDUCE_MAX_TO_BACKWARD,
+                            crate::registry::FusedOpParams::ReduceMaxToBackward,
+                        ),
                         vec![x, up_id],
                         x_shape,
                         dtype,
@@ -6229,27 +6252,30 @@ impl Tensor {
                     // the legacy per-fused-op `Op` variants and their
                     // backward arms above.
                     if fid == crate::registry::FusedOps::SOFTMAX_LAST_DIM {
-                        // grad_x = softmax_last_dim_backward(y, upstream)
-                        // — same formula as the legacy Op::SoftmaxLastDim
-                        // arm above. The backward fused-op
-                        // (Op::SoftmaxLastDimBackward) is itself migrated
-                        // to a registry entry in step 4; until then we
-                        // emit the legacy variant.
+                        // grad_x = softmax_last_dim_backward(y, upstream).
+                        // Phase 7.6 step 4 (backward-helper batch):
+                        // emits Op::Fused(SOFTMAX_LAST_DIM_BACKWARD, _)
+                        // — the architecturally-correct registry form,
+                        // matching the BackwardKind::Fused edge on
+                        // SOFTMAX_LAST_DIM's entry.
                         let x = inputs[0];
                         let y_shape = node_shape(&graph_handle, id);
                         let dtype = node_dtype(&graph_handle, id);
                         let grad_x = push_node(
                             &graph_handle,
-                            Op::SoftmaxLastDimBackward,
+                            Op::Fused(
+                                crate::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                                crate::registry::FusedOpParams::SoftmaxLastDimBackward,
+                            ),
                             vec![id, up_id],
                             y_shape,
                             dtype,
                         );
                         accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                     } else if fid == crate::registry::FusedOps::LAYER_NORM_LAST_DIM {
-                        // grad_x = layer_norm_last_dim_backward(x, upstream, eps)
-                        // — same formula as the legacy
-                        // Op::LayerNormLastDim { eps } arm above.
+                        // grad_x = layer_norm_last_dim_backward(x, upstream, eps).
+                        // Phase 7.6 step 4 (backward-helper batch): emits
+                        // registry form Op::Fused(LAYER_NORM_LAST_DIM_BACKWARD, _).
                         let eps = match params {
                             crate::registry::FusedOpParams::LayerNormLastDim { eps } => eps,
                             _ => panic!(
@@ -6262,20 +6288,19 @@ impl Tensor {
                         let dtype = node_dtype(&graph_handle, x);
                         let grad_x = push_node(
                             &graph_handle,
-                            Op::LayerNormLastDimBackward { eps },
+                            Op::Fused(
+                                crate::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+                                crate::registry::FusedOpParams::LayerNormLastDimBackward { eps },
+                            ),
                             vec![x, up_id],
                             x_shape,
                             dtype,
                         );
                         accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                     } else if fid == crate::registry::FusedOps::RMS_NORM_LAST_DIM {
-                        // grad_x = rms_norm_last_dim_backward(x, upstream, eps)
-                        // — same formula as the legacy
-                        // Op::RmsNormLastDim { eps } arm above. The
-                        // backward fused-op (Op::RmsNormLastDimBackward)
-                        // is itself migrated to a registry entry in
-                        // its own step-4 commit; until then we emit
-                        // the legacy variant.
+                        // grad_x = rms_norm_last_dim_backward(x, upstream, eps).
+                        // Phase 7.6 step 4 (backward-helper batch): emits
+                        // registry form Op::Fused(RMS_NORM_LAST_DIM_BACKWARD, _).
                         let eps = match params {
                             crate::registry::FusedOpParams::RmsNormLastDim { eps } => eps,
                             _ => panic!(
@@ -6288,7 +6313,10 @@ impl Tensor {
                         let dtype = node_dtype(&graph_handle, x);
                         let grad_x = push_node(
                             &graph_handle,
-                            Op::RmsNormLastDimBackward { eps },
+                            Op::Fused(
+                                crate::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                                crate::registry::FusedOpParams::RmsNormLastDimBackward { eps },
+                            ),
                             vec![x, up_id],
                             x_shape,
                             dtype,
@@ -6491,6 +6519,22 @@ impl Tensor {
                             );
                             accumulate_grad(&mut upstream, bias, grad_b, &graph_handle);
                         }
+                    } else if fid == crate::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD
+                        || fid == crate::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD
+                        || fid == crate::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD
+                        || fid == crate::registry::FusedOps::REDUCE_MAX_TO_BACKWARD
+                    {
+                        // Higher-order gradients through backward
+                        // helpers panic — mirrors the legacy
+                        // Op::SoftmaxLastDimBackward | ... arm above
+                        // (which still fires for any directly-
+                        // constructed legacy backward node). Step 5
+                        // drops the legacy arm; this one stays.
+                        panic!(
+                            "backward: higher-order gradients through \
+                             softmax/layer_norm/rms_norm/reduce_max_to backward \
+                             helpers are not yet supported in the MVP."
+                        );
                     } else {
                         panic!(
                             "Tensor::backward: Op::Fused id {fid:?} has no \

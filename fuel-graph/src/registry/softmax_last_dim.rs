@@ -29,13 +29,14 @@ pub fn entry() -> FusedOpEntry {
         family:     FusedOpFamily::Forward,
         pattern:    SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        // Step 3 wires backward through the legacy
-        // Op::SoftmaxLastDimBackward variant; the backward fused-op
-        // isn't migrated to a registry entry until step 4. The
-        // `Decompose` flavor is unused here because Tensor::backward
-        // dispatches Op::Fused(SOFTMAX_LAST_DIM, _) directly through
-        // a hard-coded arm in step 3 (see fuel-graph/src/lib.rs).
-        backward:   BackwardKind::NotDifferentiable,
+        // Phase 7.6 step 4 (backward-helper batch): SOFTMAX_LAST_DIM_BACKWARD
+        // is now a registry entry, so the architecturally-correct
+        // BackwardKind::Fused(id) edge is live. `Tensor::backward`'s
+        // `Op::Fused(SOFTMAX_LAST_DIM, _)` arm reads this entry and
+        // emits `Op::Fused(SOFTMAX_LAST_DIM_BACKWARD, _)` for the
+        // gradient node. The architectural connection latent since
+        // step 3 is now exercised.
+        backward:   BackwardKind::Fused(FusedOps::SOFTMAX_LAST_DIM_BACKWARD),
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
     }

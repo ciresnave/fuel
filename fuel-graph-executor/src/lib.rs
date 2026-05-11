@@ -1795,9 +1795,42 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
+            // Phase 7.6 step 4 (backward-helper batch): registry-extended
+            // backward helpers share the legacy dispatch path.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD =>
+            {
+                let eps = match params {
+                    fuel_graph::registry::FusedOpParams::LayerNormLastDimBackward { eps } => *eps,
+                    _ => panic!(
+                        "Op::Fused(LAYER_NORM_LAST_DIM_BACKWARD, _) expected \
+                         FusedOpParams::LayerNormLastDimBackward, got {params:?}",
+                    ),
+                };
+                let x = self.get_gt_c(inputs, 0, cache);
+                let up = self.get_gt_c(inputs, 1, cache);
+                match self.backend.layer_norm_last_dim_backward(
+                    &x.storage, &up.storage, &x.layout(), &up.layout(), eps,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
 
             // -- softmax backward (fused) --
             Op::SoftmaxLastDimBackward => {
+                let y = self.get_gt_c(inputs, 0, cache);
+                let up = self.get_gt_c(inputs, 1, cache);
+                match self.backend.softmax_last_dim_backward(
+                    &y.storage, &up.storage, &y.layout(), &up.layout(),
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+            Op::Fused(fid, _)
+                if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD =>
+            {
                 let y = self.get_gt_c(inputs, 0, cache);
                 let up = self.get_gt_c(inputs, 1, cache);
                 match self.backend.softmax_last_dim_backward(
@@ -1814,6 +1847,25 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 let up = self.get_gt_c(inputs, 1, cache);
                 match self.backend.rms_norm_last_dim_backward(
                     &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD =>
+            {
+                let eps = match params {
+                    fuel_graph::registry::FusedOpParams::RmsNormLastDimBackward { eps } => *eps,
+                    _ => panic!(
+                        "Op::Fused(RMS_NORM_LAST_DIM_BACKWARD, _) expected \
+                         FusedOpParams::RmsNormLastDimBackward, got {params:?}",
+                    ),
+                };
+                let x = self.get_gt_c(inputs, 0, cache);
+                let up = self.get_gt_c(inputs, 1, cache);
+                match self.backend.rms_norm_last_dim_backward(
+                    &x.storage, &up.storage, &x.layout(), &up.layout(), eps,
                 ) {
                     Ok(s) => s,
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),

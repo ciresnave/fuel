@@ -33,9 +33,13 @@ use std::collections::HashMap;
 pub mod conv2d;
 pub mod fused_linear;
 pub mod layer_norm_last_dim;
+pub mod layer_norm_last_dim_backward;
+pub mod reduce_max_to_backward;
 pub mod rms_norm_last_dim;
+pub mod rms_norm_last_dim_backward;
 pub mod rope;
 pub mod softmax_last_dim;
+pub mod softmax_last_dim_backward;
 
 /// Stable identifier for a registered fused op. Indexes into
 /// [`FusedOpRegistry::entries`]. Newtype over `u16` (~65K capacity is
@@ -139,9 +143,21 @@ pub enum FusedOpParams {
         padding: (usize, usize),
         groups:  usize,
     },
+    /// SoftmaxLastDimBackward — `s * (g - sum(g * s, last, keepdim))`.
+    /// Two inputs (forward_y, upstream); parameterless. Higher-order
+    /// gradients panic per `Tensor::backward`'s MVP behavior.
+    SoftmaxLastDimBackward,
+    /// LayerNormLastDimBackward — recomputes mean/variance from the
+    /// original x. Two inputs (x, upstream) + eps.
+    LayerNormLastDimBackward { eps: f64 },
+    /// RmsNormLastDimBackward — `r_rms · (g − x·s / (n·(mean_sq + eps)))`.
+    /// Two inputs (x, upstream) + eps.
+    RmsNormLastDimBackward { eps: f64 },
+    /// ReduceMaxToBackward — routes upstream to argmax positions
+    /// (fair-share on ties). Two inputs (x, upstream); parameterless.
+    ReduceMaxToBackward,
     // Step 4 (continued) extends this enum with: ConvTranspose2D { ... },
-    // FlashAttn { ... }, PagedAttn { ... }, QMatMul { quant_type, k, n },
-    // plus the four backward helpers.
+    // FlashAttn { ... }, PagedAttn { ... }, QMatMul { quant_type, k, n }.
 }
 
 /// Hashable key for [`FusedOpParams`]. Used by `op_key`/CSE so that two
@@ -206,6 +222,26 @@ impl FusedOpParams {
                     padding.1 as i64,
                     *groups as i64,
                 ],
+            },
+            FusedOpParams::SoftmaxLastDimBackward => FusedOpParamsKey {
+                tag: 7,
+                bits: Vec::new(),
+                ints: Vec::new(),
+            },
+            FusedOpParams::LayerNormLastDimBackward { eps } => FusedOpParamsKey {
+                tag: 8,
+                bits: vec![eps.to_bits()],
+                ints: Vec::new(),
+            },
+            FusedOpParams::RmsNormLastDimBackward { eps } => FusedOpParamsKey {
+                tag: 9,
+                bits: vec![eps.to_bits()],
+                ints: Vec::new(),
+            },
+            FusedOpParams::ReduceMaxToBackward => FusedOpParamsKey {
+                tag: 10,
+                bits: Vec::new(),
+                ints: Vec::new(),
             },
         }
     }
@@ -452,8 +488,27 @@ impl FusedOps {
     /// weight]` or `[x, weight, bias]`; carries stride / padding /
     /// groups in [`FusedOpParams::Conv2D`].
     pub const CONV2D: FusedOpId = FusedOpId(6);
+    /// SoftmaxLastDimBackward — fused backward helper for the
+    /// SoftmaxLastDim forward. Two inputs `[y, upstream]`,
+    /// parameterless. Wired through `BackwardKind::Fused` from
+    /// `SOFTMAX_LAST_DIM`'s entry.
+    pub const SOFTMAX_LAST_DIM_BACKWARD: FusedOpId = FusedOpId(7);
+    /// LayerNormLastDimBackward — fused backward helper for the
+    /// LayerNormLastDim forward. Two inputs `[x, upstream]` + eps.
+    pub const LAYER_NORM_LAST_DIM_BACKWARD: FusedOpId = FusedOpId(8);
+    /// RmsNormLastDimBackward — fused backward helper for the
+    /// RmsNormLastDim forward. Two inputs `[x, upstream]` + eps.
+    pub const RMS_NORM_LAST_DIM_BACKWARD: FusedOpId = FusedOpId(9);
+    /// ReduceMaxToBackward — fused backward helper for the
+    /// `Op::ReduceMaxTo` primitive (routes upstream to argmax
+    /// positions, fair-share on ties). Two inputs `[x, upstream]`,
+    /// parameterless. Note this is the backward of a *primitive*
+    /// (`Op::ReduceMaxTo`), not of a fused forward — there's no
+    /// `BackwardKind::Fused` edge wired to this helper, autograd
+    /// reaches it directly from `Op::ReduceMaxTo`'s arm.
+    pub const REDUCE_MAX_TO_BACKWARD: FusedOpId = FusedOpId(10);
     // Step 4 (continued) adds: CONV_TRANSPOSE2D, FLASH_ATTN,
-    // PAGED_ATTN, QMATMUL, plus the 4 backward helpers.
+    // PAGED_ATTN, QMATMUL.
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -474,6 +529,10 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(layer_norm_last_dim::entry())
             .with_entry(rope::entry())
             .with_entry(conv2d::entry())
+            .with_entry(softmax_last_dim_backward::entry())
+            .with_entry(layer_norm_last_dim_backward::entry())
+            .with_entry(rms_norm_last_dim_backward::entry())
+            .with_entry(reduce_max_to_backward::entry())
     })
 }
 
