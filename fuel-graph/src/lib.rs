@@ -3473,10 +3473,15 @@ impl Tensor {
     /// divides by the root-mean-square, which is both cheaper and
     /// empirically just as effective in transformer blocks.
     ///
-    /// Emits a single fused `Op::RmsNormLastDim { eps }` node.
-    /// Backends that have a native implementation dispatch it as one
-    /// kernel; ones that don't get a CPU fallback via the reference
-    /// implementation.
+    /// Emits a fused RmsNormLastDim node. Backends that have a native
+    /// implementation dispatch it as one kernel; ones that don't get a
+    /// CPU fallback via the reference implementation.
+    ///
+    /// Phase 7.6 step 4 (continued): emits
+    /// `Op::Fused(FusedOps::RMS_NORM_LAST_DIM, FusedOpParams::RmsNormLastDim { eps })`
+    /// through the registry-extended arm. The legacy
+    /// `Op::RmsNormLastDim { eps }` variant remains in the enum during
+    /// migration; step 5 drops it once nothing emits it.
     ///
     /// Use [`rms_norm_last_dim_decomposed`](Self::rms_norm_last_dim_decomposed)
     /// instead if you need to differentiate through this op —
@@ -3487,7 +3492,10 @@ impl Tensor {
             !x_dims_vec.is_empty() && *x_dims_vec.last().unwrap() > 0,
             "rms_norm_last_dim: input must have non-zero last dim, got {x_dims_vec:?}",
         );
-        self.unary_op(Op::RmsNormLastDim { eps })
+        self.unary_op(Op::Fused(
+            crate::registry::FusedOps::RMS_NORM_LAST_DIM,
+            crate::registry::FusedOpParams::RmsNormLastDim { eps },
+        ))
     }
 
     /// Decomposed version — emits the (sqr → mean_dim → reshape →
@@ -6186,7 +6194,7 @@ impl Tensor {
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                     accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
                 }
-                Op::Fused(fid, _) => {
+                Op::Fused(fid, params) => {
                     // Phase 7.6 step 3+: per-id backward dispatch. Each
                     // migrated fused op gets a branch here that emits
                     // the appropriate gradient subgraph. Step 5 drops
@@ -6207,6 +6215,32 @@ impl Tensor {
                             Op::SoftmaxLastDimBackward,
                             vec![id, up_id],
                             y_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    } else if fid == crate::registry::FusedOps::RMS_NORM_LAST_DIM {
+                        // grad_x = rms_norm_last_dim_backward(x, upstream, eps)
+                        // — same formula as the legacy
+                        // Op::RmsNormLastDim { eps } arm above. The
+                        // backward fused-op (Op::RmsNormLastDimBackward)
+                        // is itself migrated to a registry entry in
+                        // its own step-4 commit; until then we emit
+                        // the legacy variant.
+                        let eps = match params {
+                            crate::registry::FusedOpParams::RmsNormLastDim { eps } => eps,
+                            _ => panic!(
+                                "Tensor::backward: Op::Fused(RMS_NORM_LAST_DIM, _) \
+                                 expected FusedOpParams::RmsNormLastDim, got {params:?}",
+                            ),
+                        };
+                        let x = inputs[0];
+                        let x_shape = node_shape(&graph_handle, x);
+                        let dtype = node_dtype(&graph_handle, x);
+                        let grad_x = push_node(
+                            &graph_handle,
+                            Op::RmsNormLastDimBackward { eps },
+                            vec![x, up_id],
+                            x_shape,
                             dtype,
                         );
                         accumulate_grad(&mut upstream, x, grad_x, &graph_handle);

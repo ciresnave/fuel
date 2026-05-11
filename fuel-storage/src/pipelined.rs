@@ -533,6 +533,11 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::FusedLinear)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
+        {
+            Some(OpKind::RmsNormLastDim)
+        }
         Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
@@ -1228,6 +1233,31 @@ fn op_to_op_params(
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::NormLastDim { outer_count, last_dim, eps: *eps }
+        }
+        // Phase 7.6 step 4 (continued): registry-extended RmsNormLastDim
+        // shares the same shape contract; collapse to the same body but
+        // extract eps from FusedOpParams instead of the legacy variant.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
+        {
+            let eps = match params {
+                fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps } => *eps,
+                _ => return Err(Error::Msg(format!(
+                    "Op::Fused(RMS_NORM_LAST_DIM, _) expected \
+                     FusedOpParams::RmsNormLastDim, got {params:?}",
+                )).bt()),
+            };
+            let il = input_layout(node.inputs[0]);
+            let dims = il.shape().dims();
+            if dims.is_empty() {
+                return Err(Error::Msg(
+                    "Op::Fused(RMS_NORM_LAST_DIM, _) requires rank ≥ 1".to_string(),
+                )
+                .bt());
+            }
+            let last_dim = *dims.last().unwrap();
+            let outer_count: usize = dims[..dims.len() - 1].iter().product();
+            OpParams::NormLastDim { outer_count, last_dim, eps }
         }
         Op::Concat { dim } => {
             // Output's shape: [..., total_dim, ...]. Compute outer
