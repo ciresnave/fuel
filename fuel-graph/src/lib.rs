@@ -3425,14 +3425,23 @@ impl Tensor {
             sin_shape.dims(),
         );
         let _ = rank;
-        // Emit a single fused Op::Rope node. The decomposed version
+        // Emit a single fused Rope node. The decomposed version
         // (slice+neg+concat+broadcast+mul+add) produces ~72 dispatches
         // on GPU backends because concat-along-last-dim has a per-row
         // host loop. Fused path dispatches once.
+        //
+        // Phase 7.6 step 4 (continued): emits
+        // `Op::Fused(FusedOps::ROPE, FusedOpParams::Rope)` through the
+        // registry-extended arm. The legacy `Op::Rope` variant remains
+        // in the enum during migration; step 5 drops it once nothing
+        // emits it.
         let out_shape = in_shape.clone();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Rope,
+            op: Op::Fused(
+                crate::registry::FusedOps::ROPE,
+                crate::registry::FusedOpParams::Rope,
+            ),
             inputs: vec![self.id, cos.id, sin.id],
             shape: out_shape,
             dtype,
@@ -6271,6 +6280,32 @@ impl Tensor {
                             &graph_handle,
                             Op::RmsNormLastDimBackward { eps },
                             vec![x, up_id],
+                            x_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    } else if fid == crate::registry::FusedOps::ROPE {
+                        // grad_x = rope(upstream, cos, -sin) — same
+                        // formula as the legacy Op::Rope arm above.
+                        // Emit the registry form for the backward
+                        // Rope node so the gradient subgraph routes
+                        // through the same Op::Fused dispatch as the
+                        // forward.
+                        let x = inputs[0];
+                        let cos = inputs[1];
+                        let sin = inputs[2];
+                        let x_shape = node_shape(&graph_handle, x);
+                        let sin_shape = node_shape(&graph_handle, sin);
+                        let dtype = node_dtype(&graph_handle, x);
+                        let neg_sin = push_node(
+                            &graph_handle, Op::Neg, vec![sin], sin_shape, dtype);
+                        let grad_x = push_node(
+                            &graph_handle,
+                            Op::Fused(
+                                crate::registry::FusedOps::ROPE,
+                                crate::registry::FusedOpParams::Rope,
+                            ),
+                            vec![up_id, cos, neg_sin],
                             x_shape,
                             dtype,
                         );

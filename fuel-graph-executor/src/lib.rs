@@ -1773,6 +1773,23 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
+            // Phase 7.6 step 4 (continued): registry-extended Rope
+            // routes to the same backend.rope path as the legacy
+            // variant.
+            Op::Fused(fid, _params)
+                if *fid == fuel_graph::registry::FusedOps::ROPE =>
+            {
+                let x = self.get_gt(inputs, 0, cache);
+                let cos = self.get_gt_c(inputs, 1, cache);
+                let sin = self.get_gt_c(inputs, 2, cache);
+                match self.backend.rope(
+                    &x.storage, &cos.storage, &sin.storage,
+                    &x.layout(), &cos.layout(), &sin.layout(),
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
 
             // -- indexing (CPU fallback if backend doesn't implement) --
             Op::IndexSelect { dim } => {
