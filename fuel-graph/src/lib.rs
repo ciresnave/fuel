@@ -531,29 +531,9 @@ pub enum Op {
     // every fused op flows through `Op::Fused(FusedOpId, FusedOpParams)`.
     // See `docs/fused-op-registry.md` for the migration record.
 
-    /// Quantized matrix multiply: `C = A @ dequant(W_Q)`. The second
-    /// input is a U32-typed tensor holding raw quantization-block
-    /// bytes; the backend dequantizes on the fly inside its matmul
-    /// kernel (avoiding a full dequant roundtrip through F32/BF16).
-    ///
-    /// Input shapes:
-    ///   A: `[..., M, K]` F32 (activations)
-    ///   W_Q: `[n_bytes / 4]` U32 — a row-major stream of Q-type blocks
-    ///         for a `[N, K]` weight matrix (llama.cpp/GGUF convention).
-    /// Output shape: `[..., M, N]` F32.
-    ///
-    /// Backward: gradient through W_Q is zero (quantized weights are
-    /// frozen in the expected use case). Gradient through A is not
-    /// implemented at the moment — add it if/when we need to fine-tune
-    /// over Q-weights.
-    QMatMul {
-        /// Quantization type for the weight blocks.
-        quant_type: QuantType,
-        /// Weight input-feature dim (the contracted dim).
-        k: usize,
-        /// Weight output-feature dim.
-        n: usize,
-    },
+    // Phase 7.6 step 5 (continued, 2026-05-11): `QMatMul {
+    // quant_type, k, n }` dropped — flows through
+    // `Op::Fused(QMATMUL, FusedOpParams::QMatMul { … })`.
 
     // --- backward helpers ---
     //
@@ -655,78 +635,11 @@ pub enum Op {
     // See `fuel-graph/src/registry/{conv2d,fused_linear}.rs` for the
     // current entry shapes.
 
-    /// Multi-head scaled-dot-product attention (FlashAttention-shaped).
-    ///
-    /// Inputs: `[q, k, v, optional alibi_slopes]`.
-    ///   - `q`: `[B, Hq, Sq, D]`
-    ///   - `k`: `[B, Hkv, Sk, D]`  (Hkv ≤ Hq for GQA; Hq must be a multiple of Hkv)
-    ///   - `v`: `[B, Hkv, Sk, D]`
-    ///   - `alibi_slopes` (optional): `[Hq]`
-    ///
-    /// Output: `[B, Hq, Sq, D]` (same shape as `q`).
-    ///
-    /// Backends without a native flash-attention kernel fall through to
-    /// the executor's CPU fallback, which uses
-    /// `fuel_reference_backend::attention::attention_naive`. The lazy
-    /// node carries enough metadata that the planner can pick a fast
-    /// kernel where one exists.
-    FlashAttn {
-        softmax_scale:     f32,
-        causal:            bool,
-        window_size_left:  Option<usize>,
-        window_size_right: Option<usize>,
-        softcap:           Option<f32>,
-    },
-
-    /// Paged-cache scaled-dot-product attention (Phase 6d).
-    ///
-    /// Inputs: `[q, k_cache, v_cache, block_table, context_lens,
-    /// optional alibi_slopes]`.
-    ///   - `q`:             `[B, Hq, Sq, D]`
-    ///   - `k_cache`:       `[num_blocks, block_size, Hkv, D]`
-    ///   - `v_cache`:       `[num_blocks, block_size, Hkv, D]`
-    ///   - `block_table`:   `[B, max_num_blocks_per_seq]` (u32) — maps logical
-    ///     KV block index → physical block index in `k_cache`/`v_cache`.
-    ///   - `context_lens`:  `[B]` (u32) — per-sequence true context length.
-    ///   - `alibi_slopes`:  `[Hq]` (optional)
-    ///
-    /// Output: `[B, Hq, Sq, D]` (same shape as `q`).
-    ///
-    /// This is the paged-attention variant of `Op::FlashAttn`. It collapses
-    /// every variable-length decode shape into a single execution path —
-    /// the kernel reads only populated blocks via the block table. Replaces
-    /// the bucketing-and-pad pattern from `fuel_core::seq_bucketing`.
-    ///
-    /// Causal masking is implicit: each query position `q_pos` (relative
-    /// to the start of the Sq window) corresponds to absolute position
-    /// `context_lens[b] - Sq + q_pos`. K positions strictly after that
-    /// are masked.
-    PagedAttn {
-        softmax_scale: f32,
-        block_size:    usize,
-        softcap:       Option<f32>,
-    },
-
-    /// 2-D transposed convolution (a.k.a. fractionally-strided / "deconv").
-    ///
-    /// Inputs: `[x, weight]` (no bias — composed externally if needed).
-    ///   - `x`:      `[N, Cin, H, W]`
-    ///   - `weight`: `[Cin, Cout/groups, Kh, Kw]` (note transposed
-    ///     channel order vs `Conv2D`)
-    ///
-    /// Output shape: `[N, Cout, Hout, Wout]` where
-    ///   Hout = (H − 1)·stride.0 − 2·pad.0 + dil.0·(Kh − 1) + out_pad.0 + 1
-    ///   Wout = (W − 1)·stride.1 − 2·pad.1 + dil.1·(Kw − 1) + out_pad.1 + 1
-    ///
-    /// Used directly for Stable Diffusion-style upsamplers and as the
-    /// `dX` half of `Conv2D`'s gradient rule.
-    ConvTranspose2D {
-        stride:         (usize, usize),
-        padding:        (usize, usize),
-        output_padding: (usize, usize),
-        dilation:       (usize, usize),
-        groups:         usize,
-    },
+    // Phase 7.6 step 5 (continued, 2026-05-11): `FlashAttn`,
+    // `PagedAttn`, and `ConvTranspose2D` dropped — all three flow
+    // through `Op::Fused(<id>, FusedOpParams::<variant>)` per the
+    // registry split. See `fuel-graph/src/registry/{flash_attn,
+    // paged_attn, conv_transpose_2d}.rs`.
 
     // --- cross-device transfer ---
     /// Copy the input tensor to a specific device. Source stays
@@ -930,7 +843,6 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::MaxDim(_)            => "MaxDim",
         Op::MinDim(_)            => "MinDim",
         Op::MeanDim(_)           => "MeanDim",
-        Op::QMatMul{..}          => "QMatMul",
         Op::LogSoftmaxLastDimBackward
                                  => "LogSoftmaxLastDimBackward",
         Op::ArgMaxDim(_)         => "ArgMaxDim",
@@ -947,9 +859,6 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gather{..}           => "Gather",
         Op::IndexAdd{..}         => "IndexAdd",
         Op::ScatterAdd{..}       => "ScatterAdd",
-        Op::ConvTranspose2D{..}  => "ConvTranspose2D",
-        Op::FlashAttn{..}        => "FlashAttn",
-        Op::PagedAttn{..}        => "PagedAttn",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
@@ -5382,20 +5291,9 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                // Phase 7.6 step 4 (final): legacy `Op::QMatMul`
-                // backward path stays as a panic arm during the
-                // migration window — the builder now emits
-                // `Op::Fused(QMATMUL, _)` so this arm only fires for
-                // direct legacy-variant construction (tests). Drops
-                // when QMatMul's `Op` variant is retired in a
-                // follow-up step-5-style commit.
-                Op::QMatMul { .. } => {
-                    panic!(
-                        "backward: QMatMul is not differentiable (quantized \
-                         weights are frozen). Use a dequantize + standard \
-                         matmul if you need gradients through this input."
-                    );
-                }
+                // Phase 7.6 step 5 (final, 2026-05-11): legacy
+                // `Op::QMatMul` arm dropped with the variant; QMatMul
+                // backward panics via the Op::Fused arm below.
                 // Phase 7.6 step 5 (2026-05-11): the legacy
                 // `Op::SoftmaxLastDimBackward | Op::LayerNormLastDimBackward |
                 // Op::RmsNormLastDimBackward | Op::ReduceMaxToBackward`
@@ -5844,35 +5742,11 @@ impl Tensor {
                 // ConvTranspose2D, FlashAttn, and PagedAttn now emit
                 // `Op::Fused(<id>, _)`; these legacy backward arms
                 // still fire for direct legacy-variant constructions
-                // (tests, intermediate nodes from Conv2D's backward
-                // before that itself migrates). They drop when the
-                // legacy `Op` variants are retired in a step-5-style
-                // follow-up.
-                Op::ConvTranspose2D { .. } => {
-                    panic!(
-                        "Tensor::backward: Op::ConvTranspose2D does not \
-                         yet have its own gradient rule (only used \
-                         in the forward path of Conv2D's backward).",
-                    );
-                }
-                Op::FlashAttn { .. } => {
-                    panic!(
-                        "Tensor::backward: Op::FlashAttn does not \
-                         yet have a gradient rule. Compose attention \
-                         from matmul + softmax for differentiable use.",
-                    );
-                }
-                Op::PagedAttn { .. } => {
-                    panic!(
-                        "Tensor::backward: Op::PagedAttn is decode-only; \
-                         no gradient rule exists.",
-                    );
-                }
-                // Phase 7.6 step 5 (2026-05-11): the legacy
-                // `Op::FusedLinear` backward arm has been dropped
-                // together with the variant; `Op::Fused(FUSED_LINEAR,
-                // _)` below carries the (a @ b) + bias gradient
-                // decomposition.
+                // Phase 7.6 step 5 (final, 2026-05-11): the legacy
+                // `Op::ConvTranspose2D` / `Op::FlashAttn` /
+                // `Op::PagedAttn` / `Op::FusedLinear` backward arms
+                // have all been dropped together with the variants;
+                // `Op::Fused(<id>, _)` below panics for each id.
                 Op::Fused(fid, params) => {
                     // Per-id backward dispatch. Each migrated fused op
                     // gets a branch here that emits the appropriate

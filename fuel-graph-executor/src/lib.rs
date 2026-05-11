@@ -1248,36 +1248,12 @@ impl<B: GraphBackend> GraphExecutor<B> {
             }
 
             // -- quantized matmul: C = A @ dequant(W_Q) --
-            // Dispatch flat-per-quant-type so the backend doesn't do
-            // a second match on quant_type; we have it in hand on the
-            // op variant and there's no reason to nest dispatches.
-            Op::QMatMul { quant_type, k, n } => {
-                let a = self.get_gt(inputs, 0, cache);
-                // Weight bytes are a const U32 buffer — always contiguous.
-                let w = self.get_gt_c(inputs, 1, cache);
-                let result = match quant_type {
-                    fuel_graph::QuantType::Q4_0 =>
-                        self.backend.matmul_q4_0(&a.storage, &w.storage, *k, *n, &a.layout()),
-                    fuel_graph::QuantType::Q8_0 =>
-                        self.backend.matmul_q8_0(&a.storage, &w.storage, *k, *n, &a.layout()),
-                    fuel_graph::QuantType::Q4_K_M =>
-                        self.backend.matmul_q4_km(&a.storage, &w.storage, *k, *n, &a.layout()),
-                    // Legacy executor only wires the three quant types
-                    // it has trait methods for. New variants
-                    // (Q4_1/Q5_0/Q5_1/Q8_1/Q2K/Q3K/Q5K/Q6K) flow only
-                    // through the pipelined executor for now.
-                    _ => Err(fuel_core_types::Error::Msg(format!(
-                        "legacy executor: QMatMul {:?} not wired (use pipelined executor)",
-                        quant_type
-                    ))),
-                };
-                match result {
-                    Ok(s) => s,
-                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
-                }
-            }
-            // Phase 7.6 step 4 (final): registry-extended QMatMul
-            // shares the legacy quant-type dispatch.
+            // Phase 7.6 step 5 (final): legacy `Op::QMatMul` arm
+            // dropped with the variant; QMatMul dispatches only
+            // through `Op::Fused(QMATMUL, _)`. The legacy executor
+            // still only wires the three quant types it has trait
+            // methods for (Q4_0/Q8_0/Q4_K_M); new variants flow
+            // through the pipelined executor.
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::QMATMUL =>
             {
@@ -1396,21 +1372,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
             // padding / dilation is forwarded to the backend as-is —
             // unlike Conv2D, no symmetry pre-screen, since the
             // backward path produces non-square cases naturally.
-            Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
-                let input  = self.get_gt_c(inputs, 0, cache);
-                let weight = self.get_gt_c(inputs, 1, cache);
-                match self.backend.conv_transpose2d(
-                    &input.storage, &weight.storage,
-                    &input.layout(), &weight.layout(),
-                    *stride, *padding, *output_padding, *dilation, *groups,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                    }
-                }
-            }
-            // Phase 7.6 step 4 (final): registry-extended ConvTranspose2D.
+            // Phase 7.6 step 5 (final): legacy `Op::ConvTranspose2D`
+            // arm dropped with the variant.
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D =>
             {
@@ -1443,30 +1406,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
             // a native flash-attn kernel return Err from the default
             // trait impl; the executor catches it and falls back to
             // attention_naive via cpu_fallback.
-            Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
-                let q = self.get_gt_c(inputs, 0, cache);
-                let k = self.get_gt_c(inputs, 1, cache);
-                let v = self.get_gt_c(inputs, 2, cache);
-                let alibi = if inputs.len() >= 4 {
-                    Some(self.get_gt_c(inputs, 3, cache))
-                } else {
-                    None
-                };
-                let alibi_layout = alibi.as_ref().map(|t| t.layout());
-                match self.backend.flash_attn(
-                    &q.storage, &k.storage, &v.storage,
-                    alibi.as_ref().map(|t| t.storage.as_ref()),
-                    &q.layout(), &k.layout(), &v.layout(),
-                    alibi_layout.as_ref(),
-                    *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                    }
-                }
-            }
-            // Phase 7.6 step 4 (final): registry-extended FlashAttn.
+            // Phase 7.6 step 5 (final): legacy `Op::FlashAttn` arm
+            // dropped with the variant.
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::FLASH_ATTN =>
             {
@@ -1515,33 +1456,8 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            Op::PagedAttn { softmax_scale, block_size, softcap } => {
-                let q  = self.get_gt_c(inputs, 0, cache);
-                let kc = self.get_gt_c(inputs, 1, cache);
-                let vc = self.get_gt_c(inputs, 2, cache);
-                let bt = self.get_gt_c(inputs, 3, cache);
-                let cl = self.get_gt_c(inputs, 4, cache);
-                let alibi = if inputs.len() >= 6 {
-                    Some(self.get_gt_c(inputs, 5, cache))
-                } else {
-                    None
-                };
-                let alibi_layout = alibi.as_ref().map(|t| t.layout());
-                match self.backend.paged_attn(
-                    &q.storage, &kc.storage, &vc.storage, &bt.storage, &cl.storage,
-                    alibi.as_ref().map(|t| t.storage.as_ref()),
-                    &q.layout(), &kc.layout(), &vc.layout(),
-                    &bt.layout(), &cl.layout(),
-                    alibi_layout.as_ref(),
-                    *softmax_scale, *block_size, *softcap,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                    }
-                }
-            }
-            // Phase 7.6 step 4 (final): registry-extended PagedAttn.
+            // Phase 7.6 step 5 (final): legacy `Op::PagedAttn` arm
+            // dropped with the variant.
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN =>
             {
@@ -2201,7 +2117,9 @@ fn op_short_name(op: &Op) -> &'static str {
         // behind `Op::Fused(_, _)` now and reach the `_ => "Other"`
         // catch-all here. Per-id names will land alongside the
         // step-7/8 PrecisionGuarantee / cost-model populating pass.
-        Op::QMatMul { .. } => "QMatMul",
+        // Phase 7.6 step 5 (final): legacy QMatMul/FlashAttn/
+        // PagedAttn/ConvTranspose2D arms dropped — all hit the
+        // catch-all "Other" until per-id names land.
         _ => "Other",
     }
 }

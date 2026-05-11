@@ -501,19 +501,17 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV2D => {
             Some(OpKind::Conv2D)
         }
-        Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
-        // Phase 7.6 step 4 (final): registry-extended forms share
-        // the same OpKind binding-table entries.
+        // Phase 7.6 step 5 (final): legacy `Op::ConvTranspose2D` /
+        // `Op::FlashAttn` / `Op::PagedAttn` arms dropped with the
+        // variants; dispatch flows only through `Op::Fused`.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D => {
             Some(OpKind::ConvTranspose2D)
         }
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::ReduceMaxTo(_) => Some(OpKind::ReduceMaxTo),
-        Op::FlashAttn { .. } => Some(OpKind::FlashAttn),
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FLASH_ATTN => {
             Some(OpKind::FlashAttn)
         }
-        Op::PagedAttn { .. } => Some(OpKind::PagedAttn),
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN => {
             Some(OpKind::PagedAttn)
         }
@@ -553,7 +551,7 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
         Op::ArgMaxDim(_) => Some(OpKind::ArgMaxDim),
         Op::ArgMinDim(_) => Some(OpKind::ArgMinDim),
-        Op::QMatMul { .. } => Some(OpKind::QMatMul),
+        // Phase 7.6 step 5 (final): legacy `Op::QMatMul` arm dropped.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::QMATMUL => {
             Some(OpKind::QMatMul)
         }
@@ -623,11 +621,8 @@ fn op_to_op_params(
             .unwrap_or_else(|| graph.layout(input_id))
     };
     Ok(match &node.op {
-        // Phase 7.6 step 4 (final): both `Op::QMatMul` and
-        // `Op::Fused(QMATMUL, _)` share this body — destructured
-        // off either op variant.
-        Op::QMatMul { quant_type, k, n }
-        | Op::Fused(_, fuel_graph::registry::FusedOpParams::QMatMul { quant_type, k, n }) => {
+        // Phase 7.6 step 5 (final): legacy `Op::QMatMul` arm dropped.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::QMatMul { quant_type, k, n }) => {
             // Inputs: (activations f32 [..., m, k], weight_bytes
             // u32-typed). Output shape (this Node's shape) is
             // [..., m, n]. Flatten leading dims into batch_count.
@@ -1349,10 +1344,8 @@ fn op_to_op_params(
                 groups: *groups,
             }
         }
-        // Phase 7.6 step 4 (final): both `Op::PagedAttn` and
-        // `Op::Fused(PAGED_ATTN, _)` share this body.
-        Op::PagedAttn { softmax_scale, block_size, softcap }
-        | Op::Fused(_, fuel_graph::registry::FusedOpParams::PagedAttn {
+        // Phase 7.6 step 5 (final): legacy `Op::PagedAttn` arm dropped.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::PagedAttn {
             softmax_scale, block_size, softcap,
         }) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k_cache [num_blocks,
@@ -1413,8 +1406,8 @@ fn op_to_op_params(
                 softcap: *softcap,
             }
         }
-        Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap }
-        | Op::Fused(_, fuel_graph::registry::FusedOpParams::FlashAttn {
+        // Phase 7.6 step 5 (final): legacy `Op::FlashAttn` arm dropped.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::FlashAttn {
             softmax_scale, causal, window_size_left, window_size_right, softcap,
         }) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k [B,Hkv,Sk,D],
@@ -1490,8 +1483,8 @@ fn op_to_op_params(
             let output_shape: Vec<usize> = target_shape.dims().to_vec();
             OpParams::ReduceMaxTo { input_shape, output_shape }
         }
-        Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups }
-        | Op::Fused(_, fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+        // Phase 7.6 step 5 (final): legacy `Op::ConvTranspose2D` arm dropped.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::ConvTranspose2D {
             stride, padding, output_padding, dilation, groups,
         }) => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
@@ -2867,7 +2860,12 @@ mod tests {
                 dtype: DType::U32,
             });
             let mm = g.push(Node {
-                op: Op::QMatMul { quant_type: QuantType::Q4_0, k: 32, n: 2 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::QMATMUL,
+                    fuel_graph::registry::FusedOpParams::QMatMul {
+                        quant_type: QuantType::Q4_0, k: 32, n: 2,
+                    },
+                ),
                 inputs: vec![act, w],
                 shape: Shape::from_dims(&[1, 2]),
                 dtype: DType::F32,
@@ -2940,7 +2938,12 @@ mod tests {
                 dtype: DType::U32,
             });
             let mm = g.push(Node {
-                op: Op::QMatMul { quant_type: QuantType::Q5_0, k, n },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::QMATMUL,
+                    fuel_graph::registry::FusedOpParams::QMatMul {
+                        quant_type: QuantType::Q5_0, k, n,
+                    },
+                ),
                 inputs: vec![act, w],
                 shape: Shape::from_dims(&[1, n]),
                 dtype: DType::F32,
@@ -3008,7 +3011,12 @@ mod tests {
                 dtype: DType::U32,
             });
             let mm = g.push(Node {
-                op: Op::QMatMul { quant_type: QuantType::Q6K, k, n },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::QMATMUL,
+                    fuel_graph::registry::FusedOpParams::QMatMul {
+                        quant_type: QuantType::Q6K, k, n,
+                    },
+                ),
                 inputs: vec![act, w],
                 shape: Shape::from_dims(&[1, n]),
                 dtype: DType::F32,
@@ -4154,7 +4162,12 @@ mod tests {
                 shape: Shape::from_dims(&[1]), dtype: DType::U32,
             });
             let op = g.push(Node {
-                op: Op::PagedAttn { softmax_scale: 1.0, block_size: 2, softcap: None },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::PAGED_ATTN,
+                    fuel_graph::registry::FusedOpParams::PagedAttn {
+                        softmax_scale: 1.0, block_size: 2, softcap: None,
+                    },
+                ),
                 inputs: vec![q, kc, vc, bt, cl],
                 shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::F32,
             });
@@ -4227,7 +4240,12 @@ mod tests {
                 shape: Shape::from_dims(&[1]), dtype: DType::U32,
             });
             let op = g.push(Node {
-                op: Op::PagedAttn { softmax_scale: 1.0, block_size: 2, softcap: None },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::PAGED_ATTN,
+                    fuel_graph::registry::FusedOpParams::PagedAttn {
+                        softmax_scale: 1.0, block_size: 2, softcap: None,
+                    },
+                ),
                 inputs: vec![q, kc, vc, bt, cl],
                 shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
             });
@@ -4280,13 +4298,16 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
             });
             let op = g.push(Node {
-                op: Op::FlashAttn {
-                    softmax_scale: 1.0,
-                    causal: false,
-                    window_size_left: None,
-                    window_size_right: None,
-                    softcap: None,
-                },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FLASH_ATTN,
+                    fuel_graph::registry::FusedOpParams::FlashAttn {
+                        softmax_scale: 1.0,
+                        causal: false,
+                        window_size_left: None,
+                        window_size_right: None,
+                        softcap: None,
+                    },
+                ),
                 inputs: vec![q, k, v],
                 shape: Shape::from_dims(&[1, 1, 1, 2]),
                 dtype: DType::F32,
@@ -4342,11 +4363,14 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
             });
             let op = g.push(Node {
-                op: Op::FlashAttn {
-                    softmax_scale: 1.0, causal: true,
-                    window_size_left: None, window_size_right: None,
-                    softcap: None,
-                },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FLASH_ATTN,
+                    fuel_graph::registry::FusedOpParams::FlashAttn {
+                        softmax_scale: 1.0, causal: true,
+                        window_size_left: None, window_size_right: None,
+                        softcap: None,
+                    },
+                ),
                 inputs: vec![q, k, v],
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
             });
@@ -4400,11 +4424,14 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
             });
             let op = g.push(Node {
-                op: Op::FlashAttn {
-                    softmax_scale: 1.0, causal: false,
-                    window_size_left: None, window_size_right: None,
-                    softcap: None,
-                },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FLASH_ATTN,
+                    fuel_graph::registry::FusedOpParams::FlashAttn {
+                        softmax_scale: 1.0, causal: false,
+                        window_size_left: None, window_size_right: None,
+                        softcap: None,
+                    },
+                ),
                 inputs: vec![q, k, v],
                 shape: Shape::from_dims(&[1, 1, 1, 2]), dtype: DType::BF16,
             });
@@ -4773,10 +4800,13 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::ConvTranspose2D {
-                    stride: (1, 1), padding: (0, 0),
-                    output_padding: (0, 0), dilation: (1, 1), groups: 1,
-                },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D,
+                    fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+                        stride: (1, 1), padding: (0, 0),
+                        output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 3, 3]),
                 dtype: DType::F32,
@@ -4813,10 +4843,13 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
             });
             let c = g.push(Node {
-                op: Op::ConvTranspose2D {
-                    stride: (1, 1), padding: (0, 0),
-                    output_padding: (0, 0), dilation: (1, 1), groups: 1,
-                },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D,
+                    fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+                        stride: (1, 1), padding: (0, 0),
+                        output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 3, 3]),
                 dtype: DType::F64,
@@ -4857,10 +4890,13 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
             });
             let c = g.push(Node {
-                op: Op::ConvTranspose2D {
-                    stride: (1, 1), padding: (0, 0),
-                    output_padding: (0, 0), dilation: (1, 1), groups: 1,
-                },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D,
+                    fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+                        stride: (1, 1), padding: (0, 0),
+                        output_padding: (0, 0), dilation: (1, 1), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 3, 3]),
                 dtype: DType::BF16,
