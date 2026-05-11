@@ -921,6 +921,73 @@ pub fn matmul_f32(
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, need_out))
 }
 
+/// CUTLASS bf16 matmul through the unified byte-storage substrate.
+/// Mirrors [`matmul_f32`]'s argument shape but routes through the
+/// alpha.13 `LayoutSku::Rrr` SKU in [`crate::cutlass::cutlass_matmul_bf16`]
+/// instead of cuBLAS — no row-major-via-col-major transpose trick is
+/// needed because CUTLASS Rrr already matches `Op::MatMul`'s
+/// activation-row-major @ weight-row-major shape.
+///
+/// Equal-batch coverage only: per-axis `lhs_batch_dims == rhs_batch_dims`.
+/// GQA (per-axis broadcast with `lhs % rhs == 0`) is rejected and the
+/// caller should split it upstream — `BatchedGemmPlan` (Phase B6) is
+/// the natural follow-on for native batched dispatch.
+pub fn matmul_bf16(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    lhs_batch_dims: &[usize],
+    rhs_batch_dims: &[usize],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<CudaStorageBytes> {
+    if lhs_batch_dims.len() != rhs_batch_dims.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "matmul_bf16: batch ranks must match (lhs={}, rhs={})",
+            lhs_batch_dims.len(),
+            rhs_batch_dims.len(),
+        ))
+        .bt());
+    }
+    for (i, (&la, &ra)) in lhs_batch_dims.iter().zip(rhs_batch_dims.iter()).enumerate() {
+        if la != ra {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "matmul_bf16: GQA / broadcast batch (axis {i}: lhs={la}, rhs={ra}) \
+                 not supported yet on the CUTLASS bf16 path; split upstream or \
+                 wait for BatchedGemmPlan (Phase B6)",
+            ))
+            .bt());
+        }
+    }
+    let elem = std::mem::size_of::<half::bf16>();
+    let lhs_per_batch = m.saturating_mul(k);
+    let rhs_per_batch = k.saturating_mul(n);
+    let batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+    let need_lhs = batch_count
+        .saturating_mul(lhs_per_batch)
+        .saturating_mul(elem);
+    let need_rhs = batch_count
+        .saturating_mul(rhs_per_batch)
+        .saturating_mul(elem);
+    if lhs.len_bytes() != need_lhs {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "matmul_bf16: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (bf16)",
+            lhs.len_bytes(),
+            lhs_batch_dims,
+        ))
+        .bt());
+    }
+    if rhs.len_bytes() != need_rhs {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "matmul_bf16: rhs bytes={} doesn't match shape {:?} + [{k}, {n}] (bf16)",
+            rhs.len_bytes(),
+            rhs_batch_dims,
+        ))
+        .bt());
+    }
+    crate::cutlass::cutlass_matmul_bf16(lhs, rhs, batch_count, m, n, k)
+}
+
 /// Element-wise affine `y = mul * x + add` for one F32 `CudaStorageBytes`.
 /// Backs `OpKind::Affine` (and is the building block `mean_reduce_f32`
 /// uses for its post-sum scaling step). The legacy `Affine` struct
