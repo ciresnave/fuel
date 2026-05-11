@@ -21,11 +21,12 @@
 
 use std::sync::Arc;
 
-use baracuda_driver::DeviceBuffer;
+use baracuda_driver::{DeviceBuffer, DeviceSlice};
+use baracuda_types::DeviceRepr;
 use fuel_core_types::backend::BackendStorage;
 use fuel_core_types::Result;
 
-use crate::error::WrapErr;
+use crate::error::{CudaError, WrapErr};
 use crate::CudaDevice;
 
 /// Byte-shaped CUDA storage. Holds a raw `DeviceBuffer<u8>` (CUDA-
@@ -71,6 +72,27 @@ impl CudaStorageBytes {
     /// Total byte count.
     pub fn len_bytes(&self) -> usize {
         self.len_bytes
+    }
+
+    /// Reinterpret the byte buffer as a typed `DeviceSlice<T>` view.
+    /// The seam used by CUTLASS-backed kernels (and any future safe-API
+    /// CUDA library that takes typed slices) to consume the
+    /// dtype-erased byte substrate. Returns
+    /// [`CudaError::InvalidDtypeBoundary`] when the byte length is not
+    /// an integer multiple of `size_of::<T>()`. The returned slice
+    /// borrows from `self`; `cuMemAlloc`'s 256-byte alignment satisfies
+    /// any `DeviceRepr` we ship.
+    pub fn view_as<T: DeviceRepr>(&self) -> Result<DeviceSlice<'_, T>> {
+        let elem = std::mem::size_of::<T>();
+        if elem != 0 && self.len_bytes % elem != 0 {
+            return Err(CudaError::InvalidDtypeBoundary {
+                byte_len: self.len_bytes,
+                dtype_size: elem,
+                dtype_name: std::any::type_name::<T>(),
+            }
+            .into());
+        }
+        Ok(self.buffer.view_as::<T>())
     }
 
     /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` zero-

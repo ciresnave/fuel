@@ -31,6 +31,15 @@ pub enum CudaError {
     #[error("unsupported dtype {dtype:?} for {op}")]
     UnsupportedDtype { dtype: DType, op: &'static str },
 
+    #[error(
+        "cannot view {byte_len} bytes as {dtype_name}: byte length not divisible by size_of::<{dtype_name}>() = {dtype_size}"
+    )]
+    InvalidDtypeBoundary {
+        byte_len: usize,
+        dtype_size: usize,
+        dtype_name: &'static str,
+    },
+
     #[error("internal error '{0}'")]
     InternalError(&'static str),
 
