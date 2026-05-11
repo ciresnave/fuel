@@ -98,66 +98,63 @@ binary_kernel!(div_f64, f64, |a: f64, b: f64| a / b, "Elementwise `f64` division
 // Elementwise unary kernels (f32)
 // =============================================================================
 
-/// Generate a unary kernel parameterized over the element type `$T`:
-/// `out[i] = op(input[i])`.
+/// Generate a public unary-kernel entry point as a thin thunk over
+/// the chassis. Op marker `$Op` lives in [`crate::chassis::unary`]
+/// (e.g. `Relu`, `Sqr`, `GeluTanh`); per-precision math lives there
+/// once and the four dtype impls fall out of the chassis's blanket
+/// `UnaryOp<T>` impls.
 ///
-/// Output is pre-allocated by the caller and must match the input
-/// byte length.
-macro_rules! unary_kernel {
-    ($name:ident, $T:ty, $op:expr, $doc:literal) => {
-        #[doc = $doc]
-        pub fn $name(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
-            check_lens_2(stringify!($name), input.len_bytes(), out.len_bytes())?;
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = out.as_slice_mut()?;
-            let op: fn($T) -> $T = $op;
-            for (i, slot) in out_view.iter_mut().enumerate() {
-                *slot = op(in_view[i]);
-            }
-            Ok(())
+/// Pre-chassis surface used closure-based macros (`unary_kernel!`,
+/// `unary_f32_kernel!`) carrying the op math inline at each call
+/// site. The thunk macro replaces both; per-function docstrings
+/// from the old form moved to the op-marker definitions in the
+/// chassis module.
+macro_rules! unary_thunk {
+    ($name:ident, $T:ty, $Op:ident) => {
+        pub fn $name(
+            input: &CpuStorageBytes,
+            output: &mut CpuStorageBytes,
+        ) -> Result<()> {
+            crate::chassis::unary::unary::<$T, crate::chassis::unary::$Op>(
+                stringify!($name), input, output,
+            )
         }
     };
 }
 
-/// Backward-compat alias for the previous `unary_f32_kernel!`
-/// invocations.
-macro_rules! unary_f32_kernel {
-    ($name:ident, $op:expr, $doc:literal) => {
-        unary_kernel!($name, f32, $op, $doc);
-    };
-}
+// Base unary set — Relu / Neg / Sqr / Sqrt / Recip / Abs / Tanh /
+// Exp / Log / Sin / Cos / Sigmoid / Silu / Step — across f32 + f64.
+// The bf16 / f16 mirrors live in their own dtype-grouped section
+// below (the chassis's blanket impls route them through f32).
+unary_thunk!(relu_f32, f32, Relu);
+unary_thunk!(neg_f32, f32, Neg);
+unary_thunk!(sqr_f32, f32, Sqr);
+unary_thunk!(sqrt_f32, f32, Sqrt);
+unary_thunk!(recip_f32, f32, Recip);
+unary_thunk!(abs_f32, f32, Abs);
+unary_thunk!(tanh_f32, f32, Tanh);
+unary_thunk!(exp_f32, f32, Exp);
+unary_thunk!(log_f32, f32, Log);
+unary_thunk!(sin_f32, f32, Sin);
+unary_thunk!(cos_f32, f32, Cos);
+unary_thunk!(sigmoid_f32, f32, Sigmoid);
+unary_thunk!(silu_f32, f32, Silu);
+unary_thunk!(step_f32, f32, Step);
 
-unary_f32_kernel!(relu_f32, |x| x.max(0.0), "Elementwise `f32` ReLU: `out[i] = max(0, input[i])`.");
-unary_f32_kernel!(neg_f32, |x| -x, "Elementwise `f32` negation: `out[i] = -input[i]`.");
-unary_f32_kernel!(sqr_f32, |x| x * x, "Elementwise `f32` square: `out[i] = input[i] * input[i]`.");
-unary_f32_kernel!(sqrt_f32, |x| x.sqrt(), "Elementwise `f32` square root: `out[i] = sqrt(input[i])`. Negative inputs yield NaN per IEEE-754.");
-unary_f32_kernel!(recip_f32, |x| 1.0 / x, "Elementwise `f32` reciprocal: `out[i] = 1 / input[i]`. Zero input yields IEEE-754 inf/NaN.");
-unary_f32_kernel!(abs_f32, |x: f32| x.abs(), "Elementwise `f32` absolute value: `out[i] = |input[i]|`.");
-unary_f32_kernel!(tanh_f32, |x: f32| x.tanh(), "Elementwise `f32` hyperbolic tangent: `out[i] = tanh(input[i])`.");
-unary_f32_kernel!(exp_f32, |x: f32| x.exp(), "Elementwise `f32` exponential: `out[i] = e^input[i]`.");
-unary_f32_kernel!(log_f32, |x: f32| x.ln(), "Elementwise `f32` natural log: `out[i] = ln(input[i])`. Negative inputs yield NaN per IEEE-754.");
-unary_f32_kernel!(sin_f32, |x: f32| x.sin(), "Elementwise `f32` sine: `out[i] = sin(input[i])`.");
-unary_f32_kernel!(cos_f32, |x: f32| x.cos(), "Elementwise `f32` cosine: `out[i] = cos(input[i])`.");
-unary_f32_kernel!(sigmoid_f32, |x: f32| 1.0 / (1.0 + (-x).exp()), "Elementwise `f32` logistic sigmoid: `out[i] = 1 / (1 + exp(-input[i]))`.");
-unary_f32_kernel!(silu_f32, |x: f32| x / (1.0 + (-x).exp()), "Elementwise `f32` SiLU/Swish: `out[i] = input[i] * sigmoid(input[i])`.");
-unary_f32_kernel!(step_f32, |x: f32| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f32` Heaviside step: `out[i] = 1` where `input[i] > 0`, `0` otherwise.");
-
-// f64 mirrors of the unary set above. Each is a one-liner via the
-// parametric `unary_kernel!` macro.
-unary_kernel!(relu_f64, f64, |x: f64| x.max(0.0), "Elementwise `f64` ReLU.");
-unary_kernel!(neg_f64, f64, |x: f64| -x, "Elementwise `f64` negation.");
-unary_kernel!(sqr_f64, f64, |x: f64| x * x, "Elementwise `f64` square.");
-unary_kernel!(sqrt_f64, f64, |x: f64| x.sqrt(), "Elementwise `f64` square root.");
-unary_kernel!(recip_f64, f64, |x: f64| 1.0 / x, "Elementwise `f64` reciprocal.");
-unary_kernel!(abs_f64, f64, |x: f64| x.abs(), "Elementwise `f64` absolute value.");
-unary_kernel!(tanh_f64, f64, |x: f64| x.tanh(), "Elementwise `f64` hyperbolic tangent.");
-unary_kernel!(exp_f64, f64, |x: f64| x.exp(), "Elementwise `f64` exponential.");
-unary_kernel!(log_f64, f64, |x: f64| x.ln(), "Elementwise `f64` natural log.");
-unary_kernel!(sin_f64, f64, |x: f64| x.sin(), "Elementwise `f64` sine.");
-unary_kernel!(cos_f64, f64, |x: f64| x.cos(), "Elementwise `f64` cosine.");
-unary_kernel!(sigmoid_f64, f64, |x: f64| 1.0 / (1.0 + (-x).exp()), "Elementwise `f64` logistic sigmoid.");
-unary_kernel!(silu_f64, f64, |x: f64| x / (1.0 + (-x).exp()), "Elementwise `f64` SiLU/Swish.");
-unary_kernel!(step_f64, f64, |x: f64| if x > 0.0 { 1.0 } else { 0.0 }, "Elementwise `f64` Heaviside step.");
+unary_thunk!(relu_f64, f64, Relu);
+unary_thunk!(neg_f64, f64, Neg);
+unary_thunk!(sqr_f64, f64, Sqr);
+unary_thunk!(sqrt_f64, f64, Sqrt);
+unary_thunk!(recip_f64, f64, Recip);
+unary_thunk!(abs_f64, f64, Abs);
+unary_thunk!(tanh_f64, f64, Tanh);
+unary_thunk!(exp_f64, f64, Exp);
+unary_thunk!(log_f64, f64, Log);
+unary_thunk!(sin_f64, f64, Sin);
+unary_thunk!(cos_f64, f64, Cos);
+unary_thunk!(sigmoid_f64, f64, Sigmoid);
+unary_thunk!(silu_f64, f64, Silu);
+unary_thunk!(step_f64, f64, Step);
 
 // f64 versions of the binary extrema (Maximum/Minimum). The f32
 // versions sit later in the file (in the scalar/clamp/extrema
@@ -186,34 +183,21 @@ binary_kernel!(div_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::
 binary_kernel!(maximum_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().max(b.to_f32())), "Elementwise `bf16` maximum (via f32).");
 binary_kernel!(minimum_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().min(b.to_f32())), "Elementwise `bf16` minimum (via f32).");
 
-unary_kernel!(relu_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().max(0.0)), "Elementwise `bf16` ReLU (via f32).");
-unary_kernel!(neg_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(-x.to_f32()), "Elementwise `bf16` negation (via f32).");
-unary_kernel!(sqr_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(f * f) }, "Elementwise `bf16` square (via f32).");
-unary_kernel!(sqrt_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().sqrt()), "Elementwise `bf16` square root (via f32).");
-unary_kernel!(recip_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(1.0 / x.to_f32()), "Elementwise `bf16` reciprocal (via f32).");
-unary_kernel!(abs_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().abs()), "Elementwise `bf16` absolute value (via f32).");
-unary_kernel!(tanh_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().tanh()), "Elementwise `bf16` hyperbolic tangent (via f32).");
-unary_kernel!(exp_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().exp()), "Elementwise `bf16` exponential (via f32).");
-unary_kernel!(log_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().ln()), "Elementwise `bf16` natural log (via f32).");
-unary_kernel!(sin_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().sin()), "Elementwise `bf16` sine (via f32).");
-unary_kernel!(cos_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().cos()), "Elementwise `bf16` cosine (via f32).");
-unary_kernel!(sigmoid_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(1.0 / (1.0 + (-f).exp())) }, "Elementwise `bf16` logistic sigmoid (via f32).");
-unary_kernel!(silu_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(f / (1.0 + (-f).exp())) }, "Elementwise `bf16` SiLU/Swish (via f32).");
-unary_kernel!(step_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(if x.to_f32() > 0.0 { 1.0 } else { 0.0 }), "Elementwise `bf16` Heaviside step (via f32).");
-
-/// `bf16` GELU using the tanh approximation (mirror of [`gelu_f32`]).
-pub fn gelu_bf16(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
-    check_lens_2("gelu_bf16", input.len_bytes(), out.len_bytes())?;
-    let in_view: &[half::bf16] = input.as_slice()?;
-    let out_view: &mut [half::bf16] = out.as_slice_mut()?;
-    const COEFF: f32 = 0.797_884_56;
-    for (i, slot) in out_view.iter_mut().enumerate() {
-        let x = in_view[i].to_f32();
-        let inner = COEFF * (x + 0.044_715 * x * x * x);
-        *slot = half::bf16::from_f32(0.5 * x * (1.0 + inner.tanh()));
-    }
-    Ok(())
-}
+unary_thunk!(relu_bf16, half::bf16, Relu);
+unary_thunk!(neg_bf16, half::bf16, Neg);
+unary_thunk!(sqr_bf16, half::bf16, Sqr);
+unary_thunk!(sqrt_bf16, half::bf16, Sqrt);
+unary_thunk!(recip_bf16, half::bf16, Recip);
+unary_thunk!(abs_bf16, half::bf16, Abs);
+unary_thunk!(tanh_bf16, half::bf16, Tanh);
+unary_thunk!(exp_bf16, half::bf16, Exp);
+unary_thunk!(log_bf16, half::bf16, Log);
+unary_thunk!(sin_bf16, half::bf16, Sin);
+unary_thunk!(cos_bf16, half::bf16, Cos);
+unary_thunk!(sigmoid_bf16, half::bf16, Sigmoid);
+unary_thunk!(silu_bf16, half::bf16, Silu);
+unary_thunk!(step_bf16, half::bf16, Step);
+unary_thunk!(gelu_bf16, half::bf16, GeluTanh);
 
 // f16 mirrors of the bf16 set above. Identical patterns; only the
 // concrete type differs.
@@ -225,34 +209,21 @@ binary_kernel!(div_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_
 binary_kernel!(maximum_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().max(b.to_f32())), "Elementwise `f16` maximum (via f32).");
 binary_kernel!(minimum_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().min(b.to_f32())), "Elementwise `f16` minimum (via f32).");
 
-unary_kernel!(relu_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().max(0.0)), "Elementwise `f16` ReLU (via f32).");
-unary_kernel!(neg_f16, half::f16, |x: half::f16| half::f16::from_f32(-x.to_f32()), "Elementwise `f16` negation (via f32).");
-unary_kernel!(sqr_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(f * f) }, "Elementwise `f16` square (via f32).");
-unary_kernel!(sqrt_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().sqrt()), "Elementwise `f16` square root (via f32).");
-unary_kernel!(recip_f16, half::f16, |x: half::f16| half::f16::from_f32(1.0 / x.to_f32()), "Elementwise `f16` reciprocal (via f32).");
-unary_kernel!(abs_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().abs()), "Elementwise `f16` absolute value (via f32).");
-unary_kernel!(tanh_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().tanh()), "Elementwise `f16` hyperbolic tangent (via f32).");
-unary_kernel!(exp_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().exp()), "Elementwise `f16` exponential (via f32).");
-unary_kernel!(log_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().ln()), "Elementwise `f16` natural log (via f32).");
-unary_kernel!(sin_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().sin()), "Elementwise `f16` sine (via f32).");
-unary_kernel!(cos_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().cos()), "Elementwise `f16` cosine (via f32).");
-unary_kernel!(sigmoid_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(1.0 / (1.0 + (-f).exp())) }, "Elementwise `f16` logistic sigmoid (via f32).");
-unary_kernel!(silu_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(f / (1.0 + (-f).exp())) }, "Elementwise `f16` SiLU/Swish (via f32).");
-unary_kernel!(step_f16, half::f16, |x: half::f16| half::f16::from_f32(if x.to_f32() > 0.0 { 1.0 } else { 0.0 }), "Elementwise `f16` Heaviside step (via f32).");
-
-/// `f16` GELU using the tanh approximation (mirror of [`gelu_f32`]).
-pub fn gelu_f16(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
-    check_lens_2("gelu_f16", input.len_bytes(), out.len_bytes())?;
-    let in_view: &[half::f16] = input.as_slice()?;
-    let out_view: &mut [half::f16] = out.as_slice_mut()?;
-    const COEFF: f32 = 0.797_884_56;
-    for (i, slot) in out_view.iter_mut().enumerate() {
-        let x = in_view[i].to_f32();
-        let inner = COEFF * (x + 0.044_715 * x * x * x);
-        *slot = half::f16::from_f32(0.5 * x * (1.0 + inner.tanh()));
-    }
-    Ok(())
-}
+unary_thunk!(relu_f16, half::f16, Relu);
+unary_thunk!(neg_f16, half::f16, Neg);
+unary_thunk!(sqr_f16, half::f16, Sqr);
+unary_thunk!(sqrt_f16, half::f16, Sqrt);
+unary_thunk!(recip_f16, half::f16, Recip);
+unary_thunk!(abs_f16, half::f16, Abs);
+unary_thunk!(tanh_f16, half::f16, Tanh);
+unary_thunk!(exp_f16, half::f16, Exp);
+unary_thunk!(log_f16, half::f16, Log);
+unary_thunk!(sin_f16, half::f16, Sin);
+unary_thunk!(cos_f16, half::f16, Cos);
+unary_thunk!(sigmoid_f16, half::f16, Sigmoid);
+unary_thunk!(silu_f16, half::f16, Silu);
+unary_thunk!(step_f16, half::f16, Step);
+unary_thunk!(gelu_f16, half::f16, GeluTanh);
 
 // =============================================================================
 // Elementwise comparison kernels — typed input, U8 output
@@ -391,15 +362,15 @@ where_kernel!(where_f16, half::f16, "Ternary select on `f16`.");
 // stable since Rust 1.77). The bf16/f16 variants widen to f32 first since
 // the half crate doesn't expose roundeven natively.
 
-unary_f32_kernel!(floor_f32, |x: f32| x.floor(), "Elementwise `f32` floor: `out[i] = ⌊input[i]⌋`.");
-unary_kernel!(floor_f64, f64, |x: f64| x.floor(), "Elementwise `f64` floor.");
-unary_kernel!(floor_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().floor()), "Elementwise `bf16` floor (via f32).");
-unary_kernel!(floor_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().floor()), "Elementwise `f16` floor (via f32).");
+unary_thunk!(floor_f32, f32, Floor);
+unary_thunk!(floor_f64, f64, Floor);
+unary_thunk!(floor_bf16, half::bf16, Floor);
+unary_thunk!(floor_f16, half::f16, Floor);
 
-unary_f32_kernel!(ceil_f32, |x: f32| x.ceil(), "Elementwise `f32` ceiling: `out[i] = ⌈input[i]⌉`.");
-unary_kernel!(ceil_f64, f64, |x: f64| x.ceil(), "Elementwise `f64` ceiling.");
-unary_kernel!(ceil_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().ceil()), "Elementwise `bf16` ceiling (via f32).");
-unary_kernel!(ceil_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().ceil()), "Elementwise `f16` ceiling (via f32).");
+unary_thunk!(ceil_f32, f32, Ceil);
+unary_thunk!(ceil_f64, f64, Ceil);
+unary_thunk!(ceil_bf16, half::bf16, Ceil);
+unary_thunk!(ceil_f16, half::f16, Ceil);
 
 // Round uses **banker's rounding** (IEEE 754 roundeven / round-half-to-
 // even), via stable `f32::round_ties_even` / `f64::round_ties_even`
@@ -407,36 +378,25 @@ unary_kernel!(ceil_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32()
 // default and matches PyTorch's `torch.round`. It differs from
 // `f32::round` (half-away-from-zero) at exact halves: 0.5 → 0 (not 1),
 // 1.5 → 2, 2.5 → 2 (not 3), 3.5 → 4, etc.
-unary_f32_kernel!(round_f32, |x: f32| x.round_ties_even(), "Elementwise `f32` round-half-to-even (banker's rounding, IEEE 754 roundeven).");
-unary_kernel!(round_f64, f64, |x: f64| x.round_ties_even(), "Elementwise `f64` round-half-to-even.");
-unary_kernel!(round_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(x.to_f32().round_ties_even()), "Elementwise `bf16` round-half-to-even (via f32).");
-unary_kernel!(round_f16, half::f16, |x: half::f16| half::f16::from_f32(x.to_f32().round_ties_even()), "Elementwise `f16` round-half-to-even (via f32).");
+unary_thunk!(round_f32, f32, Round);
+unary_thunk!(round_f64, f64, Round);
+unary_thunk!(round_bf16, half::bf16, Round);
+unary_thunk!(round_f16, half::f16, Round);
 
-// Sign function: -1 / 0 / 1 by sign of input. `sign(0)` = 0 by
-// convention (subgradient of `|x|` at the origin). `f32::signum`
-// returns +1 for +0 and -1 for -0; we special-case zero to match the
-// math convention that the reference impl uses.
-unary_f32_kernel!(sign_f32, |x: f32| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }, "Elementwise `f32` sign: -1 / 0 / 1; sign(0) = 0 by subgradient convention.");
-unary_kernel!(sign_f64, f64, |x: f64| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }, "Elementwise `f64` sign.");
-unary_kernel!(sign_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(if f > 0.0 { 1.0 } else if f < 0.0 { -1.0 } else { 0.0 }) }, "Elementwise `bf16` sign (via f32).");
-unary_kernel!(sign_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(if f > 0.0 { 1.0 } else if f < 0.0 { -1.0 } else { 0.0 }) }, "Elementwise `f16` sign (via f32).");
+unary_thunk!(sign_f32, f32, Sign);
+unary_thunk!(sign_f64, f64, Sign);
+unary_thunk!(sign_bf16, half::bf16, Sign);
+unary_thunk!(sign_f16, half::f16, Sign);
 
-// Gauss error function. f32 uses `libm::erff` (single precision); f64
-// uses `libm::erf`. bf16/f16 widen to f32 and use `erff`. libm gives
-// correctly-rounded results within its published bound (typically ≤1
-// ULP for `erff`/`erf`).
-unary_f32_kernel!(erf_f32, |x: f32| libm::erff(x), "Elementwise `f32` Gauss error function via libm::erff.");
-unary_kernel!(erf_f64, f64, |x: f64| libm::erf(x), "Elementwise `f64` Gauss error function via libm::erf.");
-unary_kernel!(erf_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(libm::erff(x.to_f32())), "Elementwise `bf16` Gauss error function (via f32).");
-unary_kernel!(erf_f16, half::f16, |x: half::f16| half::f16::from_f32(libm::erff(x.to_f32())), "Elementwise `f16` Gauss error function (via f32).");
+unary_thunk!(erf_f32, f32, Erf);
+unary_thunk!(erf_f64, f64, Erf);
+unary_thunk!(erf_bf16, half::bf16, Erf);
+unary_thunk!(erf_f16, half::f16, Erf);
 
-// GELU exact-erf formulation: `0.5 * x * (1 + erf(x/√2))`.
-// Distinct from the existing `gelu_*` (tanh approximation). The
-// 1/√2 constant is `std::f32::consts::FRAC_1_SQRT_2` (0.7071067...).
-unary_f32_kernel!(gelu_erf_f32, |x: f32| 0.5 * x * (1.0 + libm::erff(x * std::f32::consts::FRAC_1_SQRT_2)), "Elementwise `f32` GELU (exact erf form): `0.5 * x * (1 + erf(x/√2))`.");
-unary_kernel!(gelu_erf_f64, f64, |x: f64| 0.5 * x * (1.0 + libm::erf(x * std::f64::consts::FRAC_1_SQRT_2)), "Elementwise `f64` GELU (exact erf form).");
-unary_kernel!(gelu_erf_bf16, half::bf16, |x: half::bf16| { let f = x.to_f32(); half::bf16::from_f32(0.5 * f * (1.0 + libm::erff(f * std::f32::consts::FRAC_1_SQRT_2))) }, "Elementwise `bf16` GELU (exact erf form, via f32).");
-unary_kernel!(gelu_erf_f16, half::f16, |x: half::f16| { let f = x.to_f32(); half::f16::from_f32(0.5 * f * (1.0 + libm::erff(f * std::f32::consts::FRAC_1_SQRT_2))) }, "Elementwise `f16` GELU (exact erf form, via f32).");
+unary_thunk!(gelu_erf_f32, f32, GeluErf);
+unary_thunk!(gelu_erf_f64, f64, GeluErf);
+unary_thunk!(gelu_erf_bf16, half::bf16, GeluErf);
+unary_thunk!(gelu_erf_f16, half::f16, GeluErf);
 
 // Binary pow with real exponent. `f32::powf` / `f64::powf` are
 // stdlib; bf16/f16 widen to f32. NaN follows IEEE-754 (e.g.
@@ -451,10 +411,10 @@ binary_kernel!(pow_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_
 // it as one op (rather than Sqrt + Recip) saves one kernel launch and
 // matches the RMSNorm pattern that drives the demand. Negative inputs
 // give NaN per IEEE.
-unary_f32_kernel!(rsqrt_f32, |x: f32| 1.0 / x.sqrt(), "Elementwise `f32` reciprocal square root: `out[i] = 1 / sqrt(input[i])`.");
-unary_kernel!(rsqrt_f64, f64, |x: f64| 1.0 / x.sqrt(), "Elementwise `f64` reciprocal square root.");
-unary_kernel!(rsqrt_bf16, half::bf16, |x: half::bf16| half::bf16::from_f32(1.0 / x.to_f32().sqrt()), "Elementwise `bf16` reciprocal square root (via f32).");
-unary_kernel!(rsqrt_f16, half::f16, |x: half::f16| half::f16::from_f32(1.0 / x.to_f32().sqrt()), "Elementwise `f16` reciprocal square root (via f32).");
+unary_thunk!(rsqrt_f32, f32, Rsqrt);
+unary_thunk!(rsqrt_f64, f64, Rsqrt);
+unary_thunk!(rsqrt_bf16, half::bf16, Rsqrt);
+unary_thunk!(rsqrt_f16, half::f16, Rsqrt);
 
 // Remainder, PyTorch convention: `a - floor(a/b) * b`. Sign of result
 // matches sign of divisor — distinct from `f32::%` (C99 fmod, sign of
@@ -4237,7 +4197,7 @@ conv_transpose2d_half_kernel!(conv_transpose2d_f16, half::f16);
 // =============================================================================
 // ReduceSumTo / ReduceMaxTo — sum / max to a broadcast-compatible
 // target shape. All 8 entries (2 ops × 4 dtypes) are thunks over
-// [`crate::chassis::reduction::reduce_to`].
+// [`reduce_to`].
 // =============================================================================
 //
 // Shape contract (preserved verbatim from the pre-chassis macros):
@@ -4255,7 +4215,7 @@ pub fn reduce_sum_to_f32(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<f32, Sum>(
+    reduce_to::<f32, Sum>(
         "reduce_sum_to_f32", input, output, input_shape, output_shape,
     )
 }
@@ -4267,7 +4227,7 @@ pub fn reduce_sum_to_f64(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<f64, Sum>(
+    reduce_to::<f64, Sum>(
         "reduce_sum_to_f64", input, output, input_shape, output_shape,
     )
 }
@@ -4280,7 +4240,7 @@ pub fn reduce_sum_to_bf16(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<half::bf16, Sum>(
+    reduce_to::<half::bf16, Sum>(
         "reduce_sum_to_bf16", input, output, input_shape, output_shape,
     )
 }
@@ -4293,7 +4253,7 @@ pub fn reduce_sum_to_f16(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<half::f16, Sum>(
+    reduce_to::<half::f16, Sum>(
         "reduce_sum_to_f16", input, output, input_shape, output_shape,
     )
 }
@@ -4305,7 +4265,7 @@ pub fn reduce_max_to_f32(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<f32, Max>(
+    reduce_to::<f32, Max>(
         "reduce_max_to_f32", input, output, input_shape, output_shape,
     )
 }
@@ -4317,7 +4277,7 @@ pub fn reduce_max_to_f64(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<f64, Max>(
+    reduce_to::<f64, Max>(
         "reduce_max_to_f64", input, output, input_shape, output_shape,
     )
 }
@@ -4330,7 +4290,7 @@ pub fn reduce_max_to_bf16(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<half::bf16, Max>(
+    reduce_to::<half::bf16, Max>(
         "reduce_max_to_bf16", input, output, input_shape, output_shape,
     )
 }
@@ -4342,7 +4302,7 @@ pub fn reduce_max_to_f16(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<()> {
-    crate::chassis::reduction::reduce_to::<half::f16, Max>(
+    reduce_to::<half::f16, Max>(
         "reduce_max_to_f16", input, output, input_shape, output_shape,
     )
 }
@@ -5658,39 +5618,13 @@ pub fn argmin_dim_f32(
     )
 }
 
-/// Elementwise GELU using the tanh approximation:
-/// `out[i] = 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x^3)))`.
-///
-/// Matches `Op::Gelu`'s tanh-approximation semantics in fuel-graph.
-pub fn gelu_f32(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
-    check_lens_2("gelu_f32", input.len_bytes(), out.len_bytes())?;
-    let in_view: &[f32] = input.as_slice()?;
-    let out_view: &mut [f32] = out.as_slice_mut()?;
-    // √(2/π) ≈ 0.7978845608
-    const COEFF: f32 = 0.797_884_56;
-    for (i, slot) in out_view.iter_mut().enumerate() {
-        let x = in_view[i];
-        let inner = COEFF * (x + 0.044_715 * x * x * x);
-        *slot = 0.5 * x * (1.0 + inner.tanh());
-    }
-    Ok(())
-}
-
-/// f64 mirror of [`gelu_f32`]. Kept hand-rolled for the same
-/// reason — the inner expression is more than a single arithmetic
-/// step so the macro form doesn't quite fit.
-pub fn gelu_f64(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
-    check_lens_2("gelu_f64", input.len_bytes(), out.len_bytes())?;
-    let in_view: &[f64] = input.as_slice()?;
-    let out_view: &mut [f64] = out.as_slice_mut()?;
-    const COEFF: f64 = 0.797_884_560_802_865_4;
-    for (i, slot) in out_view.iter_mut().enumerate() {
-        let x = in_view[i];
-        let inner = COEFF * (x + 0.044_715 * x * x * x);
-        *slot = 0.5 * x * (1.0 + inner.tanh());
-    }
-    Ok(())
-}
+// GELU (tanh approximation) — see chassis::unary::GeluTanh. The f64
+// variant uses a 16-digit coefficient for √(2/π); the f32 variant
+// uses a 7-digit coefficient. bf16 / f16 route through f32 via the
+// chassis's blanket bf16 / f16 impls (see gelu_bf16 / gelu_f16
+// thunks alongside the half-float unary set earlier in this file).
+unary_thunk!(gelu_f32, f32, GeluTanh);
+unary_thunk!(gelu_f64, f64, GeluTanh);
 
 #[cfg(test)]
 mod tests {

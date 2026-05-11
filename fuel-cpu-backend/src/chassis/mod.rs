@@ -11,3 +11,4 @@
 //! for the design rationale.
 
 pub mod reduction;
+pub mod unary;
