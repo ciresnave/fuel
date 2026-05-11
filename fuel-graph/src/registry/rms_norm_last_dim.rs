@@ -33,13 +33,12 @@ pub fn entry() -> FusedOpEntry {
         family:     FusedOpFamily::Norm,
         pattern:    SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        // Step 4 wires backward through the legacy
-        // `Op::RmsNormLastDimBackward { eps }` variant; the proper
-        // BackwardKind::Fused(RMS_NORM_LAST_DIM_BACKWARD) connection
-        // lands when the backward fused-op migrates in its own step-4
-        // commit. Until then `Tensor::backward` dispatches the
-        // `Op::Fused(RMS_NORM_LAST_DIM, _)` arm directly.
-        backward:   BackwardKind::NotDifferentiable,
+        // Phase 7.6 step 4 (backward-helper batch): the
+        // architecturally-correct BackwardKind::Fused edge is now
+        // live. `Tensor::backward`'s Op::Fused arm reads this and
+        // emits Op::Fused(RMS_NORM_LAST_DIM_BACKWARD, _) instead of
+        // the legacy variant.
+        backward:   BackwardKind::Fused(FusedOps::RMS_NORM_LAST_DIM_BACKWARD),
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
     }
