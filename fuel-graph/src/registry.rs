@@ -30,6 +30,7 @@ use crate::{Graph, NodeId};
 use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
+pub mod conv2d;
 pub mod fused_linear;
 pub mod layer_norm_last_dim;
 pub mod rms_norm_last_dim;
@@ -128,9 +129,19 @@ pub enum FusedOpParams {
     /// recovered from the inputs at execution time (see
     /// `fuel-storage::pipelined::op_to_op_params`).
     Rope,
-    // Step 4 (continued) extends this enum with: Conv2D { ... },
-    // ConvTranspose2D { ... }, FlashAttn { ... }, PagedAttn { ... },
-    // QMatMul { quant_type, k, n }, plus the four backward helpers.
+    /// Conv2D — 2-D cross-correlation with stride / padding / groups.
+    /// Spatial dilation is always 1 today; the field is omitted from
+    /// the param payload until backward's dilation-as-stride trick
+    /// forces the primitive variant to grow one (per the comments
+    /// in `Tensor::backward`'s `Op::Conv2D` arm).
+    Conv2D {
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    },
+    // Step 4 (continued) extends this enum with: ConvTranspose2D { ... },
+    // FlashAttn { ... }, PagedAttn { ... }, QMatMul { quant_type, k, n },
+    // plus the four backward helpers.
 }
 
 /// Hashable key for [`FusedOpParams`]. Used by `op_key`/CSE so that two
@@ -181,6 +192,20 @@ impl FusedOpParams {
                 tag: 5,
                 bits: Vec::new(),
                 ints: Vec::new(),
+            },
+            FusedOpParams::Conv2D { stride, padding, groups } => FusedOpParamsKey {
+                tag: 6,
+                bits: Vec::new(),
+                // Stride.{0,1}, padding.{0,1}, groups. Five i64 slots
+                // — enough that two Conv2D nodes with different
+                // strides or paddings hash to distinct CSE keys.
+                ints: vec![
+                    stride.0 as i64,
+                    stride.1 as i64,
+                    padding.0 as i64,
+                    padding.1 as i64,
+                    *groups as i64,
+                ],
             },
         }
     }
@@ -423,7 +448,11 @@ impl FusedOps {
     /// tables. Three inputs `[x, cos, sin]`, parameterless (the seq/
     /// head_dim shape parameters live in the input shapes).
     pub const ROPE: FusedOpId = FusedOpId(5);
-    // Step 4 (continued) adds: CONV2D, CONV_TRANSPOSE2D, FLASH_ATTN,
+    /// Conv2D — 2-D cross-correlation. Two or three inputs `[x,
+    /// weight]` or `[x, weight, bias]`; carries stride / padding /
+    /// groups in [`FusedOpParams::Conv2D`].
+    pub const CONV2D: FusedOpId = FusedOpId(6);
+    // Step 4 (continued) adds: CONV_TRANSPOSE2D, FLASH_ATTN,
     // PAGED_ATTN, QMATMUL, plus the 4 backward helpers.
 }
 
@@ -444,6 +473,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(rms_norm_last_dim::entry())
             .with_entry(layer_norm_last_dim::entry())
             .with_entry(rope::entry())
+            .with_entry(conv2d::entry())
     })
 }
 

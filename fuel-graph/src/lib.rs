@@ -2129,8 +2129,18 @@ impl Tensor {
         if let Some(b) = bias {
             inputs.push(b.id);
         }
+        // Phase 7.6 step 4 (continued): emit
+        // `Op::Fused(FusedOps::CONV2D, FusedOpParams::Conv2D { … })`
+        // through the registry-extended arm. The legacy
+        // `Op::Conv2D { … }` variant remains in the enum during
+        // migration (Conv2D's backward still constructs inner
+        // `Op::Fused(CONV2D, _)` nodes; the legacy variant is reached
+        // only by direct tests until step 5 drops it).
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Conv2D { stride, padding, groups },
+            op: Op::Fused(
+                crate::registry::FusedOps::CONV2D,
+                crate::registry::FusedOpParams::Conv2D { stride, padding, groups },
+            ),
             inputs,
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
             dtype,
@@ -6339,6 +6349,148 @@ impl Tensor {
                         accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
                         accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                         accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
+                    } else if fid == crate::registry::FusedOps::CONV2D {
+                        // Same backward formulation as the legacy
+                        // Op::Conv2D arm above. The inner Conv2D node
+                        // emitted for grad_w also goes through the
+                        // registry (Op::Fused(CONV2D, _)) so the
+                        // gradient subgraph routes consistently. The
+                        // ConvTranspose2D node stays as a primitive
+                        // variant until that op migrates in its own
+                        // step-4 commit.
+                        let (stride, padding, groups) = match params {
+                            crate::registry::FusedOpParams::Conv2D { stride, padding, groups } => {
+                                (stride, padding, groups)
+                            }
+                            _ => panic!(
+                                "Tensor::backward: Op::Fused(CONV2D, _) \
+                                 expected FusedOpParams::Conv2D, got {params:?}",
+                            ),
+                        };
+                        let x      = inputs[0];
+                        let weight = inputs[1];
+                        let x_shape = node_shape(&graph_handle, x);
+                        let w_shape = node_shape(&graph_handle, weight);
+                        let dtype = node_dtype(&graph_handle, x);
+
+                        // dX via transposed conv (see legacy arm for derivation).
+                        let x_dims = x_shape.dims();
+                        let w_dims = w_shape.dims();
+                        let dy_dims = node_shape(&graph_handle, id).dims().to_vec();
+                        let (sh, sw) = stride;
+                        let (ph, pw) = padding;
+                        let (kh, kw) = (w_dims[2], w_dims[3]);
+                        let (h_in, w_in) = (x_dims[2], x_dims[3]);
+                        let (dy_h, dy_w) = (dy_dims[2], dy_dims[3]);
+                        let base_h = (dy_h - 1) * sh + (kh - 1) + 1;
+                        let base_w = (dy_w - 1) * sw + (kw - 1) + 1;
+                        let want_h = h_in + 2 * ph;
+                        let want_w = w_in + 2 * pw;
+                        let out_pad_h = want_h.saturating_sub(base_h);
+                        let out_pad_w = want_w.saturating_sub(base_w);
+                        if groups != 1 {
+                            panic!(
+                                "Tensor::backward: Op::Fused(CONV2D) groups>1 \
+                                 backward not yet implemented (got groups={groups}). \
+                                 The stride/padding/groups=1 case is wired; grouped \
+                                 backward needs a per-group weight reshape.",
+                            );
+                        }
+                        let perm_01 = vec![1usize, 0, 2, 3];
+                        let grad_x = push_node(
+                            &graph_handle,
+                            Op::ConvTranspose2D {
+                                stride,
+                                padding,
+                                output_padding: (out_pad_h, out_pad_w),
+                                dilation: (1, 1),
+                                groups,
+                            },
+                            vec![up_id, weight],
+                            x_shape.clone(),
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+
+                        // dW via correlation expressed as a conv2d.
+                        if sh != 1 || sw != 1 {
+                            panic!(
+                                "Tensor::backward: Op::Fused(CONV2D) stride>1 \
+                                 backward not yet implemented (got stride={stride:?}). \
+                                 Conv2D needs a `dilation` field to express this \
+                                 without composing extra ops.",
+                            );
+                        }
+                        let x_swapped_shape = {
+                            let d = x_dims;
+                            Shape::from_dims(&[d[1], d[0], d[2], d[3]])
+                        };
+                        let x_swapped = push_node(
+                            &graph_handle,
+                            Op::Permute(perm_01.clone()),
+                            vec![x],
+                            x_swapped_shape,
+                            dtype,
+                        );
+                        let dy_swapped_shape = Shape::from_dims(&[
+                            dy_dims[1], dy_dims[0], dy_dims[2], dy_dims[3],
+                        ]);
+                        let dy_swapped = push_node(
+                            &graph_handle,
+                            Op::Permute(perm_01.clone()),
+                            vec![up_id],
+                            dy_swapped_shape,
+                            dtype,
+                        );
+                        let conv_out_shape = Shape::from_dims(&[
+                            w_dims[1], w_dims[0], w_dims[2], w_dims[3],
+                        ]);
+                        let grad_w_pre_transpose = push_node(
+                            &graph_handle,
+                            Op::Fused(
+                                crate::registry::FusedOps::CONV2D,
+                                crate::registry::FusedOpParams::Conv2D {
+                                    stride: (1, 1),
+                                    padding,
+                                    groups: 1,
+                                },
+                            ),
+                            vec![x_swapped, dy_swapped],
+                            conv_out_shape,
+                            dtype,
+                        );
+                        let grad_w = push_node(
+                            &graph_handle,
+                            Op::Permute(perm_01),
+                            vec![grad_w_pre_transpose],
+                            w_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, weight, grad_w, &graph_handle);
+
+                        // Bias (if present): sum dY over N, H, W via
+                        // ReduceSumTo([1, Cout, 1, 1]) then reshape to
+                        // [Cout]. Same path as the legacy arm.
+                        if inputs.len() >= 3 {
+                            let bias = inputs[2];
+                            let bias_shape = node_shape(&graph_handle, bias);
+                            let cout_4d = Shape::from_dims(&[1, dy_dims[1], 1, 1]);
+                            let reduced = push_node(
+                                &graph_handle,
+                                Op::ReduceSumTo(cout_4d.clone()),
+                                vec![up_id],
+                                cout_4d,
+                                dtype,
+                            );
+                            let grad_b = push_node(
+                                &graph_handle,
+                                Op::Reshape(bias_shape.clone()),
+                                vec![reduced],
+                                bias_shape,
+                                dtype,
+                            );
+                            accumulate_grad(&mut upstream, bias, grad_b, &graph_handle);
+                        }
                     } else {
                         panic!(
                             "Tensor::backward: Op::Fused id {fid:?} has no \

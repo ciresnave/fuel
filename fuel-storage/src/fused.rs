@@ -399,6 +399,82 @@ pub const FUSED_LINEAR_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
             bit-identical.",
 };
 
+/// Static cost model for `(CONV2D, Cpu)` kernels — FLOP + bandwidth
+/// per architecture v1.0 §"Layer-1 cost model."
+///
+/// Shapes: `[x, weight, (bias)]` where `x = [N, Cin, H, W]`,
+/// `weight = [Cout, Cin/groups, Kh, Kw]`, optional `bias = [Cout]`.
+/// The per-instance `FusedOpParams::Conv2D { stride, padding, groups }`
+/// supply the rest; output spatial dims are recomputed from input
+/// shape + params via the standard `(H + 2·pad - Kh) / stride + 1`.
+pub fn cost_conv2d_cpu(
+    shapes: &[Shape],
+    params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert!(
+        shapes.len() == 2 || shapes.len() == 3,
+        "Conv2D cost: expected 2 or 3 input shapes",
+    );
+    let (stride, padding, groups) = match params {
+        FusedOpParams::Conv2D { stride, padding, groups } => (*stride, *padding, *groups),
+        _ => return CostEstimate::default(),
+    };
+    let x_dims = shapes[0].dims();
+    let w_dims = shapes[1].dims();
+    if x_dims.len() != 4 || w_dims.len() != 4 || groups == 0 {
+        return CostEstimate::default();
+    }
+    let (n, cin, h_in, w_in) = (
+        x_dims[0] as u64, x_dims[1] as u64,
+        x_dims[2] as u64, x_dims[3] as u64,
+    );
+    let (cout, cin_per_g, kh, kw) = (
+        w_dims[0] as u64, w_dims[1] as u64,
+        w_dims[2] as u64, w_dims[3] as u64,
+    );
+    let (sh, sw) = (stride.0 as u64, stride.1 as u64);
+    let (ph, pw) = (padding.0 as u64, padding.1 as u64);
+    if sh == 0 || sw == 0 || kh > h_in + 2 * ph || kw > w_in + 2 * pw {
+        return CostEstimate::default();
+    }
+    let h_out = (h_in + 2 * ph - kh) / sh + 1;
+    let w_out = (w_in + 2 * pw - kw) / sw + 1;
+    // FMA counts as 2 FLOPs per (Cin/g · Kh · Kw) inner-product step,
+    // summed across N · Cout · Hout · Wout output positions. Bias-add
+    // contributes one FLOP per output element.
+    let conv_flops = 2u64 * n * cout * h_out * w_out * cin_per_g * kh * kw;
+    let bias_flops = if shapes.len() == 3 { n * cout * h_out * w_out } else { 0 };
+    let elems_in   = n * cin * h_in * w_in;
+    let elems_w    = cout * cin_per_g * kh * kw;
+    let elems_out  = n * cout * h_out * w_out;
+    let elems_bias = if shapes.len() == 3 { cout } else { 0 };
+    let bytes_moved = (elems_in + elems_w + elems_out + elems_bias) * 4;
+    CostEstimate {
+        flops: conv_flops + bias_flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee shared by every `(CONV2D, Cpu, *)` impl in
+/// fuel-cpu-backend: textbook nested-loop accumulation in F32 (F64
+/// kernels accumulate in F64; BF16/F16 upcast each multiply to F32
+/// and narrow at end), bit-identical re-run on same hardware.
+/// Same shape as [`FUSED_LINEAR_CPU_PRECISION`] — the conv kernel's
+/// numerical character is governed by the same "F32 accumulator,
+/// deterministic iteration order" properties.
+pub const CONV2D_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend Conv2D: textbook nested-loop \
+            cross-correlation; F32 accumulator (F64 for F64 input); \
+            BF16/F16 multiply in F32 and narrow at end; same-hardware \
+            re-run bit-identical.",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +602,84 @@ mod tests {
                 "CPU FusedLinear should be bit-stable on same hardware",
             );
         }
+    }
+
+    /// Step 6 (Conv2D extension) — `default_kernel_registry` populates
+    /// eight CPU Conv2D impls: four dtypes × {no-bias, with-bias}.
+    /// The route picker filters by the dtype tuple length to dispatch
+    /// the right variant per call site.
+    #[test]
+    fn default_kernel_registry_has_conv2d_cpu_octet() {
+        use fuel_graph::registry::FusedOps;
+
+        let r = default_kernel_registry();
+        let impls = r.impls_for(FusedOps::CONV2D);
+        assert_eq!(
+            impls.len(),
+            8,
+            "expected 8 Conv2D × Cpu × dtype × (no-bias|with-bias) \
+             registrations, got {}",
+            impls.len(),
+        );
+        for (backend, _) in impls {
+            assert_eq!(*backend, BackendId::Cpu);
+        }
+        // No-bias (rank-3) and with-bias (rank-4) lookups both hit per dtype.
+        for dtype in [DType::F32, DType::F64, DType::BF16, DType::F16] {
+            let no_bias = [dtype; 3];
+            let with_bias = [dtype; 4];
+            assert!(
+                r.lookup_by_dtypes(FusedOps::CONV2D, BackendId::Cpu, &no_bias).is_some(),
+                "lookup_by_dtypes missed Conv2D × Cpu × {dtype:?} (no-bias)",
+            );
+            let with_bias_impl = r.lookup_by_dtypes(
+                FusedOps::CONV2D, BackendId::Cpu, &with_bias,
+            );
+            assert!(
+                with_bias_impl.is_some(),
+                "lookup_by_dtypes missed Conv2D × Cpu × {dtype:?} (with-bias)",
+            );
+            let impl_ = with_bias_impl.unwrap();
+            assert!(
+                impl_.precision.bit_stable_on_same_hardware,
+                "CPU Conv2D should be bit-stable on same hardware",
+            );
+        }
+    }
+
+    /// Conv2D cost — FLOPs scale with `2·N·Cout·Hout·Wout·(Cin/g)·Kh·Kw`
+    /// + bias-add FLOPs (when bias is present).
+    #[test]
+    fn cost_conv2d_cpu_flops_scale() {
+        use crate::fused::cost_conv2d_cpu;
+        use fuel_core_types::DeviceLocation;
+        use std::collections::HashSet;
+
+        // x: [N=2, Cin=4, H=8, W=8], w: [Cout=6, Cin/g=4, Kh=3, Kw=3],
+        // stride=(1,1), padding=(1,1), groups=1.
+        // Hout = Wout = (8 + 2 - 3) + 1 = 8.
+        // Conv FLOPs (FMA = 2): 2·N·Cout·Hout·Wout·Cin_per_g·Kh·Kw
+        //                    = 2·2·6·8·8·4·3·3 = 55296.
+        // Bias FLOPs: N·Cout·Hout·Wout = 2·6·8·8 = 768.
+        let x = Shape::from_dims(&[2, 4, 8, 8]);
+        let w = Shape::from_dims(&[6, 4, 3, 3]);
+        let bias = Shape::from_dims(&[6]);
+        let caps = BackendCapabilities {
+            backend_id: BackendId::Cpu,
+            device_location: DeviceLocation::Cpu,
+            op_dtype_support: HashSet::new(),
+            required_alignment: 1,
+            access_granularity_bits: 8,
+            transfer_paths: vec![],
+        };
+        let params = FusedOpParams::Conv2D {
+            stride:  (1, 1),
+            padding: (1, 1),
+            groups:  1,
+        };
+        let c = cost_conv2d_cpu(&[x, w, bias], &params, &caps);
+        assert_eq!(c.flops, 55296 + 768);
+        assert!(c.bytes_moved > 0);
     }
 
     /// Cost model — FLOPs scale with 2·M·N·K + M·N, batch multiplies.

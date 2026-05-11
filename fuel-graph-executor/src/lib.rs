@@ -1344,6 +1344,66 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     }
                 }
             }
+            // Phase 7.6 step 4 (continued): registry-extended Conv2D
+            // shares the legacy variant's full dispatch logic — same
+            // symmetric-stride pre-screen, same backend.conv2d call,
+            // same bias-broadcast-add tail, same cpu_fallback. The
+            // step-9 binding-table refactor replaces both arms with a
+            // pre-resolved KernelRef from FusedKernelRegistry.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::CONV2D =>
+            {
+                let (stride, padding, groups) = match params {
+                    fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups } => {
+                        (*stride, *padding, *groups)
+                    }
+                    _ => panic!(
+                        "Op::Fused(CONV2D, _) expected \
+                         FusedOpParams::Conv2D, got {params:?}",
+                    ),
+                };
+                let input  = self.get_gt_c(inputs, 0, cache);
+                let weight = self.get_gt_c(inputs, 1, cache);
+                let symmetric = stride.0 == stride.1 && padding.0 == padding.1;
+                if !symmetric {
+                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                }
+                let conv_storage = match self.backend.conv2d(
+                    &input.storage, &weight.storage,
+                    &input.layout(), &weight.layout(),
+                    stride, padding, groups,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                };
+                if inputs.len() < 3 {
+                    conv_storage
+                } else {
+                    let bias = self.get_gt_c(inputs, 2, cache);
+                    let dims = shape.dims();
+                    let c_out = dims[1];
+                    let bias_layout_4d = Layout::contiguous(Shape::from_dims(&[1, c_out, 1, 1]));
+                    let bias_layout = match bias_layout_4d.broadcast_as(shape.clone()) {
+                        Ok(l) => l,
+                        Err(_) => {
+                            return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                        }
+                    };
+                    match self.backend.binary(
+                        BinaryOp::Add,
+                        &conv_storage, &bias.storage,
+                        &Layout::contiguous(shape),
+                        &bias_layout,
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                        }
+                    }
+                }
+            }
 
             // -- transposed convolution --
             //

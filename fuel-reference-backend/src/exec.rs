@@ -546,6 +546,22 @@ pub fn eval_node_with_op(
         Op::Conv2D { stride, padding, groups } => {
             eval_conv2d(*stride, *padding, *groups, inputs, cache)
         }
+        // Phase 7.6 step 4 (continued): registry-extended Conv2D
+        // dispatches to the same reference kernel.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::CONV2D =>
+        {
+            let (stride, padding, groups) = match params {
+                fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups } => {
+                    (*stride, *padding, *groups)
+                }
+                _ => panic!(
+                    "Op::Fused(CONV2D, _) expected \
+                     FusedOpParams::Conv2D, got {params:?}",
+                ),
+            };
+            eval_conv2d(stride, padding, groups, inputs, cache)
+        }
         Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
             eval_conv_transpose2d(*stride, *padding, *output_padding, *dilation, *groups, inputs, cache)
         }

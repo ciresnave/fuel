@@ -505,6 +505,11 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::MatMul        => Some(OpKind::MatMul),
         Op::Cast(_)       => Some(OpKind::Cast),
         Op::Conv2D { .. } => Some(OpKind::Conv2D),
+        // Phase 7.6 step 4 (continued): registry-extended Conv2D
+        // routes through the same OpKind::Conv2D binding.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV2D => {
+            Some(OpKind::Conv2D)
+        }
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::ReduceMaxTo(_) => Some(OpKind::ReduceMaxTo),
@@ -1322,7 +1327,12 @@ fn op_to_op_params(
         Op::MulScalar(c) => OpParams::Affine { mul: *c, add: 0.0 },
         Op::Clamp { min, max } => OpParams::Clamp { min: *min, max: *max },
         Op::PowI(exp) => OpParams::PowI { exp: *exp },
-        Op::Conv2D { stride, padding, groups } => {
+        // Phase 7.6 step 4 (continued): legacy `Op::Conv2D` and the
+        // registry-extended `Op::Fused(CONV2D, _)` share the same shape
+        // contract — 2 or 3 inputs, rank-4 x and weight — and recover
+        // x_shape/w_shape/out_shape identically from the layouts.
+        Op::Conv2D { stride, padding, groups }
+        | Op::Fused(_, fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups }) => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
             // [Cout, Cin/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
             // Output (this Node's shape) = [N, Cout, Hout, Wout].
