@@ -1276,6 +1276,38 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
+            // Phase 7.6 step 4 (final): registry-extended QMatMul
+            // shares the legacy quant-type dispatch.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::QMATMUL =>
+            {
+                let (quant_type, k, n) = match params {
+                    fuel_graph::registry::FusedOpParams::QMatMul { quant_type, k, n } => {
+                        (*quant_type, *k, *n)
+                    }
+                    _ => panic!(
+                        "Op::Fused(QMATMUL, _) expected FusedOpParams::QMatMul, got {params:?}",
+                    ),
+                };
+                let a = self.get_gt(inputs, 0, cache);
+                let w = self.get_gt_c(inputs, 1, cache);
+                let result = match quant_type {
+                    fuel_graph::QuantType::Q4_0 =>
+                        self.backend.matmul_q4_0(&a.storage, &w.storage, k, n, &a.layout()),
+                    fuel_graph::QuantType::Q8_0 =>
+                        self.backend.matmul_q8_0(&a.storage, &w.storage, k, n, &a.layout()),
+                    fuel_graph::QuantType::Q4_K_M =>
+                        self.backend.matmul_q4_km(&a.storage, &w.storage, k, n, &a.layout()),
+                    _ => Err(fuel_core_types::Error::Msg(format!(
+                        "legacy executor: QMatMul {:?} not wired (use pipelined executor)",
+                        quant_type
+                    ))),
+                };
+                match result {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
 
             // -- 2-D convolution --
             //
@@ -1378,6 +1410,32 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     }
                 }
             }
+            // Phase 7.6 step 4 (final): registry-extended ConvTranspose2D.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D =>
+            {
+                let (stride, padding, output_padding, dilation, groups) = match params {
+                    fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+                        stride, padding, output_padding, dilation, groups,
+                    } => (*stride, *padding, *output_padding, *dilation, *groups),
+                    _ => panic!(
+                        "Op::Fused(CONV_TRANSPOSE2D, _) expected \
+                         FusedOpParams::ConvTranspose2D, got {params:?}",
+                    ),
+                };
+                let input  = self.get_gt_c(inputs, 0, cache);
+                let weight = self.get_gt_c(inputs, 1, cache);
+                match self.backend.conv_transpose2d(
+                    &input.storage, &weight.storage,
+                    &input.layout(), &weight.layout(),
+                    stride, padding, output_padding, dilation, groups,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                }
+            }
 
             // -- multi-head attention --
             //
@@ -1401,6 +1459,40 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     &q.layout(), &k.layout(), &v.layout(),
                     alibi_layout.as_ref(),
                     *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                }
+            }
+            // Phase 7.6 step 4 (final): registry-extended FlashAttn.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::FLASH_ATTN =>
+            {
+                let (softmax_scale, causal, window_size_left, window_size_right, softcap) = match params {
+                    fuel_graph::registry::FusedOpParams::FlashAttn {
+                        softmax_scale, causal, window_size_left, window_size_right, softcap,
+                    } => (*softmax_scale, *causal, *window_size_left, *window_size_right, *softcap),
+                    _ => panic!(
+                        "Op::Fused(FLASH_ATTN, _) expected FusedOpParams::FlashAttn, got {params:?}",
+                    ),
+                };
+                let q = self.get_gt_c(inputs, 0, cache);
+                let k = self.get_gt_c(inputs, 1, cache);
+                let v = self.get_gt_c(inputs, 2, cache);
+                let alibi = if inputs.len() >= 4 {
+                    Some(self.get_gt_c(inputs, 3, cache))
+                } else {
+                    None
+                };
+                let alibi_layout = alibi.as_ref().map(|t| t.layout());
+                match self.backend.flash_attn(
+                    &q.storage, &k.storage, &v.storage,
+                    alibi.as_ref().map(|t| t.storage.as_ref()),
+                    &q.layout(), &k.layout(), &v.layout(),
+                    alibi_layout.as_ref(),
+                    softmax_scale, causal, window_size_left, window_size_right, softcap,
                 ) {
                     Ok(s) => s,
                     Err(_) => {
@@ -1442,6 +1534,43 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     &bt.layout(), &cl.layout(),
                     alibi_layout.as_ref(),
                     *softmax_scale, *block_size, *softcap,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                    }
+                }
+            }
+            // Phase 7.6 step 4 (final): registry-extended PagedAttn.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN =>
+            {
+                let (softmax_scale, block_size, softcap) = match params {
+                    fuel_graph::registry::FusedOpParams::PagedAttn {
+                        softmax_scale, block_size, softcap,
+                    } => (*softmax_scale, *block_size, *softcap),
+                    _ => panic!(
+                        "Op::Fused(PAGED_ATTN, _) expected FusedOpParams::PagedAttn, got {params:?}",
+                    ),
+                };
+                let q  = self.get_gt_c(inputs, 0, cache);
+                let kc = self.get_gt_c(inputs, 1, cache);
+                let vc = self.get_gt_c(inputs, 2, cache);
+                let bt = self.get_gt_c(inputs, 3, cache);
+                let cl = self.get_gt_c(inputs, 4, cache);
+                let alibi = if inputs.len() >= 6 {
+                    Some(self.get_gt_c(inputs, 5, cache))
+                } else {
+                    None
+                };
+                let alibi_layout = alibi.as_ref().map(|t| t.layout());
+                match self.backend.paged_attn(
+                    &q.storage, &kc.storage, &vc.storage, &bt.storage, &cl.storage,
+                    alibi.as_ref().map(|t| t.storage.as_ref()),
+                    &q.layout(), &kc.layout(), &vc.layout(),
+                    &bt.layout(), &cl.layout(),
+                    alibi_layout.as_ref(),
+                    softmax_scale, block_size, softcap,
                 ) {
                     Ok(s) => s,
                     Err(_) => {

@@ -531,14 +531,58 @@ fn eval_node(
         Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
             eval_conv_transpose2d(*stride, *padding, *output_padding, *dilation, *groups, inputs, cache)
         }
+        // Phase 7.6 step 4 (final): registry-extended ConvTranspose2D
+        // routes to the same eval_conv_transpose2d kernel.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D =>
+        {
+            let (stride, padding, output_padding, dilation, groups) = match params {
+                fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+                    stride, padding, output_padding, dilation, groups,
+                } => (*stride, *padding, *output_padding, *dilation, *groups),
+                _ => panic!(
+                    "Op::Fused(CONV_TRANSPOSE2D, _) expected \
+                     FusedOpParams::ConvTranspose2D, got {params:?}",
+                ),
+            };
+            eval_conv_transpose2d(stride, padding, output_padding, dilation, groups, inputs, cache)
+        }
         Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
             eval_flash_attn(
                 *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
                 inputs, cache,
             )
         }
+        // Registry-extended FlashAttn.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::FLASH_ATTN =>
+        {
+            let (softmax_scale, causal, window_size_left, window_size_right, softcap) = match params {
+                fuel_graph::registry::FusedOpParams::FlashAttn {
+                    softmax_scale, causal, window_size_left, window_size_right, softcap,
+                } => (*softmax_scale, *causal, *window_size_left, *window_size_right, *softcap),
+                _ => panic!(
+                    "Op::Fused(FLASH_ATTN, _) expected FusedOpParams::FlashAttn, got {params:?}",
+                ),
+            };
+            eval_flash_attn(softmax_scale, causal, window_size_left, window_size_right, softcap, inputs, cache)
+        }
         Op::PagedAttn { softmax_scale, block_size, softcap } => {
             eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
+        }
+        // Registry-extended PagedAttn.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN =>
+        {
+            let (softmax_scale, block_size, softcap) = match params {
+                fuel_graph::registry::FusedOpParams::PagedAttn {
+                    softmax_scale, block_size, softcap,
+                } => (*softmax_scale, *block_size, *softcap),
+                _ => panic!(
+                    "Op::Fused(PAGED_ATTN, _) expected FusedOpParams::PagedAttn, got {params:?}",
+                ),
+            };
+            eval_paged_attn(softmax_scale, block_size, softcap, inputs, cache)
         }
         // Phase 7.6 step 5: legacy `Op::FusedLinear` arm dropped with
         // the variant; FusedLinear dispatches only through the
@@ -605,6 +649,20 @@ fn eval_node(
             eval_rope(inputs, cache)
         }
         Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
+        // Phase 7.6 step 4 (final): registry-extended QMatMul.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::QMATMUL =>
+        {
+            let (quant_type, k, n) = match params {
+                fuel_graph::registry::FusedOpParams::QMatMul { quant_type, k, n } => {
+                    (*quant_type, *k, *n)
+                }
+                _ => panic!(
+                    "Op::Fused(QMATMUL, _) expected FusedOpParams::QMatMul, got {params:?}",
+                ),
+            };
+            eval_qmatmul(quant_type, k, n, inputs, cache)
+        }
         // Phase 7.6 step 5: backward-helper dispatch only flows
         // through the registry form below.
         Op::Fused(fid, _)

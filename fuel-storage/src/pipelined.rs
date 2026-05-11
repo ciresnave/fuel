@@ -502,10 +502,21 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
             Some(OpKind::Conv2D)
         }
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
+        // Phase 7.6 step 4 (final): registry-extended forms share
+        // the same OpKind binding-table entries.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D => {
+            Some(OpKind::ConvTranspose2D)
+        }
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::ReduceMaxTo(_) => Some(OpKind::ReduceMaxTo),
         Op::FlashAttn { .. } => Some(OpKind::FlashAttn),
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FLASH_ATTN => {
+            Some(OpKind::FlashAttn)
+        }
         Op::PagedAttn { .. } => Some(OpKind::PagedAttn),
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN => {
+            Some(OpKind::PagedAttn)
+        }
         Op::AddScalar(_)  => Some(OpKind::Affine),
         Op::MulScalar(_)  => Some(OpKind::Affine),
         Op::Clamp { .. }  => Some(OpKind::ClampElementwise),
@@ -543,6 +554,9 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::ArgMaxDim(_) => Some(OpKind::ArgMaxDim),
         Op::ArgMinDim(_) => Some(OpKind::ArgMinDim),
         Op::QMatMul { .. } => Some(OpKind::QMatMul),
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::QMATMUL => {
+            Some(OpKind::QMatMul)
+        }
         _ => None,
     }
 }
@@ -609,7 +623,11 @@ fn op_to_op_params(
             .unwrap_or_else(|| graph.layout(input_id))
     };
     Ok(match &node.op {
-        Op::QMatMul { quant_type, k, n } => {
+        // Phase 7.6 step 4 (final): both `Op::QMatMul` and
+        // `Op::Fused(QMATMUL, _)` share this body — destructured
+        // off either op variant.
+        Op::QMatMul { quant_type, k, n }
+        | Op::Fused(_, fuel_graph::registry::FusedOpParams::QMatMul { quant_type, k, n }) => {
             // Inputs: (activations f32 [..., m, k], weight_bytes
             // u32-typed). Output shape (this Node's shape) is
             // [..., m, n]. Flatten leading dims into batch_count.
@@ -1331,7 +1349,12 @@ fn op_to_op_params(
                 groups: *groups,
             }
         }
-        Op::PagedAttn { softmax_scale, block_size, softcap } => {
+        // Phase 7.6 step 4 (final): both `Op::PagedAttn` and
+        // `Op::Fused(PAGED_ATTN, _)` share this body.
+        Op::PagedAttn { softmax_scale, block_size, softcap }
+        | Op::Fused(_, fuel_graph::registry::FusedOpParams::PagedAttn {
+            softmax_scale, block_size, softcap,
+        }) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k_cache [num_blocks,
             // block_size, Hkv, D], inputs[2]=v_cache same shape,
             // inputs[3]=block_table [B, max_blocks_per_seq] U32,
@@ -1390,7 +1413,10 @@ fn op_to_op_params(
                 softcap: *softcap,
             }
         }
-        Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
+        Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap }
+        | Op::Fused(_, fuel_graph::registry::FusedOpParams::FlashAttn {
+            softmax_scale, causal, window_size_left, window_size_right, softcap,
+        }) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k [B,Hkv,Sk,D],
             // inputs[2]=v [B,Hkv,Sk,D], inputs[3]=alibi_slopes [Hq] (optional).
             if node.inputs.len() != 3 && node.inputs.len() != 4 {
@@ -1464,7 +1490,10 @@ fn op_to_op_params(
             let output_shape: Vec<usize> = target_shape.dims().to_vec();
             OpParams::ReduceMaxTo { input_shape, output_shape }
         }
-        Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
+        Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups }
+        | Op::Fused(_, fuel_graph::registry::FusedOpParams::ConvTranspose2D {
+            stride, padding, output_padding, dilation, groups,
+        }) => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
             // [Cin, Cout/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
             // Output (this Node's shape) = [N, Cout, Hout, Wout].

@@ -31,9 +31,13 @@ use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
 pub mod conv2d;
+pub mod conv_transpose_2d;
+pub mod flash_attn;
 pub mod fused_linear;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
+pub mod paged_attn;
+pub mod qmatmul;
 pub mod reduce_max_to_backward;
 pub mod rms_norm_last_dim;
 pub mod rms_norm_last_dim_backward;
@@ -156,8 +160,42 @@ pub enum FusedOpParams {
     /// ReduceMaxToBackward — routes upstream to argmax positions
     /// (fair-share on ties). Two inputs (x, upstream); parameterless.
     ReduceMaxToBackward,
-    // Step 4 (continued) extends this enum with: ConvTranspose2D { ... },
-    // FlashAttn { ... }, PagedAttn { ... }, QMatMul { quant_type, k, n }.
+    /// ConvTranspose2D — fractionally-strided 2-D convolution.
+    /// Two inputs `[x, weight]` (no bias). Carries the full
+    /// stride/padding/output_padding/dilation/groups bundle.
+    ConvTranspose2D {
+        stride:         (usize, usize),
+        padding:        (usize, usize),
+        output_padding: (usize, usize),
+        dilation:       (usize, usize),
+        groups:         usize,
+    },
+    /// FlashAttn — multi-head scaled-dot-product attention with
+    /// FlashAttention-shaped kernel hooks. 4-5 inputs (q, k, v,
+    /// optional alibi).
+    FlashAttn {
+        softmax_scale:     f32,
+        causal:            bool,
+        window_size_left:  Option<usize>,
+        window_size_right: Option<usize>,
+        softcap:           Option<f32>,
+    },
+    /// PagedAttn — paged-cache attention. 5-6 inputs (q, k_cache,
+    /// v_cache, block_table, context_lens, optional alibi).
+    PagedAttn {
+        softmax_scale: f32,
+        block_size:    usize,
+        softcap:       Option<f32>,
+    },
+    /// QMatMul — quantized matrix multiply `C = A @ dequant(W_Q)`.
+    /// Two inputs `[a, w_q_bytes]`. The U32-typed w_q_bytes carries
+    /// a Q-type block stream; `quant_type` selects the dequant
+    /// implementation; `k` / `n` are the logical weight dims.
+    QMatMul {
+        quant_type: crate::QuantType,
+        k:          usize,
+        n:          usize,
+    },
 }
 
 /// Hashable key for [`FusedOpParams`]. Used by `op_key`/CSE so that two
@@ -243,7 +281,84 @@ impl FusedOpParams {
                 bits: Vec::new(),
                 ints: Vec::new(),
             },
+            FusedOpParams::ConvTranspose2D {
+                stride, padding, output_padding, dilation, groups,
+            } => FusedOpParamsKey {
+                tag: 11,
+                bits: Vec::new(),
+                // 9 i64 slots: stride.{0,1}, padding.{0,1},
+                // output_padding.{0,1}, dilation.{0,1}, groups.
+                ints: vec![
+                    stride.0 as i64,
+                    stride.1 as i64,
+                    padding.0 as i64,
+                    padding.1 as i64,
+                    output_padding.0 as i64,
+                    output_padding.1 as i64,
+                    dilation.0 as i64,
+                    dilation.1 as i64,
+                    *groups as i64,
+                ],
+            },
+            FusedOpParams::FlashAttn {
+                softmax_scale, causal, window_size_left,
+                window_size_right, softcap,
+            } => FusedOpParamsKey {
+                tag: 12,
+                // softmax_scale f32 → u64 bit pattern; softcap
+                // f32 → u64 bit pattern (NaN sentinel for None so
+                // two FlashAttn nodes with no softcap still hash
+                // equal).
+                bits: vec![
+                    softmax_scale.to_bits() as u64,
+                    softcap.map(|s| s.to_bits() as u64).unwrap_or(u64::MAX),
+                ],
+                // causal as i64; window sizes carry MIN as the
+                // "None" sentinel so a real Some(0) still distinguishes.
+                ints: vec![
+                    if *causal { 1 } else { 0 },
+                    window_size_left.map(|w| w as i64).unwrap_or(i64::MIN),
+                    window_size_right.map(|w| w as i64).unwrap_or(i64::MIN),
+                ],
+            },
+            FusedOpParams::PagedAttn {
+                softmax_scale, block_size, softcap,
+            } => FusedOpParamsKey {
+                tag: 13,
+                bits: vec![
+                    softmax_scale.to_bits() as u64,
+                    softcap.map(|s| s.to_bits() as u64).unwrap_or(u64::MAX),
+                ],
+                ints: vec![*block_size as i64],
+            },
+            FusedOpParams::QMatMul { quant_type, k, n } => FusedOpParamsKey {
+                tag: 14,
+                bits: Vec::new(),
+                // QuantType encoded as stable per-variant i64; k, n
+                // as usize.
+                ints: vec![quant_type_key(*quant_type), *k as i64, *n as i64],
+            },
         }
+    }
+}
+
+/// Stable per-variant key for [`crate::QuantType`]. Used by
+/// [`FusedOpParams::key`] so CSE on two `Op::Fused(QMATMUL, _)`
+/// nodes with the same `(quant_type, k, n)` collapses correctly.
+fn quant_type_key(q: crate::QuantType) -> i64 {
+    use crate::QuantType::*;
+    match q {
+        Q4_0   => 1,
+        Q4_1   => 2,
+        Q5_0   => 3,
+        Q5_1   => 4,
+        Q8_0   => 5,
+        Q8_1   => 6,
+        Q2K    => 7,
+        Q3K    => 8,
+        Q4_K_M => 9,
+        Q5K    => 10,
+        Q6K    => 11,
     }
 }
 
@@ -507,8 +622,19 @@ impl FusedOps {
     /// `BackwardKind::Fused` edge wired to this helper, autograd
     /// reaches it directly from `Op::ReduceMaxTo`'s arm.
     pub const REDUCE_MAX_TO_BACKWARD: FusedOpId = FusedOpId(10);
-    // Step 4 (continued) adds: CONV_TRANSPOSE2D, FLASH_ATTN,
-    // PAGED_ATTN, QMATMUL.
+    /// ConvTranspose2D — fractionally-strided 2-D convolution.
+    /// Two inputs `[x, weight]` (no bias); carries
+    /// stride/padding/output_padding/dilation/groups in
+    /// [`FusedOpParams::ConvTranspose2D`].
+    pub const CONV_TRANSPOSE2D: FusedOpId = FusedOpId(11);
+    /// FlashAttn — multi-head attention with FlashAttention-shaped
+    /// kernel hooks. 4-5 inputs (q, k, v, optional alibi).
+    pub const FLASH_ATTN: FusedOpId = FusedOpId(12);
+    /// PagedAttn — paged-cache attention. 5-6 inputs.
+    pub const PAGED_ATTN: FusedOpId = FusedOpId(13);
+    /// QMatMul — quantized matmul `C = A @ dequant(W_Q)`. Two
+    /// inputs `[a, w_q_bytes]`.
+    pub const QMATMUL: FusedOpId = FusedOpId(14);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -533,6 +659,10 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(layer_norm_last_dim_backward::entry())
             .with_entry(rms_norm_last_dim_backward::entry())
             .with_entry(reduce_max_to_backward::entry())
+            .with_entry(conv_transpose_2d::entry())
+            .with_entry(flash_attn::entry())
+            .with_entry(paged_attn::entry())
+            .with_entry(qmatmul::entry())
     })
 }
 
