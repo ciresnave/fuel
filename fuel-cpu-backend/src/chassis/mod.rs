@@ -10,5 +10,6 @@
 //! See `docs/session-prompts/cpu-kernel-trait-chassis-refactor.md`
 //! for the design rationale.
 
+pub mod binary;
 pub mod reduction;
 pub mod unary;
