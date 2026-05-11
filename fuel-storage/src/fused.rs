@@ -24,7 +24,7 @@
 //!   hot path.
 
 use crate::kernel::{KernelCaps, KernelRef};
-use fuel_core_types::{Shape, backend::BackendCapabilities, probe::BackendId};
+use fuel_core_types::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
 use fuel_graph::registry::{FusedOpId, FusedOpParams};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -38,11 +38,25 @@ use std::collections::HashMap;
 /// Function-pointer composition (no trait-object indirection) — the
 /// registry stores [`BackendImpl`] values inline, the executor calls
 /// the function pointer directly.
+///
+/// A single `(FusedOpId, BackendId)` decision point may have multiple
+/// registered `BackendImpl`s — one per dtype tuple, and potentially
+/// multiple alternatives at the same dtype (e.g. cuBLAS bias-epilogue
+/// vs CUTLASS bias-epilogue for `(FUSED_LINEAR, [BF16,BF16,BF16,BF16],
+/// Cuda)`). The route picker filters by [`Self::dtypes`] and ranks the
+/// remaining alternatives by cost + precision.
 #[derive(Copy, Clone)]
 pub struct BackendImpl {
     /// Dispatch wrapper for this backend's kernel for this fused op.
     /// Same `KernelRef` signature as primitive-op kernels.
     pub kernel: KernelRef,
+    /// Dtype tuple this kernel is registered for. Convention mirrors
+    /// the binding-table key shape: typically `[input1, input2, ...,
+    /// output]` per the existing `register(table, op, &[dtype; N],
+    /// backend, kernel)` call sites. Using `&'static [DType]` keeps
+    /// `BackendImpl` `Copy` and lets registrations declare dtypes
+    /// inline as `&[F32, F32, F32, F32]` literals.
+    pub dtypes: &'static [DType],
     /// Cost-estimate function. Given the input shapes, the
     /// per-instance fused-op params, and the backend's capabilities,
     /// returns a [`CostEstimate`] used for placement and route ranking.
@@ -173,28 +187,50 @@ impl FusedKernelRegistry {
         Self::default()
     }
 
-    /// Register a [`BackendImpl`] for this `(id, backend)` pair. Last
-    /// writer wins on duplicate keys (matches today's
-    /// `KernelBindingTable::register` idempotency).
+    /// Register a [`BackendImpl`] for this `(id, backend)` pair. Always
+    /// appends — multiple impls per `(id, backend)` are allowed (per-
+    /// dtype registrations, alternative algorithms at the same dtype,
+    /// etc.). The route picker filters by [`BackendImpl::dtypes`] and
+    /// ranks remaining alternatives at lookup time.
     pub fn register(&mut self, id: FusedOpId, backend: BackendId, impl_: BackendImpl) {
-        let entry = self.by_id.entry(id).or_default();
-        // Replace existing entry for this backend if present.
-        if let Some(slot) = entry.iter_mut().find(|(b, _)| *b == backend) {
-            slot.1 = impl_;
-        } else {
-            entry.push((backend, impl_));
-        }
+        self.by_id.entry(id).or_default().push((backend, impl_));
     }
 
-    /// Look up the [`BackendImpl`] registered for `(id, backend)`.
-    /// Returns `None` when no kernel exists for this combination — the
-    /// optimizer's fallback in that case is to lower the fused op via
-    /// the metadata-side `decompose` and run it as primitives on the
-    /// backend.
+    /// Look up the first [`BackendImpl`] registered for `(id, backend)`
+    /// regardless of dtypes. Convenience for callers that already know
+    /// a single impl exists for the pair. Prefer
+    /// [`Self::lookup_by_dtypes`] when multiple per-dtype impls may
+    /// share a backend.
     pub fn lookup(&self, id: FusedOpId, backend: BackendId) -> Option<BackendImpl> {
         self.by_id
             .get(&id)
             .and_then(|impls| impls.iter().find(|(b, _)| *b == backend))
+            .map(|(_, impl_)| *impl_)
+    }
+
+    /// Look up the [`BackendImpl`] registered for `(id, backend,
+    /// dtypes)`. Returns `None` when no kernel matches all three; the
+    /// optimizer's fallback in that case is to lower the fused op via
+    /// the metadata-side `decompose` and run it as primitives on the
+    /// backend.
+    ///
+    /// When multiple impls match (alternatives at the same decision
+    /// point — e.g. cuBLAS vs CUTLASS bf16 matmul), the first
+    /// registration wins. Step 9's route picker replaces this with a
+    /// cost-aware selector.
+    pub fn lookup_by_dtypes(
+        &self,
+        id: FusedOpId,
+        backend: BackendId,
+        dtypes: &[DType],
+    ) -> Option<BackendImpl> {
+        self.by_id
+            .get(&id)
+            .and_then(|impls| {
+                impls
+                    .iter()
+                    .find(|(b, i)| *b == backend && i.dtypes == dtypes)
+            })
             .map(|(_, impl_)| *impl_)
     }
 
@@ -217,6 +253,152 @@ impl FusedKernelRegistry {
     }
 }
 
+/// Register a [`BackendImpl`] into a [`FusedKernelRegistry`] via the
+/// step-6 macro shape. Hides the boilerplate of constructing the
+/// `BackendImpl` struct so registration sites read as a flat list of
+/// `(id, backend, dtypes, kernel, cost, precision)` tuples.
+///
+/// Caps default to [`KernelCaps::empty()`] and revision to
+/// [`KernelRevisionHash::UNTRACKED`]; pass `caps = ...` and
+/// `revision = ...` to override.
+///
+/// # Examples
+///
+/// ```ignore
+/// register_fused!(
+///     registry,
+///     FusedOps::FUSED_LINEAR,
+///     BackendId::Cpu,
+///     &[F32, F32, F32, F32],
+///     fused_linear_f32_cpu_wrapper,
+///     cost = cost_fused_linear_cpu,
+///     precision = PrecisionGuarantee::REFERENCE,
+/// );
+/// ```
+#[macro_export]
+macro_rules! register_fused {
+    (
+        $registry:expr,
+        $id:expr,
+        $backend:expr,
+        $dtypes:expr,
+        $kernel:expr,
+        cost = $cost:expr,
+        precision = $precision:expr
+        $(, caps = $caps:expr)?
+        $(, revision = $revision:expr)?
+        $(,)?
+    ) => {{
+        #[allow(unused_mut, unused_assignments)]
+        let mut caps = $crate::kernel::KernelCaps::empty();
+        $( caps = $caps; )?
+        #[allow(unused_mut, unused_assignments)]
+        let mut revision = $crate::fused::KernelRevisionHash::UNTRACKED;
+        $( revision = $revision; )?
+        $registry.register(
+            $id,
+            $backend,
+            $crate::fused::BackendImpl {
+                kernel: $kernel,
+                dtypes: $dtypes,
+                cost: $cost,
+                precision: $precision,
+                caps,
+                revision,
+            },
+        );
+    }};
+}
+
+/// Process-wide default kernel registry: every backend's fused-op
+/// `BackendImpl`s registered at startup. Built once on first access
+/// via [`std::sync::OnceLock`]; immutable thereafter (architecture
+/// v1.0: no runtime extensibility).
+///
+/// Today's coverage:
+/// - `FUSED_LINEAR` × `Cpu` × `{F32, F64, BF16, F16}` — four
+///   bit-stable per-dtype impls registered via [`register_default_kernels`].
+///
+/// Backend-side crates (fuel-cuda-backend, fuel-vulkan-backend) extend
+/// this set by either (a) registering during their own startup, or
+/// (b) the step-9 binding-table refactor where the route picker pulls
+/// from this registry. Today's executors continue to lookup via the
+/// per-dtype [`crate::dispatch::KernelBindingTable`]; this registry is
+/// the architecture-target shape for CUTLASS / cuBLAS alternative
+/// registrations and step-9's pre-resolved `KernelRef` pipeline.
+pub fn default_kernel_registry() -> &'static FusedKernelRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<FusedKernelRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut r = FusedKernelRegistry::new();
+        register_default_kernels(&mut r);
+        r
+    })
+}
+
+/// Populate a [`FusedKernelRegistry`] with the always-built kernels
+/// (today: `fuel-cpu-backend` FusedLinear F32/F64/BF16/F16). Called
+/// from [`default_kernel_registry`]'s OnceLock initializer; exposed as
+/// a free function so backend crates can compose against a custom
+/// registry in tests.
+pub fn register_default_kernels(r: &mut FusedKernelRegistry) {
+    crate::dispatch::register_default_fused_kernels(r);
+}
+
+/// Static cost model for `(FUSED_LINEAR, Cpu)` kernels — the conservative
+/// FLOP + bandwidth model per architecture v1.0 §"Layer-1 cost model."
+/// Identical for F32/F64/BF16/F16 (the kernels accumulate in F32
+/// regardless of input dtype); the empirical Layer-2 refinement
+/// framework will tighten per-dtype later.
+///
+/// Shapes: `[a, b, bias]` where `a = [..., M, K]`, `b = [..., K, N]`,
+/// `bias = [N]`.
+pub fn cost_fused_linear_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 3, "FusedLinear cost: expected 3 input shapes");
+    let a_dims = shapes[0].dims();
+    let b_dims = shapes[1].dims();
+    let rank = a_dims.len();
+    if rank < 2 || b_dims.len() < 2 {
+        return CostEstimate::default();
+    }
+    let m = a_dims[rank - 2] as u64;
+    let k = a_dims[rank - 1] as u64;
+    let n = b_dims[b_dims.len() - 1] as u64;
+    let batch: u64 = a_dims[..rank - 2].iter().map(|d| *d as u64).product::<u64>().max(1);
+    // FMA counts as 2 FLOPs. Matmul: 2·M·N·K per batch. Bias-add: M·N per batch.
+    let mm_flops = 2u64 * m * n * k * batch;
+    let bias_flops = m * n * batch;
+    // Conservative bandwidth: assume 4 B/elem (F32-equivalent). Empirical
+    // refinement adjusts per-dtype; the static layer is intentionally coarse.
+    let elems = batch * (m * k + k * n + m * n) + n;
+    let bytes_moved = elems * 4;
+    CostEstimate {
+        flops: mm_flops + bias_flops,
+        bytes_moved,
+        kernel_overhead_ns: 50, // CPU launch overhead, ballpark
+    }
+}
+
+/// Precision guarantee shared by every `(FUSED_LINEAR, Cpu, *)` impl
+/// in fuel-cpu-backend: deterministic per-element accumulation in F32
+/// (BF16/F16 inputs upcast and narrow at the end), bit-identical on
+/// same hardware. Bounded error claims (max_ulp / max_relative) depend
+/// on the contracting dim K and so stay `None` at this layer — the
+/// empirical calibration framework derives them per-shape.
+pub const FUSED_LINEAR_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend FusedLinear: deterministic matmul + bias-add; \
+            BF16/F16 accumulate in F32 and narrow at end; same-hardware re-run \
+            bit-identical.",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,9 +419,12 @@ mod tests {
         CostEstimate::default()
     }
 
+    const DUMMY_DTYPES: &[DType] = &[DType::F32];
+
     fn make_impl() -> BackendImpl {
         BackendImpl {
             kernel: dummy_kernel,
+            dtypes: DUMMY_DTYPES,
             cost: dummy_cost,
             precision: PrecisionGuarantee::UNKNOWN,
             caps: KernelCaps::empty(),
@@ -273,15 +458,22 @@ mod tests {
         assert_eq!(impls[0].0, BackendId::Cpu);
     }
 
-    /// Re-registering the same (id, backend) overwrites — matches the
-    /// existing `KernelBindingTable::register` idempotency.
+    /// Re-registering at the same `(id, backend)` appends — multiple
+    /// alternatives at the same decision point are a feature (e.g.
+    /// cuBLAS vs CUTLASS bf16 matmul at the same dtype). The route
+    /// picker filters by dtypes via `lookup_by_dtypes` and ranks
+    /// remaining alternatives.
     #[test]
-    fn fused_kernel_registry_register_is_idempotent() {
+    fn fused_kernel_registry_register_appends_alternatives() {
         let mut r = FusedKernelRegistry::new();
         r.register(FusedOpId(1), BackendId::Cpu, make_impl());
         r.register(FusedOpId(1), BackendId::Cpu, make_impl());
-        assert_eq!(r.len(), 1);
-        assert_eq!(r.impls_for(FusedOpId(1)).len(), 1);
+        assert_eq!(r.len(), 1, "one id");
+        assert_eq!(
+            r.impls_for(FusedOpId(1)).len(),
+            2,
+            "two alternatives registered",
+        );
     }
 
     /// PrecisionGuarantee::REFERENCE has the strongest properties.
@@ -299,5 +491,67 @@ mod tests {
         assert_eq!(c.flops, 0);
         assert_eq!(c.bytes_moved, 0);
         assert_eq!(c.kernel_overhead_ns, 0);
+    }
+
+    /// Step 6 — `default_kernel_registry` populates the four CPU
+    /// FusedLinear impls under `FUSED_LINEAR × Cpu × (F32|F64|BF16|F16)`.
+    #[test]
+    fn default_kernel_registry_has_fused_linear_cpu_quartet() {
+        use fuel_graph::registry::FusedOps;
+
+        let r = default_kernel_registry();
+        let impls = r.impls_for(FusedOps::FUSED_LINEAR);
+        assert_eq!(
+            impls.len(),
+            4,
+            "expected 4 FusedLinear × Cpu × dtype registrations, got {}",
+            impls.len(),
+        );
+        for (backend, _) in impls {
+            assert_eq!(*backend, BackendId::Cpu);
+        }
+        // Per-dtype lookup hits each registration.
+        for dtype in [DType::F32, DType::F64, DType::BF16, DType::F16] {
+            let want = [dtype; 4];
+            let got = r.lookup_by_dtypes(
+                FusedOps::FUSED_LINEAR, BackendId::Cpu, &want,
+            );
+            assert!(
+                got.is_some(),
+                "lookup_by_dtypes missed FusedLinear × Cpu × {dtype:?}",
+            );
+            let impl_ = got.unwrap();
+            assert!(
+                impl_.precision.bit_stable_on_same_hardware,
+                "CPU FusedLinear should be bit-stable on same hardware",
+            );
+        }
+    }
+
+    /// Cost model — FLOPs scale with 2·M·N·K + M·N, batch multiplies.
+    #[test]
+    fn cost_fused_linear_cpu_flops_scale() {
+        use fuel_core_types::DeviceLocation;
+        use std::collections::HashSet;
+
+        let a = Shape::from_dims(&[2, 4, 8]);  // batch=2, M=4, K=8
+        let b = Shape::from_dims(&[2, 8, 16]); // batch=2, K=8, N=16
+        let bias = Shape::from_dims(&[16]);
+        let caps = BackendCapabilities {
+            backend_id: BackendId::Cpu,
+            device_location: DeviceLocation::Cpu,
+            op_dtype_support: HashSet::new(),
+            required_alignment: 1,
+            access_granularity_bits: 8,
+            transfer_paths: vec![],
+        };
+        let c = cost_fused_linear_cpu(
+            &[a, b, bias],
+            &FusedOpParams::FusedLinear,
+            &caps,
+        );
+        // 2 · 2 · 4 · 16 · 8 = 2048 matmul FLOPs + 2 · 4 · 16 = 128 bias FLOPs
+        assert_eq!(c.flops, 2048 + 128);
+        assert!(c.bytes_moved > 0);
     }
 }

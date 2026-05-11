@@ -5061,6 +5061,47 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
     register(&mut lock.write().unwrap());
 }
 
+/// Phase 7.6 step 6 — register the always-built fused-op kernels into
+/// the [`crate::fused::FusedKernelRegistry`]. Called by
+/// [`crate::fused::default_kernel_registry`]; kept here so the
+/// crate-private CPU dispatch wrappers stay co-located with their
+/// registration.
+///
+/// Today's coverage: `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16}.
+/// Backend crates (fuel-cuda-backend, fuel-vulkan-backend) extend by
+/// composing against the registry from their own startup paths or via
+/// the step-9 binding-table refactor.
+pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
+    use crate::fused::{cost_fused_linear_cpu, FUSED_LINEAR_CPU_PRECISION};
+    use crate::register_fused;
+    use fuel_graph::registry::FusedOps;
+
+    // Dtype tuples mirror the binding-table shape:
+    //   (lhs, rhs, bias, out) — all four agree per FusedLinear's contract.
+    const FL_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const FL_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const FL_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const FL_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+
+    let cpu = BackendId::Cpu;
+    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F32,
+        fused_linear_f32_cpu_wrapper,
+        cost = cost_fused_linear_cpu,
+        precision = FUSED_LINEAR_CPU_PRECISION);
+    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F64,
+        fused_linear_f64_cpu_wrapper,
+        cost = cost_fused_linear_cpu,
+        precision = FUSED_LINEAR_CPU_PRECISION);
+    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_BF16,
+        fused_linear_bf16_cpu_wrapper,
+        cost = cost_fused_linear_cpu,
+        precision = FUSED_LINEAR_CPU_PRECISION);
+    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F16,
+        fused_linear_f16_cpu_wrapper,
+        cost = cost_fused_linear_cpu,
+        precision = FUSED_LINEAR_CPU_PRECISION);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
