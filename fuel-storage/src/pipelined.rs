@@ -1854,6 +1854,42 @@ mod tests {
         assert!(!result_layout.is_contiguous());
     }
 
+    /// E2E: Const + Flip(dim=0) — verifies Op::Flip is metadata-only.
+    /// The output Storage Arc must be the SAME Arc (no copy);
+    /// the output Layout has a negated stride at dim 0 and a
+    /// shifted start_offset.
+    #[test]
+    fn pipelined_realize_flip_is_metadata_only() {
+        // shape [3, 4]; flip dim 0 → shape [3, 4], stride [-4, 1], offset 8.
+        let data: Vec<f32> = (1..=12).map(|x| x as f32).collect();
+        let storage = crate::from_slice_cpu(&data);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, f_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 4]), dtype: DType::F32,
+            });
+            let f_id = g.push(Node {
+                op: Op::Flip { dim: 0 }, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 4]), dtype: DType::F32,
+            });
+            (in_id, f_id)
+        };
+        let mut inputs = StorageCache::new();
+        let in_arc = Arc::new(RwLock::new(storage));
+        inputs.insert(in_id, Arc::clone(&in_arc));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, f_id, inputs).expect("realize");
+
+        assert!(Arc::ptr_eq(&result_arc, &in_arc), "flip must share input bytes");
+        assert_eq!(result_layout.shape().dims(), &[3, 4]);
+        assert_eq!(result_layout.stride(), &[-4_isize, 1]);
+        assert_eq!(result_layout.start_offset(), 8);
+        assert!(!result_layout.is_contiguous());
+    }
+
     /// E2E: Const + Permute(rank-3 axes [2, 0, 1]) — verifies the
     /// general permute path through metadata-only adoption.
     #[test]
@@ -2036,6 +2072,44 @@ mod tests {
         let guard = result_arc.read().unwrap();
         let crate::BackendStorage::Cpu(c) = &guard.inner;
         assert_eq!(c.as_slice::<f32>().unwrap(), &[90.0]);
+    }
+
+    /// E2E: Const + Flip + ReluElementwise — Flip is metadata-only,
+    /// then a kernel that doesn't yet handle negative strides forces
+    /// auto-Contiguize to materialize through StridedIndex (which
+    /// handles signed strides natively). Verifies the post-flip
+    /// data ordering ([4, 3, 2, 1]) is correctly seen by the kernel.
+    #[test]
+    fn pipelined_realize_flip_then_relu_materializes_in_reverse() {
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, _f_id, r_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let f_id = g.push(Node {
+                op: Op::Flip { dim: 0 }, inputs: vec![in_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let r_id = g.push(Node {
+                op: Op::Relu, inputs: vec![f_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(r_id, BackendId::Cpu);
+            (in_id, f_id, r_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let (result_arc, result_layout) =
+            PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[4.0, 3.0, 2.0, 1.0]);
+        assert_eq!(result_layout.shape().dims(), &[4]);
+        assert!(result_layout.is_contiguous(), "relu output is contiguous");
     }
 
     /// E2E: Const + BroadcastTo — verifies that broadcast layouts
