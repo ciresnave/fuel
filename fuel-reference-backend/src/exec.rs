@@ -612,6 +612,18 @@ pub fn eval_node_with_op(
             };
             eval_rms_norm_last_dim(eps, inputs, cache)
         }
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM =>
+        {
+            let eps = match params {
+                fuel_graph::registry::FusedOpParams::LayerNormLastDim { eps } => *eps,
+                _ => panic!(
+                    "Op::Fused(LAYER_NORM_LAST_DIM, _) expected \
+                     FusedOpParams::LayerNormLastDim, got {params:?}",
+                ),
+            };
+            eval_layer_norm_last_dim(eps, inputs, cache)
+        }
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),

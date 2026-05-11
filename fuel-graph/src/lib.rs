@@ -3327,6 +3327,12 @@ impl Tensor {
 
     /// Append a `LayerNormLastDim` node with the given epsilon. Shape is
     /// preserved.
+    ///
+    /// Phase 7.6 step 4 (continued): emits
+    /// `Op::Fused(FusedOps::LAYER_NORM_LAST_DIM, FusedOpParams::LayerNormLastDim { eps })`
+    /// through the registry-extended arm. The legacy
+    /// `Op::LayerNormLastDim { eps }` variant remains in the enum
+    /// during migration; step 5 drops it once nothing emits it.
     pub fn layer_norm_last_dim(&self, eps: f64) -> Tensor {
         let dims = self.shape();
         let d = dims.dims();
@@ -3334,7 +3340,10 @@ impl Tensor {
             !d.is_empty() && *d.last().unwrap() > 0,
             "layer_norm_last_dim: input must have a non-zero last dim, got {d:?}",
         );
-        self.unary_op(Op::LayerNormLastDim { eps })
+        self.unary_op(Op::Fused(
+            crate::registry::FusedOps::LAYER_NORM_LAST_DIM,
+            crate::registry::FusedOpParams::LayerNormLastDim { eps },
+        ))
     }
 
     /// Apply rotary position embeddings (RoPE) to `self`. The input is
@@ -6215,6 +6224,28 @@ impl Tensor {
                             Op::SoftmaxLastDimBackward,
                             vec![id, up_id],
                             y_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    } else if fid == crate::registry::FusedOps::LAYER_NORM_LAST_DIM {
+                        // grad_x = layer_norm_last_dim_backward(x, upstream, eps)
+                        // — same formula as the legacy
+                        // Op::LayerNormLastDim { eps } arm above.
+                        let eps = match params {
+                            crate::registry::FusedOpParams::LayerNormLastDim { eps } => eps,
+                            _ => panic!(
+                                "Tensor::backward: Op::Fused(LAYER_NORM_LAST_DIM, _) \
+                                 expected FusedOpParams::LayerNormLastDim, got {params:?}",
+                            ),
+                        };
+                        let x = inputs[0];
+                        let x_shape = node_shape(&graph_handle, x);
+                        let dtype = node_dtype(&graph_handle, x);
+                        let grad_x = push_node(
+                            &graph_handle,
+                            Op::LayerNormLastDimBackward { eps },
+                            vec![x, up_id],
+                            x_shape,
                             dtype,
                         );
                         accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
