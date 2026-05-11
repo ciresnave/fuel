@@ -1706,6 +1706,23 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
                 }
             }
+            // Phase 7.6 step 4 (continued): same bridge as SoftmaxLastDim.
+            Op::Fused(fid, params)
+                if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
+            {
+                let eps = match params {
+                    fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps } => *eps,
+                    _ => panic!(
+                        "Op::Fused(RMS_NORM_LAST_DIM, _) expected \
+                         FusedOpParams::RmsNormLastDim, got {params:?}",
+                    ),
+                };
+                let a = self.get_gt_c(inputs, 0, cache);
+                match self.backend.rms_norm_last_dim(&a.storage, &a.layout(), eps) {
+                    Ok(s) => s,
+                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
+                }
+            }
 
             // -- layer norm backward (fused) --
             Op::LayerNormLastDimBackward { eps } => {

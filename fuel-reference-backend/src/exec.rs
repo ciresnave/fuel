@@ -599,6 +599,19 @@ pub fn eval_node_with_op(
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM => {
             unary!(inputs, cache, ops::softmax_last_dim)
         }
+        // Phase 7.6 step 4 (continued): same bridge as SoftmaxLastDim.
+        Op::Fused(fid, params)
+            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
+        {
+            let eps = match params {
+                fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps } => *eps,
+                _ => panic!(
+                    "Op::Fused(RMS_NORM_LAST_DIM, _) expected \
+                     FusedOpParams::RmsNormLastDim, got {params:?}",
+                ),
+            };
+            eval_rms_norm_last_dim(eps, inputs, cache)
+        }
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),
