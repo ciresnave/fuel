@@ -435,6 +435,13 @@ impl CudaDevice {
         self.blas.clone()
     }
 
+    /// Borrow the device's default stream. Used by CUTLASS plan launches
+    /// (and any future safe-API CUDA library) that take `&Stream`. The
+    /// stream is shared across all kernel launches for this device.
+    pub fn stream(&self) -> &baracuda_driver::Stream {
+        &self.stream
+    }
+
     /// Borrow the underlying baracuda [`Context`](baracuda_driver::Context).
     ///
     /// Used by crates like [`crate::pinned`] that build CUDA host

@@ -1309,6 +1309,170 @@ fn matmul_f32_gqa_through_binding_table() {
     assert_close(host_f32, &expected, 1e-4);
 }
 
+/// CPU bf16 matmul reference (row-major Rrr). Accumulates in f32 to
+/// match how CUTLASS / cuBLAS bf16 GEMMs do the math — input precision
+/// is bf16 but the multiply-accumulate runs at f32. Only used by the
+/// bf16 matmul tests below; small enough not to belong in a shared
+/// helper.
+fn cpu_bf16_matmul_rrr(
+    a: &[half::bf16],
+    b: &[half::bf16],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Vec<half::bf16> {
+    let mut out = vec![half::bf16::ZERO; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut acc = 0.0_f32;
+            for kk in 0..k {
+                acc += a[i * k + kk].to_f32() * b[kk * n + j].to_f32();
+            }
+            out[i * n + j] = half::bf16::from_f32(acc);
+        }
+    }
+    out
+}
+
+/// End-to-end: rank-2 MatMul BF16 through the binding table.
+/// First real exercise of the CUTLASS `LayoutSku::Rrr` path:
+/// `Op::MatMul`-shaped row-major × row-major GEMM, no transpose
+/// trick.
+///
+/// Shape is `(M=16, N=16, K=32)` — CUTLASS sm80 requires 128-bit
+/// alignment on each operand, which for bf16 means M, N, K all
+/// multiples of 8. The architecture's eventual route picker will
+/// fall back to cuBLAS for misaligned shapes; today the binding
+/// table holds the CUTLASS impl unconditionally. Reference is a
+/// CPU matmul accumulating in f32 (matches CUTLASS's accumulator);
+/// tolerance is `K * 5e-3` per the alpha.13 smoke-test convention.
+#[test]
+#[ignore]
+fn matmul_bf16_rank2_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let (m, n, k) = (16_usize, 16_usize, 32_usize);
+    let a_f32: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
+    let b_f32: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
+    let a_bf16: Vec<half::bf16> = a_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let b_bf16: Vec<half::bf16> = b_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let expected_bf16 = cpu_bf16_matmul_rrr(&a_bf16, &b_bf16, m, n, k);
+    let expected: Vec<f32> = expected_bf16.iter().map(|x| x.to_f32()).collect();
+
+    let lhs = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&a_bf16), DType::BF16);
+    let rhs = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&b_bf16), DType::BF16);
+    let out_bytes = CudaStorageBytes::alloc(&dev, m * n * 2).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::BF16);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MatMul, &[DType::BF16, DType::BF16, DType::BF16], BackendId::Cuda)
+        .expect("lookup (MatMul, BF16, Cuda)");
+
+    let params = OpParams::Matmul {
+        lhs_batch_dims: vec![],
+        rhs_batch_dims: vec![],
+        m,
+        n,
+        k,
+    };
+
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let got_bf16: &[half::bf16] = bytemuck::cast_slice(&host);
+    let got: Vec<f32> = got_bf16.iter().map(|x| x.to_f32()).collect();
+    let tol = (k as f32) * 5e-3;
+    assert_close(&got, &expected, tol);
+}
+
+/// End-to-end: equal-batch MatMul BF16 through the binding table.
+/// `[2, M, K]` @ `[2, K, N]` → `[2, M, N]` with `(M=16, N=16, K=32)`.
+/// Routes through cutlass_matmul_bf16's per-batch loop —
+/// BatchedGemmPlan native dispatch lands in Phase B6. Each batch
+/// uses an independent seed so the matmuls don't collapse to
+/// identical work.
+#[test]
+#[ignore]
+fn matmul_bf16_batched_through_binding_table() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+
+    let (m, n, k, batches) = (16_usize, 16_usize, 32_usize, 2_usize);
+    let mut a_bf16 = vec![half::bf16::ZERO; batches * m * k];
+    let mut b_bf16 = vec![half::bf16::ZERO; batches * k * n];
+    for b in 0..batches {
+        for i in 0..m * k {
+            a_bf16[b * m * k + i] =
+                half::bf16::from_f32(((b * 1000 + i) as f32 * 0.01).sin());
+        }
+        for i in 0..k * n {
+            b_bf16[b * k * n + i] =
+                half::bf16::from_f32(((b * 1000 + i) as f32 * 0.013).cos());
+        }
+    }
+    let mut expected: Vec<f32> = Vec::with_capacity(batches * m * n);
+    for b in 0..batches {
+        let a_off = b * m * k;
+        let b_off = b * k * n;
+        let part = cpu_bf16_matmul_rrr(
+            &a_bf16[a_off..a_off + m * k],
+            &b_bf16[b_off..b_off + k * n],
+            m, n, k,
+        );
+        expected.extend(part.iter().map(|x| x.to_f32()));
+    }
+
+    let lhs = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&a_bf16), DType::BF16);
+    let rhs = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&b_bf16), DType::BF16);
+    let out_bytes = CudaStorageBytes::alloc(&dev, batches * m * n * 2).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::BF16);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs));
+    let rhs_arc = Arc::new(RwLock::new(rhs));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::MatMul, &[DType::BF16, DType::BF16, DType::BF16], BackendId::Cuda)
+        .expect("lookup (MatMul, BF16, Cuda)");
+
+    let params = OpParams::Matmul {
+        lhs_batch_dims: vec![batches],
+        rhs_batch_dims: vec![batches],
+        m,
+        n,
+        k,
+    };
+
+    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let got_bf16: &[half::bf16] = bytemuck::cast_slice(&host);
+    let got: Vec<f32> = got_bf16.iter().map(|x| x.to_f32()).collect();
+    let tol = (k as f32) * 5e-3;
+    assert_close(&got, &expected, tol);
+}
+
 /// End-to-end: Affine F32 through the binding table. Element-wise
 /// `y = mul * x + add` via the `affine_f32` PTX kernel — also the
 /// kernel that backs `Op::AddScalar` (mul=1) and `Op::MulScalar`

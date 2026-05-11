@@ -4701,6 +4701,65 @@ fn matmul_f32_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(MatMul, BF16, Cuda)`. Routes through
+/// the CUTLASS `LayoutSku::Rrr` SKU in `fuel-cuda-backend`. Net-new
+/// bf16 CUDA matmul coverage on the byte-storage substrate (no
+/// existing cuBLAS bf16 binding-table entry to be sibling with —
+/// Phase 7.6 step 9 migrates primitive ops to the
+/// `FusedKernelRegistry` shape where multiple alternatives at one
+/// decision point become the architecture-target).
+#[cfg(feature = "cuda")]
+fn matmul_bf16_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "matmul_bf16_cuda_wrapper: expected 2 inputs, got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "matmul_bf16_cuda_wrapper: expected 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "matmul_bf16_cuda_wrapper: expected OpParams::Matmul, got {:?}",
+                other,
+            ))
+            .bt())
+        }
+    };
+    let lhs_guard = read_storage(&inputs[0])?;
+    let rhs_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let lhs_cuda = cuda_input(&lhs_guard)?;
+    let rhs_cuda = cuda_input(&rhs_guard)?;
+    let result = fuel_cuda_backend::byte_kernels::matmul_bf16(
+        lhs_cuda,
+        rhs_cuda,
+        lhs_batch_dims,
+        rhs_batch_dims,
+        m,
+        n,
+        k,
+    )?;
+    let out_cuda = cuda_output(&mut out_guard)?;
+    *out_cuda = result;
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -4709,6 +4768,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
     let f32_dt = DType::F32;
+    let bf16_dt = DType::BF16;
     let unary  = |t: DType| [t, t];
     let binary = |t: DType| [t, t, t];
 
@@ -4749,6 +4809,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(ReduceMaxTo,        &unary(f32_dt), cuda, reduce_max_to_f32_cuda_wrapper);
 
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
+    table.register(MatMul,             &binary(bf16_dt), cuda, matmul_bf16_cuda_wrapper);
     table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
     table.register(ClampElementwise,   &unary(f32_dt),  cuda, clamp_elementwise_f32_cuda_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt),  cuda, powi_elementwise_f32_cuda_wrapper);
