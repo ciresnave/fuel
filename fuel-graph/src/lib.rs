@@ -1942,8 +1942,13 @@ impl Tensor {
         );
         let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
         out_dims.push(n);
+        // Phase 7.6 step 4 (final): emits Op::Fused(QMATMUL, _) per
+        // the registry split.
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::QMatMul { quant_type, k, n },
+            op:     Op::Fused(
+                crate::registry::FusedOps::QMATMUL,
+                crate::registry::FusedOpParams::QMatMul { quant_type, k, n },
+            ),
             inputs: vec![self.id, weight_bytes.id],
             shape:  Shape::from_dims(&out_dims),
             dtype:  DType::F32,
@@ -2116,8 +2121,12 @@ impl Tensor {
         let dtype = self.dtype();
         let mut inputs = vec![self.id, k_cache.id, v_cache.id, block_table.id, context_lens.id];
         if let Some(a) = alibi_slopes { inputs.push(a.id); }
+        // Phase 7.6 step 4 (final): emits Op::Fused(PAGED_ATTN, _).
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::PagedAttn { softmax_scale, block_size, softcap },
+            op: Op::Fused(
+                crate::registry::FusedOps::PAGED_ATTN,
+                crate::registry::FusedOpParams::PagedAttn { softmax_scale, block_size, softcap },
+            ),
             inputs,
             shape: Shape::from_dims(q_dims),
             dtype,
@@ -2190,8 +2199,14 @@ impl Tensor {
         let h_out = h_out - 2 * pad_h;
         let w_out = w_out - 2 * pad_w;
         let dtype = self.dtype();
+        // Phase 7.6 step 4 (final): emits Op::Fused(CONV_TRANSPOSE2D, _).
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups },
+            op: Op::Fused(
+                crate::registry::FusedOps::CONV_TRANSPOSE2D,
+                crate::registry::FusedOpParams::ConvTranspose2D {
+                    stride, padding, output_padding, dilation, groups,
+                },
+            ),
             inputs: vec![self.id, weight.id],
             shape: Shape::from_dims(&[n, cout, h_out, w_out]),
             dtype,
@@ -2251,8 +2266,14 @@ impl Tensor {
         if let Some(a) = alibi_slopes {
             inputs.push(a.id);
         }
+        // Phase 7.6 step 4 (final): emits Op::Fused(FLASH_ATTN, _).
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap },
+            op: Op::Fused(
+                crate::registry::FusedOps::FLASH_ATTN,
+                crate::registry::FusedOpParams::FlashAttn {
+                    softmax_scale, causal, window_size_left, window_size_right, softcap,
+                },
+            ),
             inputs,
             shape: Shape::from_dims(&[b, hq, sq, d]),
             dtype,
@@ -5361,15 +5382,14 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
+                // Phase 7.6 step 4 (final): legacy `Op::QMatMul`
+                // backward path stays as a panic arm during the
+                // migration window — the builder now emits
+                // `Op::Fused(QMATMUL, _)` so this arm only fires for
+                // direct legacy-variant construction (tests). Drops
+                // when QMatMul's `Op` variant is retired in a
+                // follow-up step-5-style commit.
                 Op::QMatMul { .. } => {
-                    // Quantized matmul is only used for frozen weights
-                    // in the expected serving-inference use case, so
-                    // backward is not implemented. If we ever need to
-                    // fine-tune through quantized weights (e.g. QLoRA
-                    // on adapter params attached to a frozen Q-weight),
-                    // the plan is: dequantize the weight once, run a
-                    // standard matmul backward, zero the gradient on
-                    // the Q-bytes input.
                     panic!(
                         "backward: QMatMul is not differentiable (quantized \
                          weights are frozen). Use a dequantize + standard \
@@ -5820,12 +5840,15 @@ impl Tensor {
                 // `Op::Fused(CONV2D, _)` below carries the full
                 // backward logic (including the inner dW Conv2D
                 // emission, which itself goes through Op::Fused).
+                // Phase 7.6 step 4 (final): the builders for
+                // ConvTranspose2D, FlashAttn, and PagedAttn now emit
+                // `Op::Fused(<id>, _)`; these legacy backward arms
+                // still fire for direct legacy-variant constructions
+                // (tests, intermediate nodes from Conv2D's backward
+                // before that itself migrates). They drop when the
+                // legacy `Op` variants are retired in a step-5-style
+                // follow-up.
                 Op::ConvTranspose2D { .. } => {
-                    // Higher-order grad of the transposed conv isn't
-                    // needed for Conv2D's backward (which only consumes
-                    // the forward output). Adding it requires the same
-                    // dilation-as-stride trick as Conv2D's dW. Punt
-                    // until a real consumer asks for it.
                     panic!(
                         "Tensor::backward: Op::ConvTranspose2D does not \
                          yet have its own gradient rule (only used \
@@ -5833,15 +5856,6 @@ impl Tensor {
                     );
                 }
                 Op::FlashAttn { .. } => {
-                    // Backward via recompute is implemented in
-                    // fuel_reference_backend::attention::attention_flash_backward.
-                    // Wiring it as a graph rewrite needs three new
-                    // gradient nodes (dQ, dK, dV) plus the recompute
-                    // pass — sized as a follow-up. Today's lazy
-                    // gradient is undefined for FlashAttn; users who
-                    // need training-on-attention should compose
-                    // attention from matmul + softmax (which has
-                    // working gradients) until the rule lands.
                     panic!(
                         "Tensor::backward: Op::FlashAttn does not \
                          yet have a gradient rule. Compose attention \
@@ -5849,10 +5863,6 @@ impl Tensor {
                     );
                 }
                 Op::PagedAttn { .. } => {
-                    // Paged attention is decode-side only by
-                    // construction (variable-length KV cache, no
-                    // training pass writes through it). No gradient
-                    // rule.
                     panic!(
                         "Tensor::backward: Op::PagedAttn is decode-only; \
                          no gradient rule exists.",
@@ -6041,15 +6051,21 @@ impl Tensor {
                             );
                         }
                         let perm_01 = vec![1usize, 0, 2, 3];
+                        // Phase 7.6 step 4 (final): emit registry form
+                        // for the inner dX node so the gradient subgraph
+                        // routes consistently through Op::Fused dispatch.
                         let grad_x = push_node(
                             &graph_handle,
-                            Op::ConvTranspose2D {
-                                stride,
-                                padding,
-                                output_padding: (out_pad_h, out_pad_w),
-                                dilation: (1, 1),
-                                groups,
-                            },
+                            Op::Fused(
+                                crate::registry::FusedOps::CONV_TRANSPOSE2D,
+                                crate::registry::FusedOpParams::ConvTranspose2D {
+                                    stride,
+                                    padding,
+                                    output_padding: (out_pad_h, out_pad_w),
+                                    dilation: (1, 1),
+                                    groups,
+                                },
+                            ),
                             vec![up_id, weight],
                             x_shape.clone(),
                             dtype,
@@ -6141,15 +6157,62 @@ impl Tensor {
                         || fid == crate::registry::FusedOps::REDUCE_MAX_TO_BACKWARD
                     {
                         // Higher-order gradients through backward
-                        // helpers panic — mirrors the legacy
-                        // Op::SoftmaxLastDimBackward | ... arm above
-                        // (which still fires for any directly-
-                        // constructed legacy backward node). Step 5
-                        // drops the legacy arm; this one stays.
+                        // helpers panic.
                         panic!(
                             "backward: higher-order gradients through \
                              softmax/layer_norm/rms_norm/reduce_max_to backward \
                              helpers are not yet supported in the MVP."
+                        );
+                    } else if fid == crate::registry::FusedOps::CONV_TRANSPOSE2D {
+                        // Higher-order grad of the transposed conv
+                        // isn't needed for Conv2D's backward (which
+                        // only consumes the forward output). Adding
+                        // it requires the same dilation-as-stride
+                        // trick as Conv2D's dW. Punt until a real
+                        // consumer asks for it.
+                        panic!(
+                            "Tensor::backward: ConvTranspose2D does \
+                             not yet have its own gradient rule \
+                             (only used in the forward path of \
+                             Conv2D's backward).",
+                        );
+                    } else if fid == crate::registry::FusedOps::FLASH_ATTN {
+                        // Backward via recompute is implemented in
+                        // fuel_reference_backend::attention::attention_flash_backward.
+                        // Wiring it as a graph rewrite needs three
+                        // new gradient nodes (dQ, dK, dV) plus the
+                        // recompute pass — sized as a follow-up.
+                        // Today's lazy gradient is undefined for
+                        // FlashAttn; users who need
+                        // training-on-attention should compose
+                        // attention from matmul + softmax (which has
+                        // working gradients) until the rule lands.
+                        panic!(
+                            "Tensor::backward: FlashAttn does not \
+                             yet have a gradient rule. Compose \
+                             attention from matmul + softmax for \
+                             differentiable use.",
+                        );
+                    } else if fid == crate::registry::FusedOps::PAGED_ATTN {
+                        // Paged attention is decode-side only by
+                        // construction (variable-length KV cache, no
+                        // training pass writes through it). No
+                        // gradient rule.
+                        panic!(
+                            "Tensor::backward: PagedAttn is \
+                             decode-only; no gradient rule exists.",
+                        );
+                    } else if fid == crate::registry::FusedOps::QMATMUL {
+                        // Quantized matmul: weights are frozen
+                        // bytes; activation gradient isn't
+                        // implemented today. Dequantize-then-matmul
+                        // is the workaround if differentiable
+                        // quantized inference is needed.
+                        panic!(
+                            "backward: QMatMul is not differentiable \
+                             (quantized weights are frozen). Use a \
+                             dequantize + standard matmul if you \
+                             need gradients through this input."
                         );
                     } else {
                         panic!(
