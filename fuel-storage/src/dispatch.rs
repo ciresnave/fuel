@@ -5184,17 +5184,40 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// crate-private CPU dispatch wrappers stay co-located with their
 /// registration.
 ///
-/// Today's coverage:
+/// Today's coverage (Phase 7.6 step 6 — 2026-05-11):
 /// - `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `CONV2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
+/// - `SOFTMAX_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `RMS_NORM_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `LAYER_NORM_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `ROPE` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `CONV_TRANSPOSE2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
+/// - `FLASH_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
+/// - `PAGED_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
+/// - `QMATMUL` × `Cpu` × {F32 activations + U32 weights} — 1 impl
+///
+/// Total: 53 CPU BackendImpls registered.
+///
+/// Not yet covered (separate follow-up):
+/// - The four backward helpers (SoftmaxLastDimBackward,
+///   LayerNormLastDimBackward, RmsNormLastDimBackward,
+///   ReduceMaxToBackward) have no CPU byte-level wrappers in this
+///   file — their dispatch flows through the `GraphBackend` trait
+///   methods (`self.backend.softmax_last_dim_backward()` etc.) in
+///   `fuel-graph-executor`. Their step-6 registration awaits either
+///   wrapper conversion or step-9's trait-method-as-KernelRef path.
 ///
 /// Backend crates (fuel-cuda-backend, fuel-vulkan-backend) extend by
 /// composing against the registry from their own startup paths or via
 /// the step-9 binding-table refactor.
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
     use crate::fused::{
-        cost_conv2d_cpu, cost_fused_linear_cpu, CONV2D_CPU_PRECISION,
-        FUSED_LINEAR_CPU_PRECISION,
+        cost_attn_cpu, cost_conv2d_cpu, cost_conv_transpose2d_cpu,
+        cost_fused_linear_cpu, cost_norm_family_cpu, cost_qmatmul_cpu,
+        cost_rope_cpu, ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
+        CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
+        NORM_FAMILY_CPU_PRECISION, QMATMUL_CPU_PRECISION,
+        ROPE_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
@@ -5216,6 +5239,43 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     const CV_BF16_BIAS: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
     const CV_F16_NOB:  &[DType] = &[DType::F16,  DType::F16,  DType::F16];
     const CV_F16_BIAS: &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+
+    // Unary (in, out) — used by Softmax/RmsNorm/LayerNorm.
+    const UNARY_F32:  &[DType] = &[DType::F32,  DType::F32];
+    const UNARY_F64:  &[DType] = &[DType::F64,  DType::F64];
+    const UNARY_BF16: &[DType] = &[DType::BF16, DType::BF16];
+    const UNARY_F16:  &[DType] = &[DType::F16,  DType::F16];
+
+    // Rope (x, cos, sin, out) — all four dtypes agree.
+    const ROPE_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const ROPE_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const ROPE_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const ROPE_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+
+    // FlashAttn: (q, k, v, [alibi], out) — no-alibi 4-tuple,
+    // with-alibi 5-tuple. Same wrapper handles both.
+    const FA_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const FA_F32_A:    &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const FA_F64_NOA:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const FA_F64_A:    &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const FA_BF16_NOA: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const FA_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const FA_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+    const FA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
+
+    // PagedAttn: (q, kc, vc, bt:U32, cl:U32, [alibi], out).
+    const PA_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::U32, DType::U32, DType::F32];
+    const PA_F32_A:    &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::U32, DType::U32, DType::F32,  DType::F32];
+    const PA_F64_NOA:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::U32, DType::U32, DType::F64];
+    const PA_F64_A:    &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::U32, DType::U32, DType::F64,  DType::F64];
+    const PA_BF16_NOA: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::U32, DType::U32, DType::BF16];
+    const PA_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::U32, DType::U32, DType::BF16, DType::BF16];
+    const PA_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16];
+    const PA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16,  DType::F16];
+
+    // QMatMul: (a:F32 activations, w_q:U32 bytes, out:F32). Only F32
+    // is wired today.
+    const QM_F32: &[DType] = &[DType::F32, DType::U32, DType::F32];
 
     let cpu = BackendId::Cpu;
     register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F32,
@@ -5270,6 +5330,188 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         conv2d_f16_cpu_wrapper,
         cost = cost_conv2d_cpu,
         precision = CONV2D_CPU_PRECISION);
+
+    // Phase 7.6 step 6 (continued): SoftmaxLastDim × 4 dtypes.
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_F32,
+        softmax_last_dim_f32_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_F64,
+        softmax_last_dim_f64_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_BF16,
+        softmax_last_dim_bf16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_F16,
+        softmax_last_dim_f16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+
+    // RmsNormLastDim × 4 dtypes.
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_F32,
+        rms_norm_last_dim_f32_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_F64,
+        rms_norm_last_dim_f64_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_BF16,
+        rms_norm_last_dim_bf16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_F16,
+        rms_norm_last_dim_f16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+
+    // LayerNormLastDim × 4 dtypes.
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_F32,
+        layer_norm_last_dim_f32_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_F64,
+        layer_norm_last_dim_f64_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_BF16,
+        layer_norm_last_dim_bf16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_F16,
+        layer_norm_last_dim_f16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+
+    // Rope × 4 dtypes.
+    register_fused!(r, FusedOps::ROPE, cpu, ROPE_F32,
+        rope_f32_cpu_wrapper,
+        cost = cost_rope_cpu,
+        precision = ROPE_CPU_PRECISION);
+    register_fused!(r, FusedOps::ROPE, cpu, ROPE_F64,
+        rope_f64_cpu_wrapper,
+        cost = cost_rope_cpu,
+        precision = ROPE_CPU_PRECISION);
+    register_fused!(r, FusedOps::ROPE, cpu, ROPE_BF16,
+        rope_bf16_cpu_wrapper,
+        cost = cost_rope_cpu,
+        precision = ROPE_CPU_PRECISION);
+    register_fused!(r, FusedOps::ROPE, cpu, ROPE_F16,
+        rope_f16_cpu_wrapper,
+        cost = cost_rope_cpu,
+        precision = ROPE_CPU_PRECISION);
+
+    // ConvTranspose2D × 4 dtypes × {no-bias, with-bias}. The CPU
+    // wrapper handles both — same dispatch pattern as Conv2D.
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F32_NOB,
+        conv_transpose2d_f32_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F32_BIAS,
+        conv_transpose2d_f32_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F64_NOB,
+        conv_transpose2d_f64_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F64_BIAS,
+        conv_transpose2d_f64_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_BF16_NOB,
+        conv_transpose2d_bf16_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_BF16_BIAS,
+        conv_transpose2d_bf16_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F16_NOB,
+        conv_transpose2d_f16_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F16_BIAS,
+        conv_transpose2d_f16_cpu_wrapper,
+        cost = cost_conv_transpose2d_cpu,
+        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+
+    // FlashAttn × 4 dtypes × {no-alibi, with-alibi}.
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_NOA,
+        flash_attn_f32_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_A,
+        flash_attn_f32_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F64_NOA,
+        flash_attn_f64_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F64_A,
+        flash_attn_f64_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_BF16_NOA,
+        flash_attn_bf16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_BF16_A,
+        flash_attn_bf16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F16_NOA,
+        flash_attn_f16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F16_A,
+        flash_attn_f16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+
+    // PagedAttn × 4 dtypes × {no-alibi, with-alibi}.
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F32_NOA,
+        paged_attn_f32_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F32_A,
+        paged_attn_f32_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F64_NOA,
+        paged_attn_f64_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F64_A,
+        paged_attn_f64_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_BF16_NOA,
+        paged_attn_bf16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_BF16_A,
+        paged_attn_bf16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F16_NOA,
+        paged_attn_f16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F16_A,
+        paged_attn_f16_cpu_wrapper,
+        cost = cost_attn_cpu,
+        precision = ATTN_CPU_PRECISION);
+
+    // QMatMul × F32 activations × U32 weights (1 impl — only F32 is
+    // wired in the legacy executor today).
+    register_fused!(r, FusedOps::QMATMUL, cpu, QM_F32,
+        qmatmul_f32_cpu_wrapper,
+        cost = cost_qmatmul_cpu,
+        precision = QMATMUL_CPU_PRECISION);
 }
 
 #[cfg(test)]

@@ -475,6 +475,316 @@ pub const CONV2D_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
             re-run bit-identical.",
 };
 
+// =============================================================================
+// Phase 7.6 step 6 — cost functions + PrecisionGuarantees for the
+// remaining 8 ops that have CPU byte-level wrappers in
+// `fuel-storage::dispatch`. The four backward helpers
+// (SoftmaxLastDimBackward / LayerNormLastDimBackward /
+// RmsNormLastDimBackward / ReduceMaxToBackward) are not covered
+// here — their CPU dispatch flows through the `GraphBackend` trait
+// methods in `fuel-graph-executor`, not the byte-level binding
+// table. Wrapper conversion + step-6 registration for those is a
+// follow-up.
+// =============================================================================
+
+/// Shared precision guarantee for the norm/softmax family — softmax,
+/// rms_norm, layer_norm. All three CPU kernels use deterministic
+/// elementwise + scalar-reduction patterns with F32 accumulator
+/// (F64 for F64 input; BF16/F16 multiply in F32 and narrow at end).
+/// Same shape as [`FUSED_LINEAR_CPU_PRECISION`] — the numerical
+/// character is governed by the same "F32 accumulator, deterministic
+/// iteration order" properties.
+pub const NORM_FAMILY_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend Softmax/RmsNorm/LayerNorm: deterministic \
+            elementwise + per-row reduction; F32 accumulator (F64 for \
+            F64 input); BF16/F16 multiply in F32 and narrow at end; \
+            same-hardware re-run bit-identical.",
+};
+
+/// Cost model for `(SoftmaxLastDim | RmsNormLastDim | LayerNormLastDim,
+/// Cpu)` kernels — outer-product structure: `outer × last_dim`
+/// elementwise pass + scalar reduction. FLOPs scale linearly with
+/// element count, bandwidth dominates for typical token-dim sizes.
+///
+/// Shapes: `[x]` where `x` is rank-≥1; the reduction is along the
+/// last axis.
+pub fn cost_norm_family_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 1, "Norm-family cost: expected 1 input shape");
+    let dims = shapes[0].dims();
+    if dims.is_empty() {
+        return CostEstimate::default();
+    }
+    let elems: u64 = dims.iter().map(|&d| d as u64).product();
+    // ~5 FLOPs per element on average for softmax (max-subtract + exp
+    // + sum + divide); ~3 for rms_norm (sqr + sum + sqrt + divide);
+    // ~7 for layer_norm (mean-sub + sqr + sum + sqrt + divide). Use
+    // 5 as a midpoint; cost is advisory.
+    let flops = 5 * elems;
+    // 2 reads + 1 write of every element.
+    let bytes_moved = 3 * elems * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(ROPE, Cpu, *)` impls. Rotary position
+/// embedding is a rotation in 2D subspaces — multiplies + adds with
+/// the cos/sin tables; F32 accumulator semantics match the norm
+/// family.
+pub const ROPE_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend Rope: per-head rotation `out = x·cos + \
+            rotated(x)·sin` with deterministic iteration order. \
+            BF16/F16 multiply in F32 and narrow at end; same-hardware \
+            re-run bit-identical.",
+};
+
+/// Cost model for `(ROPE, Cpu)` — per-element rotation costs 4 FMAs
+/// (2 multiplies + 2 adds in two 2D planes).
+///
+/// Shapes: `[x, cos, sin]` where `x = [..., seq, head_dim]`,
+/// `cos = sin = [seq, head_dim]`.
+pub fn cost_rope_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 3, "Rope cost: expected 3 input shapes (x, cos, sin)");
+    let dims = shapes[0].dims();
+    if dims.is_empty() {
+        return CostEstimate::default();
+    }
+    let elems: u64 = dims.iter().map(|&d| d as u64).product();
+    // 4 FLOPs per element (2 FMA pairs across the two rotation planes).
+    let flops = 4 * elems;
+    // Read x + cos/sin tables (small), write x_out.
+    let cs_elems: u64 = shapes[1].dims().iter().map(|&d| d as u64).product::<u64>() * 2;
+    let bytes_moved = (2 * elems + cs_elems) * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(CONV_TRANSPOSE2D, Cpu, *)` impls.
+/// Same structure as Conv2D — textbook nested-loop accumulation in
+/// F32 (F64 for F64 input).
+pub const CONV_TRANSPOSE2D_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend ConvTranspose2D: textbook scatter-with-stride \
+            + nested loops; F32 accumulator (F64 for F64); BF16/F16 \
+            multiply in F32 and narrow at end; same-hardware bit-identical.",
+};
+
+/// Cost model for `(CONV_TRANSPOSE2D, Cpu)` — FLOP count parallels
+/// Conv2D: `2·N·Cout·Hout·Wout·(Cin/g)·Kh·Kw` (each output position
+/// accumulates contributions from `Cin/g · Kh · Kw` input positions,
+/// reading transposed).
+///
+/// Shapes: `[x, weight]` where `x = [N, Cin, H, W]`,
+/// `weight = [Cin, Cout/groups, Kh, Kw]` (note transposed channel
+/// order vs Conv2D).
+pub fn cost_conv_transpose2d_cpu(
+    shapes: &[Shape],
+    params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 2, "ConvTranspose2D cost: expected 2 input shapes");
+    let (stride, padding, output_padding, dilation, groups) = match params {
+        FusedOpParams::ConvTranspose2D {
+            stride, padding, output_padding, dilation, groups,
+        } => (*stride, *padding, *output_padding, *dilation, *groups),
+        _ => return CostEstimate::default(),
+    };
+    let x_dims = shapes[0].dims();
+    let w_dims = shapes[1].dims();
+    if x_dims.len() != 4 || w_dims.len() != 4 || groups == 0 {
+        return CostEstimate::default();
+    }
+    let (n, cin, h_in, w_in) = (
+        x_dims[0] as u64, x_dims[1] as u64,
+        x_dims[2] as u64, x_dims[3] as u64,
+    );
+    let (_, cout_per_g, kh, kw) = (
+        w_dims[0] as u64, w_dims[1] as u64,
+        w_dims[2] as u64, w_dims[3] as u64,
+    );
+    let cout = cout_per_g * groups as u64;
+    // Output spatial dims: `(H-1)·stride - 2·pad + dilation·(K-1) + out_pad + 1`.
+    let h_out = h_in.saturating_sub(1) * stride.0 as u64
+        + dilation.0 as u64 * kh.saturating_sub(1)
+        + output_padding.0 as u64
+        + 1;
+    let h_out = h_out.saturating_sub(2 * padding.0 as u64);
+    let w_out = w_in.saturating_sub(1) * stride.1 as u64
+        + dilation.1 as u64 * kw.saturating_sub(1)
+        + output_padding.1 as u64
+        + 1;
+    let w_out = w_out.saturating_sub(2 * padding.1 as u64);
+    let cin_per_g = cin / groups as u64;
+    let flops = 2u64 * n * cout * h_out * w_out * cin_per_g * kh * kw;
+    let elems_in   = n * cin * h_in * w_in;
+    let elems_w    = cin * cout_per_g * kh * kw;
+    let elems_out  = n * cout * h_out * w_out;
+    let bytes_moved = (elems_in + elems_w + elems_out) * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(FLASH_ATTN | PAGED_ATTN, Cpu, *)` impls.
+/// The CPU naive-attention reference is bit-stable per-hardware
+/// because both kernels iterate in fixed order. However the tiled
+/// flash-attention GPU kernel produces different numerics than the
+/// naive reference (different reduction tree); that's a GPU-side
+/// PrecisionGuarantee concern — the CPU side stays bit-stable.
+pub const ATTN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend FlashAttn/PagedAttn: naive scaled-dot- \
+            product reference; F32 accumulator; deterministic \
+            iteration order; bit-identical re-run on same hardware. \
+            GPU kernels produce different numerics (tiled softmax) — \
+            their PrecisionGuarantee is declared separately when they \
+            register.",
+};
+
+/// Cost model for `(FLASH_ATTN, Cpu)` and `(PAGED_ATTN, Cpu)` kernels
+/// — scaled-dot-product attention is `O(B·Hq·Sq·Sk·D)` multiplies
+/// for the QK matmul + same for the PV matmul, plus softmax (small).
+///
+/// For FlashAttn shapes are `[q, k, v, (alibi)]` with
+/// `q = [B, Hq, Sq, D]`, `k = v = [B, Hkv, Sk, D]`.
+/// For PagedAttn the cache shapes complicate the calculation; we
+/// approximate using q's `Sq` × the maximum context length implied
+/// by k_cache's `num_blocks · block_size`. Both share this function
+/// because the dominant FLOP term has the same shape.
+pub fn cost_attn_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    if shapes.is_empty() {
+        return CostEstimate::default();
+    }
+    let q_dims = shapes[0].dims();
+    if q_dims.len() != 4 {
+        return CostEstimate::default();
+    }
+    let (b, hq, sq, d) = (
+        q_dims[0] as u64, q_dims[1] as u64,
+        q_dims[2] as u64, q_dims[3] as u64,
+    );
+    // Approximate K-len from input[1] (k or k_cache). For FlashAttn
+    // k.shape[-2] is Sk; for PagedAttn k_cache.shape is `[num_blocks,
+    // block_size, Hkv, D]` so the effective Sk per query is bounded
+    // by `num_blocks · block_size`.
+    let sk: u64 = if shapes.len() >= 2 {
+        let k_dims = shapes[1].dims();
+        if k_dims.len() == 4 {
+            // FlashAttn shape: [B, Hkv, Sk, D] → Sk at index 2.
+            // PagedAttn shape: [num_blocks, block_size, Hkv, D] →
+            // total slots = dim[0] · dim[1]; conservative upper bound.
+            (k_dims[2] as u64).max(k_dims[0] as u64 * k_dims[1] as u64)
+        } else {
+            sq
+        }
+    } else {
+        sq
+    };
+    // QK matmul: 2·B·Hq·Sq·Sk·D FLOPs.
+    // PV matmul: 2·B·Hq·Sq·Sk·D FLOPs.
+    // Softmax: ~5·B·Hq·Sq·Sk FLOPs (small relative to the matmuls).
+    let mm_flops = 4u64 * b * hq * sq * sk * d;
+    let sm_flops = 5u64 * b * hq * sq * sk;
+    // Bandwidth: q, k, v reads + output write; approximate.
+    let elems_qkv = b * hq * sq * d + 2 * b * hq * sk * d;
+    let elems_out = b * hq * sq * d;
+    let bytes_moved = (elems_qkv + elems_out) * 4;
+    CostEstimate {
+        flops: mm_flops + sm_flops,
+        bytes_moved,
+        // Attention has higher launch overhead than elementwise.
+        kernel_overhead_ns: 200,
+    }
+}
+
+/// Precision guarantee for `(QMATMUL, Cpu, *)` impls. Quantized
+/// matmul dequantizes inline; the dequant arithmetic is exact for
+/// the quantization scheme's block format, and the F32 matmul
+/// accumulator stays deterministic. Bit-identical on same hardware.
+pub const QMATMUL_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend QMatMul: per-block dequant + F32 matmul \
+            accumulate; deterministic iteration order; bit-identical \
+            re-run on same hardware. Inherent precision loss from \
+            the quantization itself is a property of the QuantType, \
+            not the kernel — captured separately when the calibration \
+            framework lands.",
+};
+
+/// Cost model for `(QMATMUL, Cpu)` — same FLOP count as a regular
+/// matmul (the dequant adds a small per-block overhead that's
+/// dwarfed by the FMA count for any useful K).
+///
+/// Shapes: `[a, w_q_bytes]` where `a = [..., M, K]`. `N` comes from
+/// the FusedOpParams::QMatMul payload.
+pub fn cost_qmatmul_cpu(
+    shapes: &[Shape],
+    params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 2, "QMatMul cost: expected 2 input shapes");
+    let (k, n) = match params {
+        FusedOpParams::QMatMul { k, n, .. } => (*k as u64, *n as u64),
+        _ => return CostEstimate::default(),
+    };
+    let a_dims = shapes[0].dims();
+    let rank = a_dims.len();
+    if rank < 2 {
+        return CostEstimate::default();
+    }
+    let m = a_dims[rank - 2] as u64;
+    let batch: u64 = a_dims[..rank - 2].iter().map(|&d| d as u64).product::<u64>().max(1);
+    // 2·M·N·K FLOPs per batch (FMA).
+    let flops = 2 * batch * m * n * k;
+    // Bandwidth: read A + W_Q (counted as bytes via shapes[1]
+    // elem_count of U32 = 4 bytes), write C.
+    let a_elems = batch * m * k;
+    let w_u32_elems: u64 = shapes[1].dims().iter().map(|&d| d as u64).product();
+    let c_elems = batch * m * n;
+    let bytes_moved = (a_elems + c_elems) * 4 + w_u32_elems * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,7 +957,48 @@ mod tests {
         }
     }
 
-    /// Conv2D cost — FLOPs scale with `2·N·Cout·Hout·Wout·(Cin/g)·Kh·Kw`
+    /// Step 6 — coverage assertion for the 8 ops that gained
+    /// BackendImpls in this commit (SoftmaxLastDim, RmsNormLastDim,
+    /// LayerNormLastDim, Rope, ConvTranspose2D, FlashAttn, PagedAttn,
+    /// QMatMul). Each entry should have at least one CPU impl after
+    /// `default_kernel_registry()` populates.
+    #[test]
+    fn default_kernel_registry_step6_coverage() {
+        use fuel_graph::registry::FusedOps;
+
+        let r = default_kernel_registry();
+        // (id, expected_impl_count) — derived from the dtype-tuple
+        // shapes registered. SoftmaxLastDim/RmsNormLastDim/
+        // LayerNormLastDim/Rope = 4 dtypes each. ConvTranspose2D /
+        // FlashAttn / PagedAttn = 4 dtypes × 2 shapes = 8 each.
+        // QMatMul = 1 (F32 only).
+        for (id, want) in [
+            (FusedOps::SOFTMAX_LAST_DIM,    4usize),
+            (FusedOps::RMS_NORM_LAST_DIM,   4),
+            (FusedOps::LAYER_NORM_LAST_DIM, 4),
+            (FusedOps::ROPE,                4),
+            (FusedOps::CONV_TRANSPOSE2D,    8),
+            (FusedOps::FLASH_ATTN,          8),
+            (FusedOps::PAGED_ATTN,          8),
+            (FusedOps::QMATMUL,             1),
+        ] {
+            let impls = r.impls_for(id);
+            assert_eq!(
+                impls.len(), want,
+                "expected {want} CPU impls for FusedOpId {id:?}, got {}",
+                impls.len(),
+            );
+            for (backend, impl_) in impls {
+                assert_eq!(*backend, BackendId::Cpu);
+                assert!(
+                    impl_.precision.bit_stable_on_same_hardware,
+                    "CPU impl for {id:?} should be bit-stable on same hardware",
+                );
+            }
+        }
+    }
+
+    /// Conv2D cost — FLOPs scale with `2·N·Cout·Hout·Wave·(Cin/g)·Kh·Kw`
     /// + bias-add FLOPs (when bias is present).
     #[test]
     fn cost_conv2d_cpu_flops_scale() {
