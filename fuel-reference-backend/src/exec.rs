@@ -627,6 +627,11 @@ pub fn eval_node_with_op(
         Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
         Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
         Op::Rope => eval_rope(inputs, cache),
+        // Phase 7.6 step 4 (continued): same bridge as SoftmaxLastDim —
+        // registry-extended Rope routes to the same eval_rope kernel.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => {
+            eval_rope(inputs, cache)
+        }
         Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
         Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
         Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),

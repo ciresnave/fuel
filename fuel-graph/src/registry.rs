@@ -33,6 +33,7 @@ use std::collections::HashMap;
 pub mod fused_linear;
 pub mod layer_norm_last_dim;
 pub mod rms_norm_last_dim;
+pub mod rope;
 pub mod softmax_last_dim;
 
 /// Stable identifier for a registered fused op. Indexes into
@@ -122,7 +123,12 @@ pub enum FusedOpParams {
     /// the division by sqrt(variance + eps). Like RmsNormLastDim, the
     /// last-dim axis is implicit in the input shape.
     LayerNormLastDim { eps: f64 },
-    // Step 4 (continued) extends this enum with: Rope, Conv2D { ... },
+    /// Rope — rotary position embedding with caller-supplied cos/sin
+    /// tables. No per-instance parameters: `seq` and `head_dim` are
+    /// recovered from the inputs at execution time (see
+    /// `fuel-storage::pipelined::op_to_op_params`).
+    Rope,
+    // Step 4 (continued) extends this enum with: Conv2D { ... },
     // ConvTranspose2D { ... }, FlashAttn { ... }, PagedAttn { ... },
     // QMatMul { quant_type, k, n }, plus the four backward helpers.
 }
@@ -169,6 +175,11 @@ impl FusedOpParams {
             FusedOpParams::LayerNormLastDim { eps } => FusedOpParamsKey {
                 tag: 4,
                 bits: vec![eps.to_bits()],
+                ints: Vec::new(),
+            },
+            FusedOpParams::Rope => FusedOpParamsKey {
+                tag: 5,
+                bits: Vec::new(),
                 ints: Vec::new(),
             },
         }
@@ -408,8 +419,12 @@ impl FusedOps {
     /// LayerNormLastDim — `(x - mean) / sqrt(var + eps)` along the
     /// last dim (no affine). Single input + eps param.
     pub const LAYER_NORM_LAST_DIM: FusedOpId = FusedOpId(4);
-    // Step 4 (continued) adds: ROPE, CONV2D, CONV_TRANSPOSE2D,
-    // FLASH_ATTN, PAGED_ATTN, QMATMUL, plus the 4 backward helpers.
+    /// Rope — rotary position embedding with caller-supplied cos/sin
+    /// tables. Three inputs `[x, cos, sin]`, parameterless (the seq/
+    /// head_dim shape parameters live in the input shapes).
+    pub const ROPE: FusedOpId = FusedOpId(5);
+    // Step 4 (continued) adds: CONV2D, CONV_TRANSPOSE2D, FLASH_ATTN,
+    // PAGED_ATTN, QMATMUL, plus the 4 backward helpers.
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -428,6 +443,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(fused_linear::entry())
             .with_entry(rms_norm_last_dim::entry())
             .with_entry(layer_norm_last_dim::entry())
+            .with_entry(rope::entry())
     })
 }
 

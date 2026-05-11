@@ -548,6 +548,11 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
         Op::Gather { .. } => Some(OpKind::Gather),
         Op::Rope => Some(OpKind::Rope),
+        // Phase 7.6 step 4 (continued): registry-extended Rope routes
+        // through the same OpKind::Rope binding.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => {
+            Some(OpKind::Rope)
+        }
         Op::IndexAdd { .. } => Some(OpKind::IndexAdd),
         Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
         Op::ArgMaxDim(_) => Some(OpKind::ArgMaxDim),
@@ -1131,7 +1136,13 @@ fn op_to_op_params(
                 dim: *dim,
             }
         }
-        Op::Rope => {
+        // Phase 7.6 step 4 (continued): legacy `Op::Rope` and the
+        // registry-extended `Op::Fused(ROPE, _)` share the same shape
+        // contract — three inputs (x, cos, sin), x rank ≥ 2 — and
+        // recover (outer_count, seq, head_dim) identically from x's
+        // layout. Same body, dispatched off either op variant.
+        Op::Rope
+        | Op::Fused(_, fuel_graph::registry::FusedOpParams::Rope) => {
             // Inputs: (x, cos, sin). x is [..., seq, head_dim];
             // cos/sin are [seq, head_dim] (validated at graph build).
             if node.inputs.len() != 3 {
