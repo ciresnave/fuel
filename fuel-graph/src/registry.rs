@@ -195,18 +195,30 @@ pub struct PatternTree {
 
 /// Result of a successful pattern match. Carries the bindings — the
 /// concrete `NodeId`s that the pattern's variables matched against in
-/// the host graph. The fusion rule then uses these to assemble the
-/// fused-op node's input list.
+/// the host graph — plus the [`FusedOpParams`] payload the fusion rule
+/// should stamp onto the emitted `Op::Fused(id, params)` node.
 ///
-/// Step 1 ships an opaque struct; SoftmaxLastDim's port in step 3
-/// fills in the bindings shape. Pattern callers stash the resolved
-/// NodeIds inline; declarative-tree variables resolve to entries in
-/// `bindings`.
-#[derive(Debug, Clone, Default)]
+/// `bindings` is index-keyed: bindings sorted by index become the
+/// fused-op node's input list (`inputs[0]` ← index 0, `inputs[1]` ←
+/// index 1, …). SoftmaxLastDim's match has one binding `(0, x_id)`
+/// and so emits a single-input node; FusedLinear (3 inputs:
+/// `[a, b, bias]`) emits three bindings indexed 0–2.
+///
+/// `params` is the matcher's authority on the resulting fused-op's
+/// per-instance parameters. The matcher knows what variant of
+/// [`FusedOpParams`] it's recognizing; carrying that decision in the
+/// match result keeps [`crate::opt::FusionRule::rewrite`] generic
+/// across all registered fused ops.
+#[derive(Debug, Clone)]
 pub struct PatternMatch {
-    /// Variable-id → resolved NodeId. Empty when the pattern carries no
-    /// variables. SoftmaxLastDim's matcher fills in {x → original_x}.
+    /// Variable-id → resolved NodeId. The fusion rule sorts by index
+    /// and uses the resolved ids in order as the emitted node's inputs.
     pub bindings: Vec<(usize, NodeId)>,
+    /// Per-instance parameters the matcher stamps onto the fused-op
+    /// node it produces. Parameterless ops (SoftmaxLastDim, FusedLinear)
+    /// stamp their unit variant; parameterized ops (RmsNormLastDim,
+    /// FlashAttn) recover their payload from the matched subgraph.
+    pub params: FusedOpParams,
 }
 
 /// The metadata-side registry. Built at process startup, frozen
