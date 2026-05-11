@@ -268,6 +268,43 @@ impl Layout {
         })
     }
 
+    /// Returns a layout that iterates `dim` in reverse — pure metadata,
+    /// zero copy. The stride at `dim` is negated; `start_offset` is
+    /// shifted forward by `(size-1) * |stride|` so iteration starts at
+    /// what was the last element along `dim`.
+    ///
+    /// Size-0 and size-1 axes are no-ops (no element to flip; the new
+    /// start_offset shift is 0). Successive `flip` calls on the same
+    /// dim are involutive: stride re-negates, offset cancels, you get
+    /// the original layout back.
+    pub fn flip(&self, dim: usize) -> Result<Self> {
+        let rank = self.shape().rank();
+        if dim >= rank {
+            return Err(Error::Msg(format!(
+                "flip: dim {dim} out of bounds for rank {rank}",
+            ))
+            .bt());
+        }
+        let size = self.shape().dims()[dim];
+        let mut new_stride = StrideVec::from_slice(self.stride());
+        let s = new_stride[dim];
+        new_stride[dim] = -s;
+        // For size <= 1 the iteration window is a single position (or
+        // empty), so the offset shift is 0 — flipping degenerate axes
+        // is a no-op.
+        let shift = if size > 1 { (size as isize - 1) * s } else { 0 };
+        // shift may be negative when stride is positive (most common
+        // case) — that pushes start_offset forward in storage units.
+        // For an already-negative stride we'd shift backwards, which
+        // is exactly what undoes a prior flip.
+        let new_start = (self.start_offset as isize + shift) as usize;
+        Ok(Self {
+            shape: self.shape.clone(),
+            stride: new_stride,
+            start_offset: new_start,
+        })
+    }
+
     /// Returns a layout broadcast to the given shape.
     ///
     /// Dimensions of size 1 in `self` are stretched to match the target shape.
@@ -389,6 +426,52 @@ impl Layout {
             left_broadcast,
             right_broadcast,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flip_dim0_of_3x4_negates_stride_and_shifts_offset() {
+        let l = Layout::contiguous(Shape::from_dims(&[3, 4]));
+        let f = l.flip(0).unwrap();
+        assert_eq!(f.shape().dims(), &[3, 4]);
+        assert_eq!(f.stride(), &[-4_isize, 1]);
+        assert_eq!(f.start_offset(), 8); // (3-1) * 4
+        assert!(!f.is_contiguous());
+    }
+
+    #[test]
+    fn flip_is_involutive() {
+        let l = Layout::contiguous(Shape::from_dims(&[3, 4]));
+        let ff = l.flip(0).unwrap().flip(0).unwrap();
+        assert_eq!(ff.shape().dims(), l.shape().dims());
+        assert_eq!(ff.stride(), l.stride());
+        assert_eq!(ff.start_offset(), l.start_offset());
+    }
+
+    #[test]
+    fn flip_size_one_axis_is_noop_offset() {
+        let l = Layout::contiguous(Shape::from_dims(&[1, 4]));
+        let f = l.flip(0).unwrap();
+        assert_eq!(f.start_offset(), 0);
+        assert_eq!(f.stride(), &[-4_isize, 1]);
+    }
+
+    #[test]
+    fn flip_iteration_yields_reversed_offsets() {
+        let l = Layout::contiguous(Shape::from_dims(&[4]));
+        let f = l.flip(0).unwrap();
+        let offsets: Vec<usize> = f.strided_index().collect();
+        assert_eq!(offsets, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn flip_dim_oob_errors() {
+        let l = Layout::contiguous(Shape::from_dims(&[3, 4]));
+        assert!(l.flip(2).is_err());
     }
 }
 

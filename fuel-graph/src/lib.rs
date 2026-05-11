@@ -872,6 +872,7 @@ impl Op {
                 | Op::Slice { .. }
                 | Op::Unsqueeze { .. }
                 | Op::Squeeze { .. }
+                | Op::Flip { .. }
         )
     }
 }
@@ -906,6 +907,7 @@ pub fn derive_view_output_layout(
         Op::Slice { dim, start, len } => input_layout.narrow(*dim, *start, *len),
         Op::Unsqueeze { dim } => input_layout.unsqueeze(*dim),
         Op::Squeeze { dim } => input_layout.squeeze(*dim),
+        Op::Flip { dim } => input_layout.flip(*dim),
         other => Err(fuel_core_types::Error::Msg(format!(
             "derive_view_output_layout called with non-view op {other:?}",
         ))
