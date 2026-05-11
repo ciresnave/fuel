@@ -538,6 +538,11 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::RmsNormLastDim)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM =>
+        {
+            Some(OpKind::LayerNormLastDim)
+        }
         Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
@@ -1234,24 +1239,27 @@ fn op_to_op_params(
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::NormLastDim { outer_count, last_dim, eps: *eps }
         }
-        // Phase 7.6 step 4 (continued): registry-extended RmsNormLastDim
-        // shares the same shape contract; collapse to the same body but
-        // extract eps from FusedOpParams instead of the legacy variant.
+        // Phase 7.6 step 4 (continued): registry-extended RmsNorm /
+        // LayerNorm share the legacy variants' shape contract; the
+        // only difference is where eps lives. Collapse to one body
+        // parameterized on which FusedOpParams variant we got.
         Op::Fused(fid, params)
-            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
+            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM
+                || *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM =>
         {
             let eps = match params {
                 fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps } => *eps,
+                fuel_graph::registry::FusedOpParams::LayerNormLastDim { eps } => *eps,
                 _ => return Err(Error::Msg(format!(
-                    "Op::Fused(RMS_NORM_LAST_DIM, _) expected \
-                     FusedOpParams::RmsNormLastDim, got {params:?}",
+                    "Op::Fused(NORM_LAST_DIM, _) expected \
+                     RmsNormLastDim or LayerNormLastDim params, got {params:?}",
                 )).bt()),
             };
             let il = input_layout(node.inputs[0]);
             let dims = il.shape().dims();
             if dims.is_empty() {
                 return Err(Error::Msg(
-                    "Op::Fused(RMS_NORM_LAST_DIM, _) requires rank ≥ 1".to_string(),
+                    "Op::Fused(NORM_LAST_DIM, _) requires rank ≥ 1".to_string(),
                 )
                 .bt());
             }

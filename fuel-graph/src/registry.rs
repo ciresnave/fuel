@@ -31,6 +31,7 @@ use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
 pub mod fused_linear;
+pub mod layer_norm_last_dim;
 pub mod rms_norm_last_dim;
 pub mod softmax_last_dim;
 
@@ -117,10 +118,13 @@ pub enum FusedOpParams {
     /// division by RMS magnitude. The last-dim axis itself is implicit
     /// in the input shape.
     RmsNormLastDim { eps: f64 },
-    // Step 4 (continued) extends this enum with: LayerNormLastDim { eps },
-    // Rope, Conv2D { ... }, ConvTranspose2D { ... }, FlashAttn { ... },
-    // PagedAttn { ... }, QMatMul { quant_type, k, n }, plus the four
-    // backward helpers.
+    /// LayerNormLastDim — carries the epsilon term used to stabilize
+    /// the division by sqrt(variance + eps). Like RmsNormLastDim, the
+    /// last-dim axis is implicit in the input shape.
+    LayerNormLastDim { eps: f64 },
+    // Step 4 (continued) extends this enum with: Rope, Conv2D { ... },
+    // ConvTranspose2D { ... }, FlashAttn { ... }, PagedAttn { ... },
+    // QMatMul { quant_type, k, n }, plus the four backward helpers.
 }
 
 /// Hashable key for [`FusedOpParams`]. Used by `op_key`/CSE so that two
@@ -159,6 +163,11 @@ impl FusedOpParams {
                 // Encode eps as its raw bit pattern so CSE on two
                 // RmsNormLastDim nodes with the same eps dedupes
                 // (and two with different eps don't).
+                bits: vec![eps.to_bits()],
+                ints: Vec::new(),
+            },
+            FusedOpParams::LayerNormLastDim { eps } => FusedOpParamsKey {
+                tag: 4,
                 bits: vec![eps.to_bits()],
                 ints: Vec::new(),
             },
@@ -396,9 +405,11 @@ impl FusedOps {
     /// RmsNormLastDim — `x / sqrt(mean(x²) + eps)` along the last dim.
     /// Migrated in step 4 (continued). Single input + eps param.
     pub const RMS_NORM_LAST_DIM: FusedOpId = FusedOpId(3);
-    // Step 4 (continued) adds: LAYER_NORM_LAST_DIM, ROPE, CONV2D,
-    // CONV_TRANSPOSE2D, FLASH_ATTN, PAGED_ATTN, QMATMUL, plus the
-    // 4 backward helpers.
+    /// LayerNormLastDim — `(x - mean) / sqrt(var + eps)` along the
+    /// last dim (no affine). Single input + eps param.
+    pub const LAYER_NORM_LAST_DIM: FusedOpId = FusedOpId(4);
+    // Step 4 (continued) adds: ROPE, CONV2D, CONV_TRANSPOSE2D,
+    // FLASH_ATTN, PAGED_ATTN, QMATMUL, plus the 4 backward helpers.
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -416,6 +427,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(softmax_last_dim::entry())
             .with_entry(fused_linear::entry())
             .with_entry(rms_norm_last_dim::entry())
+            .with_entry(layer_norm_last_dim::entry())
     })
 }
 
