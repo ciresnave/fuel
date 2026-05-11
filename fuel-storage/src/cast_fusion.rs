@@ -142,7 +142,13 @@ fn op_kind(op: &Op) -> Option<OpKind> {
 
         // --- dense linear algebra ---
         Op::MatMul => Some(OpKind::MatMul),
-        Op::FusedLinear => Some(OpKind::FusedLinear),
+        // Phase 7.6 step 5 (2026-05-11): FusedLinear lives behind
+        // `Op::Fused(FUSED_LINEAR, _)` now. The cast-fusion rule
+        // doesn't need to match it specially — the route through
+        // Op::Fused already carries the correct dtype info on the
+        // operand nodes; if cast-fusion ever needs to fire on a
+        // fused-linear consumer, add an Op::Fused(FUSED_LINEAR, _)
+        // arm.
 
         // Everything else is a structural or specialized op the
         // cast-fusion rule doesn't target today. Notably: Cast

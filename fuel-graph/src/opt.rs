@@ -362,25 +362,21 @@ impl Rule for LoweringRule {
         // authority. We don't gate on `node.inputs.len()` here.
         match &node.op {
             Op::Fused(fid, _) if *fid == self.id => true,
-            // Legacy-variant fallthrough during the migration window.
-            // Emission sites that haven't yet adopted the
-            // `Op::Fused(id, _)` shape (the pipelined-executor test
-            // that constructs `Op::SoftmaxLastDim` directly) keep
-            // lowering correctly. Step 5 drops the legacy variants
-            // and these arms with them.
-            Op::SoftmaxLastDim if self.id == FusedOps::SOFTMAX_LAST_DIM => true,
+            // Phase 7.6 step 5 (2026-05-11): legacy-variant
+            // fallthroughs have been dropped — every migrated fused
+            // op now flows through `Op::Fused(id, _)`. Step 5 dropped
+            // the per-fused-op `Op` variants together with these
+            // matcher arms.
             _ => false,
         }
     }
 
     fn rewrite(&self, graph: &mut Graph, id: NodeId, remap: &mut HashMap<NodeId, NodeId>) {
-        // Synthesize the params from the matched node's variant.
-        // SoftmaxLastDim has no per-instance payload so this is just a
-        // canonical FusedOpParams::SoftmaxLastDim. Step 4's per-fused-op
-        // migrations extend this match.
+        // Read params from the matched `Op::Fused(_, p)` node; the
+        // legacy primitive-variant fallthroughs were dropped in
+        // step 5.
         let params = match &graph.node(id).op {
             Op::Fused(_, p) => p.clone(),
-            Op::SoftmaxLastDim => FusedOpParams::SoftmaxLastDim,
             other => unreachable!(
                 "LoweringRule::rewrite reached with non-matching op {other:?} \
                  — matcher contract violated"
@@ -817,7 +813,14 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Squeeze { dim } => (48, vec![*dim as i64], vec![], vec![], None, None),
         Op::ReduceSumTo(s) => (43, vec![], vec![], vec![], Some(s.dims().to_vec()), None),
         Op::ReduceMaxTo(s) => (44, vec![], vec![], vec![], Some(s.dims().to_vec()), None),
-        Op::ReduceMaxToBackward => (46, vec![], vec![], vec![], None, None),
+        // Phase 7.6 step 5 (2026-05-11): tags 46/70/71/72/73/74/75/76
+        // formerly assigned to SoftmaxLastDim, LayerNormLastDim,
+        // RmsNormLastDim, Rope and the four backward helpers have
+        // been retired with their `Op` variants. Those ops now flow
+        // through the `Op::Fused(fid, fparams)` arm below (tag 200,
+        // with id + params encoded into the int/bit slots) and CSE
+        // dedupes correctly because each entry produces a distinct
+        // FusedOpId.
 
         Op::SumAll => (50, vec![], vec![], vec![], None, None),
         Op::MaxAll => (51, vec![], vec![], vec![], None, None),
@@ -830,16 +833,6 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::MeanDim(d) => (63, vec![*d as i64], vec![], vec![], None, None),
         Op::ArgMaxDim(d) => (64, vec![*d as i64], vec![], vec![], None, None),
         Op::ArgMinDim(d) => (65, vec![*d as i64], vec![], vec![], None, None),
-
-        Op::SoftmaxLastDim => (70, vec![], vec![], vec![], None, None),
-        Op::LayerNormLastDim { eps } => (71, vec![], vec![eps.to_bits()], vec![], None, None),
-        Op::RmsNormLastDim { eps } => (74, vec![], vec![eps.to_bits()], vec![], None, None),
-        Op::Rope => (75, vec![], vec![], vec![], None, None),
-        Op::RmsNormLastDimBackward { eps } => (76, vec![], vec![eps.to_bits()], vec![], None, None),
-        Op::SoftmaxLastDimBackward => (72, vec![], vec![], vec![], None, None),
-        Op::LayerNormLastDimBackward { eps } => {
-            (73, vec![], vec![eps.to_bits()], vec![], None, None)
-        }
 
         Op::Concat { dim } => (80, vec![*dim as i64], vec![], vec![], None, None),
         Op::Slice { dim, start, len } => (
@@ -2127,12 +2120,11 @@ mod tests {
         let n_exp         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Exp));
         let n_reduce_sum  = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::ReduceSumTo(_)));
         let n_div         = count_op_in_reachable(&graph, &[new_root], |op| matches!(op, Op::Div));
-        // Phase 7.6 step 3: post-migration the builder emits
-        // `Op::Fused(SOFTMAX_LAST_DIM, _)`. The lowering rule fires on
-        // either form; the assertion checks both shapes are gone.
+        // Phase 7.6 step 5: post-migration the builder emits
+        // `Op::Fused(SOFTMAX_LAST_DIM, _)` only — the legacy
+        // `Op::SoftmaxLastDim` variant was retired.
         let n_softmax     = count_op_in_reachable(&graph, &[new_root], |op| {
-            matches!(op, Op::SoftmaxLastDim)
-                || matches!(op, Op::Fused(fid, _) if *fid == FusedOps::SOFTMAX_LAST_DIM)
+            matches!(op, Op::Fused(fid, _) if *fid == FusedOps::SOFTMAX_LAST_DIM)
         });
         assert_eq!(n_reduce_max, 1);
         assert_eq!(n_max_dim, 0, "PR 3.5 max side uses ReduceMaxTo, not MaxDim+Reshape");

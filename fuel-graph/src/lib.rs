@@ -521,37 +521,15 @@ pub enum Op {
     MeanDim(usize),
 
     // --- compositions ---
-    /// Softmax along the last dimension.
-    SoftmaxLastDim,
-    /// Layer normalization along the last dimension, without affine params.
-    /// The epsilon is carried on the op and converted to the target dtype
-    /// by the executor.
-    LayerNormLastDim { eps: f64 },
-    /// Root-mean-square normalization along the last dimension, no
-    /// affine parameters. Formula:
-    ///   y = x / sqrt(mean(x², last) + eps)
-    /// This is the norm RMSNorm-family models (LLaMA, Qwen, Gemma,
-    /// etc.) use on every attention and MLP input. Decomposed in
-    /// fuel-graph proper into sqr → mean_dim → reshape → add_scalar
-    /// → sqrt → broadcast_to → div (9 nodes), this fused op exists
-    /// so backends can dispatch it as a single kernel — the
-    /// difference between 9 kernel launches and 1 at 45+ sites per
-    /// forward pass.
-    RmsNormLastDim { eps: f64 },
-    /// Fused rotary position embedding. Inputs: `(x, cos, sin)`.
-    /// `x` has shape `[..., seq, head_dim]` (head_dim even). `cos` and
-    /// `sin` both have shape `[seq, head_dim]` and broadcast across
-    /// any leading dims. Output shape == x shape.
-    ///
-    /// Formula (rotate_half convention):
-    ///   out[..., s, i]        = x[..., s, i]         * cos[s, i]         - x[..., s, i + h] * sin[s, i]
-    ///   out[..., s, i + h]    = x[..., s, i + h]     * cos[s, i + h]     + x[..., s, i]     * sin[s, i + h]
-    /// where `h = head_dim / 2`.
-    ///
-    /// Replaces the slice+neg+concat+broadcast_mul decomposition in
-    /// `Tensor::rope_with_tables`, which was dispatching 72+ kernels
-    /// per layer (~1760 per TinyLlama token). This fuses it to 1.
-    Rope,
+    //
+    // Phase 7.6 step 5 (2026-05-11): the per-fused-op primitive variants
+    // (SoftmaxLastDim, LayerNormLastDim { eps }, RmsNormLastDim { eps },
+    // Rope, Conv2D { … }, FusedLinear) plus the four backward-helper
+    // variants (SoftmaxLastDimBackward, LayerNormLastDimBackward,
+    // RmsNormLastDimBackward, ReduceMaxToBackward) have been dropped.
+    // The closed primitive set no longer carries fused-op concepts;
+    // every fused op flows through `Op::Fused(FusedOpId, FusedOpParams)`.
+    // See `docs/fused-op-registry.md` for the migration record.
 
     /// Quantized matrix multiply: `C = A @ dequant(W_Q)`. The second
     /// input is a U32-typed tensor holding raw quantization-block
@@ -579,16 +557,15 @@ pub enum Op {
 
     // --- backward helpers ---
     //
-    // These ops encapsulate the "all at once" backward rules for
-    // compositions whose gradients are awkward to express as
-    // compositions of primitives. They take (forward_output_or_input,
-    // upstream) and emit the gradient of the input.
+    // Phase 7.6 step 5 (2026-05-11): the four migrated backward-helper
+    // variants (SoftmaxLastDimBackward, LayerNormLastDimBackward,
+    // RmsNormLastDimBackward, ReduceMaxToBackward) have been dropped.
+    // They flow through `Op::Fused(FusedOpId, FusedOpParams)` per the
+    // registry split. LogSoftmaxLastDimBackward is the only remaining
+    // backward-helper primitive variant — its forward primitive
+    // (`Op::LogSoftmaxLastDim`, not in scope for step 5) hasn't migrated
+    // to the registry yet, so the backward stays primitive too.
     //
-    /// Softmax-last-dim backward. Inputs: (forward_softmax_output, upstream).
-    /// Output: the gradient of the input to the softmax. Formula:
-    /// `s * (g - sum(g * s, last_dim, keepdim=true))` where `s` is the
-    /// forward output and `g` is the upstream gradient.
-    SoftmaxLastDimBackward,
     /// LogSoftmax-last-dim backward. Inputs: `(forward_log_softmax_output,
     /// upstream)`. Output: the gradient of the input to log-softmax.
     /// Formula: `g - exp(y) * sum(g, last_dim, keepdim=true)` where
@@ -597,34 +574,6 @@ pub enum Op {
     /// the closed-form rule uses `exp(y) = softmax(x)` directly, not
     /// the upstream-times-softmax composition.
     LogSoftmaxLastDimBackward,
-    /// Layer-norm-last-dim backward. Inputs: (original_x, upstream).
-    /// Output: the gradient of `x`. Computed in full from scratch
-    /// because the forward normalized tensor alone doesn't carry enough
-    /// info (we'd also need `rstd`, which the forward node doesn't
-    /// expose as an output). Takes `eps` as a parameter so the backward
-    /// op recomputes the same statistics the forward used.
-    LayerNormLastDimBackward { eps: f64 },
-    /// Fused RMSNorm-last-dim backward. Inputs: (original_x, upstream).
-    /// Output: grad_x = r_rms * (upstream - x * s / (n * (mean_sq + eps))).
-    /// Takes `eps` so the backward op recomputes the same
-    /// normalization constant the forward used. Replaces the
-    /// 12-node primitive synthesis the autograd graph used to emit.
-    /// Backends that don't ship a fused kernel fall back to the
-    /// primitive decomposition.
-    RmsNormLastDimBackward { eps: f64 },
-    /// Backward for [`Op::ReduceMaxTo`]. Inputs:
-    /// `(original_x, upstream)`. Output shape == `original_x.shape`;
-    /// the upstream's shape is the forward `target_shape`. Routes the
-    /// upstream gradient to the position(s) where x equals its
-    /// per-window max; when multiple positions are tied, the gradient
-    /// is split equally (fair-share subgradient).
-    ///
-    /// Carries no params: both shape contracts (input shape, output
-    /// target shape) flow from the input tensors at execution time.
-    /// Mirrors the structure of [`Op::SoftmaxLastDimBackward`] —
-    /// fused-backward for an op whose IR-level decomposition would
-    /// need an equality primitive that doesn't exist today.
-    ReduceMaxToBackward,
 
     // --- integer-producing reductions ---
     //
@@ -698,48 +647,13 @@ pub enum Op {
     /// indices[p]] += src[p]`.
     ScatterAdd { dim: usize },
 
-    // --- 2-D convolution ---
-    /// 2-D convolution with stride, symmetric padding, and grouped
-    /// channels. Inputs: `(x, weight)` or `(x, weight, bias)`.
-    ///   - `x`:     `[N, Cin, H, W]`
-    ///   - `weight`: `[Cout, Cin/groups, Kh, Kw]`
-    ///   - `bias`:  `[Cout]` (optional)
-    ///
-    /// Output shape: `[N, Cout, Hout, Wout]` where
-    ///   Hout = (H + 2·pad.0 − Kh) / stride.0 + 1
-    ///   Wout = (W + 2·pad.1 − Kw) / stride.1 + 1
-    ///
-    /// `groups` splits the channels into `groups` independent
-    /// convolutions (`Cin/groups` input channels per group mapped to
-    /// `Cout/groups` output channels). `groups=1` is the standard
-    /// cross-channel conv; `groups=Cin=Cout` is the depthwise case
-    /// (ConvNeXt's kernel-7 block mixer).
-    ///
-    /// The op exists as a primitive so backends can fuse the full
-    /// im2col+gemm (or direct conv) pipeline into a single kernel
-    /// launch. The lazy-graph composition path (slice + concat +
-    /// matmul) was correct but spawned ~9·Cin ops per forward pass;
-    /// this op is the unblock for conv-heavy anchor inference speed.
-    Conv2D {
-        stride:  (usize, usize),
-        padding: (usize, usize),
-        groups:  usize,
-    },
-
-    /// Fused linear layer (Phase 6d Track 3): matmul + bias-add in one
-    /// IR node. Inputs: `[a, b, bias]`.
-    ///   - `a`: `[..., M, K]`
-    ///   - `b`: `[..., K, N]`
-    ///   - `bias`: `[N]` (broadcast across all leading dims of the matmul output)
-    ///
-    /// Output: `[..., M, N]` — bias is added along the last axis.
-    ///
-    /// Created by `opt::fuse_linear` from `MatMul + Add(rank-1 bias)`
-    /// patterns. Backends dispatch to a fused kernel when one exists
-    /// (cuBLAS gemm with bias epilogue, hand-written Slang, etc.) and
-    /// fall through to two-kernel matmul + binary-add otherwise. Same
-    /// numerical result either way.
-    FusedLinear,
+    // --- 2-D convolution + fused linear ---
+    //
+    // Phase 7.6 step 5 (2026-05-11): `Conv2D { stride, padding, groups }`
+    // and `FusedLinear` have been dropped — both flow through
+    // `Op::Fused(FusedOpId, FusedOpParams)` per the registry split.
+    // See `fuel-graph/src/registry/{conv2d,fused_linear}.rs` for the
+    // current entry shapes.
 
     /// Multi-head scaled-dot-product attention (FlashAttention-shaped).
     ///
@@ -1016,20 +930,9 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::MaxDim(_)            => "MaxDim",
         Op::MinDim(_)            => "MinDim",
         Op::MeanDim(_)           => "MeanDim",
-        Op::SoftmaxLastDim       => "SoftmaxLastDim",
-        Op::LayerNormLastDim{..} => "LayerNormLastDim",
-        Op::RmsNormLastDim{..}   => "RmsNormLastDim",
-        Op::Rope                 => "Rope",
         Op::QMatMul{..}          => "QMatMul",
-        Op::SoftmaxLastDimBackward
-                                 => "SoftmaxLastDimBackward",
         Op::LogSoftmaxLastDimBackward
                                  => "LogSoftmaxLastDimBackward",
-        Op::LayerNormLastDimBackward { .. }
-                                 => "LayerNormLastDimBackward",
-        Op::RmsNormLastDimBackward { .. }
-                                 => "RmsNormLastDimBackward",
-        Op::ReduceMaxToBackward  => "ReduceMaxToBackward",
         Op::ArgMaxDim(_)         => "ArgMaxDim",
         Op::ArgMinDim(_)         => "ArgMinDim",
         Op::Concat{..}           => "Concat",
@@ -1044,10 +947,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gather{..}           => "Gather",
         Op::IndexAdd{..}         => "IndexAdd",
         Op::ScatterAdd{..}       => "ScatterAdd",
-        Op::Conv2D{..}           => "Conv2D",
         Op::ConvTranspose2D{..}  => "ConvTranspose2D",
         Op::FlashAttn{..}        => "FlashAttn",
-        Op::FusedLinear          => "FusedLinear",
         Op::PagedAttn{..}        => "PagedAttn",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
@@ -5412,86 +5313,14 @@ impl Tensor {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::SoftmaxLastDim => {
-                    // grad_x = softmax_last_dim_backward(y, upstream)
-                    // where y is this forward node's output. Phase 7.6
-                    // step 4 (backward-helper batch): emits the
-                    // registry form, matching the new
-                    // Tensor::softmax_last_dim builder path.
-                    let x = inputs[0];
-                    let y_shape = node_shape(&graph_handle, id);
-                    let dtype = node_dtype(&graph_handle, id);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Fused(
-                            crate::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
-                            crate::registry::FusedOpParams::SoftmaxLastDimBackward,
-                        ),
-                        vec![id, up_id],
-                        y_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
-                }
-                Op::LayerNormLastDim { eps } => {
-                    // grad_x = layer_norm_last_dim_backward(x, upstream, eps).
-                    // Phase 7.6 step 4 (backward-helper batch): emits
-                    // the registry form. The backward formula needs
-                    // both mean/variance statistics and the centered
-                    // values, so the original x flows through (not the
-                    // forward output).
-                    let x = inputs[0];
-                    let x_shape = node_shape(&graph_handle, x);
-                    let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Fused(
-                            crate::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
-                            crate::registry::FusedOpParams::LayerNormLastDimBackward { eps },
-                        ),
-                        vec![x, up_id],
-                        x_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
-                }
-                Op::RmsNormLastDim { eps } => {
-                    // Phase 7.6 step 4 (backward-helper batch): emits
-                    // the registry form Op::Fused(RMS_NORM_LAST_DIM_BACKWARD,
-                    // _). Backends without a fused kernel fall through
-                    // to GraphExecutor::cpu_fallback.
-                    let x = inputs[0];
-                    let x_shape = node_shape(&graph_handle, x);
-                    let dtype = node_dtype(&graph_handle, x);
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::Fused(
-                            crate::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
-                            crate::registry::FusedOpParams::RmsNormLastDimBackward { eps },
-                        ),
-                        vec![x, up_id],
-                        x_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
-                }
-                Op::Rope => {
-                    // d_x = rope(upstream, cos, -sin). The cos/sin
-                    // tables are treated as constants (no gradient
-                    // flows back through them).
-                    let x = inputs[0];
-                    let cos = inputs[1];
-                    let sin = inputs[2];
-                    let x_shape = node_shape(&graph_handle, x);
-                    let sin_shape = node_shape(&graph_handle, sin);
-                    let dtype = node_dtype(&graph_handle, x);
-                    let neg_sin = push_node(
-                        &graph_handle, Op::Neg, vec![sin], sin_shape, dtype);
-                    let grad_x = push_node(
-                        &graph_handle, Op::Rope,
-                        vec![up_id, cos, neg_sin], x_shape, dtype);
-                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
-                }
+                // Phase 7.6 step 5 (2026-05-11): the legacy
+                // `Op::SoftmaxLastDim` / `Op::LayerNormLastDim` /
+                // `Op::RmsNormLastDim` / `Op::Rope` /
+                // `Op::Conv2D` / `Op::FusedLinear` arms have been
+                // dropped together with the variants themselves; the
+                // `Op::Fused(fid, _)` arm below dispatches per id and
+                // is the single source of truth for migrated forward
+                // ops' backward.
                 Op::ArgMaxDim(_) | Op::ArgMinDim(_) => {
                     // Argmax/argmin produce integer indices, which are
                     // non-differentiable. Panic rather than silently
@@ -5509,18 +5338,14 @@ impl Tensor {
                     // Forward: y = reduce_max_to(x, target).
                     // Backward: route upstream to position(s) where
                     // x equals its per-window max via the fused
-                    // backward helper (takes (x, upstream) and emits
-                    // grad_x of x.shape). Tied maxes share the
-                    // gradient equally (fair-share subgradient).
-                    //
-                    // Phase 7.6 step 4 (backward-helper batch): emits
-                    // the registry form Op::Fused(REDUCE_MAX_TO_BACKWARD,
-                    // _). Note this is the backward of a *primitive*
-                    // (Op::ReduceMaxTo), not a fused op — so there's
-                    // no BackwardKind::Fused edge driving this; the
-                    // legacy direct emission stays, just shaped as
-                    // the registry form for executor-routing
-                    // consistency.
+                    // backward helper Op::Fused(REDUCE_MAX_TO_BACKWARD,
+                    // _) (takes (x, upstream) and emits grad_x of
+                    // x.shape). Tied maxes share the gradient equally
+                    // (fair-share subgradient). Note this is the
+                    // backward of a *primitive* (Op::ReduceMaxTo),
+                    // not a fused forward — no BackwardKind::Fused
+                    // edge in the registry drives this; the explicit
+                    // emission is the source of truth.
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -5551,21 +5376,12 @@ impl Tensor {
                          matmul if you need gradients through this input."
                     );
                 }
-                Op::SoftmaxLastDimBackward
-                | Op::LayerNormLastDimBackward { .. }
-                | Op::RmsNormLastDimBackward { .. }
-                | Op::ReduceMaxToBackward => {
-                    // Higher-order gradients through the backward helper
-                    // ops are not supported in the MVP — they'd require
-                    // either a full symbolic-derivative pass over the
-                    // backward op or a dedicated second-order backward
-                    // helper. For now, panic with a clear message.
-                    panic!(
-                        "backward: higher-order gradients through \
-                         softmax/layer_norm/rms_norm/reduce_max_to backward \
-                         helpers are not yet supported in the MVP."
-                    );
-                }
+                // Phase 7.6 step 5 (2026-05-11): the legacy
+                // `Op::SoftmaxLastDimBackward | Op::LayerNormLastDimBackward |
+                // Op::RmsNormLastDimBackward | Op::ReduceMaxToBackward`
+                // higher-order panic arm has been dropped together
+                // with the variants themselves. The Op::Fused arm
+                // below panics for those four ids.
                 Op::IndexSelect { dim } => {
                     // Forward: out = index_select(data, dim, indices).
                     // Backward: grad_data = index_add(zeros_like(data), dim, indices, upstream).
@@ -5998,180 +5814,12 @@ impl Tensor {
                     let x = inputs[0];
                     accumulate_grad(&mut upstream, x, up_id, &graph_handle);
                 }
-                Op::Conv2D { stride, padding, groups } => {
-                    // Forward: Y = conv2d(X, W; stride, pad, groups).
-                    //   X: [N, Cin, H, W]   W: [Cout, Cin/g, Kh, Kw]
-                    //   Y: [N, Cout, Hout, Wout]
-                    //
-                    // Backward:
-                    //   dX = conv_transpose2d(dY, W; stride, pad, ?, dil=1, groups)
-                    //        — output_padding chosen so the unpadded
-                    //        spatial dims of dX match X's.
-                    //   dW = conv2d(X^T_NC, dY^T_NC; stride=dil, pad=pad, groups)^T_NC
-                    //        — i.e. swap N/C on both, run a regular
-                    //        conv with strides/dilations swapped, then
-                    //        swap N/C of the result. This expresses the
-                    //        sum-over-NHW correlation as a gemm.
-                    //   dB (if present) = sum dY over (N, H, W) — bias
-                    //        is composed externally, so we don't have a
-                    //        direct bias edge here; the broadcast-add
-                    //        in the executor's Op::Conv2D arm absorbs
-                    //        the bias-grad path through standard rules.
-                    let x      = inputs[0];
-                    let weight = inputs[1];
-                    let x_shape = node_shape(&graph_handle, x);
-                    let w_shape = node_shape(&graph_handle, weight);
-                    let dtype = node_dtype(&graph_handle, x);
-
-                    // --- dX via transposed conv ---
-                    // ConvTranspose2D's natural output before subtracting
-                    // padding is (Hin−1)·s + (Kh−1) + 1 + out_pad. We
-                    // want dX's unpadded dims = X's spatial dims, so:
-                    //   out_pad = X.h − ((dY.h−1)·s + (Kh−1) + 1) + 2·pad
-                    let x_dims = x_shape.dims();
-                    let w_dims = w_shape.dims();
-                    let dy_dims = node_shape(&graph_handle, id).dims().to_vec();
-                    let (sh, sw) = stride;
-                    let (ph, pw) = padding;
-                    let (kh, kw) = (w_dims[2], w_dims[3]);
-                    let (h_in, w_in) = (x_dims[2], x_dims[3]);
-                    let (dy_h, dy_w) = (dy_dims[2], dy_dims[3]);
-                    // base unpadded h_out from ConvTranspose2D formula
-                    let base_h = (dy_h - 1) * sh + (kh - 1) + 1;
-                    let base_w = (dy_w - 1) * sw + (kw - 1) + 1;
-                    let want_h = h_in + 2 * ph;
-                    let want_w = w_in + 2 * pw;
-                    let out_pad_h = want_h.saturating_sub(base_h);
-                    let out_pad_w = want_w.saturating_sub(base_w);
-
-                    // For groups=1, Conv2D's weight `[Cout, Cin, Kh, Kw]`
-                    // is what ConvTranspose2D expects directly: its
-                    // "Cin_input" is the input's Cin (= Cout of forward
-                    // conv = dY's Cin) and "Cout/g" is the output's Cin
-                    // (= Cin of forward conv). No permute needed.
-                    // groups>1 needs a per-group weight reshape — punt.
-                    if groups != 1 {
-                        panic!(
-                            "Tensor::backward: Op::Conv2D groups>1 backward \
-                             not yet implemented (got groups={groups}). The \
-                             stride/padding/groups=1 case is wired; grouped \
-                             backward needs a per-group weight reshape.",
-                        );
-                    }
-                    let perm_01 = vec![1usize, 0, 2, 3];
-                    let grad_x = push_node(
-                        &graph_handle,
-                        Op::ConvTranspose2D {
-                            stride,
-                            padding,
-                            output_padding: (out_pad_h, out_pad_w),
-                            dilation: (1, 1),
-                            groups,
-                        },
-                        vec![up_id, weight],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
-
-                    // --- dW via correlation expressed as a conv2d ---
-                    // X.transpose(0, 1):  [Cin, N, H, W]
-                    // dY.transpose(0, 1): [Cout, N, Hout, Wout]
-                    // conv2d(X^T, dY^T, stride=1, padding=pad, dil=stride):
-                    //   out: [Cin, Cout, kh, kw]
-                    // .transpose(0, 1): [Cout, Cin, kh, kw] = w_shape.
-                    //
-                    // The dilation-equals-forward-stride trick is the
-                    // standard way to express stride-S backward as a
-                    // dilation-S forward. Today's lazy Op::Conv2D
-                    // doesn't carry a dilation field — for stride=1
-                    // (dilation=1) this works directly; for stride>1
-                    // we need to either add dilation to Conv2D or
-                    // CPU-fall-back. Punt the stride>1 case for now.
-                    if sh != 1 || sw != 1 {
-                        panic!(
-                            "Tensor::backward: Op::Conv2D stride>1 backward \
-                             not yet implemented (got stride={stride:?}). \
-                             Op::Conv2D needs a `dilation` field to express \
-                             this without composing extra ops.",
-                        );
-                    }
-                    let x_swapped_shape = {
-                        let d = x_dims;
-                        Shape::from_dims(&[d[1], d[0], d[2], d[3]])
-                    };
-                    let x_swapped = push_node(
-                        &graph_handle,
-                        Op::Permute(perm_01.clone()),
-                        vec![x],
-                        x_swapped_shape,
-                        dtype,
-                    );
-                    let dy_swapped_shape = Shape::from_dims(&[
-                        dy_dims[1], dy_dims[0], dy_dims[2], dy_dims[3],
-                    ]);
-                    let dy_swapped = push_node(
-                        &graph_handle,
-                        Op::Permute(perm_01.clone()),
-                        vec![up_id],
-                        dy_swapped_shape,
-                        dtype,
-                    );
-                    // Output of conv2d(X^T_NC, dY^T_NC) is [Cin, Cout, kh, kw];
-                    // permute(1,0,2,3) → [Cout, Cin, kh, kw] = w_shape.
-                    let conv_out_shape = Shape::from_dims(&[
-                        w_dims[1], w_dims[0], w_dims[2], w_dims[3],
-                    ]);
-                    let grad_w_pre_transpose = push_node(
-                        &graph_handle,
-                        Op::Conv2D {
-                            stride: (1, 1),
-                            padding,
-                            groups: 1,
-                        },
-                        vec![x_swapped, dy_swapped],
-                        conv_out_shape,
-                        dtype,
-                    );
-                    let grad_w = push_node(
-                        &graph_handle,
-                        Op::Permute(perm_01),
-                        vec![grad_w_pre_transpose],
-                        w_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, weight, grad_w, &graph_handle);
-
-                    // Bias (if any, inputs[2]) — sum dY over N, H, W.
-                    // Bias arrives as shape [Cout] but the executor's
-                    // forward path reshapes it to [1, Cout, 1, 1] before
-                    // broadcasting against [N, Cout, Hout, Wout]. The
-                    // backward of broadcast_to is reduce_sum_to, which
-                    // requires its target shape be broadcast-compatible
-                    // *into* dY's shape — `[Cout]` is not (rank-1 doesn't
-                    // align). Reduce to `[1, Cout, 1, 1]` first, then
-                    // reshape back to `[Cout]`.
-                    if inputs.len() >= 3 {
-                        let bias = inputs[2];
-                        let bias_shape = node_shape(&graph_handle, bias);
-                        let cout_4d = Shape::from_dims(&[1, dy_dims[1], 1, 1]);
-                        let reduced = push_node(
-                            &graph_handle,
-                            Op::ReduceSumTo(cout_4d.clone()),
-                            vec![up_id],
-                            cout_4d,
-                            dtype,
-                        );
-                        let grad_b = push_node(
-                            &graph_handle,
-                            Op::Reshape(bias_shape.clone()),
-                            vec![reduced],
-                            bias_shape,
-                            dtype,
-                        );
-                        accumulate_grad(&mut upstream, bias, grad_b, &graph_handle);
-                    }
-                }
+                // Phase 7.6 step 5 (2026-05-11): the legacy
+                // `Op::Conv2D { stride, padding, groups }` backward
+                // arm has been dropped together with the variant;
+                // `Op::Fused(CONV2D, _)` below carries the full
+                // backward logic (including the inner dW Conv2D
+                // emission, which itself goes through Op::Fused).
                 Op::ConvTranspose2D { .. } => {
                     // Higher-order grad of the transposed conv isn't
                     // needed for Conv2D's backward (which only consumes
@@ -6210,47 +5858,15 @@ impl Tensor {
                          no gradient rule exists.",
                     );
                 }
-                Op::FusedLinear => {
-                    // FusedLinear is structurally `(a @ b) + bias`.
-                    // Decompose its gradient:
-                    //   dA    = upstream @ B^T  (same shape as a)
-                    //   dB    = A^T @ upstream  (same shape as b)
-                    //   dBias = ReduceSumTo([N]) of upstream
-                    //
-                    // We can re-use the MatMul backward formulas
-                    // directly since the only difference is the
-                    // bias-add term, which is independent and has
-                    // its own grad rule.
-                    let a = inputs[0];
-                    let b = inputs[1];
-                    let bias = inputs[2];
-                    let a_shape = node_shape(&graph_handle, a);
-                    let b_shape = node_shape(&graph_handle, b);
-                    let bias_shape = node_shape(&graph_handle, bias);
-                    let dtype = node_dtype(&graph_handle, a);
-                    let b_t_shape = transposed_shape(&b_shape);
-                    let b_t = push_node(&graph_handle, Op::Transpose, vec![b], b_t_shape, dtype);
-                    let grad_a = push_node(&graph_handle, Op::MatMul, vec![up_id, b_t], a_shape.clone(), dtype);
-                    let a_t_shape = transposed_shape(&a_shape);
-                    let a_t = push_node(&graph_handle, Op::Transpose, vec![a], a_t_shape, dtype);
-                    let grad_b = push_node(&graph_handle, Op::MatMul, vec![a_t, up_id], b_shape, dtype);
-                    let grad_bias = push_node(
-                        &graph_handle,
-                        Op::ReduceSumTo(bias_shape.clone()),
-                        vec![up_id],
-                        bias_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
-                    accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
-                    accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
-                }
+                // Phase 7.6 step 5 (2026-05-11): the legacy
+                // `Op::FusedLinear` backward arm has been dropped
+                // together with the variant; `Op::Fused(FUSED_LINEAR,
+                // _)` below carries the (a @ b) + bias gradient
+                // decomposition.
                 Op::Fused(fid, params) => {
-                    // Phase 7.6 step 3+: per-id backward dispatch. Each
-                    // migrated fused op gets a branch here that emits
-                    // the appropriate gradient subgraph. Step 5 drops
-                    // the legacy per-fused-op `Op` variants and their
-                    // backward arms above.
+                    // Per-id backward dispatch. Each migrated fused op
+                    // gets a branch here that emits the appropriate
+                    // gradient subgraph.
                     if fid == crate::registry::FusedOps::SOFTMAX_LAST_DIM {
                         // grad_x = softmax_last_dim_backward(y, upstream).
                         // Phase 7.6 step 4 (backward-helper batch):

@@ -82,21 +82,11 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     };
     let eps = match params {
         FusedOpParams::RmsNormLastDim { eps } => *eps,
-        // The fused-op fast path emits FusedOpParams::RmsNormLastDim.
-        // The legacy path (Op::RmsNormLastDim { eps }) reaches this
-        // function only via the lowering rule's fallthrough — which
-        // doesn't pass params to us. Extract eps from the node itself
-        // in that case.
-        _ => {
-            if let Op::RmsNormLastDim { eps } = graph.node(id).op {
-                eps
-            } else {
-                panic!(
-                    "rms_norm_last_dim::decompose called with non-RmsNorm node {:?}",
-                    graph.node(id).op
-                );
-            }
-        }
+        _ => panic!(
+            "rms_norm_last_dim::decompose called with non-RmsNorm \
+             params {params:?}; node op = {:?}",
+            graph.node(id).op
+        ),
     };
     let dims = x_shape.dims().to_vec();
     let rank = dims.len();
