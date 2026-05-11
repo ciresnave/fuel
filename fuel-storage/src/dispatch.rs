@@ -5184,21 +5184,38 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// crate-private CPU dispatch wrappers stay co-located with their
 /// registration.
 ///
-/// Today's coverage: `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16}.
+/// Today's coverage:
+/// - `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `CONV2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
+///
 /// Backend crates (fuel-cuda-backend, fuel-vulkan-backend) extend by
 /// composing against the registry from their own startup paths or via
 /// the step-9 binding-table refactor.
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
-    use crate::fused::{cost_fused_linear_cpu, FUSED_LINEAR_CPU_PRECISION};
+    use crate::fused::{
+        cost_conv2d_cpu, cost_fused_linear_cpu, CONV2D_CPU_PRECISION,
+        FUSED_LINEAR_CPU_PRECISION,
+    };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
 
     // Dtype tuples mirror the binding-table shape:
-    //   (lhs, rhs, bias, out) — all four agree per FusedLinear's contract.
+    //   FusedLinear: (lhs, rhs, bias, out) — all four agree.
     const FL_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
     const FL_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
     const FL_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
     const FL_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+
+    // Conv2D: two shapes per dtype — no-bias (x, w, out) and
+    // with-bias (x, w, bias, out). The CPU wrapper handles both.
+    const CV_F32_NOB:  &[DType] = &[DType::F32,  DType::F32,  DType::F32];
+    const CV_F32_BIAS: &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const CV_F64_NOB:  &[DType] = &[DType::F64,  DType::F64,  DType::F64];
+    const CV_F64_BIAS: &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const CV_BF16_NOB:  &[DType] = &[DType::BF16, DType::BF16, DType::BF16];
+    const CV_BF16_BIAS: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const CV_F16_NOB:  &[DType] = &[DType::F16,  DType::F16,  DType::F16];
+    const CV_F16_BIAS: &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
 
     let cpu = BackendId::Cpu;
     register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F32,
@@ -5217,6 +5234,42 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         fused_linear_f16_cpu_wrapper,
         cost = cost_fused_linear_cpu,
         precision = FUSED_LINEAR_CPU_PRECISION);
+
+    // Conv2D — eight registrations: {F32,F64,BF16,F16} × {no-bias, with-bias}.
+    // The same wrapper handles both shapes; the dtype tuple distinguishes
+    // them in the kernel registry so the route picker matches per-input-count.
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_F32_NOB,
+        conv2d_f32_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_F32_BIAS,
+        conv2d_f32_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_F64_NOB,
+        conv2d_f64_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_F64_BIAS,
+        conv2d_f64_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_BF16_NOB,
+        conv2d_bf16_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_BF16_BIAS,
+        conv2d_bf16_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_F16_NOB,
+        conv2d_f16_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
+    register_fused!(r, FusedOps::CONV2D, cpu, CV_F16_BIAS,
+        conv2d_f16_cpu_wrapper,
+        cost = cost_conv2d_cpu,
+        precision = CONV2D_CPU_PRECISION);
 }
 
 #[cfg(test)]
