@@ -1871,13 +1871,13 @@ impl GraphBackend for VulkanBackend {
         // Batch stride = stride of the first "batch" dim if rank >= 3.
         // For rank-2 (no batch), batch_stride = m*k / k*n — doesn't
         // matter since batch==1 and we never index past 0.
-        let sa_batch = if a_rank >= 3 { a_strides[a_rank - 3] } else { m * k };
-        let sa_row = a_strides[a_rank - 2];
-        let sa_col = a_strides[a_rank - 1];
+        let sa_batch = if a_rank >= 3 { a_strides[a_rank - 3] as usize } else { m * k };
+        let sa_row = a_strides[a_rank - 2] as usize;
+        let sa_col = a_strides[a_rank - 1] as usize;
 
-        let sb_batch = if b_rank >= 3 { b_strides[b_rank - 3] } else { k * n };
-        let sb_row = b_strides[b_rank - 2];
-        let sb_col = b_strides[b_rank - 1];
+        let sb_batch = if b_rank >= 3 { b_strides[b_rank - 3] as usize } else { k * n };
+        let sb_row = b_strides[b_rank - 2] as usize;
+        let sb_col = b_strides[b_rank - 1] as usize;
 
         // GQA-aware: infer n_rep from the SHAPES, not strides.
         // For non-contiguous B, stride-based elem_count/stride is wrong.
@@ -2843,8 +2843,8 @@ impl GraphBackend for VulkanBackend {
             match rank {
                 2 => (
                     // [seq, head_dim]
-                    (x_strides[0] * dims[0]) as u32, // unused (outer=1)
-                    (x_strides[0] * dims[0]) as u32, // unused
+                    (x_strides[0] as usize * dims[0]) as u32, // unused (outer=1)
+                    (x_strides[0] as usize * dims[0]) as u32, // unused
                     x_strides[0] as u32,
                     x_strides[1] as u32,
                     1u32,

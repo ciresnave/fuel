@@ -115,13 +115,13 @@ mod tests {
     #[test]
     fn stride() {
         let shape = Shape::from(());
-        assert_eq!(shape.stride_contiguous().to_vec(), Vec::<usize>::new());
+        assert_eq!(shape.stride_contiguous().to_vec(), Vec::<isize>::new());
         let shape = Shape::from(42);
-        assert_eq!(shape.stride_contiguous().to_vec(), [1]);
+        assert_eq!(shape.stride_contiguous().to_vec(), [1_isize]);
         let shape = Shape::from((42, 1337));
-        assert_eq!(shape.stride_contiguous().to_vec(), [1337, 1]);
+        assert_eq!(shape.stride_contiguous().to_vec(), [1337_isize, 1]);
         let shape = Shape::from((299, 792, 458));
-        assert_eq!(shape.stride_contiguous().to_vec(), [458 * 792, 458, 1]);
+        assert_eq!(shape.stride_contiguous().to_vec(), [458_isize * 792, 458, 1]);
     }
 
     #[test]

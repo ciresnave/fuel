@@ -7246,7 +7246,7 @@ mod tests {
         // Transposed view: shape [3, 2], strides [1, 3]
         let layout = Layout::new(
             fuel_core_types::Shape::from_dims(&[3, 2]),
-            fuel_core_types::DimVec::from_slice(&[1usize, 3]),
+            fuel_core_types::StrideVec::from_slice(&[1_isize, 3]),
             0,
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
@@ -7260,7 +7260,7 @@ mod tests {
         let input = CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0]);
         let layout = Layout::new(
             fuel_core_types::Shape::from_dims(&[2, 3]),
-            fuel_core_types::DimVec::from_slice(&[0usize, 1]),
+            fuel_core_types::StrideVec::from_slice(&[0_isize, 1]),
             0,
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
@@ -7276,7 +7276,7 @@ mod tests {
         let input = CpuStorageBytes::from_slice(&[100.0_f32, 200.0, 1.0, 2.0, 3.0]);
         let layout = Layout::new(
             fuel_core_types::Shape::from_dims(&[3]),
-            fuel_core_types::DimVec::from_slice(&[1usize]),
+            fuel_core_types::StrideVec::from_slice(&[1_isize]),
             2,
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");

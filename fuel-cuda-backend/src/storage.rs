@@ -58,6 +58,43 @@ impl<T: DeviceRepr> SlicePtrOrNull<T> {
     }
 }
 
+/// Pack a Layout's dims+strides into a single `Vec<usize>` ready to upload to a CUDA kernel
+/// that expects `usize` strides. Casts signed strides through `stride_unsigned()` (which
+/// debug-asserts non-negative).
+pub(crate) fn dims_strides_usize(l: &Layout) -> Vec<usize> {
+    let dims = l.dims();
+    let stride = l.stride_unsigned();
+    let mut v = Vec::with_capacity(dims.len() + stride.len());
+    v.extend_from_slice(dims);
+    v.extend_from_slice(&stride);
+    v
+}
+
+/// Like `dims_strides_usize` but for two layouts sharing one dims slice (binary-op style):
+/// `[dims, lhs.stride(), rhs.stride()]`.
+pub(crate) fn dims_strides_strides_usize(dims: &[usize], a: &Layout, b: &Layout) -> Vec<usize> {
+    let sa = a.stride_unsigned();
+    let sb = b.stride_unsigned();
+    let mut v = Vec::with_capacity(dims.len() + sa.len() + sb.len());
+    v.extend_from_slice(dims);
+    v.extend_from_slice(&sa);
+    v.extend_from_slice(&sb);
+    v
+}
+
+/// Conv-style param pack: `[dims, inp.stride(), k.dims(), k.stride()]`.
+pub(crate) fn conv_dims_strides_usize(dims: &[usize], inp_l: &Layout, k_l: &Layout) -> Vec<usize> {
+    let inp_s = inp_l.stride_unsigned();
+    let k_s = k_l.stride_unsigned();
+    let k_d = k_l.dims();
+    let mut v = Vec::with_capacity(dims.len() + inp_s.len() + k_d.len() + k_s.len());
+    v.extend_from_slice(dims);
+    v.extend_from_slice(&inp_s);
+    v.extend_from_slice(k_d);
+    v.extend_from_slice(&k_s);
+    v
+}
+
 fn push_scalar_arg<'a>(scalar: &'a fuel_core_types::scalar::Scalar, builder: &mut crate::device::LaunchArgs<'a>) {
     use fuel_core_types::scalar::Scalar;
     match scalar {
@@ -79,7 +116,7 @@ impl SlicePtrOrNull<usize> {
         let ds = if l.is_contiguous() {
             SlicePtrOrNull::Null
         } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&[l.dims(), l.stride()].concat())?)
+            SlicePtrOrNull::Ptr(dev.clone_htod(&dims_strides_usize(l))?)
         };
         Ok(ds)
     }
@@ -209,7 +246,7 @@ impl Map1 for Im2Col1D {
         let l_out = self.l_out(dims[2]);
         let threads = dims[0] * l_out * dims[1];
         let cfg = LaunchConfig::for_num_elems(threads as u32);
-        let ds = dev.clone_htod(&[dims, layout.stride()].concat())?;
+        let ds = dev.clone_htod(&dims_strides_usize(layout))?;
         let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("im2col1d"), &kernels::CONV)?;
         // SAFETY: Set later by running the kernel.
@@ -260,7 +297,7 @@ impl Map1 for Im2Col {
         let (h_out, w_out) = self.hw_out(dims[2], dims[3]);
         let dst_el = dims[0] * h_out * w_out * dims[1] * self.h_k * self.w_k;
         let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let ds = dev.clone_htod(&[dims, layout.stride()].concat())?;
+        let ds = dev.clone_htod(&dims_strides_usize(layout))?;
         let src = &src.slice(layout.start_offset()..src.len());
         let func = dev.get_or_load_func(&kernel_name::<T>("im2col"), &kernels::CONV)?;
         // SAFETY: Set later by running the kernel.
@@ -322,12 +359,12 @@ impl Map1Any for FastReduce<'_> {
         layout: &Layout,
         wrap: W,
     ) -> Result<S> {
-        let src_stride = layout.stride();
+        let src_stride = layout.stride_unsigned();
         let src_dims = layout.shape().dims();
         let src_el: usize = src_dims.iter().product();
         // Source dims and strides with the sum dims at the end.
-        let mut dims = vec![];
-        let mut stride = vec![];
+        let mut dims: Vec<usize> = vec![];
+        let mut stride: Vec<usize> = vec![];
         let mut dst_el: usize = 1;
         for (dim_idx, &d) in src_dims.iter().enumerate() {
             if !self.0.contains(&dim_idx) {
@@ -460,7 +497,7 @@ impl Map1 for IndexSelect<'_> {
         };
         let ids_shape = ids_l.shape();
         let ids_dims = ids_shape.dims();
-        let ds = dev.clone_htod(&[ids_dims, ids_l.stride()].concat())?;
+        let ds = dev.clone_htod(&dims_strides_usize(ids_l))?;
         let src = match src_l.contiguous_offsets() {
             Some((o1, o2)) => src.slice(o1..o2),
             None => Err(crate::Error::RequiresContiguous { op: "index-select" }.bt())?,
@@ -727,9 +764,15 @@ impl Map2 for Conv1D<'_> {
         // SAFETY: Set later by running the kernel.
         let out = unsafe { dev.alloc::<T>(dst_el)? };
         let ds = if dims.len() == 3 {
-            [dims, inp_l.stride(), k_l.dims(), k_l.stride()].concat()
+            conv_dims_strides_usize(dims, inp_l, k_l)
         } else if dims.len() == 2 {
-            [&[1], dims, &[1], inp_l.stride(), k_l.dims(), k_l.stride()].concat()
+            let mut v = vec![1usize];
+            v.extend_from_slice(dims);
+            v.push(1);
+            v.extend_from_slice(&inp_l.stride_unsigned());
+            v.extend_from_slice(k_l.dims());
+            v.extend_from_slice(&k_l.stride_unsigned());
+            v
         } else {
             fuel_core_types::bail!("unexpected input shape for conv1d {dims:?}")
         };
@@ -772,7 +815,7 @@ impl Map2 for Conv2D<'_> {
         let cfg = LaunchConfig::for_num_elems(dst_el as u32);
         let func = dev.get_or_load_func(&kernel_name::<T>("conv2d"), &kernels::CONV)?;
         let ds = if dims.len() == 4 {
-            [dims, inp_l.stride(), k_l.dims(), k_l.stride()].concat()
+            conv_dims_strides_usize(dims, inp_l, k_l)
         } else {
             fuel_core_types::bail!("unexpected input shape for conv2d {dims:?}")
         };
@@ -843,7 +886,7 @@ impl Map2 for ConvTranspose1D<'_> {
         let cfg = LaunchConfig::for_num_elems(dst_el as u32);
         let func = dev.get_or_load_func(&kernel_name::<T>("conv_transpose1d"), &kernels::CONV)?;
         let ds = if dims.len() == 3 {
-            [dims, inp_l.stride(), k_l.dims(), k_l.stride()].concat()
+            conv_dims_strides_usize(dims, inp_l, k_l)
         } else {
             fuel_core_types::bail!("unexpected input shape for conv_transpose1d {dims:?}")
         };
@@ -891,7 +934,7 @@ impl Map2 for ConvTranspose2D<'_> {
         let cfg = LaunchConfig::for_num_elems(dst_el as u32);
         let func = dev.get_or_load_func(&kernel_name::<T>("conv_transpose2d"), &kernels::CONV)?;
         let ds = if dims.len() == 4 {
-            [dims, inp_l.stride(), k_l.dims(), k_l.stride()].concat()
+            conv_dims_strides_usize(dims, inp_l, k_l)
         } else {
             fuel_core_types::bail!("unexpected input shape for conv_transpose2d {dims:?}")
         };
@@ -939,7 +982,7 @@ impl Map1 for Pool2D {
         let shape = inp_l.shape();
         let dims = shape.dims();
         let ds = if dims.len() == 4 {
-            [dims, inp_l.stride()].concat()
+            dims_strides_usize(inp_l)
         } else {
             fuel_core_types::bail!("unexpected input shape for pool {dims:?}")
         };
@@ -984,7 +1027,7 @@ impl Map1 for UpsampleNearest2D {
         let shape = inp_l.shape();
         let dims = shape.dims();
         let ds = if dims.len() == 4 {
-            [dims, inp_l.stride()].concat()
+            dims_strides_usize(inp_l)
         } else {
             fuel_core_types::bail!("unexpected input shape for upsample {dims:?}")
         };
@@ -1030,7 +1073,7 @@ impl Map1 for UpsampleBilinear2D {
         let shape = inp_l.shape();
         let dims = shape.dims();
         let ds = if dims.len() == 4 {
-            [dims, inp_l.stride()].concat()
+            dims_strides_usize(inp_l)
         } else {
             fuel_core_types::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
         };
@@ -1098,8 +1141,17 @@ impl Map2 for WhereCond<'_> {
         let dims = shape.dims();
         let el = shape.elem_count();
         let cfg = LaunchConfig::for_num_elems(el as u32);
-        let ds =
-            dev.clone_htod(&[dims, ids_l.stride(), layout_t.stride(), layout_f.stride()].concat())?;
+        let ds = {
+            let s_ids = ids_l.stride_unsigned();
+            let s_t = layout_t.stride_unsigned();
+            let s_f = layout_f.stride_unsigned();
+            let mut v = Vec::with_capacity(dims.len() + s_ids.len() + s_t.len() + s_f.len());
+            v.extend_from_slice(dims);
+            v.extend_from_slice(&s_ids);
+            v.extend_from_slice(&s_t);
+            v.extend_from_slice(&s_f);
+            dev.clone_htod(&v)?
+        };
         let t = &t.slice(layout_t.start_offset()..t.len());
         let f = &f.slice(layout_f.start_offset()..f.len());
         let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::TERNARY)?;
@@ -1135,7 +1187,7 @@ impl<U: fuel_core_types::op::BinaryOpT> Map2 for U {
         let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
             SlicePtrOrNull::Null
         } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&[dims, lhs_l.stride(), rhs_l.stride()].concat())?)
+            SlicePtrOrNull::Ptr(dev.clone_htod(&dims_strides_strides_usize(dims, lhs_l, rhs_l))?)
         };
         let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
         let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
@@ -1172,7 +1224,7 @@ impl Map2Any for Cmp {
         let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
             SlicePtrOrNull::Null
         } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&[dims, lhs_l.stride(), rhs_l.stride()].concat())?)
+            SlicePtrOrNull::Ptr(dev.clone_htod(&dims_strides_strides_usize(dims, lhs_l, rhs_l))?)
         };
         let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
         let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
@@ -1380,8 +1432,8 @@ fn gemm_config<T>(
     // https://docs.nvidia.com/cuda/cublas/index.html#cublas-t-gemm
     use baracuda_cublas::Op;
 
-    let lhs_stride = lhs_l.stride();
-    let rhs_stride = rhs_l.stride();
+    let lhs_stride = lhs_l.stride_unsigned();
+    let rhs_stride = rhs_l.stride_unsigned();
     let rhs_m1 = rhs_stride[rhs_stride.len() - 1];
     let rhs_m2 = rhs_stride[rhs_stride.len() - 2];
     let lhs_m1 = lhs_stride[lhs_stride.len() - 1];
@@ -2365,7 +2417,7 @@ impl CudaStorage {
                 // This merges the last two dimensions of the kernel together.
                 let kernel_l_mm = Layout::new(
                     (b_size, c_in, k_size * c_out).into(),
-                    smallvec::smallvec![0, k_size * c_out, 1],
+                    smallvec::smallvec![0_isize, (k_size * c_out) as isize, 1_isize],
                     kernel_l.start_offset(),
                 );
                 self.matmul(

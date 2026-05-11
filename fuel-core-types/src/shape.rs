@@ -162,15 +162,18 @@ impl Shape {
     }
 
     /// The strides given in number of elements for a contiguous n-dimensional
-    /// array using this shape.
-    pub fn stride_contiguous(&self) -> DimVec {
-        let mut stride: DimVec = self
+    /// array using this shape. Returns signed strides
+    /// ([`crate::StrideVec`]) — a contiguous layout's strides are
+    /// always non-negative, but the type is signed so callers can
+    /// uniformly handle negative-stride view ops (Flip, etc.).
+    pub fn stride_contiguous(&self) -> crate::StrideVec {
+        let mut stride: crate::StrideVec = self
             .0
             .iter()
             .rev()
-            .scan(1, |prod, u| {
+            .scan(1_isize, |prod, &u| {
                 let prod_pre_mult = *prod;
-                *prod *= u;
+                *prod *= u as isize;
                 Some(prod_pre_mult)
             })
             .collect();
@@ -179,31 +182,31 @@ impl Shape {
     }
 
     /// Returns true if the strides are C contiguous (aka row major).
-    pub fn is_contiguous(&self, stride: &[usize]) -> bool {
+    pub fn is_contiguous(&self, stride: &[isize]) -> bool {
         if self.0.len() != stride.len() {
             return false;
         }
-        let mut acc = 1;
+        let mut acc: isize = 1;
         for (&stride, &dim) in stride.iter().zip(self.0.iter()).rev() {
             if dim > 1 && stride != acc {
                 return false;
             }
-            acc *= dim;
+            acc *= dim as isize;
         }
         true
     }
 
     /// Returns true if the strides are Fortran contiguous (aka column major).
-    pub fn is_fortran_contiguous(&self, stride: &[usize]) -> bool {
+    pub fn is_fortran_contiguous(&self, stride: &[isize]) -> bool {
         if self.0.len() != stride.len() {
             return false;
         }
-        let mut acc = 1;
+        let mut acc: isize = 1;
         for (&stride, &dim) in stride.iter().zip(self.0.iter()) {
             if dim > 1 && stride != acc {
                 return false;
             }
-            acc *= dim;
+            acc *= dim as isize;
         }
         true
     }
@@ -527,6 +530,60 @@ extract_dims!(
     /// Extracts the five dimensions from a rank-5 shape.
     shape);
 
+// Stride destructure helpers — sister set to dims2/3/4/5 above, but
+// for [`crate::Layout::stride()`] which returns `&[isize]`. These cast
+// to `usize` at the destructure boundary with a debug_assert that
+// every stride is non-negative, since current kernels are written
+// against unsigned-stride byte arithmetic. The Layout-side change to
+// signed strides unlocks negative-stride view ops (e.g. Op::Flip);
+// when those land, kernels that consume the resulting layouts
+// directly should iterate via [`crate::StridedIndex`] (which handles
+// signed) rather than reading raw stride bytes through these helpers.
+
+/// Validates 2 strides and returns them as `(usize, usize)`.
+pub fn stride_dims2(stride: &[isize]) -> Result<(usize, usize)> {
+    if stride.len() != 2 {
+        return Err(Error::UnexpectedNumberOfDims {
+            expected: 2, got: stride.len(), shape: Shape::from(&[][..]),
+        }.bt());
+    }
+    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims2: negative stride");
+    Ok((stride[0] as usize, stride[1] as usize))
+}
+
+/// Validates 3 strides and returns them as `(usize, usize, usize)`.
+pub fn stride_dims3(stride: &[isize]) -> Result<(usize, usize, usize)> {
+    if stride.len() != 3 {
+        return Err(Error::UnexpectedNumberOfDims {
+            expected: 3, got: stride.len(), shape: Shape::from(&[][..]),
+        }.bt());
+    }
+    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims3: negative stride");
+    Ok((stride[0] as usize, stride[1] as usize, stride[2] as usize))
+}
+
+/// Validates 4 strides and returns them as `(usize, usize, usize, usize)`.
+pub fn stride_dims4(stride: &[isize]) -> Result<(usize, usize, usize, usize)> {
+    if stride.len() != 4 {
+        return Err(Error::UnexpectedNumberOfDims {
+            expected: 4, got: stride.len(), shape: Shape::from(&[][..]),
+        }.bt());
+    }
+    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims4: negative stride");
+    Ok((stride[0] as usize, stride[1] as usize, stride[2] as usize, stride[3] as usize))
+}
+
+/// Validates 5 strides and returns them as `(usize, usize, usize, usize, usize)`.
+pub fn stride_dims5(stride: &[isize]) -> Result<(usize, usize, usize, usize, usize)> {
+    if stride.len() != 5 {
+        return Err(Error::UnexpectedNumberOfDims {
+            expected: 5, got: stride.len(), shape: Shape::from(&[][..]),
+        }.bt());
+    }
+    debug_assert!(stride.iter().all(|&s| s >= 0), "stride_dims5: negative stride");
+    Ok((stride[0] as usize, stride[1] as usize, stride[2] as usize, stride[3] as usize, stride[4] as usize))
+}
+
 /// A trait for shape specifications that may contain one unknown dimension marked with `()`.
 ///
 /// When reshaping, you can use `()` as a placeholder for one dimension and the
@@ -672,13 +729,13 @@ mod tests {
     #[test]
     fn stride() {
         let shape = Shape::from(());
-        assert_eq!(shape.stride_contiguous().to_vec(), Vec::<usize>::new());
+        assert_eq!(shape.stride_contiguous().to_vec(), Vec::<isize>::new());
         let shape = Shape::from(42);
-        assert_eq!(shape.stride_contiguous().to_vec(), [1]);
+        assert_eq!(shape.stride_contiguous().to_vec(), [1_isize]);
         let shape = Shape::from((42, 1337));
-        assert_eq!(shape.stride_contiguous().to_vec(), [1337, 1]);
+        assert_eq!(shape.stride_contiguous().to_vec(), [1337_isize, 1]);
         let shape = Shape::from((299, 792, 458));
-        assert_eq!(shape.stride_contiguous().to_vec(), [458 * 792, 458, 1]);
+        assert_eq!(shape.stride_contiguous().to_vec(), [458_isize * 792, 458, 1]);
     }
 
     #[test]

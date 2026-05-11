@@ -573,13 +573,13 @@ impl CudaGraphExecutor {
         let _s = debug_span!("permute", elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
-        let mut strides: DimVec = DimVec::from_elem(0, rank);
-        let mut s = 1usize;
+        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, rank);
+        let mut s: isize = 1;
         for i in (0..rank).rev() {
             strides[i] = s;
-            s *= in_dims[i];
+            s *= in_dims[i] as isize;
         }
-        let permuted_strides: DimVec = axes.iter().map(|&ax| strides[ax]).collect();
+        let permuted_strides: fuel_core_types::StrideVec = axes.iter().map(|&ax| strides[ax]).collect();
         let permuted_dims: Vec<usize> = axes.iter().map(|&ax| in_dims[ax]).collect();
         let src_layout = Layout::new(
             Shape::from_dims(&permuted_dims),
@@ -615,13 +615,13 @@ impl CudaGraphExecutor {
         }
 
         let _s = debug_span!("broadcast_strided", src_elems = a.shape.elem_count(), dst_elems = target.elem_count()).entered();
-        let mut strides: DimVec = DimVec::from_elem(0, dst_dims.len());
-        let mut s = 1usize;
+        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, dst_dims.len());
+        let mut s: isize = 1;
         for i in (0..src_dims.len()).rev() {
             if src_dims[i] == dst_dims[pad + i] {
                 strides[pad + i] = s;
             }
-            s *= src_dims[i];
+            s *= src_dims[i] as isize;
         }
         let src_layout = Layout::new(target.clone(), strides, 0);
         let mut dst = self.device.zeros_impl(target, a.storage.dtype())
@@ -685,13 +685,13 @@ impl CudaGraphExecutor {
     ) -> GpuTensor {
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
-        let mut strides: DimVec = DimVec::from_elem(0, rank);
-        let mut s = 1usize;
+        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, rank);
+        let mut s: isize = 1;
         for i in (0..rank).rev() {
             strides[i] = s;
-            s *= in_dims[i];
+            s *= in_dims[i] as isize;
         }
-        let offset = start * strides[dim];
+        let offset = (start as isize * strides[dim]) as usize;
         let src_layout = Layout::new(out_shape.clone(), strides, offset);
         let mut dst = self.device.zeros_impl(out_shape, a.storage.dtype())
             .expect("slice alloc");

@@ -3,23 +3,31 @@ use smallvec::smallvec;
 
 /// An iterator over offset position for items of an N-dimensional arrays stored in a
 /// flat buffer using some potential strides.
+///
+/// `next_storage_index` is held as `isize` internally so negative
+/// strides (e.g. from `Op::Flip`) work uniformly: each step adds
+/// `stride[k]` (signed) to the current offset, and the iteration
+/// invariant is that the cumulative offset stays in
+/// `[0, storage.len())` — a property the producing Layout's
+/// `start_offset` guarantees by construction. Yielded indices are
+/// cast to `usize` at the boundary.
 #[derive(Debug)]
 pub struct StridedIndex<'a> {
-    next_storage_index: Option<usize>,
+    next_storage_index: Option<isize>,
     multi_index: DimVec,
     dims: &'a [usize],
-    stride: &'a [usize],
+    stride: &'a [isize],
     remaining: usize,
 }
 
 impl<'a> StridedIndex<'a> {
-    pub fn new(dims: &'a [usize], stride: &'a [usize], start_offset: usize) -> Self {
+    pub fn new(dims: &'a [usize], stride: &'a [isize], start_offset: usize) -> Self {
         let elem_count: usize = dims.iter().product();
         let next_storage_index = if elem_count == 0 {
             None
         } else {
             // This applies to the scalar case.
-            Some(start_offset)
+            Some(start_offset as isize)
         };
         StridedIndex {
             next_storage_index,
@@ -57,7 +65,7 @@ impl Iterator for StridedIndex<'_> {
                 next_storage_index += stride_i;
                 break;
             } else {
-                next_storage_index -= *multi_i * stride_i;
+                next_storage_index -= (*multi_i as isize) * stride_i;
                 *multi_i = 0
             }
         }
@@ -67,7 +75,9 @@ impl Iterator for StridedIndex<'_> {
         } else {
             None
         };
-        Some(storage_index)
+        // Cast to usize at the boundary; the Layout's construction
+        // invariant guarantees the offset is non-negative.
+        Some(storage_index as usize)
     }
 
     #[inline]

@@ -82,11 +82,11 @@ impl GraphBackend for CpuBackend {
                 // Simple strided iteration
                 let mut src_idx = vec![0usize; src_shape.len()];
                 for i in 0..n {
-                    let mut flat = offset;
+                    let mut flat = offset as isize;
                     for d in 0..src_shape.len() {
-                        flat += src_idx[d] * strides[d];
+                        flat += src_idx[d] as isize * strides[d];
                     }
-                    out[dst_offset + i] = src_data[flat];
+                    out[dst_offset + i] = src_data[flat as usize];
                     // Increment multi-index
                     for d in (0..src_shape.len()).rev() {
                         src_idx[d] += 1;
@@ -586,11 +586,11 @@ fn materialize_view(storage: &AnyRefTensor, layout: &Layout) -> AnyRefTensor {
             let mut out = Vec::with_capacity(n);
             let mut idx = vec![0usize; dims.len()];
             for _ in 0..n {
-                let mut flat = offset;
+                let mut flat = offset as isize;
                 for d in 0..dims.len() {
-                    flat += idx[d] * strides[d];
+                    flat += idx[d] as isize * strides[d];
                 }
-                out.push(src[flat]);
+                out.push(src[flat as usize]);
                 for d in (0..dims.len()).rev() {
                     idx[d] += 1;
                     if idx[d] < dims[d] { break; }

@@ -170,7 +170,7 @@ impl Map2 for BinaryKernel {
         let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
             SlicePtrOrNull::Null
         } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&[dims, lhs_l.stride(), rhs_l.stride()].concat())?)
+            SlicePtrOrNull::Ptr(dev.clone_htod(&crate::storage::dims_strides_strides_usize(dims, lhs_l, rhs_l))?)
         };
         let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
         let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
