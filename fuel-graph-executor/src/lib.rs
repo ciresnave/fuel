@@ -1292,61 +1292,13 @@ impl<B: GraphBackend> GraphExecutor<B> {
             // implement grouped conv (Vulkan, im2col-fallback CUDA).
             // CUDA-cuDNN, AOCL, and MKL all handle groups > 1 natively
             // and the executor lets them try.
-            Op::Conv2D { stride, padding, groups } => {
-                let input  = self.get_gt_c(inputs, 0, cache);
-                let weight = self.get_gt_c(inputs, 1, cache);
-                let symmetric = stride.0 == stride.1 && padding.0 == padding.1;
-                if !symmetric {
-                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                }
-                let conv_storage = match self.backend.conv2d(
-                    &input.storage, &weight.storage,
-                    &input.layout(), &weight.layout(),
-                    *stride, *padding, *groups,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                    }
-                };
-                if inputs.len() < 3 {
-                    // No bias — return the raw conv output.
-                    conv_storage
-                } else {
-                    // Bias has shape [c_out]; reshape it as
-                    // [1, c_out, 1, 1] then broadcast to the conv
-                    // output shape, producing stride [0, 1, 0, 0].
-                    // The CUDA binary kernel handles strided inputs
-                    // including stride-0 broadcasts.
-                    let bias = self.get_gt_c(inputs, 2, cache);
-                    let dims = shape.dims();
-                    let c_out = dims[1];
-                    let bias_layout_4d = Layout::contiguous(Shape::from_dims(&[1, c_out, 1, 1]));
-                    let bias_layout = match bias_layout_4d.broadcast_as(shape.clone()) {
-                        Ok(l) => l,
-                        Err(_) => {
-                            return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                        }
-                    };
-                    match self.backend.binary(
-                        BinaryOp::Add,
-                        &conv_storage, &bias.storage,
-                        &Layout::contiguous(shape),
-                        &bias_layout,
-                    ) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            // Bias broadcast not supported by this
-                            // backend's binary path — fall back to CPU
-                            // for the whole conv2d.
-                            return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                        }
-                    }
-                }
-            }
-            // Phase 7.6 step 4 (continued): registry-extended Conv2D
-            // shares the legacy variant's full dispatch logic — same
-            // symmetric-stride pre-screen, same backend.conv2d call,
+            // Phase 7.6 step 5 (2026-05-11): the legacy `Op::Conv2D
+            // { stride, padding, groups }` arm has been dropped
+            // together with the variant; the `Op::Fused(CONV2D, _)`
+            // arm below is the single Conv2D dispatch path.
+            // Conv2D shares the legacy variant's full dispatch logic
+            // (now in the registry form) — same symmetric-stride
+            // pre-screen, same backend.conv2d call,
             // same bias-broadcast-add tail, same cpu_fallback. The
             // step-9 binding-table refactor replaces both arms with a
             // pre-resolved KernelRef from FusedKernelRegistry.
@@ -1457,17 +1409,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            Op::FusedLinear => match self.try_eval_fused_linear(inputs, shape, cache) {
-                Ok(s) => s,
-                Err(_) => {
-                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
-                }
-            },
-            // Phase 7.6 step 4: dispatch the registry-extended fused
-            // form through the same backend.matmul+backend.binary path
-            // as the legacy `Op::FusedLinear` variant. Step 5 drops the
-            // legacy variant; step 9 replaces both arms with a
-            // pre-resolved `KernelRef` from the route picker.
+            // Phase 7.6 step 5: legacy `Op::FusedLinear` arm dropped
+            // with the variant; FusedLinear dispatches only through
+            // `Op::Fused(FUSED_LINEAR, _)` below.
             Op::Fused(fid, _params)
                 if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR =>
             {
@@ -1737,18 +1681,15 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            // -- softmax --
-            // Phase 7.6 step 3: dispatch the new Op::Fused(SOFTMAX_LAST_DIM, _)
-            // through the same backend.softmax_last_dim path as the legacy
-            // Op::SoftmaxLastDim variant. The fused-op registry's
-            // BackendImpl is the architecture-target shape; this match arm
-            // is the step-3 bridge that keeps the legacy GraphBackend trait
+            // -- softmax (registry-routed) --
+            // Phase 7.6 step 5: legacy `Op::SoftmaxLastDim` arm
+            // dropped with the variant; dispatch goes through
+            // `Op::Fused(SOFTMAX_LAST_DIM, _)` only. The fused-op
+            // registry's BackendImpl is the architecture-target shape;
+            // this match arm keeps the legacy GraphBackend trait
             // dispatch working until the binding-table planning-time
-            // refactor (step 9) replaces it with pre-resolved KernelRefs.
-            Op::SoftmaxLastDim => {
-                let a = self.get_gt_c(inputs, 0, cache);
-                self.backend.softmax_last_dim(&a.storage, &a.layout()).expect("SoftmaxLastDim")
-            }
+            // refactor (step 9) replaces it with pre-resolved
+            // KernelRefs.
             Op::Fused(fid, _params)
                 if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
             {
@@ -1758,15 +1699,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
                     .expect("Op::Fused(SOFTMAX_LAST_DIM)")
             }
 
-            // -- rms norm (fused) --
-            Op::RmsNormLastDim { eps } => {
-                let a = self.get_gt_c(inputs, 0, cache);
-                match self.backend.rms_norm_last_dim(&a.storage, &a.layout(), *eps) {
-                    Ok(s) => s,
-                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
-                }
-            }
-            // Phase 7.6 step 4 (continued): same bridge as SoftmaxLastDim.
+            // -- rms norm (registry-routed) --
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
             {
@@ -1784,19 +1717,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            // -- layer norm backward (fused) --
-            Op::LayerNormLastDimBackward { eps } => {
-                let x = self.get_gt_c(inputs, 0, cache);
-                let up = self.get_gt_c(inputs, 1, cache);
-                match self.backend.layer_norm_last_dim_backward(
-                    &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
-                }
-            }
-            // Phase 7.6 step 4 (backward-helper batch): registry-extended
-            // backward helpers share the legacy dispatch path.
+            // -- layer norm backward (registry-routed) --
+            // Phase 7.6 step 5: legacy `Op::LayerNormLastDimBackward`
+            // arm dropped with the variant.
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD =>
             {
@@ -1817,17 +1740,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            // -- softmax backward (fused) --
-            Op::SoftmaxLastDimBackward => {
-                let y = self.get_gt_c(inputs, 0, cache);
-                let up = self.get_gt_c(inputs, 1, cache);
-                match self.backend.softmax_last_dim_backward(
-                    &y.storage, &up.storage, &y.layout(), &up.layout(),
-                ) {
-                    Ok(s) => s,
-                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
-                }
-            }
+            // -- softmax backward (registry-routed) --
+            // Phase 7.6 step 5: legacy `Op::SoftmaxLastDimBackward`
+            // arm dropped with the variant.
             Op::Fused(fid, _)
                 if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD =>
             {
@@ -1841,17 +1756,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            // -- rms norm backward (fused) --
-            Op::RmsNormLastDimBackward { eps } => {
-                let x = self.get_gt_c(inputs, 0, cache);
-                let up = self.get_gt_c(inputs, 1, cache);
-                match self.backend.rms_norm_last_dim_backward(
-                    &x.storage, &up.storage, &x.layout(), &up.layout(), *eps,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
-                }
-            }
+            // -- rms norm backward (registry-routed) --
+            // Phase 7.6 step 5: legacy `Op::RmsNormLastDimBackward`
+            // arm dropped with the variant.
             Op::Fused(fid, params)
                 if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD =>
             {
@@ -1872,22 +1779,9 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            // -- rope (fused, stride-aware on x) --
-            Op::Rope => {
-                let x = self.get_gt(inputs, 0, cache);
-                let cos = self.get_gt_c(inputs, 1, cache);
-                let sin = self.get_gt_c(inputs, 2, cache);
-                match self.backend.rope(
-                    &x.storage, &cos.storage, &sin.storage,
-                    &x.layout(), &cos.layout(), &sin.layout(),
-                ) {
-                    Ok(s) => s,
-                    Err(_) => return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache)),
-                }
-            }
-            // Phase 7.6 step 4 (continued): registry-extended Rope
-            // routes to the same backend.rope path as the legacy
-            // variant.
+            // -- rope (registry-routed, stride-aware on x) --
+            // Phase 7.6 step 5: legacy `Op::Rope` arm dropped with
+            // the variant.
             Op::Fused(fid, _params)
                 if *fid == fuel_graph::registry::FusedOps::ROPE =>
             {
@@ -2172,13 +2066,12 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::MaxDim(_) => "MaxDim", Op::MinDim(_) => "MinDim",
         Op::IndexSelect { .. } => "IndexSelect", Op::Gather { .. } => "Gather",
         Op::Concat { .. } => "Concat", Op::Slice { .. } => "Slice",
-        Op::SoftmaxLastDim => "SoftmaxLastDim",
-        Op::RmsNormLastDim { .. } => "RmsNormLastDim",
-        Op::RmsNormLastDimBackward { .. } => "RmsNormLastDimBackward",
-        Op::SoftmaxLastDimBackward => "SoftmaxLastDimBackward",
-        Op::LayerNormLastDimBackward { .. } => "LayerNormLastDimBackward",
-        Op::ReduceMaxToBackward => "ReduceMaxToBackward",
-        Op::Rope => "Rope",
+        // Phase 7.6 step 5: fused ops (SoftmaxLastDim,
+        // RmsNormLastDim, RmsNormLastDimBackward, SoftmaxLastDimBackward,
+        // LayerNormLastDimBackward, ReduceMaxToBackward, Rope) live
+        // behind `Op::Fused(_, _)` now and reach the `_ => "Other"`
+        // catch-all here. Per-id names will land alongside the
+        // step-7/8 PrecisionGuarantee / cost-model populating pass.
         Op::QMatMul { .. } => "QMatMul",
         _ => "Other",
     }

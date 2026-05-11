@@ -509,15 +509,11 @@ fn eval_node(
         Op::Transpose => unary!(inputs, cache, ops::transpose_last_two),
         Op::Permute(axes) => eval_permute(axes, inputs, cache),
 
-        // --- 2-D convolution (defers to reference nested loops for
-        // now; a gemm-backed im2col fast-path is a follow-up) ---
-        Op::Conv2D { stride, padding, groups } => {
-            eval_conv2d(*stride, *padding, *groups, inputs, cache)
-        }
-        // Phase 7.6 step 4 (continued): registry-extended Conv2D
-        // routes to the same eval_conv2d kernel. Step 5 drops the
-        // legacy arm; step 9 replaces both with a pre-resolved
-        // KernelRef pulled from FusedKernelRegistry at planning time.
+        // --- 2-D convolution (registry-routed; defers to reference
+        // nested loops for now — a gemm-backed im2col fast-path is a
+        // follow-up) ---
+        // Phase 7.6 step 5: legacy `Op::Conv2D` arm dropped with the
+        // variant.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::CONV2D =>
         {
@@ -544,10 +540,9 @@ fn eval_node(
         Op::PagedAttn { softmax_scale, block_size, softcap } => {
             eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
         }
-        Op::FusedLinear => eval_fused_linear(inputs, cache),
-        // Phase 7.6 step 4: registry-extended FusedLinear routes to the
-        // same primitive kernel as the legacy variant. Step 5 drops the
-        // legacy arm; step 9 replaces both with a pre-resolved KernelRef.
+        // Phase 7.6 step 5: legacy `Op::FusedLinear` arm dropped with
+        // the variant; FusedLinear dispatches only through the
+        // registry form below.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR => {
             eval_fused_linear(inputs, cache)
         }
@@ -573,17 +568,15 @@ fn eval_node(
         Op::ArgMaxDim(d) => eval_argindex_dim(*d, inputs, cache, true),
         Op::ArgMinDim(d) => eval_argindex_dim(*d, inputs, cache, false),
 
-        // --- compositions ---
-        Op::SoftmaxLastDim => unary!(inputs, cache, ops::softmax_last_dim),
-        // Phase 7.6 step 3: dispatch the registry-extended fused arm to
-        // the same primitive kernel as the legacy variant.
+        // --- compositions (registry-routed) ---
+        // Phase 7.6 step 5: all legacy primitive-variant arms for
+        // fused ops (SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim,
+        // Rope, and the four backward helpers) have been dropped
+        // together with their variants. Dispatch flows through
+        // `Op::Fused(fid, params)` below.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM => {
             unary!(inputs, cache, ops::softmax_last_dim)
         }
-        // Phase 7.6 step 4 (continued): same bridge as SoftmaxLastDim —
-        // the registry-extended Op::Fused(RMS_NORM_LAST_DIM, _) routes
-        // to the existing eval_rms_norm_last_dim kernel until the
-        // step-9 planning-time refactor lands.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM =>
         {
@@ -608,26 +601,12 @@ fn eval_node(
             };
             eval_layer_norm_last_dim(eps, inputs, cache)
         }
-        Op::LayerNormLastDim { eps } => eval_layer_norm_last_dim(*eps, inputs, cache),
-        Op::RmsNormLastDim { eps } => eval_rms_norm_last_dim(*eps, inputs, cache),
-        Op::Rope => eval_rope(inputs, cache),
-        // Phase 7.6 step 4 (continued): registry-extended Rope routes
-        // to the same eval_rope kernel as the legacy variant. The
-        // FusedOpParams::Rope variant is parameterless — seq/head_dim
-        // are recovered from the input shapes inside eval_rope.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => {
             eval_rope(inputs, cache)
         }
         Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
-        Op::RmsNormLastDimBackward { eps } => eval_rms_norm_last_dim_backward(*eps, inputs, cache),
-        Op::SoftmaxLastDimBackward => eval_softmax_last_dim_backward(inputs, cache),
-        Op::ReduceMaxToBackward => eval_reduce_max_to_backward(inputs, cache),
-        Op::LayerNormLastDimBackward { eps } => {
-            eval_layer_norm_last_dim_backward(*eps, inputs, cache)
-        }
-        // Phase 7.6 step 4 (backward-helper batch): registry-extended
-        // backward helpers route to the same primitive kernels as the
-        // legacy variants. Step 5 drops the legacy arms.
+        // Phase 7.6 step 5: backward-helper dispatch only flows
+        // through the registry form below.
         Op::Fused(fid, _)
             if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD =>
         {

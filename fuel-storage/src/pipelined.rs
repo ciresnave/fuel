@@ -418,30 +418,19 @@ fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
     dts
 }
 
-/// Phase 7.6 step 3: SoftmaxLastDim flows through both the legacy
-/// `Op::SoftmaxLastDim` variant and the registry-extended
-/// `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, _)` form. Both dispatch to
-/// the same `OpKind::SoftmaxLastDim` binding-table entry; this helper
-/// collapses the two shapes for op-to-OpKind/OpParams call sites.
+/// SoftmaxLastDim is reachable only through `Op::Fused(FusedOps::
+/// SOFTMAX_LAST_DIM, _)` post-step-5 (the legacy `Op::SoftmaxLastDim`
+/// primitive variant was retired). This helper collapses the
+/// op-to-OpKind/OpParams shapes for callers that want a single-arm
+/// match.
 fn op_is_softmax_last_dim(op: &Op) -> bool {
-    match op {
-        Op::SoftmaxLastDim => true,
-        Op::Fused(fid, _) => *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM,
-        _ => false,
-    }
+    matches!(op, Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM)
 }
 
-/// Phase 7.6 step 4: FusedLinear flows through both the legacy
-/// `Op::FusedLinear` variant and the registry-extended
-/// `Op::Fused(FusedOps::FUSED_LINEAR, _)` form. Both dispatch to the
-/// same `OpKind::FusedLinear` binding-table entry; this helper
-/// collapses the two shapes for op-to-OpKind/OpParams call sites.
+/// FusedLinear is reachable only through `Op::Fused(FusedOps::
+/// FUSED_LINEAR, _)` post-step-5.
 fn op_is_fused_linear(op: &Op) -> bool {
-    match op {
-        Op::FusedLinear => true,
-        Op::Fused(fid, _) => *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR,
-        _ => false,
-    }
+    matches!(op, Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR)
 }
 
 /// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.
@@ -504,16 +493,17 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::MeanAll       => Some(OpKind::MeanReduce),
         Op::MatMul        => Some(OpKind::MatMul),
         Op::Cast(_)       => Some(OpKind::Cast),
-        Op::Conv2D { .. } => Some(OpKind::Conv2D),
-        // Phase 7.6 step 4 (continued): registry-extended Conv2D
-        // routes through the same OpKind::Conv2D binding.
+        // Phase 7.6 step 5: fused-op dispatch routes through
+        // `Op::Fused(fid, _)`; the legacy `Op::Conv2D` /
+        // `Op::FusedLinear` / `Op::SoftmaxLastDim` /
+        // `Op::RmsNormLastDim` / `Op::LayerNormLastDim` / `Op::Rope`
+        // arms were dropped together with the variants.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::CONV2D => {
             Some(OpKind::Conv2D)
         }
         Op::ConvTranspose2D { .. } => Some(OpKind::ConvTranspose2D),
         Op::ReduceSumTo(_) => Some(OpKind::ReduceSumTo),
         Op::ReduceMaxTo(_) => Some(OpKind::ReduceMaxTo),
-        Op::FusedLinear => Some(OpKind::FusedLinear),
         Op::FlashAttn { .. } => Some(OpKind::FlashAttn),
         Op::PagedAttn { .. } => Some(OpKind::PagedAttn),
         Op::AddScalar(_)  => Some(OpKind::Affine),
@@ -523,11 +513,6 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Maximum       => Some(OpKind::MaximumElementwise),
         Op::Minimum       => Some(OpKind::MinimumElementwise),
         Op::Concat { .. } => Some(OpKind::Concat),
-        Op::SoftmaxLastDim => Some(OpKind::SoftmaxLastDim),
-        // Phase 7.6 step 3: route the registry-extended fused arm
-        // through the same OpKind binding; the per-dtype CPU/CUDA
-        // wrappers registered against OpKind::SoftmaxLastDim continue
-        // to handle dispatch.
         Op::Fused(fid, _)
             if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
         {
@@ -548,13 +533,8 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::LayerNormLastDim)
         }
-        Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
-        Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
         Op::IndexSelect { .. } => Some(OpKind::IndexSelect),
         Op::Gather { .. } => Some(OpKind::Gather),
-        Op::Rope => Some(OpKind::Rope),
-        // Phase 7.6 step 4 (continued): registry-extended Rope routes
-        // through the same OpKind::Rope binding.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => {
             Some(OpKind::Rope)
         }
@@ -1141,13 +1121,9 @@ fn op_to_op_params(
                 dim: *dim,
             }
         }
-        // Phase 7.6 step 4 (continued): legacy `Op::Rope` and the
-        // registry-extended `Op::Fused(ROPE, _)` share the same shape
-        // contract — three inputs (x, cos, sin), x rank ≥ 2 — and
-        // recover (outer_count, seq, head_dim) identically from x's
-        // layout. Same body, dispatched off either op variant.
-        Op::Rope
-        | Op::Fused(_, fuel_graph::registry::FusedOpParams::Rope) => {
+        // Phase 7.6 step 5: Rope routes through the registry; the
+        // legacy `Op::Rope` arm was retired with the variant.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::Rope) => {
             // Inputs: (x, cos, sin). x is [..., seq, head_dim];
             // cos/sin are [seq, head_dim] (validated at graph build).
             if node.inputs.len() != 3 {
@@ -1241,24 +1217,9 @@ fn op_to_op_params(
                 inner_count,
             }
         }
-        Op::RmsNormLastDim { eps } | Op::LayerNormLastDim { eps } => {
-            let il = input_layout(node.inputs[0]);
-            let dims = il.shape().dims();
-            if dims.is_empty() {
-                return Err(Error::Msg(format!(
-                    "Op::{:?} requires rank ≥ 1",
-                    node.op,
-                ))
-                .bt());
-            }
-            let last_dim = *dims.last().unwrap();
-            let outer_count: usize = dims[..dims.len() - 1].iter().product();
-            OpParams::NormLastDim { outer_count, last_dim, eps: *eps }
-        }
-        // Phase 7.6 step 4 (continued): registry-extended RmsNorm /
-        // LayerNorm share the legacy variants' shape contract; the
-        // only difference is where eps lives. Collapse to one body
-        // parameterized on which FusedOpParams variant we got.
+        // Phase 7.6 step 5: legacy `Op::RmsNormLastDim` /
+        // `Op::LayerNormLastDim` arms retired with the variants;
+        // both now route through `Op::Fused(NORM_LAST_DIM, _)`.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM
                 || *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM =>
@@ -1327,12 +1288,9 @@ fn op_to_op_params(
         Op::MulScalar(c) => OpParams::Affine { mul: *c, add: 0.0 },
         Op::Clamp { min, max } => OpParams::Clamp { min: *min, max: *max },
         Op::PowI(exp) => OpParams::PowI { exp: *exp },
-        // Phase 7.6 step 4 (continued): legacy `Op::Conv2D` and the
-        // registry-extended `Op::Fused(CONV2D, _)` share the same shape
-        // contract — 2 or 3 inputs, rank-4 x and weight — and recover
-        // x_shape/w_shape/out_shape identically from the layouts.
-        Op::Conv2D { stride, padding, groups }
-        | Op::Fused(_, fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups }) => {
+        // Phase 7.6 step 5: legacy `Op::Conv2D` arm retired with the
+        // variant; Conv2D routes through `Op::Fused(CONV2D, _)`.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups }) => {
             // Inputs[0] = x [N, Cin, Hin, Win]; inputs[1] = weight
             // [Cout, Cin/groups, Kh, Kw]; inputs[2] (optional) = bias [Cout].
             // Output (this Node's shape) = [N, Cout, Hout, Wout].
@@ -3057,7 +3015,10 @@ mod tests {
                 shape: Shape::from_dims(&[1, 2]), dtype: DType::BF16,
             });
             let op_id = g.push(Node {
-                op: Op::RmsNormLastDim { eps: 0.0 }, inputs: vec![in_id],
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM,
+                    fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps: 0.0 },
+                ), inputs: vec![in_id],
                 shape: Shape::from_dims(&[1, 2]), dtype: DType::BF16,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
@@ -3462,7 +3423,11 @@ mod tests {
                 shape: Shape::from_dims(&[1, 4]), dtype: DType::F32,
             });
             let r = g.push(Node {
-                op: Op::Rope, inputs: vec![x, c, s],
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::ROPE,
+                    fuel_graph::registry::FusedOpParams::Rope,
+                ),
+                inputs: vec![x, c, s],
                 shape: Shape::from_dims(&[1, 1, 4]), dtype: DType::F32,
             });
             g.set_target_backend(r, BackendId::Cpu);
@@ -3577,7 +3542,10 @@ mod tests {
                 shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
             });
             let op_id = g.push(Node {
-                op: Op::RmsNormLastDim { eps: 0.0 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM,
+                    fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps: 0.0 },
+                ),
                 inputs: vec![in_id],
                 shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
             });
@@ -3616,7 +3584,10 @@ mod tests {
                 shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
             });
             let op_id = g.push(Node {
-                op: Op::LayerNormLastDim { eps: 0.0 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM,
+                    fuel_graph::registry::FusedOpParams::LayerNormLastDim { eps: 0.0 },
+                ),
                 inputs: vec![in_id],
                 shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
             });
@@ -3658,7 +3629,11 @@ mod tests {
                 shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
             });
             let op_id = g.push(Node {
-                op: Op::SoftmaxLastDim, inputs: vec![in_id],
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM,
+                    fuel_graph::registry::FusedOpParams::SoftmaxLastDim,
+                ),
+                inputs: vec![in_id],
                 shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
             });
             g.set_target_backend(op_id, BackendId::Cpu);
@@ -3875,7 +3850,12 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV2D,
+                    fuel_graph::registry::FusedOpParams::Conv2D {
+                        stride: (1, 1), padding: (0, 0), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 2, 2]),
                 dtype: DType::F32,
@@ -3923,7 +3903,12 @@ mod tests {
                 shape: Shape::from_dims(&[1]), dtype: DType::F32,
             });
             let c = g.push(Node {
-                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV2D,
+                    fuel_graph::registry::FusedOpParams::Conv2D {
+                        stride: (1, 1), padding: (0, 0), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w, b],
                 shape: Shape::from_dims(&[1, 1, 2, 2]),
                 dtype: DType::F32,
@@ -3965,7 +3950,12 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F64,
             });
             let c = g.push(Node {
-                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV2D,
+                    fuel_graph::registry::FusedOpParams::Conv2D {
+                        stride: (1, 1), padding: (0, 0), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 2, 2]),
                 dtype: DType::F64,
@@ -4004,7 +3994,12 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::BF16,
             });
             let c = g.push(Node {
-                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV2D,
+                    fuel_graph::registry::FusedOpParams::Conv2D {
+                        stride: (1, 1), padding: (0, 0), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 2, 2]),
                 dtype: DType::BF16,
@@ -4048,7 +4043,12 @@ mod tests {
                 shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F16,
             });
             let c = g.push(Node {
-                op: Op::Conv2D { stride: (1, 1), padding: (0, 0), groups: 1 },
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::CONV2D,
+                    fuel_graph::registry::FusedOpParams::Conv2D {
+                        stride: (1, 1), padding: (0, 0), groups: 1,
+                    },
+                ),
                 inputs: vec![x, w],
                 shape: Shape::from_dims(&[1, 1, 2, 2]),
                 dtype: DType::F16,
@@ -4423,7 +4423,11 @@ mod tests {
                 shape: Shape::from_dims(&[2]), dtype: DType::F32,
             });
             let op = g.push(Node {
-                op: Op::FusedLinear, inputs: vec![a, b, bias],
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FUSED_LINEAR,
+                    fuel_graph::registry::FusedOpParams::FusedLinear,
+                ),
+                inputs: vec![a, b, bias],
                 shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::F32,
             });
             g.set_target_backend(op, BackendId::Cpu);
@@ -4461,7 +4465,11 @@ mod tests {
                 shape: Shape::from_dims(&[2]), dtype: DType::F64,
             });
             let op = g.push(Node {
-                op: Op::FusedLinear, inputs: vec![a, b, bias],
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FUSED_LINEAR,
+                    fuel_graph::registry::FusedOpParams::FusedLinear,
+                ),
+                inputs: vec![a, b, bias],
                 shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::F64,
             });
             g.set_target_backend(op, BackendId::Cpu);
@@ -4505,7 +4513,11 @@ mod tests {
                 shape: Shape::from_dims(&[2]), dtype: DType::BF16,
             });
             let op = g.push(Node {
-                op: Op::FusedLinear, inputs: vec![a, b, bias],
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FUSED_LINEAR,
+                    fuel_graph::registry::FusedOpParams::FusedLinear,
+                ),
+                inputs: vec![a, b, bias],
                 shape: Shape::from_dims(&[1, 2, 2]), dtype: DType::BF16,
             });
             g.set_target_backend(op, BackendId::Cpu);

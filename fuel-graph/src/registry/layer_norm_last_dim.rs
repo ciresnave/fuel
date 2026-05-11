@@ -79,16 +79,11 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     };
     let eps = match params {
         FusedOpParams::LayerNormLastDim { eps } => *eps,
-        _ => {
-            if let Op::LayerNormLastDim { eps } = graph.node(id).op {
-                eps
-            } else {
-                panic!(
-                    "layer_norm_last_dim::decompose called with non-LayerNorm node {:?}",
-                    graph.node(id).op
-                );
-            }
-        }
+        _ => panic!(
+            "layer_norm_last_dim::decompose called with non-LayerNorm \
+             params {params:?}; node op = {:?}",
+            graph.node(id).op
+        ),
     };
     let dims = x_shape.dims().to_vec();
     let rank = dims.len();

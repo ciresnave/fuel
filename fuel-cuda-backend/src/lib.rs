@@ -503,7 +503,13 @@ impl CudaGraphExecutor {
             }
 
             // Native CUDA softmax — the kernel from reduce.cu.
-            Op::SoftmaxLastDim => {
+            // Phase 7.6 step 5 (2026-05-11): SoftmaxLastDim now flows
+            // through `Op::Fused(SOFTMAX_LAST_DIM, _)` per the registry
+            // split; the legacy `Op::SoftmaxLastDim` arm was retired
+            // with the variant.
+            Op::Fused(fid, _)
+                if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
+            {
                 let a = self.get_gt(inputs, 0, cache);
                 a.storage.softmax_last_dim(&a.layout()).expect("SoftmaxLastDim")
             }
@@ -777,7 +783,9 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gather { .. } => "Gather",
         Op::Concat { .. } => "Concat",
         Op::Slice { .. } => "Slice",
-        Op::SoftmaxLastDim => "SoftmaxLastDim",
+        // Phase 7.6 step 5: fused ops (SoftmaxLastDim et al.) hit
+        // the catch-all here. Per-id names land alongside the
+        // step-7/8 PrecisionGuarantee/cost-model pass.
         _ => "Other",
     }
 }
