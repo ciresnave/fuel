@@ -48,51 +48,40 @@ fn check_lens_2(name: &str, a: usize, b: usize) -> Result<()> {
 // Elementwise binary kernels (f32)
 // =============================================================================
 
-/// Generate a binary kernel parameterized over the element type
-/// `$T`: `out[i] = op(lhs[i], rhs[i])`.
+/// Generate a public binary-kernel entry point as a thin thunk over
+/// the chassis. Op marker `$Op` lives in [`crate::chassis::binary`]
+/// (e.g. `Add`, `Mul`, `Pow`); per-precision math lives there once
+/// and the four dtype impls fall out of the chassis's blanket
+/// `BinaryOp<T>` impls.
 ///
-/// Output is pre-allocated by the caller (the dispatch wrapper) and
-/// must match the input byte length. The kernel writes into the
-/// pre-allocated bytes; it never allocates.
-macro_rules! binary_kernel {
-    ($name:ident, $T:ty, $op:expr, $doc:literal) => {
-        #[doc = $doc]
+/// Pre-chassis surface used closure-based macros (`binary_kernel!`,
+/// `binary_f32_kernel!`) carrying the op math inline at each call
+/// site. The thunk macro replaces both; per-function docstrings
+/// from the old form moved to the op-marker definitions in the
+/// chassis module.
+macro_rules! binary_thunk {
+    ($name:ident, $T:ty, $Op:ident) => {
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
             out: &mut CpuStorageBytes,
         ) -> Result<()> {
-            check_lens_3(stringify!($name), lhs.len_bytes(), rhs.len_bytes(), out.len_bytes())?;
-            let lhs_view: &[$T] = lhs.as_slice()?;
-            let rhs_view: &[$T] = rhs.as_slice()?;
-            let out_view: &mut [$T] = out.as_slice_mut()?;
-            let op: fn($T, $T) -> $T = $op;
-            for (i, slot) in out_view.iter_mut().enumerate() {
-                *slot = op(lhs_view[i], rhs_view[i]);
-            }
-            Ok(())
+            crate::chassis::binary::binary::<$T, crate::chassis::binary::$Op>(
+                stringify!($name), lhs, rhs, out,
+            )
         }
     };
 }
 
-/// Backward-compat alias for the previous `binary_f32_kernel!`
-/// invocations. Existing call sites stay unchanged; new dtypes
-/// declare via `binary_kernel!` directly.
-macro_rules! binary_f32_kernel {
-    ($name:ident, $op:expr, $doc:literal) => {
-        binary_kernel!($name, f32, $op, $doc);
-    };
-}
+binary_thunk!(add_f32, f32, Add);
+binary_thunk!(sub_f32, f32, Sub);
+binary_thunk!(mul_f32, f32, Mul);
+binary_thunk!(div_f32, f32, Div);
 
-binary_f32_kernel!(add_f32, |a, b| a + b, "Elementwise `f32` addition: `out[i] = lhs[i] + rhs[i]`.");
-binary_f32_kernel!(sub_f32, |a, b| a - b, "Elementwise `f32` subtraction: `out[i] = lhs[i] - rhs[i]`.");
-binary_f32_kernel!(mul_f32, |a, b| a * b, "Elementwise `f32` multiplication: `out[i] = lhs[i] * rhs[i]`.");
-binary_f32_kernel!(div_f32, |a, b| a / b, "Elementwise `f32` division: `out[i] = lhs[i] / rhs[i]`. Division by zero yields IEEE-754 inf/NaN per platform.");
-
-binary_kernel!(add_f64, f64, |a: f64, b: f64| a + b, "Elementwise `f64` addition.");
-binary_kernel!(sub_f64, f64, |a: f64, b: f64| a - b, "Elementwise `f64` subtraction.");
-binary_kernel!(mul_f64, f64, |a: f64, b: f64| a * b, "Elementwise `f64` multiplication.");
-binary_kernel!(div_f64, f64, |a: f64, b: f64| a / b, "Elementwise `f64` division.");
+binary_thunk!(add_f64, f64, Add);
+binary_thunk!(sub_f64, f64, Sub);
+binary_thunk!(mul_f64, f64, Mul);
+binary_thunk!(div_f64, f64, Div);
 
 // =============================================================================
 // Elementwise unary kernels (f32)
@@ -160,8 +149,8 @@ unary_thunk!(step_f64, f64, Step);
 // versions sit later in the file (in the scalar/clamp/extrema
 // section); placing the f64 mirrors here keeps the elementwise
 // arithmetic block contiguous.
-binary_kernel!(maximum_f64, f64, |a: f64, b: f64| a.max(b), "Elementwise `f64` maximum.");
-binary_kernel!(minimum_f64, f64, |a: f64, b: f64| a.min(b), "Elementwise `f64` minimum.");
+binary_thunk!(maximum_f64, f64, Maximum);
+binary_thunk!(minimum_f64, f64, Minimum);
 
 // =============================================================================
 // bf16 / f16 elementwise — via-f32 round-trip
@@ -176,12 +165,12 @@ binary_kernel!(minimum_f64, f64, |a: f64, b: f64| a.min(b), "Elementwise `f64` m
 // op) but correctness-first; vendor backends override this once
 // they're wired.
 
-binary_kernel!(add_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() + b.to_f32()), "Elementwise `bf16` addition (via f32).");
-binary_kernel!(sub_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() - b.to_f32()), "Elementwise `bf16` subtraction (via f32).");
-binary_kernel!(mul_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() * b.to_f32()), "Elementwise `bf16` multiplication (via f32).");
-binary_kernel!(div_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32() / b.to_f32()), "Elementwise `bf16` division (via f32).");
-binary_kernel!(maximum_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().max(b.to_f32())), "Elementwise `bf16` maximum (via f32).");
-binary_kernel!(minimum_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().min(b.to_f32())), "Elementwise `bf16` minimum (via f32).");
+binary_thunk!(add_bf16, half::bf16, Add);
+binary_thunk!(sub_bf16, half::bf16, Sub);
+binary_thunk!(mul_bf16, half::bf16, Mul);
+binary_thunk!(div_bf16, half::bf16, Div);
+binary_thunk!(maximum_bf16, half::bf16, Maximum);
+binary_thunk!(minimum_bf16, half::bf16, Minimum);
 
 unary_thunk!(relu_bf16, half::bf16, Relu);
 unary_thunk!(neg_bf16, half::bf16, Neg);
@@ -202,12 +191,12 @@ unary_thunk!(gelu_bf16, half::bf16, GeluTanh);
 // f16 mirrors of the bf16 set above. Identical patterns; only the
 // concrete type differs.
 
-binary_kernel!(add_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() + b.to_f32()), "Elementwise `f16` addition (via f32).");
-binary_kernel!(sub_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() - b.to_f32()), "Elementwise `f16` subtraction (via f32).");
-binary_kernel!(mul_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() * b.to_f32()), "Elementwise `f16` multiplication (via f32).");
-binary_kernel!(div_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32() / b.to_f32()), "Elementwise `f16` division (via f32).");
-binary_kernel!(maximum_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().max(b.to_f32())), "Elementwise `f16` maximum (via f32).");
-binary_kernel!(minimum_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().min(b.to_f32())), "Elementwise `f16` minimum (via f32).");
+binary_thunk!(add_f16, half::f16, Add);
+binary_thunk!(sub_f16, half::f16, Sub);
+binary_thunk!(mul_f16, half::f16, Mul);
+binary_thunk!(div_f16, half::f16, Div);
+binary_thunk!(maximum_f16, half::f16, Maximum);
+binary_thunk!(minimum_f16, half::f16, Minimum);
 
 unary_thunk!(relu_f16, half::f16, Relu);
 unary_thunk!(neg_f16, half::f16, Neg);
@@ -401,10 +390,10 @@ unary_thunk!(gelu_erf_f16, half::f16, GeluErf);
 // Binary pow with real exponent. `f32::powf` / `f64::powf` are
 // stdlib; bf16/f16 widen to f32. NaN follows IEEE-754 (e.g.
 // `pow(-2, 0.5) = NaN`).
-binary_kernel!(pow_f32, f32, |a: f32, b: f32| a.powf(b), "Elementwise `f32` binary power: `out[i] = pow(lhs[i], rhs[i])`.");
-binary_kernel!(pow_f64, f64, |a: f64, b: f64| a.powf(b), "Elementwise `f64` binary power.");
-binary_kernel!(pow_bf16, half::bf16, |a: half::bf16, b: half::bf16| half::bf16::from_f32(a.to_f32().powf(b.to_f32())), "Elementwise `bf16` binary power (via f32).");
-binary_kernel!(pow_f16, half::f16, |a: half::f16, b: half::f16| half::f16::from_f32(a.to_f32().powf(b.to_f32())), "Elementwise `f16` binary power (via f32).");
+binary_thunk!(pow_f32, f32, Pow);
+binary_thunk!(pow_f64, f64, Pow);
+binary_thunk!(pow_bf16, half::bf16, Pow);
+binary_thunk!(pow_f16, half::f16, Pow);
 
 // Reciprocal square root. `1 / sqrt(x)` directly; `Float::sqrt`
 // followed by reciprocal is bit-equivalent on IEEE-754, but expressing
@@ -420,10 +409,10 @@ unary_thunk!(rsqrt_f16, half::f16, Rsqrt);
 // matches sign of divisor — distinct from `f32::%` (C99 fmod, sign of
 // dividend) and from `f32::rem_euclid` (always non-negative). Picked
 // to match `torch.remainder` for cross-framework compatibility.
-binary_kernel!(rem_f32, f32, |a: f32, b: f32| a - (a / b).floor() * b, "Elementwise `f32` remainder (PyTorch convention: sign of divisor).");
-binary_kernel!(rem_f64, f64, |a: f64, b: f64| a - (a / b).floor() * b, "Elementwise `f64` remainder (PyTorch convention).");
-binary_kernel!(rem_bf16, half::bf16, |a: half::bf16, b: half::bf16| { let af = a.to_f32(); let bf = b.to_f32(); half::bf16::from_f32(af - (af / bf).floor() * bf) }, "Elementwise `bf16` remainder (PyTorch convention, via f32).");
-binary_kernel!(rem_f16, half::f16, |a: half::f16, b: half::f16| { let af = a.to_f32(); let bf = b.to_f32(); half::f16::from_f32(af - (af / bf).floor() * bf) }, "Elementwise `f16` remainder (PyTorch convention, via f32).");
+binary_thunk!(rem_f32, f32, Rem);
+binary_thunk!(rem_f64, f64, Rem);
+binary_thunk!(rem_bf16, half::bf16, Rem);
+binary_thunk!(rem_f16, half::f16, Rem);
 
 // =============================================================================
 // Flip / Roll along one dim — dtype-agnostic byte reorder
@@ -2874,8 +2863,8 @@ pub fn powi_f32(
     Ok(())
 }
 
-binary_f32_kernel!(maximum_f32, |a: f32, b: f32| a.max(b), "Element-wise `f32` maximum: `out[i] = max(lhs[i], rhs[i])`. NaN handling follows `f32::max` (NaN-propagating per IEEE-754).");
-binary_f32_kernel!(minimum_f32, |a: f32, b: f32| a.min(b), "Element-wise `f32` minimum: `out[i] = min(lhs[i], rhs[i])`. NaN handling follows `f32::min`.");
+binary_thunk!(maximum_f32, f32, Maximum);
+binary_thunk!(minimum_f32, f32, Minimum);
 
 // Native-arithmetic Affine / Clamp / PowI for f64.
 pub fn affine_f64(
