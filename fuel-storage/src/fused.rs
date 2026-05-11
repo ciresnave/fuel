@@ -957,6 +957,181 @@ mod tests {
         }
     }
 
+    /// Phase 7.6 step 7 — the architecture v1.0 §05 "always-built
+    /// backend bit-stable coverage commitment" lint.
+    ///
+    /// Every fused op registered in
+    /// `fuel_graph::registry::default_registry()` MUST have at least
+    /// one CPU `BackendImpl` in
+    /// `fuel_storage::fused::default_kernel_registry()` with
+    /// `precision.bit_stable_on_same_hardware == true`. This is the
+    /// architecture's correctness anchor: the always-built backend
+    /// gives every downstream consumer a deterministic
+    /// implementation to fall back on, so cross-backend equivalence
+    /// tests have a fixed reference.
+    ///
+    /// The lint runs as a unit test so violations surface in CI
+    /// rather than at runtime. Adding a new `FusedOpEntry` without
+    /// a matching CPU registration fails this test immediately.
+    ///
+    /// `KNOWN_GAPS` enumerates ops that are deliberately not yet
+    /// covered, each with a one-line reason. The list is an
+    /// allowlist, not an excuse — each entry has a follow-up commit
+    /// that removes it. As of step 7 (2026-05-11) only the four
+    /// backward helpers appear here; their CPU dispatch flows
+    /// through `GraphBackend` trait methods in
+    /// `fuel-graph-executor`, not the byte-level binding table,
+    /// so step-6 registration awaits either wrapper conversion or
+    /// step-9's trait-method-as-KernelRef path.
+    ///
+    /// Note on primitive Ops: this lint covers the **fused-op**
+    /// registry only. Primitive ops (Op::Add, Op::MatMul, etc.)
+    /// dispatch through `KernelBindingTable` and don't carry a
+    /// `PrecisionGuarantee` field today. Extending the architecture
+    /// commitment to primitives is step 7b — pending a binding-table
+    /// refactor or a parallel PrecisionGuarantee side-table per
+    /// OpKind.
+    #[test]
+    fn precision_guarantee_lint_bit_stable_cpu_coverage() {
+        use fuel_graph::registry::{default_registry, FusedOpId, FusedOps};
+
+        // Each gap names the FusedOpId + the reason it isn't yet
+        // covered by a CPU BackendImpl. When you close a gap, delete
+        // the corresponding line; when you add a new fused op
+        // without immediate coverage, add a line here AND file a
+        // follow-up.
+        const KNOWN_GAPS: &[(FusedOpId, &str)] = &[
+            (
+                FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                "CPU dispatch flows through GraphBackend::softmax_last_dim_backward, \
+                 not a byte-level wrapper. Step-6 registration awaits wrapper \
+                 conversion or step-9 trait-method-as-KernelRef.",
+            ),
+            (
+                FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+                "Same as SOFTMAX_LAST_DIM_BACKWARD — trait-method dispatch only.",
+            ),
+            (
+                FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                "Same as SOFTMAX_LAST_DIM_BACKWARD — trait-method dispatch only.",
+            ),
+            (
+                FusedOps::REDUCE_MAX_TO_BACKWARD,
+                "Same as SOFTMAX_LAST_DIM_BACKWARD — trait-method dispatch only.",
+            ),
+        ];
+
+        let meta = default_registry();
+        let kernels = default_kernel_registry();
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut covered = 0usize;
+        let mut allowlisted = 0usize;
+
+        for entry in meta.entries_iter() {
+            let id = entry.id;
+            let name = entry.name;
+
+            if let Some((_, reason)) = KNOWN_GAPS.iter().find(|(g, _)| *g == id) {
+                allowlisted += 1;
+                // Sanity: a gap entry should have no CPU coverage.
+                // If a CPU registration shows up for an
+                // allowlisted id, the gap entry should be removed.
+                let has_cpu = kernels.impls_for(id).iter().any(|(b, _)| *b == BackendId::Cpu);
+                if has_cpu {
+                    failures.push(format!(
+                        "FusedOpId {id:?} ({name}) is on the KNOWN_GAPS allowlist \
+                         but DOES have a CPU registration now. Reason given was: \
+                         {reason:?}. Remove the allowlist entry to enable the \
+                         bit-stable lint.",
+                    ));
+                }
+                continue;
+            }
+
+            let impls = kernels.impls_for(id);
+            let has_bit_stable_cpu = impls.iter().any(|(backend, impl_)| {
+                *backend == BackendId::Cpu && impl_.precision.bit_stable_on_same_hardware
+            });
+            if has_bit_stable_cpu {
+                covered += 1;
+            } else {
+                failures.push(format!(
+                    "FusedOpId {id:?} ({name}) has no bit-stable CPU BackendImpl. \
+                     Architecture v1.0 §05 requires the always-built backend \
+                     (fuel-cpu-backend) to provide at least one \
+                     `bit_stable_on_same_hardware: true` kernel per registered \
+                     fused op. Either add a CPU registration in \
+                     fuel-storage::dispatch::register_default_fused_kernels with \
+                     a matching PrecisionGuarantee, or add a line to KNOWN_GAPS \
+                     above with a documented reason.",
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "Architecture v1.0 bit-stable CPU coverage lint failed:\n{}",
+            failures.join("\n"),
+        );
+        // Sanity: the lint should be exercising real ops. If both
+        // counts are zero, something is wrong with the registry
+        // population.
+        assert!(
+            covered > 0 || allowlisted > 0,
+            "lint covered 0 ops — registry appears empty"
+        );
+    }
+
+    /// Negative-path check for the bit-stable lint logic: a
+    /// `FusedKernelRegistry` with no CPU impl for a registered id
+    /// must fail the bit-stable check. Verifies the lint's failure
+    /// detection works rather than just relying on the positive
+    /// path being green.
+    ///
+    /// Doesn't touch `default_kernel_registry()` — runs the check
+    /// against a freshly-constructed empty registry so the failure
+    /// is deterministic regardless of global state.
+    #[test]
+    fn precision_guarantee_lint_detects_missing_cpu() {
+        use fuel_graph::registry::FusedOpId;
+        let empty = FusedKernelRegistry::new();
+        let id = FusedOpId(1);
+        // Same predicate the production lint uses.
+        let has_bit_stable_cpu = empty.impls_for(id).iter().any(|(backend, impl_)| {
+            *backend == BackendId::Cpu && impl_.precision.bit_stable_on_same_hardware
+        });
+        assert!(!has_bit_stable_cpu,
+            "empty registry must not report bit-stable CPU coverage");
+    }
+
+    /// Negative-path check: a CPU registration without
+    /// `bit_stable_on_same_hardware: true` must NOT satisfy the
+    /// lint. Captures the difference between "any CPU impl" and "a
+    /// bit-stable CPU impl" — the architecture commits to the
+    /// stronger property.
+    #[test]
+    fn precision_guarantee_lint_rejects_non_bit_stable_cpu() {
+        use fuel_graph::registry::FusedOpId;
+        let mut r = FusedKernelRegistry::new();
+        let id = FusedOpId(42);
+        let weak = BackendImpl {
+            kernel: dummy_kernel,
+            dtypes: DUMMY_DTYPES,
+            cost: dummy_cost,
+            // UNKNOWN has bit_stable_on_same_hardware: false.
+            precision: PrecisionGuarantee::UNKNOWN,
+            caps: KernelCaps::empty(),
+            revision: KernelRevisionHash::UNTRACKED,
+        };
+        r.register(id, BackendId::Cpu, weak);
+        let has_bit_stable_cpu = r.impls_for(id).iter().any(|(backend, impl_)| {
+            *backend == BackendId::Cpu && impl_.precision.bit_stable_on_same_hardware
+        });
+        assert!(!has_bit_stable_cpu,
+            "an UNKNOWN-precision CPU impl must not satisfy the bit-stable lint");
+    }
+
     /// Step 6 — coverage assertion for the 8 ops that gained
     /// BackendImpls in this commit (SoftmaxLastDim, RmsNormLastDim,
     /// LayerNormLastDim, Rope, ConvTranspose2D, FlashAttn, PagedAttn,
