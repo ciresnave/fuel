@@ -4,7 +4,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::ops::{Im2Col, MatMul, copy_strided_src_};
 use crate::utils::{Map1, Map2};
-use fuel_core_types::{Layout, Result, WithDType, conv::ParamsConv2D, shape::dims4};
+use fuel_core_types::{Layout, Result, WithDType, conv::ParamsConv2D, shape::stride_dims4};
 
 pub struct Conv2D<'a>(pub &'a ParamsConv2D);
 
@@ -58,11 +58,9 @@ fn conv2d_1x1<T: WithDType + num_traits::Num + Copy + 'static>(
     k_l: &Layout,
 ) -> Result<Vec<T>> {
     let inp = &inp[inp_l.start_offset()..];
-    let inp_stride = inp_l.stride();
-    let (inp_s0, inp_s1, inp_s2, inp_s3) =
-        (inp_stride[0], inp_stride[1], inp_stride[2], inp_stride[3]);
+    let (inp_s0, inp_s1, inp_s2, inp_s3) = stride_dims4(inp_l.stride())?;
     let k = &k[k_l.start_offset()..];
-    let k_stride = k_l.stride();
+    let k_stride = k_l.stride_unsigned();
     let (k_s0, k_s1) = (k_stride[0], k_stride[1]);
     let (out_h, out_w) = (p.out_h(), p.out_w());
 
@@ -128,9 +126,9 @@ fn conv2d_tiled<T: WithDType + num_traits::Num + Copy + 'static>(
     k_l: &Layout,
 ) -> Result<Vec<T>> {
     let inp = &inp[inp_l.start_offset()..];
-    let (inp_s0, inp_s1, inp_s2, inp_s3) = dims4(inp_l.stride())?;
+    let (inp_s0, inp_s1, inp_s2, inp_s3) = stride_dims4(inp_l.stride())?;
     let k = &k[k_l.start_offset()..];
-    let (k_s0, k_s1, k_s2, k_s3) = dims4(k_l.stride())?;
+    let (k_s0, k_s1, k_s2, k_s3) = stride_dims4(k_l.stride())?;
     let (out_h, out_w) = (p.out_h(), p.out_w());
 
     // Output shape: [b_size, c_out, out_h, out_w].
@@ -275,9 +273,9 @@ fn conv2d_direct<T: WithDType + num_traits::Num + Copy + 'static>(
     k_l: &Layout,
 ) -> Result<Vec<T>> {
     let inp = &inp[inp_l.start_offset()..];
-    let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_core_types::shape::dims4(inp_l.stride())?;
+    let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_core_types::shape::stride_dims4(inp_l.stride())?;
     let k = &k[k_l.start_offset()..];
-    let (k_s0, k_s1, k_s2, k_s3) = fuel_core_types::shape::dims4(k_l.stride())?;
+    let (k_s0, k_s1, k_s2, k_s3) = fuel_core_types::shape::stride_dims4(k_l.stride())?;
     let (out_h, out_w) = (p.out_h(), p.out_w());
 
     // Output shape: [b_size, c_out, out_h, out_w].

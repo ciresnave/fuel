@@ -94,7 +94,7 @@ impl ReduceIndex {
         G: Fn(T, usize) -> U,
     {
         let reduce_dim_size = src_l.dims()[self.reduce_dim_index];
-        let reduce_dim_stride = src_l.stride()[self.reduce_dim_index];
+        let reduce_dim_stride = src_l.stride()[self.reduce_dim_index] as usize;
         let dst_len = src_l.shape().elem_count() / reduce_dim_size;
         let mut dst: Vec<U> = Vec::with_capacity(dst_len);
         let dst_to_set = dst.spare_capacity_mut();
@@ -282,7 +282,7 @@ impl Map1 for AvgPool2D {
         let (k_h, k_w) = self.0;
         let (s_h, s_w) = self.1;
         let (b_sz, c, h, w) = layout.shape().dims4()?;
-        let stride = layout.stride();
+        let stride = layout.stride_unsigned();
         let (stride_h, stride_w) = (stride[2], stride[3]);
         let h_out = (h - k_h) / s_h + 1;
         let w_out = (w - k_w) / s_w + 1;
@@ -329,7 +329,7 @@ impl Map1 for MaxPool2D {
         let (k_h, k_w) = self.0;
         let (s_h, s_w) = self.1;
         let (b_sz, c, h, w) = layout.shape().dims4()?;
-        let stride = layout.stride();
+        let stride = layout.stride_unsigned();
         let (stride_h, stride_w) = (stride[2], stride[3]);
         let h_out = (h - k_h) / s_h + 1;
         let w_out = (w - k_w) / s_w + 1;
@@ -376,7 +376,7 @@ impl Map1 for UpsampleNearest1D {
         // TODO: Specialized implementation for the case 2*sz?
         let dst_sz = self.0;
         let (b_sz, c, src_sz) = layout.shape().dims3()?;
-        let stride = layout.stride();
+        let stride = layout.stride_unsigned();
         let stride_sz = stride[2];
         let src_index = layout.start_offset();
         let scale_sz = src_sz as f64 / dst_sz as f64;
@@ -406,7 +406,7 @@ impl Map1 for UpsampleNearest2D {
         // TODO: Specialized implementation for the case 2*h, 2*w?
         let (dst_h, dst_w) = (self.0, self.1);
         let (b_sz, c, src_h, src_w) = layout.shape().dims4()?;
-        let stride = layout.stride();
+        let stride = layout.stride_unsigned();
         let (stride_h, stride_w) = (stride[2], stride[3]);
         let src_index = layout.start_offset();
         let scale_h = src_h as f64 / dst_h as f64;
@@ -455,7 +455,7 @@ impl Map1 for UpsampleBilinear2D {
             return Ok(src.to_vec());
         }
 
-        let stride = layout.stride();
+        let stride = layout.stride_unsigned();
         let src_offset = layout.start_offset();
 
         // Calculate scale factors following PyTorch's area_pixel_compute_scale logic
@@ -635,7 +635,7 @@ impl<I: IntDType> Map1 for IndexSelect<'_, I> {
             }
             .bt())?,
         };
-        let stride_ids = self.ids_l.stride()[0];
+        let stride_ids = self.ids_l.stride()[0] as usize;
         let mut dst_dims = layout.dims().to_vec();
         let src_dim = dst_dims[dim];
         dst_dims[dim] = n_ids;
@@ -900,7 +900,7 @@ pub fn copy_strided_src_<T: Copy + Send + Sync>(
             block_len: 1,
         } => {
             let dims = src_l.dims();
-            let strides = src_l.stride();
+            let strides = src_l.stride_unsigned();
             let start = src_l.start_offset();
             let elem_count: usize = dims.iter().product();
             let elem_count = elem_count.min(dst.len() - dst_offset);
@@ -911,7 +911,7 @@ pub fn copy_strided_src_<T: Copy + Send + Sync>(
                     .par_iter_mut()
                     .enumerate()
                     .for_each(|(i, dst_val)| {
-                        let src_offset = compute_strided_offset(i, dims, strides, start);
+                        let src_offset = compute_strided_offset(i, dims, &strides, start);
                         *dst_val = src[src_offset];
                     });
             } else {
@@ -929,11 +929,11 @@ pub fn copy_strided_src_<T: Copy + Send + Sync>(
             block_len,
         } => {
             let dims = src_l.dims();
-            let strides = src_l.stride();
+            let strides = src_l.stride_unsigned();
             let start = src_l.start_offset();
             // Recompute the number of non-contiguous leading dimensions (same logic
             // as Layout::strided_blocks) so we can index blocks directly.
-            let mut bl = 1;
+            let mut bl: usize = 1;
             let mut contiguous_dims = 0;
             for (&stride, &dim) in strides.iter().zip(dims.iter()).rev() {
                 if stride != bl {
@@ -1001,8 +1001,8 @@ impl Map2 for Conv1D<'_> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let k = &k[k_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2) = fuel_core_types::shape::dims3(inp_l.stride())?;
-        let (k_s0, k_s1, k_s2) = fuel_core_types::shape::dims3(k_l.stride())?;
+        let (inp_s0, inp_s1, inp_s2) = fuel_core_types::shape::stride_dims3(inp_l.stride())?;
+        let (k_s0, k_s1, k_s2) = fuel_core_types::shape::stride_dims3(k_l.stride())?;
         let l_out = p.l_out();
         let dst_elems = p.c_out * l_out * p.b_size;
         // The output shape is [b_size, c_out, l_out]
@@ -1081,7 +1081,7 @@ impl Map1 for Im2Col1D {
         let src = &vs[layout.start_offset()..];
         let mut dst = vec![T::zero(); b * l_out * c * l_k];
         let (src_s0, src_s1, src_s2) = {
-            let s = layout.stride();
+            let s = layout.stride_unsigned();
             (s[0], s[1], s[2])
         };
         // TODO: provide specialized kernels for the common use cases.
@@ -1144,7 +1144,7 @@ impl Map1 for Im2Col {
         let src = &vs[layout.start_offset()..];
         let mut dst = vec![T::zero(); b * h_out * w_out * c * h_k * w_k];
         let (src_s0, src_s1, src_s2, src_s3) = {
-            let s = layout.stride();
+            let s = layout.stride_unsigned();
             (s[0], s[1], s[2], s[3])
         };
         // TODO: provide specialized kernels for the common use cases.
@@ -1225,8 +1225,8 @@ impl Map2 for ConvTranspose1D<'_> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let k = &k[k_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2) = fuel_core_types::shape::dims3(inp_l.stride())?;
-        let (k_s0, k_s1, k_s2) = fuel_core_types::shape::dims3(k_l.stride())?;
+        let (inp_s0, inp_s1, inp_s2) = fuel_core_types::shape::stride_dims3(inp_l.stride())?;
+        let (k_s0, k_s1, k_s2) = fuel_core_types::shape::stride_dims3(k_l.stride())?;
         let l_out = p.l_out();
 
         // Output shape: [b_size, c_out, l_out].
@@ -1293,9 +1293,9 @@ impl Map2 for ConvTranspose2D<'_> {
     fn f<T: WithDType>(&self, inp: &[T], inp_l: &Layout, k: &[T], k_l: &Layout) -> Result<Vec<T>> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_core_types::shape::dims4(inp_l.stride())?;
+        let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_core_types::shape::stride_dims4(inp_l.stride())?;
         let k = &k[k_l.start_offset()..];
-        let (k_s0, k_s1, k_s2, k_s3) = fuel_core_types::shape::dims4(k_l.stride())?;
+        let (k_s0, k_s1, k_s2, k_s3) = fuel_core_types::shape::stride_dims4(k_l.stride())?;
         let (out_h, out_w) = (p.out_h(), p.out_w());
 
         // Output shape: [b_size, c_out, out_h, out_w].
@@ -1392,8 +1392,8 @@ impl MatMul {
     }
 
     fn ab_skip(&self, lhs_l: &Layout, rhs_l: &Layout) -> Result<(usize, usize)> {
-        let lhs_stride = lhs_l.stride();
-        let rhs_stride = rhs_l.stride();
+        let lhs_stride = lhs_l.stride_unsigned();
+        let rhs_stride = rhs_l.stride_unsigned();
         let rank = lhs_stride.len();
         let (_b, m, n, k) = self.0;
         let a_skip: usize = match lhs_stride[..rank - 2] {

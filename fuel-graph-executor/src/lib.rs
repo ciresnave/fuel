@@ -14,7 +14,7 @@
 //! matmul, unary/binary kernels, reductions, and softmax.
 
 
-use fuel_core_types::{DType, DimVec, Layout, Shape};
+use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph::{NodeId, Op, Tensor};
 use fuel_graph::opt::{execution_plan, RuleRegistry};
 
@@ -1836,10 +1836,12 @@ impl<B: GraphBackend> GraphExecutor<B> {
         // Fallback: axes.len() != rank (shouldn't happen for valid permutations).
         let _s = debug_span!("permute_copy", elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
-        let mut strides: DimVec = DimVec::from_elem(0, rank);
-        let mut s = 1usize;
-        for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i]; }
-        let permuted_strides: DimVec = axes.iter().map(|&ax| strides[ax]).collect();
+        let mut strides: fuel_core_types::StrideVec =
+            fuel_core_types::StrideVec::from_elem(0_isize, rank);
+        let mut s: isize = 1;
+        for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i] as isize; }
+        let permuted_strides: fuel_core_types::StrideVec =
+            axes.iter().map(|&ax| strides[ax]).collect();
         let permuted_dims: Vec<usize> = axes.iter().map(|&ax| in_dims[ax]).collect();
         let src_layout = Layout::new(Shape::from_dims(&permuted_dims), permuted_strides, 0);
         let mut dst = self.backend.alloc_zeros(out_shape, self.backend.storage_dtype(&a.storage)).expect("permute alloc");
@@ -1869,7 +1871,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let _s = debug_span!("broadcast_view", elems = target.elem_count()).entered();
         let src_layout = a.layout();
         let src_stride = src_layout.stride();
-        let mut strides: DimVec = DimVec::from_elem(0, dst_dims.len());
+        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, dst_dims.len());
         for i in 0..src_dims.len() {
             if src_dims[i] == dst_dims[pad + i] {
                 strides[pad + i] = src_stride[i];
@@ -1939,10 +1941,10 @@ impl<B: GraphBackend> GraphExecutor<B> {
         let _s = debug_span!("slice_copy", dim, start, elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
-        let mut strides: DimVec = DimVec::from_elem(0, rank);
-        let mut s = 1usize;
-        for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i]; }
-        let offset = start * strides[dim];
+        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, rank);
+        let mut s: isize = 1;
+        for i in (0..rank).rev() { strides[i] = s; s *= in_dims[i] as isize; }
+        let offset = (start as isize * strides[dim]) as usize;
         let src_layout = Layout::new(out_shape.clone(), strides, offset);
         let dtype = self.backend.storage_dtype(&a.storage);
         let mut dst = self.backend.alloc_zeros(out_shape, dtype).expect("slice alloc");

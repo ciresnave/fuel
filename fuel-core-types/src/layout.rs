@@ -3,24 +3,34 @@
 //! A [`Layout`] describes how a tensor's elements are stored in memory.
 //! Contiguous layouts use row-major strides; non-contiguous layouts arise from
 //! operations like [`transpose`](Layout::transpose) or [`narrow`](Layout::narrow).
-use crate::{DimVec, Error, Result, Shape};
+use crate::{DimVec, Error, Result, Shape, StrideVec};
 use smallvec::smallvec;
 
 /// Describes the memory layout of a tensor: shape, strides, and start offset.
 ///
-/// Strides are in units of elements (not bytes). A contiguous (row-major) tensor
-/// of shape `[a, b, c]` has strides `[b*c, c, 1]`.
+/// Strides are in units of elements (not bytes) and are **signed** —
+/// metadata-only view ops (notably `Op::Flip`) reverse iteration along
+/// a dim by negating that dim's stride and adjusting `start_offset`,
+/// so a stride can be negative even though sizes can't. A contiguous
+/// (row-major) tensor of shape `[a, b, c]` has strides `[b*c, c, 1]`
+/// (all positive); a Flip-on-dim-0 of that has stride `[-b*c, c, 1]`
+/// with `start_offset` set to the byte offset of the (originally)
+/// last element along dim 0.
+///
+/// `start_offset` is the byte offset of the layout's *first* element
+/// in iteration order — by construction always non-negative, even for
+/// negative-stride layouts.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Layout {
     shape: Shape,
-    // The strides are given in number of elements and not in bytes.
-    stride: DimVec,
+    // Signed: see struct doc comment.
+    stride: StrideVec,
     start_offset: usize,
 }
 
 impl Layout {
     /// Creates a layout with explicit shape, strides, and start offset.
-    pub fn new(shape: Shape, stride: DimVec, start_offset: usize) -> Self {
+    pub fn new(shape: Shape, stride: StrideVec, start_offset: usize) -> Self {
         Self {
             shape,
             stride,
@@ -61,8 +71,26 @@ impl Layout {
     }
 
     /// Returns the strides as a slice (in elements, not bytes).
-    pub fn stride(&self) -> &[usize] {
+    /// Signed — see struct-level docs.
+    pub fn stride(&self) -> &[isize] {
         &self.stride
+    }
+
+    /// Returns strides cast to `usize`, debug-asserting non-negative.
+    /// Convenience for kernels that haven't been updated to handle
+    /// signed strides yet (most of them, since auto-Contiguize
+    /// guarantees positive strides on kernel input today). One stack
+    /// allocation via [`DimVec`]; effectively zero cost for rank ≤ 6.
+    ///
+    /// **Don't use this** if your kernel needs to support negative
+    /// strides (e.g. is the consumer of an `Op::Flip` view): iterate
+    /// via [`crate::StridedIndex`] which handles the sign correctly.
+    pub fn stride_unsigned(&self) -> DimVec {
+        self.stride.iter().map(|&s| {
+            debug_assert!(s >= 0, "stride_unsigned() called on a layout with negative stride; \
+                use StridedIndex or operate on signed strides");
+            s as usize
+        }).collect()
     }
 
     /// Returns the start offset into the underlying storage.
@@ -115,10 +143,20 @@ impl Layout {
         }
         let mut dims = DimVec::from_slice(dims);
         dims[dim] = len;
+        // start * stride[dim] is element offset; for negative strides
+        // it shifts in the negative element direction, which then adds
+        // (potentially as a wrapping subtraction) to start_offset.
+        // start_offset stays non-negative because narrow only ever
+        // moves the iteration window forward in the original storage's
+        // sense — for positive stride, start*stride is non-negative;
+        // for negative stride, start*stride is non-positive and we add
+        // a non-positive shift, which is fine as long as the original
+        // start_offset already accommodates the layout's full footprint.
+        let new_start = (self.start_offset as isize + self.stride[dim] * start as isize) as usize;
         Ok(Self {
             shape: Shape::from(dims),
             stride: self.stride.clone(),
-            start_offset: self.start_offset + self.stride[dim] * start,
+            start_offset: new_start,
         })
     }
 
@@ -133,7 +171,7 @@ impl Layout {
             }
             .bt())?
         }
-        let mut stride = DimVec::from_slice(self.stride());
+        let mut stride = StrideVec::from_slice(self.stride());
         let mut dims = DimVec::from_slice(self.shape().dims());
         dims.swap(dim1, dim2);
         stride.swap(dim1, dim2);
@@ -157,7 +195,7 @@ impl Layout {
         }
         let stride = self.stride();
         let dims = self.shape().dims();
-        let mut perm_stride = DimVec::from_slice(stride);
+        let mut perm_stride = StrideVec::from_slice(stride);
         let mut perm_dims = DimVec::from_slice(dims);
         for (i, &idx) in idxs.iter().enumerate() {
             perm_stride[i] = stride[idx];
@@ -191,7 +229,7 @@ impl Layout {
         }
         let mut new_dims = DimVec::from_slice(self.shape().dims());
         new_dims.insert(dim, 1);
-        let mut new_stride = DimVec::from_slice(self.stride());
+        let mut new_stride = StrideVec::from_slice(self.stride());
         new_stride.insert(dim, 0);
         Ok(Self {
             shape: Shape::from(new_dims),
@@ -221,7 +259,7 @@ impl Layout {
         }
         let mut new_dims = DimVec::from_slice(self.shape().dims());
         new_dims.remove(dim);
-        let mut new_stride = DimVec::from_slice(self.stride());
+        let mut new_stride = StrideVec::from_slice(self.stride());
         new_stride.remove(dim);
         Ok(Self {
             shape: Shape::from(new_dims),
@@ -243,7 +281,7 @@ impl Layout {
             .bt());
         }
         let added_dims = shape.rank() - self.shape().rank();
-        let mut stride: DimVec = smallvec![0; added_dims];
+        let mut stride: StrideVec = smallvec![0_isize; added_dims];
         for (&dst_dim, (&src_dim, &src_stride)) in shape.dims()[added_dims..]
             .iter()
             .zip(self.dims().iter().zip(self.stride()))
@@ -273,10 +311,13 @@ impl Layout {
     }
 
     pub fn strided_blocks(&self) -> crate::StridedBlocks<'_> {
-        let mut block_len = 1;
+        let mut block_len: usize = 1;
         let mut contiguous_dims = 0; // These are counted from the right.
         for (&stride, &dim) in self.stride().iter().zip(self.dims().iter()).rev() {
-            if stride != block_len {
+            // Contiguous block detection: stride must equal +block_len
+            // exactly. Negative strides break the run (a flipped axis
+            // can't extend a contiguous block).
+            if stride != block_len as isize {
                 break;
             }
             block_len *= dim;
@@ -303,8 +344,8 @@ impl Layout {
 
     // Returns the contiguous offsets with broadcast if applicable.
     pub fn offsets_b(&self) -> Option<ContiguousOffsetsWithBroadcast> {
-        let mut left_broadcast = 1;
-        let mut right_broadcast = 1;
+        let mut left_broadcast: usize = 1;
+        let mut right_broadcast: usize = 1;
         let strides = self.stride();
         let dims = self.dims();
         let mut start_cont = 0;
@@ -334,9 +375,10 @@ impl Layout {
         // Check that the inner dims are contiguous
         let strides = &strides[start_cont..end_cont];
         let dims = &dims[start_cont..end_cont];
-        let mut len = 1;
+        let mut len: usize = 1;
         for (&stride, &dim) in strides.iter().zip(dims.iter()).rev() {
-            if stride != len {
+            // Same as strided_blocks: positive contiguous run only.
+            if stride != len as isize {
                 return None;
             }
             len *= dim;

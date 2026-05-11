@@ -6,9 +6,18 @@
 //! (`HostBuffer`, `HostBufferRef`, `CpuDevice`) that are shared across all
 //! fuel backend crates.
 
-/// A small-vector type for dimension/stride storage.
+/// A small-vector type for dimension storage (sizes are non-negative).
 /// Avoids heap allocation for tensors with up to 6 dimensions.
 pub type DimVec = smallvec::SmallVec<[usize; 6]>;
+
+/// A small-vector type for **signed** strides. Strides are signed
+/// because metadata-only view ops can produce negative steps —
+/// `Op::Flip` reverses iteration along a dim by negating that dim's
+/// stride and adjusting `start_offset`, with zero kernel work. Most
+/// strides are positive in practice; the signed type widens the
+/// representation to cover the negative-stride case without forcing
+/// every kernel to allocate or convert.
+pub type StrideVec = smallvec::SmallVec<[isize; 6]>;
 
 pub mod backend;
 pub mod capability;

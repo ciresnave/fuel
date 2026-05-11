@@ -140,9 +140,9 @@ where
     };
     // q_guard, k_guard, v_guard, and m_guard (if any) are kept in scope to hold storage alive
 
-    let q_stride = q.stride();
-    let k_stride = k.stride();
-    let v_stride = v.stride();
+    let q_stride: Vec<usize> = q.stride().iter().map(|&s| s as usize).collect();
+    let k_stride: Vec<usize> = k.stride().iter().map(|&s| s as usize).collect();
+    let v_stride: Vec<usize> = v.stride().iter().map(|&s| s as usize).collect();
 
     // Fast path for decode: q_len == 1
     if q.shape().dims()[1] == 1 {
@@ -154,9 +154,9 @@ where
             q.shape().dims(),
             k.shape().dims(),
             v.shape().dims(),
-            q_stride,
-            k_stride,
-            v_stride,
+            &q_stride,
+            &k_stride,
+            &v_stride,
             softmax_scale,
             max_bias.unwrap_or(0.0),
             softcap.unwrap_or(0.0),
@@ -171,9 +171,9 @@ where
         q.shape().dims(),
         k.shape().dims(),
         v.shape().dims(),
-        q_stride,
-        k_stride,
-        v_stride,
+        &q_stride,
+        &k_stride,
+        &v_stride,
         softmax_scale,
         max_bias.unwrap_or(0.0),
         softcap.unwrap_or(0.0),

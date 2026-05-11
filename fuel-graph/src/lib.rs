@@ -6416,7 +6416,7 @@ mod tests {
         // strides are [1, 3] (row-of-output is column-of-source).
         let l = Layout::new(
             Shape::from_dims(&[3, 2]),
-            DimVec::from_slice(&[1usize, 3]),
+            fuel_core_types::StrideVec::from_slice(&[1_isize, 3]),
             0,
         );
         g.set_layout(id, l);
@@ -6429,7 +6429,7 @@ mod tests {
     /// set_layout twice with different layouts overwrites.
     #[test]
     fn layout_set_overwrites() {
-        use fuel_core_types::DimVec;
+        use fuel_core_types::StrideVec;
         let mut g = Graph::new();
         let id = g.push(Node {
             op: Op::Transpose,
@@ -6440,7 +6440,7 @@ mod tests {
         g.set_layout(id, Layout::contiguous(Shape::from_dims(&[2])));
         g.set_layout(
             id,
-            Layout::new(Shape::from_dims(&[2]), DimVec::from_slice(&[3usize]), 1),
+            Layout::new(Shape::from_dims(&[2]), StrideVec::from_slice(&[3_isize]), 1),
         );
         assert_eq!(g.layout(id).start_offset(), 1);
         assert_eq!(g.explicit_layout_count(), 1);

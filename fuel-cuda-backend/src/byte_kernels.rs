@@ -431,7 +431,7 @@ fn arg_extremum_f32(
         .bt());
     }
     let src_dims = input_layout.shape().dims();
-    let src_stride = input_layout.stride();
+    let src_stride = input_layout.stride_unsigned();
     let src_el: usize = src_dims.iter().product();
     if src_el * f32_size != src.len_bytes() {
         return Err(fuel_core_types::Error::Msg(format!(
@@ -461,8 +461,8 @@ fn arg_extremum_f32(
     // fast_argmax/fast_argmin kernels expect the contiguous reduce-
     // axis to be last and compute the per-block index as
     // `idx % dims[num_dims - 1]`.
-    let mut dims = Vec::with_capacity(src_dims.len());
-    let mut stride = Vec::with_capacity(src_dims.len());
+    let mut dims: Vec<usize> = Vec::with_capacity(src_dims.len());
+    let mut stride: Vec<usize> = Vec::with_capacity(src_dims.len());
     let mut dst_el: usize = 1;
     for (dim_idx, &d) in src_dims.iter().enumerate() {
         if dim_idx != dim {
@@ -1214,7 +1214,7 @@ fn binary_elementwise_f32(
         // blob and walks indices itself. Stride 0 on any axis collapses
         // that axis to repeated reads, which is exactly broadcast.
         SlicePtrOrNull::Ptr(device.clone_htod(
-            &[lhs_dims, lhs_layout.stride(), rhs_layout.stride()].concat(),
+            &crate::storage::dims_strides_strides_usize(lhs_dims, lhs_layout, rhs_layout),
         )?)
     };
 
@@ -1306,7 +1306,7 @@ fn reduce_f32(
         .bt());
     }
     let src_dims = input_layout.shape().dims();
-    let src_stride = input_layout.stride();
+    let src_stride = input_layout.stride_unsigned();
     let src_el: usize = src_dims.iter().product();
     if src_el * elem != src.len_bytes() {
         return Err(fuel_core_types::Error::Msg(format!(
@@ -1323,8 +1323,8 @@ fn reduce_f32(
     // matches the legacy `FastReduce::f` precondition that the
     // kernel iterates over the last `el_to_sum_per_block` elements
     // per block.
-    let mut dims = Vec::with_capacity(src_dims.len());
-    let mut stride = Vec::with_capacity(src_dims.len());
+    let mut dims: Vec<usize> = Vec::with_capacity(src_dims.len());
+    let mut stride: Vec<usize> = Vec::with_capacity(src_dims.len());
     let mut dst_el: usize = 1;
     for (dim_idx, &d) in src_dims.iter().enumerate() {
         if !reduce_dims.contains(&dim_idx) {

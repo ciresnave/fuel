@@ -633,7 +633,8 @@ impl From<Object> for E {
 // Arguments: storage, storage_offset, size, stride, requires_grad, backward_hooks
 fn rebuild_args(args: Object) -> Result<(Layout, DType, String, usize)> {
     let mut args = args.tuple()?;
-    let stride = DimVec::from(Vec::<usize>::try_from(args.remove(3))?);
+    let stride_usize = Vec::<usize>::try_from(args.remove(3))?;
+    let stride: fuel_core_types::StrideVec = stride_usize.iter().map(|&s| s as isize).collect();
     let size = Vec::<usize>::try_from(args.remove(2))?;
     let offset = args.remove(1).int_or_long()? as usize;
     let storage = args.remove(0).persistent_load()?;

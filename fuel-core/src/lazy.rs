@@ -3236,11 +3236,11 @@ fn truncate_kv_seq<B: fuel_graph_executor::GraphBackend>(
     // where dim-2 stride stays head_dim but the gap between heads
     // skips the trailing old_seq-new_seq rows' worth of data.
     let src_shape = Shape::from_dims(&[batch, n_kv, new_seq, head_dim]);
-    let src_strides: fuel_core_types::DimVec = smallvec::smallvec![
-        n_kv * old_seq * head_dim,
-        old_seq * head_dim,
-        head_dim,
-        1,
+    let src_strides: fuel_core_types::StrideVec = smallvec::smallvec![
+        (n_kv * old_seq * head_dim) as isize,
+        (old_seq * head_dim) as isize,
+        head_dim as isize,
+        1_isize,
     ];
     let src_layout = fuel_core_types::Layout::new(src_shape.clone(), src_strides, 0);
 
