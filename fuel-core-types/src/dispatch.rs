@@ -243,6 +243,22 @@ pub enum OpKind {
     /// Replicate (repeat edges). Only Constant is implemented in
     /// the v1 cut; Reflect/Replicate fall through to a clean error.
     Pad,
+    /// Upper-triangular mask along the last two dims. Materializing,
+    /// dtype-agnostic at the byte level (output is x or zero per
+    /// position; just selects bytes from src or the zero-init buffer).
+    Triu,
+    /// Lower-triangular mask along the last two dims (mirror of [`Triu`]).
+    Tril,
+    /// Numerically-stable log-softmax along the last dim. Per-dtype
+    /// (uses log/exp). Output shape == input shape.
+    LogSoftmaxLastDim,
+    /// Backward of [`LogSoftmaxLastDim`]: takes `(forward_output, upstream)`
+    /// and produces the input gradient. Per-dtype.
+    LogSoftmaxLastDimBackward,
+    /// MaskedFill: fill positions where mask is nonzero with a scalar.
+    /// Inputs `(x, mask)` where mask is U8. Per-dtype on x; output
+    /// shape == x shape.
+    MaskedFill,
     /// Backward helper for `Pad`. Per-dtype since accumulation is
     /// typed addition. Routes all 3 modes uniformly — the kernel
     /// switches on `mode_tag`.
@@ -356,6 +372,12 @@ impl OpKind {
             OpKind::CumSum             => "cumsum",
             OpKind::Pad                => "pad",
             OpKind::PadBackward        => "pad_backward",
+            OpKind::Triu               => "triu",
+            OpKind::Tril               => "tril",
+            OpKind::LogSoftmaxLastDim  => "log_softmax_last_dim",
+            OpKind::LogSoftmaxLastDimBackward
+                                       => "log_softmax_last_dim_backward",
+            OpKind::MaskedFill         => "masked_fill",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",

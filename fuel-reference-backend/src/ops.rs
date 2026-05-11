@@ -2842,6 +2842,128 @@ pub fn rope<T: Float>(
     RefTensor::from_vec(out, x.shape().clone())
 }
 
+/// Upper triangular mask: keep `x[..., i, j]` where `j >= i + diagonal`,
+/// zero elsewhere. Operates on the last two dims; leading dims are batched.
+pub fn triu<T: Copy + Default>(x: &RefTensor<T>, diagonal: i64) -> RefTensor<T> {
+    let dims = x.shape().dims();
+    assert!(dims.len() >= 2, "triu: input rank must be >= 2, got {dims:?}");
+    let cols = dims[dims.len() - 1];
+    let rows = dims[dims.len() - 2];
+    let batch: usize = dims[..dims.len() - 2].iter().product::<usize>().max(1);
+    let plane = rows * cols;
+    let src = x.as_slice();
+    let mut out = vec![T::default(); src.len()];
+    for b in 0..batch {
+        let base = b * plane;
+        for i in 0..rows {
+            for j in 0..cols {
+                if (j as i64) >= (i as i64) + diagonal {
+                    out[base + i * cols + j] = src[base + i * cols + j];
+                }
+            }
+        }
+    }
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
+/// Lower triangular mask: keep `x[..., i, j]` where `j <= i + diagonal`,
+/// zero elsewhere.
+pub fn tril<T: Copy + Default>(x: &RefTensor<T>, diagonal: i64) -> RefTensor<T> {
+    let dims = x.shape().dims();
+    assert!(dims.len() >= 2, "tril: input rank must be >= 2, got {dims:?}");
+    let cols = dims[dims.len() - 1];
+    let rows = dims[dims.len() - 2];
+    let batch: usize = dims[..dims.len() - 2].iter().product::<usize>().max(1);
+    let plane = rows * cols;
+    let src = x.as_slice();
+    let mut out = vec![T::default(); src.len()];
+    for b in 0..batch {
+        let base = b * plane;
+        for i in 0..rows {
+            for j in 0..cols {
+                if (j as i64) <= (i as i64) + diagonal {
+                    out[base + i * cols + j] = src[base + i * cols + j];
+                }
+            }
+        }
+    }
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
+/// LogSoftmax along the last dim using the numerically stable form
+/// `log_softmax(x_i) = (x_i - max_j x_j) - log(sum_j exp(x_j - max_j x_j))`.
+pub fn log_softmax_last_dim<T: Float>(x: &RefTensor<T>) -> RefTensor<T> {
+    let dims = x.shape().dims();
+    assert!(!dims.is_empty(), "log_softmax_last_dim: input must have rank >= 1");
+    let last = dims[dims.len() - 1];
+    let row_count: usize = if dims.len() == 1 { 1 } else { dims[..dims.len() - 1].iter().product() };
+    let src = x.as_slice();
+    let mut out = vec![T::zero(); src.len()];
+    for r in 0..row_count {
+        let start = r * last;
+        let mut row_max = T::neg_infinity();
+        for i in 0..last {
+            let v = src[start + i];
+            if v > row_max {
+                row_max = v;
+            }
+        }
+        let mut row_sum = T::zero();
+        for i in 0..last {
+            row_sum = row_sum + (src[start + i] - row_max).exp();
+        }
+        let log_sum = row_sum.ln();
+        for i in 0..last {
+            out[start + i] = src[start + i] - row_max - log_sum;
+        }
+    }
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
+/// LogSoftmax backward along the last dim. Given the forward output
+/// `y = log_softmax(x)` and upstream `g`:
+///   `dL/dx_i = g_i - exp(y_i) * sum_j g_j`
+pub fn log_softmax_last_dim_backward<T: Float>(
+    y: &RefTensor<T>,
+    g: &RefTensor<T>,
+) -> RefTensor<T> {
+    let dims = y.shape().dims();
+    assert_eq!(dims, g.shape().dims(), "log_softmax_last_dim_backward: shape mismatch");
+    assert!(!dims.is_empty(), "log_softmax_last_dim_backward: rank >= 1");
+    let last = dims[dims.len() - 1];
+    let row_count: usize = if dims.len() == 1 { 1 } else { dims[..dims.len() - 1].iter().product() };
+    let y_data = y.as_slice();
+    let g_data = g.as_slice();
+    let mut out = vec![T::zero(); y_data.len()];
+    for r in 0..row_count {
+        let start = r * last;
+        let mut g_sum = T::zero();
+        for i in 0..last {
+            g_sum = g_sum + g_data[start + i];
+        }
+        for i in 0..last {
+            out[start + i] = g_data[start + i] - y_data[start + i].exp() * g_sum;
+        }
+    }
+    RefTensor::from_vec(out, y.shape().clone())
+}
+
+/// MaskedFill: `out[i] = if mask[i] != 0 { value } else { x[i] }`.
+/// `mask` is U8; `value` is `T`. Shapes must match exactly.
+pub fn masked_fill<T: Copy>(
+    x: &RefTensor<T>,
+    mask: &RefTensor<u8>,
+    value: T,
+) -> RefTensor<T> {
+    assert_eq!(x.shape().dims(), mask.shape().dims(), "masked_fill: shape mismatch");
+    let src = x.as_slice();
+    let m = mask.as_slice();
+    let out: Vec<T> = src.iter().zip(m.iter()).map(|(&v, &mm)| {
+        if mm != 0 { value } else { v }
+    }).collect();
+    RefTensor::from_vec(out, x.shape().clone())
+}
+
 // ---------- tests -----------------------------------------------------------
 
 #[cfg(test)]

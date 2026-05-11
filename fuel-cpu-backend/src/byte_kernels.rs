@@ -963,6 +963,298 @@ pub fn cumsum_f16(
 }
 
 // =============================================================================
+// Triu / Tril (dtype-agnostic byte-level masking)
+// =============================================================================
+
+/// Triangular masking shared by Triu and Tril. Keeps `x[..., i, j]`
+/// when `keep_upper && j as i64 >= i as i64 + diagonal`
+/// or `!keep_upper && j as i64 <= i as i64 + diagonal`; zeros
+/// everywhere else. Dtype-agnostic at the byte level: the caller
+/// supplies `dtype_size_in_bytes` and the kernel walks bytes.
+pub fn triangular_cpu(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch_count: usize,
+    rows: usize,
+    cols: usize,
+    diagonal: i64,
+    keep_upper: bool,
+    dtype_size: usize,
+) -> Result<()> {
+    let needed = batch_count * rows * cols * dtype_size;
+    let inv = input.bytes();
+    let outv = out.bytes_mut();
+    if inv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "triangular_cpu: byte length mismatch (in={}, out={}, expected={needed})",
+            inv.len(), outv.len(),
+        )).bt());
+    }
+    // Zero the output first; then selectively copy kept positions.
+    // Dtype-agnostic zero == all-zero bytes for every IEEE-754 / integer
+    // dtype Fuel supports.
+    outv.fill(0);
+    for b in 0..batch_count {
+        let base = b * rows * cols * dtype_size;
+        for i in 0..rows {
+            for j in 0..cols {
+                let keep = if keep_upper {
+                    (j as i64) >= (i as i64) + diagonal
+                } else {
+                    (j as i64) <= (i as i64) + diagonal
+                };
+                if keep {
+                    let off = base + (i * cols + j) * dtype_size;
+                    outv[off..off + dtype_size].copy_from_slice(&inv[off..off + dtype_size]);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
+// LogSoftmax (per-dtype, last dim)
+// =============================================================================
+
+macro_rules! log_softmax_last_dim_kernel {
+    ($name:ident, $T:ty, $to_f32:expr, $from_f32:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            input: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer: usize,
+            last_dim: usize,
+        ) -> Result<()> {
+            let inv: &[$T] = input.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let needed = outer * last_dim;
+            if inv.len() != needed || outv.len() != needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (in={}, out={}, expected={needed})",
+                    stringify!($name), inv.len(), outv.len(),
+                )).bt());
+            }
+            for r in 0..outer {
+                let start = r * last_dim;
+                // Row max for numerical stability.
+                let mut row_max = f32::NEG_INFINITY;
+                for i in 0..last_dim {
+                    let v: f32 = $to_f32(inv[start + i]);
+                    if v > row_max { row_max = v; }
+                }
+                // sum exp(x - max).
+                let mut sum = 0.0f32;
+                for i in 0..last_dim {
+                    sum += ((($to_f32)(inv[start + i])) - row_max).exp();
+                }
+                let log_sum = sum.ln();
+                for i in 0..last_dim {
+                    let v: f32 = $to_f32(inv[start + i]);
+                    outv[start + i] = $from_f32(v - row_max - log_sum);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+#[inline] fn id_f32(v: f32) -> f32 { v }
+#[inline] fn id_f32_back(v: f32) -> f32 { v }
+#[inline] fn f64_to_f32(v: f64) -> f32 { v as f32 }
+#[inline] fn f32_to_f64(v: f32) -> f64 { v as f64 }
+#[inline] fn bf16_to_f32(v: half::bf16) -> f32 { v.to_f32() }
+#[inline] fn f32_to_bf16(v: f32) -> half::bf16 { half::bf16::from_f32(v) }
+#[inline] fn f16_to_f32(v: half::f16) -> f32 { v.to_f32() }
+#[inline] fn f32_to_f16(v: f32) -> half::f16 { half::f16::from_f32(v) }
+
+log_softmax_last_dim_kernel!(
+    log_softmax_last_dim_f32, f32, id_f32, id_f32_back,
+    "Numerically-stable log-softmax along the last dim — f32."
+);
+
+// f64: keep an f64 accumulator path for max range/precision.
+pub fn log_softmax_last_dim_f64(
+    input: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer: usize,
+    last_dim: usize,
+) -> Result<()> {
+    let inv: &[f64] = input.as_slice()?;
+    let outv: &mut [f64] = out.as_slice_mut()?;
+    let needed = outer * last_dim;
+    if inv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "log_softmax_last_dim_f64: element count mismatch (in={}, out={}, expected={needed})",
+            inv.len(), outv.len(),
+        )).bt());
+    }
+    for r in 0..outer {
+        let start = r * last_dim;
+        let mut row_max = f64::NEG_INFINITY;
+        for i in 0..last_dim {
+            if inv[start + i] > row_max { row_max = inv[start + i]; }
+        }
+        let mut sum = 0.0f64;
+        for i in 0..last_dim {
+            sum += (inv[start + i] - row_max).exp();
+        }
+        let log_sum = sum.ln();
+        for i in 0..last_dim {
+            outv[start + i] = inv[start + i] - row_max - log_sum;
+        }
+    }
+    Ok(())
+}
+
+log_softmax_last_dim_kernel!(
+    log_softmax_last_dim_bf16, half::bf16, bf16_to_f32, f32_to_bf16,
+    "Numerically-stable log-softmax along the last dim — bf16 (f32 accumulator)."
+);
+log_softmax_last_dim_kernel!(
+    log_softmax_last_dim_f16, half::f16, f16_to_f32, f32_to_f16,
+    "Numerically-stable log-softmax along the last dim — f16 (f32 accumulator)."
+);
+
+// Avoid unused-fn lint warnings:
+#[allow(dead_code)]
+const _UNUSED_F32_F64_HELPERS: (fn(f64) -> f32, fn(f32) -> f64) = (f64_to_f32, f32_to_f64);
+
+// =============================================================================
+// LogSoftmax backward (per-dtype, last dim)
+// =============================================================================
+
+macro_rules! log_softmax_last_dim_backward_kernel {
+    ($name:ident, $T:ty, $to_f32:expr, $from_f32:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(
+            y: &CpuStorageBytes,           // forward output
+            g: &CpuStorageBytes,           // upstream gradient
+            out: &mut CpuStorageBytes,
+            outer: usize,
+            last_dim: usize,
+        ) -> Result<()> {
+            let yv: &[$T] = y.as_slice()?;
+            let gv: &[$T] = g.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let needed = outer * last_dim;
+            if yv.len() != needed || gv.len() != needed || outv.len() != needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (y={}, g={}, out={}, expected={needed})",
+                    stringify!($name), yv.len(), gv.len(), outv.len(),
+                )).bt());
+            }
+            for r in 0..outer {
+                let start = r * last_dim;
+                let mut g_sum = 0.0f32;
+                for i in 0..last_dim {
+                    g_sum += $to_f32(gv[start + i]);
+                }
+                for i in 0..last_dim {
+                    let g_i: f32 = $to_f32(gv[start + i]);
+                    let y_i: f32 = $to_f32(yv[start + i]);
+                    outv[start + i] = $from_f32(g_i - y_i.exp() * g_sum);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+log_softmax_last_dim_backward_kernel!(
+    log_softmax_last_dim_backward_f32, f32, id_f32, id_f32_back,
+    "LogSoftmax-last-dim backward — f32."
+);
+
+pub fn log_softmax_last_dim_backward_f64(
+    y: &CpuStorageBytes,
+    g: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer: usize,
+    last_dim: usize,
+) -> Result<()> {
+    let yv: &[f64] = y.as_slice()?;
+    let gv: &[f64] = g.as_slice()?;
+    let outv: &mut [f64] = out.as_slice_mut()?;
+    let needed = outer * last_dim;
+    if yv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "log_softmax_last_dim_backward_f64: element count mismatch (y={}, g={}, out={}, expected={needed})",
+            yv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    for r in 0..outer {
+        let start = r * last_dim;
+        let mut g_sum = 0.0f64;
+        for i in 0..last_dim {
+            g_sum += gv[start + i];
+        }
+        for i in 0..last_dim {
+            outv[start + i] = gv[start + i] - yv[start + i].exp() * g_sum;
+        }
+    }
+    Ok(())
+}
+
+log_softmax_last_dim_backward_kernel!(
+    log_softmax_last_dim_backward_bf16, half::bf16, bf16_to_f32, f32_to_bf16,
+    "LogSoftmax-last-dim backward — bf16 (f32 accumulator)."
+);
+log_softmax_last_dim_backward_kernel!(
+    log_softmax_last_dim_backward_f16, half::f16, f16_to_f32, f32_to_f16,
+    "LogSoftmax-last-dim backward — f16 (f32 accumulator)."
+);
+
+// =============================================================================
+// MaskedFill (dtype-agnostic byte-level)
+// =============================================================================
+
+/// MaskedFill: copy bytes from `input` to `out` where `mask` is 0;
+/// write `fill_bytes` (one element's worth) where `mask` is nonzero.
+/// All three tensors have the same logical element count; the input
+/// and output are `count * dtype_size` bytes; the mask is `count`
+/// bytes (U8).
+pub fn masked_fill_cpu(
+    input: &CpuStorageBytes,
+    mask: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    fill_bytes: &[u8],
+    dtype_size: usize,
+) -> Result<()> {
+    let inv = input.bytes();
+    let mv = mask.bytes();
+    let outv = out.bytes_mut();
+    if fill_bytes.len() != dtype_size {
+        return Err(Error::Msg(format!(
+            "masked_fill_cpu: fill_bytes.len() ({}) != dtype_size ({dtype_size})",
+            fill_bytes.len(),
+        )).bt());
+    }
+    if inv.len() != outv.len() {
+        return Err(Error::Msg(format!(
+            "masked_fill_cpu: byte length mismatch (in={}, out={})",
+            inv.len(), outv.len(),
+        )).bt());
+    }
+    let count = inv.len() / dtype_size;
+    if mv.len() != count {
+        return Err(Error::Msg(format!(
+            "masked_fill_cpu: mask byte length ({}) != element count ({count})",
+            mv.len(),
+        )).bt());
+    }
+    for i in 0..count {
+        let off = i * dtype_size;
+        if mv[i] != 0 {
+            outv[off..off + dtype_size].copy_from_slice(fill_bytes);
+        } else {
+            outv[off..off + dtype_size].copy_from_slice(&inv[off..off + dtype_size]);
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Contiguize (dtype-agnostic, byte-level)
 // =============================================================================
 

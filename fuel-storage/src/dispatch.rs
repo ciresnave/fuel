@@ -649,6 +649,173 @@ cpu_cumsum_wrapper!(cumsum_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::cums
 cpu_cumsum_wrapper!(cumsum_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_bf16, "cumsum_bf16");
 cpu_cumsum_wrapper!(cumsum_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f16, "cumsum_f16");
 
+/// Triu / Tril share one byte-level kernel; the wrapper picks
+/// keep_upper from the OpKind at dispatch time. Dtype-agnostic.
+fn triu_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    triangular_wrapper_inner(inputs, outputs, params, /*keep_upper*/ true, "triu_cpu_wrapper")
+}
+
+fn tril_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    triangular_wrapper_inner(inputs, outputs, params, /*keep_upper*/ false, "tril_cpu_wrapper")
+}
+
+fn triangular_wrapper_inner(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    params: &OpParams,
+    keep_upper: bool,
+    op_name: &str,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "{op_name}: expects 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        )).bt());
+    }
+    let (batch, rows, cols, diag) = match params {
+        OpParams::Triangular { batch_count, rows, cols, diagonal } => {
+            (*batch_count, *rows, *cols, *diagonal)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "{op_name}: expects OpParams::Triangular, got {other:?}",
+            )).bt());
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
+    let in_cpu = cpu_input(&in_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::triangular_cpu(
+        in_cpu, out_cpu, batch, rows, cols, diag, keep_upper, dtype_size,
+    )
+}
+
+/// Per-dtype log-softmax wrapper. Geometry comes from
+/// `OpParams::LogSoftmaxLastDim`.
+macro_rules! cpu_log_softmax_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 1 input + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, last_dim) = match params {
+                OpParams::LogSoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::LogSoftmaxLastDim, got {other:?}",
+                        $op_name,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let in_cpu = cpu_input(&in_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(in_cpu, out_cpu, outer, last_dim)
+        }
+    };
+}
+
+cpu_log_softmax_wrapper!(log_softmax_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f32, "log_softmax_f32");
+cpu_log_softmax_wrapper!(log_softmax_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f64, "log_softmax_f64");
+cpu_log_softmax_wrapper!(log_softmax_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_bf16, "log_softmax_bf16");
+cpu_log_softmax_wrapper!(log_softmax_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f16, "log_softmax_f16");
+
+/// Per-dtype log-softmax-backward wrapper. Two inputs (y, g); same
+/// geometry as forward.
+macro_rules! cpu_log_softmax_backward_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 2 inputs (y, g) + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, last_dim) = match params {
+                OpParams::LogSoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::LogSoftmaxLastDim, got {other:?}",
+                        $op_name,
+                    )).bt());
+                }
+            };
+            let y_guard = read_storage(&inputs[0])?;
+            let g_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let y_cpu = cpu_input(&y_guard)?;
+            let g_cpu = cpu_input(&g_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(y_cpu, g_cpu, out_cpu, outer, last_dim)
+        }
+    };
+}
+
+cpu_log_softmax_backward_wrapper!(log_softmax_backward_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f32, "log_softmax_backward_f32");
+cpu_log_softmax_backward_wrapper!(log_softmax_backward_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f64, "log_softmax_backward_f64");
+cpu_log_softmax_backward_wrapper!(log_softmax_backward_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_bf16, "log_softmax_backward_bf16");
+cpu_log_softmax_backward_wrapper!(log_softmax_backward_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f16, "log_softmax_backward_f16");
+
+/// Single dtype-agnostic MaskedFill wrapper. Reads `fill_bytes`
+/// (pre-encoded by `op_to_op_params`) and dtype_size from the output.
+fn masked_fill_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "masked_fill_cpu_wrapper: expects 2 inputs (x, mask) + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        )).bt());
+    }
+    let fill_bytes = match params {
+        OpParams::MaskedFill { fill_bytes } => fill_bytes.clone(),
+        other => {
+            return Err(Error::Msg(format!(
+                "masked_fill_cpu_wrapper: expects OpParams::MaskedFill, got {other:?}",
+            )).bt());
+        }
+    };
+    let in_guard = read_storage(&inputs[0])?;
+    let mask_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dtype_size = out_guard.dtype.size_in_bytes();
+    let in_cpu = cpu_input(&in_guard)?;
+    let mask_cpu = cpu_input(&mask_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::masked_fill_cpu(
+        in_cpu, mask_cpu, out_cpu, &fill_bytes, dtype_size,
+    )
+}
+
 /// Single dtype-agnostic dispatch wrapper for Pad. The kernel is
 /// byte-level (`fill_bytes` is pre-encoded for the output dtype in
 /// `op_to_op_params`); this wrapper just reads dtype_size from the
@@ -2873,6 +3040,42 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(CumSum, &unary(f64_dt),  cpu, cumsum_f64_cpu_wrapper);
     table.register(CumSum, &unary(bf16_dt), cpu, cumsum_bf16_cpu_wrapper);
     table.register(CumSum, &unary(f16_dt),  cpu, cumsum_f16_cpu_wrapper);
+
+    // Triu / Tril share one byte-level kernel (dtype-agnostic).
+    table.register(Triu, &unary(f32_dt),  cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(f64_dt),  cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(bf16_dt), cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(f16_dt),  cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(u32_dt),  cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(u8_dt),   cpu, triu_cpu_wrapper);
+    table.register(Tril, &unary(f32_dt),  cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(f64_dt),  cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(bf16_dt), cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(f16_dt),  cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(u32_dt),  cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(u8_dt),   cpu, tril_cpu_wrapper);
+
+    // LogSoftmaxLastDim — per-dtype.
+    table.register(LogSoftmaxLastDim, &unary(f32_dt),  cpu, log_softmax_f32_cpu_wrapper);
+    table.register(LogSoftmaxLastDim, &unary(f64_dt),  cpu, log_softmax_f64_cpu_wrapper);
+    table.register(LogSoftmaxLastDim, &unary(bf16_dt), cpu, log_softmax_bf16_cpu_wrapper);
+    table.register(LogSoftmaxLastDim, &unary(f16_dt),  cpu, log_softmax_f16_cpu_wrapper);
+
+    // LogSoftmaxLastDimBackward — per-dtype, two inputs (y, g) → out.
+    table.register(LogSoftmaxLastDimBackward, &binary(f32_dt),  cpu, log_softmax_backward_f32_cpu_wrapper);
+    table.register(LogSoftmaxLastDimBackward, &binary(f64_dt),  cpu, log_softmax_backward_f64_cpu_wrapper);
+    table.register(LogSoftmaxLastDimBackward, &binary(bf16_dt), cpu, log_softmax_backward_bf16_cpu_wrapper);
+    table.register(LogSoftmaxLastDimBackward, &binary(f16_dt),  cpu, log_softmax_backward_f16_cpu_wrapper);
+
+    // MaskedFill — dtype-agnostic byte kernel; binding-table key is
+    // [T, U8, T] (x dtype, mask U8, output == x).
+    let masked_dtypes = |t: DType| [t, DType::U8, t];
+    table.register(MaskedFill, &masked_dtypes(f32_dt),  cpu, masked_fill_cpu_wrapper);
+    table.register(MaskedFill, &masked_dtypes(f64_dt),  cpu, masked_fill_cpu_wrapper);
+    table.register(MaskedFill, &masked_dtypes(bf16_dt), cpu, masked_fill_cpu_wrapper);
+    table.register(MaskedFill, &masked_dtypes(f16_dt),  cpu, masked_fill_cpu_wrapper);
+    table.register(MaskedFill, &masked_dtypes(u32_dt),  cpu, masked_fill_cpu_wrapper);
+    table.register(MaskedFill, &masked_dtypes(u8_dt),   cpu, masked_fill_cpu_wrapper);
 
     // Pad (Constant mode wired; Reflect/Replicate fall through to a
     // clean error inside the wrapper). Single dtype-agnostic wrapper

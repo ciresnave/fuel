@@ -389,6 +389,51 @@ fn eval_node(
                 AnyTensor::U32(_) => panic!("cumsum: not supported on U32 tensors"),
             }
         }
+        Op::Triu { diagonal } => {
+            let src = cache.get(&inputs[0]).expect("triu missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::triu(t, *diagonal)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::triu(t, *diagonal)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::triu(t, *diagonal)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::triu(t, *diagonal)),
+                AnyTensor::U32(t) => AnyTensor::U32(ops::triu(t, *diagonal)),
+            }
+        }
+        Op::Tril { diagonal } => {
+            let src = cache.get(&inputs[0]).expect("tril missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::tril(t, *diagonal)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::tril(t, *diagonal)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::tril(t, *diagonal)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::tril(t, *diagonal)),
+                AnyTensor::U32(t) => AnyTensor::U32(ops::tril(t, *diagonal)),
+            }
+        }
+        Op::LogSoftmaxLastDim => {
+            let src = cache.get(&inputs[0]).expect("log_softmax_last_dim missing input");
+            match src {
+                AnyTensor::F32(t) => AnyTensor::F32(ops::log_softmax_last_dim(t)),
+                AnyTensor::F64(t) => AnyTensor::F64(ops::log_softmax_last_dim(t)),
+                AnyTensor::BF16(t) => AnyTensor::BF16(ops::log_softmax_last_dim(t)),
+                AnyTensor::F16(t) => AnyTensor::F16(ops::log_softmax_last_dim(t)),
+                AnyTensor::U32(_) => panic!("log_softmax_last_dim: not supported on U32 tensors"),
+            }
+        }
+        Op::LogSoftmaxLastDimBackward => {
+            let y = cache.get(&inputs[0]).expect("log_softmax_last_dim_backward: missing y");
+            let g = cache.get(&inputs[1]).expect("log_softmax_last_dim_backward: missing grad");
+            match (y, g) {
+                (AnyTensor::F32(y), AnyTensor::F32(g)) => AnyTensor::F32(ops::log_softmax_last_dim_backward(y, g)),
+                (AnyTensor::F64(y), AnyTensor::F64(g)) => AnyTensor::F64(ops::log_softmax_last_dim_backward(y, g)),
+                (AnyTensor::BF16(y), AnyTensor::BF16(g)) => AnyTensor::BF16(ops::log_softmax_last_dim_backward(y, g)),
+                (AnyTensor::F16(y), AnyTensor::F16(g)) => AnyTensor::F16(ops::log_softmax_last_dim_backward(y, g)),
+                _ => panic!("log_softmax_last_dim_backward: dtype mismatch or unsupported dtype"),
+            }
+        }
+        Op::MaskedFill { .. } => panic!(
+            "Op::MaskedFill: legacy fuel-graph-cpu executor doesn't support \
+             U8-mask ops; use the storage-path PipelinedExecutor instead",
+        ),
         Op::Pad { padding, mode, value } => {
             let src = cache.get(&inputs[0]).expect("pad missing input");
             match (src, mode) {
@@ -2416,5 +2461,119 @@ mod tests {
             "expected op short name 'Log' in message, got: {msg}");
         assert!(msg.contains("U32"),
             "expected input dtype 'U32' in message, got: {msg}");
+    }
+
+    #[test]
+    fn triu_diag0_zeros_below() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            Shape::from_dims(&[3, 3]),
+            cpu_dev(),
+        );
+        let y = x.triu(0).unwrap();
+        let out = realize_f32(&y);
+        assert_eq!(out.as_slice(), &[
+            1.0, 2.0, 3.0,
+            0.0, 5.0, 6.0,
+            0.0, 0.0, 9.0,
+        ]);
+    }
+
+    #[test]
+    fn tril_diag0_zeros_above() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            Shape::from_dims(&[3, 3]),
+            cpu_dev(),
+        );
+        let y = x.tril(0).unwrap();
+        let out = realize_f32(&y);
+        assert_eq!(out.as_slice(), &[
+            1.0, 0.0, 0.0,
+            4.0, 5.0, 0.0,
+            7.0, 8.0, 9.0,
+        ]);
+    }
+
+    #[test]
+    fn tril_diag1_keeps_first_superdiagonal() {
+        // diagonal=1 keeps positions where j <= i + 1
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            Shape::from_dims(&[3, 3]),
+            cpu_dev(),
+        );
+        let y = x.tril(1).unwrap();
+        let out = realize_f32(&y);
+        assert_eq!(out.as_slice(), &[
+            1.0, 2.0, 0.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ]);
+    }
+
+    #[test]
+    fn triu_backward_passes_through_kept_positions() {
+        // y = triu(x, diagonal=1). Forward zeros the diagonal + below.
+        // Backward: ones tensor passed through triu(diagonal=1) — so
+        // dL/dx is the mask itself.
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            Shape::from_dims(&[3, 3]),
+            cpu_dev(),
+        );
+        let y = x.triu(1).unwrap();
+        let grads = y.backward();
+        let g_x = grads.get(&x).expect("gradient for x");
+        let out = realize_f32(&g_x);
+        assert_eq!(out.as_slice(), &[
+            0.0, 1.0, 1.0,
+            0.0, 0.0, 1.0,
+            0.0, 0.0, 0.0,
+        ]);
+    }
+
+    #[test]
+    fn log_softmax_last_dim_matches_log_of_softmax() {
+        // log_softmax(x) should equal log(softmax(x)) for normal inputs.
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 3.0, 2.0, 1.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let ls = x.log_softmax_last_dim().unwrap();
+        let out = realize_f32(&ls);
+        // For row [1, 2, 3]: max=3, exp(-2)+exp(-1)+1 = 1.503;
+        // log_softmax = [1-3-log(1.503), 2-3-log(1.503), 3-3-log(1.503)]
+        //             ≈ [-2.4076, -1.4076, -0.4076]
+        let expected = [
+            -2.4076059, -1.4076059, -0.40760595_f32,
+            -0.40760595, -1.4076059, -2.4076059,
+        ];
+        for (a, b) in out.as_slice().iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-5, "log_softmax mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn log_softmax_backward_grad_sums_to_zero() {
+        // For y = log_softmax(x): dL/dx_i = upstream_i - exp(y_i) * sum(upstream).
+        // When upstream is all ones, sum(upstream) = N (last_dim);
+        // grad_i = 1 - exp(y_i) * N = 1 - softmax(x)_i * N.
+        // Sum of grad over the last dim is N - N * sum(softmax) = N - N = 0
+        // (since softmax sums to 1). Verify this invariant.
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5],
+            Shape::from_dims(&[2, 4]),
+            cpu_dev(),
+        );
+        let y = x.log_softmax_last_dim().unwrap();
+        let grads = y.backward();
+        let g_x = grads.get(&x).expect("gradient for x");
+        let out = realize_f32(&g_x);
+        for row in out.as_slice().chunks(4) {
+            let s: f32 = row.iter().sum();
+            assert!(s.abs() < 1e-4, "row gradient sum: {s} != 0");
+        }
     }
 }

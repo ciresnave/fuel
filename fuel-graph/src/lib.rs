@@ -46,7 +46,7 @@ pub mod opt;
 pub mod registry;
 
 use crate::registry::{FusedOpId, FusedOpParams};
-use fuel_core_types::{DeviceLocation, DType, Layout, Shape, Storage, probe::BackendId};
+use fuel_core_types::{DeviceLocation, DType, Layout, Scalar, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -357,6 +357,34 @@ pub enum Op {
     /// Backward: reverse cumsum, expressed as `Flip → CumSum → Flip`
     /// on the same dim using existing primitives.
     CumSum { dim: usize },
+    /// Upper triangular: keep `x[..., i, j]` when `j >= i + diagonal`,
+    /// zero otherwise. Operates on the last two dims; leading dims
+    /// are batched. `diagonal` selects which diagonal is the cutoff
+    /// (0 = main diagonal, positive = above, negative = below).
+    /// Same shape as input. Backward is `Triu { diagonal }` itself
+    /// (linear mask; gradient passes through kept positions).
+    Triu { diagonal: i64 },
+    /// Lower triangular: keep `x[..., i, j]` when `j <= i + diagonal`,
+    /// zero otherwise. Operates on the last two dims; leading dims
+    /// are batched. `diagonal` selects which diagonal is the cutoff
+    /// (0 = main diagonal, positive = above, negative = below). The
+    /// canonical causal-attention mask is `tril(diagonal = 0)`.
+    /// Same shape as input. Backward is `Tril { diagonal }` itself.
+    Tril { diagonal: i64 },
+    /// Numerically-stable log-softmax along the last dimension:
+    /// `y_i = x_i - max_j(x_j) - log(sum_j exp(x_j - max_j(x_j)))`.
+    /// Same shape as input. Used in NLL / cross-entropy loss where
+    /// the explicit `log(softmax(x))` decomposition risks
+    /// over/underflow. Backward: see [`Op::LogSoftmaxLastDimBackward`].
+    LogSoftmaxLastDim,
+    /// MaskedFill: `out = where(mask != 0, value, x)`. Inputs:
+    /// `(x, mask)` where `mask` is U8 (any nonzero counts as "fill").
+    /// `value` is a scalar of the same dtype as `x`, stored on the
+    /// op. Output shape == x shape (mask must broadcast to x but the
+    /// simple-shape case requires identical shapes today). Backward
+    /// passes the upstream gradient through `x` at positions where
+    /// `mask == 0`, and contributes zero to `mask` (U8 anyway).
+    MaskedFill { value: Scalar },
     /// Backward helper for [`Op::Pad`]. Single input is the upstream
     /// gradient (shape == padded forward output shape); output is the
     /// gradient with respect to the original input (shape ==
@@ -561,6 +589,14 @@ pub enum Op {
     /// `s * (g - sum(g * s, last_dim, keepdim=true))` where `s` is the
     /// forward output and `g` is the upstream gradient.
     SoftmaxLastDimBackward,
+    /// LogSoftmax-last-dim backward. Inputs: `(forward_log_softmax_output,
+    /// upstream)`. Output: the gradient of the input to log-softmax.
+    /// Formula: `g - exp(y) * sum(g, last_dim, keepdim=true)` where
+    /// `y` is the forward log-softmax output and `g` is the upstream
+    /// gradient. Independent of `Op::SoftmaxLastDimBackward` because
+    /// the closed-form rule uses `exp(y) = softmax(x)` directly, not
+    /// the upstream-times-softmax composition.
+    LogSoftmaxLastDimBackward,
     /// Layer-norm-last-dim backward. Inputs: (original_x, upstream).
     /// Output: the gradient of `x`. Computed in full from scratch
     /// because the forward normalized tensor alone doesn't carry enough
@@ -956,6 +992,10 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Flip{..}             => "Flip",
         Op::Roll{..}             => "Roll",
         Op::CumSum{..}           => "CumSum",
+        Op::Triu{..}             => "Triu",
+        Op::Tril{..}             => "Tril",
+        Op::LogSoftmaxLastDim    => "LogSoftmaxLastDim",
+        Op::MaskedFill{..}       => "MaskedFill",
         Op::Pad{..}              => "Pad",
         Op::PadBackward{..}      => "PadBackward",
         Op::MatMul               => "MatMul",
@@ -983,6 +1023,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::QMatMul{..}          => "QMatMul",
         Op::SoftmaxLastDimBackward
                                  => "SoftmaxLastDimBackward",
+        Op::LogSoftmaxLastDimBackward
+                                 => "LogSoftmaxLastDimBackward",
         Op::LayerNormLastDimBackward { .. }
                                  => "LayerNormLastDimBackward",
         Op::RmsNormLastDimBackward { .. }
@@ -2670,6 +2712,128 @@ impl Tensor {
             op:     Op::CumSum { dim },
             inputs: vec![self.id],
             shape:  in_shape,
+            dtype,
+        });
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
+    }
+
+    /// Append a `Triu` node — upper-triangular mask along the last two
+    /// dims. `diagonal = 0` keeps the main diagonal and above; positive
+    /// values shift the cutoff up (keeping less); negative shift down
+    /// (keeping more, including subdiagonals).
+    ///
+    /// **Returns `Result`**: rank < 2 surfaces as a typed error.
+    pub fn triu(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let in_shape = self.shape();
+        let rank = in_shape.dims().len();
+        if rank < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "triu: input must have rank >= 2, got {rank}",
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Triu { diagonal },
+            inputs: vec![self.id],
+            shape:  in_shape,
+            dtype,
+        });
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
+    }
+
+    /// Append a `Tril` node — lower-triangular mask along the last two
+    /// dims. `diagonal = 0` keeps the main diagonal and below.
+    /// `tril(diagonal = 0)` is the canonical causal-attention mask.
+    ///
+    /// **Returns `Result`**: rank < 2 surfaces as a typed error.
+    pub fn tril(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let in_shape = self.shape();
+        let rank = in_shape.dims().len();
+        if rank < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "tril: input must have rank >= 2, got {rank}",
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Tril { diagonal },
+            inputs: vec![self.id],
+            shape:  in_shape,
+            dtype,
+        });
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
+    }
+
+    /// Append a `LogSoftmaxLastDim` node. Output shape == input shape.
+    /// Numerically stable (max-subtracting formula) — preferred over
+    /// `log(softmax(x))` for NLL / cross-entropy loss.
+    ///
+    /// **Returns `Result`**: rank < 1 surfaces as a typed error.
+    pub fn log_softmax_last_dim(&self) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let in_shape = self.shape();
+        if in_shape.dims().is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "log_softmax_last_dim: input must have rank >= 1".to_string(),
+            ).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::LogSoftmaxLastDim,
+            inputs: vec![self.id],
+            shape:  in_shape,
+            dtype,
+        });
+        Ok(Self {
+            graph: self.graph.clone(),
+            id,
+        })
+    }
+
+    /// Append a `MaskedFill` node. `mask` must be U8 and have the same
+    /// shape as `self`. Every position where `mask != 0` gets `value`;
+    /// every position where `mask == 0` passes `self` through. `value`
+    /// is a scalar of `self`'s dtype.
+    ///
+    /// **Returns `Result`**: shape or dtype mismatches surface as typed
+    /// errors.
+    pub fn masked_fill(
+        &self,
+        mask: &Tensor,
+        value: Scalar,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        if self.shape().dims() != mask.shape().dims() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "masked_fill: x.shape={:?} != mask.shape={:?}",
+                self.shape().dims(), mask.shape().dims(),
+            )).bt());
+        }
+        if mask.dtype() != DType::U8 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "masked_fill: mask dtype must be U8, got {:?}",
+                mask.dtype(),
+            )).bt());
+        }
+        if value.dtype() != self.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "masked_fill: value dtype {:?} != x dtype {:?}",
+                value.dtype(), self.dtype(),
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let shape = self.shape();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::MaskedFill { value },
+            inputs: vec![self.id, mask.id],
+            shape,
             dtype,
         });
         Ok(Self {
@@ -4602,6 +4766,65 @@ impl Tensor {
                         vec![up_id], x_shape, dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Triu { diagonal } => {
+                    // y = triu(x, diagonal). Mask is a binary indicator
+                    // — gradient passes through kept positions and is
+                    // zero on the masked half. Same op on the upstream.
+                    let diagonal = diagonal;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle, Op::Triu { diagonal },
+                        vec![up_id], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Tril { diagonal } => {
+                    // Mirror of Op::Triu — same mask gradient.
+                    let diagonal = diagonal;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle, Op::Tril { diagonal },
+                        vec![up_id], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::LogSoftmaxLastDim => {
+                    // grad_x = upstream - exp(y) * sum(upstream, last_dim, keepdim).
+                    // Folded into Op::LogSoftmaxLastDimBackward — takes
+                    // (forward_output, upstream), avoids re-evaluating
+                    // the softmax outside the kernel.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle, Op::LogSoftmaxLastDimBackward,
+                        vec![id, up_id], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::LogSoftmaxLastDimBackward => {
+                    // Backward helper — no higher-order autograd in v1.
+                }
+                Op::MaskedFill { value: _ } => {
+                    // y = mask ? value : x. dy/dx = (mask == 0).
+                    // grad_x = MaskedFill(upstream, mask, value=0_of_dtype).
+                    // The mask is integer-only; no gradient flows to it.
+                    let x = inputs[0];
+                    let mask = inputs[1];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let zero = fuel_core_types::Scalar::zero(dtype);
+                    let grad_x = push_node(
+                        &graph_handle, Op::MaskedFill { value: zero },
+                        vec![up_id, mask], x_shape, dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    // No gradient to mask: it's discrete.
                 }
                 Op::Rem => {
                     // y = a - floor(a/b) * b (PyTorch convention).
