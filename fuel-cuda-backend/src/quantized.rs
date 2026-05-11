@@ -952,7 +952,7 @@ mod test {
         let mut y_q8_1 = unsafe { dev.alloc::<u8>(y_size_in_bytes)? };
         let vs: Vec<f32> = (0..el).map(|v| v as f32).collect();
         let y = dev.clone_htod(&vs)?;
-        quantize_q8_1(&y.as_view(), &mut y_q8_1, el, 1, &dev)?;
+        quantize_q8_1(&y.as_slice(), &mut y_q8_1, el, 1, &dev)?;
         Ok(())
     }
 
@@ -962,11 +962,12 @@ mod test {
         let ncols = 256;
         let vs: Vec<f32> = (0..ncols).map(|v| v as f32).collect();
         let y = dev.clone_htod(&vs)?;
+        let y_dup = dev.clone_dtod(&y)?;
         let mut xs = QCudaStorage::zeros(&dev, ncols, GgmlDType::Q4_0)?;
-        xs.quantize(&CudaStorage::wrap_cuda_slice(y.clone(), dev.clone()))?;
+        xs.quantize(&CudaStorage::wrap_cuda_slice(y_dup, dev.clone()))?;
         let cuda_storage = mul_mat_vec_via_q8_1(
             &xs.data,
-            &y.as_view(),
+            &y.as_slice(),
             /* dtype */ GgmlDType::Q4_0,
             /* ncols */ ncols,
             /* nrows */ 1,
@@ -974,7 +975,7 @@ mod test {
             &dev,
         )?;
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
-        let vs = dev.clone_dtoh(&vs.as_view())?;
+        let vs = dev.clone_dtoh(&vs.as_slice())?;
         assert_eq!(vs.len(), 1);
         // for n = 255, n.(n+1).(2n+1) / 6 = 5559680
         // Q8 means 1/256 precision.
@@ -982,14 +983,14 @@ mod test {
 
         let cuda_storage = dequantize_mul_mat_vec(
             &xs.data,
-            &y.as_view(),
+            &y.as_slice(),
             /* dtype */ GgmlDType::Q4_0,
             /* ncols */ ncols,
             /* nrows */ 1,
             &dev,
         )?;
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
-        let vs = dev.clone_dtoh(&vs.as_view())?;
+        let vs = dev.clone_dtoh(&vs.as_slice())?;
         assert_eq!(vs.len(), 1);
         assert_eq!(vs[0], 5561851.0);
         Ok(())
@@ -1001,11 +1002,12 @@ mod test {
         let ncols = 256;
         let vs: Vec<f32> = (0..ncols * 4).map(|v| v as f32 / 4.).collect();
         let y = dev.clone_htod(&vs)?;
+        let y_dup = dev.clone_dtod(&y)?;
         let mut xs = QCudaStorage::zeros(&dev, ncols * 4, GgmlDType::Q4_0)?;
-        xs.quantize(&CudaStorage::wrap_cuda_slice(y.clone(), dev.clone()))?;
+        xs.quantize(&CudaStorage::wrap_cuda_slice(y_dup, dev.clone()))?;
         let cuda_storage = mul_mat_via_q8_1(
             &xs.data,
-            &y.as_view(),
+            &y.as_slice(),
             /* dtype */ GgmlDType::Q4_0,
             /* x_rows */ 4,
             /* x_cols */ ncols,
@@ -1014,7 +1016,7 @@ mod test {
             &dev,
         )?;
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
-        let vs = dev.clone_dtoh(&vs.as_view())?;
+        let vs = dev.clone_dtoh(&vs.as_slice())?;
 
         /*
            x = torch.tensor([float(v) for v in range(1024)]).reshape(4, 256)
@@ -1042,11 +1044,12 @@ mod test {
         let (x_rows, ncols, y_cols) = (4, 16, 2048);
         let vs: Vec<f32> = (0..ncols * y_cols).map(|v| v as f32 / 256.).collect();
         let y = dev.clone_htod(&vs)?;
+        let y_dup = dev.clone_dtod(&y)?;
         let mut xs = QCudaStorage::zeros(&dev, ncols * x_rows, GgmlDType::Q4_0)?;
-        xs.quantize(&CudaStorage::wrap_cuda_slice(y.clone(), dev.clone()))?;
+        xs.quantize(&CudaStorage::wrap_cuda_slice(y_dup, dev.clone()))?;
         let cuda_storage = mul_mat_via_q8_1(
             &xs.data,
-            &y.as_view(),
+            &y.as_slice(),
             /* dtype */ GgmlDType::Q4_0,
             /* x_rows */ x_rows,
             /* x_cols */ ncols,
@@ -1055,7 +1058,7 @@ mod test {
             &dev,
         )?;
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
-        let _vs = dev.clone_dtoh(&vs.as_view())?;
+        let _vs = dev.clone_dtoh(&vs.as_slice())?;
         Ok(())
     }
 }
