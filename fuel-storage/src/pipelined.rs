@@ -431,6 +431,19 @@ fn op_is_softmax_last_dim(op: &Op) -> bool {
     }
 }
 
+/// Phase 7.6 step 4: FusedLinear flows through both the legacy
+/// `Op::FusedLinear` variant and the registry-extended
+/// `Op::Fused(FusedOps::FUSED_LINEAR, _)` form. Both dispatch to the
+/// same `OpKind::FusedLinear` binding-table entry; this helper
+/// collapses the two shapes for op-to-OpKind/OpParams call sites.
+fn op_is_fused_linear(op: &Op) -> bool {
+    match op {
+        Op::FusedLinear => true,
+        Op::Fused(fid, _) => *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR,
+        _ => false,
+    }
+}
+
 /// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.
 /// Returns `None` for ops that haven't been wired into the new
 /// dispatch path yet — Phase C extends this as op families migrate.
@@ -514,6 +527,11 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
             if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM =>
         {
             Some(OpKind::SoftmaxLastDim)
+        }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR =>
+        {
+            Some(OpKind::FusedLinear)
         }
         Op::RmsNormLastDim { .. } => Some(OpKind::RmsNormLastDim),
         Op::LayerNormLastDim { .. } => Some(OpKind::LayerNormLastDim),
@@ -718,7 +736,10 @@ fn op_to_op_params(
                 k: k_lhs,
             }
         }
-        Op::FusedLinear => {
+        // Phase 7.6 step 4: legacy `Op::FusedLinear` and registry-extended
+        // `Op::Fused(FUSED_LINEAR, _)` share the same shape contract and
+        // params encoding (reuses OpParams::Matmul). One body covers both.
+        op if op_is_fused_linear(op) => {
             // Inputs: [a, b, bias]. Same shape semantics as MatMul on
             // a/b; bias is rank-1 [N] and broadcasts along all leading
             // dims. We reuse OpParams::Matmul (kernel reads bias from

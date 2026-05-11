@@ -108,8 +108,11 @@ pub enum FusedOpParams {
     /// SoftmaxLastDim has no per-instance parameters; the last-dim axis
     /// is implicit in the input shape.
     SoftmaxLastDim,
-    // Step 4 extends this enum with: RmsNormLastDim { eps },
-    // LayerNormLastDim { eps }, Rope, FusedLinear, Conv2D { ... },
+    /// FusedLinear ((a @ b) + bias). No per-instance parameters: the
+    /// matmul shape and bias rank are implicit in the three inputs.
+    FusedLinear,
+    // Step 4 (continued) extends this enum with: RmsNormLastDim { eps },
+    // LayerNormLastDim { eps }, Rope, Conv2D { ... },
     // ConvTranspose2D { ... }, FlashAttn { ... }, PagedAttn { ... },
     // QMatMul { quant_type, k, n }, plus the four backward helpers.
 }
@@ -129,13 +132,19 @@ pub struct FusedOpParamsKey {
 }
 
 impl FusedOpParams {
-    /// Hashable encoding. Pre-step-4 there is exactly one variant —
-    /// SoftmaxLastDim — and it carries no payload, so the key is just
-    /// the variant tag.
+    /// Hashable encoding. Step 4 adds variants per-fused-op as each
+    /// migrates; the tag uniquely identifies the variant and the
+    /// bits/ints slots carry any payload (none for parameterless ops
+    /// like SoftmaxLastDim and FusedLinear).
     pub fn key(&self) -> FusedOpParamsKey {
         match self {
             FusedOpParams::SoftmaxLastDim => FusedOpParamsKey {
                 tag: 1,
+                bits: Vec::new(),
+                ints: Vec::new(),
+            },
+            FusedOpParams::FusedLinear => FusedOpParamsKey {
+                tag: 2,
                 bits: Vec::new(),
                 ints: Vec::new(),
             },
@@ -365,9 +374,14 @@ pub struct FusedOps;
 impl FusedOps {
     /// SoftmaxLastDim — proof-of-concept migration target (step 3).
     pub const SOFTMAX_LAST_DIM: FusedOpId = FusedOpId(1);
-    // Step 4 adds: RMS_NORM_LAST_DIM, LAYER_NORM_LAST_DIM, ROPE,
-    // FUSED_LINEAR, CONV2D, CONV_TRANSPOSE2D, FLASH_ATTN, PAGED_ATTN,
-    // QMATMUL, plus the 4 backward helpers.
+    /// FusedLinear — first multi-input fused op migrated to the
+    /// registry (step 4). Three inputs `[a, b, bias]`, output
+    /// `(a @ b) + bias`. The CUTLASS bias-epilogue integration in the
+    /// baracuda-cutlass alpha.13 plan registers here.
+    pub const FUSED_LINEAR: FusedOpId = FusedOpId(2);
+    // Step 4 (continued) adds: RMS_NORM_LAST_DIM, LAYER_NORM_LAST_DIM,
+    // ROPE, CONV2D, CONV_TRANSPOSE2D, FLASH_ATTN, PAGED_ATTN, QMATMUL,
+    // plus the 4 backward helpers.
 }
 
 /// Process-wide default registry: the union of every fused op's

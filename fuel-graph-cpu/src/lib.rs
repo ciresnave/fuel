@@ -527,6 +527,12 @@ fn eval_node(
             eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
         }
         Op::FusedLinear => eval_fused_linear(inputs, cache),
+        // Phase 7.6 step 4: registry-extended FusedLinear routes to the
+        // same primitive kernel as the legacy variant. Step 5 drops the
+        // legacy arm; step 9 replaces both with a pre-resolved KernelRef.
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR => {
+            eval_fused_linear(inputs, cache)
+        }
 
         // --- dtype, shape, broadcasting ---
         Op::Cast(target) => eval_cast(*target, inputs, cache),

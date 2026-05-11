@@ -6187,12 +6187,10 @@ impl Tensor {
                     accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
                 }
                 Op::Fused(fid, _) => {
-                    // Phase 7.6 step 3: per-id backward dispatch. Each
-                    // migrated fused op gets a backward arm here that
-                    // emits the appropriate gradient subgraph for its
-                    // single input. Step 4 grows this match as more
-                    // fused ops migrate; step 5 drops the legacy
-                    // per-fused-op `Op` variants and their existing
+                    // Phase 7.6 step 3+: per-id backward dispatch. Each
+                    // migrated fused op gets a branch here that emits
+                    // the appropriate gradient subgraph. Step 5 drops
+                    // the legacy per-fused-op `Op` variants and their
                     // backward arms above.
                     if fid == crate::registry::FusedOps::SOFTMAX_LAST_DIM {
                         // grad_x = softmax_last_dim_backward(y, upstream)
@@ -6212,12 +6210,41 @@ impl Tensor {
                             dtype,
                         );
                         accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                    } else if fid == crate::registry::FusedOps::FUSED_LINEAR {
+                        // (a @ b) + bias backward — same three-grad
+                        // decomposition as the legacy Op::FusedLinear
+                        // arm above. We reuse MatMul backward (no
+                        // intermediate matmul output is cached, so the
+                        // grad computes from upstream + a, b directly).
+                        let a = inputs[0];
+                        let b = inputs[1];
+                        let bias = inputs[2];
+                        let a_shape = node_shape(&graph_handle, a);
+                        let b_shape = node_shape(&graph_handle, b);
+                        let bias_shape = node_shape(&graph_handle, bias);
+                        let dtype = node_dtype(&graph_handle, a);
+                        let b_t_shape = transposed_shape(&b_shape);
+                        let b_t = push_node(&graph_handle, Op::Transpose, vec![b], b_t_shape, dtype);
+                        let grad_a = push_node(&graph_handle, Op::MatMul, vec![up_id, b_t], a_shape.clone(), dtype);
+                        let a_t_shape = transposed_shape(&a_shape);
+                        let a_t = push_node(&graph_handle, Op::Transpose, vec![a], a_t_shape, dtype);
+                        let grad_b = push_node(&graph_handle, Op::MatMul, vec![a_t, up_id], b_shape, dtype);
+                        let grad_bias = push_node(
+                            &graph_handle,
+                            Op::ReduceSumTo(bias_shape.clone()),
+                            vec![up_id],
+                            bias_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
+                        accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
+                        accumulate_grad(&mut upstream, bias, grad_bias, &graph_handle);
                     } else {
                         panic!(
                             "Tensor::backward: Op::Fused id {fid:?} has no \
                              backward arm wired yet. This is a programming \
-                             bug — extend the match in step 4 when the op \
-                             migrates to the registry.",
+                             bug — extend the match when the op migrates \
+                             to the registry.",
                         );
                     }
                 }
