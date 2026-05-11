@@ -19,6 +19,7 @@
 //!   `abs`, `tanh`
 
 use crate::byte_storage::CpuStorageBytes;
+use crate::chassis::reduction::{reduce, reduce_to, Max, Mean, Min, Sum};
 use fuel_core_types::{Error, Layout, Result};
 
 /// Verify three byte buffers have matching lengths.
@@ -4234,276 +4235,117 @@ conv_transpose2d_half_kernel!(conv_transpose2d_bf16, half::bf16);
 conv_transpose2d_half_kernel!(conv_transpose2d_f16, half::f16);
 
 // =============================================================================
-// ReduceSumTo — sum-reduce to a broadcast-compatible target shape
+// ReduceSumTo / ReduceMaxTo — sum / max to a broadcast-compatible
+// target shape. All 8 entries (2 ops × 4 dtypes) are thunks over
+// [`crate::chassis::reduction::reduce_to`].
 // =============================================================================
 //
-// The output shape is left-padded with 1s if its rank < input rank, so
-// every input axis aligns with one output axis. For each axis: if the
-// padded output dim == input dim, the axis carries through; if 1, the
-// axis is summed away. Any other value is a contract violation.
-//
-// Strategy: zero output, walk input flat → multi-index, project each
-// axis to the output multi-index, accumulate.
+// Shape contract (preserved verbatim from the pre-chassis macros):
+// `output_shape` is left-padded with 1s if its rank < input rank.
+// For each padded axis: if the value matches the input's size, the
+// axis carries through; if 1, the axis is reduced away; any other
+// value is a contract violation. Half-float accumulation runs in
+// f32 (the trait's `Acc = f32` impl for `Sum<bf16>` / `Sum<f16>` /
+// `Max<bf16>` / `Max<f16>`).
 
-fn align_reduce_to(input_shape: &[usize], output_shape: &[usize]) -> Result<Vec<usize>> {
-    if output_shape.len() > input_shape.len() {
-        return Err(Error::Msg(format!(
-            "reduce_sum_to: output rank {} exceeds input rank {}",
-            output_shape.len(), input_shape.len(),
-        ))
-        .bt());
-    }
-    let pad = input_shape.len() - output_shape.len();
-    let mut padded = vec![1_usize; pad];
-    padded.extend_from_slice(output_shape);
-    for (i, (&s, &t)) in input_shape.iter().zip(padded.iter()).enumerate() {
-        if t != 1 && t != s {
-            return Err(Error::Msg(format!(
-                "reduce_sum_to: axis {i} target {t} must be 1 or input {s}",
-            ))
-            .bt());
-        }
-    }
-    Ok(padded)
+/// Sum-reduce `f32` to a broadcast-compatible target shape.
+pub fn reduce_sum_to_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<f32, Sum>(
+        "reduce_sum_to_f32", input, output, input_shape, output_shape,
+    )
 }
 
-fn elem_count(shape: &[usize]) -> usize {
-    shape.iter().product()
+/// Sum-reduce `f64` to a broadcast-compatible target shape.
+pub fn reduce_sum_to_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<f64, Sum>(
+        "reduce_sum_to_f64", input, output, input_shape, output_shape,
+    )
 }
 
-/// Reduce-sum-to for native arithmetic ($T = f32 or f64).
-macro_rules! reduce_sum_to_native_kernel {
-    ($name:ident, $T:ty, $T_size:expr, $zero:expr) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            output_shape: &[usize],
-        ) -> Result<()> {
-            let padded = align_reduce_to(input_shape, output_shape)?;
-            let in_elems = elem_count(input_shape);
-            let out_elems = elem_count(output_shape);
-            let elem = $T_size;
-            if input.len_bytes() != in_elems * elem
-                || output.len_bytes() != out_elems * elem
-            {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch (in {} elems, out {} elems)",
-                    stringify!($name), in_elems, out_elems,
-                ))
-                .bt());
-            }
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            for slot in out_view.iter_mut() { *slot = $zero; }
-            // Strides for input (row-major).
-            let rank = input_shape.len();
-            let mut in_strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
-            }
-            // Strides for the *padded* output, matching input rank.
-            let mut out_strides_padded = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
-            }
-            for in_flat in 0..in_elems {
-                // Decode input multi-index, project to output.
-                let mut out_flat = 0_usize;
-                let mut rem = in_flat;
-                for axis in 0..rank {
-                    let coord = rem / in_strides[axis];
-                    rem %= in_strides[axis];
-                    let out_coord = if padded[axis] == 1 { 0 } else { coord };
-                    out_flat += out_coord * out_strides_padded[axis];
-                }
-                out_view[out_flat] += in_view[in_flat];
-            }
-            Ok(())
-        }
-    };
+/// Sum-reduce `bf16` to a broadcast-compatible target shape.
+/// Accumulator runs in f32.
+pub fn reduce_sum_to_bf16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<half::bf16, Sum>(
+        "reduce_sum_to_bf16", input, output, input_shape, output_shape,
+    )
 }
 
-reduce_sum_to_native_kernel!(reduce_sum_to_f32, f32, std::mem::size_of::<f32>(), 0.0_f32);
-reduce_sum_to_native_kernel!(reduce_sum_to_f64, f64, std::mem::size_of::<f64>(), 0.0_f64);
-
-/// Reduce-sum-to for half-floats — accumulate into f32 and narrow.
-macro_rules! reduce_sum_to_half_kernel {
-    ($name:ident, $T:ty) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            output_shape: &[usize],
-        ) -> Result<()> {
-            let padded = align_reduce_to(input_shape, output_shape)?;
-            let in_elems = elem_count(input_shape);
-            let out_elems = elem_count(output_shape);
-            let elem = std::mem::size_of::<$T>();
-            if input.len_bytes() != in_elems * elem
-                || output.len_bytes() != out_elems * elem
-            {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
-            }
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            let mut acc = vec![0.0_f32; out_elems];
-            let rank = input_shape.len();
-            let mut in_strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
-            }
-            let mut out_strides_padded = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
-            }
-            for in_flat in 0..in_elems {
-                let mut out_flat = 0_usize;
-                let mut rem = in_flat;
-                for axis in 0..rank {
-                    let coord = rem / in_strides[axis];
-                    rem %= in_strides[axis];
-                    let out_coord = if padded[axis] == 1 { 0 } else { coord };
-                    out_flat += out_coord * out_strides_padded[axis];
-                }
-                acc[out_flat] += in_view[in_flat].to_f32();
-            }
-            for (dst, src) in out_view.iter_mut().zip(acc.iter()) {
-                *dst = <$T>::from_f32(*src);
-            }
-            Ok(())
-        }
-    };
+/// Sum-reduce `f16` to a broadcast-compatible target shape.
+/// Accumulator runs in f32.
+pub fn reduce_sum_to_f16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<half::f16, Sum>(
+        "reduce_sum_to_f16", input, output, input_shape, output_shape,
+    )
 }
 
-reduce_sum_to_half_kernel!(reduce_sum_to_bf16, half::bf16);
-reduce_sum_to_half_kernel!(reduce_sum_to_f16, half::f16);
-
-// =============================================================================
-// ReduceMaxTo — max-reduce to a broadcast-compatible target shape
-// =============================================================================
-//
-// Same alignment + projection logic as ReduceSumTo; the only differences
-// are the reduction operator (`max` instead of `+`) and the output's
-// initial value (negative infinity instead of zero).
-
-/// Reduce-max-to for native arithmetic ($T = f32 or f64).
-macro_rules! reduce_max_to_native_kernel {
-    ($name:ident, $T:ty, $T_size:expr, $neg_inf:expr) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            output_shape: &[usize],
-        ) -> Result<()> {
-            let padded = align_reduce_to(input_shape, output_shape)?;
-            let in_elems = elem_count(input_shape);
-            let out_elems = elem_count(output_shape);
-            let elem = $T_size;
-            if input.len_bytes() != in_elems * elem
-                || output.len_bytes() != out_elems * elem
-            {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch (in {} elems, out {} elems)",
-                    stringify!($name), in_elems, out_elems,
-                ))
-                .bt());
-            }
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            for slot in out_view.iter_mut() { *slot = $neg_inf; }
-            let rank = input_shape.len();
-            let mut in_strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
-            }
-            let mut out_strides_padded = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
-            }
-            for in_flat in 0..in_elems {
-                let mut out_flat = 0_usize;
-                let mut rem = in_flat;
-                for axis in 0..rank {
-                    let coord = rem / in_strides[axis];
-                    rem %= in_strides[axis];
-                    let out_coord = if padded[axis] == 1 { 0 } else { coord };
-                    out_flat += out_coord * out_strides_padded[axis];
-                }
-                if in_view[in_flat] > out_view[out_flat] {
-                    out_view[out_flat] = in_view[in_flat];
-                }
-            }
-            Ok(())
-        }
-    };
+/// Max-reduce `f32` to a broadcast-compatible target shape.
+pub fn reduce_max_to_f32(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<f32, Max>(
+        "reduce_max_to_f32", input, output, input_shape, output_shape,
+    )
 }
 
-reduce_max_to_native_kernel!(reduce_max_to_f32, f32, std::mem::size_of::<f32>(), f32::NEG_INFINITY);
-reduce_max_to_native_kernel!(reduce_max_to_f64, f64, std::mem::size_of::<f64>(), f64::NEG_INFINITY);
-
-/// Reduce-max-to for half-floats — accumulate via f32 and narrow.
-/// (The f32 widening is overkill for max — straightforward
-/// half-arithmetic would also work — but it keeps the macro shape
-/// uniform with the sum kernel and avoids edge cases around half-float
-/// total-ordering.)
-macro_rules! reduce_max_to_half_kernel {
-    ($name:ident, $T:ty) => {
-        pub fn $name(
-            input: &CpuStorageBytes,
-            output: &mut CpuStorageBytes,
-            input_shape: &[usize],
-            output_shape: &[usize],
-        ) -> Result<()> {
-            let padded = align_reduce_to(input_shape, output_shape)?;
-            let in_elems = elem_count(input_shape);
-            let out_elems = elem_count(output_shape);
-            let elem = std::mem::size_of::<$T>();
-            if input.len_bytes() != in_elems * elem
-                || output.len_bytes() != out_elems * elem
-            {
-                return Err(Error::Msg(format!(
-                    "{}: bytes mismatch", stringify!($name),
-                ))
-                .bt());
-            }
-            let in_view: &[$T] = input.as_slice()?;
-            let out_view: &mut [$T] = output.as_slice_mut()?;
-            let mut acc = vec![f32::NEG_INFINITY; out_elems];
-            let rank = input_shape.len();
-            let mut in_strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
-            }
-            let mut out_strides_padded = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
-            }
-            for in_flat in 0..in_elems {
-                let mut out_flat = 0_usize;
-                let mut rem = in_flat;
-                for axis in 0..rank {
-                    let coord = rem / in_strides[axis];
-                    rem %= in_strides[axis];
-                    let out_coord = if padded[axis] == 1 { 0 } else { coord };
-                    out_flat += out_coord * out_strides_padded[axis];
-                }
-                let v = in_view[in_flat].to_f32();
-                if v > acc[out_flat] { acc[out_flat] = v; }
-            }
-            for (dst, src) in out_view.iter_mut().zip(acc.iter()) {
-                *dst = <$T>::from_f32(*src);
-            }
-            Ok(())
-        }
-    };
+/// Max-reduce `f64` to a broadcast-compatible target shape.
+pub fn reduce_max_to_f64(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<f64, Max>(
+        "reduce_max_to_f64", input, output, input_shape, output_shape,
+    )
 }
 
-reduce_max_to_half_kernel!(reduce_max_to_bf16, half::bf16);
-reduce_max_to_half_kernel!(reduce_max_to_f16, half::f16);
+/// Max-reduce `bf16` to a broadcast-compatible target shape.
+/// Extremum runs in f32, narrows back to bf16.
+pub fn reduce_max_to_bf16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<half::bf16, Max>(
+        "reduce_max_to_bf16", input, output, input_shape, output_shape,
+    )
+}
+
+/// Max-reduce `f16` to a broadcast-compatible target shape.
+pub fn reduce_max_to_f16(
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    crate::chassis::reduction::reduce_to::<half::f16, Max>(
+        "reduce_max_to_f16", input, output, input_shape, output_shape,
+    )
+}
 
 // =============================================================================
 // FusedLinear — matmul + bias-add (3-input)
@@ -5530,8 +5372,6 @@ pub fn conv2d_f32(
 // notably the f32 accumulator promotion for bf16 / f16 sums and
 // means (encoded as the trait's `Acc` associated type so a future
 // contributor adding a new low-precision dtype cannot forget it).
-
-use crate::chassis::reduction::{reduce, Max, Mean, Min, Sum};
 
 /// Sum-reduce `f32`. Output is the input with the listed `reduce_dims`
 /// removed; each remaining slot holds the sum over the reduced axes.

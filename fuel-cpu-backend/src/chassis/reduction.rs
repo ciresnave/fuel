@@ -310,9 +310,114 @@ where
     Ok(())
 }
 
+/// Reduce `input` to `output_shape` — the broadcast-target form
+/// used by `Op::ReduceSumTo` and `Op::ReduceMaxTo`. Differs from
+/// [`reduce`] only in shape derivation: each output axis (after
+/// left-padding to input rank) must equal either the input's size
+/// on that axis (axis passes through unchanged) or 1 (axis is
+/// reduced away). Any other value is a contract violation.
+///
+/// Walks the input once, projecting each input multi-index to the
+/// corresponding output slot by clamping coords to 0 on collapsed
+/// axes, folds via [`ReduceOp::fold`], finalizes once per slot.
+pub fn reduce_to<T, R>(
+    name: &str,
+    input: &CpuStorageBytes,
+    output: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()>
+where
+    T: Copy + Pod,
+    R: ReduceOp<T>,
+{
+    let padded = align_reduce_to(name, input_shape, output_shape)?;
+    let elem = std::mem::size_of::<T>();
+    let in_elems: usize = input_shape.iter().product();
+    let out_elems: usize = output_shape.iter().product();
+    if input.len_bytes() != in_elems.saturating_mul(elem)
+        || output.len_bytes() != out_elems.saturating_mul(elem)
+    {
+        return Err(Error::Msg(format!(
+            "{name}: bytes mismatch (in {in_elems} elems, out {out_elems} elems)",
+        ))
+        .bt());
+    }
+    // Count of inputs folded into each output slot — the product of
+    // input dims on the collapsed axes (uniform across all output
+    // slots because each collapsed axis collapses uniformly). Only
+    // Mean's `finalize` reads it; for Sum/Max it's ignored. Computed
+    // here to keep the trait contract uniform across chassis fns.
+    let mut count: usize = 1;
+    for (axis, &p) in padded.iter().enumerate() {
+        if p == 1 {
+            count = count.saturating_mul(input_shape[axis]);
+        }
+    }
+    R::validate_count(name, count)?;
+    let in_view: &[T] = input.as_slice()?;
+    let out_view: &mut [T] = output.as_slice_mut()?;
+    let mut acc: Vec<R::Acc> = (0..out_elems).map(|_| R::init()).collect();
+    let rank = input_shape.len();
+    let mut in_strides = vec![1_usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        in_strides[i] = in_strides[i + 1] * input_shape[i + 1];
+    }
+    // Strides for the *padded* output, matching input rank.
+    let mut out_strides_padded = vec![1_usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
+    }
+    for in_flat in 0..in_elems {
+        let mut out_flat = 0_usize;
+        let mut rem = in_flat;
+        for axis in 0..rank {
+            let coord = rem / in_strides[axis];
+            rem %= in_strides[axis];
+            let out_coord = if padded[axis] == 1 { 0 } else { coord };
+            out_flat += out_coord * out_strides_padded[axis];
+        }
+        acc[out_flat] = R::fold(acc[out_flat], in_view[in_flat]);
+    }
+    for (slot, &a) in out_view.iter_mut().zip(&acc) {
+        *slot = R::finalize(a, count);
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Shape helpers — private to the chassis
 // =============================================================================
+
+/// Left-pad `output_shape` with 1s up to `input_shape`'s rank and
+/// validate that every axis matches the input or is 1 (collapsed).
+/// Returns the padded shape. Shared by [`reduce_to`].
+fn align_reduce_to(
+    name: &str,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<Vec<usize>> {
+    if output_shape.len() > input_shape.len() {
+        return Err(Error::Msg(format!(
+            "{name}: output rank {} exceeds input rank {}",
+            output_shape.len(),
+            input_shape.len(),
+        ))
+        .bt());
+    }
+    let pad = input_shape.len() - output_shape.len();
+    let mut padded = vec![1_usize; pad];
+    padded.extend_from_slice(output_shape);
+    for (i, (&s, &t)) in input_shape.iter().zip(padded.iter()).enumerate() {
+        if t != 1 && t != s {
+            return Err(Error::Msg(format!(
+                "{name}: axis {i} target {t} must be 1 or input {s}",
+            ))
+            .bt());
+        }
+    }
+    Ok(padded)
+}
 
 /// Validate input/output byte counts against the declared shape and
 /// reduce-dim list. Returns `(total_input_elements, kept_dims)`.
@@ -446,6 +551,48 @@ mod tests {
         assert!(r.is_err());
         let r = <Mean as ReduceOp<f32>>::validate_count("test", 5);
         assert!(r.is_ok());
+    }
+
+    #[test]
+    fn reduce_to_sum_f32_collapses_inner_axis() {
+        // input [2,3] → output [2,1] sums each row.
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut output = CpuStorageBytes::from_zero_bytes(2 * 4);
+        reduce_to::<f32, Sum>("test_sum_to", &input, &mut output, &[2, 3], &[2, 1])
+            .expect("reduce_to sum_f32");
+        let r: &[f32] = output.as_slice().unwrap();
+        assert_eq!(r, &[6.0, 15.0]);
+    }
+
+    #[test]
+    fn reduce_to_max_f32_collapses_all_to_scalar() {
+        // input [2,3] → output [1,1] picks the global max.
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, -5.0, 3.0, 2.0, 0.0, -1.0]);
+        let mut output = CpuStorageBytes::from_zero_bytes(4);
+        reduce_to::<f32, Max>("test_max_to", &input, &mut output, &[2, 3], &[1, 1])
+            .expect("reduce_to max_f32");
+        let r: &[f32] = output.as_slice().unwrap();
+        assert_eq!(r, &[3.0]);
+    }
+
+    #[test]
+    fn reduce_to_pad_rank_with_leading_ones() {
+        // input [2,3] → output [3] gets padded to [1,3]; collapse outer.
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut output = CpuStorageBytes::from_zero_bytes(3 * 4);
+        reduce_to::<f32, Sum>("test_pad", &input, &mut output, &[2, 3], &[3])
+            .expect("reduce_to sum_f32 padded");
+        let r: &[f32] = output.as_slice().unwrap();
+        assert_eq!(r, &[5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn reduce_to_rejects_incompatible_target_axis() {
+        // input axis size 3, target axis size 2 → contract violation.
+        let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut output = CpuStorageBytes::from_zero_bytes(2 * 2 * 4);
+        let r = reduce_to::<f32, Sum>("test_bad", &input, &mut output, &[2, 3], &[2, 2]);
+        assert!(r.is_err());
     }
 
     #[test]
