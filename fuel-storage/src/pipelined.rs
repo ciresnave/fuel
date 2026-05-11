@@ -474,6 +474,11 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Flip { .. }   => Some(OpKind::Flip),
         Op::Roll { .. }   => Some(OpKind::Roll),
         Op::CumSum { .. } => Some(OpKind::CumSum),
+        Op::Triu { .. }   => Some(OpKind::Triu),
+        Op::Tril { .. }   => Some(OpKind::Tril),
+        Op::LogSoftmaxLastDim => Some(OpKind::LogSoftmaxLastDim),
+        Op::LogSoftmaxLastDimBackward => Some(OpKind::LogSoftmaxLastDimBackward),
+        Op::MaskedFill { .. } => Some(OpKind::MaskedFill),
         Op::Pad { .. }    => Some(OpKind::Pad),
         Op::PadBackward { .. } => Some(OpKind::PadBackward),
         Op::SumDim(_)     => Some(OpKind::SumReduce),
@@ -547,6 +552,25 @@ fn encode_value_to_bytes(dtype: DType, value: f64) -> Result<Vec<u8>> {
         other => Err(Error::Msg(format!(
             "encode_value_to_bytes: dtype {other:?} not yet supported for Pad fill",
         )).bt()),
+    }
+}
+
+/// Encode a typed `Scalar` to its little-endian byte representation.
+/// Used by Op::MaskedFill so the kernel only sees bytes — never has
+/// to know the value's dtype.
+fn scalar_to_bytes(s: fuel_core_types::Scalar) -> Vec<u8> {
+    use fuel_core_types::Scalar;
+    match s {
+        Scalar::U8(v)  => vec![v],
+        Scalar::U32(v) => v.to_le_bytes().to_vec(),
+        Scalar::I16(v) => v.to_le_bytes().to_vec(),
+        Scalar::I32(v) => v.to_le_bytes().to_vec(),
+        Scalar::I64(v) => v.to_le_bytes().to_vec(),
+        Scalar::BF16(v) => v.to_le_bytes().to_vec(),
+        Scalar::F16(v) => v.to_le_bytes().to_vec(),
+        Scalar::F32(v) => v.to_le_bytes().to_vec(),
+        Scalar::F64(v) => v.to_le_bytes().to_vec(),
+        Scalar::F8E4M3(v) => vec![v.to_bits()],
     }
 }
 
@@ -854,6 +878,82 @@ fn op_to_op_params(
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
             OpParams::CumSum { outer_count, dim_size, inner_count }
+        }
+        Op::Triu { diagonal } | Op::Tril { diagonal } => {
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::Triu/Tril expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let in_dims = in_layout.shape().dims();
+            if in_dims.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "Op::Triu/Tril requires rank >= 2, got {}",
+                    in_dims.len(),
+                ))
+                .bt());
+            }
+            let rows = in_dims[in_dims.len() - 2];
+            let cols = in_dims[in_dims.len() - 1];
+            let batch_count: usize = in_dims[..in_dims.len() - 2]
+                .iter().product::<usize>().max(1);
+            OpParams::Triangular { batch_count, rows, cols, diagonal: *diagonal }
+        }
+        Op::LogSoftmaxLastDim => {
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::LogSoftmaxLastDim expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let in_dims = in_layout.shape().dims();
+            if in_dims.is_empty() {
+                return Err(Error::Msg(
+                    "Op::LogSoftmaxLastDim requires rank ≥ 1".to_string(),
+                )
+                .bt());
+            }
+            let last_dim = *in_dims.last().unwrap();
+            let outer_count: usize = in_dims[..in_dims.len() - 1].iter().product();
+            OpParams::LogSoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::LogSoftmaxLastDimBackward => {
+            // Inputs: (forward_output_y, upstream_grad). Same shape contract
+            // as SoftmaxLastDimBackward — last-dim row-wise dispatch.
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::LogSoftmaxLastDimBackward expects 2 inputs, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let in_layout = input_layout(node.inputs[0]);
+            let in_dims = in_layout.shape().dims();
+            if in_dims.is_empty() {
+                return Err(Error::Msg(
+                    "Op::LogSoftmaxLastDimBackward requires rank ≥ 1".to_string(),
+                )
+                .bt());
+            }
+            let last_dim = *in_dims.last().unwrap();
+            let outer_count: usize = in_dims[..in_dims.len() - 1].iter().product();
+            OpParams::LogSoftmaxLastDim { outer_count, last_dim }
+        }
+        Op::MaskedFill { value } => {
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::MaskedFill expects 2 inputs (x, mask), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let fill_bytes = scalar_to_bytes(*value);
+            OpParams::MaskedFill { fill_bytes }
         }
         Op::PadBackward { in_shape, padding, mode } => {
             // Single input is the upstream gradient; output is the
@@ -5187,5 +5287,164 @@ mod tests {
             // (1+10) + 100 = 111;  (2+20) + 200 = 222.
             assert_eq!(typed, &[111.0, 222.0]);
         }
+    }
+
+    /// E2E: triu(diagonal=0) on a 3×3 matrix.
+    /// Input:  [1 2 3 / 4 5 6 / 7 8 9]
+    /// Output: [1 2 3 / 0 5 6 / 0 0 9]
+    #[test]
+    fn pipelined_realize_triu_3x3_diag0() {
+        let storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+            4.0,     5.0, 6.0,
+            7.0,     8.0, 9.0,
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, out_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+            });
+            let out_id = g.push(Node {
+                op: Op::Triu { diagonal: 0 }, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+            });
+            g.set_target_backend(out_id, BackendId::Cpu);
+            (in_id, out_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(out, &[
+            1.0, 2.0, 3.0,
+            0.0, 5.0, 6.0,
+            0.0, 0.0, 9.0,
+        ]);
+    }
+
+    /// E2E: tril(diagonal=0) on a 3×3 matrix — the canonical causal mask.
+    /// Output: [1 0 0 / 4 5 0 / 7 8 9]
+    #[test]
+    fn pipelined_realize_tril_3x3_diag0_causal_mask() {
+        let storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+            4.0,     5.0, 6.0,
+            7.0,     8.0, 9.0,
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, out_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+            });
+            let out_id = g.push(Node {
+                op: Op::Tril { diagonal: 0 }, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3, 3]), dtype: DType::F32,
+            });
+            g.set_target_backend(out_id, BackendId::Cpu);
+            (in_id, out_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(out, &[
+            1.0, 0.0, 0.0,
+            4.0, 5.0, 0.0,
+            7.0, 8.0, 9.0,
+        ]);
+    }
+
+    /// E2E: log_softmax over a 2×3 input. Rows are [1,2,3] and [3,2,1].
+    /// log_softmax(row) = row - max - log(sum exp(row - max)).
+    /// Row 0: max=3, exp(-2)+exp(-1)+exp(0) = 0.135+0.368+1.0 = 1.503;
+    ///        log(1.503) ≈ 0.4076; out = [1-3-0.4076, 2-3-0.4076, 3-3-0.4076]
+    ///                              = [-2.4076, -1.4076, -0.4076]
+    /// Row 1 is row 0 reversed: [-0.4076, -1.4076, -2.4076].
+    #[test]
+    fn pipelined_realize_log_softmax_last_dim() {
+        let storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0,
+            3.0,     2.0, 1.0,
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, out_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            let out_id = g.push(Node {
+                op: Op::LogSoftmaxLastDim, inputs: vec![in_id],
+                shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            });
+            g.set_target_backend(out_id, BackendId::Cpu);
+            (in_id, out_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let out: &[f32] = c.as_slice().unwrap();
+        let expected = [
+            -2.4076059, -1.4076059, -0.40760595_f32,
+            -0.40760595, -1.4076059, -2.4076059,
+        ];
+        for (a, b) in out.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-5, "log_softmax mismatch: {a} vs {b}");
+        }
+        // The exp() of the output should sum to 1 per row.
+        for row in out.chunks(3) {
+            let sum: f32 = row.iter().map(|x| x.exp()).sum();
+            assert!((sum - 1.0).abs() < 1e-5, "softmax(log_softmax) row sum != 1: {sum}");
+        }
+    }
+
+    /// E2E: masked_fill with -inf — the attention masking pattern.
+    /// x = [1, 2, 3, 4]; mask = [0, 1, 0, 1]; value = -1000.
+    /// out = [1, -1000, 3, -1000].
+    #[test]
+    fn pipelined_realize_masked_fill_attention_pattern() {
+        let x_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let mask_storage = crate::from_slice_cpu(&[0u8, 1, 0, 1]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, mask_id, out_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let mask = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::U8,
+            });
+            let out = g.push(Node {
+                op: Op::MaskedFill { value: fuel_core_types::Scalar::F32(-1000.0) },
+                inputs: vec![x, mask],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(out, BackendId::Cpu);
+            (x, mask, out)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+        inputs.insert(mask_id, Arc::new(RwLock::new(mask_storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(out, &[1.0, -1000.0, 3.0, -1000.0]);
     }
 }

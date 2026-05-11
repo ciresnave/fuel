@@ -440,6 +440,32 @@ pub enum OpParams {
         inner_count: usize,
     },
 
+    /// Triangular mask parameters (used by both Triu and Tril — the
+    /// op-kind picks the direction). `batch_count` is the product of
+    /// leading dims; `rows`/`cols` are the last two dims. `diagonal`
+    /// is signed (0 = main diagonal, positive shifts up, negative
+    /// shifts down).
+    Triangular {
+        batch_count: usize,
+        rows: usize,
+        cols: usize,
+        diagonal: i64,
+    },
+
+    /// LogSoftmax along the last dim. Walks `outer_count` rows of
+    /// `last_dim` elements each. Per-dtype kernel (uses log/exp).
+    LogSoftmaxLastDim {
+        outer_count: usize,
+        last_dim: usize,
+    },
+
+    /// MaskedFill: per-element fill where mask is nonzero. The kernel
+    /// reads the element count from the layout; `fill_bytes` is
+    /// pre-encoded in the output's dtype (one element's worth).
+    MaskedFill {
+        fill_bytes: Vec<u8>,
+    },
+
     /// Backward helper for Pad. Carries the input shape so the kernel
     /// can size its scatter-add buffer; the output shape is implicit
     /// from the input shape + padding.

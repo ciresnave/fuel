@@ -413,6 +413,52 @@ pub fn eval_node_with_op(
                 AnyRefTensor::U32(_) => panic!("cumsum: not supported on U32 tensors"),
             }
         }
+        Op::Triu { diagonal } => {
+            let src = cache.get(&inputs[0]).expect("triu missing input");
+            match src {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::triu(t, *diagonal)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::triu(t, *diagonal)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::triu(t, *diagonal)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::triu(t, *diagonal)),
+                AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::triu(t, *diagonal)),
+            }
+        }
+        Op::Tril { diagonal } => {
+            let src = cache.get(&inputs[0]).expect("tril missing input");
+            match src {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::tril(t, *diagonal)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::tril(t, *diagonal)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::tril(t, *diagonal)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::tril(t, *diagonal)),
+                AnyRefTensor::U32(t) => AnyRefTensor::U32(ops::tril(t, *diagonal)),
+            }
+        }
+        Op::LogSoftmaxLastDim => {
+            let src = cache.get(&inputs[0]).expect("log_softmax_last_dim missing input");
+            match src {
+                AnyRefTensor::F32(t) => AnyRefTensor::F32(ops::log_softmax_last_dim(t)),
+                AnyRefTensor::F64(t) => AnyRefTensor::F64(ops::log_softmax_last_dim(t)),
+                AnyRefTensor::BF16(t) => AnyRefTensor::BF16(ops::log_softmax_last_dim(t)),
+                AnyRefTensor::F16(t) => AnyRefTensor::F16(ops::log_softmax_last_dim(t)),
+                AnyRefTensor::U32(_) => panic!("log_softmax_last_dim: not supported on U32 tensors"),
+            }
+        }
+        Op::LogSoftmaxLastDimBackward => {
+            let y = cache.get(&inputs[0]).expect("log_softmax_last_dim_backward: missing y");
+            let g = cache.get(&inputs[1]).expect("log_softmax_last_dim_backward: missing grad");
+            match (y, g) {
+                (AnyRefTensor::F32(y), AnyRefTensor::F32(g)) => AnyRefTensor::F32(ops::log_softmax_last_dim_backward(y, g)),
+                (AnyRefTensor::F64(y), AnyRefTensor::F64(g)) => AnyRefTensor::F64(ops::log_softmax_last_dim_backward(y, g)),
+                (AnyRefTensor::BF16(y), AnyRefTensor::BF16(g)) => AnyRefTensor::BF16(ops::log_softmax_last_dim_backward(y, g)),
+                (AnyRefTensor::F16(y), AnyRefTensor::F16(g)) => AnyRefTensor::F16(ops::log_softmax_last_dim_backward(y, g)),
+                _ => panic!("log_softmax_last_dim_backward: dtype mismatch or unsupported dtype"),
+            }
+        }
+        Op::MaskedFill { .. } => panic!(
+            "Op::MaskedFill: legacy fuel-reference-backend executor doesn't \
+             support U8-mask ops; use the storage-path \
+             PipelinedExecutor instead",
+        ),
         Op::Pad { padding, mode, value } => {
             let src = cache.get(&inputs[0]).expect("pad missing input");
             match (src, mode) {
