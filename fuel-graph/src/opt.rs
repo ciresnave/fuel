@@ -344,21 +344,16 @@ impl Rule for LoweringRule {
 
     fn matches(&self, graph: &Graph, id: NodeId) -> bool {
         let node = graph.node(id);
-        // Single-input shape check — every fused op registered in step
-        // 3 is a single-input op (SoftmaxLastDim). Generalize when an
-        // op with arity > 1 lands.
-        if node.inputs.len() != 1 || node.shape.rank() < 1 {
-            return false;
-        }
+        // Arity is per-fused-op; the decompose function is the
+        // authority. We don't gate on `node.inputs.len()` here.
         match &node.op {
             Op::Fused(fid, _) if *fid == self.id => true,
-            // Legacy variant fallthrough: the SoftmaxLastDim entry's
-            // lowering rule also fires on `Op::SoftmaxLastDim` so that
-            // emission sites that haven't migrated to the
-            // `Op::Fused(SOFTMAX_LAST_DIM, _)` form (e.g. the
-            // pipelined-executor test that constructs the node
-            // directly) keep lowering correctly. Step 5 drops the
-            // legacy variant; this arm goes with it.
+            // Legacy-variant fallthrough during the migration window.
+            // Emission sites that haven't yet adopted the
+            // `Op::Fused(id, _)` shape (the pipelined-executor test
+            // that constructs `Op::SoftmaxLastDim` directly) keep
+            // lowering correctly. Step 5 drops the legacy variants
+            // and these arms with them.
             Op::SoftmaxLastDim if self.id == FusedOps::SOFTMAX_LAST_DIM => true,
             _ => false,
         }
@@ -438,30 +433,30 @@ impl Rule for FusionRule {
                 "Declarative fusion patterns aren't fired in step 3"
             ),
         };
-        // Bindings convention: index 0 is the "input x" for SoftmaxLastDim.
-        // Step 4 generalizes per-fused-op when arity > 1 lands.
-        let x_id = pattern_match
-            .bindings
-            .iter()
-            .find(|(idx, _)| *idx == 0)
-            .map(|(_, n)| *n)
-            .expect("FusionRule expects a binding at index 0 (the input x)");
-        // Reconstruct params by-id. Step 4 extends this match with the
-        // remaining 12 fused ops (some of which carry payloads).
-        let params = if self.id == FusedOps::SOFTMAX_LAST_DIM {
-            FusedOpParams::SoftmaxLastDim
-        } else {
-            unreachable!(
-                "FusionRule for id {:?} has no params reconstructor — \
-                 step 4 extends this match",
+        // General-arity input reconstruction: bindings are (index, NodeId)
+        // pairs; sorting by index yields the emitted node's inputs in
+        // canonical order. SoftmaxLastDim binds {0 → x_id}; FusedLinear
+        // binds {0 → a, 1 → b, 2 → bias}. Missing index in the [0, N)
+        // range is a matcher contract violation.
+        let mut sorted = pattern_match.bindings.clone();
+        sorted.sort_by_key(|(idx, _)| *idx);
+        for (expected_idx, (got_idx, _)) in sorted.iter().enumerate() {
+            debug_assert_eq!(
+                *got_idx, expected_idx,
+                "FusionRule: bindings must be dense [0..N); pattern for id \
+                 {:?} returned non-contiguous indices",
                 self.id,
             );
-        };
+        }
+        let inputs: Vec<NodeId> = sorted.iter().map(|(_, n)| *n).collect();
+        // Params come from the matcher — it's authoritative on what
+        // variant the recognized subgraph represents.
+        let params = pattern_match.params;
         let dtype = graph.node(id).dtype;
         let shape = graph.node(id).shape.clone();
         let new_id = graph.push(Node {
             op:     Op::Fused(self.id, params),
-            inputs: vec![x_id],
+            inputs,
             shape,
             dtype,
         });

@@ -207,6 +207,7 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
 
     Some(PatternMatch {
         bindings: vec![(0, x_id)],
+        params:   FusedOpParams::SoftmaxLastDim,
     })
 }
 
