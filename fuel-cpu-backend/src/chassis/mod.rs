@@ -11,5 +11,6 @@
 //! for the design rationale.
 
 pub mod binary;
+pub mod compare;
 pub mod reduction;
 pub mod unary;

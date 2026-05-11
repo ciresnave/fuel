@@ -22,18 +22,10 @@ use crate::byte_storage::CpuStorageBytes;
 use crate::chassis::reduction::{reduce, reduce_to, Max, Mean, Min, Sum};
 use fuel_core_types::{Error, Layout, Result};
 
-/// Verify three byte buffers have matching lengths.
-fn check_lens_3(name: &str, a: usize, b: usize, c: usize) -> Result<()> {
-    if a != b || a != c {
-        return Err(Error::Msg(format!(
-            "{name}: byte length mismatch (lhs={a}, rhs={b}, out={c})",
-        ))
-        .bt());
-    }
-    Ok(())
-}
-
-/// Verify two byte buffers have matching lengths (unary kernels).
+/// Verify two byte buffers have matching lengths (used by kernels
+/// outside the unary/binary chassis families — softmax, affine,
+/// clamp, powi, etc.). The chassis functions in `crate::chassis::*`
+/// carry their own length-check logic.
 fn check_lens_2(name: &str, a: usize, b: usize) -> Result<()> {
     if a != b {
         return Err(Error::Msg(format!(
@@ -227,71 +219,60 @@ unary_thunk!(gelu_f16, half::f16, GeluTanh);
 // ArgMax pattern (typed input, U32 output) and is what the binding-
 // table dispatch keys on `[T, T, U8]` resolve to.
 
-/// Generate a binary comparison kernel parameterized over the input
-/// element type `$T`: `out[i] = if predicate(lhs[i], rhs[i]) { 1 } else { 0 }`.
+/// Generate a public compare-kernel entry point as a thin thunk
+/// over the chassis. Op marker `$Op` lives in
+/// [`crate::chassis::compare`] (`Eq`, `Ne`, `Lt`, `Le`, `Gt`,
+/// `Ge`); per-precision predicate lives there once and the four
+/// dtype impls fall out of the chassis's blanket `CompareOp<T>`
+/// impls (which also handle bool → u8 conversion).
 ///
 /// Output is `&mut [u8]`; the caller pre-allocates it sized as
-/// `lhs.len_bytes() / size_of::<T>()` bytes (one byte per element).
-/// Per-input lengths must match in element count, not byte count.
-macro_rules! binary_compare_kernel {
-    ($name:ident, $T:ty, $op:expr, $doc:literal) => {
-        #[doc = $doc]
+/// one byte per element (not byte-equal to input lengths because
+/// inputs are wider than u8). The chassis function validates
+/// element counts (not byte counts) accordingly.
+macro_rules! compare_thunk {
+    ($name:ident, $T:ty, $Op:ident) => {
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
             out: &mut CpuStorageBytes,
         ) -> Result<()> {
-            let lhs_view: &[$T] = lhs.as_slice()?;
-            let rhs_view: &[$T] = rhs.as_slice()?;
-            let out_view: &mut [u8] = out.as_slice_mut()?;
-            if lhs_view.len() != rhs_view.len() || lhs_view.len() != out_view.len() {
-                return Err(Error::Msg(format!(
-                    "{}: element count mismatch (lhs={}, rhs={}, out={})",
-                    stringify!($name),
-                    lhs_view.len(),
-                    rhs_view.len(),
-                    out_view.len(),
-                ))
-                .bt());
-            }
-            let op: fn($T, $T) -> bool = $op;
-            for (i, slot) in out_view.iter_mut().enumerate() {
-                *slot = if op(lhs_view[i], rhs_view[i]) { 1 } else { 0 };
-            }
-            Ok(())
+            crate::chassis::compare::compare::<$T, crate::chassis::compare::$Op>(
+                stringify!($name), lhs, rhs, out,
+            )
         }
     };
 }
 
-binary_compare_kernel!(eq_f32_u8, f32, |a: f32, b: f32| a == b, "Elementwise `f32 == f32` → `u8` mask: `out[i] = 1 if lhs[i] == rhs[i] else 0`. NaN follows IEEE-754 (`NaN != NaN`).");
-binary_compare_kernel!(eq_f64_u8, f64, |a: f64, b: f64| a == b, "Elementwise `f64 == f64` → `u8` mask.");
-binary_compare_kernel!(eq_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a == b, "Elementwise `bf16 == bf16` → `u8` mask. Comparison is bitwise on the bf16 representation, matching IEEE-754 semantics widened to f32.");
-binary_compare_kernel!(eq_f16_u8, half::f16, |a: half::f16, b: half::f16| a == b, "Elementwise `f16 == f16` → `u8` mask.");
+compare_thunk!(eq_f32_u8, f32, Eq);
+compare_thunk!(eq_f64_u8, f64, Eq);
+compare_thunk!(eq_bf16_u8, half::bf16, Eq);
+compare_thunk!(eq_f16_u8, half::f16, Eq);
 
-binary_compare_kernel!(ne_f32_u8, f32, |a: f32, b: f32| a != b, "Elementwise `f32 != f32` → `u8` mask. NaN follows IEEE-754 (`NaN != NaN` is true → 1).");
-binary_compare_kernel!(ne_f64_u8, f64, |a: f64, b: f64| a != b, "Elementwise `f64 != f64` → `u8` mask.");
-binary_compare_kernel!(ne_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a != b, "Elementwise `bf16 != bf16` → `u8` mask.");
-binary_compare_kernel!(ne_f16_u8, half::f16, |a: half::f16, b: half::f16| a != b, "Elementwise `f16 != f16` → `u8` mask.");
+compare_thunk!(ne_f32_u8, f32, Ne);
+compare_thunk!(ne_f64_u8, f64, Ne);
+compare_thunk!(ne_bf16_u8, half::bf16, Ne);
+compare_thunk!(ne_f16_u8, half::f16, Ne);
 
-binary_compare_kernel!(lt_f32_u8, f32, |a: f32, b: f32| a < b, "Elementwise `f32 < f32` → `u8` mask. NaN comparisons are always false (IEEE-754 unordered).");
-binary_compare_kernel!(lt_f64_u8, f64, |a: f64, b: f64| a < b, "Elementwise `f64 < f64` → `u8` mask.");
-binary_compare_kernel!(lt_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a < b, "Elementwise `bf16 < bf16` → `u8` mask.");
-binary_compare_kernel!(lt_f16_u8, half::f16, |a: half::f16, b: half::f16| a < b, "Elementwise `f16 < f16` → `u8` mask.");
+compare_thunk!(lt_f32_u8, f32, Lt);
+compare_thunk!(lt_f64_u8, f64, Lt);
+compare_thunk!(lt_bf16_u8, half::bf16, Lt);
+compare_thunk!(lt_f16_u8, half::f16, Lt);
 
-binary_compare_kernel!(le_f32_u8, f32, |a: f32, b: f32| a <= b, "Elementwise `f32 <= f32` → `u8` mask. NaN comparisons are always false.");
-binary_compare_kernel!(le_f64_u8, f64, |a: f64, b: f64| a <= b, "Elementwise `f64 <= f64` → `u8` mask.");
-binary_compare_kernel!(le_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a <= b, "Elementwise `bf16 <= bf16` → `u8` mask.");
-binary_compare_kernel!(le_f16_u8, half::f16, |a: half::f16, b: half::f16| a <= b, "Elementwise `f16 <= f16` → `u8` mask.");
+compare_thunk!(le_f32_u8, f32, Le);
+compare_thunk!(le_f64_u8, f64, Le);
+compare_thunk!(le_bf16_u8, half::bf16, Le);
+compare_thunk!(le_f16_u8, half::f16, Le);
 
-binary_compare_kernel!(gt_f32_u8, f32, |a: f32, b: f32| a > b, "Elementwise `f32 > f32` → `u8` mask. NaN comparisons are always false.");
-binary_compare_kernel!(gt_f64_u8, f64, |a: f64, b: f64| a > b, "Elementwise `f64 > f64` → `u8` mask.");
-binary_compare_kernel!(gt_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a > b, "Elementwise `bf16 > bf16` → `u8` mask.");
-binary_compare_kernel!(gt_f16_u8, half::f16, |a: half::f16, b: half::f16| a > b, "Elementwise `f16 > f16` → `u8` mask.");
+compare_thunk!(gt_f32_u8, f32, Gt);
+compare_thunk!(gt_f64_u8, f64, Gt);
+compare_thunk!(gt_bf16_u8, half::bf16, Gt);
+compare_thunk!(gt_f16_u8, half::f16, Gt);
 
-binary_compare_kernel!(ge_f32_u8, f32, |a: f32, b: f32| a >= b, "Elementwise `f32 >= f32` → `u8` mask. NaN comparisons are always false.");
-binary_compare_kernel!(ge_f64_u8, f64, |a: f64, b: f64| a >= b, "Elementwise `f64 >= f64` → `u8` mask.");
-binary_compare_kernel!(ge_bf16_u8, half::bf16, |a: half::bf16, b: half::bf16| a >= b, "Elementwise `bf16 >= bf16` → `u8` mask.");
-binary_compare_kernel!(ge_f16_u8, half::f16, |a: half::f16, b: half::f16| a >= b, "Elementwise `f16 >= f16` → `u8` mask.");
+compare_thunk!(ge_f32_u8, f32, Ge);
+compare_thunk!(ge_f64_u8, f64, Ge);
+compare_thunk!(ge_bf16_u8, half::bf16, Ge);
+compare_thunk!(ge_f16_u8, half::f16, Ge);
 
 // =============================================================================
 // Ternary select (Op::Where) — U8 cond + T × T → T
