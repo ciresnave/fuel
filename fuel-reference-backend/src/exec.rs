@@ -557,10 +557,8 @@ pub fn eval_node_with_op(
             };
             eval_conv2d(stride, padding, groups, inputs, cache)
         }
-        Op::ConvTranspose2D { stride, padding, output_padding, dilation, groups } => {
-            eval_conv_transpose2d(*stride, *padding, *output_padding, *dilation, *groups, inputs, cache)
-        }
-        // Phase 7.6 step 4 (final): registry-extended ConvTranspose2D.
+        // Phase 7.6 step 5 (final): legacy `Op::ConvTranspose2D` arm
+        // dropped with the variant.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::CONV_TRANSPOSE2D =>
         {
@@ -575,13 +573,8 @@ pub fn eval_node_with_op(
             };
             eval_conv_transpose2d(stride, padding, output_padding, dilation, groups, inputs, cache)
         }
-        Op::FlashAttn { softmax_scale, causal, window_size_left, window_size_right, softcap } => {
-            eval_flash_attn(
-                *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap,
-                inputs, cache,
-            )
-        }
-        // Registry-extended FlashAttn.
+        // Phase 7.6 step 5 (final): legacy `Op::FlashAttn` arm
+        // dropped with the variant.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::FLASH_ATTN =>
         {
@@ -595,10 +588,8 @@ pub fn eval_node_with_op(
             };
             eval_flash_attn(softmax_scale, causal, window_size_left, window_size_right, softcap, inputs, cache)
         }
-        Op::PagedAttn { softmax_scale, block_size, softcap } => {
-            eval_paged_attn(*softmax_scale, *block_size, *softcap, inputs, cache)
-        }
-        // Registry-extended PagedAttn.
+        // Phase 7.6 step 5 (final): legacy `Op::PagedAttn` arm
+        // dropped with the variant.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::PAGED_ATTN =>
         {
@@ -678,8 +669,8 @@ pub fn eval_node_with_op(
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::ROPE => {
             eval_rope(inputs, cache)
         }
-        Op::QMatMul { quant_type, k, n } => eval_qmatmul(*quant_type, *k, *n, inputs, cache),
-        // Phase 7.6 step 4 (final): registry-extended QMatMul.
+        // Phase 7.6 step 5 (final): legacy `Op::QMatMul` arm dropped
+        // with the variant.
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::QMATMUL =>
         {
