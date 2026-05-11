@@ -83,6 +83,13 @@ pub enum RuleFamily {
     /// the orphaned subgraph nodes remain in the arena but are
     /// unreachable from the user's roots after consumer rewiring).
     Fusion,
+    /// Algebraic identity rewrites that don't fit the lowering or
+    /// fusion shapes: cast elimination (`Cast(src→dst) → Op(dst)`
+    /// becomes `Op(src)` when the consumer supports the source
+    /// dtype), constant folding, identity elimination, common-
+    /// subexpression hoisting. Runs after fusion so cast-elimination
+    /// can't break fusion-pattern dtype expectations.
+    Algebraic,
 }
 
 /// One graph-rewrite rule. A rule pairs a structural matcher with a
@@ -208,6 +215,13 @@ impl RuleRegistry {
         // Phase 2: fusion to fixpoint.
         loop {
             let any = self.run_pass(RuleFamily::Fusion, graph, &mut roots);
+            if !any { break; }
+        }
+        // Phase 3: algebraic identities to fixpoint. Runs last so it
+        // can't disturb fusion patterns by eliminating casts that
+        // fusion was about to match on.
+        loop {
+            let any = self.run_pass(RuleFamily::Algebraic, graph, &mut roots);
             if !any { break; }
         }
         roots
@@ -459,6 +473,226 @@ impl Rule for FusionRule {
             inputs,
             shape,
             dtype,
+        });
+        remap.insert(id, new_id);
+    }
+}
+
+// ---- Cast-fusion algebraic rule ------------------------------------------
+//
+// `CastFusionRule` fires on `Cast(src→dst) → Op(dst, ...)` chains
+// where:
+//   - the Cast (or chain of casts) has exactly one consumer at
+//     each link of the chain,
+//   - the consumer is a **type-preserving op** (its output dtype
+//     equals the cast-fed input dtype — true for unary/binary
+//     arithmetic, reductions, MatMul; *false* for compare ops,
+//     Where, Cast),
+//   - the consumer has a kernel for the cast's *source* dtype on
+//     all input slots (capability predicate says yes).
+//
+// On fire: a new consumer node is appended with the cast input
+// replaced by the cast's source. **The new consumer's output dtype
+// is the cast-source dtype, not the original output dtype.** Any
+// downstream consumers reading from the rewritten node now see the
+// new dtype. This is by design — the rule fires aggressively under
+// the assumption that downstream consumers either (a) are
+// type-tolerant or (b) will have their own cast-fusion applied,
+// collapsing the chain.
+//
+// **Caveat — semantic change**: in graphs where the downstream
+// expects the original dst_dtype (e.g. a sink that returns BF16),
+// aggressive cast-fusion silently changes the dtype the user
+// observes. Wire this rule opt-in until a downstream-tolerance
+// framework (precision filter, op-tolerance metadata) is in place
+// to guard against unsafe rewrites.
+//
+// Chain cancellation is the always-safe sub-case: when the chain
+// is a net no-op (`Cast(F32→BF16) → Cast(BF16→F32) → Op(F32)`),
+// the final source dtype already matches the consumer's input
+// slot, so neither output dtype nor kernel selection changes.
+//
+// Architecture v1.0: this is the first "algebraic" family rule.
+// Future algebraic rewrites (constant folding, identity
+// elimination, CSE hoisting) join the same family and run in the
+// same Phase 3 loop.
+//
+// Decoupling: `fuel-graph::opt` doesn't know about binding tables,
+// PrecisionGuarantee, or BackendId. The capability check is
+// injected at rule construction via [`CapabilityPredicate`]; the
+// consumer (typically the route-picker layer in fuel-storage or a
+// higher crate) is responsible for closing over a binding-table
+// reference and answering the predicate.
+
+use std::sync::Arc;
+
+/// Predicate answering "is there a registered kernel for this op
+/// with these input/output dtypes?" The dtypes vector is the
+/// consumer's full input-dtype list (after the cast-source
+/// substitution) followed by the consumer's output dtype. Format
+/// matches the binding-table key shape used by `fuel-storage`.
+///
+/// Returns `true` if at least one backend has a kernel registered
+/// for the proposed (op, dtypes) combination — the route picker
+/// later decides which backend to use.
+pub type CapabilityPredicate =
+    Arc<dyn Fn(&Op, &[DType]) -> bool + Send + Sync>;
+
+/// `Cast(src→dst) → Op(dst) ≡ Op(src)` when the consumer has a
+/// kernel for `src`.
+///
+/// Only fires when the cast has exactly one consumer (MVP: avoids
+/// the DAG complication of partial fan-out elimination). Multi-
+/// consumer Cast handling is a follow-up: rewrite one consumer and
+/// keep the cast alive for the others.
+pub struct CastFusionRule {
+    capabilities: CapabilityPredicate,
+}
+
+impl CastFusionRule {
+    /// Build the rule with a capability predicate. The predicate
+    /// closes over whatever capability source the caller has (a
+    /// binding table, a route picker, a static manifest). The rule
+    /// itself stays decoupled from those internals.
+    pub fn new(capabilities: CapabilityPredicate) -> Self {
+        Self { capabilities }
+    }
+
+    /// Walk `node.inputs` looking for an edge ending at a Cast (or
+    /// a chain of Casts) where every link in the chain has exactly
+    /// one consumer (the next link). Returns `Some((input_index,
+    /// final_src_id, consumer_dtypes))` where `final_src_id` is the
+    /// deepest reachable source after walking through the chain.
+    /// `consumer_dtypes` is the dtypes vector to ask the predicate
+    /// about. Returns `None` if no input qualifies.
+    ///
+    /// Walking through chained casts in one pass avoids a subtle
+    /// fixpoint trap: after the outer Cast is eliminated, the inner
+    /// Cast's other consumer (the now-orphan outer Cast) is still
+    /// in the arena and would make `count_consumers != 1` on the
+    /// next iteration. Collapsing the whole chain at once sidesteps
+    /// this because we never re-examine intermediate links.
+    ///
+    /// Shared by `matches` (which discards the index) and `rewrite`
+    /// (which uses the index to point the new consumer's input edge
+    /// at the deepest source). Computed twice intentionally — the
+    /// alternative is mutable state across `matches`/`rewrite`,
+    /// which conflicts with the trait's pure-matcher contract.
+    fn find_eligible_cast_input(
+        &self,
+        graph: &Graph,
+        id: NodeId,
+    ) -> Option<(usize, NodeId, Vec<fuel_core_types::DType>)> {
+        let node = graph.node(id);
+        // Don't fire on a Cast node itself — fire on the consumer.
+        if matches!(node.op, Op::Cast(_)) { return None; }
+        for (idx, &input_id) in node.inputs.iter().enumerate() {
+            // Walk through chained casts. `current` is the cast (or
+            // chain of casts) currently being examined; `prev` is
+            // the consumer at this link of the chain (initially `id`,
+            // then the outer-most cast as we descend).
+            if !matches!(graph.node(input_id).op, Op::Cast(_)) { continue; }
+            // Type-preserving filter: the consumer's output dtype
+            // must equal the cast'd input slot's dtype. This is the
+            // family of ops where rewriting the input dtype is
+            // equivalent to rewriting the output dtype — Neg/Add/
+            // Mul/Div, reductions, MatMul, etc. Excludes Compare
+            // (T→U8), Where (U8+T+T→T), and Cast itself (which we
+            // already filtered above). For non-type-preserving
+            // consumers, swapping the input dtype would produce an
+            // output we can't predict without per-op knowledge.
+            if node.dtype != graph.node(input_id).dtype { continue; }
+            let mut prev = id;
+            let mut current = input_id;
+            let final_src_id = loop {
+                let current_node = graph.node(current);
+                if !matches!(current_node.op, Op::Cast(_)) {
+                    break current;
+                }
+                // Single-consumer constraint at this link: the cast
+                // at `current` must feed only `prev`. Otherwise we
+                // can't eliminate it (would orphan the other consumer's
+                // input edge).
+                if !is_only_consumer(graph, current, prev) {
+                    // The chain stops here; we treat the current node
+                    // (a Cast) as the source. The consumer takes the
+                    // dst dtype of this Cast.
+                    break current;
+                }
+                let Some(&next) = current_node.inputs.first() else {
+                    break current;
+                };
+                prev = current;
+                current = next;
+            };
+            // If the walk didn't move past the first cast (e.g.
+            // because the first cast has multiple consumers), there's
+            // nothing to fuse for this input.
+            if final_src_id == input_id { continue; }
+            let final_src_dtype = graph.node(final_src_id).dtype;
+            // Build the proposed input-dtypes + output-dtype vector.
+            // Type-preserving filter above guarantees output dtype
+            // tracks the cast-fed input, so the new output dtype is
+            // `final_src_dtype` (not the original `node.dtype`).
+            let mut dtypes: Vec<fuel_core_types::DType> = node
+                .inputs
+                .iter()
+                .map(|&iid| if iid == input_id {
+                    final_src_dtype
+                } else {
+                    graph.node(iid).dtype
+                })
+                .collect();
+            dtypes.push(final_src_dtype);
+            if (self.capabilities)(&node.op, &dtypes) {
+                return Some((idx, final_src_id, dtypes));
+            }
+        }
+        None
+    }
+}
+
+/// Returns `true` if `expected_consumer` is the only consumer of
+/// `target` in the arena. Used to guard chained-cast elimination.
+fn is_only_consumer(graph: &Graph, target: NodeId, expected_consumer: NodeId) -> bool {
+    let mut found_others = false;
+    for i in 0..graph.len() {
+        let nid = NodeId(i);
+        if nid == expected_consumer { continue; }
+        if graph.node(nid).inputs.contains(&target) {
+            found_others = true;
+            break;
+        }
+    }
+    !found_others
+}
+
+impl Rule for CastFusionRule {
+    fn name(&self) -> &'static str { "CastFusion" }
+    fn family(&self) -> RuleFamily { RuleFamily::Algebraic }
+
+    fn matches(&self, graph: &Graph, id: NodeId) -> bool {
+        self.find_eligible_cast_input(graph, id).is_some()
+    }
+
+    fn rewrite(&self, graph: &mut Graph, id: NodeId, remap: &mut HashMap<NodeId, NodeId>) {
+        let (idx, final_src_id, _dtypes) = self
+            .find_eligible_cast_input(graph, id)
+            .expect("CastFusionRule::rewrite called on non-matching node");
+        let node = graph.node(id).clone();
+        let final_src_dtype = graph.node(final_src_id).dtype;
+        let mut new_inputs = node.inputs.clone();
+        new_inputs[idx] = final_src_id;
+        let new_id = graph.push(Node {
+            op:     node.op.clone(),
+            inputs: new_inputs,
+            shape:  node.shape.clone(),
+            // Type-preserving op (matcher's invariant): the new
+            // output dtype tracks the new input dtype. Downstream
+            // consumers seeing this node may observe a different
+            // dtype than before the rewrite — see the module
+            // docstring on the aggressive-semantics caveat.
+            dtype:  final_src_dtype,
         });
         remap.insert(id, new_id);
     }
@@ -2061,6 +2295,208 @@ mod tests {
             )))
             .optimize_to_fixpoint(&graph, &[c.id()]);
         assert_eq!(new_roots, vec![c.id()]);
+        assert_eq!(graph.read().unwrap().len(), pre_len);
+    }
+
+    // -------- Cast-fusion rule -------------------------------------------
+
+    /// Build a "yes to everything" capability predicate. Useful when
+    /// the test wants to confirm the matcher/rewriter mechanics work;
+    /// orthogonal tests cover the predicate-says-no path.
+    fn allow_all_predicate() -> CapabilityPredicate {
+        Arc::new(|_op: &Op, _dtypes: &[fuel_core_types::DType]| true)
+    }
+
+    /// Predicate that says no for everything. Useful for confirming
+    /// the rule respects the capability gate.
+    fn deny_all_predicate() -> CapabilityPredicate {
+        Arc::new(|_op: &Op, _dtypes: &[fuel_core_types::DType]| false)
+    }
+
+    /// Happy path: `x:f32 → Cast(BF16) → Neg(BF16)` collapses to
+    /// `x:f32 → Neg(f32)` when the predicate says Neg supports f32.
+    #[test]
+    fn cast_fusion_drops_cast_when_consumer_supports_source_dtype() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let xc = x.cast(fuel_core_types::DType::BF16);
+        let y = xc.neg();
+        let graph = y.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
+        assert_eq!(new_roots.len(), 1);
+        let new_root = new_roots[0];
+
+        let g = graph.read().unwrap();
+        // The new root is a fresh Neg whose input is the original
+        // f32 Const x, not the Cast.
+        assert!(matches!(g.node(new_root).op, Op::Neg));
+        assert_eq!(g.node(new_root).inputs, vec![x.id()]);
+        // Cast node remains in the arena but is no longer reachable
+        // from the new root.
+        let reachable = topo_order_multi(&g, &[new_root]);
+        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Cast(_))),
+            "no Cast node should be reachable post-fusion");
+        // One new Neg node was appended; the original Neg + Cast are
+        // unreachable but still in the arena.
+        assert!(g.len() > pre_len);
+    }
+
+    /// Capability gate: when the predicate says no, the rule must
+    /// not fire. Graph structure is unchanged.
+    #[test]
+    fn cast_fusion_no_fire_when_predicate_denies() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let xc = x.cast(fuel_core_types::DType::BF16);
+        let y = xc.neg();
+        let graph = y.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(deny_all_predicate())));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
+        assert_eq!(new_roots, vec![y.id()]);
+        assert_eq!(graph.read().unwrap().len(), pre_len,
+            "predicate-says-no should append no nodes");
+        // The original Cast → Neg chain is intact.
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(y.id()).op, Op::Neg));
+        assert_eq!(g.node(y.id()).inputs, vec![xc.id()]);
+        assert!(matches!(g.node(xc.id()).op, Op::Cast(_)));
+    }
+
+    /// Single-consumer constraint: if the Cast feeds two consumers,
+    /// the rule must not fire (eliminating the cast for one consumer
+    /// would orphan it for the other).
+    #[test]
+    fn cast_fusion_no_fire_when_cast_has_multiple_consumers() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let xc = x.cast(fuel_core_types::DType::BF16);
+        // Two consumers of the same Cast.
+        let y1 = xc.neg();
+        let y2 = xc.relu();
+        let graph = y1.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[y1.id(), y2.id()]);
+        // Roots unchanged; cast survives because rule didn't fire.
+        assert_eq!(new_roots, vec![y1.id(), y2.id()]);
+        assert_eq!(graph.read().unwrap().len(), pre_len);
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(xc.id()).op, Op::Cast(_)));
+    }
+
+    /// Output dtype tracks the new input: in aggressive mode the
+    /// rewritten consumer's output dtype is the cast-source dtype,
+    /// not the original consumer's output dtype. Downstream
+    /// consumers reading from the rewritten node will see the new
+    /// dtype — by design (see module docstring's
+    /// aggressive-semantics caveat).
+    #[test]
+    fn cast_fusion_rewrites_output_dtype_to_source_dtype() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let xc = x.cast(fuel_core_types::DType::BF16);
+        let y = xc.neg();
+        // Pre-fusion the original Neg produces BF16.
+        assert_eq!(y.dtype(), fuel_core_types::DType::BF16);
+
+        let graph = y.graph().clone();
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
+        let new_root = new_roots[0];
+
+        let g = graph.read().unwrap();
+        // The rewritten Neg consumes the F32 source directly and
+        // produces F32. This differs from the original BF16
+        // output; the rule's aggressive semantics commit to this.
+        assert_eq!(g.node(new_root).dtype, fuel_core_types::DType::F32);
+    }
+
+    /// Multi-input op: only the qualifying input fuses; the others
+    /// are left alone.
+    #[test]
+    fn cast_fusion_multi_input_op_fuses_only_qualifying_edge() {
+        let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        // a:f32 → Cast(BF16) → Add(bf16, b:bf16) where b is already bf16.
+        let ac = a.cast(fuel_core_types::DType::BF16);
+        let b = a.const_bf16_like(
+            vec![half::bf16::from_f32(2.0); 4],
+            Shape::from_dims(&[4]),
+        );
+        let sum = ac.add(&b);
+        let graph = sum.graph().clone();
+
+        // Build a predicate that says yes only for Add[f32, bf16, bf16].
+        // (Realistic kernels typically wouldn't have mixed-dtype Add;
+        // this isolates the matcher's per-input behavior. If the
+        // predicate said no, the rule wouldn't fire and `b` would
+        // stay paired with the Cast.)
+        let predicate: CapabilityPredicate = Arc::new(|op: &Op, _dtypes: &[fuel_core_types::DType]| {
+            matches!(op, Op::Add)
+        });
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(predicate)));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[sum.id()]);
+        let new_root = new_roots[0];
+
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(new_root).op, Op::Add));
+        // First input of new Add: the original f32 const (cast eliminated).
+        // Second input: still `b` (a bf16 const, no cast was there).
+        assert_eq!(g.node(new_root).inputs, vec![a.id(), b.id()]);
+    }
+
+    /// Chained casts: `x:f32 → Cast(BF16) → Cast(F32) → Op` should
+    /// reduce to `x:f32 → Op` via the fixpoint loop firing the rule
+    /// twice (once per consumer-side cast).
+    #[test]
+    fn cast_fusion_handles_chained_casts_via_fixpoint() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x_bf16 = x.cast(fuel_core_types::DType::BF16);
+        let x_f32 = x_bf16.cast(fuel_core_types::DType::F32);
+        let y = x_f32.neg();
+        let graph = y.graph().clone();
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[y.id()]);
+        let new_root = new_roots[0];
+
+        let g = graph.read().unwrap();
+        // After two iterations: the outer Cast is gone (Neg consumes
+        // x_bf16 directly), then the inner Cast is gone (Neg consumes
+        // x directly). No Cast nodes are reachable.
+        let reachable = topo_order_multi(&g, &[new_root]);
+        let cast_count = reachable.iter()
+            .filter(|&&n| matches!(g.node(n).op, Op::Cast(_)))
+            .count();
+        assert_eq!(cast_count, 0,
+            "fixpoint should eliminate both casts in the chain");
+        assert!(matches!(g.node(new_root).op, Op::Neg));
+        assert_eq!(g.node(new_root).inputs, vec![x.id()]);
+    }
+
+    /// The rule must not fire on the Cast node itself — only on the
+    /// consumer of a Cast.
+    #[test]
+    fn cast_fusion_does_not_fire_on_cast_node_itself() {
+        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let xc = x.cast(fuel_core_types::DType::BF16);
+        let graph = xc.graph().clone();
+        let pre_len = graph.read().unwrap().len();
+
+        let registry = RuleRegistry::new()
+            .with_rule(Box::new(CastFusionRule::new(allow_all_predicate())));
+        // Root the optimizer at the Cast itself. The rule should look
+        // at the Cast and decline (it's not the consumer's role).
+        let new_roots = registry.optimize_to_fixpoint(&graph, &[xc.id()]);
+        assert_eq!(new_roots, vec![xc.id()]);
         assert_eq!(graph.read().unwrap().len(), pre_len);
     }
 }

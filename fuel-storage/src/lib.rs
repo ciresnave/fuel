@@ -31,6 +31,7 @@
 //! GPU placeholder variants. A3.1/A3.2/A3.3 replace those placeholders
 //! with real types from each GPU backend.
 
+pub mod cast_fusion;
 pub mod compiled;
 pub mod dispatch;
 pub mod fused;
