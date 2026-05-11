@@ -25,6 +25,9 @@
     baracuda-cublas-sys = { workspace = true }
     baracuda-curand     = { workspace = true }
     baracuda-nvrtc      = { workspace = true }
+    # CUTLASS-backed GEMM kernels — registers as alternative implementations
+    # at the (MatMul, *, Cuda) decision points alongside the cuBLAS path.
+    baracuda-cutlass    = { workspace = true }
     baracuda-cudnn      = { workspace = true, optional = true }
     baracuda-cudnn-sys  = { workspace = true, optional = true }
     baracuda-nccl       = { workspace = true, optional = true }

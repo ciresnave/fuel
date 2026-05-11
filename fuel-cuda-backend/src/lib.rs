@@ -42,6 +42,7 @@ pub mod flash_attn;
 pub mod flash_attn_v3;
 pub mod byte_kernels;
 pub mod byte_storage;
+pub mod cutlass;
 pub mod device;
 pub mod dyn_impl;
 pub mod error;
