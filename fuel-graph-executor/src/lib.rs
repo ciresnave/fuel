@@ -1168,6 +1168,49 @@ impl<B: GraphBackend> GraphExecutor<B> {
         }
     }
 
+    /// Shared dispatch helper for `Op::FusedLinear` and
+    /// `Op::Fused(FUSED_LINEAR, _)`. Both arms today fall back to
+    /// `backend.matmul + backend.binary(Add)`; backends with a true
+    /// fused kernel (cuBLAS gemm-with-bias-epilogue, hand-written
+    /// Slang, CUTLASS bias epilogue) override this by registering a
+    /// `BackendImpl` for the fused-op id in step 6's
+    /// `FusedKernelRegistry`. Returning `Err` triggers the CPU
+    /// fallback at the call site.
+    fn try_eval_fused_linear(
+        &self,
+        inputs: &[NodeId],
+        shape: &Shape,
+        cache: &HashMap<NodeId, CacheEntry<B::Storage>>,
+    ) -> fuel_core_types::Result<B::Storage> {
+        let a = self.get_gt(inputs, 0, cache);
+        let b = self.get_gt(inputs, 1, cache);
+        let bias = self.get_gt_c(inputs, 2, cache);
+        let ad = a.shape.dims();
+        let bd = b.shape.dims();
+        let rank = ad.len();
+        let (m, k, n) = (ad[rank - 2], ad[rank - 1], bd[rank - 1]);
+        let batch: usize = ad[..rank - 2].iter().product::<usize>().max(1);
+        let mm = self.backend.matmul(
+            &a.storage, &b.storage, (batch, m, n, k),
+            &a.layout(), &b.layout(),
+        )?;
+        let mm_layout = Layout::contiguous(shape.clone());
+        // Bias is rank-1 [N]; broadcast to mm's [..., M, N] by
+        // reshaping to [1...1, 1, N] and broadcasting to the matmul
+        // output shape.
+        let mut leading: Vec<usize> = vec![1; shape.dims().len() - 1];
+        leading.push(shape.dims()[shape.dims().len() - 1]);
+        let bias_4d = Layout::contiguous(Shape::from_dims(&leading));
+        let bias_layout = bias_4d.broadcast_as(shape.clone()).map_err(|e| {
+            fuel_core_types::Error::Msg(format!("FusedLinear bias broadcast: {e}"))
+        })?;
+        self.backend.binary(
+            BinaryOp::Add,
+            &mm, &bias.storage,
+            &mm_layout, &bias_layout,
+        )
+    }
+
     // -- eval_node: the big dispatcher ----------------------------------------
 
     fn eval_node(
@@ -1354,42 +1397,21 @@ impl<B: GraphBackend> GraphExecutor<B> {
                 }
             }
 
-            Op::FusedLinear => {
-                // Currently dispatches as backend.matmul + backend.binary(Add).
-                // Backends with a true fused kernel (cuBLAS gemm-with-bias-
-                // epilogue, hand-written Slang) can opt in by adding an
-                // override later. Same numerical output either way; this
-                // arm exists so the IR pattern survives optimization
-                // passes intact.
-                let a = self.get_gt(inputs, 0, cache);
-                let b = self.get_gt(inputs, 1, cache);
-                let bias = self.get_gt_c(inputs, 2, cache);
-                let ad = a.shape.dims();
-                let bd = b.shape.dims();
-                let rank = ad.len();
-                let (m, k, n) = (ad[rank - 2], ad[rank - 1], bd[rank - 1]);
-                let batch: usize = ad[..rank - 2].iter().product::<usize>().max(1);
-                match (|| -> fuel_core_types::Result<B::Storage> {
-                    let mm = self.backend.matmul(
-                        &a.storage, &b.storage, (batch, m, n, k),
-                        &a.layout(), &b.layout(),
-                    )?;
-                    let mm_layout = Layout::contiguous(shape.clone());
-                    // Bias is rank-1 [N]; broadcast to mm's [..., M, N] by
-                    // reshaping to [1...1, 1, N] and broadcasting to the
-                    // matmul output shape.
-                    let mut leading: Vec<usize> = vec![1; shape.dims().len() - 1];
-                    leading.push(shape.dims()[shape.dims().len() - 1]);
-                    let bias_4d = Layout::contiguous(Shape::from_dims(&leading));
-                    let bias_layout = bias_4d.broadcast_as(shape.clone()).map_err(|e| {
-                        fuel_core_types::Error::Msg(format!("FusedLinear bias broadcast: {e}"))
-                    })?;
-                    self.backend.binary(
-                        BinaryOp::Add,
-                        &mm, &bias.storage,
-                        &mm_layout, &bias_layout,
-                    )
-                })() {
+            Op::FusedLinear => match self.try_eval_fused_linear(inputs, shape, cache) {
+                Ok(s) => s,
+                Err(_) => {
+                    return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
+                }
+            },
+            // Phase 7.6 step 4: dispatch the registry-extended fused
+            // form through the same backend.matmul+backend.binary path
+            // as the legacy `Op::FusedLinear` variant. Step 5 drops the
+            // legacy variant; step 9 replaces both arms with a
+            // pre-resolved `KernelRef` from the route picker.
+            Op::Fused(fid, _params)
+                if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR =>
+            {
+                match self.try_eval_fused_linear(inputs, shape, cache) {
                     Ok(s) => s,
                     Err(_) => {
                         return CacheEntry::Owned(self.cpu_fallback(op, inputs, shape, dtype, cache));
