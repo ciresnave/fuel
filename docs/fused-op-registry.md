@@ -414,6 +414,16 @@ The companion lint (`fuel-storage::dispatch::tests::precision_guarantee_lint_bit
 
 Each `BackendImpl`'s `cost` function gets a real implementation. Initial: FLOP-counting + bandwidth model (the conservative static-only form). The community-aggregated empirical refinement framework (per [11-persistence §Cache generation and distribution](architecture/11-persistence.md#cache-generation-and-distribution)) tightens these over time as telemetry pipeline lands.
 
+**Status (2026-05-12)**: **Shipped** — Layer-1 cost model populated for both halves of the registry.
+
+- **Fused-op cost functions** (via `FusedKernelRegistry`): 8 cost-family functions registered against the 14 fused ops — `cost_fused_linear_cpu`, `cost_conv2d_cpu`, `cost_conv_transpose2d_cpu`, `cost_norm_family_cpu` (per-id branching for softmax/rms_norm/layer_norm forward + backward FLOP counts), `cost_rope_cpu`, `cost_attn_cpu`, `cost_qmatmul_cpu`, `cost_reduce_max_to_backward_cpu`. All cost functions return real FLOP + bandwidth estimates computed from shapes + params.
+
+- **Primitive-op cost functions** (via `KernelBindingTable`): new `fuel-storage::cost` module with 20 cost-family functions (`cost_elementwise_unary_cpu`, `cost_elementwise_unary_transcendental_cpu`, `cost_elementwise_binary_cpu`, `cost_comparison_cpu`, `cost_where_cpu`, `cost_reduction_cpu`, `cost_reduce_to_cpu`, `cost_matmul_cpu`, `cost_fused_linear_primitive_cpu`, `cost_cast_cpu`, `cost_scalar_op_cpu`, `cost_masked_fill_cpu`, `cost_shape_op_cpu`, `cost_concat_cpu`, `cost_indexing_cpu`, `cost_argindex_cpu`, `cost_conv2d_primitive_cpu`, `cost_conv_transpose2d_primitive_cpu`, `cost_flash_attn_primitive_cpu`, `cost_paged_attn_primitive_cpu`, `cost_softmax_last_dim_primitive_cpu`, `cost_norm_last_dim_primitive_cpu`, `cost_rope_primitive_cpu`, `cost_qmatmul_primitive_cpu`, `cost_reduce_max_to_backward_primitive_cpu`). `default_cost_for_op_kind` dispatcher maps every `OpKind` variant to its cost family. `KernelBindingTable` carries a `CostFn` per entry; `register_cpu_kernels` ends with `fill_unset_cpu_cost(default_cost_for_op_kind)` mirroring step 7b's precision fill.
+
+- **Cost-coverage CI lint** (`cost_lint_per_op_kind_cpu_coverage` in `fuel-storage::dispatch::tests`): iterates the same `ALL_OP_KINDS` list as the step-7b precision lint, asserts every variant has ≥1 CPU registration with a non-`unknown_cost` function. `KNOWN_GAPS` is empty. Adding a new `OpKind` without a `default_cost_for_op_kind` arm fails this test immediately because the fill pass leaves the entry bound to the `unknown_cost` sentinel.
+
+- **Layer-2 empirical refinement** stays out of step 8 scope per the design doc: the FLOP / bandwidth numbers above are static estimates. Tightening to measured per-shape-per-hardware bounds requires the calibration framework that lands with step 11 (community-aggregated cache) and the telemetry pipeline.
+
 ### Step 9: binding-table planning-time refactor
 
 Migrate per-kernel binding-table lookup off the executor's hot path:

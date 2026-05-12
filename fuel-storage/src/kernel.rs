@@ -527,9 +527,39 @@ pub enum OpParams {
 /// Backends register their wrappers via the `dispatch::register_*`
 /// functions in this crate (e.g.
 /// [`crate::dispatch::register_cpu_kernels`]).
+/// Cost-fn signature for primitive-op registrations stored in
+/// [`KernelBindingTable`]. Mirrors the fused-op cost-fn shape but
+/// takes [`OpParams`] (the binding-table param payload) instead of
+/// `FusedOpParams`.
+///
+/// Implementations return a [`crate::fused::CostEstimate`] computed
+/// statically from shapes + dtypes + op-specific params + backend
+/// capabilities. The architecture's Layer-1 (FLOP-count + bandwidth)
+/// cost model lives here; Layer-2 empirical refinement composes on
+/// top via the telemetry framework, not by changing this signature.
+pub type CostFn = fn(
+    &[fuel_core_types::Shape],
+    &[DType],
+    &OpParams,
+    &fuel_core_types::backend::BackendCapabilities,
+) -> crate::fused::CostEstimate;
+
+/// Sentinel "no cost claim" function — returns
+/// [`crate::fused::CostEstimate::default`] (all-zero). The fill pass
+/// (`fill_unset_cpu_cost`) recognizes this exact function pointer
+/// to decide which entries get the OpKind-family default.
+pub fn unknown_cost(
+    _shapes: &[fuel_core_types::Shape],
+    _dtypes: &[DType],
+    _params: &OpParams,
+    _caps: &fuel_core_types::backend::BackendCapabilities,
+) -> crate::fused::CostEstimate {
+    crate::fused::CostEstimate::default()
+}
+
 #[derive(Default)]
 pub struct KernelBindingTable {
-    bindings: HashMap<(OpKind, KernelDTypes, BackendId), (KernelRef, KernelCaps, crate::fused::PrecisionGuarantee)>,
+    bindings: HashMap<(OpKind, KernelDTypes, BackendId), (KernelRef, KernelCaps, crate::fused::PrecisionGuarantee, CostFn)>,
 }
 
 impl KernelBindingTable {
@@ -557,10 +587,11 @@ impl KernelBindingTable {
         backend: BackendId,
         kernel: KernelRef,
     ) {
-        self.register_with_caps_and_precision(
+        self.register_full(
             op, dtypes, backend, kernel,
             KernelCaps::empty(),
             crate::fused::PrecisionGuarantee::UNKNOWN,
+            unknown_cost,
         );
     }
 
@@ -576,9 +607,10 @@ impl KernelBindingTable {
         kernel: KernelRef,
         caps: KernelCaps,
     ) {
-        self.register_with_caps_and_precision(
+        self.register_full(
             op, dtypes, backend, kernel, caps,
             crate::fused::PrecisionGuarantee::UNKNOWN,
+            unknown_cost,
         );
     }
 
@@ -595,12 +627,15 @@ impl KernelBindingTable {
         kernel: KernelRef,
         precision: crate::fused::PrecisionGuarantee,
     ) {
-        self.register_with_caps_and_precision(
-            op, dtypes, backend, kernel, KernelCaps::empty(), precision,
+        self.register_full(
+            op, dtypes, backend, kernel, KernelCaps::empty(),
+            precision, unknown_cost,
         );
     }
 
-    /// Full-form register with both caps and precision.
+    /// Backwards-compatible alias for full-form registration without
+    /// an explicit cost function. New code should prefer
+    /// [`Self::register_full`].
     pub fn register_with_caps_and_precision(
         &mut self,
         op: OpKind,
@@ -610,9 +645,28 @@ impl KernelBindingTable {
         caps: KernelCaps,
         precision: crate::fused::PrecisionGuarantee,
     ) {
+        self.register_full(op, dtypes, backend, kernel, caps, precision, unknown_cost);
+    }
+
+    /// Phase 7.6 step 8: full-form register with caps + precision +
+    /// cost. Cost defaults to [`unknown_cost`] in the other
+    /// signatures; sites with non-default cost claims must use this
+    /// form (and not be overwritten by the bulk
+    /// [`Self::fill_unset_cpu_cost`] pass, which only touches
+    /// entries whose cost is still `unknown_cost`).
+    pub fn register_full(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+        caps: KernelCaps,
+        precision: crate::fused::PrecisionGuarantee,
+        cost: CostFn,
+    ) {
         self.bindings.insert(
             (op, SmallVec::from_slice(dtypes), backend),
-            (kernel, caps, precision),
+            (kernel, caps, precision, cost),
         );
     }
 
@@ -633,7 +687,7 @@ impl KernelBindingTable {
     /// backends register their own precision claims; non-UNKNOWN
     /// entries are preserved.
     pub fn fill_unset_cpu_precision(&mut self, default: crate::fused::PrecisionGuarantee) {
-        for ((_, _, backend), (_, _, precision)) in self.bindings.iter_mut() {
+        for ((_, _, backend), (_, _, precision, _)) in self.bindings.iter_mut() {
             if *backend == BackendId::Cpu
                 && !precision.bit_stable_on_same_hardware
                 && precision.max_ulp.is_none()
@@ -644,6 +698,30 @@ impl KernelBindingTable {
                 // four bound fields are the UNKNOWN defaults. A real
                 // weaker claim would set at least one bound field.
                 *precision = default;
+            }
+        }
+    }
+
+    /// Phase 7.6 step 8: upgrade every still-`unknown_cost` CPU
+    /// registration to the cost function returned by `dispatcher` for
+    /// its OpKind. The dispatcher's contract: given an `OpKind`,
+    /// return the appropriate cost-family function — typically
+    /// [`crate::cost::default_cost_for_op_kind`] in production code,
+    /// but tests may pass their own dispatcher to exercise specific
+    /// cost shapes.
+    ///
+    /// Convention is to call this at the *end* of bulk registration,
+    /// so any `register_full(...)` calls that explicitly claimed a
+    /// non-default cost are preserved. The function-pointer equality
+    /// check identifies UNKNOWN entries — any caller that wants a
+    /// "weaker" claim with non-zero values must use a distinct
+    /// function pointer (which won't compare equal to `unknown_cost`
+    /// and thus won't be overwritten).
+    pub fn fill_unset_cpu_cost(&mut self, dispatcher: fn(OpKind) -> CostFn) {
+        let sentinel = unknown_cost as usize;
+        for ((op, _, backend), (_, _, _, cost)) in self.bindings.iter_mut() {
+            if *backend == BackendId::Cpu && (*cost as usize) == sentinel {
+                *cost = dispatcher(*op);
             }
         }
     }
@@ -662,8 +740,24 @@ impl KernelBindingTable {
         let key = (op, SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
-            .map(|(_, _, p)| *p)
+            .map(|(_, _, p, _)| *p)
             .unwrap_or(crate::fused::PrecisionGuarantee::UNKNOWN)
+    }
+
+    /// Look up the [`CostFn`] for a registered `(op, dtypes, backend)`
+    /// triple. Returns [`unknown_cost`] for missing bindings — the
+    /// step-8 lint treats that as "no cost claim."
+    pub fn lookup_cost(
+        &self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+    ) -> CostFn {
+        let key = (op, SmallVec::from_slice(dtypes), backend);
+        self.bindings
+            .get(&key)
+            .map(|(_, _, _, c)| *c)
+            .unwrap_or(unknown_cost)
     }
 
     /// Iterate `(op, dtypes, backend, precision)` over every
@@ -676,7 +770,20 @@ impl KernelBindingTable {
     {
         self.bindings
             .iter()
-            .map(|((op, dtypes, backend), (_, _, p))| (*op, dtypes.as_slice(), *backend, *p))
+            .map(|((op, dtypes, backend), (_, _, p, _))| (*op, dtypes.as_slice(), *backend, *p))
+    }
+
+    /// Iterate `(op, dtypes, backend, cost_fn)` over every
+    /// registration. Used by the step-8 coverage lint to enumerate
+    /// what's registered and check the "every primitive op has a
+    /// non-default cost function" commitment per OpKind.
+    pub fn iter_cost(
+        &self,
+    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, CostFn)>
+    {
+        self.bindings
+            .iter()
+            .map(|((op, dtypes, backend), (_, _, _, c))| (*op, dtypes.as_slice(), *backend, *c))
     }
 
     /// Look up the wrapper for `(op, dtypes, backend)`. Returns just
@@ -701,7 +808,7 @@ impl KernelBindingTable {
         backend: BackendId,
     ) -> Result<(KernelRef, KernelCaps)> {
         let key = (op, SmallVec::from_slice(dtypes), backend);
-        self.bindings.get(&key).map(|(k, c, _)| (*k, *c)).ok_or_else(|| {
+        self.bindings.get(&key).map(|(k, c, _, _)| (*k, *c)).ok_or_else(|| {
             let available_backends: Vec<BackendId> = self
                 .bindings
                 .keys()

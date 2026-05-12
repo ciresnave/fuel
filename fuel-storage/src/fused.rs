@@ -544,29 +544,47 @@ pub const NORM_FAMILY_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
 /// elementwise pass + scalar reduction. FLOPs scale linearly with
 /// element count, bandwidth dominates for typical token-dim sizes.
 ///
-/// Shapes: `[x]` where `x` is rank-≥1; the reduction is along the
-/// last axis.
+/// Phase 7.6 step 8 — branches on `FusedOpParams` to use a per-op
+/// FLOP/element count: softmax ≈ 5, rms_norm ≈ 4, layer_norm ≈ 7
+/// (plus their backwards, which do comparable per-element work).
+/// Replaces the step-6 midpoint-of-5 estimate. Both forward and
+/// backward variants of each norm use the same FLOP/element count
+/// because they touch the data the same way per row.
+///
+/// Shapes: `[x]` (forward, 1 input) or `[x_or_y, g]` (backward,
+/// 2 inputs). Total element count comes from input[0] either way.
 pub fn cost_norm_family_cpu(
     shapes: &[Shape],
-    _params: &FusedOpParams,
+    params: &FusedOpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    debug_assert_eq!(shapes.len(), 1, "Norm-family cost: expected 1 input shape");
+    debug_assert!(
+        !shapes.is_empty(),
+        "Norm-family cost: expected ≥1 input shape",
+    );
     let dims = shapes[0].dims();
     if dims.is_empty() {
         return CostEstimate::default();
     }
     let elems: u64 = dims.iter().map(|&d| d as u64).product();
-    // ~5 FLOPs per element on average for softmax (max-subtract + exp
-    // + sum + divide); ~3 for rms_norm (sqr + sum + sqrt + divide);
-    // ~7 for layer_norm (mean-sub + sqr + sum + sqrt + divide). Use
-    // 5 as a midpoint; cost is advisory.
-    let flops = 5 * elems;
-    // 2 reads + 1 write of every element.
-    let bytes_moved = 3 * elems * 4;
+    let flops_per_elem: u64 = match params {
+        FusedOpParams::SoftmaxLastDim
+        | FusedOpParams::SoftmaxLastDimBackward
+            => 5, // max-sub + exp + sum + divide
+        FusedOpParams::RmsNormLastDim { .. }
+        | FusedOpParams::RmsNormLastDimBackward { .. }
+            => 4, // sqr + sum + sqrt + divide
+        FusedOpParams::LayerNormLastDim { .. }
+        | FusedOpParams::LayerNormLastDimBackward { .. }
+            => 7, // mean-sub + sqr + sum + sqrt + divide + center
+        _ => 5,   // fallback if a future caller mis-dispatches
+    };
+    // Backwards have 2 inputs + 1 output (3 element-count touches);
+    // forwards have 1 input + 1 output (2 element-count touches).
+    let bandwidth_factor: u64 = if shapes.len() >= 2 { 3 } else { 2 };
     CostEstimate {
-        flops,
-        bytes_moved,
+        flops: flops_per_elem * elems,
+        bytes_moved: bandwidth_factor * elems * 4,
         kernel_overhead_ns: 50,
     }
 }
