@@ -112,6 +112,7 @@ pub struct NodeKernelBinding {
 /// HashMap lookups once Track B's executor migration lands, revisit
 /// and consider a `Vec<NodeKernelBinding>` keyed by an internal
 /// per-plan index plus a `NodeId -> usize` translation map.
+#[derive(Debug)]
 pub struct ExecutionPlan {
     /// Topological order — same shape the executor walks today.
     /// `compile_plan` clones the caller's order rather than recomputing
@@ -421,6 +422,17 @@ pub(crate) fn empty_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, RwLock};
+
+    use fuel_core_types::{Layout, Shape};
+    use fuel_graph::{topo_order, Node, Op};
+
+    use crate::fused::PrecisionGuarantee;
+    use crate::kernel::{KernelCaps, OpParams};
+    use crate::kernel::unknown_cost;
+    use crate::Storage;
+
+    // ---------- A1 type-shape tests (kept from earlier commit) ----------
 
     #[test]
     fn empty_plan_has_no_bindings() {
@@ -451,9 +463,6 @@ mod tests {
 
     #[test]
     fn empty_binding_starts_with_kernel_none_and_untracked_revision() {
-        // NodeId(0) is fine for type-shape exercise; no graph
-        // interaction. Real plan construction flows through
-        // compile_plan (A2).
         let binding = empty_binding(
             NodeId(0),
             OpKind::AddElementwise,
@@ -471,5 +480,400 @@ mod tests {
         assert_eq!(binding.device, DeviceLocation::Cpu);
         assert!(binding.kernel.is_none());
         assert_eq!(binding.kernel_revision, KernelRevisionHash::UNTRACKED);
+    }
+
+    // ---------- A4 compile_plan + resolve_kernel tests ----------
+
+    /// No-op kernel stand-ins. Distinct `fn` items so the binding-
+    /// table's append-on-register treats them as sibling alternatives
+    /// (registering the *same* fn item twice is the panic-guarded
+    /// programmer-error path; we want two real alternatives here).
+    fn ok_kernel_a(
+        _inputs: &[Arc<RwLock<Storage>>],
+        _outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn ok_kernel_b(
+        _inputs: &[Arc<RwLock<Storage>>],
+        _outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// PrecisionGuarantee carrying `bit_stable_on_same_hardware: true`
+    /// without further bound claims — used to mark one alternative as
+    /// the bit-stable choice in the BitStableFirst-policy tests.
+    const BIT_STABLE: PrecisionGuarantee = PrecisionGuarantee {
+        bit_stable_on_same_hardware: true,
+        max_ulp: Some(0),
+        max_relative: None,
+        max_absolute: None,
+        notes: "test bit-stable stub",
+    };
+
+    /// Helper: register one binding-table entry with explicit
+    /// precision (so we can pick which alternative carries
+    /// bit_stable_on_same_hardware = true). Defaults to KernelCaps::empty()
+    /// and unknown_cost — tests don't exercise caps or cost.
+    fn register(
+        table: &mut KernelBindingTable,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: crate::kernel::KernelRef,
+        precision: PrecisionGuarantee,
+    ) {
+        table.register_full(
+            op,
+            dtypes,
+            backend,
+            kernel,
+            KernelCaps::empty(),
+            precision,
+            unknown_cost,
+        );
+    }
+
+    /// Build a 3-node graph: Const, Const, Add(c0, c1). Returns the
+    /// graph and the Add's id (the realize-root).
+    fn build_add_graph() -> (Graph, NodeId) {
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let rhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(add, BackendId::Cpu);
+        (g, add)
+    }
+
+    /// **Verification 1 — compile_plan walks the graph and skips
+    /// kernel-less nodes.** Const inputs + a Reshape (view-shaped op,
+    /// op_to_op_kind returns None) get no binding; only the kernel-
+    /// bearing nodes (the Add) land in `plan.bindings`.
+    #[test]
+    fn compile_plan_walks_graph_and_skips_view_and_const_nodes() {
+        let mut table = KernelBindingTable::new();
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_a,
+            BIT_STABLE,
+        );
+
+        // Const, Const, Add, then Reshape on top of the Add — the
+        // Reshape is a "no-kernel" node (Op::Reshape isn't in the
+        // op_to_op_kind table, so compile_plan skips it).
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[6]),
+            dtype: DType::F32,
+        });
+        let rhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[6]),
+            dtype: DType::F32,
+        });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[6]),
+            dtype: DType::F32,
+        });
+        let reshape = g.push(Node {
+            op: Op::Reshape(Shape::from_dims(&[2, 3])),
+            inputs: vec![add],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(add, BackendId::Cpu);
+        g.set_target_backend(reshape, BackendId::Cpu);
+
+        let order = topo_order(&g, reshape);
+        let plan = compile_plan(&g, &order, &table).expect("compile_plan");
+
+        // 4 nodes in topo order; only the Add gets a binding.
+        assert_eq!(plan.order.len(), 4);
+        assert_eq!(plan.bindings.len(), 1, "only Add carries a binding");
+        let b = plan.binding(add).expect("Add binding present");
+        assert_eq!(b.op_kind, OpKind::AddElementwise);
+        assert_eq!(
+            b.dtypes.as_slice(),
+            &[DType::F32, DType::F32, DType::F32],
+        );
+        assert_eq!(b.backend, BackendId::Cpu);
+        assert!(b.kernel.is_none(), "kernel slot stays None at compile_plan time");
+        assert!(plan.binding(lhs).is_none(), "Const has no binding");
+        assert!(plan.binding(rhs).is_none(), "Const has no binding");
+        assert!(
+            plan.binding(reshape).is_none(),
+            "Reshape (no OpKind mapping) has no binding",
+        );
+    }
+
+    /// **Verification 2 — compile_plan fails fast on missing binding.**
+    /// With no kernel registered for `(MatMul, [F32, F32, F32], Cpu)`,
+    /// building a plan for a graph that uses MatMul returns
+    /// `Err(NoBackendForOp)` at plan time. The executor never sees
+    /// the missing-binding error.
+    #[test]
+    fn compile_plan_fails_fast_on_missing_binding() {
+        // Empty table — no MatMul registration anywhere.
+        let table = KernelBindingTable::new();
+
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
+        });
+        let rhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 2]),
+            dtype: DType::F32,
+        });
+        let mm = g.push(Node {
+            op: Op::MatMul,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[2, 2]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(mm, BackendId::Cpu);
+
+        let order = topo_order(&g, mm);
+        let err = compile_plan(&g, &order, &table).expect_err("plan must error");
+        match err {
+            fuel_core_types::Error::NoBackendForOp { op, dtypes, .. } => {
+                assert_eq!(op, OpKind::MatMul);
+                assert_eq!(dtypes, vec![DType::F32, DType::F32, DType::F32]);
+            }
+            other => panic!("expected NoBackendForOp, got {other:?}"),
+        }
+    }
+
+    /// **Verification 3 — resolve_kernel caches the first resolution
+    /// (lazy).** Second call returns the same KernelRef without
+    /// touching the table. We assert idempotency by checking the
+    /// returned pointer matches across calls and that the binding's
+    /// kernel slot is populated after the first call.
+    #[test]
+    fn resolve_kernel_lazy_caches_first_resolution() {
+        let mut table = KernelBindingTable::new();
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_a,
+            BIT_STABLE,
+        );
+
+        let mut binding = empty_binding(
+            NodeId(42),
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            DeviceLocation::Cpu,
+        );
+        assert!(binding.kernel.is_none(), "binding starts unresolved");
+
+        let k1 =
+            resolve_kernel(&mut binding, &table, TolerancePolicy::BitStableFirst)
+                .expect("first resolve");
+        assert!(binding.kernel.is_some(), "binding cached after first call");
+
+        let k2 =
+            resolve_kernel(&mut binding, &table, TolerancePolicy::BitStableFirst)
+                .expect("second resolve");
+        assert_eq!(
+            k1 as *const () as usize,
+            k2 as *const () as usize,
+            "second call returns the cached KernelRef",
+        );
+        assert_eq!(
+            binding.kernel.unwrap() as *const () as usize,
+            ok_kernel_a as *const () as usize,
+            "the cached kernel is the registered one",
+        );
+    }
+
+    /// **Verification 3a — BitStableFirst picks the bit-stable
+    /// alternative when one exists.** Register two alternatives at the
+    /// same decision point: the *first* registered is non-bit-stable,
+    /// the *second* is bit-stable. BitStableFirst must return the
+    /// second.
+    #[test]
+    fn resolve_kernel_bitstable_first_picks_bitstable_alternative_when_present() {
+        let mut table = KernelBindingTable::new();
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_a,
+            PrecisionGuarantee::UNKNOWN, // non-bit-stable
+        );
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_b,
+            BIT_STABLE,
+        );
+
+        let mut binding = empty_binding(
+            NodeId(0),
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            DeviceLocation::Cpu,
+        );
+        let chosen = resolve_kernel(&mut binding, &table, TolerancePolicy::BitStableFirst)
+            .expect("resolve");
+        assert_eq!(
+            chosen as *const () as usize,
+            ok_kernel_b as *const () as usize,
+            "BitStableFirst picks ok_kernel_b (bit-stable), not ok_kernel_a (UNKNOWN)",
+        );
+    }
+
+    /// **Verification 4 — BitStableFirst falls back to first-registered
+    /// when no alternative is bit-stable.** Register two non-bit-stable
+    /// alternatives; BitStableFirst returns the first (registration
+    /// order).
+    #[test]
+    fn resolve_kernel_bitstable_first_falls_back_to_first_when_none_bitstable() {
+        let mut table = KernelBindingTable::new();
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_a,
+            PrecisionGuarantee::UNKNOWN,
+        );
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_b,
+            PrecisionGuarantee::UNKNOWN,
+        );
+
+        let mut binding = empty_binding(
+            NodeId(0),
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            DeviceLocation::Cpu,
+        );
+        let chosen = resolve_kernel(&mut binding, &table, TolerancePolicy::BitStableFirst)
+            .expect("resolve");
+        assert_eq!(
+            chosen as *const () as usize,
+            ok_kernel_a as *const () as usize,
+            "BitStableFirst falls back to the first-registered alternative",
+        );
+    }
+
+    /// **Verification 5 — FirstAlternative returns first-registered
+    /// regardless of precision.** Same setup as the bit-stable test
+    /// (first non-bit-stable, second bit-stable); FirstAlternative
+    /// must return the *first* (unlike BitStableFirst which picks the
+    /// bit-stable second).
+    #[test]
+    fn resolve_kernel_first_alternative_policy_returns_first() {
+        let mut table = KernelBindingTable::new();
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_a,
+            PrecisionGuarantee::UNKNOWN,
+        );
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_b,
+            BIT_STABLE,
+        );
+
+        let mut binding = empty_binding(
+            NodeId(0),
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            DeviceLocation::Cpu,
+        );
+        let chosen =
+            resolve_kernel(&mut binding, &table, TolerancePolicy::FirstAlternative)
+                .expect("resolve");
+        assert_eq!(
+            chosen as *const () as usize,
+            ok_kernel_a as *const () as usize,
+            "FirstAlternative returns first-registered regardless of precision",
+        );
+    }
+
+    /// **Bonus integration — compile_plan + resolve_kernel end-to-end.**
+    /// Build a small Add graph, register the kernel, build a plan, and
+    /// resolve the binding. The end-to-end path produces the kernel the
+    /// route picker chose, with the binding's slot populated for cache
+    /// hits on subsequent dispatches of the same node within this realize.
+    #[test]
+    fn compile_plan_then_resolve_kernel_end_to_end() {
+        let mut table = KernelBindingTable::new();
+        register(
+            &mut table,
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            ok_kernel_a,
+            BIT_STABLE,
+        );
+
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let mut plan = compile_plan(&g, &order, &table).expect("compile_plan");
+
+        let binding = plan.binding_mut(add_id).expect("Add binding present");
+        let kernel = resolve_kernel(binding, &table, TolerancePolicy::default())
+            .expect("resolve");
+        assert_eq!(
+            kernel as *const () as usize,
+            ok_kernel_a as *const () as usize,
+        );
+        assert!(plan.binding(add_id).unwrap().kernel.is_some());
     }
 }
