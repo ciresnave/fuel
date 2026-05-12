@@ -557,9 +557,26 @@ pub fn unknown_cost(
     crate::fused::CostEstimate::default()
 }
 
+/// One concrete kernel registered against a `(OpKind, dtypes, backend)`
+/// decision-point key. Phase 7.6 step 9a: a single key now carries
+/// `SmallVec<[BindingEntry; 2]>` — multiple alternatives compete at
+/// the same decision point (e.g. cuBLAS bf16 matmul + CUTLASS bf16
+/// matmul at `(MatMul, [BF16, BF16, BF16], Cuda)`). The route picker
+/// (step 9b) selects among them at plan time; today's single-impl
+/// callers (`lookup`, `lookup_with_caps`, `lookup_precision`,
+/// `lookup_cost`) return the first entry, preserving the pre-9a
+/// behavior for sites that haven't migrated.
+#[derive(Clone, Copy, Debug)]
+pub struct BindingEntry {
+    pub kernel: KernelRef,
+    pub caps: KernelCaps,
+    pub precision: crate::fused::PrecisionGuarantee,
+    pub cost: CostFn,
+}
+
 #[derive(Default)]
 pub struct KernelBindingTable {
-    bindings: HashMap<(OpKind, KernelDTypes, BackendId), (KernelRef, KernelCaps, crate::fused::PrecisionGuarantee, CostFn)>,
+    bindings: HashMap<(OpKind, KernelDTypes, BackendId), SmallVec<[BindingEntry; 2]>>,
 }
 
 impl KernelBindingTable {
@@ -568,9 +585,16 @@ impl KernelBindingTable {
     }
 
     /// Register a dispatch wrapper for `(op, dtypes, backend)` with the
-    /// default (all-false) capabilities. Idempotent: re-registering with
-    /// the same key overwrites. `dtypes` is the per-operand dtype list —
-    /// inputs in order, then outputs.
+    /// default (all-false) capabilities. `dtypes` is the per-operand
+    /// dtype list — inputs in order, then outputs.
+    ///
+    /// Phase 7.6 step 9a: multiple distinct kernels may register
+    /// against the same `(op, dtypes, backend)` key — they become
+    /// sibling alternatives at one decision point. Registering the
+    /// **same** `KernelRef` function pointer twice **panics** at
+    /// registration time as a programmer-error guard (registration
+    /// runs at module init via `Lazy`/`OnceLock`, so a panic there
+    /// fails fast at startup rather than at runtime).
     ///
     /// PrecisionGuarantee defaults to [`PrecisionGuarantee::UNKNOWN`].
     /// Step-7b convention: the always-built backend
@@ -654,6 +678,12 @@ impl KernelBindingTable {
     /// form (and not be overwritten by the bulk
     /// [`Self::fill_unset_cpu_cost`] pass, which only touches
     /// entries whose cost is still `unknown_cost`).
+    ///
+    /// Phase 7.6 step 9a: appends to the alternative set for `(op,
+    /// dtypes, backend)`. Distinct `KernelRef` function pointers
+    /// compose as siblings. Registering the same `KernelRef` twice
+    /// panics — see [`Self::register`]'s doc-comment for the
+    /// rationale.
     pub fn register_full(
         &mut self,
         op: OpKind,
@@ -664,10 +694,20 @@ impl KernelBindingTable {
         precision: crate::fused::PrecisionGuarantee,
         cost: CostFn,
     ) {
-        self.bindings.insert(
-            (op, SmallVec::from_slice(dtypes), backend),
-            (kernel, caps, precision, cost),
-        );
+        let key = (op, SmallVec::from_slice(dtypes), backend);
+        let entry = BindingEntry { kernel, caps, precision, cost };
+        let alts = self.bindings.entry(key).or_default();
+        let new_ptr = kernel as *const () as usize;
+        if alts.iter().any(|e| (e.kernel as *const () as usize) == new_ptr) {
+            panic!(
+                "KernelBindingTable: duplicate KernelRef registered for \
+                 (op={op:?}, dtypes={dtypes:?}, backend={backend:?}). \
+                 Same function pointer registered twice is programmer \
+                 error. Distinct alternatives at one decision point \
+                 must be distinct `fn` items.",
+            );
+        }
+        alts.push(entry);
     }
 
     /// Phase 7.6 step 7b: upgrade every UNKNOWN-precision CPU
@@ -686,18 +726,27 @@ impl KernelBindingTable {
     /// `PrecisionGuarantee::UNKNOWN` sentinel are touched. Non-CPU
     /// backends register their own precision claims; non-UNKNOWN
     /// entries are preserved.
+    ///
+    /// Step 9a: applies to **every alternative** registered under a
+    /// CPU key, not just the first — so a key with N siblings all
+    /// starting at UNKNOWN ends with N entries upgraded to `default`.
     pub fn fill_unset_cpu_precision(&mut self, default: crate::fused::PrecisionGuarantee) {
-        for ((_, _, backend), (_, _, precision, _)) in self.bindings.iter_mut() {
-            if *backend == BackendId::Cpu
-                && !precision.bit_stable_on_same_hardware
-                && precision.max_ulp.is_none()
-                && precision.max_relative.is_none()
-                && precision.max_absolute.is_none()
-            {
-                // Heuristic for "this is an UNKNOWN sentinel": all
-                // four bound fields are the UNKNOWN defaults. A real
-                // weaker claim would set at least one bound field.
-                *precision = default;
+        for ((_, _, backend), alts) in self.bindings.iter_mut() {
+            if *backend != BackendId::Cpu {
+                continue;
+            }
+            for entry in alts.iter_mut() {
+                let p = &mut entry.precision;
+                if !p.bit_stable_on_same_hardware
+                    && p.max_ulp.is_none()
+                    && p.max_relative.is_none()
+                    && p.max_absolute.is_none()
+                {
+                    // Heuristic for "this is an UNKNOWN sentinel": all
+                    // four bound fields are the UNKNOWN defaults. A real
+                    // weaker claim would set at least one bound field.
+                    *p = default;
+                }
             }
         }
     }
@@ -717,17 +766,28 @@ impl KernelBindingTable {
     /// "weaker" claim with non-zero values must use a distinct
     /// function pointer (which won't compare equal to `unknown_cost`
     /// and thus won't be overwritten).
+    ///
+    /// Step 9a: applies to **every alternative** with a CPU backend —
+    /// each sibling entry at a key starting at `unknown_cost` is
+    /// upgraded independently.
     pub fn fill_unset_cpu_cost(&mut self, dispatcher: fn(OpKind) -> CostFn) {
         let sentinel = unknown_cost as usize;
-        for ((op, _, backend), (_, _, _, cost)) in self.bindings.iter_mut() {
-            if *backend == BackendId::Cpu && (*cost as usize) == sentinel {
-                *cost = dispatcher(*op);
+        for ((op, _, backend), alts) in self.bindings.iter_mut() {
+            if *backend != BackendId::Cpu {
+                continue;
+            }
+            for entry in alts.iter_mut() {
+                if (entry.cost as usize) == sentinel {
+                    entry.cost = dispatcher(*op);
+                }
             }
         }
     }
 
     /// Look up the [`crate::fused::PrecisionGuarantee`] for a
-    /// registered `(op, dtypes, backend)` triple. Returns
+    /// registered `(op, dtypes, backend)` triple. Returns the **first
+    /// alternative**'s precision; multi-impl callers wanting all
+    /// alternatives use [`Self::lookup_alternatives`]. Returns
     /// `PrecisionGuarantee::UNKNOWN` if the binding is missing —
     /// callers (notably the step-7b lint) treat that as "no claim"
     /// rather than panicking.
@@ -740,13 +800,17 @@ impl KernelBindingTable {
         let key = (op, SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
-            .map(|(_, _, p, _)| *p)
+            .and_then(|alts| alts.first())
+            .map(|e| e.precision)
             .unwrap_or(crate::fused::PrecisionGuarantee::UNKNOWN)
     }
 
     /// Look up the [`CostFn`] for a registered `(op, dtypes, backend)`
-    /// triple. Returns [`unknown_cost`] for missing bindings — the
-    /// step-8 lint treats that as "no cost claim."
+    /// triple. Returns the **first alternative**'s cost; multi-impl
+    /// callers wanting all alternatives use
+    /// [`Self::lookup_alternatives`]. Returns [`unknown_cost`] for
+    /// missing bindings — the step-8 lint treats that as "no cost
+    /// claim."
     pub fn lookup_cost(
         &self,
         op: OpKind,
@@ -756,39 +820,44 @@ impl KernelBindingTable {
         let key = (op, SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
-            .map(|(_, _, _, c)| *c)
+            .and_then(|alts| alts.first())
+            .map(|e| e.cost)
             .unwrap_or(unknown_cost)
     }
 
     /// Iterate `(op, dtypes, backend, precision)` over every
-    /// registration. Used by the step-7b coverage lint to enumerate
-    /// what's registered and check the bit-stable commitment per
-    /// OpKind.
+    /// registered alternative — one tuple per `BindingEntry`, not per
+    /// key. Used by the step-7b coverage lint, which groups by
+    /// OpKind and checks the bit-stable commitment per group; the
+    /// grouping handles N-alternatives-per-key naturally.
     pub fn iter_precision(
         &self,
     ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, crate::fused::PrecisionGuarantee)>
     {
-        self.bindings
-            .iter()
-            .map(|((op, dtypes, backend), (_, _, p, _))| (*op, dtypes.as_slice(), *backend, *p))
+        self.bindings.iter().flat_map(|((op, dtypes, backend), alts)| {
+            alts.iter()
+                .map(move |e| (*op, dtypes.as_slice(), *backend, e.precision))
+        })
     }
 
-    /// Iterate `(op, dtypes, backend, cost_fn)` over every
-    /// registration. Used by the step-8 coverage lint to enumerate
-    /// what's registered and check the "every primitive op has a
+    /// Iterate `(op, dtypes, backend, cost_fn)` over every registered
+    /// alternative — one tuple per `BindingEntry`. Used by the step-8
+    /// coverage lint to check the "every primitive op has a
     /// non-default cost function" commitment per OpKind.
     pub fn iter_cost(
         &self,
     ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, CostFn)>
     {
-        self.bindings
-            .iter()
-            .map(|((op, dtypes, backend), (_, _, _, c))| (*op, dtypes.as_slice(), *backend, *c))
+        self.bindings.iter().flat_map(|((op, dtypes, backend), alts)| {
+            alts.iter()
+                .map(move |e| (*op, dtypes.as_slice(), *backend, e.cost))
+        })
     }
 
-    /// Look up the wrapper for `(op, dtypes, backend)`. Returns just
-    /// the [`KernelRef`]; for capability-aware lookup use
-    /// [`Self::lookup_with_caps`].
+    /// Look up the wrapper for `(op, dtypes, backend)`. Returns the
+    /// **first alternative**'s [`KernelRef`]; for capability-aware
+    /// lookup use [`Self::lookup_with_caps`]; for the full alternative
+    /// set use [`Self::lookup_alternatives`].
     pub fn lookup(
         &self,
         op: OpKind,
@@ -798,9 +867,10 @@ impl KernelBindingTable {
         self.lookup_with_caps(op, dtypes, backend).map(|(k, _)| k)
     }
 
-    /// Capability-aware lookup. Returns the wrapper paired with its
-    /// registered [`KernelCaps`]. Surfaces [`Error::NoBackendForOp`] on
-    /// missing binding (production-correct: no panic).
+    /// Capability-aware lookup. Returns the **first alternative**'s
+    /// wrapper paired with its registered [`KernelCaps`]. Surfaces
+    /// [`Error::NoBackendForOp`] on missing binding
+    /// (production-correct: no panic).
     pub fn lookup_with_caps(
         &self,
         op: OpKind,
@@ -808,44 +878,80 @@ impl KernelBindingTable {
         backend: BackendId,
     ) -> Result<(KernelRef, KernelCaps)> {
         let key = (op, SmallVec::from_slice(dtypes), backend);
-        self.bindings.get(&key).map(|(k, c, _, _)| (*k, *c)).ok_or_else(|| {
-            let available_backends: Vec<BackendId> = self
-                .bindings
-                .keys()
-                .map(|(_, _, b)| *b)
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            let supported_combinations: Vec<(BackendId, OpKind, Vec<DType>)> = self
-                .bindings
-                .keys()
-                .map(|(o, d, b)| (*b, *o, d.to_vec()))
-                .collect();
-            Error::NoBackendForOp {
-                op,
-                dtypes: dtypes.to_vec(),
-                available_backends,
-                supported_combinations,
-            }
-            .bt()
-        })
+        self.bindings
+            .get(&key)
+            .and_then(|alts| alts.first())
+            .map(|e| (e.kernel, e.caps))
+            .ok_or_else(|| {
+                let available_backends: Vec<BackendId> = self
+                    .bindings
+                    .keys()
+                    .map(|(_, _, b)| *b)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                let supported_combinations: Vec<(BackendId, OpKind, Vec<DType>)> = self
+                    .bindings
+                    .keys()
+                    .map(|(o, d, b)| (*b, *o, d.to_vec()))
+                    .collect();
+                Error::NoBackendForOp {
+                    op,
+                    dtypes: dtypes.to_vec(),
+                    available_backends,
+                    supported_combinations,
+                }
+                .bt()
+            })
     }
 
-    /// Total bindings registered.
+    /// Phase 7.6 step 9a: return the full set of registered
+    /// alternatives at the `(op, dtypes, backend)` decision point.
+    /// Order is registration order — append-on-register is the step-9a
+    /// contract. The empty slice means "no kernel registered at this
+    /// decision point."
+    ///
+    /// The route picker (step 9b) consumes this to rank alternatives
+    /// by cost + precision at plan time. Single-impl callers continue
+    /// to use [`Self::lookup_with_caps`] (which returns the first
+    /// alternative — the route picker's job is the longer-term home
+    /// for selection logic).
+    pub fn lookup_alternatives(
+        &self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+    ) -> &[BindingEntry] {
+        let key = (op, SmallVec::from_slice(dtypes), backend);
+        self.bindings
+            .get(&key)
+            .map(|alts| alts.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Total number of registered alternatives across all keys (not
+    /// just unique keys). Step 9a: a key with N siblings counts N.
     pub fn len(&self) -> usize {
-        self.bindings.len()
+        self.bindings.values().map(|alts| alts.len()).sum()
     }
 
     /// Empty binding table.
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
     }
+
+    /// Total number of unique `(op, dtypes, backend)` keys. Step 9a:
+    /// distinct from [`Self::len`], which counts alternatives.
+    pub fn key_count(&self) -> usize {
+        self.bindings.len()
+    }
 }
 
 impl std::fmt::Debug for KernelBindingTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KernelBindingTable")
-            .field("bindings_count", &self.bindings.len())
+            .field("keys", &self.bindings.len())
+            .field("total_alternatives", &self.len())
             .finish_non_exhaustive()
     }
 }
@@ -942,6 +1048,101 @@ mod tests {
         if let crate::BackendStorage::Cpu(s) = &out_guard.inner {
             let typed: &[f32] = s.as_slice().unwrap();
             assert_eq!(typed, &[1.0, 2.0, 3.0, 4.0]);
+        }
+    }
+
+    fn ok_kernel(
+        _inputs: &[Arc<RwLock<Storage>>],
+        _outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn ok_kernel_alt(
+        _inputs: &[Arc<RwLock<Storage>>],
+        _outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Phase 7.6 step 9a: two distinct `KernelRef`s register against
+    /// the same `(op, dtypes, backend)` key as sibling alternatives.
+    /// `lookup_with_caps` returns the first; `lookup_alternatives`
+    /// returns both in registration order.
+    #[test]
+    fn step_9a_two_alternatives_append_then_first_wins_on_legacy_lookup() {
+        use fuel_core_types::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::BF16, DType::BF16, DType::BF16];
+        table.register(OpKind::MatMul, &dts, BackendId::Cuda, ok_kernel);
+        table.register(OpKind::MatMul, &dts, BackendId::Cuda, ok_kernel_alt);
+
+        // Legacy single-impl lookup returns the first-registered.
+        let (k1, _caps) = table
+            .lookup_with_caps(OpKind::MatMul, &dts, BackendId::Cuda)
+            .unwrap();
+        assert_eq!(k1 as *const () as usize, ok_kernel as *const () as usize);
+
+        // Multi-impl lookup returns both in registration order.
+        let alts = table.lookup_alternatives(OpKind::MatMul, &dts, BackendId::Cuda);
+        assert_eq!(alts.len(), 2);
+        assert_eq!(alts[0].kernel as *const () as usize, ok_kernel as *const () as usize);
+        assert_eq!(alts[1].kernel as *const () as usize, ok_kernel_alt as *const () as usize);
+
+        // Step-9a accounting helpers stay consistent.
+        assert_eq!(table.key_count(), 1, "one decision point");
+        assert_eq!(table.len(), 2, "two alternatives total");
+    }
+
+    /// Phase 7.6 step 9a: registering the same `KernelRef` function
+    /// pointer twice against one key panics — "Strict — panic on
+    /// exact duplicate" per the user's choice (programmer-error
+    /// guard, registration runs at module init).
+    #[test]
+    #[should_panic(expected = "duplicate KernelRef")]
+    fn step_9a_duplicate_kernel_ref_panics() {
+        use fuel_core_types::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel);
+        table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel);
+    }
+
+    /// Phase 7.6 step 9a: `fill_unset_cpu_precision` upgrades every
+    /// alternative under a CPU key, not just the first.
+    #[test]
+    fn step_9a_fill_passes_touch_every_alternative() {
+        use crate::fused::PrecisionGuarantee;
+        use fuel_core_types::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel_alt);
+
+        // Both start at UNKNOWN.
+        for e in table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu) {
+            assert!(!e.precision.bit_stable_on_same_hardware);
+        }
+
+        let bit_stable = PrecisionGuarantee {
+            bit_stable_on_same_hardware: true,
+            max_ulp: Some(0),
+            max_relative: None,
+            max_absolute: None,
+            notes: "test default",
+        };
+        table.fill_unset_cpu_precision(bit_stable);
+
+        // Both got upgraded.
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu);
+        assert_eq!(alts.len(), 2);
+        for e in alts {
+            assert!(e.precision.bit_stable_on_same_hardware);
+            assert_eq!(e.precision.max_ulp, Some(0));
         }
     }
 }
