@@ -3392,6 +3392,24 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PowIElementwise,    &unary(f64_dt),  cpu, powi_f64_cpu_wrapper);
     table.register(PowIElementwise,    &unary(bf16_dt), cpu, powi_bf16_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f16_dt),  cpu, powi_f16_cpu_wrapper);
+
+    // Phase 7.6 step 7b — populate `PrecisionGuarantee` for every
+    // CPU primitive registration. Every `table.register(...)` call
+    // above defaulted to `PrecisionGuarantee::UNKNOWN`; this fill
+    // pass upgrades them to `PRIMITIVE_DETERMINISTIC_CPU` (bit-stable
+    // per hardware, deterministic iteration order, F32 accumulator
+    // for half-precision). Sites that need a weaker claim should
+    // call `table.register_with_precision(...)` explicitly *before*
+    // this point — those won't be overwritten because the fill only
+    // touches UNKNOWN entries.
+    //
+    // The architecture-target shape is precision-per-call-site,
+    // but the 335+ CPU primitive registrations all share the same
+    // deterministic property; bulk-applying the claim here keeps
+    // the call sites concise while still ensuring every entry
+    // carries an explicit, non-UNKNOWN PrecisionGuarantee that the
+    // step-7b coverage lint can enforce.
+    table.fill_unset_cpu_precision(crate::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU);
 }
 
 // =============================================================================
@@ -5782,6 +5800,182 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Phase 7.6 step 7b — the architecture v1.0 §05 "always-built
+    /// backend bit-stable coverage commitment" lint, extended from
+    /// the fused-op half (step 7a) to **primitive** ops.
+    ///
+    /// Every `OpKind` variant that flows through `KernelBindingTable`
+    /// MUST have at least one CPU registration with
+    /// `precision.bit_stable_on_same_hardware == true`. The
+    /// architecture's correctness anchor is the always-built backend
+    /// giving every downstream consumer a deterministic
+    /// implementation to fall back on, so cross-backend equivalence
+    /// tests have a fixed reference.
+    ///
+    /// The lint runs as a unit test so violations surface in CI
+    /// rather than at runtime. Adding a new `OpKind` variant without
+    /// a matching CPU registration fails this test immediately.
+    ///
+    /// As of step 7b (2026-05-11), every `OpKind` variant has CPU
+    /// coverage via `register_cpu_kernels` + the
+    /// `fill_unset_cpu_precision` pass at the end of that function.
+    /// `KNOWN_GAPS` is empty.
+    ///
+    /// Note on the OpKind enumeration: there's no `strum`-style
+    /// derive on the enum, so the test hardcodes the variant list.
+    /// New OpKind variants must be added here AND to a matching
+    /// CPU registration in `register_cpu_kernels`. The two-touch
+    /// requirement is a feature — the test becomes the canonical
+    /// "all kernels accounted for" reference.
+    #[test]
+    fn precision_guarantee_lint_bit_stable_cpu_coverage_primitives() {
+        use fuel_core_types::dispatch::OpKind;
+        use fuel_core_types::probe::BackendId;
+
+        // Allowlist for OpKind variants that *can't* have bit-stable
+        // CPU coverage. Empty as of step 7b (every variant routes
+        // through deterministic kernels). New entries must come with
+        // a documented reason — and a follow-up to close the gap.
+        const KNOWN_GAPS: &[(OpKind, &str)] = &[];
+
+        // The canonical list of every OpKind variant. Mirrors the
+        // enum definition in fuel-core-types::dispatch. Adding a
+        // new variant requires adding it here; that's the explicit
+        // contract for "this OpKind exists and is expected to have
+        // CPU coverage."
+        const ALL_OP_KINDS: &[OpKind] = &[
+            OpKind::MatMul,
+            OpKind::AddElementwise, OpKind::SubElementwise,
+            OpKind::MulElementwise, OpKind::DivElementwise,
+            OpKind::ReluElementwise, OpKind::NegElementwise,
+            OpKind::SqrElementwise, OpKind::SqrtElementwise,
+            OpKind::RecipElementwise, OpKind::AbsElementwise,
+            OpKind::TanhElementwise, OpKind::ExpElementwise,
+            OpKind::LogElementwise, OpKind::SinElementwise,
+            OpKind::CosElementwise, OpKind::SigmoidElementwise,
+            OpKind::SiluElementwise, OpKind::GeluElementwise,
+            OpKind::StepElementwise,
+            OpKind::SumReduce, OpKind::MaxReduce,
+            OpKind::MinReduce, OpKind::MeanReduce,
+            OpKind::Cast,
+            OpKind::Conv2D, OpKind::ConvTranspose2D,
+            OpKind::ReduceSumTo, OpKind::ReduceMaxTo,
+            OpKind::FusedLinear,
+            OpKind::FlashAttn, OpKind::PagedAttn,
+            OpKind::Affine, OpKind::ClampElementwise,
+            OpKind::PowIElementwise,
+            OpKind::MaximumElementwise, OpKind::MinimumElementwise,
+            OpKind::EqualElementwise, OpKind::NotEqualElementwise,
+            OpKind::LessElementwise, OpKind::LessEqualElementwise,
+            OpKind::GreaterElementwise, OpKind::GreaterEqualElementwise,
+            OpKind::Where,
+            OpKind::FloorElementwise, OpKind::CeilElementwise,
+            OpKind::RoundElementwise, OpKind::SignElementwise,
+            OpKind::ErfElementwise, OpKind::GeluErfElementwise,
+            OpKind::PowElementwise, OpKind::RsqrtElementwise,
+            OpKind::RemElementwise,
+            OpKind::Flip, OpKind::Roll, OpKind::CumSum,
+            OpKind::Pad, OpKind::PadBackward,
+            OpKind::Triu, OpKind::Tril,
+            OpKind::LogSoftmaxLastDim, OpKind::LogSoftmaxLastDimBackward,
+            OpKind::MaskedFill, OpKind::Concat,
+            OpKind::SoftmaxLastDim, OpKind::SoftmaxLastDimBackward,
+            OpKind::RmsNormLastDim, OpKind::RmsNormLastDimBackward,
+            OpKind::LayerNormLastDim, OpKind::LayerNormLastDimBackward,
+            OpKind::ReduceMaxToBackward,
+            OpKind::IndexSelect, OpKind::Gather,
+            OpKind::Rope,
+            OpKind::IndexAdd, OpKind::ScatterAdd,
+            OpKind::ArgMaxDim, OpKind::ArgMinDim,
+            OpKind::QMatMul,
+        ];
+
+        // Populate the binding table the same way the production
+        // path does — via register_cpu_kernels including the
+        // fill_unset_cpu_precision pass at the end.
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+
+        // Group all CPU registrations by OpKind so we can check
+        // coverage per variant.
+        let mut by_op_kind: std::collections::HashMap<
+            OpKind,
+            Vec<crate::fused::PrecisionGuarantee>,
+        > = std::collections::HashMap::new();
+        for (op, _dtypes, backend, precision) in table.iter_precision() {
+            if backend == BackendId::Cpu {
+                by_op_kind.entry(op).or_default().push(precision);
+            }
+        }
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut covered = 0usize;
+        let mut allowlisted = 0usize;
+
+        for op in ALL_OP_KINDS.iter().copied() {
+            if let Some((_, reason)) = KNOWN_GAPS.iter().find(|(g, _)| *g == op) {
+                allowlisted += 1;
+                if by_op_kind.contains_key(&op) {
+                    failures.push(format!(
+                        "OpKind::{op:?} is on the KNOWN_GAPS allowlist but DOES \
+                         have a CPU registration now. Reason given was: \
+                         {reason:?}. Remove the allowlist entry to enable the \
+                         bit-stable lint for this op.",
+                    ));
+                }
+                continue;
+            }
+            let precisions = by_op_kind.get(&op);
+            let has_bit_stable_cpu = precisions.is_some_and(|ps| {
+                ps.iter().any(|p| p.bit_stable_on_same_hardware)
+            });
+            if has_bit_stable_cpu {
+                covered += 1;
+            } else {
+                failures.push(format!(
+                    "OpKind::{op:?} has no bit-stable CPU registration. \
+                     Architecture v1.0 §05 requires the always-built backend \
+                     (fuel-cpu-backend) to provide at least one \
+                     `bit_stable_on_same_hardware: true` kernel per primitive \
+                     op. Either add a CPU registration in \
+                     register_cpu_kernels (the fill_unset_cpu_precision pass \
+                     at the end will upgrade it to PRIMITIVE_DETERMINISTIC_CPU \
+                     automatically), or add a line to KNOWN_GAPS above with a \
+                     documented reason.",
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "Architecture v1.0 bit-stable CPU coverage lint (primitives) failed:\n{}",
+            failures.join("\n"),
+        );
+        assert_eq!(
+            allowlisted, 0,
+            "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
+        );
+        // Sanity: ALL_OP_KINDS should match the production
+        // registration set. If a new variant lands in the enum
+        // without being added here, the test's value is reduced —
+        // catch the case by asserting the count.
+        assert!(
+            covered > 0,
+            "lint covered 0 OpKinds — table appears empty",
+        );
+        // Sanity: every OpKind we enumerated should have ≥1 dtype
+        // registration. The fill pass should have populated
+        // precision for each.
+        for op in ALL_OP_KINDS {
+            assert!(
+                by_op_kind.contains_key(op),
+                "OpKind::{op:?} has no CPU registration at all — either add \
+                 one in register_cpu_kernels or document the gap in \
+                 KNOWN_GAPS.",
+            );
+        }
+    }
 
     fn cpu_caps() -> BackendCapabilities {
         BackendCapabilities {

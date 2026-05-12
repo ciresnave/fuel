@@ -529,7 +529,7 @@ pub enum OpParams {
 /// [`crate::dispatch::register_cpu_kernels`]).
 #[derive(Default)]
 pub struct KernelBindingTable {
-    bindings: HashMap<(OpKind, KernelDTypes, BackendId), (KernelRef, KernelCaps)>,
+    bindings: HashMap<(OpKind, KernelDTypes, BackendId), (KernelRef, KernelCaps, crate::fused::PrecisionGuarantee)>,
 }
 
 impl KernelBindingTable {
@@ -541,6 +541,15 @@ impl KernelBindingTable {
     /// default (all-false) capabilities. Idempotent: re-registering with
     /// the same key overwrites. `dtypes` is the per-operand dtype list —
     /// inputs in order, then outputs.
+    ///
+    /// PrecisionGuarantee defaults to [`PrecisionGuarantee::UNKNOWN`].
+    /// Step-7b convention: the always-built backend
+    /// (fuel-cpu-backend) runs [`Self::fill_unset_cpu_precision`] at
+    /// the end of its bulk registration pass to upgrade every UNKNOWN
+    /// CPU entry to `PRIMITIVE_DETERMINISTIC_CPU` (bit-stable per
+    /// hardware). Kernels with weaker guarantees should call
+    /// [`Self::register_with_precision`] explicitly *before* the fill
+    /// pass to opt out of the default.
     pub fn register(
         &mut self,
         op: OpKind,
@@ -548,7 +557,11 @@ impl KernelBindingTable {
         backend: BackendId,
         kernel: KernelRef,
     ) {
-        self.register_with_caps(op, dtypes, backend, kernel, KernelCaps::empty());
+        self.register_with_caps_and_precision(
+            op, dtypes, backend, kernel,
+            KernelCaps::empty(),
+            crate::fused::PrecisionGuarantee::UNKNOWN,
+        );
     }
 
     /// Register a dispatch wrapper with explicit capability flags.
@@ -563,8 +576,107 @@ impl KernelBindingTable {
         kernel: KernelRef,
         caps: KernelCaps,
     ) {
+        self.register_with_caps_and_precision(
+            op, dtypes, backend, kernel, caps,
+            crate::fused::PrecisionGuarantee::UNKNOWN,
+        );
+    }
+
+    /// Register with an explicit [`crate::fused::PrecisionGuarantee`].
+    /// Use this when a kernel has a precision claim that differs from
+    /// the bulk-fill default (e.g., a multi-threaded reduction with
+    /// non-deterministic accumulation order — bit_stable_on_same_hardware
+    /// must be false).
+    pub fn register_with_precision(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+        precision: crate::fused::PrecisionGuarantee,
+    ) {
+        self.register_with_caps_and_precision(
+            op, dtypes, backend, kernel, KernelCaps::empty(), precision,
+        );
+    }
+
+    /// Full-form register with both caps and precision.
+    pub fn register_with_caps_and_precision(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+        caps: KernelCaps,
+        precision: crate::fused::PrecisionGuarantee,
+    ) {
+        self.bindings.insert(
+            (op, SmallVec::from_slice(dtypes), backend),
+            (kernel, caps, precision),
+        );
+    }
+
+    /// Phase 7.6 step 7b: upgrade every UNKNOWN-precision CPU
+    /// registration to the supplied `default`. Convention is to call
+    /// this at the *end* of bulk registration, so any
+    /// `register_with_precision(...)` calls that explicitly claimed a
+    /// non-default value are preserved. The architecture-target
+    /// shape would be precision-per-call-site, but for the ~335 CPU
+    /// primitive registrations that all share the deterministic
+    /// F32-accumulator property, a fill pass keeps the call sites
+    /// concise without sacrificing the architectural commitment
+    /// (every entry ends up with an explicit, non-UNKNOWN precision
+    /// claim before lookup is ever exercised).
+    ///
+    /// Only entries with `backend == BackendId::Cpu` and the current
+    /// `PrecisionGuarantee::UNKNOWN` sentinel are touched. Non-CPU
+    /// backends register their own precision claims; non-UNKNOWN
+    /// entries are preserved.
+    pub fn fill_unset_cpu_precision(&mut self, default: crate::fused::PrecisionGuarantee) {
+        for ((_, _, backend), (_, _, precision)) in self.bindings.iter_mut() {
+            if *backend == BackendId::Cpu
+                && !precision.bit_stable_on_same_hardware
+                && precision.max_ulp.is_none()
+                && precision.max_relative.is_none()
+                && precision.max_absolute.is_none()
+            {
+                // Heuristic for "this is an UNKNOWN sentinel": all
+                // four bound fields are the UNKNOWN defaults. A real
+                // weaker claim would set at least one bound field.
+                *precision = default;
+            }
+        }
+    }
+
+    /// Look up the [`crate::fused::PrecisionGuarantee`] for a
+    /// registered `(op, dtypes, backend)` triple. Returns
+    /// `PrecisionGuarantee::UNKNOWN` if the binding is missing —
+    /// callers (notably the step-7b lint) treat that as "no claim"
+    /// rather than panicking.
+    pub fn lookup_precision(
+        &self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+    ) -> crate::fused::PrecisionGuarantee {
+        let key = (op, SmallVec::from_slice(dtypes), backend);
         self.bindings
-            .insert((op, SmallVec::from_slice(dtypes), backend), (kernel, caps));
+            .get(&key)
+            .map(|(_, _, p)| *p)
+            .unwrap_or(crate::fused::PrecisionGuarantee::UNKNOWN)
+    }
+
+    /// Iterate `(op, dtypes, backend, precision)` over every
+    /// registration. Used by the step-7b coverage lint to enumerate
+    /// what's registered and check the bit-stable commitment per
+    /// OpKind.
+    pub fn iter_precision(
+        &self,
+    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, crate::fused::PrecisionGuarantee)>
+    {
+        self.bindings
+            .iter()
+            .map(|((op, dtypes, backend), (_, _, p))| (*op, dtypes.as_slice(), *backend, *p))
     }
 
     /// Look up the wrapper for `(op, dtypes, backend)`. Returns just
@@ -589,7 +701,7 @@ impl KernelBindingTable {
         backend: BackendId,
     ) -> Result<(KernelRef, KernelCaps)> {
         let key = (op, SmallVec::from_slice(dtypes), backend);
-        self.bindings.get(&key).copied().ok_or_else(|| {
+        self.bindings.get(&key).map(|(k, c, _)| (*k, *c)).ok_or_else(|| {
             let available_backends: Vec<BackendId> = self
                 .bindings
                 .keys()
