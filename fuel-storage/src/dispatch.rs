@@ -3410,6 +3410,24 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // carries an explicit, non-UNKNOWN PrecisionGuarantee that the
     // step-7b coverage lint can enforce.
     table.fill_unset_cpu_precision(crate::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU);
+
+    // Phase 7.6 step 8 — populate cost functions for every CPU
+    // primitive registration. Every `table.register(...)` call
+    // above defaulted to `unknown_cost`; this fill pass dispatches
+    // each entry to its OpKind-appropriate cost-family function
+    // (per `crate::cost::default_cost_for_op_kind`). Sites that
+    // need a non-default cost claim should call
+    // `table.register_full(...)` with their own `CostFn` *before*
+    // this point — those won't be overwritten because the fill
+    // only touches entries still bound to `unknown_cost`.
+    //
+    // Architecturally this is the same shape as the precision fill
+    // above: bulk-apply the family-default at the end so the 335
+    // CPU registration call sites stay concise, while the lint
+    // (`precision_guarantee_lint_bit_stable_cpu_coverage_primitives`
+    // companion: `cost_lint_per_op_kind_cpu_coverage`) enforces
+    // that every OpKind ends up with a non-default cost function.
+    table.fill_unset_cpu_cost(crate::cost::default_cost_for_op_kind);
 }
 
 // =============================================================================
@@ -5973,6 +5991,143 @@ mod tests {
                 "OpKind::{op:?} has no CPU registration at all — either add \
                  one in register_cpu_kernels or document the gap in \
                  KNOWN_GAPS.",
+            );
+        }
+    }
+
+    /// Phase 7.6 step 8 — the "every OpKind has a real cost
+    /// function" coverage lint. Companion to step 7b's bit-stable
+    /// precision lint; the architectural commitment is that every
+    /// primitive op carries both a `PrecisionGuarantee` and a
+    /// `CostFn` (Layer-1 cost model: FLOPs + bandwidth + launch
+    /// overhead) by the time the binding table is consulted at
+    /// dispatch time.
+    ///
+    /// The lint runs as a unit test. Violations surface in CI
+    /// rather than at runtime — a new `OpKind` variant without a
+    /// matching arm in
+    /// [`crate::cost::default_cost_for_op_kind`] fails this test
+    /// immediately because the fill pass leaves it bound to
+    /// `unknown_cost`.
+    ///
+    /// `KNOWN_GAPS` is empty as of step 8 (2026-05-12). Adding a
+    /// future variant without immediate cost coverage needs a
+    /// documented allowlist entry AND a follow-up.
+    #[test]
+    fn cost_lint_per_op_kind_cpu_coverage() {
+        use fuel_core_types::dispatch::OpKind;
+        use fuel_core_types::probe::BackendId;
+
+        const KNOWN_GAPS: &[(OpKind, &str)] = &[];
+
+        const ALL_OP_KINDS: &[OpKind] = &[
+            OpKind::MatMul,
+            OpKind::AddElementwise, OpKind::SubElementwise,
+            OpKind::MulElementwise, OpKind::DivElementwise,
+            OpKind::ReluElementwise, OpKind::NegElementwise,
+            OpKind::SqrElementwise, OpKind::SqrtElementwise,
+            OpKind::RecipElementwise, OpKind::AbsElementwise,
+            OpKind::TanhElementwise, OpKind::ExpElementwise,
+            OpKind::LogElementwise, OpKind::SinElementwise,
+            OpKind::CosElementwise, OpKind::SigmoidElementwise,
+            OpKind::SiluElementwise, OpKind::GeluElementwise,
+            OpKind::StepElementwise,
+            OpKind::SumReduce, OpKind::MaxReduce,
+            OpKind::MinReduce, OpKind::MeanReduce,
+            OpKind::Cast,
+            OpKind::Conv2D, OpKind::ConvTranspose2D,
+            OpKind::ReduceSumTo, OpKind::ReduceMaxTo,
+            OpKind::FusedLinear,
+            OpKind::FlashAttn, OpKind::PagedAttn,
+            OpKind::Affine, OpKind::ClampElementwise,
+            OpKind::PowIElementwise,
+            OpKind::MaximumElementwise, OpKind::MinimumElementwise,
+            OpKind::EqualElementwise, OpKind::NotEqualElementwise,
+            OpKind::LessElementwise, OpKind::LessEqualElementwise,
+            OpKind::GreaterElementwise, OpKind::GreaterEqualElementwise,
+            OpKind::Where,
+            OpKind::FloorElementwise, OpKind::CeilElementwise,
+            OpKind::RoundElementwise, OpKind::SignElementwise,
+            OpKind::ErfElementwise, OpKind::GeluErfElementwise,
+            OpKind::PowElementwise, OpKind::RsqrtElementwise,
+            OpKind::RemElementwise,
+            OpKind::Flip, OpKind::Roll, OpKind::CumSum,
+            OpKind::Pad, OpKind::PadBackward,
+            OpKind::Triu, OpKind::Tril,
+            OpKind::LogSoftmaxLastDim, OpKind::LogSoftmaxLastDimBackward,
+            OpKind::MaskedFill, OpKind::Concat,
+            OpKind::SoftmaxLastDim, OpKind::SoftmaxLastDimBackward,
+            OpKind::RmsNormLastDim, OpKind::RmsNormLastDimBackward,
+            OpKind::LayerNormLastDim, OpKind::LayerNormLastDimBackward,
+            OpKind::ReduceMaxToBackward,
+            OpKind::IndexSelect, OpKind::Gather,
+            OpKind::Rope,
+            OpKind::IndexAdd, OpKind::ScatterAdd,
+            OpKind::ArgMaxDim, OpKind::ArgMinDim,
+            OpKind::QMatMul,
+        ];
+
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+
+        // Group cost functions by OpKind for CPU registrations.
+        let mut by_op_kind: std::collections::HashMap<
+            OpKind,
+            Vec<crate::kernel::CostFn>,
+        > = std::collections::HashMap::new();
+        for (op, _dtypes, backend, cost) in table.iter_cost() {
+            if backend == BackendId::Cpu {
+                by_op_kind.entry(op).or_default().push(cost);
+            }
+        }
+
+        let unknown_sentinel = crate::kernel::unknown_cost as usize;
+
+        let mut failures: Vec<String> = Vec::new();
+        for op in ALL_OP_KINDS.iter().copied() {
+            if let Some((_, reason)) = KNOWN_GAPS.iter().find(|(g, _)| *g == op) {
+                if let Some(costs) = by_op_kind.get(&op) {
+                    let has_real = costs.iter().any(|c| (*c as usize) != unknown_sentinel);
+                    if has_real {
+                        failures.push(format!(
+                            "OpKind::{op:?} is on the cost-lint KNOWN_GAPS \
+                             allowlist but DOES have a non-default cost fn \
+                             now. Reason given: {reason:?}. Remove the \
+                             allowlist entry.",
+                        ));
+                    }
+                }
+                continue;
+            }
+            let costs = by_op_kind.get(&op);
+            let has_real_cost = costs.is_some_and(|cs| {
+                cs.iter().any(|c| (*c as usize) != unknown_sentinel)
+            });
+            if !has_real_cost {
+                failures.push(format!(
+                    "OpKind::{op:?} has no non-default cost fn in any CPU \
+                     registration. Either add an arm in \
+                     `crate::cost::default_cost_for_op_kind` (the \
+                     fill_unset_cpu_cost pass at the end of \
+                     register_cpu_kernels will pick it up automatically), \
+                     register an explicit cost via `register_full(...)`, \
+                     or add a line to KNOWN_GAPS with a documented reason.",
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "Phase 7.6 step 8 cost-coverage lint failed:\n{}",
+            failures.join("\n"),
+        );
+        // Sanity: every OpKind we enumerated should have ≥1 CPU
+        // registration (asserted separately by the step-7b lint,
+        // but re-checked here for symmetry).
+        for op in ALL_OP_KINDS {
+            assert!(
+                by_op_kind.contains_key(op),
+                "OpKind::{op:?} has no CPU registration at all.",
             );
         }
     }

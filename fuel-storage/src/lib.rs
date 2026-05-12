@@ -33,6 +33,7 @@
 
 pub mod cast_fusion;
 pub mod compiled;
+pub mod cost;
 pub mod dispatch;
 pub mod fused;
 pub mod kernel;
