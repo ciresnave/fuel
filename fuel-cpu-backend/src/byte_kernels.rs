@@ -5596,6 +5596,695 @@ pub fn argmin_dim_f32(
 unary_thunk!(gelu_f32, f32, GeluTanh);
 unary_thunk!(gelu_f64, f64, GeluTanh);
 
+// =============================================================================
+// Phase 7.6 step 6 follow-up — backward-helper byte-level kernels.
+//
+// These mirror the generic-typed reference implementations in
+// fuel-reference-backend::ops::* and let the four backward helpers
+// register through the byte-level KernelBindingTable + FusedKernelRegistry
+// path. Before this commit, fuel-graph-executor's trait-method dispatch
+// (`self.backend.softmax_last_dim_backward(...)`) was the only CPU path.
+// =============================================================================
+
+/// Softmax-last-dim backward — F32. Inputs `(y, g)` both
+/// `[outer × last_dim]`. Output: `y * (g - sum(y * g, last_dim))`
+/// per row.
+pub fn softmax_last_dim_backward_f32(
+    y: &CpuStorageBytes,
+    g: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+) -> Result<()> {
+    let yv: &[f32] = y.as_slice()?;
+    let gv: &[f32] = g.as_slice()?;
+    let outv: &mut [f32] = out.as_slice_mut()?;
+    let needed = outer_count * last_dim;
+    if yv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "softmax_last_dim_backward_f32: element count mismatch \
+             (y={}, g={}, out={}, expected={needed})",
+            yv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    for r in 0..outer_count {
+        let off = r * last_dim;
+        let mut dot = 0.0_f32;
+        for i in 0..last_dim {
+            dot += yv[off + i] * gv[off + i];
+        }
+        for i in 0..last_dim {
+            outv[off + i] = yv[off + i] * (gv[off + i] - dot);
+        }
+    }
+    Ok(())
+}
+
+/// Softmax-last-dim backward — F64.
+pub fn softmax_last_dim_backward_f64(
+    y: &CpuStorageBytes,
+    g: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+) -> Result<()> {
+    let yv: &[f64] = y.as_slice()?;
+    let gv: &[f64] = g.as_slice()?;
+    let outv: &mut [f64] = out.as_slice_mut()?;
+    let needed = outer_count * last_dim;
+    if yv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "softmax_last_dim_backward_f64: element count mismatch \
+             (y={}, g={}, out={}, expected={needed})",
+            yv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    for r in 0..outer_count {
+        let off = r * last_dim;
+        let mut dot = 0.0_f64;
+        for i in 0..last_dim {
+            dot += yv[off + i] * gv[off + i];
+        }
+        for i in 0..last_dim {
+            outv[off + i] = yv[off + i] * (gv[off + i] - dot);
+        }
+    }
+    Ok(())
+}
+
+macro_rules! softmax_last_dim_backward_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            y: &CpuStorageBytes,
+            g: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            last_dim: usize,
+        ) -> Result<()> {
+            let yv: &[$T] = y.as_slice()?;
+            let gv: &[$T] = g.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let needed = outer_count * last_dim;
+            if yv.len() != needed || gv.len() != needed || outv.len() != needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (y={}, g={}, out={}, expected={needed})",
+                    stringify!($name), yv.len(), gv.len(), outv.len(),
+                )).bt());
+            }
+            for r in 0..outer_count {
+                let off = r * last_dim;
+                let mut dot = 0.0_f32;
+                for i in 0..last_dim {
+                    dot += yv[off + i].to_f32() * gv[off + i].to_f32();
+                }
+                for i in 0..last_dim {
+                    let val = yv[off + i].to_f32() * (gv[off + i].to_f32() - dot);
+                    outv[off + i] = <$T>::from_f32(val);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+softmax_last_dim_backward_half!(softmax_last_dim_backward_bf16, half::bf16);
+softmax_last_dim_backward_half!(softmax_last_dim_backward_f16, half::f16);
+
+/// LayerNorm-last-dim backward — F32. Inputs `(x, g)`; both
+/// `[outer × last_dim]`. Carries `eps` to recompute the same
+/// statistics the forward used. Formula:
+///   `grad_x_i = rstd · (g_i - mean(g) - y_i · mean(g · y))`
+/// where `y_i = (x_i - μ) · rstd`, `rstd = 1/sqrt(var + eps)`.
+pub fn layer_norm_last_dim_backward_f32(
+    x: &CpuStorageBytes,
+    g: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    let xv: &[f32] = x.as_slice()?;
+    let gv: &[f32] = g.as_slice()?;
+    let outv: &mut [f32] = out.as_slice_mut()?;
+    let needed = outer_count * last_dim;
+    if xv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "layer_norm_last_dim_backward_f32: element count mismatch \
+             (x={}, g={}, out={}, expected={needed})",
+            xv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    let n = last_dim as f32;
+    let eps_t = eps as f32;
+    for r in 0..outer_count {
+        let off = r * last_dim;
+        let mut mean = 0.0_f32;
+        for i in 0..last_dim {
+            mean += xv[off + i];
+        }
+        mean /= n;
+        let mut var = 0.0_f32;
+        for i in 0..last_dim {
+            let d = xv[off + i] - mean;
+            var += d * d;
+        }
+        var /= n;
+        let rstd = 1.0_f32 / (var + eps_t).sqrt();
+        let mut mean_g = 0.0_f32;
+        let mut mean_g_y = 0.0_f32;
+        for i in 0..last_dim {
+            let yi = (xv[off + i] - mean) * rstd;
+            mean_g += gv[off + i];
+            mean_g_y += gv[off + i] * yi;
+        }
+        mean_g /= n;
+        mean_g_y /= n;
+        for i in 0..last_dim {
+            let yi = (xv[off + i] - mean) * rstd;
+            outv[off + i] = rstd * (gv[off + i] - mean_g - yi * mean_g_y);
+        }
+    }
+    Ok(())
+}
+
+/// LayerNorm-last-dim backward — F64.
+pub fn layer_norm_last_dim_backward_f64(
+    x: &CpuStorageBytes,
+    g: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    let xv: &[f64] = x.as_slice()?;
+    let gv: &[f64] = g.as_slice()?;
+    let outv: &mut [f64] = out.as_slice_mut()?;
+    let needed = outer_count * last_dim;
+    if xv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "layer_norm_last_dim_backward_f64: element count mismatch \
+             (x={}, g={}, out={}, expected={needed})",
+            xv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    let n = last_dim as f64;
+    for r in 0..outer_count {
+        let off = r * last_dim;
+        let mut mean = 0.0_f64;
+        for i in 0..last_dim { mean += xv[off + i]; }
+        mean /= n;
+        let mut var = 0.0_f64;
+        for i in 0..last_dim {
+            let d = xv[off + i] - mean;
+            var += d * d;
+        }
+        var /= n;
+        let rstd = 1.0_f64 / (var + eps).sqrt();
+        let mut mean_g = 0.0_f64;
+        let mut mean_g_y = 0.0_f64;
+        for i in 0..last_dim {
+            let yi = (xv[off + i] - mean) * rstd;
+            mean_g += gv[off + i];
+            mean_g_y += gv[off + i] * yi;
+        }
+        mean_g /= n;
+        mean_g_y /= n;
+        for i in 0..last_dim {
+            let yi = (xv[off + i] - mean) * rstd;
+            outv[off + i] = rstd * (gv[off + i] - mean_g - yi * mean_g_y);
+        }
+    }
+    Ok(())
+}
+
+macro_rules! layer_norm_last_dim_backward_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            x: &CpuStorageBytes,
+            g: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            last_dim: usize,
+            eps: f64,
+        ) -> Result<()> {
+            let xv: &[$T] = x.as_slice()?;
+            let gv: &[$T] = g.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let needed = outer_count * last_dim;
+            if xv.len() != needed || gv.len() != needed || outv.len() != needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (x={}, g={}, out={}, expected={needed})",
+                    stringify!($name), xv.len(), gv.len(), outv.len(),
+                )).bt());
+            }
+            let n = last_dim as f32;
+            let eps_t = eps as f32;
+            for r in 0..outer_count {
+                let off = r * last_dim;
+                let mut mean = 0.0_f32;
+                for i in 0..last_dim { mean += xv[off + i].to_f32(); }
+                mean /= n;
+                let mut var = 0.0_f32;
+                for i in 0..last_dim {
+                    let d = xv[off + i].to_f32() - mean;
+                    var += d * d;
+                }
+                var /= n;
+                let rstd = 1.0_f32 / (var + eps_t).sqrt();
+                let mut mean_g = 0.0_f32;
+                let mut mean_g_y = 0.0_f32;
+                for i in 0..last_dim {
+                    let yi = (xv[off + i].to_f32() - mean) * rstd;
+                    mean_g += gv[off + i].to_f32();
+                    mean_g_y += gv[off + i].to_f32() * yi;
+                }
+                mean_g /= n;
+                mean_g_y /= n;
+                for i in 0..last_dim {
+                    let yi = (xv[off + i].to_f32() - mean) * rstd;
+                    let val = rstd * (gv[off + i].to_f32() - mean_g - yi * mean_g_y);
+                    outv[off + i] = <$T>::from_f32(val);
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+layer_norm_last_dim_backward_half!(layer_norm_last_dim_backward_bf16, half::bf16);
+layer_norm_last_dim_backward_half!(layer_norm_last_dim_backward_f16, half::f16);
+
+/// RmsNorm-last-dim backward — F32. Inputs `(x, g_y)`; both
+/// `[outer × last_dim]`. Closed form:
+///   `grad_x_j = r_rms · (g_y_j - x_j · s / (n · (mean_sq + eps)))`
+/// where `r_rms = 1/sqrt(mean_sq + eps)`, `s = sum(g_y · x)`.
+pub fn rms_norm_last_dim_backward_f32(
+    x: &CpuStorageBytes,
+    g_y: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    let xv: &[f32] = x.as_slice()?;
+    let gv: &[f32] = g_y.as_slice()?;
+    let outv: &mut [f32] = out.as_slice_mut()?;
+    let needed = outer_count * last_dim;
+    if xv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "rms_norm_last_dim_backward_f32: element count mismatch \
+             (x={}, g_y={}, out={}, expected={needed})",
+            xv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    let n = last_dim as f32;
+    let eps_t = eps as f32;
+    for r in 0..outer_count {
+        let off = r * last_dim;
+        let mut sum_sq = 0.0_f32;
+        let mut sum_gx = 0.0_f32;
+        for i in 0..last_dim {
+            sum_sq += xv[off + i] * xv[off + i];
+            sum_gx += gv[off + i] * xv[off + i];
+        }
+        let mean_sq = sum_sq / n;
+        let denom_sq = mean_sq + eps_t;
+        let r_rms = 1.0_f32 / denom_sq.sqrt();
+        let coeff = sum_gx / (n * denom_sq);
+        for i in 0..last_dim {
+            outv[off + i] = r_rms * (gv[off + i] - xv[off + i] * coeff);
+        }
+    }
+    Ok(())
+}
+
+/// RmsNorm-last-dim backward — F64.
+pub fn rms_norm_last_dim_backward_f64(
+    x: &CpuStorageBytes,
+    g_y: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    outer_count: usize,
+    last_dim: usize,
+    eps: f64,
+) -> Result<()> {
+    let xv: &[f64] = x.as_slice()?;
+    let gv: &[f64] = g_y.as_slice()?;
+    let outv: &mut [f64] = out.as_slice_mut()?;
+    let needed = outer_count * last_dim;
+    if xv.len() != needed || gv.len() != needed || outv.len() != needed {
+        return Err(Error::Msg(format!(
+            "rms_norm_last_dim_backward_f64: element count mismatch \
+             (x={}, g_y={}, out={}, expected={needed})",
+            xv.len(), gv.len(), outv.len(),
+        )).bt());
+    }
+    let n = last_dim as f64;
+    for r in 0..outer_count {
+        let off = r * last_dim;
+        let mut sum_sq = 0.0_f64;
+        let mut sum_gx = 0.0_f64;
+        for i in 0..last_dim {
+            sum_sq += xv[off + i] * xv[off + i];
+            sum_gx += gv[off + i] * xv[off + i];
+        }
+        let mean_sq = sum_sq / n;
+        let denom_sq = mean_sq + eps;
+        let r_rms = 1.0_f64 / denom_sq.sqrt();
+        let coeff = sum_gx / (n * denom_sq);
+        for i in 0..last_dim {
+            outv[off + i] = r_rms * (gv[off + i] - xv[off + i] * coeff);
+        }
+    }
+    Ok(())
+}
+
+macro_rules! rms_norm_last_dim_backward_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            x: &CpuStorageBytes,
+            g_y: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            outer_count: usize,
+            last_dim: usize,
+            eps: f64,
+        ) -> Result<()> {
+            let xv: &[$T] = x.as_slice()?;
+            let gv: &[$T] = g_y.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let needed = outer_count * last_dim;
+            if xv.len() != needed || gv.len() != needed || outv.len() != needed {
+                return Err(Error::Msg(format!(
+                    "{}: element count mismatch (x={}, g_y={}, out={}, expected={needed})",
+                    stringify!($name), xv.len(), gv.len(), outv.len(),
+                )).bt());
+            }
+            let n = last_dim as f32;
+            let eps_t = eps as f32;
+            for r in 0..outer_count {
+                let off = r * last_dim;
+                let mut sum_sq = 0.0_f32;
+                let mut sum_gx = 0.0_f32;
+                for i in 0..last_dim {
+                    let xi = xv[off + i].to_f32();
+                    let gi = gv[off + i].to_f32();
+                    sum_sq += xi * xi;
+                    sum_gx += gi * xi;
+                }
+                let mean_sq = sum_sq / n;
+                let denom_sq = mean_sq + eps_t;
+                let r_rms = 1.0_f32 / denom_sq.sqrt();
+                let coeff = sum_gx / (n * denom_sq);
+                for i in 0..last_dim {
+                    let xi = xv[off + i].to_f32();
+                    let gi = gv[off + i].to_f32();
+                    outv[off + i] = <$T>::from_f32(r_rms * (gi - xi * coeff));
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+rms_norm_last_dim_backward_half!(rms_norm_last_dim_backward_bf16, half::bf16);
+rms_norm_last_dim_backward_half!(rms_norm_last_dim_backward_f16, half::f16);
+
+/// ReduceMaxTo backward — F32. Inputs `(x, upstream)`. `input_shape`
+/// is x's shape; `output_shape` is upstream's shape (= the forward
+/// target_shape). Routes upstream to argmax positions, splitting
+/// equally on ties.
+///
+/// Algorithm:
+/// 1. recompute the forward max via reduce_max_to (uses input_shape
+///    + output_shape to determine which axes reduce);
+/// 2. broadcast max to input shape, build a U8 mask where x == max;
+/// 3. reduce the mask to output_shape via sum to get tie counts;
+/// 4. clamp counts to >= 1 (defensive guard against empty windows);
+/// 5. scaled_upstream = upstream / count;
+/// 6. broadcast scaled_upstream to input_shape, gate by mask.
+///
+/// Implementation borrows the same broadcast-and-reduce helpers as
+/// the typed reference op; the byte-level path materializes
+/// intermediate buffers on the stack rather than RefTensor allocs.
+pub fn reduce_max_to_backward_f32(
+    x: &CpuStorageBytes,
+    upstream: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    let xv: &[f32] = x.as_slice()?;
+    let uv: &[f32] = upstream.as_slice()?;
+    let outv: &mut [f32] = out.as_slice_mut()?;
+    let in_count: usize = input_shape.iter().product();
+    let out_count: usize = output_shape.iter().product();
+    if xv.len() != in_count || outv.len() != in_count || uv.len() != out_count {
+        return Err(Error::Msg(format!(
+            "reduce_max_to_backward_f32: shape mismatch (x={}, up={}, out={}, \
+             expected x.out={in_count}, up={out_count})",
+            xv.len(), uv.len(), outv.len(),
+        )).bt());
+    }
+    reduce_max_to_backward_impl(xv, uv, outv, input_shape, output_shape);
+    Ok(())
+}
+
+/// ReduceMaxTo backward — F64.
+pub fn reduce_max_to_backward_f64(
+    x: &CpuStorageBytes,
+    upstream: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    input_shape: &[usize],
+    output_shape: &[usize],
+) -> Result<()> {
+    let xv: &[f64] = x.as_slice()?;
+    let uv: &[f64] = upstream.as_slice()?;
+    let outv: &mut [f64] = out.as_slice_mut()?;
+    let in_count: usize = input_shape.iter().product();
+    let out_count: usize = output_shape.iter().product();
+    if xv.len() != in_count || outv.len() != in_count || uv.len() != out_count {
+        return Err(Error::Msg(format!(
+            "reduce_max_to_backward_f64: shape mismatch (x={}, up={}, out={}, \
+             expected x.out={in_count}, up={out_count})",
+            xv.len(), uv.len(), outv.len(),
+        )).bt());
+    }
+    reduce_max_to_backward_impl(xv, uv, outv, input_shape, output_shape);
+    Ok(())
+}
+
+macro_rules! reduce_max_to_backward_half {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            x: &CpuStorageBytes,
+            upstream: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            input_shape: &[usize],
+            output_shape: &[usize],
+        ) -> Result<()> {
+            let xv: &[$T] = x.as_slice()?;
+            let uv: &[$T] = upstream.as_slice()?;
+            let outv: &mut [$T] = out.as_slice_mut()?;
+            let in_count: usize = input_shape.iter().product();
+            let out_count: usize = output_shape.iter().product();
+            if xv.len() != in_count || outv.len() != in_count || uv.len() != out_count {
+                return Err(Error::Msg(format!(
+                    "{}: shape mismatch (x={}, up={}, out={}, expected x.out={in_count}, up={out_count})",
+                    stringify!($name), xv.len(), uv.len(), outv.len(),
+                )).bt());
+            }
+            // Promote to f32, run f32 kernel, narrow on output.
+            let xv32: Vec<f32> = xv.iter().map(|v| v.to_f32()).collect();
+            let uv32: Vec<f32> = uv.iter().map(|v| v.to_f32()).collect();
+            let mut outv32 = vec![0.0_f32; in_count];
+            reduce_max_to_backward_impl(&xv32, &uv32, &mut outv32, input_shape, output_shape);
+            for i in 0..in_count {
+                outv[i] = <$T>::from_f32(outv32[i]);
+            }
+            Ok(())
+        }
+    };
+}
+
+reduce_max_to_backward_half!(reduce_max_to_backward_bf16, half::bf16);
+reduce_max_to_backward_half!(reduce_max_to_backward_f16, half::f16);
+
+/// Shared implementation for `reduce_max_to_backward` over a generic
+/// numeric type that supports the comparisons + arithmetic used.
+/// Mirrors fuel-reference-backend::ops::reduce_max_to_backward step
+/// by step; see that function for the algorithmic explanation.
+fn reduce_max_to_backward_impl<T>(
+    x: &[T],
+    upstream: &[T],
+    out: &mut [T],
+    input_shape: &[usize],
+    output_shape: &[usize],
+) where
+    T: Copy + PartialEq + PartialOrd + Default
+        + std::ops::Add<Output = T> + std::ops::Mul<Output = T>
+        + std::ops::Div<Output = T> + From<u8>,
+{
+    let in_count = x.len();
+    let one = T::from(1u8);
+    // Step 1: forward max via reduce_max_to.
+    let mut max_y = vec![T::default(); upstream.len()];
+    reduce_max_impl(x, &mut max_y, input_shape, output_shape);
+    // Step 2: broadcast max_y to input shape (in-place into a buffer);
+    //         build mask: 1 where x == broadcast(max_y), else 0.
+    let mut max_b = vec![T::default(); in_count];
+    broadcast_to_impl(&max_y, &mut max_b, output_shape, input_shape);
+    let mut mask = vec![T::default(); in_count];
+    for i in 0..in_count {
+        if x[i] == max_b[i] {
+            mask[i] = one;
+        }
+    }
+    // Step 3: count = reduce_sum_to(mask).
+    let mut count = vec![T::default(); upstream.len()];
+    reduce_sum_to_impl(&mask, &mut count, input_shape, output_shape);
+    // Step 4: clamp count to >= 1.
+    for c in count.iter_mut() {
+        if *c < one { *c = one; }
+    }
+    // Step 5: scaled = upstream / count.
+    let mut scaled = vec![T::default(); upstream.len()];
+    for i in 0..upstream.len() {
+        scaled[i] = upstream[i] / count[i];
+    }
+    // Step 6: broadcast scaled to input shape, gate by mask.
+    let mut scaled_b = vec![T::default(); in_count];
+    broadcast_to_impl(&scaled, &mut scaled_b, output_shape, input_shape);
+    for i in 0..in_count {
+        out[i] = scaled_b[i] * mask[i];
+    }
+}
+
+/// Internal: reduce-max-to. Walks each output position, reads every
+/// input position that maps to it (per NumPy-style broadcast axis
+/// alignment), keeps the max. Generic so the same logic works in
+/// f32 (the half-precision path) and f64.
+fn reduce_max_impl<T>(input: &[T], output: &mut [T], in_shape: &[usize], out_shape: &[usize])
+where
+    T: Copy + PartialOrd + Default,
+{
+    // Pad output_shape with leading 1s to match input rank.
+    let in_rank = in_shape.len();
+    let out_rank = out_shape.len();
+    let pad = in_rank - out_rank;
+    let mut padded_out: Vec<usize> = vec![1; in_rank];
+    for (i, &s) in out_shape.iter().enumerate() {
+        padded_out[pad + i] = s;
+    }
+    let in_count: usize = in_shape.iter().product();
+    // Strides for output indexing into the in-shape lattice.
+    let mut out_strides = vec![0_usize; in_rank];
+    let mut acc = 1;
+    for i in (0..in_rank).rev() {
+        out_strides[i] = if padded_out[i] == 1 { 0 } else { acc };
+        if padded_out[i] != 1 { acc *= padded_out[i]; }
+    }
+    // Initialize: copy first contributing input to each output (or
+    // mark as "not yet set"). Easiest: iterate in lex order and
+    // update max via comparisons.
+    let mut first_set = vec![false; output.len()];
+    let mut idx = vec![0_usize; in_rank];
+    for flat in 0..in_count {
+        // Reconstruct multi-index `idx` from flat.
+        let mut rem = flat;
+        let mut in_stride = 1;
+        for i in (0..in_rank).rev() {
+            idx[i] = (rem / in_stride) % in_shape[i];
+            in_stride *= in_shape[i];
+            // Simpler decomposition below; use direct.
+        }
+        // Compute out_flat via per-axis strides.
+        let mut out_flat = 0;
+        for i in 0..in_rank {
+            out_flat += idx[i] * out_strides[i];
+        }
+        let v = input[flat];
+        if !first_set[out_flat] {
+            output[out_flat] = v;
+            first_set[out_flat] = true;
+        } else if v > output[out_flat] {
+            output[out_flat] = v;
+        }
+    }
+}
+
+/// Internal: broadcast `src` (shape `src_shape`) into `dst` (shape
+/// `dst_shape`). Right-aligns axes; size-1 axes broadcast.
+fn broadcast_to_impl<T>(src: &[T], dst: &mut [T], src_shape: &[usize], dst_shape: &[usize])
+where
+    T: Copy,
+{
+    let dst_rank = dst_shape.len();
+    let src_rank = src_shape.len();
+    let pad = dst_rank - src_rank;
+    let mut padded_src: Vec<usize> = vec![1; dst_rank];
+    for (i, &s) in src_shape.iter().enumerate() {
+        padded_src[pad + i] = s;
+    }
+    // src strides (where size==1, stride is 0 so the axis is replicated).
+    let mut src_strides = vec![0_usize; dst_rank];
+    let mut acc = 1;
+    for i in (0..dst_rank).rev() {
+        src_strides[i] = if padded_src[i] == 1 { 0 } else { acc };
+        if padded_src[i] != 1 { acc *= padded_src[i]; }
+    }
+    let dst_count: usize = dst_shape.iter().product();
+    let mut idx = vec![0_usize; dst_rank];
+    for flat in 0..dst_count {
+        let mut rem = flat;
+        for i in (0..dst_rank).rev() {
+            idx[i] = rem % dst_shape[i];
+            rem /= dst_shape[i];
+        }
+        let mut src_flat = 0;
+        for i in 0..dst_rank {
+            src_flat += idx[i] * src_strides[i];
+        }
+        dst[flat] = src[src_flat];
+    }
+}
+
+/// Internal: reduce-sum-to. Same structure as `reduce_max_impl` but
+/// accumulates via `+` instead of taking max.
+fn reduce_sum_to_impl<T>(input: &[T], output: &mut [T], in_shape: &[usize], out_shape: &[usize])
+where
+    T: Copy + Default + std::ops::Add<Output = T>,
+{
+    let in_rank = in_shape.len();
+    let out_rank = out_shape.len();
+    let pad = in_rank - out_rank;
+    let mut padded_out: Vec<usize> = vec![1; in_rank];
+    for (i, &s) in out_shape.iter().enumerate() {
+        padded_out[pad + i] = s;
+    }
+    let in_count: usize = in_shape.iter().product();
+    let mut out_strides = vec![0_usize; in_rank];
+    let mut acc = 1;
+    for i in (0..in_rank).rev() {
+        out_strides[i] = if padded_out[i] == 1 { 0 } else { acc };
+        if padded_out[i] != 1 { acc *= padded_out[i]; }
+    }
+    for o in output.iter_mut() {
+        *o = T::default();
+    }
+    let mut idx = vec![0_usize; in_rank];
+    for flat in 0..in_count {
+        let mut rem = flat;
+        for i in (0..in_rank).rev() {
+            idx[i] = rem % in_shape[i];
+            rem /= in_shape[i];
+        }
+        let mut out_flat = 0;
+        for i in 0..in_rank {
+            out_flat += idx[i] * out_strides[i];
+        }
+        output[out_flat] = output[out_flat] + input[flat];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

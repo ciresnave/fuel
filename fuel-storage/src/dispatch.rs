@@ -782,6 +782,169 @@ cpu_log_softmax_backward_wrapper!(log_softmax_backward_f64_cpu_wrapper, fuel_cpu
 cpu_log_softmax_backward_wrapper!(log_softmax_backward_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_bf16, "log_softmax_backward_bf16");
 cpu_log_softmax_backward_wrapper!(log_softmax_backward_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f16, "log_softmax_backward_f16");
 
+/// Softmax-last-dim backward — 2 inputs (y, g) + 1 output, reuses
+/// `OpParams::SoftmaxLastDim` (same outer × last_dim shape contract
+/// as the forward).
+macro_rules! cpu_softmax_last_dim_backward_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "softmax_last_dim_backward wrapper expects 2 inputs (y, g) + 1 output, got {} + {}",
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, last_dim) = match params {
+                OpParams::SoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "softmax_last_dim_backward wrapper expects OpParams::SoftmaxLastDim, got {other:?}",
+                    )).bt());
+                }
+            };
+            let y_guard = read_storage(&inputs[0])?;
+            let g_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let y_cpu = cpu_input(&y_guard)?;
+            let g_cpu = cpu_input(&g_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(y_cpu, g_cpu, out_cpu, outer, last_dim)
+        }
+    };
+}
+
+cpu_softmax_last_dim_backward_wrapper!(
+    softmax_last_dim_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f32);
+cpu_softmax_last_dim_backward_wrapper!(
+    softmax_last_dim_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f64);
+cpu_softmax_last_dim_backward_wrapper!(
+    softmax_last_dim_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_bf16);
+cpu_softmax_last_dim_backward_wrapper!(
+    softmax_last_dim_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f16);
+
+/// LayerNorm / RmsNorm backward share `OpParams::NormLastDim` (with
+/// eps). Two inputs (x, g) + 1 output, same outer × last_dim shape.
+macro_rules! cpu_norm_last_dim_backward_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 2 inputs (x, g) + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, last_dim, eps) = match params {
+                OpParams::NormLastDim { outer_count, last_dim, eps } => {
+                    (*outer_count, *last_dim, *eps)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::NormLastDim, got {other:?}",
+                        $op_name,
+                    )).bt());
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let g_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let g_cpu = cpu_input(&g_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(x_cpu, g_cpu, out_cpu, outer, last_dim, eps)
+        }
+    };
+}
+
+cpu_norm_last_dim_backward_wrapper!(
+    layer_norm_last_dim_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f32, "layer_norm_backward_f32");
+cpu_norm_last_dim_backward_wrapper!(
+    layer_norm_last_dim_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f64, "layer_norm_backward_f64");
+cpu_norm_last_dim_backward_wrapper!(
+    layer_norm_last_dim_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_bf16, "layer_norm_backward_bf16");
+cpu_norm_last_dim_backward_wrapper!(
+    layer_norm_last_dim_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f16, "layer_norm_backward_f16");
+
+cpu_norm_last_dim_backward_wrapper!(
+    rms_norm_last_dim_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f32, "rms_norm_backward_f32");
+cpu_norm_last_dim_backward_wrapper!(
+    rms_norm_last_dim_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f64, "rms_norm_backward_f64");
+cpu_norm_last_dim_backward_wrapper!(
+    rms_norm_last_dim_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_bf16, "rms_norm_backward_bf16");
+cpu_norm_last_dim_backward_wrapper!(
+    rms_norm_last_dim_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f16, "rms_norm_backward_f16");
+
+/// ReduceMaxTo backward — 2 inputs (x, upstream) + 1 output. Carries
+/// the shape pair via `OpParams::ReduceMaxToBackward`.
+macro_rules! cpu_reduce_max_to_backward_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "reduce_max_to_backward wrapper expects 2 inputs (x, upstream) + 1 output, got {} + {}",
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (input_shape, output_shape) = match params {
+                OpParams::ReduceMaxToBackward { input_shape, output_shape } => {
+                    (input_shape.as_slice(), output_shape.as_slice())
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "reduce_max_to_backward wrapper expects OpParams::ReduceMaxToBackward, got {other:?}",
+                    )).bt());
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let up_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let up_cpu = cpu_input(&up_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(x_cpu, up_cpu, out_cpu, input_shape, output_shape)
+        }
+    };
+}
+
+cpu_reduce_max_to_backward_wrapper!(
+    reduce_max_to_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32);
+cpu_reduce_max_to_backward_wrapper!(
+    reduce_max_to_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f64);
+cpu_reduce_max_to_backward_wrapper!(
+    reduce_max_to_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_bf16);
+cpu_reduce_max_to_backward_wrapper!(
+    reduce_max_to_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f16);
+
 /// Single dtype-agnostic MaskedFill wrapper. Reads `fill_bytes`
 /// (pre-encoded by `op_to_op_params`) and dtype_size from the output.
 fn masked_fill_cpu_wrapper(
@@ -3067,6 +3230,26 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(LogSoftmaxLastDimBackward, &binary(bf16_dt), cpu, log_softmax_backward_bf16_cpu_wrapper);
     table.register(LogSoftmaxLastDimBackward, &binary(f16_dt),  cpu, log_softmax_backward_f16_cpu_wrapper);
 
+    // Phase 7.6 step 6 follow-up — backward helpers gain byte-level
+    // CPU coverage. Each takes 2 inputs (y/x, g/upstream) + 1 output;
+    // dtype tuple matches the binary `[T, T, T]` shape.
+    table.register(SoftmaxLastDimBackward,    &binary(f32_dt),  cpu, softmax_last_dim_backward_f32_cpu_wrapper);
+    table.register(SoftmaxLastDimBackward,    &binary(f64_dt),  cpu, softmax_last_dim_backward_f64_cpu_wrapper);
+    table.register(SoftmaxLastDimBackward,    &binary(bf16_dt), cpu, softmax_last_dim_backward_bf16_cpu_wrapper);
+    table.register(SoftmaxLastDimBackward,    &binary(f16_dt),  cpu, softmax_last_dim_backward_f16_cpu_wrapper);
+    table.register(LayerNormLastDimBackward,  &binary(f32_dt),  cpu, layer_norm_last_dim_backward_f32_cpu_wrapper);
+    table.register(LayerNormLastDimBackward,  &binary(f64_dt),  cpu, layer_norm_last_dim_backward_f64_cpu_wrapper);
+    table.register(LayerNormLastDimBackward,  &binary(bf16_dt), cpu, layer_norm_last_dim_backward_bf16_cpu_wrapper);
+    table.register(LayerNormLastDimBackward,  &binary(f16_dt),  cpu, layer_norm_last_dim_backward_f16_cpu_wrapper);
+    table.register(RmsNormLastDimBackward,    &binary(f32_dt),  cpu, rms_norm_last_dim_backward_f32_cpu_wrapper);
+    table.register(RmsNormLastDimBackward,    &binary(f64_dt),  cpu, rms_norm_last_dim_backward_f64_cpu_wrapper);
+    table.register(RmsNormLastDimBackward,    &binary(bf16_dt), cpu, rms_norm_last_dim_backward_bf16_cpu_wrapper);
+    table.register(RmsNormLastDimBackward,    &binary(f16_dt),  cpu, rms_norm_last_dim_backward_f16_cpu_wrapper);
+    table.register(ReduceMaxToBackward,       &binary(f32_dt),  cpu, reduce_max_to_backward_f32_cpu_wrapper);
+    table.register(ReduceMaxToBackward,       &binary(f64_dt),  cpu, reduce_max_to_backward_f64_cpu_wrapper);
+    table.register(ReduceMaxToBackward,       &binary(bf16_dt), cpu, reduce_max_to_backward_bf16_cpu_wrapper);
+    table.register(ReduceMaxToBackward,       &binary(f16_dt),  cpu, reduce_max_to_backward_f16_cpu_wrapper);
+
     // MaskedFill — dtype-agnostic byte kernel; binding-table key is
     // [T, U8, T] (x dtype, mask U8, output == x).
     let masked_dtypes = |t: DType| [t, DType::U8, t];
@@ -5184,7 +5367,7 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// crate-private CPU dispatch wrappers stay co-located with their
 /// registration.
 ///
-/// Today's coverage (Phase 7.6 step 6 — 2026-05-11):
+/// Today's coverage (Phase 7.6 step 6 + backward-helper follow-up — 2026-05-11):
 /// - `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `CONV2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
 /// - `SOFTMAX_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
@@ -5195,17 +5378,15 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// - `FLASH_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
 /// - `PAGED_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
 /// - `QMATMUL` × `Cpu` × {F32 activations + U32 weights} — 1 impl
+/// - `SOFTMAX_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `LAYER_NORM_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `RMS_NORM_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `REDUCE_MAX_TO_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 ///
-/// Total: 53 CPU BackendImpls registered.
-///
-/// Not yet covered (separate follow-up):
-/// - The four backward helpers (SoftmaxLastDimBackward,
-///   LayerNormLastDimBackward, RmsNormLastDimBackward,
-///   ReduceMaxToBackward) have no CPU byte-level wrappers in this
-///   file — their dispatch flows through the `GraphBackend` trait
-///   methods (`self.backend.softmax_last_dim_backward()` etc.) in
-///   `fuel-graph-executor`. Their step-6 registration awaits either
-///   wrapper conversion or step-9's trait-method-as-KernelRef path.
+/// Total: 69 CPU BackendImpls registered across **all 14** registered
+/// fused ops. The architecture v1.0 §05 bit-stable coverage
+/// commitment is now compiler-enforced for the full fused-op set
+/// (no `KNOWN_GAPS` allowlist in the step-7 lint).
 ///
 /// Backend crates (fuel-cuda-backend, fuel-vulkan-backend) extend by
 /// composing against the registry from their own startup paths or via
@@ -5214,10 +5395,11 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     use crate::fused::{
         cost_attn_cpu, cost_conv2d_cpu, cost_conv_transpose2d_cpu,
         cost_fused_linear_cpu, cost_norm_family_cpu, cost_qmatmul_cpu,
-        cost_rope_cpu, ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
+        cost_reduce_max_to_backward_cpu, cost_rope_cpu,
+        ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
         NORM_FAMILY_CPU_PRECISION, QMATMUL_CPU_PRECISION,
-        ROPE_CPU_PRECISION,
+        REDUCE_MAX_TO_BACKWARD_CPU_PRECISION, ROPE_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
@@ -5276,6 +5458,14 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     // QMatMul: (a:F32 activations, w_q:U32 bytes, out:F32). Only F32
     // is wired today.
     const QM_F32: &[DType] = &[DType::F32, DType::U32, DType::F32];
+
+    // Backward helpers — `[T, T, T]` for the binary (input0, input1, out)
+    // shape. SoftmaxBackward, LayerNormBackward, RmsNormBackward,
+    // ReduceMaxToBackward all share this dtype-tuple structure.
+    const BW_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32];
+    const BW_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64];
+    const BW_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16];
+    const BW_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16];
 
     let cpu = BackendId::Cpu;
     register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F32,
@@ -5512,6 +5702,81 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         qmatmul_f32_cpu_wrapper,
         cost = cost_qmatmul_cpu,
         precision = QMATMUL_CPU_PRECISION);
+
+    // Phase 7.6 step 6 follow-up — backward helpers gain CPU
+    // BackendImpls now that byte-level wrappers exist. Each takes
+    // 2 inputs + 1 output, dtype tuple `[T, T, T]`. Softmax /
+    // Layer / Rms backwards share `cost_norm_family_cpu` +
+    // `NORM_FAMILY_CPU_PRECISION` (same outer × last_dim shape as
+    // their forward); ReduceMaxToBackward has its own (5-pass
+    // recomputed-max + tie-share gate).
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_F32,
+        softmax_last_dim_backward_f32_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_F64,
+        softmax_last_dim_backward_f64_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_BF16,
+        softmax_last_dim_backward_bf16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_F16,
+        softmax_last_dim_backward_f16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_F32,
+        layer_norm_last_dim_backward_f32_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_F64,
+        layer_norm_last_dim_backward_f64_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_BF16,
+        layer_norm_last_dim_backward_bf16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_F16,
+        layer_norm_last_dim_backward_f16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_F32,
+        rms_norm_last_dim_backward_f32_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_F64,
+        rms_norm_last_dim_backward_f64_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_BF16,
+        rms_norm_last_dim_backward_bf16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_F16,
+        rms_norm_last_dim_backward_f16_cpu_wrapper,
+        cost = cost_norm_family_cpu,
+        precision = NORM_FAMILY_CPU_PRECISION);
+
+    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_F32,
+        reduce_max_to_backward_f32_cpu_wrapper,
+        cost = cost_reduce_max_to_backward_cpu,
+        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_F64,
+        reduce_max_to_backward_f64_cpu_wrapper,
+        cost = cost_reduce_max_to_backward_cpu,
+        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_BF16,
+        reduce_max_to_backward_bf16_cpu_wrapper,
+        cost = cost_reduce_max_to_backward_cpu,
+        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_F16,
+        reduce_max_to_backward_f16_cpu_wrapper,
+        cost = cost_reduce_max_to_backward_cpu,
+        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
 }
 
 #[cfg(test)]

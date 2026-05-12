@@ -527,6 +527,28 @@ fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::SoftmaxLastDim)
         }
+        // Phase 7.6 step 6 follow-up: backward helpers now route
+        // through the byte-level binding table too.
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD =>
+        {
+            Some(OpKind::SoftmaxLastDimBackward)
+        }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD =>
+        {
+            Some(OpKind::LayerNormLastDimBackward)
+        }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD =>
+        {
+            Some(OpKind::RmsNormLastDimBackward)
+        }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD =>
+        {
+            Some(OpKind::ReduceMaxToBackward)
+        }
         Op::Fused(fid, _)
             if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR =>
         {
@@ -824,13 +846,16 @@ fn op_to_op_params(
                 k: k_lhs,
             }
         }
-        // Phase 7.6 step 3: SoftmaxLastDim flows in either the legacy
-        // `Op::SoftmaxLastDim` shape or the new
-        // `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, _)` shape; both share
-        // the same shape contract (input == output == [..., last_dim]),
-        // and the params are derived from the input layout (not the op
-        // variant), so collapse to one body.
-        op if op_is_softmax_last_dim(op) => {
+        // Phase 7.6 step 3: SoftmaxLastDim flows through
+        // `Op::Fused(FusedOps::SOFTMAX_LAST_DIM, _)`. The
+        // SOFTMAX_LAST_DIM_BACKWARD variant added in step 6
+        // follow-up shares the same `outer × last_dim` shape
+        // contract (input 0 is `y` for forward / forward-output
+        // for backward; both rank-≥1 with last-dim as the
+        // reduction axis).
+        op if op_is_softmax_last_dim(op)
+            || matches!(op, Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::SOFTMAX_LAST_DIM_BACKWARD) =>
+        {
             let il = input_layout(node.inputs[0]);
             let dims = il.shape().dims();
             if dims.is_empty() {
@@ -1233,29 +1258,53 @@ fn op_to_op_params(
         // Phase 7.6 step 5: legacy `Op::RmsNormLastDim` /
         // `Op::LayerNormLastDim` arms retired with the variants;
         // both now route through `Op::Fused(NORM_LAST_DIM, _)`.
+        // Step 6 follow-up extends this arm to also cover the
+        // backward variants (same outer × last_dim + eps geometry).
         Op::Fused(fid, params)
             if *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM
-                || *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM =>
+                || *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM
+                || *fid == fuel_graph::registry::FusedOps::RMS_NORM_LAST_DIM_BACKWARD
+                || *fid == fuel_graph::registry::FusedOps::LAYER_NORM_LAST_DIM_BACKWARD =>
         {
             let eps = match params {
                 fuel_graph::registry::FusedOpParams::RmsNormLastDim { eps } => *eps,
                 fuel_graph::registry::FusedOpParams::LayerNormLastDim { eps } => *eps,
+                fuel_graph::registry::FusedOpParams::RmsNormLastDimBackward { eps } => *eps,
+                fuel_graph::registry::FusedOpParams::LayerNormLastDimBackward { eps } => *eps,
                 _ => return Err(Error::Msg(format!(
-                    "Op::Fused(NORM_LAST_DIM, _) expected \
-                     RmsNormLastDim or LayerNormLastDim params, got {params:?}",
+                    "Op::Fused(NORM_LAST_DIM[_BACKWARD], _) expected \
+                     RmsNormLastDim[Backward] or LayerNormLastDim[Backward] params, got {params:?}",
                 )).bt()),
             };
             let il = input_layout(node.inputs[0]);
             let dims = il.shape().dims();
             if dims.is_empty() {
                 return Err(Error::Msg(
-                    "Op::Fused(NORM_LAST_DIM, _) requires rank ≥ 1".to_string(),
+                    "Op::Fused(NORM_LAST_DIM[_BACKWARD], _) requires rank ≥ 1".to_string(),
                 )
                 .bt());
             }
             let last_dim = *dims.last().unwrap();
             let outer_count: usize = dims[..dims.len() - 1].iter().product();
             OpParams::NormLastDim { outer_count, last_dim, eps }
+        }
+        // ReduceMaxToBackward: shape pair via the new
+        // OpParams::ReduceMaxToBackward variant. x's shape is
+        // `input_shape`; upstream's shape is `output_shape`.
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::REDUCE_MAX_TO_BACKWARD =>
+        {
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::Fused(REDUCE_MAX_TO_BACKWARD) expects 2 inputs, got {}",
+                    node.inputs.len(),
+                )).bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let up_layout = input_layout(node.inputs[1]);
+            let input_shape: Vec<usize> = x_layout.shape().dims().to_vec();
+            let output_shape: Vec<usize> = up_layout.shape().dims().to_vec();
+            OpParams::ReduceMaxToBackward { input_shape, output_shape }
         }
         Op::Concat { dim } => {
             // Output's shape: [..., total_dim, ...]. Compute outer
