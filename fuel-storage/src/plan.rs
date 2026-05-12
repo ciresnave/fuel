@@ -286,6 +286,116 @@ fn missing_binding_error(
     .bt()
 }
 
+/// v1 route picker (step A3 of Phase 7.6 step 9b). Resolves a
+/// [`NodeKernelBinding`]'s `kernel` slot from the alternatives the
+/// binding-table registers at its decision point, caches the chosen
+/// [`KernelRef`] for subsequent calls, and returns it.
+///
+/// The v1 picker is intentionally a placeholder: per architecture
+/// v1.0 §04, the long-term home for selection is the empirical Judge
+/// driven by per-cell telemetry — out of scope for 9b. Today's choice
+/// is a discrete tolerance policy ([`TolerancePolicy`]); the Judge
+/// integration is the future replacement.
+///
+/// ## Semantics
+///
+/// - **First-call:** the binding's `kernel` is `None`. The picker
+///   reads `bindings_table.lookup_alternatives(...)`, applies
+///   `policy`, writes the result back to `binding.kernel`, and
+///   returns it.
+/// - **Second-call:** `binding.kernel` is `Some(_)` from the prior
+///   resolution. The picker short-circuits — no table lookup — and
+///   returns the cached value. This is the lazy-caching commitment
+///   architecture v1.0 §04 names: a decision point resolves once per
+///   realize.
+/// - **No alternative registered:** returns [`Error::NoBackendForOp`].
+///   In a well-formed plan this never fires — `compile_plan` (A2)
+///   already verified ≥1 alternative existed. The branch exists so
+///   the picker is safe to call against a binding from outside
+///   `compile_plan` (e.g. tests, future direct-call sites).
+///
+/// `kernel_revision` will be updated alongside `kernel` once
+/// per-kernel revision hashing exists (out of scope for 9b — stays
+/// [`KernelRevisionHash::UNTRACKED`]).
+pub fn resolve_kernel(
+    binding: &mut NodeKernelBinding,
+    bindings_table: &KernelBindingTable,
+    policy: TolerancePolicy,
+) -> Result<KernelRef> {
+    if let Some(k) = binding.kernel {
+        return Ok(k);
+    }
+    let alts = bindings_table.lookup_alternatives(
+        binding.op_kind,
+        &binding.dtypes,
+        binding.backend,
+    );
+    let chosen = match policy {
+        TolerancePolicy::BitStableFirst => alts
+            .iter()
+            .find(|e| e.precision.bit_stable_on_same_hardware)
+            .or_else(|| alts.first()),
+        TolerancePolicy::FirstAlternative => alts.first(),
+    }
+    .ok_or_else(|| {
+        Error::NoBackendForOp {
+            op: binding.op_kind,
+            dtypes: binding.dtypes.to_vec(),
+            available_backends: Vec::new(),
+            supported_combinations: Vec::new(),
+        }
+        .bt()
+    })?;
+    binding.kernel = Some(chosen.kernel);
+    // kernel_revision stays UNTRACKED in 9b — real revision hashing
+    // lands with the persistence-cache phase. Keeping the field on
+    // the binding ensures the seam is in place when that work starts.
+    Ok(chosen.kernel)
+}
+
+/// Route-picker tolerance policy. The v1 picker (step 9b) exposes
+/// two arms; architecture v1.0 §04's long-term shape is a per-op
+/// tolerance *budget* (`max_ulp_threshold: u32`, `max_relative_threshold: f64`)
+/// driven by calibration data — that's the future replacement, not 9b
+/// scope.
+///
+/// The discrete enum is a placeholder for two reasons:
+///
+/// 1. **Calibration framework isn't built yet.** Without measured
+///    per-cell error data, there's nothing to drive a budget-based
+///    picker — every alternative would look "good enough."
+///    `BitStableFirst` is the conservative stand-in: prefer
+///    bit-equivalent kernels until measured data argues otherwise.
+/// 2. **The cutlass session's architectural payoff.** Registering
+///    CUTLASS as a bf16/f16 matmul sibling alongside cuBLAS doesn't
+///    change user behavior under `BitStableFirst` (cuBLAS wins on
+///    `bit_stable_on_same_hardware: true`). A later session enables
+///    CUTLASS by flipping a tolerance-policy switch — no executor
+///    edit required.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TolerancePolicy {
+    /// **Default.** Prefer an alternative whose
+    /// `PrecisionGuarantee::bit_stable_on_same_hardware` is `true`. If
+    /// none of the registered alternatives are bit-stable, fall back
+    /// to the first-registered alternative.
+    BitStableFirst,
+    /// First-registered alternative wins, regardless of precision.
+    /// Used by tests that exercise non-bit-stable kernels deliberately,
+    /// and by future entry points (a "tolerance-aware" realize call)
+    /// that have already filtered alternatives by their per-op
+    /// tolerance budget upstream.
+    FirstAlternative,
+}
+
+impl Default for TolerancePolicy {
+    /// `BitStableFirst` — architecture v1.0 §04 names bit-stability as
+    /// the default correctness anchor; the picker honors that until a
+    /// calibration framework can drive richer policy.
+    fn default() -> Self {
+        TolerancePolicy::BitStableFirst
+    }
+}
+
 /// Build a [`NodeKernelBinding`] with `kernel: None` — the
 /// pre-resolution shape every entry in `ExecutionPlan::bindings`
 /// starts as. Exposed for step A4's tests; production construction
