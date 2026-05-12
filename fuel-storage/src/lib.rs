@@ -43,7 +43,7 @@ pub mod plan;
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
-pub use plan::{ExecutionPlan, NodeKernelBinding};
+pub use plan::{compile_plan, resolve_kernel, ExecutionPlan, NodeKernelBinding, TolerancePolicy};
 
 /// Vulkan storage variant — re-exported from fuel-graph-vulkan when
 /// the vulkan feature is enabled.
