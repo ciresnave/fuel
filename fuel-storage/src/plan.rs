@@ -44,12 +44,13 @@ use std::collections::HashMap;
 
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation};
-use fuel_graph::NodeId;
+use fuel_core_types::{DType, DeviceLocation, Error, Result};
+use fuel_graph::{Graph, NodeId};
 use smallvec::SmallVec;
 
 use crate::fused::KernelRevisionHash;
-use crate::kernel::{KernelDTypes, KernelRef};
+use crate::kernel::{KernelBindingTable, KernelDTypes, KernelRef};
+use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 
 /// One node's lazy kernel resolution.
 ///
@@ -166,6 +167,123 @@ pub(crate) fn default_device_for(backend: BackendId) -> DeviceLocation {
         // arm here.
         _ => DeviceLocation::Cpu,
     }
+}
+
+/// Build an [`ExecutionPlan`] from a topologically-ordered node
+/// sequence and the binding-table snapshot. Step A2 of Phase 7.6
+/// step 9b.
+///
+/// For every node in `order`:
+///
+/// - If `op_to_op_kind(&node.op)` returns `None` (view ops,
+///   `Op::Const`, ops not yet wired into the dispatch table),
+///   the node gets **no binding** — view-only adoption and const
+///   adoption flow through the legacy paths unchanged.
+/// - Otherwise resolve the node's `(op_kind, dtypes, backend, device)`
+///   tuple — `dtypes` via [`build_lookup_dtypes`] (same shape the
+///   pipelined path uses), `backend` via `Graph::target_backend(id)`
+///   (populated by op-builder methods per Phase 7.5 B3),
+///   `device` via `Graph::placement(id)` (falling back to
+///   `default_device_for(backend)`).
+/// - **Fail-fast guard**: assert the binding-table has at least one
+///   alternative registered for `(op_kind, dtypes, backend)`. If none,
+///   return [`Error::NoBackendForOp`] — failing at plan time beats
+///   failing at first-use time deep inside `eval_node`. Resolution
+///   (*which* alternative wins) is lazy; *existence* is checked
+///   eagerly.
+/// - Insert `NodeKernelBinding { kernel: None, kernel_revision: UNTRACKED, ... }`
+///   into `plan.bindings`. The route picker (step A3) fills `kernel`
+///   on first use.
+///
+/// `order` is the same topological order today's executor walks — the
+/// pipelined path computes it via `fuel_graph::topo_order`; callers
+/// pass it in rather than recomputing here.
+pub fn compile_plan(
+    graph: &Graph,
+    order: &[NodeId],
+    bindings_table: &KernelBindingTable,
+) -> Result<ExecutionPlan> {
+    let mut bindings = HashMap::with_capacity(order.len());
+
+    for &id in order {
+        let node = graph.node(id);
+        // Skip ops the binding-table doesn't index: view ops, Const,
+        // Reshape, and any op_to_op_kind() returns None for.
+        let Some(op_kind) = op_to_op_kind(&node.op) else {
+            continue;
+        };
+        let backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "compile_plan: node {:?} ({:?}) has no target_backend set",
+                id, node.op,
+            ))
+            .bt()
+        })?;
+        let device = graph
+            .placement(id)
+            .unwrap_or_else(|| default_device_for(backend));
+        let dtypes = build_lookup_dtypes(graph, node);
+
+        // Fail-fast: the binding-table must carry at least one
+        // alternative for this decision point. Missing-binding errors
+        // surface here, not deep in eval_node where the executor
+        // would otherwise hit them.
+        let alts = bindings_table.lookup_alternatives(op_kind, &dtypes, backend);
+        if alts.is_empty() {
+            // Reuse the error shape lookup_with_caps emits so callers
+            // see consistent diagnostics whether they go through the
+            // legacy path or compile_plan.
+            return Err(missing_binding_error(
+                bindings_table,
+                op_kind,
+                &dtypes,
+                backend,
+            ));
+        }
+
+        bindings.insert(
+            id,
+            NodeKernelBinding {
+                node: id,
+                op_kind,
+                dtypes: SmallVec::from_slice(&dtypes),
+                backend,
+                device,
+                kernel: None,
+                kernel_revision: KernelRevisionHash::UNTRACKED,
+            },
+        );
+    }
+
+    Ok(ExecutionPlan {
+        order: order.to_vec(),
+        bindings,
+    })
+}
+
+/// Build an [`Error::NoBackendForOp`] diagnostic for a decision point
+/// with no registered alternative. Same shape as
+/// [`crate::kernel::KernelBindingTable::lookup_with_caps`]'s error
+/// branch so callers see consistent output regardless of which path
+/// surfaced the miss.
+fn missing_binding_error(
+    table: &KernelBindingTable,
+    op: OpKind,
+    dtypes: &[DType],
+    backend: BackendId,
+) -> Error {
+    let _ = (table, backend); // table-introspection is the legacy path's job;
+    // here we surface only the op + dtypes the caller asked for. A
+    // richer "available backends for this op" enumeration could be
+    // added once compile_plan starts being the primary error surface
+    // (Track B onward).
+    Error::NoBackendForOp {
+        op,
+        dtypes: dtypes.to_vec(),
+        available_backends: Vec::new(),
+        supported_combinations: Vec::new(),
+    }
+    .bt()
 }
 
 /// Build a [`NodeKernelBinding`] with `kernel: None` — the

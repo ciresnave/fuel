@@ -399,7 +399,11 @@ fn compile_one(
 /// (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
 /// match how those wrappers are registered (otherwise an N-way concat
 /// would need N+1 distinct registrations per dtype).
-fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
+///
+/// `pub(crate)` — `crate::plan::compile_plan` (step 9b) reuses this
+/// to key the route picker's binding-table lookup the same way the
+/// pipelined path does.
+pub(crate) fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
     if matches!(node.op, Op::Concat { .. }) {
         // Concat: all inputs share node.dtype by construction.
         let in_dt = node
@@ -436,7 +440,11 @@ fn op_is_fused_linear(op: &Op) -> bool {
 /// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.
 /// Returns `None` for ops that haven't been wired into the new
 /// dispatch path yet — Phase C extends this as op families migrate.
-fn op_to_op_kind(op: &Op) -> Option<OpKind> {
+///
+/// `pub(crate)` — `crate::plan::compile_plan` (step 9b) reuses this
+/// to skip nodes the binding-table doesn't index (view ops,
+/// `Op::Const`, not-yet-migrated ops) when building bindings.
+pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
     match op {
         Op::Add           => Some(OpKind::AddElementwise),
         Op::Sub           => Some(OpKind::SubElementwise),
