@@ -241,6 +241,17 @@ pub enum OpParams {
         output_shape: Vec<usize>,
     },
 
+    /// Backward of `ReduceMaxTo`. Inputs: `(x, upstream)` where
+    /// `x.shape == input_shape` and `upstream.shape == output_shape`.
+    /// Output: `grad_x` of `input_shape`. The kernel recomputes the
+    /// forward max via `input_shape → output_shape` axis alignment,
+    /// builds a tie-count mask, and routes upstream back to argmax
+    /// positions (fair-share on ties).
+    ReduceMaxToBackward {
+        input_shape: Vec<usize>,
+        output_shape: Vec<usize>,
+    },
+
     /// Multi-head scaled-dot-product attention shape + math params.
     /// `q` is `[B, Hq, Sq, D]`, `k` and `v` are `[B, Hkv, Sk, D]`
     /// (Hkv ≤ Hq, GQA-divisible). Optional 4th input `alibi_slopes`

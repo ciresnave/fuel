@@ -747,6 +747,45 @@ pub const QMATMUL_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
             framework lands.",
 };
 
+/// Precision guarantee for `(REDUCE_MAX_TO_BACKWARD, Cpu, *)` impls.
+/// The kernel recomputes the forward max, builds a tie-mask,
+/// counts ties via reduce_sum, divides upstream by the count, then
+/// broadcasts back and gates by the mask. All deterministic on
+/// same hardware (no atomics, no parallel reductions); F32
+/// accumulator for half-precision dtypes via the shared
+/// `reduce_max_to_backward_impl` adapter.
+pub const REDUCE_MAX_TO_BACKWARD_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend ReduceMaxTo backward: recomputed-max + \
+            tie-mask + scale + gate; deterministic iteration order; \
+            F32 accumulator for half-precision; bit-identical same-\
+            hardware re-run.",
+};
+
+/// Cost model for `(REDUCE_MAX_TO_BACKWARD, Cpu)` — five passes over
+/// the input: forward max, mask build, count, scale, broadcast +
+/// gate. Roughly `5 · in_count` FLOPs, with bandwidth dominated by
+/// 5× the input element count.
+pub fn cost_reduce_max_to_backward_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 2, "ReduceMaxToBackward cost: expected 2 input shapes");
+    let in_count: u64 = shapes[0].dims().iter().map(|&d| d as u64).product();
+    let out_count: u64 = shapes[1].dims().iter().map(|&d| d as u64).product();
+    let flops = 5 * in_count + 2 * out_count;
+    let bytes_moved = (5 * in_count + 3 * out_count) * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 80,
+    }
+}
+
 /// Cost model for `(QMATMUL, Cpu)` — same FLOP count as a regular
 /// matmul (the dequant adds a small per-block overhead that's
 /// dwarfed by the FMA count for any useful K).
@@ -974,15 +1013,13 @@ mod tests {
     /// rather than at runtime. Adding a new `FusedOpEntry` without
     /// a matching CPU registration fails this test immediately.
     ///
-    /// `KNOWN_GAPS` enumerates ops that are deliberately not yet
-    /// covered, each with a one-line reason. The list is an
-    /// allowlist, not an excuse — each entry has a follow-up commit
-    /// that removes it. As of step 7 (2026-05-11) only the four
-    /// backward helpers appear here; their CPU dispatch flows
-    /// through `GraphBackend` trait methods in
-    /// `fuel-graph-executor`, not the byte-level binding table,
-    /// so step-6 registration awaits either wrapper conversion or
-    /// step-9's trait-method-as-KernelRef path.
+    /// As of step-6 follow-up (2026-05-11), the previously-empty-
+    /// covered backward helpers (SoftmaxLastDimBackward,
+    /// LayerNormLastDimBackward, RmsNormLastDimBackward,
+    /// ReduceMaxToBackward) gained byte-level CPU wrappers +
+    /// binding-table registrations + BackendImpls. The `KNOWN_GAPS`
+    /// allowlist is therefore **empty** — every registered fused
+    /// op has bit-stable CPU coverage.
     ///
     /// Note on primitive Ops: this lint covers the **fused-op**
     /// registry only. Primitive ops (Op::Add, Op::MatMul, etc.)
@@ -993,33 +1030,14 @@ mod tests {
     /// OpKind.
     #[test]
     fn precision_guarantee_lint_bit_stable_cpu_coverage() {
-        use fuel_graph::registry::{default_registry, FusedOpId, FusedOps};
+        use fuel_graph::registry::{default_registry, FusedOpId};
 
-        // Each gap names the FusedOpId + the reason it isn't yet
-        // covered by a CPU BackendImpl. When you close a gap, delete
-        // the corresponding line; when you add a new fused op
-        // without immediate coverage, add a line here AND file a
-        // follow-up.
-        const KNOWN_GAPS: &[(FusedOpId, &str)] = &[
-            (
-                FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
-                "CPU dispatch flows through GraphBackend::softmax_last_dim_backward, \
-                 not a byte-level wrapper. Step-6 registration awaits wrapper \
-                 conversion or step-9 trait-method-as-KernelRef.",
-            ),
-            (
-                FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
-                "Same as SOFTMAX_LAST_DIM_BACKWARD — trait-method dispatch only.",
-            ),
-            (
-                FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
-                "Same as SOFTMAX_LAST_DIM_BACKWARD — trait-method dispatch only.",
-            ),
-            (
-                FusedOps::REDUCE_MAX_TO_BACKWARD,
-                "Same as SOFTMAX_LAST_DIM_BACKWARD — trait-method dispatch only.",
-            ),
-        ];
+        // The allowlist is empty now that every registered fused op
+        // has bit-stable CPU coverage. If a future commit introduces
+        // a new entry without immediate CPU coverage, add it here
+        // with a documented reason AND file a follow-up to remove
+        // the line.
+        const KNOWN_GAPS: &[(FusedOpId, &str)] = &[];
 
         let meta = default_registry();
         let kernels = default_kernel_registry();
@@ -1081,6 +1099,17 @@ mod tests {
             covered > 0 || allowlisted > 0,
             "lint covered 0 ops — registry appears empty"
         );
+        // Stronger commitment: with KNOWN_GAPS empty, every entry
+        // should be covered.
+        assert_eq!(
+            allowlisted, 0,
+            "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
+        );
+        // Sanity: we should see all 14 registered fused ops covered.
+        assert_eq!(
+            covered, 14,
+            "expected 14 fused ops covered by bit-stable CPU impls, got {covered}",
+        );
     }
 
     /// Negative-path check for the bit-stable lint logic: a
@@ -1132,10 +1161,10 @@ mod tests {
             "an UNKNOWN-precision CPU impl must not satisfy the bit-stable lint");
     }
 
-    /// Step 6 — coverage assertion for the 8 ops that gained
-    /// BackendImpls in this commit (SoftmaxLastDim, RmsNormLastDim,
-    /// LayerNormLastDim, Rope, ConvTranspose2D, FlashAttn, PagedAttn,
-    /// QMatMul). Each entry should have at least one CPU impl after
+    /// Step 6 + backward-helper follow-up — coverage assertion for
+    /// the 12 ops that gained BackendImpls (8 forwards from step 6
+    /// + 4 backward helpers from the follow-up). Each entry should
+    /// have at least the expected CPU impl count after
     /// `default_kernel_registry()` populates.
     #[test]
     fn default_kernel_registry_step6_coverage() {
@@ -1146,16 +1175,21 @@ mod tests {
         // shapes registered. SoftmaxLastDim/RmsNormLastDim/
         // LayerNormLastDim/Rope = 4 dtypes each. ConvTranspose2D /
         // FlashAttn / PagedAttn = 4 dtypes × 2 shapes = 8 each.
-        // QMatMul = 1 (F32 only).
+        // QMatMul = 1 (F32 only). The 4 backward helpers = 4 dtypes
+        // each.
         for (id, want) in [
-            (FusedOps::SOFTMAX_LAST_DIM,    4usize),
-            (FusedOps::RMS_NORM_LAST_DIM,   4),
-            (FusedOps::LAYER_NORM_LAST_DIM, 4),
-            (FusedOps::ROPE,                4),
-            (FusedOps::CONV_TRANSPOSE2D,    8),
-            (FusedOps::FLASH_ATTN,          8),
-            (FusedOps::PAGED_ATTN,          8),
-            (FusedOps::QMATMUL,             1),
+            (FusedOps::SOFTMAX_LAST_DIM,             4usize),
+            (FusedOps::RMS_NORM_LAST_DIM,            4),
+            (FusedOps::LAYER_NORM_LAST_DIM,          4),
+            (FusedOps::ROPE,                         4),
+            (FusedOps::CONV_TRANSPOSE2D,             8),
+            (FusedOps::FLASH_ATTN,                   8),
+            (FusedOps::PAGED_ATTN,                   8),
+            (FusedOps::QMATMUL,                      1),
+            (FusedOps::SOFTMAX_LAST_DIM_BACKWARD,    4),
+            (FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, 4),
+            (FusedOps::RMS_NORM_LAST_DIM_BACKWARD,   4),
+            (FusedOps::REDUCE_MAX_TO_BACKWARD,       4),
         ] {
             let impls = r.impls_for(id);
             assert_eq!(

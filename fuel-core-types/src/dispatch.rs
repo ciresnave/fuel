@@ -270,12 +270,28 @@ pub enum OpKind {
     /// Softmax along the last dim, numerically stable
     /// (subtract per-row max, exp, divide by sum).
     SoftmaxLastDim,
+    /// Backward of [`SoftmaxLastDim`]: `(y, g) → y · (g - sum(y · g, last))`.
+    /// Per-dtype; output shape == y shape.
+    SoftmaxLastDimBackward,
     /// RMS normalization along the last dim, no affine params:
     /// `y = x / sqrt(mean(x², last) + eps)`.
     RmsNormLastDim,
+    /// Backward of [`RmsNormLastDim`]: `(x, g_y) → grad_x` per the
+    /// closed-form formula in
+    /// `fuel-reference-backend::ops::rms_norm_last_dim_backward`.
+    /// Per-dtype + eps; output shape == x shape.
+    RmsNormLastDimBackward,
     /// Layer normalization along the last dim, no affine params:
     /// `y = (x - mean(x)) / sqrt(var(x) + eps)`.
     LayerNormLastDim,
+    /// Backward of [`LayerNormLastDim`]: `(x, g) → grad_x` per the
+    /// canonical formula. Per-dtype + eps; output shape == x shape.
+    LayerNormLastDimBackward,
+    /// Backward of [`ReduceMaxTo`]: `(x, upstream) → grad_x` of x's
+    /// shape. Routes upstream to argmax positions; ties split
+    /// equally. Per-dtype; carries shape pair via
+    /// [`OpParams::ReduceMaxToBackward`].
+    ReduceMaxToBackward,
     /// Pick slices from a source tensor along `dim` using a rank-1
     /// U32 index tensor. Output's `dim` size = number of indices.
     IndexSelect,
@@ -380,8 +396,12 @@ impl OpKind {
             OpKind::MaskedFill         => "masked_fill",
             OpKind::Concat            => "concat",
             OpKind::SoftmaxLastDim    => "softmax_last_dim",
+            OpKind::SoftmaxLastDimBackward => "softmax_last_dim_backward",
             OpKind::RmsNormLastDim    => "rms_norm_last_dim",
+            OpKind::RmsNormLastDimBackward => "rms_norm_last_dim_backward",
             OpKind::LayerNormLastDim  => "layer_norm_last_dim",
+            OpKind::LayerNormLastDimBackward => "layer_norm_last_dim_backward",
+            OpKind::ReduceMaxToBackward => "reduce_max_to_backward",
             OpKind::IndexSelect       => "index_select",
             OpKind::Gather            => "gather",
             OpKind::Rope              => "rope",
