@@ -137,6 +137,40 @@ impl PrecisionGuarantee {
         notes: "Reference IEEE-754 evaluation; bit-identical re-run.",
     };
 
+    /// Phase 7.6 step 7b: shared precision guarantee for the
+    /// always-built CPU backend's **primitive** kernels — elementwise
+    /// unary/binary, reductions, matmul, casts, comparisons, indexing,
+    /// scalar ops, transcendentals (Exp/Log/Sin/Cos/Tanh/Sigmoid/
+    /// Gelu/Silu), etc. All claim:
+    ///
+    /// - `bit_stable_on_same_hardware: true` (deterministic iteration
+    ///   order; no atomic FP adds; sequential nested loops)
+    /// - F32 accumulator for BF16/F16 inputs, native F32 / F64 / U32
+    ///   for matching dtypes
+    /// - No specific ULP / relative / absolute bound claimed at this
+    ///   layer — the empirical calibration framework in step 8
+    ///   populates per-op-per-shape bounds via reference comparisons
+    ///
+    /// This is the default value bulk-applied by
+    /// [`crate::kernel::KernelBindingTable::fill_unset_cpu_precision`]
+    /// at the end of `register_cpu_kernels`. Sites that need a
+    /// different claim must call
+    /// [`crate::kernel::KernelBindingTable::register_with_precision`]
+    /// explicitly with the weaker guarantee — those don't get
+    /// bulk-overwritten because the fill only touches UNKNOWN
+    /// entries.
+    pub const PRIMITIVE_DETERMINISTIC_CPU: PrecisionGuarantee = PrecisionGuarantee {
+        bit_stable_on_same_hardware: true,
+        max_ulp: None,
+        max_relative: None,
+        max_absolute: None,
+        notes: "fuel-cpu-backend primitive kernel family: deterministic \
+                nested-loop iteration order; F32 accumulator for \
+                half-precision inputs; bit-identical same-hardware \
+                re-run. Per-op-per-shape ULP / relative bounds land \
+                with the step-8 empirical calibration framework.",
+    };
+
     /// Conservative all-unknown defaults. Used as a placeholder during
     /// the migration when a real PrecisionGuarantee hasn't been audited
     /// yet. Step 7 replaces every use of this with a real claim and
