@@ -105,8 +105,11 @@ accelerate-src = { version = "0.3.2" }
 aocl-blas  = { path = "../aocl/crates/aocl-blas" }
 aocl-types = { path = "../aocl/crates/aocl-types" }
 # Intel oneMKL safe wrapper for the Phase 7b second CPU backend.
-# Crates.io release 0.1.0 (2026-04-28).
-onemkl = "0.1"
+# Crates.io release 0.2.0 (2026-05-15) — adds service module
+# (IsaLevel, cpu_* helpers, ThreadCountGuard, AlignedBuffer), RNG
+# distribution suite, iterative-refinement LAPACK, sparse SYRK/SYPR,
+# summary-stats preprocessing.
+onemkl = "0.2"
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
 fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.2" }
