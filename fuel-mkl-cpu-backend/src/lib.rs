@@ -37,6 +37,33 @@ use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
 use fuel_reference_backend::exec::AnyRefTensor;
 use fuel_reference_backend::RefTensor;
 
+// onemkl v0.2 service-module surface re-exported so callers can
+// reach for these without taking a direct `onemkl` dependency.
+//
+// * `IsaLevel`        — pin MKL's vector-ISA dispatch tier (see
+//                       [`pin_isa`]). Useful for benchmarking and for
+//                       working around a misbehaving fallback path.
+// * `ThreadCountGuard`— RAII scope guard that overrides MKL's local
+//                       thread count and restores it on drop. Lets a
+//                       caller say "this matmul should use 1 thread"
+//                       without disturbing the rest of the process.
+pub use onemkl::service::{IsaLevel, ThreadCountGuard};
+
+/// Pin oneMKL's vector-ISA dispatch tier to `level`.
+///
+/// Must be called **before** any MKL routine (including
+/// [`probe_mkl_loadable`] and the `MklBackend::try_new*` family) —
+/// MKL caches its dispatched code path on first use. Returns `Err`
+/// if the CPU does not support the requested level.
+///
+/// On Windows this best-effort extends `PATH` so `mkl_rt` can load
+/// even when `setvars.bat` hasn't been run.
+pub fn pin_isa(level: IsaLevel) -> Result<()> {
+    dll_path::ensure_loadable();
+    onemkl::service::enable_instructions(level)
+        .map_err(|e| fuel_core_types::Error::Msg(format!("MKL_Enable_Instructions: {e}")))
+}
+
 /// Probe `mkl_rt` (or whichever oneMKL runtime resolves) with a 2×2
 /// sgemm. Returns `Ok` on a successful call producing the right
 /// answer, `Err` if the library can't be loaded or the probe gemm
@@ -99,6 +126,20 @@ impl MklBackend {
     pub fn try_new() -> Result<Self> {
         probe_mkl_loadable()?;
         Ok(Self { cpu: CpuBackend })
+    }
+
+    /// Same as [`MklBackend::try_new`], but additionally sets oneMKL's
+    /// global thread count to `num_threads` via
+    /// `onemkl::service::set_num_threads`.
+    ///
+    /// Threading is process-global in MKL: this affects every
+    /// subsequent MKL routine regardless of which `MklBackend`
+    /// instance issues it. For per-scope control use
+    /// [`ThreadCountGuard`] directly at the call site instead.
+    pub fn try_new_with_threads(num_threads: i32) -> Result<Self> {
+        let backend = Self::try_new()?;
+        onemkl::service::set_num_threads(num_threads);
+        Ok(backend)
     }
 }
 
@@ -204,10 +245,21 @@ impl GraphBackend for MklBackend {
             );
         }
         let mut out = vec![0.0_f32; s.output_len()];
-        let mut patches = vec![0.0_f32; s.im2col_len()];
+        // 64-byte alignment matches AVX-512 cache-line loads, which
+        // the GEMM call below will consume the im2col patches with.
+        // Falls back to the inner CpuBackend if MKL_malloc can't
+        // satisfy the allocation.
+        let mut patches = match onemkl::service::AlignedBuffer::<f32>::new(s.im2col_len(), 64) {
+            Ok(buf) => buf,
+            Err(_) => {
+                return self.cpu.conv2d(
+                    input, weight, input_layout, weight_layout, stride, padding, groups,
+                );
+            }
+        };
         fuel_conv::conv2d_via_gemm(
             xf.as_slice(), wf.as_slice(), None,
-            &s, &mut out, &mut patches,
+            &s, &mut out, patches.as_mut_slice(),
             |m, n, k, a, b, c| {
                 use onemkl::enums::{Layout as MklLayout, Transpose};
                 use onemkl::matrix::{MatrixMut, MatrixRef};

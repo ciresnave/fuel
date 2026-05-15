@@ -17,7 +17,9 @@ impl BackendProbe for MklBackendProbe {
 }
 
 /// Enumerate MKL "devices" — one entry if `mkl_rt` loads, empty
-/// otherwise.
+/// otherwise. The descriptor's `hardware_sku` carries the runtime
+/// MKL version string plus current/max CPU frequency, sourced from
+/// `onemkl::service` (v0.2).
 pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
     if crate::probe_mkl_loadable().is_err() {
         return Ok(Vec::new());
@@ -25,8 +27,16 @@ pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let sku = format!("{} ({} logical cores) [oneMKL]",
-        std::env::consts::ARCH, cores);
+    // v0.2 service module — replaces the std::env::consts::ARCH
+    // placeholder with the real running-MKL identity + CPU info.
+    let mkl_version    = onemkl::service::version_string();
+    let cpu_freq_ghz   = onemkl::service::cpu_frequency_ghz();
+    let max_freq_ghz   = onemkl::service::max_cpu_frequency_ghz();
+    let mkl_max_thread = onemkl::service::max_threads();
+    let sku = format!(
+        "{} ({} logical cores, MKL max-threads {}) @ {:.2}/{:.2} GHz [{mkl_version}]",
+        std::env::consts::ARCH, cores, mkl_max_thread, cpu_freq_ghz, max_freq_ghz,
+    );
     Ok(vec![DeviceDescriptor {
         backend:            BackendId::Mkl,
         device_index:       0,
