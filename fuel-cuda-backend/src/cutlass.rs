@@ -50,7 +50,12 @@ fn cutlass_matmul_rrr<T>(
     k: usize,
 ) -> Result<CudaStorageBytes>
 where
-    T: CutlassElement + DeviceRepr,
+    // `Scalar = f32`: baracuda alpha.26 added an associated `Scalar` type on
+    // `Element` (the renamed `CutlassElement`) for the GEMM epilogue's α/β
+    // compute precision. f16, bf16, and f32-input kernels all use an f32
+    // epilogue; only f64 uses Scalar = f64. Constraining here keeps the
+    // generic happy with naked numeric literals.
+    T: CutlassElement<Scalar = f32> + DeviceRepr,
 {
     let dtype_label = std::any::type_name::<T>();
     let device = lhs.device().clone();
