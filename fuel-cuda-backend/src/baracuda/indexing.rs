@@ -157,3 +157,395 @@ macro_rules! index_select_kernel {
 index_select_kernel!(index_select_f32, f32, 4, "index_select_f32");
 index_select_kernel!(index_select_f64, f64, 8, "index_select_f64");
 index_select_kernel!(index_select_i32, i32, 4, "index_select_i32");
+
+// ===========================================================================
+// Gather (N-dim, single dim, U32 indices)
+// ===========================================================================
+
+type GatherRun = unsafe extern "C" fn(
+    out_numel: i64,
+    rank: i32,
+    gather_dim: i32,
+    src_dim_size: i32,
+    out_shape: *const i32,
+    stride_src: *const i64,
+    stride_index: *const i64,
+    stride_out: *const i64,
+    src: *const std::ffi::c_void,
+    index: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// Build i32 shape + i64 stride buffers from a `Vec<usize>` source
+/// shape. Stride convention: row-major contiguous.
+fn shape_strides_for(
+    shape: &[usize],
+    op_label: &'static str,
+) -> Result<(Vec<i32>, Vec<i64>)> {
+    let rank = shape.len();
+    let mut shape_i32 = Vec::with_capacity(rank);
+    for (i, &d) in shape.iter().enumerate() {
+        shape_i32.push(i32::try_from(d).map_err(|_| {
+            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
+            })
+        })?);
+    }
+    let mut stride = vec![0_i64; rank];
+    if rank > 0 {
+        stride[rank - 1] = 1;
+        for i in (0..rank - 1).rev() {
+            stride[i] = stride[i + 1] * shape[i + 1] as i64;
+        }
+    }
+    Ok((shape_i32, stride))
+}
+
+fn gather_run(
+    src: &CudaStorageBytes,
+    index: &CudaStorageBytes,
+    source_shape: &[usize],
+    output_shape: &[usize],
+    dim: usize,
+    kernel: GatherRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    if source_shape.len() != output_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: source rank {} != output rank {}",
+            source_shape.len(),
+            output_shape.len(),
+        ))
+        .bt());
+    }
+    if dim >= source_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: dim {dim} out of bounds for rank {}",
+            source_shape.len(),
+        ))
+        .bt());
+    }
+    let device = src.device().clone();
+    let out_numel: i64 = output_shape.iter().product::<usize>() as i64;
+    let out_bytes = (out_numel as usize) * dtype_size_bytes;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+    let (out_shape_i32, stride_out) = shape_strides_for(output_shape, op_label)?;
+    let (_src_shape_i32, stride_src) = shape_strides_for(source_shape, op_label)?;
+    // Index shape matches output shape for gather.
+    let (_idx_shape_i32, stride_index) = shape_strides_for(output_shape, op_label)?;
+    let rank = source_shape.len() as i32;
+    let src_dim = i32::try_from(source_shape[dim]).map_err(|_| {
+        fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label,
+            dim_index: dim,
+            dim_value: source_shape[dim],
+        })
+    })?;
+
+    let src_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
+    let idx_ptr = index.buffer().as_raw().0 as *const std::ffi::c_void;
+    let out_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+
+    let status = unsafe {
+        kernel(
+            out_numel,
+            rank,
+            dim as i32,
+            src_dim,
+            out_shape_i32.as_ptr(),
+            stride_src.as_ptr(),
+            stride_index.as_ptr(),
+            stride_out.as_ptr(),
+            src_ptr,
+            idx_ptr,
+            out_ptr,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
+}
+
+macro_rules! gather_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda `", $op_label, "` kernel (U32 indices).")]
+            pub fn $name(
+                src: &CudaStorageBytes,
+                index: &CudaStorageBytes,
+                source_shape: &[usize],
+                output_shape: &[usize],
+                dim: usize,
+            ) -> Result<CudaStorageBytes> {
+                gather_run(
+                    src,
+                    index,
+                    source_shape,
+                    output_shape,
+                    dim,
+                    sys::[<baracuda_kernels_gather_ $sys_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+gather_kernel!(gather_f32, f32, 4, "gather_f32");
+gather_kernel!(gather_f64, f64, 8, "gather_f64");
+gather_kernel!(gather_i32, i32, 4, "gather_i32");
+
+// ===========================================================================
+// MaskedFill
+// ===========================================================================
+
+type MaskedFillRun = unsafe extern "C" fn(
+    numel: i64,
+    src: *const std::ffi::c_void,
+    mask: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+    fill_bits: i64,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// Pack `fill_bytes` (Fuel's pre-encoded scalar in output dtype's
+/// representation) into baracuda's `i64 fill_bits`. The kernel
+/// reads only the low `sizeof(T)` bytes per element; higher bytes
+/// are ignored.
+fn pack_fill_bits(fill_bytes: &[u8], op_label: &'static str) -> Result<i64> {
+    if fill_bytes.len() > 8 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: fill_bytes length {} exceeds i64 (8 bytes)",
+            fill_bytes.len(),
+        ))
+        .bt());
+    }
+    let mut buf = [0_u8; 8];
+    buf[..fill_bytes.len()].copy_from_slice(fill_bytes);
+    Ok(i64::from_le_bytes(buf))
+}
+
+fn masked_fill_run(
+    src: &CudaStorageBytes,
+    mask: &CudaStorageBytes,
+    fill_bytes: &[u8],
+    kernel: MaskedFillRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    let device = src.device().clone();
+    let numel = src.len_bytes() / dtype_size_bytes.max(1);
+    let out_bytes = numel * dtype_size_bytes;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+    let fill_bits = pack_fill_bits(fill_bytes, op_label)?;
+    let src_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
+    let mask_ptr = mask.buffer().as_raw().0 as *const std::ffi::c_void;
+    let out_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+
+    let status = unsafe {
+        kernel(
+            numel as i64,
+            src_ptr,
+            mask_ptr,
+            out_ptr,
+            fill_bits,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
+}
+
+macro_rules! masked_fill_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda `", $op_label, "` kernel.")]
+            pub fn $name(
+                src: &CudaStorageBytes,
+                mask: &CudaStorageBytes,
+                fill_bytes: &[u8],
+            ) -> Result<CudaStorageBytes> {
+                masked_fill_run(
+                    src,
+                    mask,
+                    fill_bytes,
+                    sys::[<baracuda_kernels_masked_fill_ $sys_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+masked_fill_kernel!(masked_fill_f32, f32, 4, "masked_fill_f32");
+masked_fill_kernel!(masked_fill_f64, f64, 8, "masked_fill_f64");
+masked_fill_kernel!(masked_fill_i32, i32, 4, "masked_fill_i32");
+
+// ===========================================================================
+// ScatterAdd
+// ===========================================================================
+
+type ScatterAddRun = unsafe extern "C" fn(
+    upd_numel: i64,
+    rank: i32,
+    scatter_dim: i32,
+    out_dim_size: i32,
+    upd_shape: *const i32,
+    stride_upd: *const i64,
+    stride_index: *const i64,
+    stride_out: *const i64,
+    updates: *const std::ffi::c_void,
+    index: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// ScatterAdd: `out[..., index[i, ...], ...] += src[i, ...]`. The
+/// caller pre-allocates `out` as a copy of `base` (Fuel's
+/// `OpKind::ScatterAdd` semantics — accumulate into base).
+fn scatter_add_run(
+    base: &CudaStorageBytes,
+    index: &CudaStorageBytes,
+    updates: &CudaStorageBytes,
+    base_shape: &[usize],
+    src_shape: &[usize],
+    dim: usize,
+    kernel: ScatterAddRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    if base_shape.len() != src_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: base rank {} != src rank {}",
+            base_shape.len(),
+            src_shape.len(),
+        ))
+        .bt());
+    }
+    if dim >= base_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: dim {dim} out of bounds for rank {}",
+            base_shape.len(),
+        ))
+        .bt());
+    }
+    let device = base.device().clone();
+    // Output = base copy; ScatterAdd accumulates into the copy.
+    let base_bytes = base.len_bytes();
+    let host_base = base.to_cpu_bytes()?;
+    let out = CudaStorageBytes::from_cpu_bytes(&device, &host_base)?;
+    let _ = base_bytes;
+
+    let upd_numel: i64 = src_shape.iter().product::<usize>() as i64;
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+    let (upd_shape_i32, stride_upd) = shape_strides_for(src_shape, op_label)?;
+    let (_idx_shape_i32, stride_index) = shape_strides_for(src_shape, op_label)?;
+    let (_out_shape_i32, stride_out) = shape_strides_for(base_shape, op_label)?;
+    let out_dim = i32::try_from(base_shape[dim]).map_err(|_| {
+        fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label,
+            dim_index: dim,
+            dim_value: base_shape[dim],
+        })
+    })?;
+    let rank = base_shape.len() as i32;
+
+    let upd_ptr = updates.buffer().as_raw().0 as *const std::ffi::c_void;
+    let idx_ptr = index.buffer().as_raw().0 as *const std::ffi::c_void;
+    let out_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
+    let _ = dtype_size_bytes;
+
+    let status = unsafe {
+        kernel(
+            upd_numel,
+            rank,
+            dim as i32,
+            out_dim,
+            upd_shape_i32.as_ptr(),
+            stride_upd.as_ptr(),
+            stride_index.as_ptr(),
+            stride_out.as_ptr(),
+            upd_ptr,
+            idx_ptr,
+            out_ptr,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(out)
+}
+
+macro_rules! scatter_add_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda `", $op_label, "` kernel (U32 indices).")]
+            #[allow(clippy::too_many_arguments)]
+            pub fn $name(
+                base: &CudaStorageBytes,
+                index: &CudaStorageBytes,
+                updates: &CudaStorageBytes,
+                base_shape: &[usize],
+                src_shape: &[usize],
+                dim: usize,
+            ) -> Result<CudaStorageBytes> {
+                scatter_add_run(
+                    base,
+                    index,
+                    updates,
+                    base_shape,
+                    src_shape,
+                    dim,
+                    sys::[<baracuda_kernels_scatter_add_ $sys_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+scatter_add_kernel!(scatter_add_f32, f32, 4, "scatter_add_f32");
+scatter_add_kernel!(scatter_add_f64, f64, 8, "scatter_add_f64");

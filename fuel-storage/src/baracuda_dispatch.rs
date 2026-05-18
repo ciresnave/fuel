@@ -217,6 +217,132 @@ macro_rules! cuda_index_select_baracuda_wrapper {
 // Indexing — IndexSelect wrappers
 // ===========================================================================
 
+macro_rules! cuda_gather_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 2 inputs + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (source_shape, output_shape, dim) = match params {
+                OpParams::Gather { source_shape, output_shape, dim } => {
+                    (source_shape.clone(), output_shape.clone(), *dim)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Gather, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let src_guard = read_storage(&inputs[0])?;
+            let idx_guard = read_storage(&inputs[1])?;
+            if idx_guard.dtype != DType::U32 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": indices must be U32, got {:?}"),
+                    idx_guard.dtype,
+                )).bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&src_guard)?;
+            let idx_cuda = cuda_input(&idx_guard)?;
+            let result = $baracuda_fn(src_cuda, idx_cuda, &source_shape, &output_shape, dim)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+macro_rules! cuda_scatter_add_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 3 inputs + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (base_shape, src_shape, dim) = match params {
+                OpParams::ScatterAdd { base_shape, src_shape, dim } => {
+                    (base_shape.clone(), src_shape.clone(), *dim)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::ScatterAdd, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let base_guard = read_storage(&inputs[0])?;
+            let idx_guard = read_storage(&inputs[1])?;
+            if idx_guard.dtype != DType::U32 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": indices must be U32, got {:?}"),
+                    idx_guard.dtype,
+                )).bt());
+            }
+            let src_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let base_cuda = cuda_input(&base_guard)?;
+            let idx_cuda = cuda_input(&idx_guard)?;
+            let src_cuda = cuda_input(&src_guard)?;
+            let result = $baracuda_fn(base_cuda, idx_cuda, src_cuda, &base_shape, &src_shape, dim)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+macro_rules! cuda_masked_fill_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 2 inputs + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let fill_bytes = match params {
+                OpParams::MaskedFill { fill_bytes } => fill_bytes.clone(),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::MaskedFill, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let src_guard = read_storage(&inputs[0])?;
+            let mask_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&src_guard)?;
+            let mask_cuda = cuda_input(&mask_guard)?;
+            let result = $baracuda_fn(src_cuda, mask_cuda, &fill_bytes)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
 pub mod indexing {
     use super::*;
     use fuel_cuda_backend::baracuda::indexing as bk;
@@ -224,6 +350,17 @@ pub mod indexing {
     cuda_index_select_baracuda_wrapper!(index_select_f32, bk::index_select_f32);
     cuda_index_select_baracuda_wrapper!(index_select_f64, bk::index_select_f64);
     cuda_index_select_baracuda_wrapper!(index_select_i32, bk::index_select_i32);
+
+    cuda_gather_baracuda_wrapper!(gather_f32, bk::gather_f32);
+    cuda_gather_baracuda_wrapper!(gather_f64, bk::gather_f64);
+    cuda_gather_baracuda_wrapper!(gather_i32, bk::gather_i32);
+
+    cuda_scatter_add_baracuda_wrapper!(scatter_add_f32, bk::scatter_add_f32);
+    cuda_scatter_add_baracuda_wrapper!(scatter_add_f64, bk::scatter_add_f64);
+
+    cuda_masked_fill_baracuda_wrapper!(masked_fill_f32, bk::masked_fill_f32);
+    cuda_masked_fill_baracuda_wrapper!(masked_fill_f64, bk::masked_fill_f64);
+    cuda_masked_fill_baracuda_wrapper!(masked_fill_i32, bk::masked_fill_i32);
 }
 
 /// Generate a CUDA softmax-last-dim dispatch wrapper that pulls
@@ -682,13 +819,34 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(LogSoftmaxLastDim, &u(bf16), cuda, softmax::log_softmax_bf16);
     table.register(LogSoftmaxLastDim, &u(f64),  cuda, softmax::log_softmax_f64);
 
-    // ----- IndexSelect (data, U32 indices, data) -----
+    // ----- IndexSelect / Gather / MaskedFill / ScatterAdd
+    // Dtype keys mirror the existing CPU registrations:
+    //   IndexSelect: [data, U32, data]
+    //   Gather:      [data, U32, data]
+    //   MaskedFill:  [data, U8,  data]
+    //   ScatterAdd:  [data, U32, data, data] (base, idx, src, out — Fuel folds out into the table's per-key shape)
     let u32_dt = DType::U32;
+    let u8_dt = DType::U8;
     let i32_dt = DType::I32;
     let index_select_dts = |dt: DType| [dt, u32_dt, dt];
+    let gather_dts = |dt: DType| [dt, u32_dt, dt];
+    let masked_dts = |dt: DType| [dt, u8_dt, dt];
+    let scatter_dts = |dt: DType| [dt, u32_dt, dt, dt];
+
     table.register(IndexSelect, &index_select_dts(f32), cuda, indexing::index_select_f32);
     table.register(IndexSelect, &index_select_dts(f64), cuda, indexing::index_select_f64);
     table.register(IndexSelect, &index_select_dts(i32_dt), cuda, indexing::index_select_i32);
+
+    table.register(Gather, &gather_dts(f32), cuda, indexing::gather_f32);
+    table.register(Gather, &gather_dts(f64), cuda, indexing::gather_f64);
+    table.register(Gather, &gather_dts(i32_dt), cuda, indexing::gather_i32);
+
+    table.register(MaskedFill, &masked_dts(f32), cuda, indexing::masked_fill_f32);
+    table.register(MaskedFill, &masked_dts(f64), cuda, indexing::masked_fill_f64);
+    table.register(MaskedFill, &masked_dts(i32_dt), cuda, indexing::masked_fill_i32);
+
+    table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
+    table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);

@@ -117,6 +117,60 @@ fn baracuda_index_select_f32_picks_rows() {
     assert_eq!(got, expected);
 }
 
+fn upload_u8(dev: &CudaDevice, host: &[u8]) -> Storage {
+    let cuda_bytes = CudaStorageBytes::from_cpu_bytes(dev, host).expect("h2d");
+    Storage::new(BackendStorage::Cuda(cuda_bytes), DType::U8)
+}
+
+#[test]
+#[ignore]
+fn baracuda_masked_fill_f32_replaces_masked_positions() {
+    if dev_or_skip().is_none() {
+        return;
+    }
+    let dev = CudaDevice::new(0).expect("cuda");
+    let mut table = KernelBindingTable::new();
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    // src: [1, 2, 3, 4, 5, 6]
+    // mask: [0, 1, 0, 1, 0, 1]  (nonzero = "replace")
+    // fill = -99.0_f32
+    // expected: [1, -99, 3, -99, 5, -99]
+    let src: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let mask: Vec<u8> = vec![0, 1, 0, 1, 0, 1];
+    let fill_value: f32 = -99.0;
+    let fill_bytes = fill_value.to_le_bytes().to_vec();
+    let expected: Vec<f32> = vec![1.0, -99.0, 3.0, -99.0, 5.0, -99.0];
+
+    let src_storage = upload_f32(&dev, &src);
+    let mask_storage = upload_u8(&dev, &mask);
+    let out_bytes = CudaStorageBytes::alloc(&dev, src.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let mask_arc = Arc::new(RwLock::new(mask_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = pick_alt(
+        &table,
+        OpKind::MaskedFill,
+        &[DType::F32, DType::U8, DType::F32],
+        fuel_storage::baracuda_dispatch::indexing::masked_fill_f32,
+    );
+
+    kernel(
+        &[src_arc.clone(), mask_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::MaskedFill { fill_bytes },
+    )
+    .expect("kernel call");
+
+    let got = download_f32(&out_arc.read().unwrap());
+    assert_eq!(got, expected);
+}
+
 #[test]
 #[ignore]
 fn baracuda_index_select_f32_with_outer_batch() {
