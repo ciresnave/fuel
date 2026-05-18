@@ -247,12 +247,14 @@ fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes>
 /// programming bug (a previous writer panicked while holding the
 /// lock); production code surfaces it as a typed error rather than
 /// re-panicking through `unwrap`.
-fn read_storage(arc: &Arc<RwLock<Storage>>) -> Result<std::sync::RwLockReadGuard<'_, Storage>> {
+pub(crate) fn read_storage(
+    arc: &Arc<RwLock<Storage>>,
+) -> Result<std::sync::RwLockReadGuard<'_, Storage>> {
     arc.read()
         .map_err(|_| Error::Msg("kernel wrapper: storage RwLock poisoned (read)".to_string()).bt())
 }
 
-fn write_storage(
+pub(crate) fn write_storage(
     arc: &Arc<RwLock<Storage>>,
 ) -> Result<std::sync::RwLockWriteGuard<'_, Storage>> {
     arc.write()
@@ -3444,7 +3446,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 /// Helper: extract `&CudaStorageBytes` from `&Storage`. Returns
 /// Err if the variant isn't `BackendStorage::Cuda`.
 #[cfg(feature = "cuda")]
-fn cuda_input(s: &Storage) -> Result<&fuel_cuda_backend::CudaStorageBytes> {
+pub(crate) fn cuda_input(s: &Storage) -> Result<&fuel_cuda_backend::CudaStorageBytes> {
     match &s.inner {
         BackendStorage::Cuda(c) => Ok(c),
         #[allow(unreachable_patterns)]
@@ -3457,7 +3459,7 @@ fn cuda_input(s: &Storage) -> Result<&fuel_cuda_backend::CudaStorageBytes> {
 
 /// Helper: extract `&mut CudaStorageBytes` from `&mut Storage`.
 #[cfg(feature = "cuda")]
-fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::CudaStorageBytes> {
+pub(crate) fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::CudaStorageBytes> {
     match &mut s.inner {
         BackendStorage::Cuda(c) => Ok(c),
         #[allow(unreachable_patterns)]

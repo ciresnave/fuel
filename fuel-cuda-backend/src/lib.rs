@@ -40,6 +40,7 @@ pub mod cudnn;
 pub mod flash_attn;
 #[cfg(feature = "flash-attn-v3")]
 pub mod flash_attn_v3;
+pub mod baracuda;
 pub mod byte_kernels;
 pub mod byte_storage;
 pub mod cutlass;
