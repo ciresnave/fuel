@@ -105,6 +105,67 @@ macro_rules! cuda_binary_baracuda_wrapper {
     };
 }
 
+/// Generate a CUDA RoPE dispatch wrapper that pulls
+/// `(outer_count, seq, head_dim)` from `OpParams::Rope` and
+/// forwards to a baracuda RoPE kernel.
+macro_rules! cuda_rope_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, seq, head_dim) = match params {
+                OpParams::Rope { outer_count, seq, head_dim } => {
+                    (*outer_count, *seq, *head_dim)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Rope, got {:?}",
+                        ),
+                        other,
+                    ))
+                    .bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, outer_count, seq, head_dim)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+// ===========================================================================
+// Attention — RoPE wrappers
+// ===========================================================================
+
+pub mod attention {
+    use super::*;
+    use fuel_cuda_backend::baracuda::attention as bk;
+
+    cuda_rope_baracuda_wrapper!(rope_f32, bk::rope_f32);
+    cuda_rope_baracuda_wrapper!(rope_f16, bk::rope_f16);
+    cuda_rope_baracuda_wrapper!(rope_bf16, bk::rope_bf16);
+    cuda_rope_baracuda_wrapper!(rope_f64, bk::rope_f64);
+}
+
 /// Generate a CUDA norm-last-dim dispatch wrapper that pulls
 /// `(outer_count, last_dim, eps)` from `OpParams::NormLastDim`
 /// and forwards to a baracuda last-dim norm kernel.
@@ -459,6 +520,12 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(LayerNormLastDim, &u(f16),  cuda, norm::layer_f16);
     table.register(LayerNormLastDim, &u(bf16), cuda, norm::layer_bf16);
     table.register(LayerNormLastDim, &u(f64),  cuda, norm::layer_f64);
+
+    // ----- Attention — RoPE -----
+    table.register(Rope, &u(f32),  cuda, attention::rope_f32);
+    table.register(Rope, &u(f16),  cuda, attention::rope_f16);
+    table.register(Rope, &u(bf16), cuda, attention::rope_bf16);
+    table.register(Rope, &u(f64),  cuda, attention::rope_f64);
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
