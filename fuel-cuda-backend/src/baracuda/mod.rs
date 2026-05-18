@@ -42,6 +42,7 @@
 
 #![allow(dead_code)] // submodules land incrementally; intermediate dead-code is expected.
 
+pub mod binary;
 pub mod elementwise;
 pub mod scratch;
 pub mod shape_strides;
