@@ -152,6 +152,80 @@ macro_rules! cuda_rope_baracuda_wrapper {
     };
 }
 
+/// Generate a CUDA index_select dispatch wrapper. Two inputs
+/// `(src, indices)`; pulls the shape params from
+/// `OpParams::IndexSelect`.
+macro_rules! cuda_index_select_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, source_dim_size, n_indices, inner_count) = match params {
+                OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count } => {
+                    (*outer_count, *source_dim_size, *n_indices, *inner_count)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::IndexSelect, got {:?}",
+                        ),
+                        other,
+                    ))
+                    .bt());
+                }
+            };
+            let src_guard = read_storage(&inputs[0])?;
+            let idx_guard = read_storage(&inputs[1])?;
+            if idx_guard.dtype != DType::U32 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": indices must be U32, got {:?}",
+                    ),
+                    idx_guard.dtype,
+                ))
+                .bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&src_guard)?;
+            let idx_cuda = cuda_input(&idx_guard)?;
+            let result = $baracuda_fn(
+                src_cuda, idx_cuda, outer_count, source_dim_size, n_indices, inner_count,
+            )?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+// ===========================================================================
+// Indexing — IndexSelect wrappers
+// ===========================================================================
+
+pub mod indexing {
+    use super::*;
+    use fuel_cuda_backend::baracuda::indexing as bk;
+
+    cuda_index_select_baracuda_wrapper!(index_select_f32, bk::index_select_f32);
+    cuda_index_select_baracuda_wrapper!(index_select_f64, bk::index_select_f64);
+    cuda_index_select_baracuda_wrapper!(index_select_i32, bk::index_select_i32);
+}
+
 /// Generate a CUDA softmax-last-dim dispatch wrapper that pulls
 /// `(outer_count, last_dim)` from `OpParams::SoftmaxLastDim`
 /// (or `LogSoftmaxLastDim`) and forwards to a baracuda softmax
@@ -607,6 +681,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(LogSoftmaxLastDim, &u(f16),  cuda, softmax::log_softmax_f16);
     table.register(LogSoftmaxLastDim, &u(bf16), cuda, softmax::log_softmax_bf16);
     table.register(LogSoftmaxLastDim, &u(f64),  cuda, softmax::log_softmax_f64);
+
+    // ----- IndexSelect (data, U32 indices, data) -----
+    let u32_dt = DType::U32;
+    let i32_dt = DType::I32;
+    let index_select_dts = |dt: DType| [dt, u32_dt, dt];
+    table.register(IndexSelect, &index_select_dts(f32), cuda, indexing::index_select_f32);
+    table.register(IndexSelect, &index_select_dts(f64), cuda, indexing::index_select_f64);
+    table.register(IndexSelect, &index_select_dts(i32_dt), cuda, indexing::index_select_i32);
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
