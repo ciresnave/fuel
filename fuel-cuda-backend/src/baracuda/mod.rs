@@ -42,6 +42,7 @@
 
 #![allow(dead_code)] // submodules land incrementally; intermediate dead-code is expected.
 
+pub mod affine;
 pub mod attention;
 pub mod binary;
 pub mod cast;

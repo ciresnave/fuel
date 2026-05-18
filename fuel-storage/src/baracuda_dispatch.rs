@@ -364,6 +364,66 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
+// ===========================================================================
+//
+// Per-dtype wrappers; baracuda's FFI carries (a, b) in the natural
+// per-dtype arithmetic type (f32 for f16/bf16 storage; f64 for f64
+// storage; per-element int type for i32/i64/u8). The wrappers cast
+// Fuel's `(f64, f64)` OpParams down to the right type at the FFI
+// boundary.
+
+macro_rules! cuda_affine_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path, $scalar_cast:expr $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (mul_f64, add_f64) = match params {
+                OpParams::Affine { mul, add } => (*mul, *add),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Affine, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let cast = $scalar_cast;
+            let mul = cast(mul_f64);
+            let add = cast(add_f64);
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, mul, add)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod affine {
+    use super::*;
+    use fuel_cuda_backend::baracuda::affine as bk;
+
+    cuda_affine_baracuda_wrapper!(affine_f32, bk::affine_f32, |v: f64| v as f32);
+    cuda_affine_baracuda_wrapper!(affine_f64, bk::affine_f64, |v: f64| v);
+    cuda_affine_baracuda_wrapper!(affine_f16, bk::affine_f16, |v: f64| v as f32);
+    cuda_affine_baracuda_wrapper!(affine_bf16, bk::affine_bf16, |v: f64| v as f32);
+    cuda_affine_baracuda_wrapper!(affine_i32, bk::affine_i32, |v: f64| v as i32);
+    cuda_affine_baracuda_wrapper!(affine_i64, bk::affine_i64, |v: f64| v as i64);
+    cuda_affine_baracuda_wrapper!(affine_u8, bk::affine_u8, |v: f64| v as u8);
+}
+
+// ===========================================================================
 // Cast — single wrapper across every (src_dt, dst_dt) pair baracuda exposes
 // ===========================================================================
 //
@@ -889,6 +949,16 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
+    // Net-new dtype coverage on CUDA: PTX path is f32 only.
+    table.register(Affine, &u(f32),  cuda, affine::affine_f32);
+    table.register(Affine, &u(f64),  cuda, affine::affine_f64);
+    table.register(Affine, &u(f16),  cuda, affine::affine_f16);
+    table.register(Affine, &u(bf16), cuda, affine::affine_bf16);
+    table.register(Affine, &u(DType::I32), cuda, affine::affine_i32);
+    table.register(Affine, &u(DType::I64), cuda, affine::affine_i64);
+    table.register(Affine, &u(DType::U8),  cuda, affine::affine_u8);
 
     // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
     // U32 collapses to baracuda i32 at the FFI level (bit-identical for
