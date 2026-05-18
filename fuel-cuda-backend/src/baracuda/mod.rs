@@ -46,6 +46,7 @@ pub mod affine;
 pub mod attention;
 pub mod binary;
 pub mod cast;
+pub mod clamp;
 pub mod concat;
 pub mod elementwise;
 pub mod gguf;
