@@ -1,0 +1,271 @@
+//! Binary elementwise kernels from `baracuda-kernels-sys`.
+//!
+//! Each kernel has signature
+//! `(numel, a, b, y, workspace, workspace_bytes, stream) -> i32`
+//! for the contiguous path and
+//! `(numel, rank, shape, stride_a, stride_b, stride_y, a, b, y, …)`
+//! for the strided path.
+//!
+//! ## Coverage today
+//!
+//! - FP math: add / sub / mul / div / maximum / minimum, across the
+//!   four-dtype family (F32 / F16 / BF16 / F64).
+//!
+//! Ops baracuda ships that Fuel doesn't yet have OpKinds for
+//! (`atan2`, `copysign`, `hypot`, `fmax`, `fmin`, `nextafter`, `pow`,
+//! `remainder`, `floor_divide`, `mod`, `lerp`) and `BinaryCmp*`
+//! (output dtype Bool — Fuel doesn't have Bool today) are wired up
+//! incrementally as Fuel grows those primitive ops.
+
+use std::sync::Arc;
+
+use baracuda_kernels_sys as sys;
+use fuel_core_types::{DType, Layout, Result, Shape};
+
+use crate::byte_storage::CudaStorageBytes;
+
+use super::scratch::Workspace;
+use super::status::check;
+
+type BinaryContigRun = unsafe extern "C" fn(
+    numel: i64,
+    a: *const std::ffi::c_void,
+    b: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+type BinaryStridedRun = unsafe extern "C" fn(
+    numel: i64,
+    rank: i32,
+    shape: *const i32,
+    stride_a: *const i64,
+    stride_b: *const i64,
+    stride_y: *const i64,
+    a: *const std::ffi::c_void,
+    b: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// Three layouts (a, b, output) folded into one stride buffer per
+/// tensor. Used by the strided binary path when inputs are
+/// broadcast-shaped or non-contiguous.
+struct BinaryStrides {
+    rank: i32,
+    shape: Vec<i32>,
+    stride_a: Vec<i64>,
+    stride_b: Vec<i64>,
+    stride_y: Vec<i64>,
+}
+
+impl BinaryStrides {
+    fn from(
+        a_layout: &Layout,
+        b_layout: &Layout,
+        y_layout: &Layout,
+        op_label: &'static str,
+    ) -> Result<Self> {
+        let dims = y_layout.shape().dims();
+        if a_layout.shape().dims() != dims || b_layout.shape().dims() != dims {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{op_label}: a / b / y shapes must match after broadcast \
+                 (a={:?}, b={:?}, y={:?})",
+                a_layout.shape().dims(),
+                b_layout.shape().dims(),
+                dims,
+            ))
+            .bt());
+        }
+        let mut shape = Vec::with_capacity(dims.len());
+        for (i, &d) in dims.iter().enumerate() {
+            shape.push(i32::try_from(d).map_err(|_| {
+                fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                    op: op_label,
+                    dim_index: i,
+                    dim_value: d,
+                })
+            })?);
+        }
+        Ok(Self {
+            rank: dims.len() as i32,
+            shape,
+            stride_a: a_layout.stride().iter().map(|&s| s as i64).collect(),
+            stride_b: b_layout.stride().iter().map(|&s| s as i64).collect(),
+            stride_y: y_layout.stride().iter().map(|&s| s as i64).collect(),
+        })
+    }
+}
+
+/// Core binary-elementwise driver. Mirrors `unary_run`'s shape but
+/// takes two input pointers + their strides.
+fn binary_run(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    lhs_layout: Option<&Layout>,
+    rhs_layout: Option<&Layout>,
+    contig_run: BinaryContigRun,
+    strided_run: BinaryStridedRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    let derived_lhs_layout;
+    let derived_rhs_layout;
+    let lhs_l = match lhs_layout {
+        Some(l) => l,
+        None => {
+            let elems = lhs.len_bytes() / dtype_size_bytes.max(1);
+            derived_lhs_layout = Layout::contiguous(Shape::from_dims(&[elems]));
+            &derived_lhs_layout
+        }
+    };
+    let rhs_l = match rhs_layout {
+        Some(l) => l,
+        None => {
+            let elems = rhs.len_bytes() / dtype_size_bytes.max(1);
+            derived_rhs_layout = Layout::contiguous(Shape::from_dims(&[elems]));
+            &derived_rhs_layout
+        }
+    };
+    let numel: i64 = lhs_l.shape().elem_count() as i64;
+    let out_bytes = (numel as usize) * dtype_size_bytes;
+    let device = lhs.device().clone();
+    if rhs.device().id() != device.id() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: lhs and rhs on different CUDA devices",
+        ))
+        .bt());
+    }
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let a_ptr = lhs.buffer().as_raw().0 as *const std::ffi::c_void;
+    let b_ptr = rhs.buffer().as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+
+    let contig = lhs_l.is_contiguous()
+        && lhs_l.start_offset() == 0
+        && rhs_l.is_contiguous()
+        && rhs_l.start_offset() == 0;
+    let status = if contig {
+        // SAFETY: pointers + lengths validated; stream lives on device;
+        // workspace is null because elementwise binary needs none.
+        unsafe {
+            contig_run(
+                numel,
+                a_ptr,
+                b_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
+            )
+        }
+    } else {
+        let out_layout = Layout::contiguous(lhs_l.shape());
+        let s = BinaryStrides::from(lhs_l, rhs_l, &out_layout, op_label)?;
+        // SAFETY: shape/stride buffers owned by `s`; pointers above.
+        unsafe {
+            strided_run(
+                numel,
+                s.rank,
+                s.shape.as_ptr(),
+                s.stride_a.as_ptr(),
+                s.stride_b.as_ptr(),
+                s.stride_y.as_ptr(),
+                a_ptr,
+                b_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
+            )
+        }
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
+}
+
+/// Manifest macro for one (kind, dtype) binary entry.
+macro_rules! binary_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda binary `", $op_label, "` kernel.")]
+            pub fn $name(
+                lhs: &CudaStorageBytes,
+                rhs: &CudaStorageBytes,
+                lhs_layout: Option<&Layout>,
+                rhs_layout: Option<&Layout>,
+            ) -> Result<CudaStorageBytes> {
+                binary_run(
+                    lhs,
+                    rhs,
+                    lhs_layout,
+                    rhs_layout,
+                    sys::[<baracuda_kernels_binary_ $sys_stem _run>],
+                    sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// F32 binary kernels
+// ---------------------------------------------------------------------------
+
+binary_kernel!(binary_add_f32, add_f32, 4, "binary_add_f32");
+binary_kernel!(binary_sub_f32, sub_f32, 4, "binary_sub_f32");
+binary_kernel!(binary_mul_f32, mul_f32, 4, "binary_mul_f32");
+binary_kernel!(binary_div_f32, div_f32, 4, "binary_div_f32");
+binary_kernel!(binary_maximum_f32, maximum_f32, 4, "binary_maximum_f32");
+binary_kernel!(binary_minimum_f32, minimum_f32, 4, "binary_minimum_f32");
+
+// ---------------------------------------------------------------------------
+// F16 / BF16 / F64 binary kernels — mirrors of F32 above
+// ---------------------------------------------------------------------------
+
+binary_kernel!(binary_add_f16, add_f16, 2, "binary_add_f16");
+binary_kernel!(binary_sub_f16, sub_f16, 2, "binary_sub_f16");
+binary_kernel!(binary_mul_f16, mul_f16, 2, "binary_mul_f16");
+binary_kernel!(binary_div_f16, div_f16, 2, "binary_div_f16");
+binary_kernel!(binary_maximum_f16, maximum_f16, 2, "binary_maximum_f16");
+binary_kernel!(binary_minimum_f16, minimum_f16, 2, "binary_minimum_f16");
+
+binary_kernel!(binary_add_bf16, add_bf16, 2, "binary_add_bf16");
+binary_kernel!(binary_sub_bf16, sub_bf16, 2, "binary_sub_bf16");
+binary_kernel!(binary_mul_bf16, mul_bf16, 2, "binary_mul_bf16");
+binary_kernel!(binary_div_bf16, div_bf16, 2, "binary_div_bf16");
+binary_kernel!(binary_maximum_bf16, maximum_bf16, 2, "binary_maximum_bf16");
+binary_kernel!(binary_minimum_bf16, minimum_bf16, 2, "binary_minimum_bf16");
+
+binary_kernel!(binary_add_f64, add_f64, 8, "binary_add_f64");
+binary_kernel!(binary_sub_f64, sub_f64, 8, "binary_sub_f64");
+binary_kernel!(binary_mul_f64, mul_f64, 8, "binary_mul_f64");
+binary_kernel!(binary_div_f64, div_f64, 8, "binary_div_f64");
+binary_kernel!(binary_maximum_f64, maximum_f64, 8, "binary_maximum_f64");
+binary_kernel!(binary_minimum_f64, minimum_f64, 8, "binary_minimum_f64");
+
+/// Byte-size lookup for binary-elementwise dtypes.
+pub fn dtype_byte_size(dt: DType) -> usize {
+    match dt {
+        DType::F32 => 4,
+        DType::F64 => 8,
+        DType::F16 | DType::BF16 => 2,
+        _ => 0,
+    }
+}

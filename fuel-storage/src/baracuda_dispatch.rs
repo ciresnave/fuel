@@ -67,6 +67,81 @@ macro_rules! cuda_unary_baracuda_wrapper {
     };
 }
 
+/// Generate one CUDA binary dispatch wrapper.
+macro_rules! cuda_binary_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 2 inputs, got {}"),
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 output, got {}"),
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let lhs_layout = layouts.first();
+            let rhs_layout = layouts.get(1);
+            let lhs_guard = read_storage(&inputs[0])?;
+            let rhs_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let lhs_cuda = cuda_input(&lhs_guard)?;
+            let rhs_cuda = cuda_input(&rhs_guard)?;
+            let result = $baracuda_fn(lhs_cuda, rhs_cuda, lhs_layout, rhs_layout)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+// ===========================================================================
+// Elementwise binary wrappers
+// ===========================================================================
+
+pub mod binary {
+    use super::*;
+    use fuel_cuda_backend::baracuda::binary as bk;
+
+    cuda_binary_baracuda_wrapper!(add_f32, bk::binary_add_f32);
+    cuda_binary_baracuda_wrapper!(sub_f32, bk::binary_sub_f32);
+    cuda_binary_baracuda_wrapper!(mul_f32, bk::binary_mul_f32);
+    cuda_binary_baracuda_wrapper!(div_f32, bk::binary_div_f32);
+    cuda_binary_baracuda_wrapper!(maximum_f32, bk::binary_maximum_f32);
+    cuda_binary_baracuda_wrapper!(minimum_f32, bk::binary_minimum_f32);
+
+    cuda_binary_baracuda_wrapper!(add_f16, bk::binary_add_f16);
+    cuda_binary_baracuda_wrapper!(sub_f16, bk::binary_sub_f16);
+    cuda_binary_baracuda_wrapper!(mul_f16, bk::binary_mul_f16);
+    cuda_binary_baracuda_wrapper!(div_f16, bk::binary_div_f16);
+    cuda_binary_baracuda_wrapper!(maximum_f16, bk::binary_maximum_f16);
+    cuda_binary_baracuda_wrapper!(minimum_f16, bk::binary_minimum_f16);
+
+    cuda_binary_baracuda_wrapper!(add_bf16, bk::binary_add_bf16);
+    cuda_binary_baracuda_wrapper!(sub_bf16, bk::binary_sub_bf16);
+    cuda_binary_baracuda_wrapper!(mul_bf16, bk::binary_mul_bf16);
+    cuda_binary_baracuda_wrapper!(div_bf16, bk::binary_div_bf16);
+    cuda_binary_baracuda_wrapper!(maximum_bf16, bk::binary_maximum_bf16);
+    cuda_binary_baracuda_wrapper!(minimum_bf16, bk::binary_minimum_bf16);
+
+    cuda_binary_baracuda_wrapper!(add_f64, bk::binary_add_f64);
+    cuda_binary_baracuda_wrapper!(sub_f64, bk::binary_sub_f64);
+    cuda_binary_baracuda_wrapper!(mul_f64, bk::binary_mul_f64);
+    cuda_binary_baracuda_wrapper!(div_f64, bk::binary_div_f64);
+    cuda_binary_baracuda_wrapper!(maximum_f64, bk::binary_maximum_f64);
+    cuda_binary_baracuda_wrapper!(minimum_f64, bk::binary_minimum_f64);
+}
+
 // ===========================================================================
 // Elementwise unary wrappers
 // ===========================================================================
@@ -162,11 +237,42 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
     let u = |t: DType| [t, t];
+    let b = |t: DType| [t, t, t];
 
     let f32 = DType::F32;
     let f16 = DType::F16;
     let bf16 = DType::BF16;
     let f64 = DType::F64;
+
+    // ----- F32 binary -----
+    table.register(AddElementwise,     &b(f32), cuda, binary::add_f32);
+    table.register(SubElementwise,     &b(f32), cuda, binary::sub_f32);
+    table.register(MulElementwise,     &b(f32), cuda, binary::mul_f32);
+    table.register(DivElementwise,     &b(f32), cuda, binary::div_f32);
+    table.register(MaximumElementwise, &b(f32), cuda, binary::maximum_f32);
+    table.register(MinimumElementwise, &b(f32), cuda, binary::minimum_f32);
+
+    // ----- F16 / BF16 / F64 binary (net-new dtype coverage on CUDA) -----
+    table.register(AddElementwise,     &b(f16), cuda, binary::add_f16);
+    table.register(SubElementwise,     &b(f16), cuda, binary::sub_f16);
+    table.register(MulElementwise,     &b(f16), cuda, binary::mul_f16);
+    table.register(DivElementwise,     &b(f16), cuda, binary::div_f16);
+    table.register(MaximumElementwise, &b(f16), cuda, binary::maximum_f16);
+    table.register(MinimumElementwise, &b(f16), cuda, binary::minimum_f16);
+
+    table.register(AddElementwise,     &b(bf16), cuda, binary::add_bf16);
+    table.register(SubElementwise,     &b(bf16), cuda, binary::sub_bf16);
+    table.register(MulElementwise,     &b(bf16), cuda, binary::mul_bf16);
+    table.register(DivElementwise,     &b(bf16), cuda, binary::div_bf16);
+    table.register(MaximumElementwise, &b(bf16), cuda, binary::maximum_bf16);
+    table.register(MinimumElementwise, &b(bf16), cuda, binary::minimum_bf16);
+
+    table.register(AddElementwise,     &b(f64), cuda, binary::add_f64);
+    table.register(SubElementwise,     &b(f64), cuda, binary::sub_f64);
+    table.register(MulElementwise,     &b(f64), cuda, binary::mul_f64);
+    table.register(DivElementwise,     &b(f64), cuda, binary::div_f64);
+    table.register(MaximumElementwise, &b(f64), cuda, binary::maximum_f64);
+    table.register(MinimumElementwise, &b(f64), cuda, binary::minimum_f64);
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
