@@ -40,6 +40,20 @@ pub enum CudaError {
         dtype_name: &'static str,
     },
 
+    #[error("baracuda-kernels {op}: status {code} ({reason})")]
+    BaracudaKernel {
+        op: &'static str,
+        code: i32,
+        reason: &'static str,
+    },
+
+    #[error("baracuda-kernels {op}: shape dim {dim_index} = {dim_value} exceeds i32 range")]
+    BaracudaShapeOverflow {
+        op: &'static str,
+        dim_index: usize,
+        dim_value: usize,
+    },
+
     #[error("internal error '{0}'")]
     InternalError(&'static str),
 

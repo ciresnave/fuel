@@ -28,6 +28,12 @@
     # CUTLASS-backed GEMM kernels — registers as alternative implementations
     # at the (MatMul, *, Cuda) decision points alongside the cuBLAS path.
     baracuda-cutlass    = { workspace = true }
+    # Bespoke ML kernels (elementwise / reduce / softmax / norm / attention /
+    # GGUF / MoE / int-GEMM / etc.). Used via the raw -sys layer (per the
+    # alpha.26 compatibility note); each extern "C" symbol becomes its own
+    # KernelRef in the binding table.
+    baracuda-kernels-sys   = { workspace = true }
+    baracuda-kernels-types = { workspace = true }
     baracuda-cudnn      = { workspace = true, optional = true }
     baracuda-cudnn-sys  = { workspace = true, optional = true }
     baracuda-nccl       = { workspace = true, optional = true }
@@ -43,6 +49,7 @@
     float8     = { workspace = true }
     half       = { workspace = true }
     num-traits = { workspace = true }
+    paste      = { workspace = true }
     smallvec   = { workspace = true }
     thiserror  = { workspace = true }
     tracing    = { workspace = true }
