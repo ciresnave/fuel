@@ -363,6 +363,48 @@ pub mod indexing {
     cuda_masked_fill_baracuda_wrapper!(masked_fill_i32, bk::masked_fill_i32);
 }
 
+// ===========================================================================
+// Cast — single wrapper across every (src_dt, dst_dt) pair baracuda exposes
+// ===========================================================================
+//
+// Cast's binding-table key is `[src_dt, dst_dt]` (two dtypes, not the
+// usual unary `[dt, dt]`). The wrapper reads both dtypes from the
+// input/output Storage and dispatches into
+// `fuel_cuda_backend::baracuda::cast::dispatch`, which picks the right
+// FFI symbol from the 8×8 baracuda surface. One wrapper, many
+// (per-pair) binding-table entries — same pattern as the PTX-backed
+// `cast_cuda_wrapper` in [`crate::dispatch`].
+
+pub mod cast {
+    use super::*;
+    use fuel_cuda_backend::baracuda::cast as bk;
+
+    pub fn cast_baracuda_wrapper(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "cast_baracuda_wrapper: expected 1 input + 1 output, got {} + {}",
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src_dtype = in_guard.dtype;
+        let dst_dtype = out_guard.dtype;
+        let src_cuda = cuda_input(&in_guard)?;
+        let result = bk::dispatch(src_cuda, src_dtype, dst_dtype)?;
+        let out_cuda = cuda_output(&mut out_guard)?;
+        *out_cuda = result;
+        Ok(())
+    }
+}
+
 /// Generate a CUDA softmax-last-dim dispatch wrapper that pulls
 /// `(outer_count, last_dim)` from `OpParams::SoftmaxLastDim`
 /// (or `LogSoftmaxLastDim`) and forwards to a baracuda softmax
@@ -847,6 +889,21 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
+    // U32 collapses to baracuda i32 at the FFI level (bit-identical for
+    // non-negative values — same trick as IndexSelect's index dtype).
+    // Mirrors the pairs Fuel's PTX cast_cuda_wrapper already registers,
+    // plus a few extras (e.g. F16↔I64, BF16↔I64) that baracuda exposes.
+    let cast_dtypes = [
+        DType::F32, DType::F64, DType::F16, DType::BF16,
+        DType::I32, DType::U32, DType::I64, DType::U8,
+    ];
+    for &src in &cast_dtypes {
+        for &dst in &cast_dtypes {
+            table.register(Cast, &[src, dst], cuda, cast::cast_baracuda_wrapper);
+        }
+    }
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
