@@ -364,6 +364,84 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// Concat — N-ary via N-1 chained baracuda concat2 calls
+// ===========================================================================
+//
+// Baracuda only ships binary `concat2`. The wrapper chains N-1 calls
+// to cover Fuel's `OpKind::Concat` N-input semantics. The route
+// picker / Judge will tend to prefer the PTX 1-launch path for N > 2
+// in practice; baracuda still wins on N == 2 where there's no
+// launch-count tax.
+
+macro_rules! cuda_concat_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.is_empty() {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": at least 1 input required"),
+                )).bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 output, got {}"),
+                    outputs.len(),
+                )).bt());
+            }
+            let (outer_count, input_dim_sizes, inner_count) = match params {
+                OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+                    (*outer_count, input_dim_sizes.clone(), *inner_count)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Concat, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            if input_dim_sizes.len() != inputs.len() {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": OpParams declares {} inputs but the work item carries {}",
+                    ),
+                    input_dim_sizes.len(),
+                    inputs.len(),
+                )).bt());
+            }
+            let in_guards: Vec<_> = inputs
+                .iter()
+                .map(read_storage)
+                .collect::<Result<Vec<_>>>()?;
+            let mut in_cudas: Vec<&fuel_cuda_backend::CudaStorageBytes> =
+                Vec::with_capacity(in_guards.len());
+            for g in &in_guards {
+                in_cudas.push(cuda_input(g)?);
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let result = $baracuda_fn(&in_cudas, outer_count, &input_dim_sizes, inner_count)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod concat {
+    use super::*;
+    use fuel_cuda_backend::baracuda::concat as bk;
+
+    cuda_concat_baracuda_wrapper!(concat_f32, bk::concat_f32);
+    cuda_concat_baracuda_wrapper!(concat_f64, bk::concat_f64);
+    cuda_concat_baracuda_wrapper!(concat_f16, bk::concat_f16);
+    cuda_concat_baracuda_wrapper!(concat_bf16, bk::concat_bf16);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -949,6 +1027,13 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- Concat — N-ary via chained baracuda concat2.
+    // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
+    table.register(Concat, &u(f32),  cuda, concat::concat_f32);
+    table.register(Concat, &u(f64),  cuda, concat::concat_f64);
+    table.register(Concat, &u(f16),  cuda, concat::concat_f16);
+    table.register(Concat, &u(bf16), cuda, concat::concat_bf16);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
