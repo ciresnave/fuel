@@ -44,6 +44,7 @@
 
 pub mod binary;
 pub mod elementwise;
+pub mod gguf;
 pub mod norm;
 pub mod reduce;
 pub mod scratch;
