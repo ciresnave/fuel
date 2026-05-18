@@ -44,6 +44,7 @@
 
 pub mod binary;
 pub mod elementwise;
+pub mod norm;
 pub mod reduce;
 pub mod scratch;
 pub mod shape_strides;

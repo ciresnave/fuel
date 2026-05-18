@@ -105,6 +105,72 @@ macro_rules! cuda_binary_baracuda_wrapper {
     };
 }
 
+/// Generate a CUDA norm-last-dim dispatch wrapper that pulls
+/// `(outer_count, last_dim, eps)` from `OpParams::NormLastDim`
+/// and forwards to a baracuda last-dim norm kernel.
+macro_rules! cuda_norm_last_dim_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (outer_count, last_dim, eps) = match params {
+                OpParams::NormLastDim { outer_count, last_dim, eps } => {
+                    (*outer_count, *last_dim, *eps)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::NormLastDim, got {:?}",
+                        ),
+                        other,
+                    ))
+                    .bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, outer_count, last_dim, eps)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+// ===========================================================================
+// Norm-last-dim wrappers (RmsNorm + LayerNorm)
+// ===========================================================================
+
+pub mod norm {
+    use super::*;
+    use fuel_cuda_backend::baracuda::norm as bk;
+
+    cuda_norm_last_dim_baracuda_wrapper!(rms_f32, bk::rms_norm_last_dim_f32);
+    cuda_norm_last_dim_baracuda_wrapper!(rms_f16, bk::rms_norm_last_dim_f16);
+    cuda_norm_last_dim_baracuda_wrapper!(rms_bf16, bk::rms_norm_last_dim_bf16);
+    cuda_norm_last_dim_baracuda_wrapper!(rms_f64, bk::rms_norm_last_dim_f64);
+
+    cuda_norm_last_dim_baracuda_wrapper!(layer_f32, bk::layer_norm_last_dim_f32);
+    cuda_norm_last_dim_baracuda_wrapper!(layer_f16, bk::layer_norm_last_dim_f16);
+    cuda_norm_last_dim_baracuda_wrapper!(layer_bf16, bk::layer_norm_last_dim_bf16);
+    cuda_norm_last_dim_baracuda_wrapper!(layer_f64, bk::layer_norm_last_dim_f64);
+}
+
 /// Generate one CUDA reduce dispatch wrapper. Reduce wrappers
 /// destructure `OpParams::Reduce { dims, keepdim }` and forward
 /// to the baracuda multi-axis driver.
@@ -382,6 +448,17 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MaxReduce,  &u(f64),  cuda, reduce::max_f64);
     table.register(MinReduce,  &u(f64),  cuda, reduce::min_f64);
     table.register(MeanReduce, &u(f64),  cuda, reduce::mean_f64);
+
+    // ----- Norm LastDim (RmsNorm + LayerNorm) -----
+    table.register(RmsNormLastDim,   &u(f32),  cuda, norm::rms_f32);
+    table.register(RmsNormLastDim,   &u(f16),  cuda, norm::rms_f16);
+    table.register(RmsNormLastDim,   &u(bf16), cuda, norm::rms_bf16);
+    table.register(RmsNormLastDim,   &u(f64),  cuda, norm::rms_f64);
+
+    table.register(LayerNormLastDim, &u(f32),  cuda, norm::layer_f32);
+    table.register(LayerNormLastDim, &u(f16),  cuda, norm::layer_f16);
+    table.register(LayerNormLastDim, &u(bf16), cuda, norm::layer_bf16);
+    table.register(LayerNormLastDim, &u(f64),  cuda, norm::layer_f64);
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
