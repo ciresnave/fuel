@@ -364,6 +364,60 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// Clamp — scalar (min, max) → broadcast-tensor ternary clamp
+// ===========================================================================
+//
+// Fuel's `OpKind::ClampElementwise` carries `(min, max)` in
+// `OpParams::Clamp`; baracuda's `ternary_clamp` accepts two bound
+// tensors. The per-dtype wrapper allocates two 1-element device
+// buffers (one per bound) inside the kernel module and invokes the
+// strided variant with stride 0 on the bound axis.
+
+macro_rules! cuda_clamp_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path, $scalar_ty:ty $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (min_f64, max_f64) = match params {
+                OpParams::Clamp { min, max } => (*min, *max),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Clamp, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, min_f64 as $scalar_ty, max_f64 as $scalar_ty)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod clamp {
+    use super::*;
+    use fuel_cuda_backend::baracuda::clamp as bk;
+
+    cuda_clamp_baracuda_wrapper!(clamp_f32, bk::clamp_f32, f32);
+    cuda_clamp_baracuda_wrapper!(clamp_f64, bk::clamp_f64, f64);
+    cuda_clamp_baracuda_wrapper!(clamp_f16, bk::clamp_f16, f32);
+    cuda_clamp_baracuda_wrapper!(clamp_bf16, bk::clamp_bf16, f32);
+}
+
+// ===========================================================================
 // Concat — N-ary via N-1 chained baracuda concat2 calls
 // ===========================================================================
 //
@@ -1027,6 +1081,13 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- Clamp — scalar bounds → broadcast-tensor ternary clamp.
+    // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
+    table.register(ClampElementwise, &u(f32),  cuda, clamp::clamp_f32);
+    table.register(ClampElementwise, &u(f64),  cuda, clamp::clamp_f64);
+    table.register(ClampElementwise, &u(f16),  cuda, clamp::clamp_f16);
+    table.register(ClampElementwise, &u(bf16), cuda, clamp::clamp_bf16);
 
     // ----- Concat — N-ary via chained baracuda concat2.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
