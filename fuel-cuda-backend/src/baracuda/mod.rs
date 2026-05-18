@@ -44,6 +44,7 @@
 
 pub mod attention;
 pub mod binary;
+pub mod cast;
 pub mod elementwise;
 pub mod gguf;
 pub mod indexing;
