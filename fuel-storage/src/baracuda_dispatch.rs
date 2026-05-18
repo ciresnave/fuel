@@ -105,6 +105,93 @@ macro_rules! cuda_binary_baracuda_wrapper {
     };
 }
 
+/// Generate one CUDA reduce dispatch wrapper. Reduce wrappers
+/// destructure `OpParams::Reduce { dims, keepdim }` and forward
+/// to the baracuda multi-axis driver.
+macro_rules! cuda_reduce_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input, got {}"),
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 output, got {}"),
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (dims, keepdim) = match params {
+                OpParams::Reduce { dims, keepdim } => (dims.clone(), *keepdim),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Reduce, got {:?}",
+                        ),
+                        other,
+                    ))
+                    .bt());
+                }
+            };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": reduce requires an input layout (call with layouts[0])",
+                    ),
+                ))
+                .bt()
+            })?;
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, layout, &dims, keepdim)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+// ===========================================================================
+// Reduce wrappers
+// ===========================================================================
+
+pub mod reduce {
+    use super::*;
+    use fuel_cuda_backend::baracuda::reduce as bk;
+
+    cuda_reduce_baracuda_wrapper!(sum_f32, bk::reduce_sum_f32);
+    cuda_reduce_baracuda_wrapper!(max_f32, bk::reduce_max_f32);
+    cuda_reduce_baracuda_wrapper!(min_f32, bk::reduce_min_f32);
+    cuda_reduce_baracuda_wrapper!(mean_f32, bk::reduce_mean_f32);
+
+    cuda_reduce_baracuda_wrapper!(sum_f16, bk::reduce_sum_f16);
+    cuda_reduce_baracuda_wrapper!(max_f16, bk::reduce_max_f16);
+    cuda_reduce_baracuda_wrapper!(min_f16, bk::reduce_min_f16);
+    cuda_reduce_baracuda_wrapper!(mean_f16, bk::reduce_mean_f16);
+
+    cuda_reduce_baracuda_wrapper!(sum_bf16, bk::reduce_sum_bf16);
+    cuda_reduce_baracuda_wrapper!(max_bf16, bk::reduce_max_bf16);
+    cuda_reduce_baracuda_wrapper!(min_bf16, bk::reduce_min_bf16);
+    cuda_reduce_baracuda_wrapper!(mean_bf16, bk::reduce_mean_bf16);
+
+    cuda_reduce_baracuda_wrapper!(sum_f64, bk::reduce_sum_f64);
+    cuda_reduce_baracuda_wrapper!(max_f64, bk::reduce_max_f64);
+    cuda_reduce_baracuda_wrapper!(min_f64, bk::reduce_min_f64);
+    cuda_reduce_baracuda_wrapper!(mean_f64, bk::reduce_mean_f64);
+}
+
 // ===========================================================================
 // Elementwise binary wrappers
 // ===========================================================================
@@ -273,6 +360,28 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(DivElementwise,     &b(f64), cuda, binary::div_f64);
     table.register(MaximumElementwise, &b(f64), cuda, binary::maximum_f64);
     table.register(MinimumElementwise, &b(f64), cuda, binary::minimum_f64);
+
+    // ----- Reduce (single dispatch covers all axis configurations;
+    //       the wrapper destructures OpParams::Reduce { dims, keepdim }) -----
+    table.register(SumReduce,  &u(f32),  cuda, reduce::sum_f32);
+    table.register(MaxReduce,  &u(f32),  cuda, reduce::max_f32);
+    table.register(MinReduce,  &u(f32),  cuda, reduce::min_f32);
+    table.register(MeanReduce, &u(f32),  cuda, reduce::mean_f32);
+
+    table.register(SumReduce,  &u(f16),  cuda, reduce::sum_f16);
+    table.register(MaxReduce,  &u(f16),  cuda, reduce::max_f16);
+    table.register(MinReduce,  &u(f16),  cuda, reduce::min_f16);
+    table.register(MeanReduce, &u(f16),  cuda, reduce::mean_f16);
+
+    table.register(SumReduce,  &u(bf16), cuda, reduce::sum_bf16);
+    table.register(MaxReduce,  &u(bf16), cuda, reduce::max_bf16);
+    table.register(MinReduce,  &u(bf16), cuda, reduce::min_bf16);
+    table.register(MeanReduce, &u(bf16), cuda, reduce::mean_bf16);
+
+    table.register(SumReduce,  &u(f64),  cuda, reduce::sum_f64);
+    table.register(MaxReduce,  &u(f64),  cuda, reduce::max_f64);
+    table.register(MinReduce,  &u(f64),  cuda, reduce::min_f64);
+    table.register(MeanReduce, &u(f64),  cuda, reduce::mean_f64);
 
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
