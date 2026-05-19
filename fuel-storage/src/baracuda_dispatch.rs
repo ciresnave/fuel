@@ -364,6 +364,75 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// ArgMaxDim / ArgMinDim — U32-output variants (alpha.28)
+// ===========================================================================
+//
+// Pulls `dim` from `OpParams::Reduce { dims, keepdim: _ }` with the
+// single-dim constraint Fuel's PTX argmax/argmin paths enforce.
+// Output is U32 indices in the squeezed (rank N-1) shape.
+
+macro_rules! cuda_arg_reduce_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let dim = match params {
+                OpParams::Reduce { dims, keepdim: _ } => {
+                    if dims.len() != 1 {
+                        return Err(Error::Msg(format!(
+                            concat!(stringify!($wrapper_name), ": expected a single reduce dim, got {:?}"),
+                            dims,
+                        )).bt());
+                    }
+                    dims[0]
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Reduce, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": layouts empty"),
+                )).bt()
+            })?;
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, layout, dim)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod arg_reduce {
+    use super::*;
+    use fuel_cuda_backend::baracuda::arg_reduce as bk;
+
+    cuda_arg_reduce_baracuda_wrapper!(argmax_dim_u32_f32, bk::argmax_dim_u32_f32);
+    cuda_arg_reduce_baracuda_wrapper!(argmin_dim_u32_f32, bk::argmin_dim_u32_f32);
+    cuda_arg_reduce_baracuda_wrapper!(argmax_dim_u32_f64, bk::argmax_dim_u32_f64);
+    cuda_arg_reduce_baracuda_wrapper!(argmin_dim_u32_f64, bk::argmin_dim_u32_f64);
+    cuda_arg_reduce_baracuda_wrapper!(argmax_dim_u32_f16, bk::argmax_dim_u32_f16);
+    cuda_arg_reduce_baracuda_wrapper!(argmin_dim_u32_f16, bk::argmin_dim_u32_f16);
+    cuda_arg_reduce_baracuda_wrapper!(argmax_dim_u32_bf16, bk::argmax_dim_u32_bf16);
+    cuda_arg_reduce_baracuda_wrapper!(argmin_dim_u32_bf16, bk::argmin_dim_u32_bf16);
+}
+
+// ===========================================================================
 // PowI — `y = x^n` with integer exponent (OpParams::PowI { exp })
 // ===========================================================================
 //
@@ -1134,6 +1203,19 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- ArgMaxDim / ArgMinDim — U32 output (alpha.28 added u32/i32 outputs).
+    // Net-new dtype coverage on CUDA: PTX path is F32-only.
+    let u32_dt = DType::U32;
+    let arg_dts = |dt: DType| [dt, u32_dt];
+    table.register(ArgMaxDim, &arg_dts(f32),  cuda, arg_reduce::argmax_dim_u32_f32);
+    table.register(ArgMinDim, &arg_dts(f32),  cuda, arg_reduce::argmin_dim_u32_f32);
+    table.register(ArgMaxDim, &arg_dts(f64),  cuda, arg_reduce::argmax_dim_u32_f64);
+    table.register(ArgMinDim, &arg_dts(f64),  cuda, arg_reduce::argmin_dim_u32_f64);
+    table.register(ArgMaxDim, &arg_dts(f16),  cuda, arg_reduce::argmax_dim_u32_f16);
+    table.register(ArgMinDim, &arg_dts(f16),  cuda, arg_reduce::argmin_dim_u32_f16);
+    table.register(ArgMaxDim, &arg_dts(bf16), cuda, arg_reduce::argmax_dim_u32_bf16);
+    table.register(ArgMinDim, &arg_dts(bf16), cuda, arg_reduce::argmin_dim_u32_bf16);
 
     // ----- PowI — integer-exponent power (alpha.28).
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
