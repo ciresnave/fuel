@@ -5376,16 +5376,32 @@ pub fn register_backend_capabilities(caps: BackendCapabilities) {
 }
 
 /// Read-lock the process-wide kernel-binding table. CPU dispatch
-/// wrappers are auto-registered on first access.
+/// wrappers are auto-registered on first access. When built with the
+/// `cuda` feature, the CUDA PTX path + the baracuda-kernels-sys path
+/// are also auto-registered — production callers picking up the
+/// global table see all available backends without manual init.
 pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTable> {
     GLOBAL_BINDINGS
         .get_or_init(|| {
             let mut t = KernelBindingTable::new();
             register_cpu_kernels(&mut t);
+            register_optional_backends(&mut t);
             RwLock::new(t)
         })
         .read()
         .unwrap()
+}
+
+/// Auto-register every cargo-feature-gated backend that built. CPU is
+/// always present (registered above); CUDA paths are conditionally
+/// added. Future Vulkan / Metal / etc. paths hook in here.
+fn register_optional_backends(table: &mut KernelBindingTable) {
+    #[cfg(feature = "cuda")]
+    {
+        register_cuda_kernels(table);
+        crate::baracuda_dispatch::register_baracuda_cuda_kernels(table);
+    }
+    let _ = table;
 }
 
 /// Add a backend's dispatch wrappers to the process-wide binding
@@ -5396,6 +5412,7 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
     let lock = GLOBAL_BINDINGS.get_or_init(|| {
         let mut t = KernelBindingTable::new();
         register_cpu_kernels(&mut t);
+        register_optional_backends(&mut t);
         RwLock::new(t)
     });
     register(&mut lock.write().unwrap());
@@ -6468,5 +6485,48 @@ mod tests {
         let b = global_bindings();
         let result = b.lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
         assert!(result.is_ok(), "CPU AddElementwise+F32 should be registered");
+    }
+
+    /// When the `cuda` feature is on, the CUDA PTX path AND the
+    /// baracuda path are both auto-registered into the global table.
+    /// Before this change, both paths were test-only and production
+    /// callers got an empty CUDA surface even with `--features cuda`.
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn global_bindings_auto_registers_cuda_paths() {
+        let b = global_bindings();
+        // PTX path: F32 MatMul should resolve.
+        let ptx = b.lookup(
+            OpKind::MatMul,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        );
+        assert!(ptx.is_ok(), "PTX F32 MatMul should be auto-registered on Cuda");
+
+        // Baracuda path: int8 MatMul exists only via baracuda. If this
+        // resolves, both paths fired.
+        let baracuda_int8 = b.lookup(
+            OpKind::MatMul,
+            &[DType::I8, DType::I8, DType::I8],
+            BackendId::Cuda,
+        );
+        assert!(
+            baracuda_int8.is_ok(),
+            "baracuda int8 MatMul should be auto-registered on Cuda",
+        );
+
+        // Sibling-alternative check: F32 unary Neg has both PTX and
+        // baracuda registrations after the changes; expect 2+
+        // alternatives at that key.
+        let alts = b.lookup_alternatives(
+            OpKind::NegElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        );
+        assert!(
+            alts.len() >= 2,
+            "expected >=2 CUDA Neg F32 alternatives (PTX + baracuda); got {}",
+            alts.len(),
+        );
     }
 }
