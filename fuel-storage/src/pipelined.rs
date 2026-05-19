@@ -78,6 +78,17 @@ enum WorkItemKind {
     /// Computational kernel: allocate output, run the compiled
     /// kernel, store the result. `compiled` is `Some(...)`.
     Kernel,
+    /// `Op::Release` — metadata-only "this storage is no longer
+    /// needed" directive. Per `Op::Release`'s contract: the output
+    /// is a zero-element marker (NodeId placeholder for graph
+    /// bookkeeping; never read by any consumer). The executor emits
+    /// a zero-byte CPU `Storage` at the node's slot so downstream
+    /// cache lookups don't surface "missing slot" errors; the actual
+    /// deallocation of `inputs[0]` is driven by `destructive_input`
+    /// in the realize loop (Phase B), which drops the Arc held by
+    /// the cache. The held Arc's Drop chain frees device memory
+    /// (sync for CPU, stream-deferred for async backends).
+    ReleaseMarker,
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -444,6 +455,41 @@ fn compile_one(
             dtype: node.dtype,
             target_backend,
             kind: WorkItemKind::ViewOf { input: node.inputs[0] },
+            compiled: None,
+            output_layout,
+            destructive_input,
+        });
+    }
+
+    if matches!(node.op, Op::Release) {
+        // Op::Release produces a zero-element marker output. The
+        // marker storage is CPU + 0 bytes — nothing reads it; it
+        // exists so cache lookups on the Release NodeId resolve.
+        // The actual deallocation of `inputs[0]` happens in the
+        // realize loop via `destructive_input` cleanup.
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::Release expects 1 input, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        // Inherit the source's target_backend so any downstream
+        // backend-aware logic (telemetry, scheduling) sees a sensible
+        // value. The marker doesn't actually run on any backend.
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::ReleaseMarker,
             compiled: None,
             output_layout,
             destructive_input,
@@ -1765,6 +1811,18 @@ fn execute_work_item(
                 .bt()
             })?;
             cache.insert(item.node_id, input_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::ReleaseMarker => {
+            // Emit a zero-byte CPU storage at the Release node's
+            // slot. Per Op::Release's contract the marker is never
+            // read — this exists so any downstream cache lookup of
+            // `release_id` resolves rather than failing. The actual
+            // deallocation of `inputs[0]` is driven by the realize
+            // loop's `destructive_input` cleanup (Phase B).
+            let marker = crate::alloc_cpu_zeroed(item.dtype, 0)?;
+            cache.insert(item.node_id, Arc::new(RwLock::new(marker)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }
@@ -5909,78 +5967,91 @@ mod tests {
     // --- side-effect roots + destructive cleanup (9c Phase B) -----
 
     /// Side-effect roots get merged into the realize walk even when
-    /// not reachable from the user's targets. Build a graph where
-    /// `add_id` is the user target and `extra_id` is unreachable;
-    /// mark `extra_id` as a side-effect root and verify both nodes
-    /// land in the output cache after `realize_many`.
+    /// not reachable from the user's targets. The production trigger
+    /// is `Op::Release` (emitted by `ResidencyEvictionRule`); this
+    /// test uses that exact shape.
+    ///
+    /// Graph: Const(a) + Const(b) → Add (user target); separate
+    /// Const(c) → Release(c) (side-effect root, not reachable from
+    /// Add). After realize_many on `[add]`, the Add should be in the
+    /// output AND the Release should have fired (verified by the
+    /// fact that realize succeeded — Op::Release in the walk used to
+    /// fail compilation pre-Phase B+).
     #[test]
-    fn pipelined_realize_merges_side_effect_roots() {
-        let lhs = crate::from_slice_cpu(&[1.0_f32, 2.0]);
-        let rhs = crate::from_slice_cpu(&[10.0_f32, 20.0]);
-        let extra_src = crate::from_slice_cpu(&[100.0_f32, 200.0]);
+    fn pipelined_realize_merges_op_release_side_effect_root() {
+        let a = crate::from_slice_cpu(&[1.0_f32, 2.0]);
+        let b = crate::from_slice_cpu(&[10.0_f32, 20.0]);
+        let c = crate::from_slice_cpu(&[100.0_f32, 200.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
-        let (lhs_id, rhs_id, add_id, extra_src_id, extra_id) = {
+        let (a_id, b_id, c_id, add_id, release_id) = {
             let mut g = graph.write().unwrap();
-            let lhs = g.push(Node {
+            let a = g.push(Node {
                 op: Op::Const, inputs: vec![],
                 shape: Shape::from_dims(&[2]), dtype: DType::F32,
             });
-            let rhs = g.push(Node {
+            let b = g.push(Node {
                 op: Op::Const, inputs: vec![],
                 shape: Shape::from_dims(&[2]), dtype: DType::F32,
             });
-            // Reachable from the target.
+            // c is NOT reachable from add; its Release IS marked as
+            // a side-effect root.
+            let c = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
             let add = g.push(Node {
-                op: Op::Add, inputs: vec![lhs, rhs],
+                op: Op::Add, inputs: vec![a, b],
                 shape: Shape::from_dims(&[2]), dtype: DType::F32,
             });
-            // NOT reachable from `add` — but we'll mark it as a
-            // side-effect root, so the walk must still realize it.
-            let extra_src = g.push(Node {
-                op: Op::Const, inputs: vec![],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
-            });
-            let extra = g.push(Node {
-                op: Op::Neg, inputs: vec![extra_src],
-                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            // Production shape: Op::Release on c, marked as
+            // side-effect root so it fires even though no graph
+            // node reads its output.
+            let release = g.push(Node {
+                op: Op::Release, inputs: vec![c],
+                shape: Shape::from_dims(&[0]), dtype: DType::F32,
             });
             g.set_target_backend(add, BackendId::Cpu);
-            g.set_target_backend(extra, BackendId::Cpu);
-            g.add_side_effect_root(extra);
-            (lhs, rhs, add, extra_src, extra)
+            g.set_target_backend(release, BackendId::Cpu);
+            g.add_side_effect_root(release);
+            (a, b, c, add, release)
         };
         let mut inputs = StorageCache::new();
-        inputs.insert(lhs_id, Arc::new(RwLock::new(lhs)));
-        inputs.insert(rhs_id, Arc::new(RwLock::new(rhs)));
-        inputs.insert(extra_src_id, Arc::new(RwLock::new(extra_src)));
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b)));
+        let c_arc = Arc::new(RwLock::new(c));
+        let c_arc_external = Arc::clone(&c_arc);
+        inputs.insert(c_id, c_arc);
 
-        // Only the user target — but the side-effect root must also fire.
-        let out =
-            PipelinedExecutor::realize_many(graph, &[add_id], inputs).expect("realize_many");
+        // Only `add` is requested. The Release on c is a side-effect
+        // root that must still fire.
+        let out = PipelinedExecutor::realize_many(graph, &[add_id], inputs)
+            .expect("realize_many");
         assert_eq!(out.len(), 1);
-        // Confirm the user target got the right answer.
         let add_guard = out[0].0.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
-        assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0]);
-        // The side-effect root's `extra` node was Neg-d into its own
-        // Storage. It's not in the caller-visible output Vec (only
-        // requested targets are), but the realize-time effect (the
-        // kernel firing) happened — which is what side-effect-root
-        // semantics promise.
-        let _ = extra_id;
+        let crate::BackendStorage::Cpu(arr) = &add_guard.inner else { panic!() };
+        assert_eq!(arr.as_slice::<f32>().unwrap(), &[11.0, 22.0]);
+
+        // The Release's destructive_input cleanup dropped the
+        // cache's Arc to c. The only Arc to c that survives is the
+        // external one this test holds — confirms the eviction
+        // actually freed the cache's reference.
+        assert_eq!(
+            Arc::strong_count(&c_arc_external),
+            1,
+            "Op::Release should evict the cache's Arc to its source; \
+             only the test's external clone should remain",
+        );
+        let _ = release_id;
     }
 
-    /// `compile_one` snapshots `node.op.destructive_input()` onto the
-    /// emitted WorkItem so the executor loop's eviction logic can
-    /// trigger off it without re-locking the graph. Verify the field
-    /// is populated for an `Op::Release` node.
+    /// `compile_one` emits a `WorkItemKind::ReleaseMarker` for
+    /// `Op::Release` with `destructive_input = Some(0)`. Verify
+    /// the WorkItem shape via a direct compile_one call.
     #[test]
-    fn compile_one_snapshots_destructive_input_for_release() {
-        let graph = {
-            let mut g = Graph::new();
-            // Source node whose storage Release destroys. Storage
-            // wiring isn't exercised here — we only care about the
-            // WorkItem field.
+    fn compile_one_emits_release_marker_with_destructive_input() {
+        let graph_rc = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, release_id) = {
+            let mut g = graph_rc.write().unwrap();
             let src = g.push(Node {
                 op: Op::Const, inputs: vec![],
                 shape: Shape::from_dims(&[2]), dtype: DType::F32,
@@ -5990,23 +6061,17 @@ mod tests {
                 shape: Shape::from_dims(&[0]), dtype: DType::F32,
             });
             g.set_target_backend(release, BackendId::Cpu);
-            (g, release)
+            (src, release)
         };
-        let (graph, release_id) = graph;
+        let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-
-        // compile_one returns an Err for unmapped ops (Op::Release
-        // doesn't have an OpKind today), but the destructive_input
-        // metadata snapshot must still be threadable through whatever
-        // dispatch path lands later — this test pins the snapshot via
-        // a direct node-op query, matching what compile_one does.
-        let release_op = graph.node(release_id).op.clone();
-        assert_eq!(release_op.destructive_input(), Some(0));
-        // And the non-destructive `Op::Const` source returns None.
-        let src_op = graph.node(NodeId(0)).op.clone();
-        assert_eq!(src_op.destructive_input(), None);
-        let _ = (bindings, layout_cache); // silence "unused" until Op::Release dispatch lands
+        let item = compile_one(&g, release_id, &mut layout_cache, &bindings)
+            .expect("compile_one Op::Release");
+        assert!(matches!(item.kind, WorkItemKind::ReleaseMarker));
+        assert_eq!(item.destructive_input, Some(0));
+        assert_eq!(item.inputs, vec![src_id]);
+        assert_eq!(item.elem_count, 0, "Release output is the zero-element marker");
     }
 
     // --- realize_many (Phase 7.6 step 9c Phase A) ----------------
