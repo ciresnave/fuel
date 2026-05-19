@@ -148,6 +148,53 @@ fn extend_with_side_effect_roots(graph: &Graph, user_roots: &[NodeId]) -> Vec<No
 /// Pipelined executor: walks a graph, compiles each node in a
 /// dedicated thread, executes the compiled stream on the calling
 /// thread.
+///
+/// # Architectural commitments (Phase 7.6 step 9c)
+///
+/// ## Fail-fast dispatch — no runtime CPU fallback
+///
+/// The binding-table lookup is fail-fast. If
+/// `global_bindings().lookup(op_kind, dtypes, backend)` returns
+/// `None`, `realize` / `realize_many` surface a typed `Error::Msg`
+/// at compile time. There is **no runtime fallback** to a CPU
+/// sibling when a registered kernel returns `Err`; we commit to the
+/// backend contract that registered kernels must succeed for shapes
+/// matching their declared coverage.
+///
+/// Rationale: per-decision-point alternatives (architecture v1.0
+/// §04) already let multiple backends register at the same key. If
+/// a backend's coverage is partial, the right answer is to register
+/// only the shapes it actually handles — not to silently fall back
+/// at runtime, which masks bugs and slows the hot path. The
+/// long-term home for "this op on this device" is graph-level
+/// dispatch insertion (Op::Copy edges to a backend that does
+/// support the shape), which makes the routing decision visible in
+/// the IR rather than hidden in the executor. Until that work
+/// lands, callers see a clear error when coverage is missing.
+///
+/// This is a deliberate departure from the legacy executor's
+/// `cpu_fallback(op, inputs, shape, dtype, cache)` semantics.
+///
+/// ## Optimizer separation — callers compose
+///
+/// The pipelined executor does **not** run `fuel_graph::opt` or any
+/// `RuleRegistry` pass itself. Callers that want graph-level
+/// optimization compose it at the call site:
+///
+/// ```ignore
+/// let optimized_targets = registry.optimize_to_fixpoint(&graph, &targets);
+/// PipelinedExecutor::realize_many(graph, &optimized_targets, inputs)?;
+/// ```
+///
+/// Rationale: the legacy `GraphExecutor<B>::with_optimization(bool)`
+/// coupling reflected its per-typed-entry API surface
+/// (`realize_f32`, etc.) where the convenience of a single
+/// optimize+realize call was load-bearing. The pipelined path has
+/// a uniform `realize_many` that composes trivially — no need to
+/// re-couple them at the executor layer. This keeps the executor
+/// focused on execution and lets the optimizer evolve
+/// independently (different rule registries per call site, mid-
+/// pipeline opt+realize+opt+realize patterns, etc.).
 pub struct PipelinedExecutor;
 
 impl PipelinedExecutor {
