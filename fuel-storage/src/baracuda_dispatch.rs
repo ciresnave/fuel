@@ -364,6 +364,72 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// Int-GEMM — S8/U8 RRR Identity (W8A8 phase 1)
+// ===========================================================================
+//
+// Baracuda's `gemm_{s8,u8}_rrr_sm80_run` are RRR-layout (row-major ×
+// row-major → row-major), Identity-epilogue Int8 tensor-core GEMM.
+// Mirror `Op::MatMul`'s shape contract directly — registering at
+// `(MatMul, [I8, I8, I8], Cuda)` and `[U8, U8, U8]` keys, so the
+// existing `OpParams::Matmul { m, n, k, lhs/rhs_batch_dims }` flows
+// through unchanged.
+//
+// Bias / BiasRelu / BiasGelu / BiasSilu epilogues are not yet wired
+// — those need a `FusedLinearInt` op (or extending FusedLinear with
+// int dtypes), which is a separate session.
+
+macro_rules! cuda_gemm_int_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                    (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Matmul, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let lhs_guard = read_storage(&inputs[0])?;
+            let rhs_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let lhs_cuda = cuda_input(&lhs_guard)?;
+            let rhs_cuda = cuda_input(&rhs_guard)?;
+            let result = $baracuda_fn(
+                lhs_cuda, rhs_cuda, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+            )?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod gemm_int {
+    use super::*;
+    use fuel_cuda_backend::baracuda::gemm_int as bk;
+
+    cuda_gemm_int_baracuda_wrapper!(gemm_s8_rrr, bk::gemm_s8_rrr);
+    cuda_gemm_int_baracuda_wrapper!(gemm_u8_rrr, bk::gemm_u8_rrr);
+}
+
+// ===========================================================================
 // ArgMaxDim / ArgMinDim — U32-output variants (alpha.28)
 // ===========================================================================
 //
@@ -1203,6 +1269,13 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- Int-GEMM — S8/U8 RRR Identity (alpha.28; W8A8 phase 1).
+    // Registers at the MatMul OpKind with the [int, int, int] key.
+    let i8_dt = DType::I8;
+    let u8_dt = DType::U8;
+    table.register(MatMul, &[i8_dt, i8_dt, i8_dt], cuda, gemm_int::gemm_s8_rrr);
+    table.register(MatMul, &[u8_dt, u8_dt, u8_dt], cuda, gemm_int::gemm_u8_rrr);
 
     // ----- ArgMaxDim / ArgMinDim — U32 output (alpha.28 added u32/i32 outputs).
     // Net-new dtype coverage on CUDA: PTX path is F32-only.
