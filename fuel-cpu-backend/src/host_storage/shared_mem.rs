@@ -201,6 +201,7 @@ impl HostStorage for SharedMemHostStorage {
         let r = unsafe {
             match self.dtype {
                 DType::U8 => HostBufferRef::U8(self.typed_slice::<u8>()),
+                DType::I8 => HostBufferRef::I8(self.typed_slice::<i8>()),
                 DType::U32 => HostBufferRef::U32(self.typed_slice::<u32>()),
                 DType::I16 => HostBufferRef::I16(self.typed_slice::<i16>()),
                 DType::I32 => HostBufferRef::I32(self.typed_slice::<i32>()),

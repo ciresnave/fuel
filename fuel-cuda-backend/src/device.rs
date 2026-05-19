@@ -522,6 +522,10 @@ impl CudaDevice {
                 let data = self.alloc_zeros::<u8>(elem_count)?;
                 CudaStorageSlice::U8(data)
             }
+            DType::I8 => {
+                let data = self.alloc_zeros::<i8>(elem_count)?;
+                CudaStorageSlice::I8(data)
+            }
             DType::U32 => {
                 let data = self.alloc_zeros::<u32>(elem_count)?;
                 CudaStorageSlice::U32(data)
@@ -577,6 +581,7 @@ impl CudaDevice {
             // TODO: Add support for F16 and BF16 though this is likely to require some upstream
             // cudarc changes.
             DType::U8
+            | DType::I8
             | DType::U32
             | DType::I16
             | DType::I32
@@ -632,6 +637,7 @@ impl CudaDevice {
         };
         let slice = match dtype {
             DType::U8
+            | DType::I8
             | DType::U32
             | DType::I16
             | DType::I32
@@ -675,6 +681,10 @@ impl CudaDevice {
             DType::U8 => {
                 let data = unsafe { self.alloc::<u8>(elem_count) }?;
                 CudaStorageSlice::U8(data)
+            }
+            DType::I8 => {
+                let data = unsafe { self.alloc::<i8>(elem_count) }?;
+                CudaStorageSlice::I8(data)
             }
             DType::U32 => {
                 let data = unsafe { self.alloc::<u32>(elem_count) }?;
@@ -729,6 +739,10 @@ impl CudaDevice {
             HostBufferRef::U8(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U8(data)
+            }
+            HostBufferRef::I8(storage) => {
+                let data = self.clone_htod(storage)?;
+                CudaStorageSlice::I8(data)
             }
             HostBufferRef::U32(storage) => {
                 let data = self.clone_htod(storage)?;
@@ -789,6 +803,10 @@ impl CudaDevice {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U8(data)
             }
+            HostBuffer::I8(storage) => {
+                let data = self.clone_htod(storage)?;
+                CudaStorageSlice::I8(data)
+            }
             HostBuffer::U32(storage) => {
                 let data = self.clone_htod(storage)?;
                 CudaStorageSlice::U32(data)
@@ -847,6 +865,10 @@ impl CudaDevice {
             HostBuffer::U8(storage) => {
                 let data = self.clone_htod(&storage)?;
                 CudaStorageSlice::U8(data)
+            }
+            HostBuffer::I8(storage) => {
+                let data = self.clone_htod(&storage)?;
+                CudaStorageSlice::I8(data)
             }
             HostBuffer::U32(storage) => {
                 let data = self.clone_htod(&storage)?;

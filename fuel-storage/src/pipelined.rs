@@ -622,6 +622,7 @@ fn scalar_to_bytes(s: fuel_core_types::Scalar) -> Vec<u8> {
     use fuel_core_types::Scalar;
     match s {
         Scalar::U8(v)  => vec![v],
+        Scalar::I8(v)  => vec![v as u8],
         Scalar::U32(v) => v.to_le_bytes().to_vec(),
         Scalar::I16(v) => v.to_le_bytes().to_vec(),
         Scalar::I32(v) => v.to_le_bytes().to_vec(),

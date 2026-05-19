@@ -26,6 +26,7 @@ use float8::F8E4M3 as f8e4m3;
 use half::{bf16, f16};
 
 with_dtype!(u8, U8, |v: f64| v as u8, |v: u8| v as f64);
+with_dtype!(i8, I8, |v: f64| v as i8, |v: i8| v as f64);
 with_dtype!(u32, U32, |v: f64| v as u32, |v: u32| v as f64);
 with_dtype!(i16, I16, |v: f64| v as i16, |v: i16| v as f64);
 with_dtype!(i32, I32, |v: f64| v as i32, |v: i32| v as f64);
@@ -60,6 +61,15 @@ impl IntDType for u32 {
 }
 
 impl IntDType for u8 {
+    fn is_true(&self) -> bool {
+        *self != 0
+    }
+    fn as_usize(&self) -> usize {
+        *self as usize
+    }
+}
+
+impl IntDType for i8 {
     fn is_true(&self) -> bool {
         *self != 0
     }

@@ -119,6 +119,7 @@ impl crate::CustomOp1 for ArgSort {
         {
             let sort_indexes = match &cpu.0 {
                 crate::HostBuffer::U8(vs) => self.asort(vs, layout),
+                crate::HostBuffer::I8(vs) => self.asort(vs, layout),
                 crate::HostBuffer::U32(vs) => self.asort(vs, layout),
                 crate::HostBuffer::I16(vs) => self.asort(vs, layout),
                 crate::HostBuffer::I32(vs) => self.asort(vs, layout),

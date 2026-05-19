@@ -53,7 +53,7 @@ fn dtype_bytes(dt: DType) -> u64 {
         DType::F32 | DType::U32 | DType::I32 => 4,
         DType::F64 | DType::I64 => 8,
         DType::BF16 | DType::F16 | DType::I16 => 2,
-        DType::U8 => 1,
+        DType::U8 | DType::I8 => 1,
         DType::F8E4M3 | DType::F8E8M0 => 1,
         // 6-bit and 4-bit float micro-types are byte-packed; treat
         // them as 1 byte/elem for the bandwidth estimate.

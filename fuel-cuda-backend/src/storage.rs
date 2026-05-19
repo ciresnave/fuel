@@ -99,6 +99,7 @@ fn push_scalar_arg<'a>(scalar: &'a fuel_core_types::scalar::Scalar, builder: &mu
     use fuel_core_types::scalar::Scalar;
     match scalar {
         Scalar::U8(v) => builder.arg(v),
+        Scalar::I8(v) => builder.arg(v),
         Scalar::U32(v) => builder.arg(v),
         Scalar::I16(v) => builder.arg(v),
         Scalar::I32(v) => builder.arg(v),
@@ -125,6 +126,7 @@ impl SlicePtrOrNull<usize> {
 #[derive(Debug)]
 pub enum CudaStorageSlice {
     U8(CudaSlice<u8>),
+    I8(CudaSlice<i8>),
     U32(CudaSlice<u32>),
     I16(CudaSlice<i16>),
     I32(CudaSlice<i32>),
@@ -1318,6 +1320,7 @@ macro_rules! cuda_dtype {
     };
 }
 cuda_dtype!(u8, U8);
+cuda_dtype!(i8, I8);
 cuda_dtype!(u32, U32);
 cuda_dtype!(i16, I16);
 cuda_dtype!(i32, I32);
@@ -1347,6 +1350,11 @@ impl CudaStorage {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst.clone_dtod(cuda_slice)?;
                 CudaStorageSlice::U8(result)
+            }
+            DType::I8 => {
+                let cuda_slice = self.as_cuda_slice::<i8>()?;
+                let result = dst.clone_dtod(cuda_slice)?;
+                CudaStorageSlice::I8(result)
             }
             DType::U32 => {
                 let cuda_slice = self.as_cuda_slice::<u32>()?;
@@ -1549,6 +1557,7 @@ impl CudaStorage {
     pub fn dtype(&self) -> DType {
         match self.slice {
             CudaStorageSlice::U8(_) => DType::U8,
+            CudaStorageSlice::I8(_) => DType::I8,
             CudaStorageSlice::U32(_) => DType::U32,
             CudaStorageSlice::I16(_) => DType::I16,
             CudaStorageSlice::I32(_) => DType::I32,
@@ -1579,6 +1588,7 @@ impl CudaStorage {
         let src_o = layout.start_offset();
         let ((src, _guard_src), kernel_name) = match &mut self.slice {
             S::U8(s) => (slice_ptr(s, src_o), "const_set_u8"),
+            S::I8(s) => (slice_ptr(s, src_o), "const_set_i8"),
             S::U32(s) => (slice_ptr(s, src_o), "const_set_u32"),
             S::I16(s) => (slice_ptr(s, src_o), "const_set_i16"),
             S::I32(s) => (slice_ptr(s, src_o), "const_set_i32"),
@@ -1622,6 +1632,7 @@ impl CudaStorage {
         // is used.
         let (inp, _guard) = match &self.slice {
             CudaStorageSlice::U8(inp) => slice_ptr(inp, start_o),
+            CudaStorageSlice::I8(inp) => slice_ptr(inp, start_o),
             CudaStorageSlice::U32(inp) => slice_ptr(inp, start_o),
             CudaStorageSlice::I16(inp) => slice_ptr(inp, start_o),
             CudaStorageSlice::I32(inp) => slice_ptr(inp, start_o),
@@ -1735,8 +1746,8 @@ impl CudaStorage {
                 unsafe { builder.launch(cfg) }.w()?;
                 CudaStorageSlice::F8E4M3(out)
             }
-            DType::I16 | DType::I32 => {
-                return Err(CudaError::InternalError("i16,i32 dtypes are not supported").into())
+            DType::I8 | DType::I16 | DType::I32 => {
+                return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported").into())
             }
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
                 return Err(
@@ -2203,6 +2214,10 @@ impl CudaStorage {
             CudaStorageSlice::U8(slice) => {
                 let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
                 Ok(HostBuffer::U8(cpu_storage))
+            }
+            CudaStorageSlice::I8(slice) => {
+                let cpu_storage = device.clone_dtoh(&slice.as_slice())?;
+                Ok(HostBuffer::I8(cpu_storage))
             }
             CudaStorageSlice::U32(slice) => {
                 let cpu_storage = device.clone_dtoh(&slice.as_slice())?;

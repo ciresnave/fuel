@@ -1093,6 +1093,7 @@ fn cpu_zeros(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
     let elem_count = shape.elem_count();
     let storage = match dtype {
         DType::U8 => HostBuffer::U8(vec![0u8; elem_count]),
+        DType::I8 => HostBuffer::I8(vec![0i8; elem_count]),
         DType::U32 => HostBuffer::U32(vec![0u32; elem_count]),
         DType::I16 => HostBuffer::I16(vec![0i16; elem_count]),
         DType::I32 => HostBuffer::I32(vec![0i32; elem_count]),
@@ -1114,6 +1115,7 @@ unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
     let elem_count = shape.elem_count();
     let storage = match dtype {
         DType::U8 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::U8(v) }
+        DType::I8 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::I8(v) }
         DType::U32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::U32(v) }
         DType::I16 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::I16(v) }
         DType::I32 => { let mut v = Vec::with_capacity(elem_count); unsafe { v.set_len(elem_count) }; HostBuffer::I32(v) }

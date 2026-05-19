@@ -228,6 +228,7 @@ impl Tensor {
     ) -> Result<Self> {
         match dtype {
             DType::U8 => convert_slice::<u8>(data, shape, device),
+            DType::I8 => convert_slice::<i8>(data, shape, device),
             DType::U32 => convert_slice::<u32>(data, shape, device),
             DType::I16 => convert_slice::<i16>(data, shape, device),
             DType::I32 => convert_slice::<i32>(data, shape, device),
@@ -365,6 +366,7 @@ fn convert_back(tensor: &Tensor) -> Result<Vec<u8>> {
     let tensor = tensor.flatten_all()?;
     match tensor.dtype() {
         DType::U8 => Ok(convert_back_::<u8>(tensor.to_vec1()?)),
+        DType::I8 => Ok(convert_back_::<i8>(tensor.to_vec1()?)),
         DType::U32 => Ok(convert_back_::<u32>(tensor.to_vec1()?)),
         DType::I16 => Ok(convert_back_::<i16>(tensor.to_vec1()?)),
         DType::I32 => Ok(convert_back_::<i32>(tensor.to_vec1()?)),
