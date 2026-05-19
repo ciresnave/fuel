@@ -50,6 +50,7 @@ pub mod cast;
 pub mod clamp;
 pub mod concat;
 pub mod elementwise;
+pub mod gemm_int;
 pub mod powi;
 pub mod gguf;
 pub mod indexing;
