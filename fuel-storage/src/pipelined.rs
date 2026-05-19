@@ -42,7 +42,7 @@ use std::thread;
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
-use fuel_graph::{topo_order, Graph, Node, NodeId, Op};
+use fuel_graph::{topo_order, topo_order_multi, Graph, Node, NodeId, Op};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
@@ -201,6 +201,84 @@ impl PipelinedExecutor {
             .bt()
         })?;
         Ok((storage, layout))
+    }
+
+    /// Realize multiple targets in one walk. Each target's transitive
+    /// dependency set is collapsed into a single topological order
+    /// (via [`topo_order_multi`]); shared subgraphs are evaluated
+    /// once. Returns a `Vec<(Storage, Layout)>` whose order matches
+    /// `targets`.
+    ///
+    /// This is Phase A of Phase 7.6 step 9c — feature-parity with the
+    /// legacy `GraphExecutor::realize_many_f32`. Multi-session
+    /// migration target ([memory: project_phase_7_6_step_9c_parity_audit.md]).
+    ///
+    /// Pre-conditions: every reachable `Op::Const` must be in
+    /// `inputs`; every reachable non-`Const` must have its
+    /// `target_backend` set; the op + dtype must be registered in
+    /// `global_bindings()`. Same as single-target [`realize`].
+    pub fn realize_many(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Topo order covering every target's dependency set + initial
+        // layouts for the input cache entries.
+        let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
+            let g = graph.read().map_err(|_| poisoned("graph lock"))?;
+            let order = topo_order_multi(&g, targets);
+            let mut layouts = HashMap::with_capacity(inputs.len());
+            for &id in inputs.keys() {
+                layouts.insert(id, g.layout(id));
+            }
+            (order, layouts)
+        };
+
+        let (tx, rx) = channel::<Result<WorkItem>>();
+        let graph_for_compiler = Arc::clone(&graph);
+        let order_for_compiler = order.clone();
+
+        let compiler = thread::spawn(move || {
+            compiler_thread_body(graph_for_compiler, order_for_compiler, tx);
+        });
+
+        let mut cache: StorageCache = inputs;
+        for item in rx {
+            let item = item?;
+            execute_work_item(&item, &mut cache, &mut layout_cache)?;
+        }
+
+        compiler
+            .join()
+            .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // Verify every target was realized + collect outputs in
+        // target order. We don't `remove` from the cache because the
+        // same NodeId can appear twice in `targets` (caller wants the
+        // same storage twice) — clone the Arc instead.
+        let mut out = Vec::with_capacity(targets.len());
+        for &target in targets {
+            let storage = cache.get(&target).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor::realize_many: target {:?} not populated after execution",
+                    target
+                ))
+                .bt()
+            })?;
+            let layout = layout_cache.get(&target).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor::realize_many: target layout {:?} not populated after execution",
+                    target
+                ))
+                .bt()
+            })?;
+            out.push((storage, layout));
+        }
+        Ok(out)
     }
 }
 
@@ -5768,6 +5846,146 @@ mod tests {
             let sum: f32 = row.iter().map(|x| x.exp()).sum();
             assert!((sum - 1.0).abs() < 1e-5, "softmax(log_softmax) row sum != 1: {sum}");
         }
+    }
+
+    // --- realize_many (Phase 7.6 step 9c Phase A) ----------------
+
+    /// realize_many on empty targets returns an empty Vec — no graph
+    /// walk, no panic.
+    #[test]
+    fn pipelined_realize_many_empty_targets() {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let inputs = StorageCache::new();
+        let out = PipelinedExecutor::realize_many(graph, &[], inputs).expect("realize_many");
+        assert!(out.is_empty());
+    }
+
+    /// realize_many with two independent target chains. Each chain's
+    /// output is in the cache; the shared topo walk realizes both.
+    /// Verifies parallel chain handling + return order matches input.
+    #[test]
+    fn pipelined_realize_many_two_independent_targets() {
+        let lhs = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let rhs = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (lhs_id, rhs_id, add_id, mul_id) = {
+            let mut g = graph.write().unwrap();
+            let lhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let rhs = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let add = g.push(Node {
+                op: Op::Add, inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let mul = g.push(Node {
+                op: Op::Mul, inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(add, BackendId::Cpu);
+            g.set_target_backend(mul, BackendId::Cpu);
+            (lhs, rhs, add, mul)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(lhs_id, Arc::new(RwLock::new(lhs)));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(rhs)));
+
+        // Pass mul first to confirm return order matches targets order
+        // (not graph order — graph order would put add first).
+        let out =
+            PipelinedExecutor::realize_many(graph, &[mul_id, add_id], inputs).expect("realize_many");
+        assert_eq!(out.len(), 2);
+
+        let mul_guard = out[0].0.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[10.0, 40.0, 90.0]);
+
+        let add_guard = out[1].0.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0, 33.0]);
+    }
+
+    /// realize_many with the same NodeId twice — caller asking for
+    /// the same output twice. Both outputs are the same Arc (cheap).
+    #[test]
+    fn pipelined_realize_many_duplicate_target_returns_same_arc() {
+        let storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (in_id, neg_id) = {
+            let mut g = graph.write().unwrap();
+            let in_id = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let neg = g.push(Node {
+                op: Op::Neg, inputs: vec![in_id],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(neg, BackendId::Cpu);
+            (in_id, neg)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(in_id, Arc::new(RwLock::new(storage)));
+
+        let out = PipelinedExecutor::realize_many(graph, &[neg_id, neg_id], inputs)
+            .expect("realize_many");
+        assert_eq!(out.len(), 2);
+        assert!(
+            Arc::ptr_eq(&out[0].0, &out[1].0),
+            "duplicate target should share the same storage Arc",
+        );
+    }
+
+    /// realize_many with shared upstream nodes evaluates the shared
+    /// chunk exactly once. Two targets `f = a + b` and `g = (a + b) * a`
+    /// — `a + b` is computed once.
+    #[test]
+    fn pipelined_realize_many_shared_subgraph_evaluates_once() {
+        let a_storage = crate::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let b_storage = crate::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, b_id, add_id, mul_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let add = g.push(Node {
+                op: Op::Add, inputs: vec![a, b],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            let mul = g.push(Node {
+                op: Op::Mul, inputs: vec![add, a],
+                shape: Shape::from_dims(&[3]), dtype: DType::F32,
+            });
+            g.set_target_backend(add, BackendId::Cpu);
+            g.set_target_backend(mul, BackendId::Cpu);
+            (a, b, add, mul)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a_storage)));
+        inputs.insert(b_id, Arc::new(RwLock::new(b_storage)));
+
+        let out = PipelinedExecutor::realize_many(graph, &[add_id, mul_id], inputs)
+            .expect("realize_many");
+        assert_eq!(out.len(), 2);
+
+        let add_guard = out[0].0.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0, 33.0]);
+
+        let mul_guard = out[1].0.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
+        // (a + b) * a = [11*1, 22*2, 33*3] = [11, 44, 99].
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 44.0, 99.0]);
     }
 
     /// E2E: masked_fill with -inf — the attention masking pattern.
