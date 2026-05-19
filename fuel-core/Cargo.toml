@@ -16,6 +16,8 @@ fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-mkl-cpu-backend = { workspace = true, optional = true }
 fuel-core-types = { workspace = true, features = ["serde"] }
 fuel-cpu-backend = { workspace = true }
+fuel-storage = { workspace = true }
+bytemuck = { workspace = true }
 fuel-formats = { workspace = true }
 fuel-quantized = { workspace = true }
 fuel-graph = { workspace = true }
@@ -83,6 +85,7 @@ cuda = [
     "dep:baracuda-types",
     "dep:baracuda-core",
     "dep:baracuda-driver",
+    "fuel-storage/cuda",
     "fuel-ug?/cuda",
 ]
 

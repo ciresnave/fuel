@@ -1945,10 +1945,40 @@ fn execute_work_item(
                     ))
                     .bt()
                 })?;
-                let already_contig =
-                    in_layout.is_contiguous() && in_layout.start_offset() == 0;
-                let strided_ok =
-                    kernel_handles_strided && in_layout.start_offset() == 0;
+                // "Already contig" means more than `is_contiguous()`:
+                // the LAYOUT's element count must also match the
+                // STORAGE's byte count for shape-validating kernels
+                // (concat_cpu, etc.) that read `storage.len_bytes()`.
+                // A first-N slice view has `is_contiguous() == true`
+                // (strides match canonical [1] for shape [N]) but its
+                // storage is the parent's full bytes — too big. In
+                // that case we auto-contiguize to materialize only
+                // the view's portion as a fresh storage.
+                //
+                // Same constraint applies to strided_ok: kernels that
+                // declare strided support can walk strided inputs, but
+                // the byte count check at the kernel surface still
+                // assumes storage.len_bytes() == layout.elem_count() *
+                // dtype.size_bytes(). Until kernels universally trust
+                // layout over storage, we conservatively materialize.
+                let in_dtype = in_arc
+                    .read()
+                    .map_err(|_| poisoned("input storage"))?
+                    .dtype;
+                let in_len_bytes = in_arc
+                    .read()
+                    .map_err(|_| poisoned("input storage"))?
+                    .inner
+                    .len_bytes();
+                let layout_bytes =
+                    in_layout.shape().elem_count() * in_dtype.size_in_bytes();
+                let bytes_match_shape = in_len_bytes == layout_bytes;
+                let already_contig = in_layout.is_contiguous()
+                    && in_layout.start_offset() == 0
+                    && bytes_match_shape;
+                let strided_ok = kernel_handles_strided
+                    && in_layout.start_offset() == 0
+                    && bytes_match_shape;
                 if already_contig || strided_ok {
                     input_arcs.push(in_arc);
                     kernel_layouts.push(in_layout);
@@ -1962,13 +1992,47 @@ fn execute_work_item(
             }
             kernel_layouts.push(item.output_layout.clone());
 
-            // Allocate output on the target backend.
+            // Allocate output on the target backend. For GPU backends
+            // we derive the device handle from the first input —
+            // every kernel has ≥1 input (Op::Const is handled via
+            // ConstAdopt, never via Kernel), and an input on the
+            // target backend carries its own device. This avoids
+            // threading a device handle through `realize`.
             let output = match item.target_backend {
                 BackendId::Cpu => crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
+                #[cfg(feature = "cuda")]
+                BackendId::Cuda => {
+                    let first_in = input_arcs.first().ok_or_else(|| {
+                        Error::Msg(format!(
+                            "PipelinedExecutor: kernel {:?} on Cuda has no inputs; \
+                             cannot derive device for output allocation",
+                            item.node_id,
+                        ))
+                        .bt()
+                    })?;
+                    let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
+                    let cuda_in = match &guard.inner {
+                        crate::BackendStorage::Cuda(c) => c,
+                        other => {
+                            return Err(Error::Msg(format!(
+                                "PipelinedExecutor: kernel {:?} target_backend=Cuda but \
+                                 input has BackendStorage::{:?}; mixed-backend kernels \
+                                 require an explicit Op::Copy first",
+                                item.node_id,
+                                std::mem::discriminant(other),
+                            ))
+                            .bt());
+                        }
+                    };
+                    let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+                    let cuda_bytes =
+                        fuel_cuda_backend::CudaStorageBytes::alloc(cuda_in.device(), n_bytes)?;
+                    crate::Storage::new(crate::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                }
                 other => {
                     return Err(Error::Msg(format!(
                         "PipelinedExecutor: target_backend {:?} output allocation \
-                         not yet implemented (CPU is wired; GPUs extend later)",
+                         not yet implemented (CPU + CUDA wired; Vulkan / Metal extend later)",
                         other
                     ))
                     .bt());
@@ -2013,12 +2077,31 @@ fn auto_contiguize(
             let new_bytes = fuel_cpu_backend::byte_kernels::contiguize_cpu(c, layout, dtype_size)?;
             Storage::new(crate::BackendStorage::Cpu(new_bytes), dtype)
         }
+        #[cfg(feature = "cuda")]
+        crate::BackendStorage::Cuda(c) => {
+            // D2H → CPU contiguize → H2D. Slow path (two device
+            // transfers per non-contig input) but correct; a native
+            // CUDA contiguize kernel slots in when the byte-storage
+            // CUDA family grows one.
+            let host_bytes = c.to_cpu_bytes()?;
+            let host_cpu =
+                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&host_bytes);
+            let contig_cpu = fuel_cpu_backend::byte_kernels::contiguize_cpu(
+                &host_cpu, layout, dtype_size,
+            )?;
+            let host_contig_bytes = contig_cpu.bytes().to_vec();
+            let cuda_bytes = fuel_cuda_backend::CudaStorageBytes::from_cpu_bytes(
+                c.device(),
+                &host_contig_bytes,
+            )?;
+            Storage::new(crate::BackendStorage::Cuda(cuda_bytes), dtype)
+        }
         #[allow(unreachable_patterns)]
         _ => {
             return Err(Error::Msg(
-                "auto_contiguize: only the CPU backend is wired today; \
-                 GPU backends extend this match when their first kernel \
-                 family lands"
+                "auto_contiguize: backend not wired (CPU + CUDA are wired today; \
+                 Vulkan / Metal extend this match when their byte-storage \
+                 substrate lands)"
                     .to_string(),
             )
             .bt());

@@ -802,6 +802,9 @@ impl LazyTensor {
     /// startup cost.
     pub fn realize_f32(&self) -> Vec<f32> {
         if let Some(table) = crate::dispatch::cached() {
+            // Router path: stays on the legacy executor until Phase G
+            // of the 9c migration retires the trait surface the Router
+            // dispatches through.
             let mut router = fuel_graph_router::Router::new().add_cpu();
             #[cfg(feature = "aocl")]
             { router = router.add_aocl(); }
@@ -811,8 +814,14 @@ impl LazyTensor {
             let mut exe = GraphExecutor::new(router);
             return exe.realize_f32(&self.inner).into_vec();
         }
-        let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
-        exe.realize_f32(&self.inner).into_vec()
+        // Pipelined path (Phase 7.6 step 9c E.2): walk the graph,
+        // pre-realize Consts onto CPU, dispatch through
+        // PipelinedExecutor, D2H result.
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_as::<f32>(&graph, target, &device)
+            .expect("realize_f32 via PipelinedExecutor")
     }
 
     /// Realize as an `f64` `Vec`.
@@ -836,18 +845,35 @@ impl LazyTensor {
         fuel_reference_backend::exec::realize_f32(&self.inner).into_vec()
     }
 
-    /// Realize on a CUDA GPU via the generic executor.
+    /// Realize on a CUDA GPU via [`PipelinedExecutor`].
+    ///
+    /// Phase 7.6 step 9c E.2: signature change from
+    /// `&mut GraphExecutor<CudaBackend>` to `&CudaDevice`. The
+    /// pipelined executor doesn't carry a const_pool — each call
+    /// re-uploads weights. For autoregressive decoding loops where
+    /// const_pool was load-bearing, use the persistent-StorageCache
+    /// pattern shipped in Phase E.3 (KVCache migration).
     #[cfg(feature = "cuda")]
     pub fn realize_f32_cuda(
         &self,
-        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
+        device: &fuel_cuda_backend::CudaDevice,
     ) -> Vec<f32> {
-        executor.realize_f32(&self.inner).into_vec()
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let fc_device: crate::Device = device.clone().into();
+        crate::pipelined_bridge::realize_one_as::<f32>(&graph, target, &fc_device)
+            .expect("realize_f32_cuda via PipelinedExecutor")
     }
 
     /// Realize on a Vulkan GPU via the generic executor. Mirrors the
     /// CUDA helper above so the Phase 6b Judge can profile Vulkan
     /// equivalence classes uniformly with CUDA.
+    ///
+    /// **NOT migrated to PipelinedExecutor yet** — `BackendStorage::
+    /// read_to_cpu_bytes` for the Vulkan variant returns Err because
+    /// D2H needs a `VulkanBackend` handle the byte-storage substrate
+    /// doesn't carry. Migration follows the Vulkan d2h wiring (its
+    /// own follow-up).
     #[cfg(feature = "vulkan")]
     pub fn realize_f32_vulkan(
         &self,
@@ -856,51 +882,63 @@ impl LazyTensor {
         executor.realize_f32(&self.inner).into_vec()
     }
 
-    /// Realize on the AOCL CPU backend. The executor is owned per call
-    /// to keep parity with the CPU helper above (CPU executors have no
-    /// stateful context to preserve across calls — matmul kernels in
-    /// AOCL-BLAS are stateless). The Judge constructs one executor for
-    /// the whole measurement run and reuses it across iterations.
+    /// Realize on the AOCL CPU backend via [`PipelinedExecutor`].
+    /// AOCL is a CPU backend (just a different BLAS routing); the
+    /// pipelined path treats it as CPU at the storage layer. The
+    /// kernel-binding-table picks the AOCL alternatives for matmul
+    /// etc. when AOCL kernels are registered.
+    ///
+    /// `_executor` is ignored — kept in the signature for backward
+    /// compatibility with the Phase 6b Judge's measurement loop;
+    /// the Judge constructs executors per measurement and we just
+    /// disregard them now.
     #[cfg(feature = "aocl")]
     pub fn realize_f32_aocl(
         &self,
-        executor: &mut GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>,
+        _executor: &mut GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>,
     ) -> Vec<f32> {
-        executor.realize_f32(&self.inner).into_vec()
+        // AOCL is a CPU backend at the storage layer; the kernel
+        // table routes matmul etc. to AOCL kernels when registered.
+        self.realize_f32()
     }
 
     /// Realize on the oneMKL CPU backend. Mirrors `realize_f32_aocl`.
     #[cfg(feature = "onemkl")]
     pub fn realize_f32_mkl(
         &self,
-        executor: &mut GraphExecutor<fuel_mkl_cpu_backend::MklBackend>,
+        _executor: &mut GraphExecutor<fuel_mkl_cpu_backend::MklBackend>,
     ) -> Vec<f32> {
-        executor.realize_f32(&self.inner).into_vec()
+        self.realize_f32()
     }
 }
 
-/// Realize many tensors in a single CPU topo-walk.
+/// Realize many tensors in a single CPU topo-walk. Phase 7.6 step 9c E.2.
 pub fn realize_many_f32(tensors: &[&LazyTensor]) -> Vec<Vec<f32>> {
-    let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
-    let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
-    exe.realize_many_f32(&inner)
-        .into_iter()
-        .map(|t| t.into_vec())
-        .collect()
+    if tensors.is_empty() {
+        return Vec::new();
+    }
+    let graph = tensors[0].inner.graph().clone();
+    let targets: Vec<fuel_graph::NodeId> = tensors.iter().map(|t| t.inner.id()).collect();
+    let device = crate::Device::cpu();
+    crate::pipelined_bridge::realize_many_as::<f32>(&graph, &targets, &device)
+        .expect("realize_many_f32 via PipelinedExecutor")
 }
 
-/// CUDA variant of realize_many_f32.
+/// CUDA variant of realize_many_f32. Phase 7.6 step 9c E.2: signature
+/// change from `&mut GraphExecutor<CudaBackend>` to `&CudaDevice`.
 #[cfg(feature = "cuda")]
 pub fn realize_many_f32_cuda(
     tensors: &[&LazyTensor],
-    executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
+    device: &fuel_cuda_backend::CudaDevice,
 ) -> Vec<Vec<f32>> {
-    let inner: Vec<&fuel_graph::Tensor> = tensors.iter().map(|t| &t.inner).collect();
-    executor
-        .realize_many_f32(&inner)
-        .into_iter()
-        .map(|t| t.into_vec())
-        .collect()
+    if tensors.is_empty() {
+        return Vec::new();
+    }
+    let graph = tensors[0].inner.graph().clone();
+    let targets: Vec<fuel_graph::NodeId> = tensors.iter().map(|t| t.inner.id()).collect();
+    let fc_device: crate::Device = device.clone().into();
+    crate::pipelined_bridge::realize_many_as::<f32>(&graph, &targets, &fc_device)
+        .expect("realize_many_f32_cuda via PipelinedExecutor")
 }
 
 #[cfg(test)]
@@ -1050,8 +1088,8 @@ mod tests {
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a);
         let cpu_result = c.realize_f32();
-        let mut executor = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda_result = c.realize_f32_cuda(&mut executor);
+        let executor = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda_result = c.realize_f32_cuda(&executor);
         assert_eq!(cpu_result, cuda_result);
     }
 
@@ -1069,8 +1107,8 @@ mod tests {
         );
         let c = a.matmul(&b);
         let cpu = c.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda = c.realize_f32_cuda(&mut exe);
+        let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda = c.realize_f32_cuda(&exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (a, b)) in cpu.iter().zip(cuda.iter()).enumerate() {
             assert!(
@@ -1096,8 +1134,8 @@ mod tests {
         );
         let y = x.matmul(&w);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda = y.realize_f32_cuda(&mut exe);
+        let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda = y.realize_f32_cuda(&exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
             assert!((a - b).abs() < 1e-3, "bcast_mm[{i}]: cpu={a}, cuda={b}");
@@ -1114,8 +1152,8 @@ mod tests {
         );
         let y = x.permute(&[0, 2, 1, 3]);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda = y.realize_f32_cuda(&mut exe);
+        let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda = y.realize_f32_cuda(&exe);
         assert_eq!(cpu, cuda, "permute mismatch");
     }
 
@@ -1129,8 +1167,8 @@ mod tests {
         );
         let y = x.softmax_last_dim();
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda = y.realize_f32_cuda(&mut exe);
+        let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda = y.realize_f32_cuda(&exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
             assert!((a - b).abs() < 1e-4, "softmax[{i}]: cpu={a}, cuda={b}");
@@ -1172,17 +1210,19 @@ mod tests {
         // realize_f32 path (no rule-registry pipeline involved).
         let cpu = y.realize_f32();
 
-        // CUDA via the lowered subgraph: enable optimization + swap
-        // the registry to lowering-only so fusion can't re-collapse
-        // the lowered pattern back to Op::SoftmaxLastDim.
-        let mut exe = GraphExecutor::new(
-            fuel_cuda_backend::CudaBackend::new(
-                fuel_cuda_backend::CudaDevice::new(0).unwrap(),
-            ),
-        )
-        .with_optimization(true)
-        .with_rule_registry(fuel_graph::opt::RuleRegistry::lowering_only());
-        let cuda = y.realize_f32_cuda(&mut exe);
+        // CUDA via the lowered subgraph: run the lowering-only
+        // rule registry to fixpoint first so fusion can't re-collapse
+        // the lowered pattern back to Op::SoftmaxLastDim. Then
+        // realize the remapped target via PipelinedExecutor.
+        // (Phase 7.6 step 9c E.2: optimizer is caller-composed.)
+        let graph = y.inner.graph().clone();
+        let registry = fuel_graph::opt::RuleRegistry::lowering_only();
+        let remapped = registry.optimize_to_fixpoint(&graph, &[y.inner.id()]);
+        let dev = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let fc_device: crate::Device = dev.clone().into();
+        let cuda = crate::pipelined_bridge::realize_one_as::<f32>(
+            &graph, remapped[0], &fc_device,
+        ).expect("realize lowered softmax on CUDA");
 
         assert_eq!(cpu.len(), cuda.len());
         let mut max_abs_err = 0.0_f32;
@@ -1205,8 +1245,8 @@ mod tests {
         let cat = a.concat(&b, 1); // [2, 4]
         let sliced = cat.slice(1, 1, 2); // [2, 2]
         let cpu = sliced.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda = sliced.realize_f32_cuda(&mut exe);
+        let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda = sliced.realize_f32_cuda(&exe);
         assert_eq!(cpu, cuda, "concat+slice mismatch");
     }
 
@@ -1220,8 +1260,8 @@ mod tests {
         );
         let y = x.rms_norm_last_dim(1e-5);
         let cpu = y.realize_f32();
-        let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(fuel_cuda_backend::CudaDevice::new(0).unwrap()));
-        let cuda = y.realize_f32_cuda(&mut exe);
+        let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
+        let cuda = y.realize_f32_cuda(&exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
             assert!((a - b).abs() < 1e-3, "rms_norm[{i}]: cpu={a}, cuda={b}");
