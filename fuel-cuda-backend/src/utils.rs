@@ -19,6 +19,7 @@ pub trait Map1 {
     fn map(&self, s: &S, d: &CudaDevice, l: &Layout) -> Result<S> {
         let out = match s {
             S::U8(s) => S::U8(self.f(s, d, l)?),
+            S::I8(s) => S::I8(self.f(s, d, l)?),
             S::U32(s) => S::U32(self.f(s, d, l)?),
             S::I16(s) => S::I16(self.f(s, d, l)?),
             S::I32(s) => S::I32(self.f(s, d, l)?),
@@ -49,6 +50,7 @@ pub trait Map2 {
     fn map(&self, s1: &S, l1: &Layout, s2: &S, l2: &Layout, d: &CudaDevice) -> Result<S> {
         let out = match (s1, s2) {
             (S::U8(s1), S::U8(s2)) => S::U8(self.f(s1, l1, s2, l2, d)?),
+            (S::I8(s1), S::I8(s2)) => S::I8(self.f(s1, l1, s2, l2, d)?),
             (S::U32(s1), S::U32(s2)) => S::U32(self.f(s1, l1, s2, l2, d)?),
             (S::I16(s1), S::I16(s2)) => S::I16(self.f(s1, l1, s2, l2, d)?),
             (S::I32(s1), S::I32(s2)) => S::I32(self.f(s1, l1, s2, l2, d)?),
@@ -151,6 +153,7 @@ pub trait Map1Any {
     fn map(&self, s: &S, d: &CudaDevice, l: &Layout) -> Result<S> {
         let out = match s {
             S::U8(s) => self.f(s, d, l, S::U8)?,
+            S::I8(s) => self.f(s, d, l, S::I8)?,
             S::U32(s) => self.f(s, d, l, S::U32)?,
             S::I16(s) => self.f(s, d, l, S::I16)?,
             S::I32(s) => self.f(s, d, l, S::I32)?,

@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 pub enum DType {
     /// Unsigned 8-bit integer.
     U8,
+    /// Signed 8-bit integer. Added 2026-05-19 for int8 GEMM (W8A8
+    /// inference) support — baracuda's `gemm_s8_*` family accepts
+    /// `i8` operands and `mma.sync` `.s8.s8.s32` instructions.
+    I8,
     /// Unsigned 32-bit integer.
     U32,
     /// Signed 16-bit integer.
@@ -59,6 +63,7 @@ impl std::str::FromStr for DType {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "u8" => Ok(Self::U8),
+            "i8" => Ok(Self::I8),
             "u32" => Ok(Self::U32),
             "i16" => Ok(Self::I16),
             "i32" => Ok(Self::I32),
@@ -82,6 +87,7 @@ impl DType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::U8 => "u8",
+            Self::I8 => "i8",
             Self::U32 => "u32",
             Self::I16 => "i16",
             Self::I32 => "i32",
@@ -104,6 +110,7 @@ impl DType {
     pub fn size_in_bytes(&self) -> usize {
         match self {
             Self::U8 => 1,
+            Self::I8 => 1,
             Self::U32 => 4,
             Self::I16 => 2,
             Self::I32 => 4,
@@ -120,10 +127,10 @@ impl DType {
         }
     }
 
-    /// Returns `true` if this is an integer type (U8, U32, I16, I32, I64).
+    /// Returns `true` if this is an integer type (U8, I8, U32, I16, I32, I64).
     pub fn is_int(&self) -> bool {
         match self {
-            Self::U8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => true,
+            Self::U8 | Self::I8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => true,
             Self::BF16
             | Self::F16
             | Self::F32
@@ -139,7 +146,7 @@ impl DType {
     /// Returns `true` if this is a floating-point type.
     pub fn is_float(&self) -> bool {
         match self {
-            Self::U8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => false,
+            Self::U8 | Self::I8 | Self::U32 | Self::I16 | Self::I32 | Self::I64 => false,
             Self::BF16
             | Self::F16
             | Self::F32
@@ -240,6 +247,7 @@ use float8::F8E4M3 as f8e4m3;
 use half::{bf16, f16};
 
 with_dtype!(u8, U8, |v: f64| v as u8, |v: u8| v as f64);
+with_dtype!(i8, I8, |v: f64| v as i8, |v: i8| v as f64);
 with_dtype!(u32, U32, |v: f64| v as u32, |v: u32| v as f64);
 with_dtype!(i16, I16, |v: f64| v as i16, |v: i16| v as f64);
 with_dtype!(i32, I32, |v: f64| v as i32, |v: i32| v as f64);
@@ -285,6 +293,15 @@ impl IntDType for u8 {
     }
 }
 
+impl IntDType for i8 {
+    fn is_true(&self) -> bool {
+        *self != 0
+    }
+    fn as_usize(&self) -> usize {
+        *self as usize
+    }
+}
+
 impl IntDType for i16 {
     fn is_true(&self) -> bool {
         *self != 0
@@ -319,6 +336,7 @@ impl From<DType> for st::Dtype {
     fn from(value: DType) -> Self {
         match value {
             DType::U8 => st::Dtype::U8,
+            DType::I8 => st::Dtype::I8,
             DType::U32 => st::Dtype::U32,
             DType::I16 => st::Dtype::I16,
             DType::I32 => st::Dtype::I32,
@@ -341,6 +359,7 @@ impl TryFrom<st::Dtype> for DType {
     fn try_from(value: st::Dtype) -> Result<Self> {
         match value {
             st::Dtype::U8 => Ok(DType::U8),
+            st::Dtype::I8 => Ok(DType::I8),
             st::Dtype::U32 => Ok(DType::U32),
             st::Dtype::I16 => Ok(DType::I16),
             st::Dtype::I32 => Ok(DType::I32),

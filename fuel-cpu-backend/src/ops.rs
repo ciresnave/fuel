@@ -1798,6 +1798,11 @@ pub fn unary_dispatch<B: UnaryOpT>(storage: &HostBuffer, layout: &Layout) -> Res
             unary_map(s, layout, B::f64)
         })),
         HostBuffer::U8(s) => Ok(HostBuffer::U8(unary_map(s, layout, B::u8))),
+        // I8 added 2026-05-19 for int8 GEMM storage representation;
+        // elementwise unary ops on I8 aren't wired through the UnaryOpT
+        // trait yet (no B::i8 method). Errors here cleanly until a
+        // future op-trait extension lands.
+        HostBuffer::I8(_) => Err(Error::UnsupportedDTypeForOp(DType::I8, "unary").bt()),
         HostBuffer::U32(s) => Ok(HostBuffer::U32(unary_map(s, layout, B::u32))),
         HostBuffer::I16(s) => Ok(HostBuffer::I16(unary_map(s, layout, B::i16))),
         HostBuffer::I32(s) => Ok(HostBuffer::I32(unary_map(s, layout, B::i32))),

@@ -20,6 +20,7 @@ use half::{bf16, f16};
 #[derive(Debug, Clone)]
 pub enum HostBuffer {
     U8(Vec<u8>),
+    I8(Vec<i8>),
     U32(Vec<u32>),
     I16(Vec<i16>),
     I32(Vec<i32>),
@@ -43,6 +44,7 @@ pub type CpuStorage = HostBuffer;
 #[derive(Debug, Clone)]
 pub enum HostBufferRef<'a> {
     U8(&'a [u8]),
+    I8(&'a [i8]),
     U32(&'a [u32]),
     I16(&'a [i16]),
     I32(&'a [i32]),
@@ -71,6 +73,7 @@ impl HostBuffer {
     pub fn dtype(&self) -> DType {
         match self {
             Self::U8(_) => DType::U8,
+            Self::I8(_) => DType::I8,
             Self::U32(_) => DType::U32,
             Self::I16(_) => DType::I16,
             Self::I32(_) => DType::I32,
@@ -105,6 +108,16 @@ impl HostBuffer {
                     })
                     .collect::<crate::Result<Vec<_>>>()?;
                 Self::U8(storages.concat())
+            }
+            Self::I8(_) => {
+                let storages = storages
+                    .iter()
+                    .map(|s| match s {
+                        Self::I8(s) => Ok(s.as_slice()),
+                        _ => crate::bail!("dtype mismatch"),
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?;
+                Self::I8(storages.concat())
             }
             Self::U32(_) => {
                 let storages = storages
@@ -247,6 +260,7 @@ impl HostBuffer {
     pub fn as_ref(&self) -> HostBufferRef<'_> {
         match self {
             Self::U8(v) => HostBufferRef::U8(v),
+            Self::I8(v) => HostBufferRef::I8(v),
             Self::U32(v) => HostBufferRef::U32(v),
             Self::I16(v) => HostBufferRef::I16(v),
             Self::I32(v) => HostBufferRef::I32(v),
@@ -269,6 +283,7 @@ impl<'a> HostBufferRef<'a> {
     pub fn dtype(&self) -> DType {
         match self {
             Self::U8(_) => DType::U8,
+            Self::I8(_) => DType::I8,
             Self::U32(_) => DType::U32,
             Self::I16(_) => DType::I16,
             Self::I32(_) => DType::I32,
@@ -289,6 +304,7 @@ impl<'a> HostBufferRef<'a> {
     pub fn len(&self) -> usize {
         match self {
             Self::U8(v) => v.len(),
+            Self::I8(v) => v.len(),
             Self::U32(v) => v.len(),
             Self::I16(v) => v.len(),
             Self::I32(v) => v.len(),
@@ -319,6 +335,7 @@ impl<'a> HostBufferRef<'a> {
     pub fn to_owned(&self) -> HostBuffer {
         match self {
             Self::U8(v) => HostBuffer::U8(v.to_vec()),
+            Self::I8(v) => HostBuffer::I8(v.to_vec()),
             Self::U32(v) => HostBuffer::U32(v.to_vec()),
             Self::I16(v) => HostBuffer::I16(v.to_vec()),
             Self::I32(v) => HostBuffer::I32(v.to_vec()),
