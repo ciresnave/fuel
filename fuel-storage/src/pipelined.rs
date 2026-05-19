@@ -2170,7 +2170,9 @@ mod tests {
 
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[1.5_f64, -2.25, 100.0]);
     }
 
@@ -2208,7 +2210,9 @@ mod tests {
             PipelinedExecutor::realize(graph, c2_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0_f32, 2.0, -3.0, 0.5]);
     }
 
@@ -2287,7 +2291,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[90.0]);
     }
 
@@ -2323,7 +2329,9 @@ mod tests {
         let (result_arc, result_layout) =
             PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[4.0, 3.0, 2.0, 1.0]);
         assert_eq!(result_layout.shape().dims(), &[4]);
         assert!(result_layout.is_contiguous(), "relu output is contiguous");
@@ -2403,7 +2411,9 @@ mod tests {
         assert!(result_layout.is_contiguous());
 
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[58.0, 64.0, 139.0, 154.0]);
     }
 
@@ -2449,7 +2459,9 @@ mod tests {
         assert!(result_layout.is_contiguous());
 
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         // batch 0: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
         // batch 1: identity @ [[10,20],[30,40]]   = [[10,20],[30,40]]
         assert_eq!(
@@ -2489,7 +2501,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
     }
 
@@ -2528,7 +2542,9 @@ mod tests {
             PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         // Index 0: 1.0 == 1.0 → 1.
         // Index 1: 2.0 != 5.0 → 0.
@@ -2570,7 +2586,9 @@ mod tests {
             PipelinedExecutor::realize(graph, ne_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         // Inverse of the Eq test:
         // 1.0 != 1.0 → 0;  2.0 != 5.0 → 1;  3.0 != 3.0 → 0;
@@ -2610,7 +2628,9 @@ mod tests {
             PipelinedExecutor::realize(graph, lt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         // 1.0 < 2.0 → 1;  5.0 < 5.0 → 0 (strict);  3.0 < 3.0 → 0;
         // NaN < 0.0 → 0 (unordered);  -1.0 < 0.0 → 1.
@@ -2648,7 +2668,9 @@ mod tests {
             PipelinedExecutor::realize(graph, le_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         // 1.0 <= 2.0 → 1;  5.0 <= 5.0 → 1 (key Lt difference);
         // 3.0 <= 2.0 → 0;  NaN <= 0.0 → 0 (unordered);  -1.0 <= 0.0 → 1.
@@ -2686,7 +2708,9 @@ mod tests {
             PipelinedExecutor::realize(graph, gt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         // 3.0 > 2.0 → 1;  5.0 > 5.0 → 0 (strict);  2.0 > 3.0 → 0;
         // NaN > 0.0 → 0 (unordered);  1.0 > 0.0 → 1.
@@ -2726,7 +2750,9 @@ mod tests {
             PipelinedExecutor::realize(graph, ge_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         // 3.0 >= 2.0 → 1;  5.0 >= 5.0 → 1 (key Gt difference);
         // 2.0 >= 3.0 → 0;  NaN >= 0.0 → 0 (unordered);  0.0 >= 0.0 → 1.
@@ -2765,7 +2791,9 @@ mod tests {
             PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let mask: &[u8] = c.as_slice().expect("u8 view");
         assert_eq!(mask, &[1, 1, 0]);
     }
@@ -2811,7 +2839,9 @@ mod tests {
             PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let out: &[f32] = c.as_slice().expect("f32 view");
         assert_eq!(out, &[1.0, 20.0, 3.0, 40.0, 5.0]);
     }
@@ -2868,7 +2898,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let out: &[f32] = c.as_slice().expect("f32 view");
         assert_eq!(out, &[10.0, 99.0, 30.0]);
     }
@@ -2936,7 +2968,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[f32] = c.as_slice().unwrap();
         // Both rows = sum(1..=32) = 528, within Q8_1 round-trip
         // tolerance.
@@ -3013,7 +3047,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[f32] = c.as_slice().unwrap();
         // Bit-exact against same kernel via the trait, since both
         // paths run fuel_quantized::matmul<BlockQ5_0>.
@@ -3086,7 +3122,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[f32] = c.as_slice().unwrap();
         assert_eq!(r, ref_out.as_slice(),
             "pipelined Q6K differs from reference: got {r:?}, want {ref_out:?}");
@@ -3123,7 +3161,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::BF16);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[half::bf16] = c.as_slice().unwrap();
         let rms = (12.5_f32).sqrt();
         // bf16's ~3-digit mantissa absorbs the divisor; allow ~5%.
@@ -3167,7 +3207,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::BF16);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[half::bf16] = c.as_slice().unwrap();
         let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
         assert_eq!(result_f32, vec![1.0, 2.0, 3.0, 4.0]);
@@ -3199,7 +3241,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F16);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[half::f16] = c.as_slice().unwrap();
         let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
         assert_eq!(result_f32, vec![6.0, 15.0]);
@@ -3238,7 +3282,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::BF16);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[half::bf16] = c.as_slice().unwrap();
         let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
         assert_eq!(result_f32, vec![11.0, 22.0, 33.0]);
@@ -3276,7 +3322,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F16);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r: &[half::f16] = c.as_slice().unwrap();
         let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
         // f16 has ~3 decimal digits; sqrt(sqr(x)) = |x| within rounding.
@@ -3309,7 +3357,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[6.0_f64, 15.0]);
     }
 
@@ -3342,7 +3392,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[58.0_f64, 64.0, 139.0, 154.0]);
     }
 
@@ -3376,7 +3428,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[1.0_f64, 4.0, 9.0]);
     }
 
@@ -3405,7 +3459,9 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U32);
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<u32>().unwrap(), &[1u32, 0]);
     }
 
@@ -3444,7 +3500,9 @@ mod tests {
         inputs.insert(s_id, Arc::new(RwLock::new(src)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         // 10 + 1 + 2 = 13; 20 untouched; 30 untouched.
         assert_eq!(c.as_slice::<f32>().unwrap(), &[13.0, 20.0, 30.0]);
     }
@@ -3487,7 +3545,9 @@ mod tests {
         inputs.insert(s_id, Arc::new(RwLock::new(src)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]);
     }
 
@@ -3533,7 +3593,9 @@ mod tests {
         inputs.insert(sin_id, Arc::new(RwLock::new(sin)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[-3.0, -4.0, 1.0, 2.0]);
     }
 
@@ -3569,7 +3631,9 @@ mod tests {
         inputs.insert(idx_id, Arc::new(RwLock::new(indices)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, g_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[10.0, 30.0, 20.0, 80.0, 50.0, 50.0]
@@ -3613,7 +3677,9 @@ mod tests {
             PipelinedExecutor::realize(graph, sel_id, inputs).expect("realize");
         assert_eq!(result_layout.shape().dims(), &[3, 3]);
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[30.0, 31.0, 32.0, 10.0, 11.0, 12.0, 30.0, 31.0, 32.0]
@@ -3650,7 +3716,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let result: &[f32] = c.as_slice().unwrap();
         // Row 0: rms = sqrt(12.5). Output = [3, 4] / sqrt(12.5).
         let rms0 = (12.5_f32).sqrt();
@@ -3692,7 +3760,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let result: &[f32] = c.as_slice().unwrap();
         // Each row should have mean ~0 and var ~1.
         for row in 0..2 {
@@ -3737,7 +3807,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let result: &[f32] = c.as_slice().unwrap();
 
         // Row 0: uniform 0.25
@@ -3787,7 +3859,9 @@ mod tests {
             PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         assert_eq!(result_layout.shape().dims(), &[2, 6]);
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0]
@@ -3829,7 +3903,9 @@ mod tests {
         inputs.insert(c_id, Arc::new(RwLock::new(c)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, cat_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
@@ -3856,7 +3932,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 12.0, 13.0]);
     }
 
@@ -3882,7 +3960,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[-2.0, 0.5, 2.0]);
     }
 
@@ -3914,7 +3994,9 @@ mod tests {
         inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[2.0, 5.0, -1.0]);
     }
 
@@ -3966,7 +4048,9 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[1, 1, 2, 2]);
 
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
     }
 
@@ -4018,7 +4102,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[112.0, 116.0, 124.0, 128.0]);
     }
 
@@ -4062,7 +4148,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
     }
 
@@ -4106,7 +4194,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap()
             .iter().map(|v| v.to_f32()).collect();
         let want = [12.0_f32, 16.0, 24.0, 28.0];
@@ -4155,7 +4245,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::f16>().unwrap()
             .iter().map(|v| v.to_f32()).collect();
         let want = [12.0_f32, 16.0, 24.0, 28.0];
@@ -4239,7 +4331,9 @@ mod tests {
         inputs.insert(cl_id, Arc::new(RwLock::new(context_lens_u32)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r = c.as_slice::<f32>().unwrap();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
@@ -4317,7 +4411,9 @@ mod tests {
         inputs.insert(cl_id, Arc::new(RwLock::new(cl)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
@@ -4378,7 +4474,9 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r = c.as_slice::<f32>().unwrap();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
@@ -4440,7 +4538,9 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let r = c.as_slice::<f32>().unwrap();
         // Query 0 sees only key 0 → output = v[0]
         assert!((r[0] - 5.0).abs() < 1e-5, "got {}", r[0]);
@@ -4501,7 +4601,9 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
         let expected_p0 = 2.0_f32.exp() / (2.0_f32.exp() + 1.0);
         let expected_p1 = 1.0_f32 / (2.0_f32.exp() + 1.0);
@@ -4552,7 +4654,9 @@ mod tests {
         inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[14.0, 25.0, 20.0, 31.0]);
     }
 
@@ -4594,7 +4698,9 @@ mod tests {
         inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[14.0, 25.0, 20.0, 31.0]);
     }
 
@@ -4642,7 +4748,9 @@ mod tests {
         inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
         let want = [14.0_f32, 25.0, 20.0, 31.0];
         for (g, w) in got.iter().zip(want.iter()) {
@@ -4674,7 +4782,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[5.0, 7.0, 9.0]);
     }
 
@@ -4706,7 +4816,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(s)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         // layer0 dim1-sum: col j = 1+5+9, 2+6+10, 3+7+11, 4+8+12 = [15,18,21,24]
         // layer1 dim1-sum: col j = 13+17+21, 14+18+22, 15+19+23, 16+20+24 = [51,54,57,60]
         assert_eq!(
@@ -4738,7 +4850,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[5.0, 7.0, 9.0]);
     }
 
@@ -4767,7 +4881,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[4.0, 7.0, 6.0]);
     }
 
@@ -4797,7 +4913,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[3.0, 6.0]);
     }
 
@@ -4826,7 +4944,9 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(s)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
         let want = [5.0_f32, 7.0, 9.0];
         for (g, w) in got.iter().zip(want.iter()) {
@@ -4876,7 +4996,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[1.0, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0],
@@ -4919,7 +5041,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(
             c.as_slice::<f64>().unwrap(),
             &[1.0, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0],
@@ -4966,7 +5090,9 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
         let want = [1.0_f32, 3.0, 2.0, 4.0, 10.0, 6.0, 3.0, 7.0, 4.0];
         for (g, w) in got.iter().zip(want.iter()) {
@@ -5020,7 +5146,9 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[4, 1, 1]);
 
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 3.0, 6.0, 8.0]);
     }
 
@@ -5067,7 +5195,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[17.0, 23.0, 39.0, 53.0]);
     }
 
@@ -5106,7 +5236,9 @@ mod tests {
 
         // Bytes are unchanged; just reinterpreted as [3, 2].
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
@@ -5152,7 +5284,9 @@ mod tests {
 
         // Materialized transposed bytes flattened: [1, 4, 2, 5, 3, 6].
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
 
@@ -5201,7 +5335,9 @@ mod tests {
         assert!(result_layout.is_contiguous());
 
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let typed: &[f32] = c.as_slice().unwrap();
         assert_eq!(typed, &[5.0, 7.0, 9.0]);
     }
@@ -5251,7 +5387,9 @@ mod tests {
         let (result_arc, _result_layout) =
             PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let typed: &[f32] = c.as_slice().unwrap();
         assert_eq!(typed, &[11.0, 22.0, 33.0, 14.0, 25.0, 36.0]);
     }
@@ -5532,7 +5670,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(out, &[
             1.0, 2.0, 3.0,
@@ -5569,7 +5709,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(out, &[
             1.0, 0.0, 0.0,
@@ -5609,7 +5751,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let out: &[f32] = c.as_slice().unwrap();
         let expected = [
             -2.4076059, -1.4076059, -0.40760595_f32,
@@ -5657,7 +5801,9 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let crate::BackendStorage::Cpu(c) = &guard.inner;
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(out, &[1.0, -1000.0, 3.0, -1000.0]);
     }

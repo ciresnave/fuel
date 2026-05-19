@@ -3013,19 +3013,21 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MinReduce,          &unary(f16_dt),  cpu, min_reduce_f16_cpu_wrapper);
     table.register(MeanReduce,         &unary(f16_dt),  cpu, mean_reduce_f16_cpu_wrapper);
 
-    // Cast — CPU wrappers are still keyed on the *target* dtype and
-    // dispatch internally on the source. Register `[T, T]` for each
-    // target dtype to preserve current behavior; the binding table's
-    // multi-dtype key shape lets callers pass `[src, dst]` and still
-    // hit the right wrapper because src is matched inside.
+    // Cast — register every (src, dst) pair the per-target wrapper
+    // handles internally. The wrapper dispatches by source dtype via
+    // a `match`; the binding-table key needs to match the actual
+    // dtypes the executor produces (`[src_dt, dst_dt]`).
     //
-    // TODO(phase 7.5 cast cleanup): split each cast wrapper into
-    // (src, dst) pairs once enough source dtypes are exercised; the
-    // binding key already supports it.
-    table.register(Cast, &unary(DType::F32),  cpu, cast_to_f32_cpu_wrapper);
-    table.register(Cast, &unary(DType::F64),  cpu, cast_to_f64_cpu_wrapper);
-    table.register(Cast, &unary(DType::BF16), cpu, cast_to_bf16_cpu_wrapper);
-    table.register(Cast, &unary(DType::F16),  cpu, cast_to_f16_cpu_wrapper);
+    // Identity pairs (`[T, T]`) are not registered here because the
+    // wrappers' internal match doesn't include the identity arm —
+    // Fuel's graph optimizer elides identity Cast before dispatch.
+    let cast_to_f32 = cast_to_f32_cpu_wrapper as KernelRef;
+    table.register(Cast, &[DType::F64,  DType::F32], cpu, cast_to_f32);
+    table.register(Cast, &[DType::BF16, DType::F32], cpu, cast_to_f32);
+    table.register(Cast, &[DType::F16,  DType::F32], cpu, cast_to_f32);
+    table.register(Cast, &[DType::F32,  DType::F64], cpu, cast_to_f64_cpu_wrapper);
+    table.register(Cast, &[DType::F32,  DType::BF16], cpu, cast_to_bf16_cpu_wrapper);
+    table.register(Cast, &[DType::F32,  DType::F16], cpu, cast_to_f16_cpu_wrapper);
 
     // Conv2D — register both no-bias (3 operands) and with-bias
     // (4 operands) shapes per dtype; the wrapper handles both.
