@@ -103,7 +103,6 @@ pub fn assert_cuda_matches_reference(
     atol: f32,
     rtol: f32,
 ) {
-    use fuel_graph_executor::GraphExecutor;
     let probe = crate::probe::ProbeReport::probe_all();
     let has_cuda = probe.devices.iter().any(|d| d.backend == fuel_core_types::probe::BackendId::Cuda);
     if !has_cuda {
@@ -113,8 +112,7 @@ pub fn assert_cuda_matches_reference(
     let reference = t.realize_f32_reference();
     let dev = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 available since probe found one");
-    let mut exe = GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(dev));
-    let cuda = t.realize_f32_cuda(&mut exe);
+    let cuda = t.realize_f32_cuda(&dev);
     assert_allclose_f32(&cuda, &reference, atol, rtol);
 }
 

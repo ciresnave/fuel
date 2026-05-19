@@ -36,22 +36,21 @@ use fuel_core::lazy_sd_text_encoder::{
 use fuel_core::lazy_whisper::WhisperModel;
 use fuel_core::lazy_yolov8::{YoloV8Config, YoloV8Model, YoloV8Weights};
 use fuel_core_types::{probe::BackendId, Shape};
-use fuel_graph_executor::GraphExecutor;
 use std::sync::Arc;
 
-/// Construct a fresh CUDA executor on device 0. Asserts presence —
-/// only call from inside a `cuda_present()` guard.
-fn cuda_executor() -> GraphExecutor<fuel_cuda_backend::CudaBackend> {
-    let dev = fuel_cuda_backend::CudaDevice::new(0)
-        .expect("cuda device 0 should be available");
-    GraphExecutor::new(fuel_cuda_backend::CudaBackend::new(dev))
+/// Construct a fresh CUDA device handle on device 0. Asserts presence —
+/// only call from inside a `cuda_present()` guard. Post-9c-E.2:
+/// `realize_f32_cuda` takes `&CudaDevice` instead of `&mut GraphExecutor`.
+fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
+    fuel_cuda_backend::CudaDevice::new(0)
+        .expect("cuda device 0 should be available")
 }
 
 /// Realize `t` on both reference and CUDA backends, assert allclose.
 fn assert_cuda_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
     let reference = t.realize_f32_reference();
-    let mut exe = cuda_executor();
-    let cuda = t.realize_f32_cuda(&mut exe);
+    let exe = cuda_executor();
+    let cuda = t.realize_f32_cuda(&exe);
     assert_eq!(reference.len(), cuda.len());
     fuel_core::test_utils::assert_allclose_f32(&cuda, &reference, atol, rtol);
 }
@@ -80,10 +79,7 @@ fn single_matmul_cuda_matches_reference_within_tolerance() {
 
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
-    let mut cuda_exe = GraphExecutor::new(
-        fuel_cuda_backend::CudaBackend::new(cuda_device),
-    );
-    let cuda_out = c.realize_f32_cuda(&mut cuda_exe);
+    let cuda_out = c.realize_f32_cuda(&cuda_device);
 
     assert_eq!(reference.len(), cuda_out.len());
     assert_eq!(reference.len(), m * n);
@@ -159,10 +155,7 @@ fn llama_2layer_cuda_matches_reference() {
 
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
-    let mut cuda_exe = GraphExecutor::new(
-        fuel_cuda_backend::CudaBackend::new(cuda_device),
-    );
-    let cuda_out = logits.realize_f32_cuda(&mut cuda_exe);
+    let cuda_out = logits.realize_f32_cuda(&cuda_device);
 
     assert_eq!(reference.len(), cuda_out.len());
     assert_eq!(reference.len(), tokens.len() * cfg.vocab_size);
