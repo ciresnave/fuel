@@ -364,6 +364,59 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// PowI — `y = x^n` with integer exponent (OpParams::PowI { exp })
+// ===========================================================================
+//
+// Alpha.28 added `unary_powi_<dtype>_run` over f32/f64/f16/bf16 plus
+// matching backward kernels. Power-by-squaring on device — correct on
+// negative bases, no `pow(x, n as f32)` shim needed. Exponent ships
+// via `p0: f32` (round-trips exactly for |n| ≤ 2^24).
+
+macro_rules! cuda_powi_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let exp = match params {
+                OpParams::PowI { exp } => *exp,
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::PowI, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, exp)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod powi {
+    use super::*;
+    use fuel_cuda_backend::baracuda::powi as bk;
+
+    cuda_powi_baracuda_wrapper!(powi_f32, bk::powi_f32);
+    cuda_powi_baracuda_wrapper!(powi_f64, bk::powi_f64);
+    cuda_powi_baracuda_wrapper!(powi_f16, bk::powi_f16);
+    cuda_powi_baracuda_wrapper!(powi_bf16, bk::powi_bf16);
+}
+
+// ===========================================================================
 // Clamp — scalar (min, max) → broadcast-tensor ternary clamp
 // ===========================================================================
 //
@@ -1081,6 +1134,13 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+
+    // ----- PowI — integer-exponent power (alpha.28).
+    // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
+    table.register(PowIElementwise, &u(f32),  cuda, powi::powi_f32);
+    table.register(PowIElementwise, &u(f64),  cuda, powi::powi_f64);
+    table.register(PowIElementwise, &u(f16),  cuda, powi::powi_f16);
+    table.register(PowIElementwise, &u(bf16), cuda, powi::powi_bf16);
 
     // ----- Clamp — scalar bounds → broadcast-tensor ternary clamp.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
