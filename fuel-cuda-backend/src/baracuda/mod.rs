@@ -49,6 +49,7 @@ pub mod cast;
 pub mod clamp;
 pub mod concat;
 pub mod elementwise;
+pub mod powi;
 pub mod gguf;
 pub mod indexing;
 pub mod norm;
