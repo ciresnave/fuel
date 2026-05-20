@@ -88,6 +88,7 @@ pub mod model_progress;
 mod mkl;
 pub mod dispatch;
 pub mod factories;
+pub mod inference_context;
 pub mod pipelined_bridge;
 pub mod judge;
 pub mod npy;
