@@ -70,15 +70,7 @@ pub fn realize_one_as<T: bytemuck::Pod>(
     target: NodeId,
     device: &Device,
 ) -> Result<Vec<T>> {
-    let (cache, backend_id) = prepare(graph, &[target], device)?;
-    let _ = backend_id;
-    let (storage, _layout) =
-        PipelinedExecutor::realize(graph.clone(), target, cache)?;
-    let guard = storage
-        .read()
-        .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
-    let bytes = guard.inner.read_to_cpu_bytes()?;
-    Ok(bytemuck::cast_slice::<u8, T>(&bytes).to_vec())
+    realize_one_as_with_initial::<T>(graph, target, device, StorageCache::new())
 }
 
 /// Multi-target counterpart of [`realize_one_as`]. Returns parallel
@@ -88,10 +80,43 @@ pub fn realize_many_as<T: bytemuck::Pod>(
     targets: &[NodeId],
     device: &Device,
 ) -> Result<Vec<Vec<T>>> {
+    realize_many_as_with_initial::<T>(graph, targets, device, StorageCache::new())
+}
+
+/// Realize-one variant that seeds the executor's input cache with
+/// `initial` before adding Op::Const slot uploads. Used by
+/// [`crate::inference_context::InferenceContext`] to thread its
+/// persistent storage Arcs through each realize call without
+/// re-uploading them. NodeIds already present in `initial` are
+/// not re-fetched from the graph's storage_map; their Arcs survive
+/// the call.
+pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+) -> Result<Vec<T>> {
+    let (cache, _backend_id) = prepare(graph, &[target], device, initial)?;
+    let (storage, _layout) =
+        PipelinedExecutor::realize(graph.clone(), target, cache)?;
+    let guard = storage
+        .read()
+        .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
+    let bytes = guard.inner.read_to_cpu_bytes()?;
+    Ok(bytemuck::cast_slice::<u8, T>(&bytes).to_vec())
+}
+
+/// Multi-target counterpart of [`realize_one_as_with_initial`].
+pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    targets: &[NodeId],
+    device: &Device,
+    initial: StorageCache,
+) -> Result<Vec<Vec<T>>> {
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let (cache, _) = prepare(graph, targets, device)?;
+    let (cache, _) = prepare(graph, targets, device, initial)?;
     let results = PipelinedExecutor::realize_many(graph.clone(), targets, cache)?;
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
@@ -117,6 +142,7 @@ fn prepare(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     device: &Device,
+    initial: StorageCache,
 ) -> Result<(StorageCache, BackendId)> {
     let backend_id = device_to_backend_id(device);
     let order = {
@@ -126,9 +152,10 @@ fn prepare(
         topo_order_multi(&g, targets)
     };
 
-    // Build the StorageCache before touching set_target_backend so we
-    // hold only one graph lock at a time.
-    let cache = build_const_cache(graph, &order, device)?;
+    // Build the StorageCache on top of `initial` (which may carry
+    // persistent storages from an InferenceContext). build_const_cache
+    // adds any reachable Op::Const NodeId not already present.
+    let cache = build_const_cache(graph, &order, device, initial)?;
 
     // Now set target_backend on every computational node. View ops,
     // Reshape, Const, and Release inherit/don't need it — see
@@ -173,12 +200,20 @@ fn build_const_cache(
     graph: &Arc<RwLock<Graph>>,
     order: &[NodeId],
     device: &Device,
+    initial: StorageCache,
 ) -> Result<StorageCache> {
     let g = graph
         .read()
         .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    let mut cache: StorageCache = StorageCache::with_capacity(order.len() / 4);
+    let mut cache = initial;
+    cache.reserve(order.len() / 4);
     for &id in order {
+        // Persistent slots from InferenceContext (or already-uploaded
+        // Consts from a prior pass) take precedence — don't re-fetch
+        // from the graph's storage_map.
+        if cache.contains_key(&id) {
+            continue;
+        }
         let node = g.node(id);
         if !matches!(node.op, Op::Const) {
             continue;
