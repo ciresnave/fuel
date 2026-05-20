@@ -2284,22 +2284,22 @@ fn auto_contiguize(
         }
         #[cfg(feature = "cuda")]
         crate::BackendStorage::Cuda(c) => {
-            // D2H → CPU contiguize → H2D. Slow path (two device
-            // transfers per non-contig input) but correct; a native
-            // CUDA contiguize kernel slots in when the byte-storage
-            // CUDA family grows one.
-            let host_bytes = c.to_cpu_bytes()?;
-            let host_cpu =
-                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&host_bytes);
-            let contig_cpu = fuel_cpu_backend::byte_kernels::contiguize_cpu(
-                &host_cpu, layout, dtype_size,
-            )?;
-            let host_contig_bytes = contig_cpu.bytes().to_vec();
-            let cuda_bytes = fuel_cuda_backend::CudaStorageBytes::from_cpu_bytes(
-                c.device(),
-                &host_contig_bytes,
-            )?;
-            Storage::new(crate::BackendStorage::Cuda(cuda_bytes), dtype)
+            // Native baracuda contiguize (alpha.29). Byte-width-
+            // dispatched: 1/2/4/8/16 byte elements all route to the
+            // appropriate kernel. Handles signed strides (Flip),
+            // zero strides (BroadcastTo), and non-zero element offset.
+            //
+            // Three host-side fast paths bake into the baracuda
+            // launchers: already-contiguous → single cuMemcpyDtoDAsync;
+            // innermost-stride-1 → per-outer-coord run copy; generic
+            // → one thread per output element. Retires the prior
+            // D2H → CPU contiguize_cpu → H2D fallback (two device
+            // round-trips per non-contig input).
+            let contig =
+                fuel_cuda_backend::baracuda::contiguize::contiguize_to_fresh(
+                    c, layout, dtype_size,
+                )?;
+            Storage::new(crate::BackendStorage::Cuda(contig), dtype)
         }
         #[allow(unreachable_patterns)]
         _ => {

@@ -49,6 +49,7 @@ pub mod binary;
 pub mod cast;
 pub mod clamp;
 pub mod concat;
+pub mod contiguize;
 pub mod elementwise;
 pub mod gemm_int;
 pub mod powi;
