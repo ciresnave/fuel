@@ -922,6 +922,57 @@ pub mod roll {
 }
 
 // ===========================================================================
+// CumSum — inclusive prefix sum along one axis (baracuda alpha.27,
+//          integrated alpha.29).
+// ===========================================================================
+
+macro_rules! cuda_cumsum_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, dim_size, inner) = match params {
+                OpParams::CumSum { outer_count, dim_size, inner_count } => {
+                    (*outer_count, *dim_size, *inner_count)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::CumSum, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, outer, dim_size, inner)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod cumsum {
+    use super::*;
+    use fuel_cuda_backend::baracuda::cumsum as bk;
+
+    cuda_cumsum_baracuda_wrapper!(cumsum_f32,  bk::cumsum_f32);
+    cuda_cumsum_baracuda_wrapper!(cumsum_f64,  bk::cumsum_f64);
+    cuda_cumsum_baracuda_wrapper!(cumsum_f16,  bk::cumsum_f16);
+    cuda_cumsum_baracuda_wrapper!(cumsum_bf16, bk::cumsum_bf16);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -1595,6 +1646,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(Roll, &u(f64),  cuda, roll::roll_f64);
     table.register(Roll, &u(f16),  cuda, roll::roll_f16);
     table.register(Roll, &u(bf16), cuda, roll::roll_bf16);
+
+    // ----- CumSum — single-axis inclusive prefix sum. 4 float dtypes.
+    // Backward (reverse-cumsum) is expressed upstream as Flip → CumSum →
+    // Flip, so the kernel itself never needs the reverse flag.
+    table.register(CumSum, &u(f32),  cuda, cumsum::cumsum_f32);
+    table.register(CumSum, &u(f64),  cuda, cumsum::cumsum_f64);
+    table.register(CumSum, &u(f16),  cuda, cumsum::cumsum_f16);
+    table.register(CumSum, &u(bf16), cuda, cumsum::cumsum_bf16);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
