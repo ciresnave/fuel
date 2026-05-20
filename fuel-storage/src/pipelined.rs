@@ -6587,4 +6587,105 @@ mod tests {
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(out, &[1.0, -1000.0, 3.0, -1000.0]);
     }
+
+    // ---- WriteSlice (Phase 7.6 step 9c E.3.2) -------------------------------
+
+    /// E2E: pipelined realize of `Op::WriteSlice` writing a [1, 3, 2]
+    /// source slab into a [4, 3, 2] destination at axis-0 row 2 — the
+    /// canonical KV-cache append shape.
+    #[test]
+    fn pipelined_realize_write_slice_kv_cache_append() {
+        let dest_storage = crate::from_slice_cpu(&[0.0_f32; 24]);
+        let src_storage = crate::from_slice_cpu(&[
+            1.0_f32, 2.0,
+            3.0,     4.0,
+            5.0,     6.0,
+        ]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (dest_id, src_id, ws_id) = {
+            let mut g = graph.write().unwrap();
+            let dest = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4, 3, 2]), dtype: DType::F32,
+            });
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F32,
+            });
+            let ws = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(2, 3), (0, 3), (0, 2)] },
+                inputs: vec![dest, src],
+                shape: Shape::from_dims(&[4, 3, 2]),  // adopts dest shape
+                dtype: DType::F32,
+            });
+            g.set_target_backend(ws, BackendId::Cpu);
+            (dest, src, ws)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(dest_id, Arc::new(RwLock::new(dest_storage)));
+        inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let out: &[f32] = c.as_slice().unwrap();
+        let expected = [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0,  // row 2 = source
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        assert_eq!(out, &expected);
+    }
+
+    /// E2E: pipelined realize of `Op::WriteSlice` adopts the
+    /// destination's Storage Arc as the output slot (in-place
+    /// alias) — the resulting Arc points to the SAME bytes the
+    /// destination was constructed from.
+    #[test]
+    fn pipelined_realize_write_slice_aliases_dest_storage() {
+        let dest_storage = crate::from_slice_cpu(&[0.0_f32; 6]);
+        let src_storage = crate::from_slice_cpu(&[10.0_f32, 20.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (dest_id, src_id, ws_id, dest_arc_external) = {
+            let mut g = graph.write().unwrap();
+            let dest = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]), dtype: DType::F32,
+            });
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 2]), dtype: DType::F32,
+            });
+            let ws = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(1, 2), (0, 2)] },
+                inputs: vec![dest, src],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(ws, BackendId::Cpu);
+            let arc = Arc::new(RwLock::new(dest_storage));
+            (dest, src, ws, arc)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(dest_id, Arc::clone(&dest_arc_external));
+        inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
+        // Bytes were written into the same Arc the caller held —
+        // the WriteSlice op aliases dest's Storage Arc, not allocates
+        // a fresh buffer.
+        assert!(
+            Arc::ptr_eq(&result_arc, &dest_arc_external),
+            "WriteSlice output Arc must be the same Arc as the destination's"
+        );
+        let guard = dest_arc_external.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(out, &[0.0, 0.0, 10.0, 20.0, 0.0, 0.0]);
+    }
 }
