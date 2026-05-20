@@ -60,3 +60,4 @@ pub mod scratch;
 pub mod shape_strides;
 pub mod softmax;
 pub mod status;
+pub mod write_slice;
