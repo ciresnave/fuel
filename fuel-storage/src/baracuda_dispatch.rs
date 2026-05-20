@@ -822,6 +822,56 @@ pub mod triangular {
 }
 
 // ===========================================================================
+// Flip — single-axis reverse (baracuda alpha.27, integrated alpha.29)
+// ===========================================================================
+
+macro_rules! cuda_flip_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, dim_size, inner) = match params {
+                OpParams::Flip { outer_count, dim_size, inner_count } => {
+                    (*outer_count, *dim_size, *inner_count)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Flip, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, outer, dim_size, inner)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod flip {
+    use super::*;
+    use fuel_cuda_backend::baracuda::flip as bk;
+
+    cuda_flip_baracuda_wrapper!(flip_f32,  bk::flip_f32);
+    cuda_flip_baracuda_wrapper!(flip_f64,  bk::flip_f64);
+    cuda_flip_baracuda_wrapper!(flip_f16,  bk::flip_f16);
+    cuda_flip_baracuda_wrapper!(flip_bf16, bk::flip_bf16);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -1481,6 +1531,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(Tril, &u(bf16), cuda, triangular::tril_bf16);
     table.register(Tril, &u(DType::I32), cuda, triangular::tril_i32);
     table.register(Tril, &u(DType::I64), cuda, triangular::tril_i64);
+
+    // ----- Flip — single-axis reverse. 4 float dtypes; integer dtypes
+    // (u8/u32) parked until baracuda extends the symbol set (today's
+    // CPU set covers u8/u32 via the dtype-agnostic byte-level kernel).
+    table.register(Flip, &u(f32),  cuda, flip::flip_f32);
+    table.register(Flip, &u(f64),  cuda, flip::flip_f64);
+    table.register(Flip, &u(f16),  cuda, flip::flip_f16);
+    table.register(Flip, &u(bf16), cuda, flip::flip_bf16);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
