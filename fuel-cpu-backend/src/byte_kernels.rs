@@ -6285,6 +6285,148 @@ where
     }
 }
 
+// =============================================================================
+// WriteSlice — Phase 7.6 step 9c E.3.2 (KV-cache writes)
+// =============================================================================
+
+/// In-place rectangular scatter write: copy `source`'s bytes into a
+/// slab of `dest` defined per-axis by `ranges`. `dest_shape` is the
+/// destination's shape; `ranges[i] = (start, end)` is the half-open
+/// slab range along axis `i`, so the source's shape along axis `i`
+/// is implicitly `end - start`.
+///
+/// Dtype-agnostic at the byte level — `dtype_size` scales offsets.
+/// The kernel walks every "non-innermost" coordinate of the slab in
+/// row-major order and copies the innermost (last-axis) row in one
+/// `copy_from_slice`. Bytes outside the slab are not touched.
+pub fn write_slice_cpu(
+    source: &CpuStorageBytes,
+    dest: &mut CpuStorageBytes,
+    dest_shape: &[usize],
+    ranges: &[(usize, usize)],
+    dtype_size: usize,
+) -> Result<()> {
+    if dtype_size == 0 {
+        return Err(Error::Msg("write_slice_cpu: dtype_size must be > 0".to_string()).bt());
+    }
+    let rank = dest_shape.len();
+    if rank == 0 {
+        return Err(Error::Msg(
+            "write_slice_cpu: dest rank must be >= 1 (scalar destinations have \
+             no slab to write into)".to_string(),
+        )
+        .bt());
+    }
+    if ranges.len() != rank {
+        return Err(Error::Msg(format!(
+            "write_slice_cpu: ranges.len() ({}) != dest rank ({rank})",
+            ranges.len(),
+        ))
+        .bt());
+    }
+    // Per-axis validation + slab shape derivation.
+    let mut slab_shape: Vec<usize> = Vec::with_capacity(rank);
+    for (i, &(start, end)) in ranges.iter().enumerate() {
+        if end < start || end > dest_shape[i] {
+            return Err(Error::Msg(format!(
+                "write_slice_cpu: ranges[{i}] = ({start}, {end}) invalid for \
+                 dest_shape[{i}] = {}",
+                dest_shape[i],
+            ))
+            .bt());
+        }
+        slab_shape.push(end - start);
+    }
+    // dest_shape[i] = 0 ⇒ slab dim must also be 0 (no-op).
+    let slab_elems: usize = slab_shape.iter().copied().product();
+    if slab_elems == 0 {
+        return Ok(());
+    }
+    let dest_elems: usize = dest_shape.iter().copied().product();
+    let dest_bytes_needed = dest_elems.saturating_mul(dtype_size);
+    if dest.len_bytes() != dest_bytes_needed {
+        return Err(Error::Msg(format!(
+            "write_slice_cpu: dest bytes ({}) != dest_shape {:?} * dtype_size {dtype_size}",
+            dest.len_bytes(), dest_shape,
+        ))
+        .bt());
+    }
+    let source_bytes_needed = slab_elems.saturating_mul(dtype_size);
+    if source.len_bytes() != source_bytes_needed {
+        return Err(Error::Msg(format!(
+            "write_slice_cpu: source bytes ({}) != slab {:?} * dtype_size {dtype_size}",
+            source.len_bytes(), slab_shape,
+        ))
+        .bt());
+    }
+    // Row-major strides for dest (contiguous, in elements).
+    let mut dest_strides: Vec<usize> = vec![0; rank];
+    if rank > 0 {
+        dest_strides[rank - 1] = 1;
+        for i in (0..rank - 1).rev() {
+            dest_strides[i] = dest_strides[i + 1] * dest_shape[i + 1];
+        }
+    }
+    // The innermost axis is copied as one contiguous span per outer
+    // coordinate tuple. The span's element count is the slab's
+    // innermost dim; the dest offset along the innermost axis is
+    // `ranges[rank-1].0` (the slab's start element along the inner-
+    // most axis).
+    let inner_axis = rank - 1;
+    let inner_slab_elems = slab_shape[inner_axis];
+    let inner_slab_bytes = inner_slab_elems * dtype_size;
+    let inner_dest_start_elems = ranges[inner_axis].0;
+    let inner_dest_start_bytes = inner_dest_start_elems * dtype_size;
+
+    let dest_buf = dest.bytes_mut();
+    let src_buf = source.bytes();
+    // Walk the outer (non-innermost) coordinates of the SLAB in
+    // row-major order. For each outer tuple, compute (a) the source
+    // byte offset (slab strides) and (b) the destination byte offset
+    // (dest strides + `ranges[i].0` offset along each axis).
+    if rank == 1 {
+        // Special case — only the innermost axis exists; one span.
+        let dst_off = inner_dest_start_bytes;
+        dest_buf[dst_off..dst_off + inner_slab_bytes]
+            .copy_from_slice(&src_buf[..inner_slab_bytes]);
+        return Ok(());
+    }
+    // outer_count = product of slab dims except the innermost.
+    let outer_count: usize = slab_shape[..inner_axis].iter().product();
+    let mut outer_idx = vec![0usize; inner_axis];
+    for outer_n in 0..outer_count {
+        // Reconstruct outer coords from `outer_n` (row-major).
+        let mut rem = outer_n;
+        for i in 0..inner_axis {
+            let stride: usize = slab_shape[i + 1..inner_axis].iter().product::<usize>().max(1);
+            // Slab outer dims unroll left-to-right; compute coord
+            // using slab shape from axis `i` outward (excluding
+            // innermost, which is contiguous-copied).
+            outer_idx[i] = rem / stride;
+            rem %= stride;
+        }
+        // Source offset: row-major over slab_shape (rank-1).
+        let mut src_elem = 0usize;
+        let mut src_stride = inner_slab_elems;
+        for i in (0..inner_axis).rev() {
+            src_elem += outer_idx[i] * src_stride;
+            src_stride *= slab_shape[i];
+        }
+        // Dest offset: row-major over dest_shape, with each axis
+        // shifted by `ranges[i].0`.
+        let mut dst_elem = inner_dest_start_elems;
+        for i in 0..inner_axis {
+            let dest_coord = ranges[i].0 + outer_idx[i];
+            dst_elem += dest_coord * dest_strides[i];
+        }
+        let src_off = src_elem * dtype_size;
+        let dst_off = dst_elem * dtype_size;
+        dest_buf[dst_off..dst_off + inner_slab_bytes]
+            .copy_from_slice(&src_buf[src_off..src_off + inner_slab_bytes]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7892,5 +8034,121 @@ mod tests {
         assert!((r[1] - 0.841_192).abs() < 1e-3);
         // gelu(-1) ≈ -0.1588 (tanh approx)
         assert!((r[2] - (-0.158_808)).abs() < 1e-3);
+    }
+
+    // ---- write_slice_cpu (Phase E.3.2) -------------------------------------
+
+    /// KV-cache append shape: write source [1, 3, 2] into dest [4, 3, 2]
+    /// at axis-0 row 2. Result: dest row 2 is replaced; rows 0/1/3 are
+    /// untouched.
+    #[test]
+    fn write_slice_cpu_kv_cache_append_pattern() {
+        // dest: 4 rows of 6 f32 each = 24 elements. Init to 0.0.
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 24]);
+        let source = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0,
+            3.0,     4.0,
+            5.0,     6.0,
+        ]);
+        write_slice_cpu(
+            &source, &mut dest,
+            &[4, 3, 2],
+            &[(2, 3), (0, 3), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice");
+        let r: &[f32] = dest.as_slice().unwrap();
+        let expected = [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,   // row 0 untouched
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,   // row 1 untouched
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0,   // row 2 = source
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,   // row 3 untouched
+        ];
+        assert_eq!(r, &expected);
+    }
+
+    /// Interior write: dest [3, 4] receives source [2, 2] at center.
+    /// Verifies non-full slab along both axes.
+    #[test]
+    fn write_slice_cpu_interior_2d() {
+        let mut dest = CpuStorageBytes::from_slice(&[
+            10.0_f32, 11.0, 12.0, 13.0,
+            14.0,     15.0, 16.0, 17.0,
+            18.0,     19.0, 20.0, 21.0,
+        ]);
+        let source = CpuStorageBytes::from_slice(&[
+            100.0_f32, 101.0,
+            102.0,     103.0,
+        ]);
+        write_slice_cpu(
+            &source, &mut dest,
+            &[3, 4],
+            &[(0, 2), (1, 3)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice");
+        let r: &[f32] = dest.as_slice().unwrap();
+        let expected = [
+            10.0, 100.0, 101.0, 13.0,
+            14.0, 102.0, 103.0, 17.0,
+            18.0, 19.0,  20.0,  21.0,
+        ];
+        assert_eq!(r, &expected);
+    }
+
+    /// 1-D write: special-cased single contiguous span.
+    #[test]
+    fn write_slice_cpu_1d() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32, 1.0, 2.0, 3.0, 4.0]);
+        let source = CpuStorageBytes::from_slice(&[100.0_f32, 200.0]);
+        write_slice_cpu(
+            &source, &mut dest,
+            &[5],
+            &[(2, 4)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice");
+        let r: &[f32] = dest.as_slice().unwrap();
+        assert_eq!(r, &[0.0, 1.0, 100.0, 200.0, 4.0]);
+    }
+
+    /// Rejects out-of-range slab.
+    #[test]
+    fn write_slice_cpu_rejects_out_of_range() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 12]);
+        let source = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let err = write_slice_cpu(
+            &source, &mut dest,
+            &[4, 3],
+            &[(4, 5), (0, 3)],  // axis 0 range past dest dim
+            std::mem::size_of::<f32>(),
+        );
+        assert!(err.is_err());
+    }
+
+    /// Rejects rank mismatch.
+    #[test]
+    fn write_slice_cpu_rejects_rank_mismatch() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 12]);
+        let source = CpuStorageBytes::from_slice(&[1.0_f32; 3]);
+        let err = write_slice_cpu(
+            &source, &mut dest,
+            &[4, 3],
+            &[(0, 1)],  // rank 1 vs dest rank 2
+            std::mem::size_of::<f32>(),
+        );
+        assert!(err.is_err());
+    }
+
+    /// f64 + bf16 dtype-agnostic byte-level copies.
+    #[test]
+    fn write_slice_cpu_f64_byte_correct() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f64; 6]);
+        let source = CpuStorageBytes::from_slice(&[1.5_f64, 2.5]);
+        write_slice_cpu(
+            &source, &mut dest,
+            &[3, 2],
+            &[(1, 2), (0, 2)],
+            std::mem::size_of::<f64>(),
+        ).expect("write_slice");
+        let r: &[f64] = dest.as_slice().unwrap();
+        assert_eq!(r, &[0.0, 0.0, 1.5, 2.5, 0.0, 0.0]);
     }
 }

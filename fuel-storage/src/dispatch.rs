@@ -1685,6 +1685,39 @@ fn qmatmul_f32_cpu_wrapper(
 /// Dispatch wrapper for `(Concat, *, Cpu)`. Dtype-agnostic — the
 /// underlying kernel is `concat_cpu(... dtype_size)`. The wrapper
 /// reads dtype_size from the output Storage's dtype tag.
+fn write_slice_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "write_slice wrapper expects 1 input (source) + 1 output (dest), \
+             got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (dest_shape, ranges) = match params {
+        OpParams::WriteSlice { dest_shape, ranges } => (dest_shape, ranges),
+        other => {
+            return Err(Error::Msg(format!(
+                "write_slice wrapper expects OpParams::WriteSlice, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let src_guard = read_storage(&inputs[0])?;
+    let src_cpu = cpu_input(&src_guard)?;
+    let mut dest_guard = write_storage(&outputs[0])?;
+    let dtype_size = dest_guard.dtype.size_in_bytes();
+    let dest_cpu = cpu_output(&mut dest_guard)?;
+    fuel_cpu_backend::byte_kernels::write_slice_cpu(
+        src_cpu, dest_cpu, dest_shape, ranges, dtype_size,
+    )
+}
+
 fn concat_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
@@ -3207,6 +3240,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(CumSum, &unary(f64_dt),  cpu, cumsum_f64_cpu_wrapper);
     table.register(CumSum, &unary(bf16_dt), cpu, cumsum_bf16_cpu_wrapper);
     table.register(CumSum, &unary(f16_dt),  cpu, cumsum_f16_cpu_wrapper);
+
+    // WriteSlice — Phase 7.6 step 9c E.3.2. The kernel is dtype-
+    // agnostic at the byte level (it just memcpy's slabs); per-dtype
+    // entries exist so the binding-table lookup matches the executor's
+    // `[T_src, T_out]` canonicalized key. Coverage: every dtype the
+    // KV cache might hold today + integer dtypes for future index-
+    // table use cases.
+    table.register(WriteSlice, &unary(f32_dt),  cpu, write_slice_cpu_wrapper);
+    table.register(WriteSlice, &unary(f64_dt),  cpu, write_slice_cpu_wrapper);
+    table.register(WriteSlice, &unary(bf16_dt), cpu, write_slice_cpu_wrapper);
+    table.register(WriteSlice, &unary(f16_dt),  cpu, write_slice_cpu_wrapper);
+    table.register(WriteSlice, &unary(u32_dt),  cpu, write_slice_cpu_wrapper);
+    table.register(WriteSlice, &unary(u8_dt),   cpu, write_slice_cpu_wrapper);
 
     // Triu / Tril share one byte-level kernel (dtype-agnostic).
     table.register(Triu, &unary(f32_dt),  cpu, triu_cpu_wrapper);
