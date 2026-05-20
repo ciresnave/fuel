@@ -684,6 +684,76 @@ pub mod concat {
 }
 
 // ===========================================================================
+// WriteSlice — in-place rectangular slab assignment (Phase 7.6 step 9c E.3.2)
+// ===========================================================================
+//
+// The pipelined executor's WorkItemKind::WriteSlice branch wires
+// `inputs=[source]` and `outputs=[dest_arc]` where outputs[0]'s Arc IS
+// the destination's Storage Arc (zero-copy in-place adoption). The
+// wrapper holds a write lock on outputs[0] and a read lock on inputs[0],
+// then asks baracuda's byte-width-dispatched kernel to mutate dest in
+// place.
+//
+// Byte-width-keyed (not dtype-keyed): both source and dest dtype are
+// uniform (canonicalized to `[T_src, T_out]` by build_lookup_dtypes),
+// and the kernel only cares about element size — there's no arithmetic.
+// One wrapper per byte width covers all aligned-element dtypes.
+
+macro_rules! cuda_write_slice_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (dest_shape, ranges) = match params {
+                OpParams::WriteSlice { dest_shape, ranges } => (dest_shape, ranges),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::WriteSlice, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            // Derive source_shape + range_start from the ranges. The
+            // executor has already validated rank + bounds at compile
+            // time; this is the kernel's last-line input shaping.
+            let rank = dest_shape.len();
+            let mut source_shape = Vec::with_capacity(rank);
+            let mut range_start = Vec::with_capacity(rank);
+            for &(start, end) in ranges.iter() {
+                source_shape.push(end - start);
+                range_start.push(start);
+            }
+
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let dest_cuda = cuda_output(&mut out_guard)?;
+            $baracuda_fn(dest_cuda, src_cuda, dest_shape, &source_shape, &range_start)
+        }
+    };
+}
+
+pub mod write_slice {
+    use super::*;
+    use fuel_cuda_backend::baracuda::write_slice as bk;
+
+    cuda_write_slice_baracuda_wrapper!(write_slice_b1,  bk::write_slice_b1);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b2,  bk::write_slice_b2);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b4,  bk::write_slice_b4);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b8,  bk::write_slice_b8);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b16, bk::write_slice_b16);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -1310,6 +1380,20 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(Concat, &u(f64),  cuda, concat::concat_f64);
     table.register(Concat, &u(f16),  cuda, concat::concat_f16);
     table.register(Concat, &u(bf16), cuda, concat::concat_bf16);
+
+    // ----- WriteSlice — in-place rectangular slab assign (alpha.29).
+    // Byte-width-keyed kernel (b1/b2/b4/b8); per-dtype entries just
+    // pick the right byte-width wrapper. Unblocks Fuel's persistent
+    // KV-cache integration (Phase 7.6 step 9c E.3.3).
+    table.register(WriteSlice, &u(f32),       cuda, write_slice::write_slice_b4);
+    table.register(WriteSlice, &u(f64),       cuda, write_slice::write_slice_b8);
+    table.register(WriteSlice, &u(f16),       cuda, write_slice::write_slice_b2);
+    table.register(WriteSlice, &u(bf16),      cuda, write_slice::write_slice_b2);
+    table.register(WriteSlice, &u(DType::I32),cuda, write_slice::write_slice_b4);
+    table.register(WriteSlice, &u(DType::I64),cuda, write_slice::write_slice_b8);
+    table.register(WriteSlice, &u(DType::U32),cuda, write_slice::write_slice_b4);
+    table.register(WriteSlice, &u(DType::U8), cuda, write_slice::write_slice_b1);
+    table.register(WriteSlice, &u(DType::I8), cuda, write_slice::write_slice_b1);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
