@@ -754,6 +754,74 @@ pub mod write_slice {
 }
 
 // ===========================================================================
+// Triu / Tril — upper / lower triangular mask (Phase 7.6 step 9c E.3.2.4)
+// ===========================================================================
+//
+// Per-dtype kernels (7 dtypes: f16/bf16/f32/f64/i32/i64/bool). Wrappers
+// destructure OpParams::Triangular { batch_count, rows, cols, diagonal }
+// and call the matching baracuda symbol. The kernel allocates a fresh
+// output buffer (no in-place semantics).
+
+macro_rules! cuda_triangular_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (batch, rows, cols, diag) = match params {
+                OpParams::Triangular { batch_count, rows, cols, diagonal } => {
+                    (*batch_count, *rows, *cols, *diagonal)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Triangular, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, batch, rows, cols, diag)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod triangular {
+    use super::*;
+    use fuel_cuda_backend::baracuda::triangular as bk;
+
+    // Triu
+    cuda_triangular_baracuda_wrapper!(triu_f32,  bk::triu_f32);
+    cuda_triangular_baracuda_wrapper!(triu_f64,  bk::triu_f64);
+    cuda_triangular_baracuda_wrapper!(triu_f16,  bk::triu_f16);
+    cuda_triangular_baracuda_wrapper!(triu_bf16, bk::triu_bf16);
+    cuda_triangular_baracuda_wrapper!(triu_i32,  bk::triu_i32);
+    cuda_triangular_baracuda_wrapper!(triu_i64,  bk::triu_i64);
+    cuda_triangular_baracuda_wrapper!(triu_bool, bk::triu_bool);
+
+    // Tril
+    cuda_triangular_baracuda_wrapper!(tril_f32,  bk::tril_f32);
+    cuda_triangular_baracuda_wrapper!(tril_f64,  bk::tril_f64);
+    cuda_triangular_baracuda_wrapper!(tril_f16,  bk::tril_f16);
+    cuda_triangular_baracuda_wrapper!(tril_bf16, bk::tril_bf16);
+    cuda_triangular_baracuda_wrapper!(tril_i32,  bk::tril_i32);
+    cuda_triangular_baracuda_wrapper!(tril_i64,  bk::tril_i64);
+    cuda_triangular_baracuda_wrapper!(tril_bool, bk::tril_bool);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -1394,6 +1462,25 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(WriteSlice, &u(DType::U32),cuda, write_slice::write_slice_b4);
     table.register(WriteSlice, &u(DType::U8), cuda, write_slice::write_slice_b1);
     table.register(WriteSlice, &u(DType::I8), cuda, write_slice::write_slice_b1);
+
+    // ----- Triu / Tril — triangular masks (alpha.29).
+    // 7 dtypes per direction in baracuda; Fuel registers the
+    // float + integer subset that the CPU path already covers.
+    // bool is parked until Fuel adds Bool storage (CPU coverage today
+    // also skips Bool — the kernel exists if/when needed).
+    table.register(Triu, &u(f32),  cuda, triangular::triu_f32);
+    table.register(Triu, &u(f64),  cuda, triangular::triu_f64);
+    table.register(Triu, &u(f16),  cuda, triangular::triu_f16);
+    table.register(Triu, &u(bf16), cuda, triangular::triu_bf16);
+    table.register(Triu, &u(DType::I32), cuda, triangular::triu_i32);
+    table.register(Triu, &u(DType::I64), cuda, triangular::triu_i64);
+
+    table.register(Tril, &u(f32),  cuda, triangular::tril_f32);
+    table.register(Tril, &u(f64),  cuda, triangular::tril_f64);
+    table.register(Tril, &u(f16),  cuda, triangular::tril_f16);
+    table.register(Tril, &u(bf16), cuda, triangular::tril_bf16);
+    table.register(Tril, &u(DType::I32), cuda, triangular::tril_i32);
+    table.register(Tril, &u(DType::I64), cuda, triangular::tril_i64);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
