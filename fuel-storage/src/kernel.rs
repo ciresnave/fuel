@@ -505,6 +505,19 @@ pub enum OpParams {
         mode_tag: u8,
         fill_bytes: Vec<u8>,
     },
+
+    /// In-place scatter write parameters. The destination shape +
+    /// source shape together determine the kernel walk; `ranges`
+    /// gives the per-axis (start, end) slab inside the destination.
+    /// `dest_shape[i] >= ranges[i].1`, and source shape is implicitly
+    /// `ranges[i].1 - ranges[i].0` along axis `i`.
+    ///
+    /// Phase E.3.2: backs `Op::WriteSlice` for persistent KV-cache
+    /// writes.
+    WriteSlice {
+        dest_shape: Vec<usize>,
+        ranges: Vec<(usize, usize)>,
+    },
 }
 
 // =============================================================================
