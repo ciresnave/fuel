@@ -680,6 +680,34 @@ pub enum Op {
     /// [`opt::derive_ordering`].
     Move { target: DeviceLocation },
 
+    /// In-place scatter write: copies `inputs[1]`'s bytes into a
+    /// rectangular slab of `inputs[0]`'s storage, defined per-dim by
+    /// `ranges[i] = (start, end)`. After the op runs, `inputs[0]`'s
+    /// bytes inside the slab are replaced; bytes outside the slab are
+    /// untouched.
+    ///
+    /// Shape contract: `inputs[0].rank() == inputs[1].rank() ==
+    /// ranges.len()`. For each axis `i`,
+    /// `inputs[1].dims()[i] == ranges[i].1 - ranges[i].0`, and
+    /// `ranges[i].1 <= inputs[0].dims()[i]`. Dtypes must match.
+    ///
+    /// Output is a marker that adopts `inputs[0]`'s Storage Arc and
+    /// Layout — same shape, same bytes, post-write. Consumers that
+    /// want a sub-extent of the destination compose an explicit
+    /// `Op::Slice` after the write (WriteSlice does not encode
+    /// post-write extents).
+    ///
+    /// Destructive on `inputs[0]` (the destination is consumed; only
+    /// the write op's output NodeId may read its bytes afterward).
+    /// Non-destructive on `inputs[1]`. The scheduler pins this op to
+    /// run after every other reader of the destination via
+    /// [`opt::derive_ordering`].
+    ///
+    /// Phase E.3.2: introduced to back persistent KV-cache writes
+    /// (`InferenceContext` + `KvCache`). Non-differentiable; backward
+    /// panics — KV-cache writes are forward-only.
+    WriteSlice { ranges: Vec<(usize, usize)> },
+
     /// Phase 7.6 single-arm delegate to the open
     /// [`crate::registry::FusedOpRegistry`]. The id selects which
     /// fused op (SoftmaxLastDim, RmsNormLastDim, FlashAttn, ...) and
@@ -703,7 +731,7 @@ impl Op {
     /// via ordering edges derived by [`opt::derive_ordering`].
     pub fn destructive_input(&self) -> Option<usize> {
         match self {
-            Op::Release | Op::Move { .. } => Some(0),
+            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } => Some(0),
             _ => None,
         }
     }
@@ -862,6 +890,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
+        Op::WriteSlice{..}       => "WriteSlice",
         // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
         // names through a static lookup; until then, all fused ops
         // share one short name. Distinguishing in error messages is
@@ -1381,6 +1410,82 @@ impl Tensor {
             dtype,
         });
         Tensor { graph: Arc::clone(&self.graph), id }
+    }
+
+    /// Append an `Op::WriteSlice` node — copies `source`'s bytes into
+    /// `self` at the rectangular slab defined by `ranges`. Per-axis,
+    /// `ranges[i] = (start, end)` is the half-open destination range;
+    /// `source.dims()[i]` must equal `end - start`, and `end` must
+    /// not exceed `self.dims()[i]`. Dtypes must match.
+    ///
+    /// Destructive on `self`: after the write, `self`'s NodeId is no
+    /// longer readable (the scheduler pins this op to run after every
+    /// other reader of `self` via [`opt::derive_ordering`]). The
+    /// returned tensor adopts `self`'s Storage and Layout; downstream
+    /// consumers read post-write bytes through this NodeId.
+    ///
+    /// Phase E.3.2: introduced to back persistent KV-cache writes
+    /// (`InferenceContext` + `KvCache`). Non-differentiable.
+    ///
+    /// **Returns `Result`**: rank/shape/range mismatches surface as a
+    /// typed error.
+    pub fn write_slice(
+        &self,
+        source: &Tensor,
+        ranges: Vec<(usize, usize)>,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let dest_shape = self.shape();
+        let dest_dims = dest_shape.dims();
+        let src_shape = source.shape();
+        let src_dims = src_shape.dims();
+        let rank = dest_dims.len();
+        if ranges.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice: ranges.len() ({}) must equal destination rank ({rank})",
+                ranges.len(),
+            )).bt());
+        }
+        if src_dims.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice: source rank ({}) must equal destination rank ({rank})",
+                src_dims.len(),
+            )).bt());
+        }
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            if end < start {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice: ranges[{i}] = ({start}, {end}) has end < start"
+                )).bt());
+            }
+            if end > dest_dims[i] {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice: ranges[{i}].end ({end}) > destination dim {i} ({})",
+                    dest_dims[i],
+                )).bt());
+            }
+            let slab = end - start;
+            if src_dims[i] != slab {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice: source dim {i} ({}) must equal slab width ({slab}) \
+                     = ranges[{i}].end - ranges[{i}].start",
+                    src_dims[i],
+                )).bt());
+            }
+        }
+        if self.dtype() != source.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice: dtype mismatch — destination {:?} vs source {:?}",
+                self.dtype(), source.dtype(),
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::WriteSlice { ranges },
+            inputs: vec![self.id, source.id],
+            shape:  dest_shape,
+            dtype,
+        });
+        Ok(Tensor { graph: Arc::clone(&self.graph), id })
     }
 
     /// Build a `Const` tensor from an `f32` slice and shape on a fresh
@@ -5732,6 +5837,21 @@ impl Tensor {
                     let x = inputs[0];
                     accumulate_grad(&mut upstream, x, up_id, &graph_handle);
                 }
+                Op::WriteSlice { .. } => {
+                    // KV-cache writes are forward-only — the slab being
+                    // written *into* gets mutated in place, and the
+                    // source slab is read non-destructively. There is
+                    // no meaningful gradient through a mutating write
+                    // in fuel's tape-based autograd model. If a use
+                    // case needs differentiable scatter, the gradient
+                    // path is a `Gather` (read the slab back) plus an
+                    // accumulating `IndexAdd` on the destination —
+                    // express that explicitly in forward.
+                    panic!(
+                        "Tensor::backward: Op::WriteSlice is non-differentiable. \
+                         Use Gather + IndexAdd if you need a differentiable scatter."
+                    );
+                }
                 // Phase 7.6 step 5 (2026-05-11): the legacy
                 // `Op::Conv2D { stride, padding, groups }` backward
                 // arm has been dropped together with the variant;
@@ -7722,5 +7842,97 @@ mod tests {
              got inputs {:?}",
             node.inputs,
         );
+    }
+
+    // ---- Op::WriteSlice (Phase E.3.2) ---------------------------------------
+
+    #[test]
+    fn write_slice_destructive_input_is_zero() {
+        let op = Op::WriteSlice { ranges: vec![(0, 1), (0, 32), (0, 128)] };
+        assert_eq!(op.destructive_input(), Some(0));
+    }
+
+    #[test]
+    fn write_slice_short_name() {
+        let op = Op::WriteSlice { ranges: vec![(0, 1)] };
+        assert_eq!(op.short_name(), "WriteSlice");
+    }
+
+    #[test]
+    fn write_slice_emits_op_writeslice_node() {
+        // dest shape [4, 3]; source shape [1, 3]; write at row 2.
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let out = dest.write_slice(&src, vec![(2, 3), (0, 3)])
+            .expect("write_slice should accept matching shapes");
+        let g = out.graph().read().unwrap();
+        match &g.node(out.id()).op {
+            Op::WriteSlice { ranges } => {
+                assert_eq!(ranges, &vec![(2, 3), (0, 3)]);
+            }
+            other => panic!("expected Op::WriteSlice, got {other:?}"),
+        }
+        assert_eq!(g.node(out.id()).inputs, vec![dest.id(), src.id()]);
+        // Output shape == destination shape; bytes are post-write same buffer.
+        assert_eq!(g.node(out.id()).shape.dims(), &[4, 3]);
+    }
+
+    #[test]
+    fn write_slice_rejects_rank_mismatch() {
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        // ranges has rank 2 (matches dest) but source has rank 1.
+        let err = dest.write_slice(&src, vec![(0, 1), (0, 3)]);
+        assert!(err.is_err(), "rank mismatch must error");
+    }
+
+    #[test]
+    fn write_slice_rejects_slab_width_mismatch() {
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
+        );
+        // Source has 2 elements along axis 0, but slab is width 1.
+        let src = dest.const_f32_like(
+            vec![1.0_f32; 6], Shape::from_dims(&[2, 3]),
+        );
+        let err = dest.write_slice(&src, vec![(2, 3), (0, 3)]);
+        assert!(err.is_err(), "slab-width mismatch must error");
+    }
+
+    #[test]
+    fn write_slice_rejects_range_past_dest_extent() {
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        // axis 0: dest extent is 4; range [4, 5) is out of bounds.
+        let err = dest.write_slice(&src, vec![(4, 5), (0, 3)]);
+        assert!(err.is_err(), "range past dest extent must error");
+    }
+
+    #[test]
+    fn write_slice_derives_ordering_after_other_readers() {
+        // Graph:
+        //   dest = ...; src = ...
+        //   ro = dest.relu()                          (non-destructive reader of dest)
+        //   w  = dest.write_slice(&src, [(0,1),(0,3)])  (destructive on dest)
+        // Expected ordering: w must run after ro.
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let ro = dest.relu();
+        let w = dest.write_slice(&src, vec![(0, 1), (0, 3)]).unwrap();
+        let ord = crate::opt::derive_ordering(
+            &dest.graph().read().unwrap(),
+            &[ro.id(), w.id()],
+        );
+        let deps = ord.deps_of(w.id());
+        assert_eq!(deps.len(), 1, "write_slice should have one ordering dep (the relu)");
+        assert_eq!(deps[0], ro.id(), "write_slice must run after the non-destructive reader");
     }
 }
