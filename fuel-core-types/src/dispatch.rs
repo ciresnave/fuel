@@ -325,6 +325,14 @@ pub enum OpKind {
     /// stream of quantized blocks. The quant format is carried in
     /// [`OpParams::QMatMul`](super::dispatch::OpKind).
     QMatMul,
+    /// In-place rectangular scatter write: copies source's bytes
+    /// into a slab of destination defined per-axis by `ranges`.
+    /// Backs Phase E.3.2's persistent KV-cache writes
+    /// (`InferenceContext` + `KvCache`). See
+    /// [`Op::WriteSlice`](fuel_graph::Op::WriteSlice) for the IR
+    /// contract and [`OpParams::WriteSlice`](super::dispatch::OpKind)
+    /// for the kernel-side params.
+    WriteSlice,
 }
 
 impl OpKind {
@@ -410,6 +418,7 @@ impl OpKind {
             OpKind::ArgMaxDim         => "argmax_dim",
             OpKind::ArgMinDim         => "argmin_dim",
             OpKind::QMatMul           => "qmatmul",
+            OpKind::WriteSlice        => "write_slice",
         }
     }
 }

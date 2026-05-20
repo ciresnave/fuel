@@ -89,6 +89,27 @@ enum WorkItemKind {
     /// the cache. The held Arc's Drop chain frees device memory
     /// (sync for CPU, stream-deferred for async backends).
     ReleaseMarker,
+    /// `Op::WriteSlice` — in-place scatter write. The output adopts
+    /// the destination input's Storage Arc (zero-copy alias); the
+    /// kernel mutates that Arc's bytes via a write lock. The source
+    /// input's slab is copied into the destination's rectangular
+    /// region defined by `OpParams::WriteSlice`'s `ranges`.
+    ///
+    /// Carries `dest`/`source` NodeIds so the executor can:
+    /// 1. Adopt the dest's Arc as the kernel's output slot.
+    /// 2. Pass only the source as a kernel input (the dest is not
+    ///    a read-input to the kernel; it's the destination buffer
+    ///    being mutated in place).
+    ///
+    /// The realize loop's `destructive_input` cleanup evicts the
+    /// `dest` NodeId from the cache after this op runs (per
+    /// `Op::WriteSlice`'s destructive_input == Some(0) contract).
+    /// Downstream consumers read post-write bytes via this op's
+    /// own NodeId, not the dest's.
+    WriteSlice {
+        dest: NodeId,
+        source: NodeId,
+    },
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -543,6 +564,50 @@ fn compile_one(
         });
     }
 
+    if matches!(node.op, Op::WriteSlice { .. }) {
+        // WriteSlice: kernel lookup happens like a normal kernel, but
+        // the work item carries a dedicated kind so the executor
+        // knows to adopt the destination's Arc as the output rather
+        // than allocating a fresh buffer. The destination's NodeId is
+        // captured here so the executor doesn't have to re-derive it.
+        if inputs.len() != 2 {
+            return Err(Error::Msg(format!(
+                "Op::WriteSlice expects 2 inputs (destination, source), got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: WriteSlice node {:?} has no target_backend set",
+                id
+            ))
+            .bt()
+        })?;
+        let op_params = op_to_op_params(graph, node, layout_cache)?;
+        let dtypes = build_lookup_dtypes(graph, node);
+        let compiled = compile_node(
+            OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings,
+        )?;
+        // Output adopts the destination's Layout — same Storage Arc,
+        // same shape. Downstream consumers that want a post-write
+        // sub-extent compose an explicit Op::Slice (WriteSlice does
+        // not encode partial extents).
+        let output_layout = graph.layout(inputs[0]);
+        layout_cache.insert(id, output_layout.clone());
+        return Ok(WorkItem {
+            node_id: id,
+            inputs: inputs.clone(),
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::WriteSlice { dest: inputs[0], source: inputs[1] },
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+        });
+    }
+
     if matches!(node.op, Op::Reshape(_)) {
         if inputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -641,6 +706,19 @@ pub(crate) fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
             .map(|&id| graph.node(id).dtype)
             .unwrap_or(node.dtype);
         return vec![in_dt, node.dtype];
+    }
+    if matches!(node.op, Op::WriteSlice { .. }) {
+        // WriteSlice: the destination (inputs[0]) is exposed to the
+        // executor as the OUTPUT slot (in-place adoption), not as an
+        // input the kernel reads. Canonicalize the binding-table key
+        // to `[T_source, T_out]` so registrations match the kernel's
+        // actual surface (one input slab + one output buffer).
+        let src_dt = node
+            .inputs
+            .get(1)
+            .map(|&id| graph.node(id).dtype)
+            .unwrap_or(node.dtype);
+        return vec![src_dt, node.dtype];
     }
     let mut dts: Vec<DType> = node
         .inputs
@@ -814,6 +892,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::QMATMUL => {
             Some(OpKind::QMatMul)
         }
+        Op::WriteSlice { .. } => Some(OpKind::WriteSlice),
         _ => None,
     }
 }
@@ -1815,6 +1894,42 @@ fn op_to_op_params(
                 groups: *groups,
             }
         }
+        Op::WriteSlice { ranges } => {
+            // inputs[0] = destination (its shape == this node's shape
+            // since WriteSlice's output adopts the destination's
+            // Layout). inputs[1] = source slab; its shape is implied
+            // by `ranges`. The kernel needs the destination shape to
+            // compute strides for the slab walk.
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSlice expects 2 inputs (destination, source), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let dest_dims = node.shape.dims().to_vec();
+            if ranges.len() != dest_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSlice: ranges.len() ({}) must equal destination rank ({})",
+                    ranges.len(), dest_dims.len(),
+                ))
+                .bt());
+            }
+            for (i, &(start, end)) in ranges.iter().enumerate() {
+                if end < start || end > dest_dims[i] {
+                    return Err(Error::Msg(format!(
+                        "Op::WriteSlice: ranges[{i}] = ({start}, {end}) invalid \
+                         for destination dim {i} = {}",
+                        dest_dims[i],
+                    ))
+                    .bt());
+                }
+            }
+            OpParams::WriteSlice {
+                dest_shape: dest_dims,
+                ranges: ranges.clone(),
+            }
+        }
         _ => OpParams::None,
     })
 }
@@ -1858,6 +1973,96 @@ fn execute_work_item(
                 .bt()
             })?;
             cache.insert(item.node_id, input_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::WriteSlice { dest, source } => {
+            let compiled = item.compiled.as_ref().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSlice work item {:?} has no compiled node",
+                    item.node_id,
+                ))
+                .bt()
+            })?;
+            let dest_arc = cache.get(dest).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSlice destination {:?} of {:?} not realized",
+                    dest, item.node_id,
+                ))
+                .bt()
+            })?;
+            let source_arc = cache.get(source).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSlice source {:?} of {:?} not realized",
+                    source, item.node_id,
+                ))
+                .bt()
+            })?;
+            let dest_layout = layout_cache.get(dest).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSlice destination {:?} of {:?} has no cached layout",
+                    dest, item.node_id,
+                ))
+                .bt()
+            })?;
+            let source_layout = layout_cache.get(source).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSlice source {:?} of {:?} has no cached layout",
+                    source, item.node_id,
+                ))
+                .bt()
+            })?;
+            // v1 contract: destination must be contiguous + zero
+            // offset. Strided dests would force the kernel to walk
+            // both source and dest strides; defer until KV cache
+            // exposes a non-contig dest. Source CAN be non-contig —
+            // we auto-contiguize it here so the kernel sees a flat
+            // slab.
+            if !dest_layout.is_contiguous() || dest_layout.start_offset() != 0 {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSlice (Phase E.3.2 v1): destination {:?} must be \
+                     contiguous + zero-offset; got Layout {:?}",
+                    dest, dest_layout,
+                ))
+                .bt());
+            }
+            let source_arc_contig = {
+                let s_dtype = source_arc
+                    .read()
+                    .map_err(|_| poisoned("WriteSlice source storage"))?
+                    .dtype;
+                let s_len_bytes = source_arc
+                    .read()
+                    .map_err(|_| poisoned("WriteSlice source storage"))?
+                    .inner
+                    .len_bytes();
+                let layout_bytes =
+                    source_layout.shape().elem_count() * s_dtype.size_in_bytes();
+                let bytes_match_shape = s_len_bytes == layout_bytes;
+                let already_contig = source_layout.is_contiguous()
+                    && source_layout.start_offset() == 0
+                    && bytes_match_shape;
+                if already_contig {
+                    source_arc
+                } else {
+                    auto_contiguize(&source_arc, &source_layout)?
+                }
+            };
+            let source_layout_kernel =
+                fuel_core_types::Layout::contiguous(source_layout.shape().clone());
+            // The kernel sees inputs=[source] and outputs=[dest_arc].
+            // The dest input slot is intentionally absent — the kernel
+            // doesn't read from dest; it only writes to its bytes
+            // through the output slot's write lock.
+            let input_arcs = vec![source_arc_contig];
+            let mut output_arcs = vec![dest_arc.clone()];
+            let kernel_layouts = vec![source_layout_kernel, dest_layout.clone()];
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // Adopt the dest Arc at this WriteSlice node's slot. The
+            // realize loop's destructive_input cleanup evicts the
+            // dest's own NodeId from the cache afterward — downstream
+            // readers go through this node's NodeId.
+            cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }
