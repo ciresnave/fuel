@@ -805,6 +805,25 @@ pub fn eval_node_with_op(
                 fid,
             );
         }
+        Op::WriteSlice { .. } => {
+            // Phase 7.6 step 9c E.3.2: in-place scatter writes back
+            // KV-cache mutation through the pipelined executor path,
+            // not the reference-backend eager path. The reference
+            // backend has no concept of pre-allocated destination
+            // buffers (every node materializes a fresh tensor), so
+            // a faithful implementation here would be a no-op clone
+            // — not useful for the reference-backend's purpose of
+            // bit-stable reference outputs.
+            //
+            // If a test surfaces WriteSlice through this path, the
+            // test is mis-targeted: WriteSlice belongs on the
+            // PipelinedExecutor path with an `InferenceContext`.
+            unreachable!(
+                "fuel-reference-backend eval_node: Op::WriteSlice is \
+                 a pipelined-executor-only op (KV cache writes); \
+                 reference-backend tests should not invoke it.",
+            );
+        }
     }
 }
 
