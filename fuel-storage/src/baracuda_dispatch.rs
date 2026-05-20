@@ -973,6 +973,186 @@ pub mod cumsum {
 }
 
 // ===========================================================================
+// Pad — multi-dim padding with Constant/Reflect/Replicate modes
+//       (baracuda alpha.29; Circular mode exists in baracuda but
+//        fuel-graph's IR doesn't emit it yet).
+// ===========================================================================
+
+/// Decode the pre-encoded `fill_bytes` to a typed value. Constant-mode
+/// Pad's OpParams carries fill_bytes already in the output's dtype
+/// (encode_value_to_bytes does that at op_to_op_params time). Here we
+/// reinterpret the bytes back to the matching scalar type.
+fn decode_fill_f32(b: &[u8]) -> Result<f32> {
+    if b.len() != 4 {
+        return Err(Error::Msg(format!(
+            "pad_constant_f32: fill_bytes.len()={} != 4", b.len(),
+        )).bt());
+    }
+    Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+fn decode_fill_f64(b: &[u8]) -> Result<f64> {
+    if b.len() != 8 {
+        return Err(Error::Msg(format!(
+            "pad_constant_f64: fill_bytes.len()={} != 8", b.len(),
+        )).bt());
+    }
+    Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+}
+fn decode_fill_f16(b: &[u8]) -> Result<half::f16> {
+    if b.len() != 2 {
+        return Err(Error::Msg(format!(
+            "pad_constant_f16: fill_bytes.len()={} != 2", b.len(),
+        )).bt());
+    }
+    Ok(half::f16::from_le_bytes([b[0], b[1]]))
+}
+fn decode_fill_bf16(b: &[u8]) -> Result<half::bf16> {
+    if b.len() != 2 {
+        return Err(Error::Msg(format!(
+            "pad_constant_bf16: fill_bytes.len()={} != 2", b.len(),
+        )).bt());
+    }
+    Ok(half::bf16::from_le_bytes([b[0], b[1]]))
+}
+
+/// Generate per-dtype Pad-forward wrapper. Reads `OpParams::Pad`,
+/// dispatches on `mode_tag` (0=Constant, 1=Reflect, 2=Replicate);
+/// returns Unsupported for any other tag (baracuda has Circular but
+/// fuel-graph doesn't emit it today).
+macro_rules! cuda_pad_baracuda_wrapper {
+    ($wrapper_name:ident, $const_fn:path, $reflect_fn:path, $replicate_fn:path, $decode_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (in_shape, out_shape, padding, mode_tag, fill_bytes) = match params {
+                OpParams::Pad { in_shape, out_shape, padding, mode_tag, fill_bytes } => {
+                    (in_shape, out_shape, padding, *mode_tag, fill_bytes)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Pad, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = match mode_tag {
+                0 => {
+                    let value = $decode_fn(fill_bytes)?;
+                    $const_fn(src_cuda, in_shape, out_shape, padding, value)?
+                }
+                1 => $reflect_fn(src_cuda, in_shape, out_shape, padding)?,
+                2 => $replicate_fn(src_cuda, in_shape, out_shape, padding)?,
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": mode_tag {} not supported \
+                         (Constant=0, Reflect=1, Replicate=2; Circular=3 not yet)"),
+                        other,
+                    )).bt());
+                }
+            };
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+/// Generate per-dtype PadBackward wrapper. Only Constant-mode backward
+/// is supported (the other modes' backwards aren't shipped in baracuda
+/// alpha.29; the CPU path remains the only target for them).
+macro_rules! cuda_pad_backward_baracuda_wrapper {
+    ($wrapper_name:ident, $bw_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (in_shape, out_shape, padding, mode_tag) = match params {
+                OpParams::PadBackward { in_shape, out_shape, padding, mode_tag } => {
+                    (in_shape, out_shape, padding, *mode_tag)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::PadBackward, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            if mode_tag != 0 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": only Constant-mode backward (tag 0) supported \
+                     on CUDA today, got mode_tag {}"),
+                    mode_tag,
+                )).bt());
+            }
+            // OpParams::PadBackward layout: in_shape = forward x shape
+            // (= dx shape), out_shape = forward y shape (= dy shape).
+            // baracuda's pad_constant_backward takes input_shape (= dx
+            // shape) and pad_low; dy_shape is implied. We pass both
+            // through to fuel-cuda's pad_backward wrapper so its stride
+            // arrays are computed correctly.
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let dy_cuda = cuda_input(&in_guard)?;
+            let result = $bw_fn(dy_cuda, in_shape, out_shape, padding)?;
+            let dx_cuda = cuda_output(&mut out_guard)?;
+            *dx_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod pad {
+    use super::*;
+    use fuel_cuda_backend::baracuda::pad as bk;
+
+    cuda_pad_baracuda_wrapper!(
+        pad_f32,
+        bk::pad_constant_f32, bk::pad_reflect_f32, bk::pad_replicate_f32,
+        super::decode_fill_f32
+    );
+    cuda_pad_baracuda_wrapper!(
+        pad_f64,
+        bk::pad_constant_f64, bk::pad_reflect_f64, bk::pad_replicate_f64,
+        super::decode_fill_f64
+    );
+    cuda_pad_baracuda_wrapper!(
+        pad_f16,
+        bk::pad_constant_f16, bk::pad_reflect_f16, bk::pad_replicate_f16,
+        super::decode_fill_f16
+    );
+    cuda_pad_baracuda_wrapper!(
+        pad_bf16,
+        bk::pad_constant_bf16, bk::pad_reflect_bf16, bk::pad_replicate_bf16,
+        super::decode_fill_bf16
+    );
+
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_f32,  bk::pad_backward_f32);
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_f64,  bk::pad_backward_f64);
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_f16,  bk::pad_backward_f16);
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_bf16, bk::pad_backward_bf16);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -1654,6 +1834,21 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(CumSum, &u(f64),  cuda, cumsum::cumsum_f64);
     table.register(CumSum, &u(f16),  cuda, cumsum::cumsum_f16);
     table.register(CumSum, &u(bf16), cuda, cumsum::cumsum_bf16);
+
+    // ----- Pad / PadBackward — multi-dim padding.
+    // Forward: Constant/Reflect/Replicate per dtype (Circular parked
+    // until fuel-graph emits it). Backward: Constant only (other
+    // backwards are sum-accumulating and not shipped in baracuda
+    // alpha.29 — CPU stays the only target for those).
+    table.register(Pad, &u(f32),  cuda, pad::pad_f32);
+    table.register(Pad, &u(f64),  cuda, pad::pad_f64);
+    table.register(Pad, &u(f16),  cuda, pad::pad_f16);
+    table.register(Pad, &u(bf16), cuda, pad::pad_bf16);
+
+    table.register(PadBackward, &u(f32),  cuda, pad::pad_backward_f32);
+    table.register(PadBackward, &u(f64),  cuda, pad::pad_backward_f64);
+    table.register(PadBackward, &u(f16),  cuda, pad::pad_backward_f16);
+    table.register(PadBackward, &u(bf16), cuda, pad::pad_backward_bf16);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.

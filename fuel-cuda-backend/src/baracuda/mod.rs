@@ -61,6 +61,7 @@ pub mod scratch;
 pub mod shape_strides;
 pub mod cumsum;
 pub mod flip;
+pub mod pad;
 pub mod roll;
 pub mod softmax;
 pub mod status;
