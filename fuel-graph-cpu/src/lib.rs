@@ -733,6 +733,19 @@ fn eval_node(
                  dispatch arm wired yet. Step 4 extends this match.",
             );
         }
+        Op::WriteSlice { .. } => {
+            // Phase 7.6 step 9c E.3.2: in-place scatter writes back KV-
+            // cache mutation through the pipelined executor path, not the
+            // eager fuel-graph-cpu path. Same rationale as the
+            // reference-backend eval_node: this backend has no concept
+            // of pre-allocated destination buffers, so WriteSlice has no
+            // faithful eager semantic.
+            unreachable!(
+                "fuel-graph-cpu eval_node: Op::WriteSlice is a \
+                 pipelined-executor-only op (KV cache writes); the eager \
+                 fuel-graph-cpu path should never see it.",
+            );
+        }
     }
 }
 
