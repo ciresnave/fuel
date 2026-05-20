@@ -59,6 +59,7 @@ pub mod norm;
 pub mod reduce;
 pub mod scratch;
 pub mod shape_strides;
+pub mod cumsum;
 pub mod flip;
 pub mod roll;
 pub mod softmax;
