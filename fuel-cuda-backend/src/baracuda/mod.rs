@@ -60,6 +60,7 @@ pub mod reduce;
 pub mod scratch;
 pub mod shape_strides;
 pub mod flip;
+pub mod roll;
 pub mod softmax;
 pub mod status;
 pub mod triangular;

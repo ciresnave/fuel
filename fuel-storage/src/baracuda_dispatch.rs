@@ -872,6 +872,56 @@ pub mod flip {
 }
 
 // ===========================================================================
+// Roll — single-axis cyclic shift (baracuda alpha.27, integrated alpha.29)
+// ===========================================================================
+
+macro_rules! cuda_roll_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (outer, dim_size, inner, shift) = match params {
+                OpParams::Roll { outer_count, dim_size, inner_count, shift } => {
+                    (*outer_count, *dim_size, *inner_count, *shift)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Roll, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(src_cuda, outer, dim_size, inner, shift)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod roll {
+    use super::*;
+    use fuel_cuda_backend::baracuda::roll as bk;
+
+    cuda_roll_baracuda_wrapper!(roll_f32,  bk::roll_f32);
+    cuda_roll_baracuda_wrapper!(roll_f64,  bk::roll_f64);
+    cuda_roll_baracuda_wrapper!(roll_f16,  bk::roll_f16);
+    cuda_roll_baracuda_wrapper!(roll_bf16, bk::roll_bf16);
+}
+
+// ===========================================================================
 // Affine — `y = mul * x + add` with scalar (mul, add) per OpParams::Affine
 // ===========================================================================
 //
@@ -1539,6 +1589,12 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(Flip, &u(f64),  cuda, flip::flip_f64);
     table.register(Flip, &u(f16),  cuda, flip::flip_f16);
     table.register(Flip, &u(bf16), cuda, flip::flip_bf16);
+
+    // ----- Roll — single-axis cyclic shift. Same 4 float dtypes as Flip.
+    table.register(Roll, &u(f32),  cuda, roll::roll_f32);
+    table.register(Roll, &u(f64),  cuda, roll::roll_f64);
+    table.register(Roll, &u(f16),  cuda, roll::roll_f16);
+    table.register(Roll, &u(bf16), cuda, roll::roll_bf16);
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
