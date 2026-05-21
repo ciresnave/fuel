@@ -339,6 +339,50 @@ pub mod attention {
 }
 
 // ===========================================================================
+// Affine — y = mul*x + add, f32 (V.2.E)
+// ===========================================================================
+
+pub mod affine {
+    use super::*;
+
+    pub fn affine_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::affine::affine_f32: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (mul, add) = match params {
+            OpParams::Affine { mul, add } => (*mul, *add),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::affine::affine_f32: expected OpParams::Affine, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::affine::affine_f32: input has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.affine_f32_bytes(a, out, mul, add)
+    }
+}
+
+// ===========================================================================
 // MatMul — f32 (V.2.D)
 // ===========================================================================
 //
@@ -674,4 +718,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- MatMul f32 (V.2.D) — matvec/reg-tile/tiled by m; GQA-aware -----
     table.register(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32);
+
+    // ----- Affine f32 (V.2.E) — y = mul*x + add -----
+    table.register(OpKind::Affine, &u(f32), vk, affine::affine_f32);
 }

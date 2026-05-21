@@ -1320,6 +1320,65 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f32 affine `y = mul * x + add` with scalar `mul`, `add` (read
+    /// from `OpParams::Affine`). Element-count derived from the input
+    /// byte size. Inputs must be contiguous (auto-contiguized upstream).
+    pub fn affine_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        mul: f64,
+        add: f64,
+    ) -> fuel_core_types::Result<()> {
+        let n = input.len_bytes() / std::mem::size_of::<f32>();
+        let need_bytes = n * std::mem::size_of::<f32>();
+        if input.len_bytes() != need_bytes {
+            fuel_core_types::bail!(
+                "affine_f32_bytes: input bytes {} not a multiple of f32 size",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "affine_f32_bytes: out {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct AffParams { n: u32, _pad: u32, mul: f32, add: f32 }
+        let p = AffParams {
+            n: n as u32, _pad: 0,
+            mul: mul as f32, add: add as f32,
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f32_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f32_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "affine_f32_bytes",
+            &self.pipelines.affine_pipeline,
+            &self.pipelines.affine_layout,
+            desc,
+            (Self::workgroups(n), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 batched matrix multiply on the byte-storage path. Mirrors
     /// the legacy `GraphBackend::matmul` but writes into a pre-allocated
     /// `out` buffer (the pipelined-executor pattern). Pipeline selection:
