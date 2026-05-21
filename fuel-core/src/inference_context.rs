@@ -20,11 +20,14 @@
 //!
 //! ## What this module deliberately does NOT do (yet)
 //!
-//! - **Pre-allocated buffers**: `KvLayer.k` and `.v` storages today
-//!   are sized to the current `cached_len`; growing means replacing
-//!   the Arc with a bigger storage. Phase E.3.2 introduces
-//!   `Op::WriteSlice` and pre-allocates each layer to a `max_seq_len`
-//!   buffer that the cache writes into in place.
+//! - **Pre-allocated buffers** (added Phase E.3.3.A, 2026-05-20):
+//!   [`KvCache::with_capacity`] eagerly allocates `[1, n_kv_heads,
+//!   max_seq_len, head_dim]` zero-initialized K + V buffers on a
+//!   target device. Subsequent forward steps write into these via
+//!   `Op::WriteSlice` rather than growing-by-replacement. The legacy
+//!   [`KvCache::with_dims`] constructor stays available for callers
+//!   not yet on the pre-allocated path (grow-by-replace works without
+//!   changes).
 //! - **Multi-device coherence protocol**: the `authority` and
 //!   `version` fields exist as placeholders. No protocol consults
 //!   them yet — every layer starts and stays `AuthorityState::Host`
@@ -42,9 +45,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{DeviceLocation, Error, Layout, Result};
+use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape};
 use fuel_graph::{Graph, NodeId};
-use fuel_storage::{pipelined::StorageCache, Storage};
+use fuel_storage::{pipelined::StorageCache, BackendStorage, Storage};
 
 use crate::Device;
 
@@ -130,15 +133,123 @@ pub struct KvCache {
     pub cached_len: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
+    /// Pre-allocated capacity along the sequence axis. `Some(n)` when
+    /// constructed via [`KvCache::with_capacity`] — every layer's K + V
+    /// storage holds `[1, n_kv_heads, n, head_dim]` of zeros and the
+    /// forward path writes into it via `Op::WriteSlice`. `None` for the
+    /// legacy [`KvCache::with_dims`] grow-by-replacement constructor.
+    pub max_seq_len: Option<usize>,
+    /// Dtype the pre-allocated buffers were allocated with. `Some(dt)`
+    /// in the [`KvCache::with_capacity`] path, `None` in the legacy
+    /// `with_dims` path (which leaves dtype to whatever the first
+    /// inserted layer specifies).
+    pub dtype: Option<DType>,
 }
 
 impl KvCache {
+    /// Legacy grow-by-replacement constructor. Layers start `None`; the
+    /// caller calls [`Self::set_layer`] each forward step with a freshly
+    /// allocated `KvLayer` whose storage is sized to the current cached
+    /// length. Subsequent steps replace the layer entirely with a
+    /// larger buffer.
+    ///
+    /// Replaced by [`Self::with_capacity`] when the caller knows the
+    /// generation's max sequence length up-front (the common case for
+    /// autoregressive decoding).
     pub fn with_dims(n_layers: usize, n_kv_heads: usize, head_dim: usize) -> Self {
         Self {
             layers: (0..n_layers).map(|_| None).collect(),
             cached_len: 0,
             n_kv_heads,
             head_dim,
+            max_seq_len: None,
+            dtype: None,
+        }
+    }
+
+    /// Pre-allocated KV cache. Every layer's K + V storage is allocated
+    /// up-front as a `[1, n_kv_heads, max_seq_len, head_dim]` zero
+    /// buffer on `device` with `dtype`. Subsequent forward steps write
+    /// fresh K/V slabs into these buffers via `Op::WriteSlice` rather
+    /// than growing-by-replacement.
+    ///
+    /// Memory footprint: `n_layers * 2 * n_kv_heads * max_seq_len *
+    /// head_dim * dtype_size` bytes. For Llama-7B at max_seq_len=4096,
+    /// bf16: 32 * 2 * 8 * 4096 * 128 * 2 ≈ 512 MiB.
+    ///
+    /// Returns `Err` if any per-layer allocation fails (e.g. CUDA OOM)
+    /// or the requested device hasn't been wired up in
+    /// [`pipelined_bridge`] (Vulkan / Metal — D2H/H2D for those still
+    /// goes through the legacy executor).
+    pub fn with_capacity(
+        n_layers: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_seq_len: usize,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
+        let mut layers: Vec<Option<KvLayer>> = Vec::with_capacity(n_layers);
+        let elem_count = n_kv_heads * max_seq_len * head_dim;
+        // K/V layout reflects the FULL pre-allocated buffer. The
+        // "visible extent" (cached_len) is the cache's job to track;
+        // graph-side reads slice this layout down to the prefix.
+        let layout = Layout::contiguous(Shape::from_dims(&[
+            1, n_kv_heads, max_seq_len, head_dim,
+        ]));
+        for _ in 0..n_layers {
+            let k = alloc_zeroed_on(device, dtype, elem_count)?;
+            let v = alloc_zeroed_on(device, dtype, elem_count)?;
+            layers.push(Some(KvLayer {
+                k: Arc::new(RwLock::new(k)),
+                v: Arc::new(RwLock::new(v)),
+                k_layout: layout.clone(),
+                v_layout: layout.clone(),
+                k_version: 0,
+                v_version: 0,
+                k_authority: AuthorityState::Host,
+                v_authority: AuthorityState::Host,
+            }));
+        }
+        Ok(Self {
+            layers,
+            cached_len: 0,
+            n_kv_heads,
+            head_dim,
+            max_seq_len: Some(max_seq_len),
+            dtype: Some(dtype),
+        })
+    }
+
+    /// Borrow the K-or-V storage Arc for a given layer + slot. Used by
+    /// the forward path to bind cache storage to per-step Const nodes
+    /// via [`InferenceContext::insert`]. Returns `None` if the layer
+    /// isn't populated (with_dims path before first
+    /// [`Self::set_layer`]) or `layer_idx` is out of range.
+    pub fn slot_storage(
+        &self,
+        layer_idx: usize,
+        slot: KvSlot,
+    ) -> Option<Arc<RwLock<Storage>>> {
+        let layer = self.layer(layer_idx)?;
+        Some(match slot {
+            KvSlot::K => Arc::clone(&layer.k),
+            KvSlot::V => Arc::clone(&layer.v),
+        })
+    }
+
+    /// Bump a slot's monotonic version counter. Called after every
+    /// successful `Op::WriteSlice` targeting the slot — the forward
+    /// path invokes this once per (layer, slot) per step.
+    ///
+    /// The version is consumed by the future multi-device coherence
+    /// protocol (placeholder today — see [`AuthorityState`]).
+    pub fn bump_version(&mut self, layer_idx: usize, slot: KvSlot) {
+        if let Some(layer) = self.layer_mut(layer_idx) {
+            match slot {
+                KvSlot::K => layer.k_version += 1,
+                KvSlot::V => layer.v_version += 1,
+            }
         }
     }
 
@@ -183,6 +294,38 @@ impl KvCache {
         if new_len < self.cached_len {
             self.cached_len = new_len;
         }
+    }
+}
+
+/// Allocate a zero-initialized `Storage` of `elem_count` elements at
+/// `dtype` on `device`. Mirrors [`pipelined_bridge::upload_host_buffer`]'s
+/// device dispatch but starts from zeros (no host bytes to copy).
+fn alloc_zeroed_on(
+    device: &Device,
+    dtype: DType,
+    elem_count: usize,
+) -> Result<Storage> {
+    match device.location() {
+        DeviceLocation::Cpu => fuel_storage::alloc_cpu_zeroed(dtype, elem_count),
+        #[cfg(feature = "cuda")]
+        DeviceLocation::Cuda { .. } => {
+            let cuda_dev = crate::cuda_backend::as_device(device)?;
+            let n_bytes = elem_count * dtype.size_in_bytes();
+            let cuda_bytes =
+                fuel_cuda_backend::CudaStorageBytes::alloc(cuda_dev, n_bytes)?;
+            Ok(Storage::new(BackendStorage::Cuda(cuda_bytes), dtype))
+        }
+        #[cfg(not(feature = "cuda"))]
+        DeviceLocation::Cuda { .. } => Err(Error::Msg(
+            "KvCache::with_capacity: CUDA device requested but fuel-core wasn't \
+             built with --features cuda".to_string(),
+        )
+        .bt()),
+        other => Err(Error::Msg(format!(
+            "KvCache::with_capacity: device {other:?} not wired (CPU + CUDA today; \
+             Vulkan/Metal pending their byte-storage substrate)",
+        ))
+        .bt()),
     }
 }
 
@@ -523,5 +666,125 @@ mod tests {
         assert!(matches!(layer.v_authority, AuthorityState::Host));
         assert_eq!(layer.k_version, 0);
         assert_eq!(layer.v_version, 0);
+    }
+
+    // ---- KvCache::with_capacity + accessors (Phase E.3.3.A) -----------------
+
+    /// `with_capacity` allocates n_layers fresh K + V buffers on the
+    /// CPU device. Each buffer is `n_kv_heads * max_seq_len * head_dim`
+    /// elements of the requested dtype, zero-initialized, with the
+    /// `[1, n_kv_heads, max_seq_len, head_dim]` layout pre-populated.
+    #[test]
+    fn kv_cache_with_capacity_allocates_all_layers_on_cpu() {
+        let device = Device::cpu();
+        let cache = KvCache::with_capacity(
+            /* n_layers     */ 3,
+            /* n_kv_heads   */ 4,
+            /* head_dim     */ 16,
+            /* max_seq_len  */ 32,
+            DType::F32,
+            &device,
+        ).expect("with_capacity");
+
+        assert_eq!(cache.n_layers(), 3);
+        assert_eq!(cache.cached_len, 0);
+        assert_eq!(cache.n_kv_heads, 4);
+        assert_eq!(cache.head_dim, 16);
+        assert_eq!(cache.max_seq_len, Some(32));
+        assert_eq!(cache.dtype, Some(DType::F32));
+
+        // Every layer is populated and has the expected layout.
+        for li in 0..3 {
+            let layer = cache.layer(li).expect("layer populated");
+            assert_eq!(layer.k_layout.shape().dims(), &[1, 4, 32, 16]);
+            assert_eq!(layer.v_layout.shape().dims(), &[1, 4, 32, 16]);
+            // Bytes are zero-initialized: 4 (n_kv) * 32 (seq) * 16 (head)
+            // * 4 (f32) = 8192 bytes per slot.
+            let k_guard = layer.k.read().unwrap();
+            assert_eq!(k_guard.inner.len_bytes(), 8192);
+            assert_eq!(k_guard.dtype, DType::F32);
+            // Spot-check zero init.
+            if let BackendStorage::Cpu(c) = &k_guard.inner {
+                let typed: &[f32] = c.as_slice().unwrap();
+                assert!(typed.iter().all(|&x| x == 0.0));
+            } else {
+                panic!("expected CPU storage");
+            }
+        }
+    }
+
+    /// `slot_storage(li, K)` returns the same Arc as `layer(li).k`.
+    /// Used by the forward path to bind cache storage to per-step
+    /// Const nodes.
+    #[test]
+    fn kv_cache_slot_storage_returns_layer_arc() {
+        let device = Device::cpu();
+        let cache = KvCache::with_capacity(2, 4, 8, 16, DType::F32, &device)
+            .expect("with_capacity");
+
+        let k_via_layer = Arc::clone(&cache.layer(0).unwrap().k);
+        let k_via_slot = cache.slot_storage(0, KvSlot::K).expect("layer 0 K");
+        assert!(
+            Arc::ptr_eq(&k_via_layer, &k_via_slot),
+            "slot_storage should return the same Arc as layer().k",
+        );
+
+        let v_via_layer = Arc::clone(&cache.layer(1).unwrap().v);
+        let v_via_slot = cache.slot_storage(1, KvSlot::V).expect("layer 1 V");
+        assert!(Arc::ptr_eq(&v_via_layer, &v_via_slot));
+    }
+
+    /// `slot_storage` returns `None` for an unpopulated layer (the
+    /// with_dims path before the first set_layer) and for an out-of-
+    /// range layer index.
+    #[test]
+    fn kv_cache_slot_storage_returns_none_for_unpopulated() {
+        let cache = KvCache::with_dims(2, 4, 8);
+        assert!(cache.slot_storage(0, KvSlot::K).is_none());
+        assert!(cache.slot_storage(1, KvSlot::V).is_none());
+        // Out of range.
+        assert!(cache.slot_storage(5, KvSlot::K).is_none());
+    }
+
+    /// `bump_version` advances the per-slot version counter
+    /// independently for K and V.
+    #[test]
+    fn kv_cache_bump_version_advances_per_slot() {
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(1, 4, 8, 16, DType::F32, &device)
+            .expect("with_capacity");
+        assert_eq!(cache.layer(0).unwrap().k_version, 0);
+        assert_eq!(cache.layer(0).unwrap().v_version, 0);
+
+        cache.bump_version(0, KvSlot::K);
+        cache.bump_version(0, KvSlot::K);
+        cache.bump_version(0, KvSlot::V);
+
+        assert_eq!(cache.layer(0).unwrap().k_version, 2);
+        assert_eq!(cache.layer(0).unwrap().v_version, 1);
+    }
+
+    /// Bumping a version on an unpopulated layer is a no-op (not a
+    /// panic). The `with_dims` path leaves layers `None`; the
+    /// forward code shouldn't blow up if it calls bump_version
+    /// before the layer is wired.
+    #[test]
+    fn kv_cache_bump_version_unpopulated_is_noop() {
+        let mut cache = KvCache::with_dims(2, 4, 8);
+        cache.bump_version(0, KvSlot::K);
+        cache.bump_version(99, KvSlot::V); // out of range, also no-op
+        assert!(cache.layer(0).is_none());
+    }
+
+    /// Sanity: bf16 capacity allocation produces 2-byte elements.
+    #[test]
+    fn kv_cache_with_capacity_bf16_byte_count() {
+        let device = Device::cpu();
+        let cache = KvCache::with_capacity(1, 2, 4, 8, DType::BF16, &device)
+            .expect("with_capacity bf16");
+        let layer = cache.layer(0).unwrap();
+        // 2 (n_kv) * 8 (seq) * 4 (head) * 2 (bf16) = 128 bytes per slot.
+        assert_eq!(layer.k.read().unwrap().inner.len_bytes(), 128);
+        assert_eq!(cache.dtype, Some(DType::BF16));
     }
 }
