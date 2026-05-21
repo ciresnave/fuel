@@ -16,7 +16,7 @@ use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
 use pipelines::Pipelines;
 use recorder::{OpStats, OpStatEntry, Recorder};
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{debug_span, info_span};
 use vulkane::safe::*;
@@ -157,6 +157,38 @@ impl VulkanStorage {
     }
 }
 
+/// fuel-internal POD summary of a `VK_KHR_cooperative_matrix` tile
+/// shape, extracted from `vulkane::safe::CooperativeMatrixProperties`
+/// so the field is `Send + Sync` (the vulkane wrapper holds a
+/// `VkCooperativeMatrixPropertiesKHR` which has a `pNext: *mut c_void`).
+#[derive(Debug, Clone, Copy)]
+pub struct CoopMatrixShape {
+    pub m_size: u32,
+    pub n_size: u32,
+    pub k_size: u32,
+    pub a_type: vulkane::raw::bindings::VkComponentTypeKHR,
+    pub b_type: vulkane::raw::bindings::VkComponentTypeKHR,
+    pub c_type: vulkane::raw::bindings::VkComponentTypeKHR,
+    pub result_type: vulkane::raw::bindings::VkComponentTypeKHR,
+    pub saturating_accumulation: bool,
+}
+
+impl CoopMatrixShape {
+    /// Extract a fuel-internal POD summary from a vulkane wrapper.
+    pub fn from_vulkane(p: &vulkane::safe::CooperativeMatrixProperties) -> Self {
+        Self {
+            m_size: p.m_size(),
+            n_size: p.n_size(),
+            k_size: p.k_size(),
+            a_type: p.a_type(),
+            b_type: p.b_type(),
+            c_type: p.c_type(),
+            result_type: p.result_type(),
+            saturating_accumulation: p.saturating_accumulation(),
+        }
+    }
+}
+
 /// Vulkan compute backend with pre-compiled shader pipelines.
 pub struct VulkanBackend {
     pub device: Device,
@@ -170,10 +202,18 @@ pub struct VulkanBackend {
     /// stays O(GB-of-memory / 256MB), not O(number-of-buffers).
     pub allocator: std::sync::Arc<Allocator>,
     /// Async-submission state: pool of in-flight command buffers and
-    /// their transient resources. `RefCell` because `GraphBackend`
+    /// their transient resources. `Mutex` because `GraphBackend`
     /// methods take `&self` — we need interior mutability to push
-    /// pending work. Single-threaded; no contention.
-    recorder: RefCell<Recorder>,
+    /// pending work. Mutex (not RefCell) so `VulkanBackend: Send +
+    /// Sync` and `Arc<VulkanBackend>` can be carried by
+    /// `VulkanStorageBytes` for the pipelined-executor binding-
+    /// table dispatch model (V.1 of the Vulkan catch-up). The CUDA
+    /// equivalent is `Arc<CudaDevice>` (cheap clone via internal
+    /// Arcs); for Vulkan we hand the whole backend through since
+    /// dispatch needs pipelines + recorder + allocator together.
+    /// Single-threaded contention in practice (the pipelined
+    /// executor calls kernel wrappers sequentially).
+    recorder: Mutex<Recorder>,
     /// Recycled buffer pool. Buffers returned here via VulkanBuffer::Drop
     /// are reused by alloc_device before allocating fresh from VMA.
     /// BTreeMap<byte_size, stack-of-free-buffers-of-that-size>. Enables
@@ -183,7 +223,14 @@ pub struct VulkanBackend {
     /// `VK_KHR_cooperative_matrix`. Empty if the extension is not
     /// available. Used by the matmul dispatch to decide whether to
     /// route large-M × bf16-B matmuls through a tensor-core kernel.
-    coop_matrix_shapes: Vec<CooperativeMatrixProperties>,
+    ///
+    /// Stored as a fuel-internal POD summary (M/N/K + dtype tags)
+    /// rather than the raw `vulkane::safe::CooperativeMatrixProperties`
+    /// — the latter contains `VkCooperativeMatrixPropertiesKHR` which
+    /// has a `pNext: *mut c_void` field that's !Send/!Sync, blocking
+    /// `Arc<VulkanBackend>` (required by the pipelined-executor
+    /// binding-table dispatch path).
+    coop_matrix_shapes: Vec<CoopMatrixShape>,
     /// Per-op-kind host-side timing. Counts and cumulative wall time
     /// spent inside `record_dispatch` for each op category. Useful
     /// for diagnosing whether submission overhead is the bottleneck
@@ -321,8 +368,12 @@ impl VulkanBackend {
 
         // Query supported cooperative-matrix tile shapes. If the
         // extension isn't enabled, the query returns empty.
-        let coop_matrix_shapes: Vec<CooperativeMatrixProperties> = if has_coop_matrix {
-            unsafe { physical.cooperative_matrix_properties() }
+        // Extract into a fuel-internal POD summary so the field is
+        // Send + Sync (the raw vulkane type contains a *mut c_void
+        // pNext chain that's !Send/!Sync).
+        let coop_matrix_shapes: Vec<CoopMatrixShape> = if has_coop_matrix {
+            let raw = unsafe { physical.cooperative_matrix_properties() };
+            raw.iter().map(CoopMatrixShape::from_vulkane).collect()
         } else {
             Vec::new()
         };
@@ -334,16 +385,16 @@ impl VulkanBackend {
             for (i, s) in coop_matrix_shapes.iter().enumerate() {
                 tracing::debug!(
                     shape = i,
-                    m = s.m_size(), n = s.n_size(), k = s.k_size(),
-                    a_type = ?s.a_type(), b_type = ?s.b_type(),
-                    c_type = ?s.c_type(), result_type = ?s.result_type(),
+                    m = s.m_size, n = s.n_size, k = s.k_size,
+                    a_type = ?s.a_type, b_type = ?s.b_type,
+                    c_type = ?s.c_type, result_type = ?s.result_type,
                     "coop matrix shape",
                 );
                 eprintln!(
                     "  coop[{i}] M={} N={} K={} A={:?} B={:?} C={:?} R={:?} sat={}",
-                    s.m_size(), s.n_size(), s.k_size(),
-                    s.a_type(), s.b_type(), s.c_type(), s.result_type(),
-                    s.saturating_accumulation(),
+                    s.m_size, s.n_size, s.k_size,
+                    s.a_type, s.b_type, s.c_type, s.result_type,
+                    s.saturating_accumulation,
                 );
             }
         } else {
@@ -353,7 +404,7 @@ impl VulkanBackend {
         let queue = device.get_queue(queue_family, 0);
 
         let pipelines = Pipelines::new(&device, has_coop_matrix).map_err(vk_err)?;
-        let recorder = RefCell::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
+        let recorder = Mutex::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
         let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
 
         let buffer_pool = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
@@ -397,12 +448,47 @@ impl VulkanBackend {
 
     // -- helpers --
 
+    /// Allocate `byte_count` bytes on the device and wrap as
+    /// `VulkanStorageBytes` with a back-reference to this backend's
+    /// `Arc<VulkanBackend>`. The handle lets the pipelined-executor
+    /// binding-table dispatch reach the backend from any input's
+    /// `&Storage` (mirroring CUDA's `CudaStorageBytes::device()`
+    /// pattern). Use this when the storage will flow through the
+    /// pipelined executor; `alloc_bytes` (no `_handle`) is the
+    /// legacy alternative for `GraphBackend` trait callers.
+    pub fn alloc_bytes_handle(
+        self: &std::sync::Arc<Self>,
+        byte_count: usize,
+    ) -> fuel_core_types::Result<VulkanStorageBytes> {
+        let mut s = self.alloc_bytes(byte_count)?;
+        s.backend = Some(std::sync::Arc::clone(self));
+        Ok(s)
+    }
+
+    /// H2D counterpart of [`Self::alloc_bytes_handle`] — uploads
+    /// `src` to device-local storage and attaches the backend
+    /// handle. Use this when the upload result will flow through
+    /// the pipelined executor.
+    pub fn upload_bytes_handle(
+        self: &std::sync::Arc<Self>,
+        src: &[u8],
+    ) -> fuel_core_types::Result<VulkanStorageBytes> {
+        let mut s = self.upload_bytes(src)?;
+        s.backend = Some(std::sync::Arc::clone(self));
+        Ok(s)
+    }
+
     /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` bytes of
     /// device-local storage and wraps them in a fresh
     /// `VulkanStorageBytes`. No initialization — caller is responsible
     /// for filling via [`Self::upload_bytes`] or via a kernel write
     /// before reading. Mirrors the alloc shape on CUDA / CPU; the
     /// per-op kernel migration uses this for output allocation.
+    ///
+    /// Legacy constructor — produces a `VulkanStorageBytes` whose
+    /// `backend` field is `None`. Use [`Self::alloc_bytes_handle`]
+    /// if the storage needs to flow through the pipelined-executor
+    /// binding-table dispatch.
     pub fn alloc_bytes(&self, byte_count: usize) -> fuel_core_types::Result<VulkanStorageBytes> {
         let size = (byte_count as u64).max(1);
         let _span = debug_span!("vk_alloc_bytes", bytes = byte_count).entered();
@@ -652,7 +738,7 @@ impl VulkanBackend {
     ) -> fuel_core_types::Result<Vec<T>> {
         let byte_size = storage.byte_size();
         let n = storage.elem_count;
-        let pending = self.recorder.borrow().batch_count;
+        let pending = self.recorder.lock().expect("recorder poisoned").batch_count;
         let _span = info_span!("vk_download", bytes = byte_size, pending).entered();
         // First make sure every previously-submitted async op has
         // finished on the GPU. flush_pending host-waits on our
@@ -881,12 +967,13 @@ impl VulkanBackend {
         let t0 = Instant::now();
 
         // Auto-flush if the batch is getting large (TDR safety).
-        if self.recorder.borrow().should_flush() {
+        if self.recorder.lock().expect("recorder poisoned").should_flush() {
             self.flush_pending()?;
         }
 
         self.recorder
-            .borrow_mut()
+            .lock()
+            .expect("recorder poisoned")
             .record_batch_dispatch(
                 &self.device,
                 pipeline,
@@ -907,11 +994,12 @@ impl VulkanBackend {
     /// wait for the GPU, drop transient resources, retire descriptor
     /// pools.
     fn flush_pending(&self) -> fuel_core_types::Result<()> {
-        let batch_count = self.recorder.borrow().batch_count;
+        let batch_count = self.recorder.lock().expect("recorder poisoned").batch_count;
         if batch_count == 0 { return Ok(()); }
         let _span = info_span!("vk_flush_batch", batch_count).entered();
         self.recorder
-            .borrow_mut()
+            .lock()
+            .expect("recorder poisoned")
             .flush_batch(&self.device, &self.queue, self.queue_family)
             .map_err(vk_err)?;
         self.pipelines.retire_pools_post_drain();

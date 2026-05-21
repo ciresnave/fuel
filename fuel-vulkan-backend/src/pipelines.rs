@@ -1,7 +1,7 @@
 //! Compute pipeline management for the precompiled SPIR-V shaders
 //! shipped in `fuel-graph-executor`.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use vulkane::safe::*;
 
@@ -144,7 +144,11 @@ pub struct Pipelines {
     pub quantize_q8_0_layout: PipelineLayout,
 
     /// Active descriptor pool — the one new allocations come from.
-    pub desc_pool: RefCell<DescriptorPool>,
+    /// `Mutex` (not `RefCell`) so `Pipelines: Send + Sync` and the
+    /// owning `VulkanBackend` can flow through `Arc<VulkanBackend>`
+    /// in the pipelined-executor binding-table dispatch (V.1 of
+    /// the Vulkan catch-up).
+    pub desc_pool: Mutex<DescriptorPool>,
 
     /// Pools that have been retired (filled up, replaced by a fresh
     /// one) but whose descriptors may still be referenced by
@@ -160,7 +164,7 @@ pub struct Pipelines {
     ///
     /// Cleared by `VulkanBackend::drain_recorder` which runs after
     /// the D2H fence has signaled.
-    pub retired_desc_pools: RefCell<Vec<DescriptorPool>>,
+    pub retired_desc_pools: Mutex<Vec<DescriptorPool>>,
 
     pub device: Device,
 }
@@ -170,7 +174,7 @@ impl Pipelines {
         let _span = tracing::debug_span!("vk_alloc_desc").entered();
         // Try allocating from the current pool.
         {
-            let pool = self.desc_pool.borrow();
+            let pool = self.desc_pool.lock().expect("desc_pool poisoned");
             match pool.allocate(layout) {
                 Ok(d) => return Ok(d),
                 Err(Error::Vk(code)) if is_pool_oom(code) => { /* fall through to retire + recreate */ }
@@ -184,9 +188,12 @@ impl Pipelines {
         // idle.
         let _r = tracing::info_span!("vk_alloc_desc_retire_pool").entered();
         let fresh = make_desc_pool(&self.device)?;
-        let old = std::mem::replace(&mut *self.desc_pool.borrow_mut(), fresh);
-        self.retired_desc_pools.borrow_mut().push(old);
-        self.desc_pool.borrow().allocate(layout)
+        let old = std::mem::replace(
+            &mut *self.desc_pool.lock().expect("desc_pool poisoned"),
+            fresh,
+        );
+        self.retired_desc_pools.lock().expect("retired_desc_pools poisoned").push(old);
+        self.desc_pool.lock().expect("desc_pool poisoned").allocate(layout)
     }
 
     /// Drop every retired descriptor pool. Safe to call only AFTER a
@@ -195,7 +202,7 @@ impl Pipelines {
     /// calls this from `drain_recorder`, which itself runs after the
     /// D2H copy's fence has signaled.
     pub fn retire_pools_post_drain(&self) {
-        let mut retired = self.retired_desc_pools.borrow_mut();
+        let mut retired = self.retired_desc_pools.lock().expect("retired_desc_pools poisoned");
         if !retired.is_empty() {
             let _s = tracing::info_span!("vk_retired_pools_drop", n = retired.len()).entered();
             retired.clear();
@@ -262,7 +269,7 @@ impl Pipelines {
             uniform_binding(5),
         ])?;
 
-        let desc_pool = RefCell::new(make_desc_pool(device)?);
+        let desc_pool = Mutex::new(make_desc_pool(device)?);
 
         // Build the registry once and resolve every shader through it
         // — disk-override → embedded fallback, then straight to a
@@ -405,7 +412,7 @@ impl Pipelines {
             matmul_q4_0_tiled_pipeline, matmul_q4_0_tiled_layout,
             quantize_q8_0_pipeline, quantize_q8_0_layout,
             desc_pool,
-            retired_desc_pools: RefCell::new(Vec::new()),
+            retired_desc_pools: Mutex::new(Vec::new()),
             device: device.clone(),
         })
     }

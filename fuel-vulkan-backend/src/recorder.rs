@@ -16,16 +16,21 @@
 //! - Transient resources (descs, params buffers) are kept alive
 //!   until the fence signals
 
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 use vulkane::safe::*;
 use vulkane::raw::bindings::*;
 
 /// Host-side op timing.
+///
+/// `Mutex` (not `RefCell`) so `OpStats: Send + Sync` and the owning
+/// `VulkanBackend` can flow through `Arc<VulkanBackend>` in the
+/// pipelined-executor binding-table dispatch (V.1 of the Vulkan
+/// catch-up).
 #[derive(Default)]
 pub struct OpStats {
-    inner: RefCell<HashMap<&'static str, OpStatEntry>>,
+    inner: Mutex<HashMap<&'static str, OpStatEntry>>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -36,21 +41,21 @@ pub struct OpStatEntry {
 
 impl OpStats {
     pub fn record(&self, name: &'static str, elapsed: Duration) {
-        let mut map = self.inner.borrow_mut();
+        let mut map = self.inner.lock().expect("op_stats poisoned");
         let e = map.entry(name).or_default();
         e.count += 1;
         e.total_ns += elapsed.as_nanos();
     }
 
     pub fn snapshot(&self) -> Vec<(&'static str, OpStatEntry)> {
-        let map = self.inner.borrow();
+        let map = self.inner.lock().expect("op_stats poisoned");
         let mut v: Vec<_> = map.iter().map(|(k, v)| (*k, *v)).collect();
         v.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
         v
     }
 
     pub fn reset(&self) {
-        self.inner.borrow_mut().clear();
+        self.inner.lock().expect("op_stats poisoned").clear();
     }
 }
 

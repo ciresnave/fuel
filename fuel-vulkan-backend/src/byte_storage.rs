@@ -38,6 +38,20 @@ pub struct VulkanStorageBytes {
     pub len_bytes: usize,
     /// Current residency tier.
     pub tier: Tier,
+    /// Handle back to the [`VulkanBackend`] that allocated this
+    /// storage. `Some(_)` when constructed via the handle-aware
+    /// path (`VulkanBackend::alloc_bytes_handle`,
+    /// `upload_bytes_handle`); `None` for legacy GraphBackend-trait
+    /// callers that constructed via `alloc_bytes` / `upload_bytes`
+    /// without an `Arc<VulkanBackend>` wrapper.
+    ///
+    /// Threaded through so the pipelined-executor binding-table
+    /// dispatch can reach the backend from any input's storage —
+    /// mirroring CUDA's `CudaStorageBytes::device()` pattern. The
+    /// CUDA equivalent is `Arc<CudaDevice>` (the device handle);
+    /// for Vulkan the whole backend goes through since dispatch
+    /// needs pipelines + recorder + allocator together.
+    pub backend: Option<Arc<crate::VulkanBackend>>,
 }
 
 // Manual Debug impl: VulkanBuffer and StorageBacking don't derive
@@ -59,13 +73,44 @@ impl std::fmt::Debug for VulkanStorageBytes {
 
 impl VulkanStorageBytes {
     /// Build a `VulkanStorageBytes` from a device-resident buffer +
-    /// byte count. Tier defaults to `OnDevice`.
+    /// byte count. Tier defaults to `OnDevice`. Legacy constructor
+    /// — `backend` is `None`. Use [`Self::from_device_with_backend`]
+    /// when the storage needs to be reachable from the pipelined-
+    /// executor binding-table dispatch path.
     pub fn from_device(buffer: Arc<VulkanBuffer>, len_bytes: usize) -> Self {
         Self {
             backing: StorageBacking::Device(buffer),
             len_bytes,
             tier: Tier::OnDevice,
+            backend: None,
         }
+    }
+
+    /// Build a `VulkanStorageBytes` from a device-resident buffer +
+    /// byte count AND attach a back-reference to the
+    /// [`VulkanBackend`] Arc. The pipelined-executor binding-table
+    /// dispatch wrappers reach the backend through this field to
+    /// allocate outputs + dispatch kernels.
+    pub fn from_device_with_backend(
+        buffer: Arc<VulkanBuffer>,
+        len_bytes: usize,
+        backend: Arc<crate::VulkanBackend>,
+    ) -> Self {
+        Self {
+            backing: StorageBacking::Device(buffer),
+            len_bytes,
+            tier: Tier::OnDevice,
+            backend: Some(backend),
+        }
+    }
+
+    /// Borrow the `VulkanBackend` handle that allocated this storage,
+    /// if one was attached. Returns `None` for storages constructed
+    /// via the legacy `from_device` / `alloc_bytes` path — those
+    /// can't drive the pipelined-executor binding-table dispatch
+    /// (which needs to reach the backend from a `&Storage`).
+    pub fn backend(&self) -> Option<&Arc<crate::VulkanBackend>> {
+        self.backend.as_ref()
     }
 
     /// Borrow the underlying device buffer. Returns `None` if the
