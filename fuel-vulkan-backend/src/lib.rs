@@ -1210,6 +1210,70 @@ impl VulkanBackend {
         self.binary_f32_bytes(0, "binary_add_f32_bytes", a, b, out, la, lb)
     }
 
+    /// Element-wise f32 unary op. `op_id` matches the constants in
+    /// `unary.slang`: 0=Neg, 1=Sqr, 2=Sqrt, 3=Exp, 4=Log, 5=Sin,
+    /// 6=Cos, 7=Tanh, 8=Sigmoid, 9=Silu, 10=Gelu, 11=Relu, 12=Step.
+    ///
+    /// One thread per element; no stride support (the legacy
+    /// unary.slang doesn't carry per-input strides). Inputs are
+    /// auto-contiguized upstream by the pipelined executor if they
+    /// arrive non-contiguous. f32-only today; multi-dtype expansion
+    /// is V.3 work.
+    pub fn unary_f32_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+    ) -> fuel_core_types::Result<()> {
+        let n = input.len_bytes() / std::mem::size_of::<f32>();
+        let need_bytes = n * std::mem::size_of::<f32>();
+        if input.len_bytes() != need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of f32 size",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: output buffer {} bytes < required {} bytes",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct UParams { n: u32, op_id: u32 }
+        let p = UParams { n: n as u32, op_id };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<UParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.unary_pipeline,
+            &self.pipelines.unary_layout,
+            desc,
+            (Self::workgroups(n), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     // -- quantized weight dequantization ---------------------------------------
 
     /// Dequantize a raw Q4_0 blob (18-byte blocks, 32 elements per block)
