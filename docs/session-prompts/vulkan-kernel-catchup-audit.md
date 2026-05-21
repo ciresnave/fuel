@@ -389,11 +389,17 @@ round:
   use these (`matmul_coop.glsl`); new Slang authoring should follow
   the same patterns. Not a gating concern; just an authoring style
   note.
-- **Hardware-FP8 Vulkan matmul**. Vulkan FP8 *matmul* depends on
-  device support (per-vendor; sparse on consumer hardware). F8E4M3
-  *cast* is software pack/unpack and IS in scope (Tier 3). Hardware
-  FP8 matmul stays parked until a Vulkan FP8 matmul use case
-  emerges + a target-device audit.
+- **(No hardware-FP8 deferrals.)** Initial audit parked "Hardware
+  FP8 Vulkan matmul" citing per-vendor hardware support; that was
+  wrong. The dev machine has an RTX 4070 (Ada Lovelace) with
+  native FP8 support; Vulkan exposes both storage and arithmetic
+  via `VK_EXT_shader_float8` (Khronos FP8) and FP8 cooperative-
+  matrix ops via `VK_NV_cooperative_matrix2`. Both are supported
+  on Ada. So hardware FP8 matmul on Vulkan goes in the V.3 list
+  alongside other matmul variants — write it generic over T and
+  let Slang specialize for the FP8 path on supported hardware,
+  with a CPU-or-emulated-f32 fallback for runtime feature-check
+  failures.
 - **Vulkane (the sibling project)**. Vulkane is the Vulkan-side
   analogue of baracuda. For kernel needs, fuel ships Slang sources
   in `fuel-kernels-source` rather than waiting on vulkane. Vulkane
