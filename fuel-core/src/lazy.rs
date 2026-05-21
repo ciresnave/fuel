@@ -3443,6 +3443,101 @@ impl LlamaModel {
             on_token,
         )
     }
+
+    // ===== Phase 7.6 step 9c E.3.3.C — new streaming with KvCache + InferenceContext =====
+    //
+    // These replace the legacy `generate_streaming_on` /
+    // `generate_streaming_gpu_on` pair for CPU + CUDA callers. The
+    // device is passed in directly (no `GraphBackend` parameter); the
+    // pipelined executor handles backend dispatch. Vulkan callers
+    // stay on the legacy methods until Vulkan WriteSlice ships.
+
+    /// Streaming generation through the new `forward_with_kv_context`
+    /// path. Allocates a pre-allocated `KvCache` of capacity
+    /// `prompt_tokens.len() + max_new_tokens` on `device` (so the
+    /// cache never overflows during decode), then loops prefill +
+    /// decode, calling `on_token` for each generated token.
+    ///
+    /// `dtype` is the K/V storage dtype — typically `F32` for
+    /// inference. The cache memory cost is
+    /// `n_layers * 2 * n_kv_heads * (prompt+max_new) * head_dim *
+    /// dtype_size`. For TinyLlama-1.1B at 1024-token max context, F32:
+    /// 22 * 2 * 4 * 1024 * 64 * 4 ≈ 46 MiB.
+    ///
+    /// Vulkan callers: use [`Self::generate_streaming_on`] instead —
+    /// the new path requires `Op::WriteSlice` kernel coverage that
+    /// hasn't shipped for Vulkan yet (CPU + CUDA only as of alpha.29).
+    pub fn generate_streaming_with_kv_context(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        device: &Device,
+        dtype: DType,
+        mut on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        let cfg = &self.config;
+        if prompt_tokens.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "generate_streaming_with_kv_context: prompt is empty".to_string(),
+            ).bt());
+        }
+        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
+        let mut rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+
+        let max_seq_len = prompt_tokens.len() + max_new_tokens;
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            max_seq_len, dtype, device,
+        )?;
+        let mut ctx = InferenceContext::new(device.clone());
+
+        // Prefill: one forward pass over the full prompt.
+        let mut last_logits =
+            self.forward_with_kv_context(prompt_tokens, &mut cache, &mut ctx)?;
+
+        // Decode loop.
+        for _ in 0..max_new_tokens {
+            let next = sample_logits(&last_logits, strategy, &mut rng_state);
+            tokens.push(next);
+            on_token(next);
+            if let Some(eos) = eos_id {
+                if next == eos {
+                    break;
+                }
+            }
+            last_logits =
+                self.forward_with_kv_context(&[next], &mut cache, &mut ctx)?;
+        }
+        Ok(tokens)
+    }
+
+    /// Non-streaming convenience wrapper around
+    /// [`Self::generate_streaming_with_kv_context`]. Collects the
+    /// generated tokens into a `Vec<u32>` and returns them.
+    pub fn generate_with_kv_context(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        device: &Device,
+        dtype: DType,
+    ) -> crate::Result<Vec<u32>> {
+        self.generate_streaming_with_kv_context(
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            device,
+            dtype,
+            |_| {},
+        )
+    }
 }
 
 /// Device-resident KV cache, generic over `GraphBackend`. Keys and
@@ -6308,6 +6403,114 @@ mod generate_tests {
             .unwrap();
 
         assert_eq!(cached, ref_tokens);
+    }
+
+    /// Greedy generation through the new `generate_with_kv_context`
+    /// path must produce the same token sequence as the legacy
+    /// `generate` (which uses the host-resident `LlamaKVCache` +
+    /// `forward_with_cache_on`). Both routes use the cache; the only
+    /// difference is the in-graph WriteSlice path vs the host-side
+    /// download-and-append loop.
+    #[test]
+    fn generate_with_kv_context_matches_legacy_generate() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let prompt = [1_u32, 2, 3];
+        let max_new = 5;
+
+        // Reference: legacy host-resident cache path.
+        let legacy = model
+            .generate(&prompt, max_new, SamplingStrategy::Greedy, None)
+            .unwrap();
+
+        // New: KvCache + InferenceContext + forward_with_kv_context.
+        let new_path = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &Device::cpu(), DType::F32,
+        ).unwrap();
+
+        // Greedy argmax is robust to O(ε) drift in the logits — both
+        // paths should pick the same token at every step.
+        assert_eq!(new_path, legacy);
+    }
+
+    /// Streaming generation through `generate_streaming_with_kv_context`
+    /// fires `on_token` exactly once per generated token (not the
+    /// prompt tokens) and the resulting Vec matches the non-streaming
+    /// convenience wrapper.
+    #[test]
+    fn generate_streaming_with_kv_context_fires_callback_per_token() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
+            head_dim: 2, ffn_dim: 8, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let prompt = [1_u32, 2];
+        let max_new = 3;
+
+        let mut streamed: Vec<u32> = Vec::new();
+        let tokens = model.generate_streaming_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &Device::cpu(), DType::F32,
+            |tok| streamed.push(tok),
+        ).unwrap();
+
+        // on_token fires once per GENERATED token (not the prompt).
+        assert_eq!(streamed.len(), max_new);
+        // The returned Vec is prompt ++ streamed.
+        assert_eq!(tokens.len(), prompt.len() + max_new);
+        assert_eq!(&tokens[..prompt.len()], &prompt[..]);
+        assert_eq!(&tokens[prompt.len()..], &streamed[..]);
+    }
+
+    /// `generate_streaming_with_kv_context` short-circuits when an EOS
+    /// token is generated, returning before max_new_tokens is reached.
+    #[test]
+    fn generate_streaming_with_kv_context_stops_on_eos() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
+            head_dim: 2, ffn_dim: 8, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let prompt = [1_u32, 2];
+        let max_new = 10;
+
+        // First find what greedy generates without EOS, then set the
+        // first generated token as the EOS to confirm short-circuit.
+        let unbounded = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &Device::cpu(), DType::F32,
+        ).unwrap();
+        assert_eq!(unbounded.len(), prompt.len() + max_new);
+        let first_generated = unbounded[prompt.len()];
+
+        let bounded = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, Some(first_generated),
+            &Device::cpu(), DType::F32,
+        ).unwrap();
+        // With EOS = first_generated, generation stops after producing
+        // that one token.
+        assert_eq!(bounded.len(), prompt.len() + 1);
+        assert_eq!(bounded[prompt.len()], first_generated);
     }
 
     #[test]

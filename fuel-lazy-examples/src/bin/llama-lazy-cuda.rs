@@ -18,6 +18,7 @@ fn main() {
 #[cfg(feature = "cuda")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fuel::lazy::{LlamaModel, LlamaTokenizer, SamplingStrategy};
+    use fuel::DType;
     use std::io::Write;
     use std::time::Instant;
 
@@ -57,9 +58,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprint!("Initializing CUDA device... ");
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
-    let cuda_device = fuel::CudaDevice::new(0)?;
-    let backend = fuel_cuda_backend::CudaBackend::new(cuda_device);
-    let mut executor = fuel_graph_executor::GraphExecutor::new(backend);
+    // New path (Phase 7.6 step 9c E.3.3.C): the pipelined executor
+    // handles backend dispatch via `Device`; no GraphBackend handle
+    // needed. KvCache + InferenceContext live on this device.
+    let device = fuel::cuda_backend::new_device(0)?;
     eprintln!("done in {:.2?}", t0.elapsed());
 
     eprint!("Downloading + loading model weights... ");
@@ -90,12 +92,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut streamed: Vec<u32> = prompt_tokens.clone();
     let mut printed_text = tokenizer.decode(&streamed, true)?;
     let t0 = Instant::now();
-    let output_tokens = model.generate_streaming_gpu_on(
+    let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
         SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
         tokenizer.eos_id(),
-        &mut executor,
+        &device,
+        DType::F32,
         |tok| {
             streamed.push(tok);
             if let Ok(full) = tokenizer.decode(&streamed, true) {
