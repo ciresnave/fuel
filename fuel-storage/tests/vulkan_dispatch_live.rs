@@ -534,6 +534,168 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
 }
 
 // ===========================================================================
+// V.3.J — WriteSlice (in-place slab assign)
+// ===========================================================================
+
+/// WriteSlice: 1D slab. dst shape [8] init [0,0,0,0,0,0,0,0]; src [3]
+/// = [10, 20, 30] written at range [2..5]. Expected dst:
+/// [0, 0, 10, 20, 30, 0, 0, 0].
+#[test]
+#[ignore]
+fn vulkan_dispatch_write_slice_b4_1d_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Pre-fill dst with zeros (alloc_bytes_handle does not zero — use
+    // upload_bytes_handle to set bytes explicitly).
+    let dst_init = vec![0.0_f32; 8];
+    let dst_bytes: &[u8] = bytemuck::cast_slice(&dst_init);
+    let dst_vk = backend.upload_bytes_handle(dst_bytes).expect("upload dst");
+    let dst_storage = Storage::new(BackendStorage::Vulkan(dst_vk), DType::F32);
+
+    let src = vec![10.0_f32, 20.0, 30.0];
+    let src_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&src)).expect("upload src");
+    let src_storage = Storage::new(BackendStorage::Vulkan(src_vk), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let dst_arc = Arc::new(RwLock::new(dst_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::WriteSlice,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[3])),
+        Layout::contiguous(Shape::from_dims(&[8])),
+    ];
+    kernel(
+        &[Arc::clone(&src_arc)],
+        &mut [Arc::clone(&dst_arc)],
+        &layouts,
+        &OpParams::WriteSlice {
+            dest_shape: vec![8],
+            ranges: vec![(2, 5)],
+        },
+    ).expect("write_slice dispatch");
+
+    let got = download_f32(&backend, &dst_arc.read().unwrap());
+    assert_eq!(got, vec![0.0, 0.0, 10.0, 20.0, 30.0, 0.0, 0.0, 0.0]);
+}
+
+/// WriteSlice: 2D slab — write a 2×2 block at offset (1, 1) inside
+/// a 3×4 destination.
+#[test]
+#[ignore]
+fn vulkan_dispatch_write_slice_b4_2d_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // dst 3×4 init = matrix of 0.5 (so we can see what survives).
+    let dst_init = vec![0.5_f32; 12];
+    let dst_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&dst_init)).expect("upload dst");
+    let dst_storage = Storage::new(BackendStorage::Vulkan(dst_vk), DType::F32);
+
+    // src 2×2 = [[10, 20], [30, 40]] (row-major)
+    let src = vec![10.0_f32, 20.0, 30.0, 40.0];
+    let src_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&src)).expect("upload src");
+    let src_storage = Storage::new(BackendStorage::Vulkan(src_vk), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let dst_arc = Arc::new(RwLock::new(dst_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::WriteSlice,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[2, 2])),
+        Layout::contiguous(Shape::from_dims(&[3, 4])),
+    ];
+    kernel(
+        &[Arc::clone(&src_arc)],
+        &mut [Arc::clone(&dst_arc)],
+        &layouts,
+        &OpParams::WriteSlice {
+            dest_shape: vec![3, 4],
+            ranges: vec![(1, 3), (1, 3)],
+        },
+    ).expect("write_slice 2d dispatch");
+
+    let got = download_f32(&backend, &dst_arc.read().unwrap());
+    // Layout (row-major, 3×4):
+    //   row 0: 0.5 0.5 0.5 0.5
+    //   row 1: 0.5 10  20  0.5
+    //   row 2: 0.5 30  40  0.5
+    assert_eq!(got, vec![
+        0.5, 0.5, 0.5, 0.5,
+        0.5, 10.0, 20.0, 0.5,
+        0.5, 30.0, 40.0, 0.5,
+    ]);
+}
+
+/// WriteSlice: KV-cache shape — write a single token's K vector into
+/// position 2 of a [seq=4, head_dim=8] cache. Models the inference
+/// hot path that backs Op::WriteSlice in the lazy graph.
+#[test]
+#[ignore]
+fn vulkan_dispatch_write_slice_b4_kv_cache_shape() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let seq = 4usize;
+    let head_dim = 8usize;
+    let dst_init = vec![-1.0_f32; seq * head_dim];
+    let dst_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&dst_init)).expect("upload dst");
+    let dst_storage = Storage::new(BackendStorage::Vulkan(dst_vk), DType::F32);
+
+    let src: Vec<f32> = (0..head_dim).map(|i| i as f32 + 100.0).collect();
+    let src_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&src)).expect("upload src");
+    let src_storage = Storage::new(BackendStorage::Vulkan(src_vk), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let dst_arc = Arc::new(RwLock::new(dst_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::WriteSlice,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[1, head_dim])),
+        Layout::contiguous(Shape::from_dims(&[seq, head_dim])),
+    ];
+    kernel(
+        &[Arc::clone(&src_arc)],
+        &mut [Arc::clone(&dst_arc)],
+        &layouts,
+        &OpParams::WriteSlice {
+            dest_shape: vec![seq, head_dim],
+            ranges: vec![(2, 3), (0, head_dim)],
+        },
+    ).expect("write_slice kv dispatch");
+
+    let got = download_f32(&backend, &dst_arc.read().unwrap());
+    // Rows 0, 1 stay -1; row 2 = src; row 3 stays -1.
+    for j in 0..head_dim {
+        assert_eq!(got[0 * head_dim + j], -1.0);
+        assert_eq!(got[1 * head_dim + j], -1.0);
+        assert_eq!(got[2 * head_dim + j], (j as f32) + 100.0);
+        assert_eq!(got[3 * head_dim + j], -1.0);
+    }
+}
+
+// ===========================================================================
 // V.3.B — Cast (f32 ↔ f16, f32 ↔ bf16)
 // ===========================================================================
 

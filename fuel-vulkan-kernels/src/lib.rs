@@ -46,6 +46,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("cast_f16_to_f32",           include_bytes!("../spv/cast_f16_to_f32.spv")),
     ("cast_f32_to_bf16",          include_bytes!("../spv/cast_f32_to_bf16.spv")),
     ("cast_bf16_to_f32",          include_bytes!("../spv/cast_bf16_to_f32.spv")),
+    ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
     ("concat_along_dim",          include_bytes!("../spv/concat_along_dim.spv")),
     ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
     ("flash_attention",           include_bytes!("../spv/flash_attention.spv")),
@@ -103,6 +104,8 @@ pub const CAST_F16_TO_F32: &str = "cast_f16_to_f32";
 pub const CAST_F32_TO_BF16: &str = "cast_f32_to_bf16";
 /// Cast bf16 → f32 (exact: bits << 16).
 pub const CAST_BF16_TO_F32: &str = "cast_bf16_to_f32";
+/// In-place rectangular slab write for 4-byte elements (f32/i32/u32).
+pub const WRITE_SLICE_B4: &str = "write_slice_b4";
 /// Tiled matrix multiply with 4x4 register tiling (WGSL).
 pub const MATMUL: &str = "matmul";
 /// GLSL matmul with shared-memory blocking.
