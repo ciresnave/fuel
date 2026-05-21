@@ -534,6 +534,220 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
 }
 
 // ===========================================================================
+// V.3.E — f16 unary ops (native float16_t)
+// ===========================================================================
+
+fn upload_f16(backend: &Arc<VulkanBackend>, host: &[half::f16]) -> Storage {
+    let bytes: &[u8] = bytemuck::cast_slice(host);
+    let vk_bytes = backend
+        .upload_bytes_handle(bytes)
+        .expect("vulkan upload_bytes_handle f16");
+    Storage::new(BackendStorage::Vulkan(vk_bytes), DType::F16)
+}
+
+fn download_f16(backend: &Arc<VulkanBackend>, s: &Storage) -> Vec<half::f16> {
+    let bytes = match &s.inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    bytemuck::cast_slice::<u8, half::f16>(&bytes).to_vec()
+}
+
+fn run_unary_f16(
+    backend: &Arc<VulkanBackend>,
+    op: OpKind,
+    data: &[half::f16],
+) -> Vec<half::f16> {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let n = data.len();
+    let in_storage = upload_f16(backend, data);
+    let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let kernel = table
+        .lookup_alternatives(op, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("kernel dispatch");
+    download_f16(backend, &out_arc.read().unwrap())
+}
+
+fn run_binary_f16(
+    backend: &Arc<VulkanBackend>,
+    op: OpKind,
+    a_data: &[half::f16],
+    b_data: &[half::f16],
+) -> Vec<half::f16> {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let n = a_data.len();
+    let a_storage = upload_f16(backend, a_data);
+    let b_storage = upload_f16(backend, b_data);
+    let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let kernel = table
+        .lookup_alternatives(
+            op,
+            &[DType::F16, DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("kernel dispatch");
+    download_f16(backend, &out_arc.read().unwrap())
+}
+
+#[test]
+fn vulkan_dispatch_binary_f16_registered() {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let key = [DType::F16, DType::F16, DType::F16];
+    for op in [
+        OpKind::AddElementwise,
+        OpKind::SubElementwise,
+        OpKind::MulElementwise,
+        OpKind::DivElementwise,
+        OpKind::MaximumElementwise,
+        OpKind::MinimumElementwise,
+    ] {
+        let alts = table.lookup_alternatives(op, &key, BackendId::Vulkan);
+        assert_eq!(alts.len(), 1, "expected 1 Vulkan alt for {op:?} f16, got {}", alts.len());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_binary_add_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let a: Vec<f16> = vec![1.0, 2.0, 3.0, 4.0].into_iter().map(f16::from_f32).collect();
+    let b: Vec<f16> = vec![10.0, 20.0, 30.0, 40.0].into_iter().map(f16::from_f32).collect();
+    let got = run_binary_f16(&backend, OpKind::AddElementwise, &a, &b);
+    let expected: Vec<f32> = vec![11.0, 22.0, 33.0, 44.0];
+    for (g, e) in got.iter().zip(expected.iter()) {
+        assert!((g.to_f32() - e).abs() < 0.01, "add f16: got={}, expected={e}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_binary_mul_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let a: Vec<f16> = vec![1.5, -2.0, 0.5].into_iter().map(f16::from_f32).collect();
+    let b: Vec<f16> = vec![2.0, 3.0, 4.0].into_iter().map(f16::from_f32).collect();
+    let got = run_binary_f16(&backend, OpKind::MulElementwise, &a, &b);
+    let expected: Vec<f32> = vec![3.0, -6.0, 2.0];
+    for (g, e) in got.iter().zip(expected.iter()) {
+        assert!((g.to_f32() - e).abs() < 0.01, "mul f16: got={}, expected={e}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_binary_maximum_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let a: Vec<f16> = vec![1.0, -2.0, 3.0].into_iter().map(f16::from_f32).collect();
+    let b: Vec<f16> = vec![-1.0, 2.0, 0.5].into_iter().map(f16::from_f32).collect();
+    let got = run_binary_f16(&backend, OpKind::MaximumElementwise, &a, &b);
+    let expected: Vec<f32> = vec![1.0, 2.0, 3.0];
+    for (g, e) in got.iter().zip(expected.iter()) {
+        assert!((g.to_f32() - e).abs() < 0.01, "max f16: got={}, expected={e}", g.to_f32());
+    }
+}
+
+#[test]
+fn vulkan_dispatch_unary_f16_registered() {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let key = [DType::F16, DType::F16];
+    for op in [
+        OpKind::NegElementwise,
+        OpKind::SqrElementwise,
+        OpKind::ReluElementwise,
+        OpKind::TanhElementwise,
+        OpKind::SiluElementwise,
+        OpKind::GeluElementwise,
+    ] {
+        let alts = table.lookup_alternatives(op, &key, BackendId::Vulkan);
+        assert_eq!(alts.len(), 1, "expected 1 Vulkan alt for {op:?} f16, got {}", alts.len());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_neg_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let host: Vec<f16> = vec![1.0, -2.5, 0.0, 3.0].into_iter().map(f16::from_f32).collect();
+    let got = run_unary_f16(&backend, OpKind::NegElementwise, &host);
+    for (g, src) in got.iter().zip(host.iter()) {
+        assert!((g.to_f32() - (-src.to_f32())).abs() < 1e-3,
+            "neg f16: src={}, got={}", src.to_f32(), g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_relu_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let host: Vec<f16> = vec![-1.0, 0.0, 1.0, -2.5, 2.5].into_iter().map(f16::from_f32).collect();
+    let got = run_unary_f16(&backend, OpKind::ReluElementwise, &host);
+    let expected = vec![0.0, 0.0, 1.0, 0.0, 2.5];
+    for (g, e) in got.iter().zip(expected.iter()) {
+        assert!((g.to_f32() - e).abs() < 1e-3, "relu f16: got={}, expected={e}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_tanh_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let host: Vec<f16> = vec![-1.0, 0.0, 1.0, 2.0].into_iter().map(f16::from_f32).collect();
+    let got = run_unary_f16(&backend, OpKind::TanhElementwise, &host);
+    for (g, src) in got.iter().zip(host.iter()) {
+        // f16 tanh has visible rounding error vs f32; widen tolerance.
+        let expected = src.to_f32().tanh();
+        assert!((g.to_f32() - expected).abs() < 0.01,
+            "tanh f16: src={}, got={}, expected={expected}", src.to_f32(), g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_sigmoid_f16() {
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let host: Vec<f16> = vec![-2.0, 0.0, 2.0, 5.0].into_iter().map(f16::from_f32).collect();
+    let got = run_unary_f16(&backend, OpKind::SigmoidElementwise, &host);
+    for (g, src) in got.iter().zip(host.iter()) {
+        let expected = 1.0 / (1.0 + (-src.to_f32()).exp());
+        assert!((g.to_f32() - expected).abs() < 0.01,
+            "sigmoid f16: src={}, got={}, expected={expected}", src.to_f32(), g.to_f32());
+    }
+}
+
+// ===========================================================================
 // V.3.J — WriteSlice (in-place slab assign)
 // ===========================================================================
 

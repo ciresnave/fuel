@@ -126,6 +126,58 @@ pub mod binary {
     vk_binary_f32_wrapper!(minimum_f32, 5, "binary_minimum_f32");
 }
 
+// V.3.E — f16 binary fan-out via native float16_t.
+
+macro_rules! vk_binary_f16_wrapper {
+    ($name:ident, $op_id:expr, $label:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::binary_f16::{}: expected 2 inputs + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            if layouts.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::binary_f16::{}: layouts.len() = {} < 2",
+                    $label, layouts.len(),
+                )).bt());
+            }
+            let in0_guard = read_storage(&inputs[0])?;
+            let in1_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in0_guard)?;
+            let b = vulkan_input(&in1_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::binary_f16::{}: input[0] has no VulkanBackend handle. \
+                     Storages flowing through the pipelined-executor binding-table \
+                     dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.binary_f16_bytes($op_id, $label, a, b, out, &layouts[0], &layouts[1])
+        }
+    };
+}
+
+pub mod binary_f16 {
+    use super::*;
+
+    vk_binary_f16_wrapper!(add_f16,     0, "binary_add_f16");
+    vk_binary_f16_wrapper!(sub_f16,     1, "binary_sub_f16");
+    vk_binary_f16_wrapper!(mul_f16,     2, "binary_mul_f16");
+    vk_binary_f16_wrapper!(div_f16,     3, "binary_div_f16");
+    vk_binary_f16_wrapper!(maximum_f16, 4, "binary_maximum_f16");
+    vk_binary_f16_wrapper!(minimum_f16, 5, "binary_minimum_f16");
+}
+
 // ===========================================================================
 // Unary — element-wise f32 (V.2.B: 13 ops via unary.slang's op_id)
 // ===========================================================================
@@ -177,6 +229,57 @@ pub mod unary {
     vk_unary_f32_wrapper!(gelu_f32,    10, "unary_gelu_f32");
     vk_unary_f32_wrapper!(relu_f32,    11, "unary_relu_f32");
     vk_unary_f32_wrapper!(step_f32,    12, "unary_step_f32");
+}
+
+// V.3.E — f16 fan-out via native float16_t (shaderFloat16 + 16BitStorage).
+
+macro_rules! vk_unary_f16_wrapper {
+    ($name:ident, $op_id:expr, $label:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::unary_f16::{}: expected 1 input + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::unary_f16::{}: input has no VulkanBackend handle. \
+                     Storages flowing through the pipelined-executor binding-table \
+                     dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.unary_f16_bytes($op_id, $label, a, out)
+        }
+    };
+}
+
+pub mod unary_f16 {
+    use super::*;
+
+    vk_unary_f16_wrapper!(neg_f16,     0,  "unary_neg_f16");
+    vk_unary_f16_wrapper!(sqr_f16,     1,  "unary_sqr_f16");
+    vk_unary_f16_wrapper!(sqrt_f16,    2,  "unary_sqrt_f16");
+    vk_unary_f16_wrapper!(exp_f16,     3,  "unary_exp_f16");
+    vk_unary_f16_wrapper!(log_f16,     4,  "unary_log_f16");
+    vk_unary_f16_wrapper!(sin_f16,     5,  "unary_sin_f16");
+    vk_unary_f16_wrapper!(cos_f16,     6,  "unary_cos_f16");
+    vk_unary_f16_wrapper!(tanh_f16,    7,  "unary_tanh_f16");
+    vk_unary_f16_wrapper!(sigmoid_f16, 8,  "unary_sigmoid_f16");
+    vk_unary_f16_wrapper!(silu_f16,    9,  "unary_silu_f16");
+    vk_unary_f16_wrapper!(gelu_f16,    10, "unary_gelu_f16");
+    vk_unary_f16_wrapper!(relu_f16,    11, "unary_relu_f16");
+    vk_unary_f16_wrapper!(step_f16,    12, "unary_step_f16");
 }
 
 // ===========================================================================
@@ -1152,6 +1255,29 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half);
     table.register(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half);
     table.register(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half);
+
+    // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16 -----
+    table.register(OpKind::AddElementwise,     &b(f16), vk, binary_f16::add_f16);
+    table.register(OpKind::SubElementwise,     &b(f16), vk, binary_f16::sub_f16);
+    table.register(OpKind::MulElementwise,     &b(f16), vk, binary_f16::mul_f16);
+    table.register(OpKind::DivElementwise,     &b(f16), vk, binary_f16::div_f16);
+    table.register(OpKind::MaximumElementwise, &b(f16), vk, binary_f16::maximum_f16);
+    table.register(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16);
+
+    // ----- Unary f16 (V.3.E) — native float16_t via shaderFloat16 -----
+    table.register(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16);
+    table.register(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16);
+    table.register(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16);
+    table.register(OpKind::ExpElementwise,     &u(f16), vk, unary_f16::exp_f16);
+    table.register(OpKind::LogElementwise,     &u(f16), vk, unary_f16::log_f16);
+    table.register(OpKind::SinElementwise,     &u(f16), vk, unary_f16::sin_f16);
+    table.register(OpKind::CosElementwise,     &u(f16), vk, unary_f16::cos_f16);
+    table.register(OpKind::TanhElementwise,    &u(f16), vk, unary_f16::tanh_f16);
+    table.register(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16);
+    table.register(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16);
+    table.register(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16);
+    table.register(OpKind::ReluElementwise,    &u(f16), vk, unary_f16::relu_f16);
+    table.register(OpKind::StepElementwise,    &u(f16), vk, unary_f16::step_f16);
 
     // ----- WriteSlice (V.3.J) — byte-width-keyed (b2/b4/b8) -----
     // b4: f32 / i32 / u32; b2: f16 / bf16; b8: f64 / i64

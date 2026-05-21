@@ -40,6 +40,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("add_assign_scaled",         include_bytes!("../spv/add_assign_scaled.spv")),
     ("affine",                    include_bytes!("../spv/affine.spv")),
     ("binary",                    include_bytes!("../spv/binary.spv")),
+    ("binary_f16",                include_bytes!("../spv/binary_f16.spv")),
     ("clamp",                     include_bytes!("../spv/clamp.spv")),
     ("powi",                      include_bytes!("../spv/powi.spv")),
     ("cast_f32_to_f16",           include_bytes!("../spv/cast_f32_to_f16.spv")),
@@ -75,6 +76,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("layer_norm_last_dim_backward", include_bytes!("../spv/layer_norm_last_dim_backward.spv")),
     ("strided_copy",              include_bytes!("../spv/strided_copy.spv")),
     ("unary",                     include_bytes!("../spv/unary.spv")),
+    ("unary_f16",                 include_bytes!("../spv/unary_f16.spv")),
 ];
 
 /// Environment variable backends consult for an optional disk-override
@@ -90,8 +92,14 @@ pub const OVERRIDE_ENV: &str = "FUEL_SHADER_OVERRIDE_DIR";
 
 /// Element-wise unary ops (13 ops via uniform selector).
 pub const UNARY: &str = "unary";
+/// Element-wise unary ops, f16. Same 13-op surface as UNARY but
+/// operates on native float16_t (needs shaderFloat16 + 16BitStorage).
+pub const UNARY_F16: &str = "unary_f16";
 /// Element-wise binary ops (6 ops via uniform selector).
 pub const BINARY: &str = "binary";
+/// Element-wise binary ops, f16. Same 6-op surface as BINARY but
+/// operates on native float16_t.
+pub const BINARY_F16: &str = "binary_f16";
 /// Affine transform: y = x * mul + add.
 pub const AFFINE: &str = "affine";
 /// Element-wise clamp: y = clamp(x, lo, hi).
