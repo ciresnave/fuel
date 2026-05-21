@@ -2234,10 +2234,57 @@ fn execute_work_item(
                         fuel_cuda_backend::CudaStorageBytes::alloc(cuda_in.device(), n_bytes)?;
                     crate::Storage::new(crate::BackendStorage::Cuda(cuda_bytes), item.dtype)
                 }
+                #[cfg(feature = "vulkan")]
+                BackendId::Vulkan => {
+                    // Mirror the CUDA path: derive the backend handle
+                    // from the first input's `VulkanStorageBytes::backend()`.
+                    // Vulkan catch-up V.1.B (2026-05-21) — requires
+                    // inputs constructed via `alloc_bytes_handle` /
+                    // `upload_bytes_handle` so they carry the
+                    // `Arc<VulkanBackend>` (mirroring CUDA's
+                    // `Arc<CudaDevice>`).
+                    let first_in = input_arcs.first().ok_or_else(|| {
+                        Error::Msg(format!(
+                            "PipelinedExecutor: kernel {:?} on Vulkan has no inputs; \
+                             cannot derive backend handle for output allocation",
+                            item.node_id,
+                        ))
+                        .bt()
+                    })?;
+                    let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
+                    let vk_in = match &guard.inner {
+                        crate::BackendStorage::Vulkan(v) => v,
+                        other => {
+                            return Err(Error::Msg(format!(
+                                "PipelinedExecutor: kernel {:?} target_backend=Vulkan but \
+                                 input has BackendStorage::{:?}; mixed-backend kernels \
+                                 require an explicit Op::Copy first",
+                                item.node_id,
+                                std::mem::discriminant(other),
+                            ))
+                            .bt());
+                        }
+                    };
+                    let backend = vk_in.backend().ok_or_else(|| {
+                        Error::Msg(format!(
+                            "PipelinedExecutor: Vulkan kernel {:?} input has no backend \
+                             handle. Storages flowing through the pipelined executor's \
+                             Vulkan path must be constructed via \
+                             VulkanBackend::alloc_bytes_handle / upload_bytes_handle \
+                             (not the legacy alloc_bytes / upload_bytes which leave \
+                             VulkanStorageBytes::backend = None).",
+                            item.node_id,
+                        ))
+                        .bt()
+                    })?;
+                    let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+                    let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
+                    crate::Storage::new(crate::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                }
                 other => {
                     return Err(Error::Msg(format!(
                         "PipelinedExecutor: target_backend {:?} output allocation \
-                         not yet implemented (CPU + CUDA wired; Vulkan / Metal extend later)",
+                         not yet implemented (CPU + CUDA + Vulkan wired; Metal extends later)",
                         other
                     ))
                     .bt());
@@ -2301,11 +2348,40 @@ fn auto_contiguize(
                 )?;
             Storage::new(crate::BackendStorage::Cuda(contig), dtype)
         }
+        #[cfg(feature = "vulkan")]
+        crate::BackendStorage::Vulkan(v) => {
+            // V.1.B stopgap: D2H → CPU contiguize_cpu → H2D. Mirrors
+            // the pre-alpha.29 CUDA fallback. V.3.2 of the Vulkan
+            // catch-up writes a native Slang contiguize kernel (with
+            // signed-stride support that strided_copy.slang currently
+            // lacks) and replaces this arm with a direct
+            // VulkanStorageBytes → VulkanStorageBytes path.
+            let backend = v.backend().ok_or_else(|| {
+                Error::Msg(
+                    "auto_contiguize: Vulkan input has no backend handle. \
+                     Storages flowing through the pipelined executor's Vulkan \
+                     path must be constructed via VulkanBackend::alloc_bytes_handle \
+                     / upload_bytes_handle (not the legacy alloc_bytes / \
+                     upload_bytes which leave VulkanStorageBytes::backend = None)."
+                        .to_string(),
+                )
+                .bt()
+            })?;
+            let host_bytes = backend.download_bytes(v)?;
+            let host_cpu =
+                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&host_bytes);
+            let contig_cpu = fuel_cpu_backend::byte_kernels::contiguize_cpu(
+                &host_cpu, layout, dtype_size,
+            )?;
+            let host_contig_bytes = contig_cpu.bytes().to_vec();
+            let vk_bytes = backend.upload_bytes_handle(&host_contig_bytes)?;
+            Storage::new(crate::BackendStorage::Vulkan(vk_bytes), dtype)
+        }
         #[allow(unreachable_patterns)]
         _ => {
             return Err(Error::Msg(
-                "auto_contiguize: backend not wired (CPU + CUDA are wired today; \
-                 Vulkan / Metal extend this match when their byte-storage \
+                "auto_contiguize: backend not wired (CPU + CUDA + Vulkan are \
+                 wired today; Metal extends this match when its byte-storage \
                  substrate lands)"
                     .to_string(),
             )
