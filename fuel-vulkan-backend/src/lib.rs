@@ -1320,6 +1320,107 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Cast `n` elements from `src_dtype` to `dst_dtype`. Selects the
+    /// appropriate cast pipeline by (src, dst) pair. Currently
+    /// supported: f32↔f16, f32↔bf16. `n` must be even (half-precision
+    /// dtypes are u32-packed 2-per-word; odd-count tensors should
+    /// fall back to CPU). The wrapper validates dtypes and buffer
+    /// sizes; this method dispatches.
+    pub fn cast_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        n: usize,
+        src_dtype: DType,
+        dst_dtype: DType,
+    ) -> fuel_core_types::Result<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        if n % 2 != 0 {
+            fuel_core_types::bail!(
+                "cast_f32_bytes: n={n} must be even (half-precision packed 2-per-u32); \
+                 odd-count tensors should fall back to CPU",
+            );
+        }
+        let src_elem = dtype_size(src_dtype);
+        let dst_elem = dtype_size(dst_dtype);
+        let need_src = n * src_elem;
+        let need_dst = n * dst_elem;
+        if input.len_bytes() < need_src {
+            fuel_core_types::bail!(
+                "cast_f32_bytes: input {} bytes < required {need_src} (n={n} of {src_dtype:?})",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_dst {
+            fuel_core_types::bail!(
+                "cast_f32_bytes: out {} bytes < required {need_dst} (n={n} of {dst_dtype:?})",
+                out.len_bytes(),
+            );
+        }
+
+        let (pipeline, pipe_layout, op_name) = match (src_dtype, dst_dtype) {
+            (DType::F32,  DType::F16)  => (
+                &self.pipelines.cast_f32_to_f16_pipeline,
+                &self.pipelines.cast_f32_to_f16_layout,
+                "cast_f32_to_f16",
+            ),
+            (DType::F16,  DType::F32)  => (
+                &self.pipelines.cast_f16_to_f32_pipeline,
+                &self.pipelines.cast_f16_to_f32_layout,
+                "cast_f16_to_f32",
+            ),
+            (DType::F32,  DType::BF16) => (
+                &self.pipelines.cast_f32_to_bf16_pipeline,
+                &self.pipelines.cast_f32_to_bf16_layout,
+                "cast_f32_to_bf16",
+            ),
+            (DType::BF16, DType::F32)  => (
+                &self.pipelines.cast_bf16_to_f32_pipeline,
+                &self.pipelines.cast_bf16_to_f32_layout,
+                "cast_bf16_to_f32",
+            ),
+            other => fuel_core_types::bail!(
+                "cast_f32_bytes: unsupported dtype pair {other:?} (V.3.B covers \
+                 f32↔f16 and f32↔bf16 only — others are V.3.B follow-up or CPU fallback)",
+            ),
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct CastParams { n: u32, _pad: u32 }
+        let p = CastParams { n: n as u32, _pad: 0 };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        // Each thread handles 2 elements → ceil(n / 2 / 256) workgroups.
+        let pairs = n / 2;
+        let groups = ((pairs + 255) / 256) as u32;
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups.max(1), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Mixed-precision matmul: f32 LHS × bf16 RHS → f32 output. The
     /// bf16 weights stay in their native 2-byte layout on device;
     /// the kernel unpacks per-element. Selects among:
