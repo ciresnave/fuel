@@ -1389,12 +1389,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64);
     table.register(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64);
 
-    // ----- Unary f64 (V.3.E.5) — fast ops only.
-    // Transcendentals (Exp/Log/Sin/Cos/Tanh/Sigmoid/Silu/Gelu) are
-    // skipped because GLSL.std.450's transcendental opcodes are spec-
-    // restricted to 16-bit / 32-bit float inputs. See the comment at
-    // the top of unary_f64.slang for the OpenCL.std / f32-round-trip
-    // workarounds. Route picker falls back to CPU for those. -----
+    // ----- Unary f64 (V.3.E.5) — non-transcendentals only.
+    // GLSL.std.450's Exp/Log/Sin/Cos/Tanh opcodes are spec-restricted to
+    // 16/32-bit floats. We tried importing OpenCL.std (whose double
+    // transcendentals are spec-allowed): SPV passes spirv-val but
+    // NVIDIA's Windows Vulkan driver rejects OpenCL.std imports at
+    // vkCreateShaderModule, which kills VulkanBackend::new() for every
+    // test (driver-level, not just the offending kernel). For now the
+    // route picker falls back to CPU for f64 transcendentals; the
+    // longer-term plan is graph-level Cast(f64→f32) → unary_f32 →
+    // Cast(f32→f64), per the V.3.E.5 design discussion. -----
     table.register(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64);
     table.register(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64);
     table.register(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64);
