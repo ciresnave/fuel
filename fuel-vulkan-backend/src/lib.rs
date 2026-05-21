@@ -1081,15 +1081,20 @@ impl VulkanBackend {
     // buffer. Mirrors the CUDA shape where baracuda wrappers take
     // pre-allocated output `CudaStorageBytes`.
 
-    /// Element-wise f32 Add with per-operand stride support. Writes
-    /// into the pre-allocated `out` buffer (caller pre-allocates via
-    /// `alloc_bytes_handle` in the pipelined-executor output-allocation
-    /// arm). `la` / `lb` carry per-input strides; rank ≤ 4. Mirrors
-    /// the legacy `GraphBackend::binary(BinaryOp::Add, ...)` flow but
-    /// for byte-storage. Currently f32-only; multi-dtype expansion
-    /// is a Tier-2 V.3 work unit.
-    pub fn binary_add_f32_bytes(
+    /// Element-wise f32 binary op with per-operand stride support.
+    /// `op_id` matches the constants in `binary.slang`:
+    /// 0=Add, 1=Sub, 2=Mul, 3=Div, 4=Max, 5=Min.
+    ///
+    /// Writes into the pre-allocated `out` buffer (caller pre-
+    /// allocates via `alloc_bytes_handle` in the pipelined-executor
+    /// output-allocation arm). `la` / `lb` carry per-input strides;
+    /// rank ≤ 4. Mirrors the legacy `GraphBackend::binary(...)`
+    /// flow but for byte-storage. f32-only today; multi-dtype
+    /// expansion is V.3 work.
+    pub fn binary_f32_bytes(
         &self,
+        op_id: u32,
+        op_name: &'static str,
         a: &VulkanStorageBytes,
         b: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
@@ -1100,20 +1105,20 @@ impl VulkanBackend {
         let out_elem = la.shape().elem_count();
         if out_elem != lb.shape().elem_count() {
             fuel_core_types::bail!(
-                "VulkanBackend::binary_add_f32_bytes: shape mismatch a={:?} b={:?}",
+                "VulkanBackend::{op_name}: shape mismatch a={:?} b={:?}",
                 la.shape(), lb.shape()
             );
         }
         let rank = out_dims.len();
         if rank > 4 {
             fuel_core_types::bail!(
-                "VulkanBackend::binary_add_f32_bytes: rank {rank} > 4"
+                "VulkanBackend::{op_name}: rank {rank} > 4"
             );
         }
         let need_bytes = out_elem * std::mem::size_of::<f32>();
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
-                "VulkanBackend::binary_add_f32_bytes: output buffer {} bytes \
+                "VulkanBackend::{op_name}: output buffer {} bytes \
                  < required {} bytes",
                 out.len_bytes(), need_bytes,
             );
@@ -1139,7 +1144,6 @@ impl VulkanBackend {
             && lb.stride().iter().all(|&s| s != 0);
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
-        // op_id 0 = Add (matches binary.slang's OP_ADD constant).
         #[repr(C)] #[derive(Clone, Copy)]
         struct BParams {
             out_size: u32, op_id: u32, rank: u32, flags: u32,
@@ -1148,20 +1152,20 @@ impl VulkanBackend {
             b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
         }
         let p = BParams {
-            out_size: out_elem as u32, op_id: 0, rank: rank as u32, flags,
+            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
             shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
             a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
             b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
         };
 
         let a_buf = a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "binary_add_f32_bytes: input a is host-evicted; fault back first".into(),
+            format!("{op_name}: input a is host-evicted; fault back first"),
         ))?;
         let b_buf = b.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "binary_add_f32_bytes: input b is host-evicted; fault back first".into(),
+            format!("{op_name}: input b is host-evicted; fault back first"),
         ))?;
         let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "binary_add_f32_bytes: output is host-evicted; fault back first".into(),
+            format!("{op_name}: output is host-evicted; fault back first"),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
         let params_size = std::mem::size_of::<BParams>() as u64;
@@ -1175,7 +1179,7 @@ impl VulkanBackend {
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            "binary_add_f32_bytes",
+            op_name,
             &self.pipelines.binary_pipeline,
             &self.pipelines.binary_layout,
             desc,
@@ -1183,11 +1187,27 @@ impl VulkanBackend {
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
-        // V.1.C smoke-test contract: flush so the result is observable
-        // to a follow-up download_bytes call. Once V.2+ batches multiple
-        // ops, batching can defer the flush.
+        // V.1.C/V.2 contract: flush so the result is observable to
+        // a follow-up download_bytes call. Once V.4+ batches multiple
+        // ops or wires through a true command-graph submission,
+        // batching can defer the flush.
         self.flush_pending()?;
         Ok(())
+    }
+
+    /// Backwards-compatible single-op convenience wrapper retained
+    /// for the V.1.C tests + any callers wanting an explicit Add.
+    /// New callers should use [`Self::binary_f32_bytes`] with
+    /// `op_id = 0`.
+    pub fn binary_add_f32_bytes(
+        &self,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        la: &Layout,
+        lb: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.binary_f32_bytes(0, "binary_add_f32_bytes", a, b, out, la, lb)
     }
 
     // -- quantized weight dequantization ---------------------------------------
