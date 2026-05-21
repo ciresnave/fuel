@@ -40,6 +40,7 @@ pub mod fused;
 pub mod kernel;
 pub mod pipelined;
 pub mod plan;
+pub mod vulkan_dispatch;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};

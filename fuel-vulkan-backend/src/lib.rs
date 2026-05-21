@@ -1072,6 +1072,124 @@ impl VulkanBackend {
         ((n + 255) / 256) as u32
     }
 
+    // ----- Pipelined-executor binding-table dispatch (V.1.C+) ----------------
+    //
+    // Methods that work on `VulkanStorageBytes` (the new byte-storage
+    // type) rather than `VulkanStorage` (the legacy typed variant).
+    // They expect the caller to pre-allocate the output buffer (the
+    // pipelined-executor pattern); the kernel writes into the provided
+    // buffer. Mirrors the CUDA shape where baracuda wrappers take
+    // pre-allocated output `CudaStorageBytes`.
+
+    /// Element-wise f32 Add with per-operand stride support. Writes
+    /// into the pre-allocated `out` buffer (caller pre-allocates via
+    /// `alloc_bytes_handle` in the pipelined-executor output-allocation
+    /// arm). `la` / `lb` carry per-input strides; rank ≤ 4. Mirrors
+    /// the legacy `GraphBackend::binary(BinaryOp::Add, ...)` flow but
+    /// for byte-storage. Currently f32-only; multi-dtype expansion
+    /// is a Tier-2 V.3 work unit.
+    pub fn binary_add_f32_bytes(
+        &self,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        la: &Layout,
+        lb: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let out_dims = la.shape().dims();
+        let out_elem = la.shape().elem_count();
+        if out_elem != lb.shape().elem_count() {
+            fuel_core_types::bail!(
+                "VulkanBackend::binary_add_f32_bytes: shape mismatch a={:?} b={:?}",
+                la.shape(), lb.shape()
+            );
+        }
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!(
+                "VulkanBackend::binary_add_f32_bytes: rank {rank} > 4"
+            );
+        }
+        let need_bytes = out_elem * std::mem::size_of::<f32>();
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::binary_add_f32_bytes: output buffer {} bytes \
+                 < required {} bytes",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        // Pad shape and strides to rank 4 (leading dims = 1, strides = 0).
+        let mut shape = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            a_s[pad + i] = la.stride()[i] as u32;
+            b_s[pad + i] = lb.stride()[i] as u32;
+        }
+
+        // Fast-path flag: contiguous AND matches output shape exactly.
+        let a_contig = la.is_contiguous()
+            && la.shape().dims() == out_dims
+            && la.stride().iter().all(|&s| s != 0);
+        let b_contig = lb.is_contiguous()
+            && lb.shape().dims() == out_dims
+            && lb.stride().iter().all(|&s| s != 0);
+        let flags = (a_contig as u32) | ((b_contig as u32) << 1);
+
+        // op_id 0 = Add (matches binary.slang's OP_ADD constant).
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct BParams {
+            out_size: u32, op_id: u32, rank: u32, flags: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
+        let p = BParams {
+            out_size: out_elem as u32, op_id: 0, rank: rank as u32, flags,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+        };
+
+        let a_buf = a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "binary_add_f32_bytes: input a is host-evicted; fault back first".into(),
+        ))?;
+        let b_buf = b.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "binary_add_f32_bytes: input b is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "binary_add_f32_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<BParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "binary_add_f32_bytes",
+            &self.pipelines.binary_pipeline,
+            &self.pipelines.binary_layout,
+            desc,
+            (Self::workgroups(out_elem), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        // V.1.C smoke-test contract: flush so the result is observable
+        // to a follow-up download_bytes call. Once V.2+ batches multiple
+        // ops, batching can defer the flush.
+        self.flush_pending()?;
+        Ok(())
+    }
+
     // -- quantized weight dequantization ---------------------------------------
 
     /// Dequantize a raw Q4_0 blob (18-byte blocks, 32 elements per block)
