@@ -1875,6 +1875,27 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
         }
     }
 
+    // F8E4M3 ↔ {F32, F16, BF16} — alpha.29's CastSubBytePlan (OCP/NV FP8
+    // family). The same cast_baracuda_wrapper dispatches by inspecting
+    // input + output dtypes via fuel_cuda_backend::baracuda::cast::dispatch.
+    //
+    // Not registered: F8E4M3 ↔ {I32, I64, U8, F64, F8E4M3} (baracuda
+    // alpha.29's CastSubByte surface stops at {F32, F16, BF16} for FP8
+    // — these would compose via an intermediate f32 cast).
+    //
+    // F8E5M2 / S4 / U4 / Bool exist in baracuda alpha.29 but aren't in
+    // Fuel's DType enum yet (would require the I8-style cascade through
+    // every match site before any registration is possible).
+    //
+    // F6E2M3 / F6E3M2 / F4 / F8E8M0 are in Fuel's DType but are MX
+    // (Microscaling) formats — different from baracuda's OCP/NV FP8
+    // family. baracuda alpha.29's CastSubBytePlan doesn't cover them
+    // (separate kernel family with scale tensors); still a real gap.
+    for dst in [DType::F32, DType::F16, DType::BF16] {
+        table.register(Cast, &[DType::F8E4M3, dst], cuda, cast::cast_baracuda_wrapper);
+        table.register(Cast, &[dst, DType::F8E4M3], cuda, cast::cast_baracuda_wrapper);
+    }
+
     // ----- F32 unary -----
     table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
     table.register(AbsElementwise,    &u(f32), cuda, unary::abs_f32);
