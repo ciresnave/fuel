@@ -641,6 +641,118 @@ fn vulkan_dispatch_write_slice_b4_2d_f32() {
     ]);
 }
 
+/// WriteSlice b2: f16 KV-cache slab write. 1×8 slab into a 4×8 dst
+/// at row 2. last-dim slab is the full 8 cols (range_start=0,
+/// src_shape=8) so even-alignment holds.
+#[test]
+#[ignore]
+fn vulkan_dispatch_write_slice_b2_f16_kv_cache() {
+    use half::f16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let seq = 4usize;
+    let head_dim = 8usize;
+
+    let dst_init: Vec<f16> = vec![f16::from_f32(-1.0); seq * head_dim];
+    let dst_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&dst_init)).expect("upload");
+    let dst_storage = Storage::new(BackendStorage::Vulkan(dst_vk), DType::F16);
+
+    let src: Vec<f16> = (0..head_dim).map(|i| f16::from_f32(i as f32 + 100.0)).collect();
+    let src_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&src)).expect("upload");
+    let src_storage = Storage::new(BackendStorage::Vulkan(src_vk), DType::F16);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let dst_arc = Arc::new(RwLock::new(dst_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::WriteSlice,
+            &[DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[1, head_dim])),
+        Layout::contiguous(Shape::from_dims(&[seq, head_dim])),
+    ];
+    kernel(
+        &[Arc::clone(&src_arc)],
+        &mut [Arc::clone(&dst_arc)],
+        &layouts,
+        &OpParams::WriteSlice {
+            dest_shape: vec![seq, head_dim],
+            ranges: vec![(2, 3), (0, head_dim)],
+        },
+    ).expect("write_slice b2 dispatch");
+
+    let raw = match &dst_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!(),
+    };
+    let got: Vec<f16> = bytemuck::cast_slice::<u8, f16>(&raw).to_vec();
+    for j in 0..head_dim {
+        let row0 = got[0 * head_dim + j];
+        let row1 = got[1 * head_dim + j];
+        let row2 = got[2 * head_dim + j];
+        let row3 = got[3 * head_dim + j];
+        assert_eq!(row0.to_f32(), -1.0);
+        assert_eq!(row1.to_f32(), -1.0);
+        assert_eq!(row2.to_f32(), j as f32 + 100.0);
+        assert_eq!(row3.to_f32(), -1.0);
+    }
+}
+
+/// WriteSlice b8: f64 1D slab into a [6] dst at range [1..4].
+#[test]
+#[ignore]
+fn vulkan_dispatch_write_slice_b8_f64_1d() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let dst_init: Vec<f64> = vec![0.0; 6];
+    let dst_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&dst_init)).expect("upload");
+    let dst_storage = Storage::new(BackendStorage::Vulkan(dst_vk), DType::F64);
+
+    let src: Vec<f64> = vec![100.0, 200.0, 300.0];
+    let src_vk = backend.upload_bytes_handle(bytemuck::cast_slice(&src)).expect("upload");
+    let src_storage = Storage::new(BackendStorage::Vulkan(src_vk), DType::F64);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let dst_arc = Arc::new(RwLock::new(dst_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::WriteSlice,
+            &[DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[3])),
+        Layout::contiguous(Shape::from_dims(&[6])),
+    ];
+    kernel(
+        &[Arc::clone(&src_arc)],
+        &mut [Arc::clone(&dst_arc)],
+        &layouts,
+        &OpParams::WriteSlice {
+            dest_shape: vec![6],
+            ranges: vec![(1, 4)],
+        },
+    ).expect("write_slice b8 dispatch");
+
+    let raw = match &dst_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!(),
+    };
+    let got: Vec<f64> = bytemuck::cast_slice::<u8, f64>(&raw).to_vec();
+    assert_eq!(got, vec![0.0, 100.0, 200.0, 300.0, 0.0, 0.0]);
+}
+
 /// WriteSlice: KV-cache shape — write a single token's K vector into
 /// position 2 of a [seq=4, head_dim=8] cache. Models the inference
 /// hot path that backs Op::WriteSlice in the lazy graph.
