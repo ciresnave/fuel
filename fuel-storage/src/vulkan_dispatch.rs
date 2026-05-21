@@ -180,6 +180,165 @@ pub mod unary {
 }
 
 // ===========================================================================
+// Softmax — last-dim f32 (V.2.C)
+// ===========================================================================
+//
+// One wrapper for Softmax (LogSoftmax is V.3 — no Slang kernel yet).
+// Pulls `(outer_count, last_dim)` from `OpParams::SoftmaxLastDim` and
+// forwards to `VulkanBackend::softmax_last_dim_f32_bytes`.
+
+pub mod softmax {
+    use super::*;
+
+    pub fn softmax_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::softmax::softmax_f32: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim) = match params {
+            OpParams::SoftmaxLastDim { outer_count, last_dim } => {
+                (*outer_count, *last_dim)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::softmax::softmax_f32: expected OpParams::SoftmaxLastDim, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::softmax::softmax_f32: input has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.softmax_last_dim_f32_bytes(a, out, outer_count, last_dim)
+    }
+}
+
+// ===========================================================================
+// Norm — RmsNorm last-dim f32 (V.2.C)
+// ===========================================================================
+//
+// LayerNorm is V.3 (no Slang kernel yet). RmsNorm pulls
+// `(outer_count, last_dim, eps)` from `OpParams::NormLastDim`.
+
+pub mod norm {
+    use super::*;
+
+    pub fn rms_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::norm::rms_f32: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim, eps) = match params {
+            OpParams::NormLastDim { outer_count, last_dim, eps } => {
+                (*outer_count, *last_dim, *eps)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::norm::rms_f32: expected OpParams::NormLastDim, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::norm::rms_f32: input has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.rms_norm_last_dim_f32_bytes(a, out, outer_count, last_dim, eps)
+    }
+}
+
+// ===========================================================================
+// Attention — RoPE f32 (V.2.C)
+// ===========================================================================
+//
+// 3 storage inputs: x, cos, sin. The Vulkan kernel uses pre-computed
+// cos/sin tables (unlike the CUDA baracuda path which rebuilds them
+// from `seq + head_dim`). `OpParams::Rope` carries the geometry.
+
+pub mod attention {
+    use super::*;
+
+    pub fn rope_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::attention::rope_f32: expected 3 inputs (x,cos,sin) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        // Validate params shape (we don't actually need to read the
+        // fields — the x-layout carries the geometry the kernel
+        // wants — but mismatched params signal an executor bug).
+        match params {
+            OpParams::Rope { .. } => {}
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::attention::rope_f32: expected OpParams::Rope, got {:?}",
+                    other,
+                )).bt());
+            }
+        }
+        if layouts.is_empty() {
+            return Err(Error::Msg(
+                "vulkan_dispatch::attention::rope_f32: layouts.len() = 0, need x-layout".into(),
+            ).bt());
+        }
+        let x_guard = read_storage(&inputs[0])?;
+        let cos_guard = read_storage(&inputs[1])?;
+        let sin_guard = read_storage(&inputs[2])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let x = vulkan_input(&x_guard)?;
+        let cos = vulkan_input(&cos_guard)?;
+        let sin = vulkan_input(&sin_guard)?;
+        let backend = x.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::attention::rope_f32: x has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.rope_f32_bytes(x, cos, sin, out, &layouts[0])
+    }
+}
+
+// ===========================================================================
 // register_vulkan_kernels — binding-table population
 // ===========================================================================
 
@@ -222,4 +381,11 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32);
     table.register(OpKind::ReluElementwise,    &u(f32), vk, unary::relu_f32);
     table.register(OpKind::StepElementwise,    &u(f32), vk, unary::step_f32);
+
+    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) -----
+    table.register(OpKind::SoftmaxLastDim,  &u(f32), vk, softmax::softmax_f32);
+    table.register(OpKind::RmsNormLastDim,  &u(f32), vk, norm::rms_f32);
+
+    // ----- RoPE (V.2.C, f32) — 3-input via pre-computed cos/sin -----
+    table.register(OpKind::Rope, &u(f32), vk, attention::rope_f32);
 }
