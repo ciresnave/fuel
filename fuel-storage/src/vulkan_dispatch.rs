@@ -339,6 +339,224 @@ pub mod attention {
 }
 
 // ===========================================================================
+// Concat — f32, binary (V.2.D)
+// ===========================================================================
+//
+// Vulkan's legacy `concat_along_dim` kernel is 2-input. Fuel's
+// `OpKind::Concat` is N-input. This wrapper handles N == 2 only —
+// for N > 2 it errors and the route picker falls back to a CPU /
+// CUDA alternative. Chain-for-N>2 is V.3 work.
+//
+// The concat `dim` is recovered from `OpParams::Concat.outer_count`
+// + the first input's layout (outer_count = product of dims before
+// the concat axis).
+
+pub mod concat {
+    use super::*;
+
+    pub fn concat_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::concat_f32: expected 1 output, got {}",
+                outputs.len(),
+            )).bt());
+        }
+        if inputs.len() != 2 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::concat_f32: Vulkan supports N==2 only (V.2.D); \
+                 got {} inputs. N>2 chaining is V.3 work — falling back to next alternative.",
+                inputs.len(),
+            )).bt());
+        }
+        let outer_count = match params {
+            OpParams::Concat { outer_count, .. } => *outer_count,
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::concat::concat_f32: expected OpParams::Concat, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        if layouts.len() < 2 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::concat_f32: layouts.len() = {} < 2",
+                layouts.len(),
+            )).bt());
+        }
+        // Recover the concat dim: outer_count = prod(dims[..dim]).
+        let a_dims = layouts[0].shape().dims();
+        let mut acc = 1usize;
+        let mut dim_opt: Option<usize> = None;
+        for (i, d) in a_dims.iter().enumerate() {
+            if acc == outer_count {
+                dim_opt = Some(i);
+                break;
+            }
+            acc = acc.saturating_mul(*d);
+        }
+        let dim = dim_opt.or_else(|| {
+            // outer_count == 1 → dim is the leading axis (i=0)
+            if outer_count == 1 { Some(0) } else { None }
+        }).ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::concat::concat_f32: couldn't recover concat dim from \
+                 outer_count={outer_count} + a_dims={a_dims:?}",
+            )).bt()
+        })?;
+
+        let a_guard = read_storage(&inputs[0])?;
+        let b_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&a_guard)?;
+        let b = vulkan_input(&b_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::concat::concat_f32: a has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.concat_along_dim_f32_bytes(a, b, out, dim, &layouts[0], &layouts[1])
+    }
+}
+
+// ===========================================================================
+// Reduce — Sum / Max / Min f32 (V.2.D)
+// ===========================================================================
+//
+// The Vulkan kernel handles two fast paths only:
+//   - full reduction (all dims or empty dims)
+//   - single last-dim reduction
+// Other dim combinations bail; the route picker can fall back to CPU.
+//
+// `MeanReduce` is deferred to V.3 — the legacy Vulkan kernel doesn't
+// support it (no scalar-divide pass; would need a sum + affine
+// follow-up).
+
+macro_rules! vk_reduce_f32_wrapper {
+    ($name:ident, $op_id:expr, $label:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::reduce::{}: expected 1 input + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let dims = match params {
+                OpParams::Reduce { dims, keepdim: _ } => dims.clone(),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::reduce::{}: expected OpParams::Reduce, got {:?}",
+                        $label, other,
+                    )).bt());
+                }
+            };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::reduce::{}: layouts[0] required",
+                    $label,
+                )).bt()
+            })?;
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::reduce::{}: input has no VulkanBackend handle. \
+                     Storages flowing through the pipelined-executor binding-table \
+                     dispatch must come from alloc_bytes_handle / upload_bytes_handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.reduce_f32_bytes($op_id, $label, a, out, layout, &dims)
+        }
+    };
+}
+
+pub mod reduce {
+    use super::*;
+
+    vk_reduce_f32_wrapper!(sum_f32, 0, "reduce_sum_f32");
+    vk_reduce_f32_wrapper!(max_f32, 1, "reduce_max_f32");
+    vk_reduce_f32_wrapper!(min_f32, 2, "reduce_min_f32");
+}
+
+// ===========================================================================
+// IndexSelect — f32 source + u32 ids (V.2.D)
+// ===========================================================================
+//
+// Two inputs (src, ids) + one output. `OpParams::IndexSelect` carries
+// the pre-computed geometry (outer/inner counts, source dim size,
+// index count). The Slang kernel is dtype-aware via the descriptor
+// binding (f32 storage buffer); V.3 fans out to other source dtypes.
+
+pub mod indexing {
+    use super::*;
+
+    pub fn index_select_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::indexing::index_select_f32: expected 2 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, source_dim_size, n_indices, inner_count) = match params {
+            OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count } => {
+                (*outer_count, *source_dim_size, *n_indices, *inner_count)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::indexing::index_select_f32: expected OpParams::IndexSelect, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let src_guard = read_storage(&inputs[0])?;
+        let ids_guard = read_storage(&inputs[1])?;
+        if ids_guard.dtype != DType::U32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::indexing::index_select_f32: ids must be U32, got {:?}",
+                ids_guard.dtype,
+            )).bt());
+        }
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src = vulkan_input(&src_guard)?;
+        let ids = vulkan_input(&ids_guard)?;
+        let backend = src.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::indexing::index_select_f32: src has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.index_select_f32_bytes(
+            src, ids, out,
+            outer_count, source_dim_size, n_indices, inner_count,
+        )
+    }
+}
+
+// ===========================================================================
 // register_vulkan_kernels — binding-table population
 // ===========================================================================
 
@@ -388,4 +606,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- RoPE (V.2.C, f32) — 3-input via pre-computed cos/sin -----
     table.register(OpKind::Rope, &u(f32), vk, attention::rope_f32);
+
+    // ----- IndexSelect (V.2.D, f32 src + u32 ids) -----
+    let idx_dts = [f32, DType::U32, f32];
+    table.register(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32);
+
+    // ----- Reduce f32 (V.2.D) — Sum / Max / Min (Mean deferred to V.3) -----
+    table.register(OpKind::SumReduce, &u(f32), vk, reduce::sum_f32);
+    table.register(OpKind::MaxReduce, &u(f32), vk, reduce::max_f32);
+    table.register(OpKind::MinReduce, &u(f32), vk, reduce::min_f32);
+
+    // ----- Concat f32 (V.2.D) — N==2 only; N>2 falls back to next alt -----
+    table.register(OpKind::Concat, &u(f32), vk, concat::concat_f32);
 }

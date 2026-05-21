@@ -1320,6 +1320,303 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f32 binary concat along `dim`. Output shape == inputs with
+    /// `dim` replaced by `a_dim + b_dim`. Rank ≤ 4 (the legacy
+    /// kernel's limit). Inputs must be contiguous on the non-concat
+    /// dims; the kernel respects supplied strides.
+    pub fn concat_along_dim_f32_bytes(
+        &self,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        dim: usize,
+        a_layout: &Layout,
+        b_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let a_dims = a_layout.shape().dims();
+        let b_dims = b_layout.shape().dims();
+        if a_dims.len() != b_dims.len() || dim >= a_dims.len() {
+            fuel_core_types::bail!(
+                "concat_along_dim_f32_bytes: rank/dim mismatch (a={a_dims:?}, b={b_dims:?}, dim={dim})",
+            );
+        }
+        for (i, (&da, &db)) in a_dims.iter().zip(b_dims.iter()).enumerate() {
+            if i != dim && da != db {
+                fuel_core_types::bail!(
+                    "concat_along_dim_f32_bytes: non-concat dims disagree at {i} (a={da}, b={db})",
+                );
+            }
+        }
+        let rank = a_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!(
+                "concat_along_dim_f32_bytes: rank ≤ 4 required, got {rank}",
+            );
+        }
+        let a_dim = a_dims[dim];
+        let b_dim = b_dims[dim];
+        let mut out_dims_vec: Vec<usize> = a_dims.to_vec();
+        out_dims_vec[dim] = a_dim + b_dim;
+        let out_elems: usize = out_dims_vec.iter().product();
+        let need_out_bytes = out_elems * std::mem::size_of::<f32>();
+        if out.len_bytes() < need_out_bytes {
+            fuel_core_types::bail!(
+                "concat_along_dim_f32_bytes: out {} bytes < required {}",
+                out.len_bytes(), need_out_bytes,
+            );
+        }
+
+        let pad = 4 - rank;
+        let mut out_d = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        for i in 0..rank {
+            out_d[pad + i] = out_dims_vec[i] as u32;
+            a_s[pad + i] = a_layout.stride()[i] as u32;
+            b_s[pad + i] = b_layout.stride()[i] as u32;
+        }
+        let concat_dim_padded = (pad + dim) as u32;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct CParams {
+            out_d0: u32, out_d1: u32, out_d2: u32, out_d3: u32,
+            concat_dim: u32, a_dim: u32, b_dim: u32, total: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
+        let p = CParams {
+            out_d0: out_d[0], out_d1: out_d[1], out_d2: out_d[2], out_d3: out_d[3],
+            concat_dim: concat_dim_padded,
+            a_dim: a_dim as u32,
+            b_dim: b_dim as u32,
+            total: out_elems as u32,
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+        };
+
+        let a_buf = a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "concat_along_dim_f32_bytes: a is host-evicted; fault back first".into(),
+        ))?;
+        let b_buf = b.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "concat_along_dim_f32_bytes: b is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "concat_along_dim_f32_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<CParams>() as u64);
+
+        let groups = ((out_elems as u32 + 63) / 64).max(1);
+        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "concat_along_dim_f32_bytes",
+            &self.pipelines.concat_along_dim_pipeline,
+            &self.pipelines.concat_along_dim_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// f32 multi-axis Reduce. `op_id`: 0=Sum, 1=Max, 2=Min. Mirrors
+    /// the legacy `fn reduce` two-fast-path strategy:
+    ///
+    /// - **Full reduction** (`dims.is_empty()` or `dims.len() == rank`):
+    ///   one-thread reduce of the whole input into a single scalar
+    ///   via `reduce_pipeline`.
+    /// - **Last-dim reduction** (`dims == [rank-1]`): per-row reduce
+    ///   via `reduce_last_dim_pipeline`.
+    ///
+    /// Returns `Err` for any other dim combination — the
+    /// pipelined-executor router falls back to a CPU alternative in
+    /// that case. (V.3 work: a strided reduce kernel for mid/leading
+    /// dims.)
+    pub fn reduce_f32_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        dims: &[usize],
+    ) -> fuel_core_types::Result<()> {
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let shape = layout.shape();
+        let rank = shape.dims().len();
+        let elem_count = shape.dims().iter().product::<usize>();
+
+        // Fast path 1: full reduction.
+        if dims.is_empty() || dims.len() == rank {
+            if out.len_bytes() < std::mem::size_of::<f32>() {
+                fuel_core_types::bail!(
+                    "{op_name}: full-reduce output buffer {} bytes < 4",
+                    out.len_bytes(),
+                );
+            }
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct RParams { n: u32, op_id: u32 }
+            let p = RParams { n: elem_count as u32, op_id };
+            let (pbuf, pmem) = self.upload_params(&p)?;
+
+            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+                .map_err(vk_err)?;
+            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+            let rb = [in_buf.raw() as u64];
+            let wb = [out_buf.raw() as u64];
+            self.record_dispatch_batched(
+                op_name,
+                &self.pipelines.reduce_pipeline,
+                &self.pipelines.reduce_layout,
+                desc, (1, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+            )?;
+            self.flush_pending()?;
+            return Ok(());
+        }
+
+        // Fast path 2: single last-dim reduction.
+        if dims.len() == 1 && dims[0] == rank - 1 {
+            let dims_slice = shape.dims();
+            let n_cols = dims_slice[rank - 1];
+            let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+            if n_rows == 0 || n_cols == 0 {
+                fuel_core_types::bail!(
+                    "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
+                );
+            }
+            let need_out_bytes = n_rows * std::mem::size_of::<f32>();
+            if out.len_bytes() < need_out_bytes {
+                fuel_core_types::bail!(
+                    "{op_name}: last-dim out {} bytes < required {}",
+                    out.len_bytes(), need_out_bytes,
+                );
+            }
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+            let p = RLParams {
+                n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0,
+            };
+            let (pbuf, pmem) = self.upload_params(&p)?;
+
+            let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+                .map_err(vk_err)?;
+            desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+            desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+            let rb = [in_buf.raw() as u64];
+            let wb = [out_buf.raw() as u64];
+            self.record_dispatch_batched(
+                op_name,
+                &self.pipelines.reduce_last_dim_pipeline,
+                &self.pipelines.reduce_last_dim_layout,
+                desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+            )?;
+            self.flush_pending()?;
+            return Ok(());
+        }
+
+        // No other dim combo supported — caller should fall back.
+        fuel_core_types::bail!(
+            "{op_name}: reduce along non-last dim(s) {:?} not yet native (rank={rank})",
+            dims,
+        )
+    }
+
+    /// f32 IndexSelect: gather slices along the selected dim from
+    /// `src` using rank-1 U32 `ids`. The geometry is pre-computed
+    /// upstream and passed via `OpParams::IndexSelect`:
+    /// - `outer_count` = product of dims before the selected axis
+    /// - `source_dim_size` = src.dims[axis]
+    /// - `n_indices` = ids.len() (also the output axis size)
+    /// - `inner_count` = product of dims after the selected axis
+    ///
+    /// Output buffer must be sized
+    /// `outer_count * n_indices * inner_count * 4 bytes`.
+    pub fn index_select_f32_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        ids: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        source_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        let outer = outer_count;
+        let axis_in = source_dim_size;
+        let inner = inner_count;
+        let axis_out = n_indices;
+        let out_size = outer * axis_out * inner;
+        let need_bytes = out_size * std::mem::size_of::<f32>();
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "index_select_f32_bytes: out buffer {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct IParams {
+            out_size: u32, outer: u32, axis_out: u32, inner: u32,
+            axis_in: u32, _pad0: u32, _pad1: u32, _pad2: u32,
+        }
+        let p = IParams {
+            out_size: out_size as u32,
+            outer: outer as u32,
+            axis_out: axis_out as u32,
+            inner: inner as u32,
+            axis_in: axis_in as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
+        };
+
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "index_select_f32_bytes: src is host-evicted; fault back first".into(),
+        ))?;
+        let ids_buf = ids.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "index_select_f32_bytes: ids is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "index_select_f32_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, ids_buf, 0, ids.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
+
+        let groups = Self::workgroups(out_size);
+        let rb = [src_buf.raw() as u64, ids_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "index_select_f32_bytes",
+            &self.pipelines.index_select_pipeline,
+            &self.pipelines.index_select_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 RoPE with pre-computed cos/sin tables. Three storage
     /// inputs: `x` is `[..., seq, head_dim]`, `cos` and `sin` are
     /// `[seq, head_dim/2]` (or `[seq, head_dim]` — the kernel only
