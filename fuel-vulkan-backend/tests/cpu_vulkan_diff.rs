@@ -10,14 +10,14 @@
 //! (not available in all CI environments). Invoke explicitly with:
 //!
 //! ```sh
-//! cargo test -p fuel-graph-vulkan --test cpu_vulkan_diff -- --ignored --nocapture
+//! cargo test -p fuel-vulkan-backend --test cpu_vulkan_diff -- --ignored --nocapture
 //! ```
 
 use fuel_core_types::Shape;
 use fuel_graph::Tensor;
 use fuel_graph_cpu::CpuBackend;
 use fuel_graph_executor::{GraphBackend, GraphExecutor};
-use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 
 /// Phase 7.5 G2: tests need a real device for slot-populating
@@ -787,8 +787,8 @@ fn vulkan_dequant_q8_0_matches_cpu_reference() {
 #[test]
 #[ignore]
 fn vulkan_evict_and_fault_back_preserves_data() {
-    use fuel_graph_vulkan::residency::ResidencyFile;
-    use fuel_graph_vulkan::Tier;
+    use fuel_vulkan_backend::residency::ResidencyFile;
+    use fuel_vulkan_backend::Tier;
     use std::sync::Arc;
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -886,8 +886,8 @@ fn vulkan_vram_budget_queries_return_sensible_values() {
 fn vulkan_kvcache_park_unpark_preserves_layer_data() {
     use fuel_core::lazy::{KVCache, KVCacheEntry};
     use fuel_graph_executor::GraphBackend;
-    use fuel_graph_vulkan::residency::ResidencyFile;
-    use fuel_graph_vulkan::Tier;
+    use fuel_vulkan_backend::residency::ResidencyFile;
+    use fuel_vulkan_backend::Tier;
     use std::sync::Arc;
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -978,8 +978,8 @@ fn vulkan_kvcache_park_unpark_preserves_layer_data() {
 #[test]
 #[ignore]
 fn vulkan_evict_from_candidates_respects_target_bytes() {
-    use fuel_graph_vulkan::residency::ResidencyFile;
-    use fuel_graph_vulkan::Tier;
+    use fuel_vulkan_backend::residency::ResidencyFile;
+    use fuel_vulkan_backend::Tier;
     use std::sync::Arc;
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -1031,7 +1031,7 @@ fn vulkan_evict_from_candidates_respects_target_bytes() {
 #[test]
 #[ignore]
 fn vulkan_evict_from_candidates_zero_target_evicts_nothing() {
-    use fuel_graph_vulkan::residency::ResidencyFile;
+    use fuel_vulkan_backend::residency::ResidencyFile;
     use std::sync::Arc;
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -1063,7 +1063,7 @@ fn vulkan_evict_from_candidates_zero_target_evicts_nothing() {
 #[ignore]
 #[should_panic(expected = "host-backed")]
 fn vulkan_host_backed_buffer_panics() {
-    use fuel_graph_vulkan::residency::ResidencyFile;
+    use fuel_vulkan_backend::residency::ResidencyFile;
     use std::sync::Arc;
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -1153,7 +1153,7 @@ fn vulkan_quantize_q8_0_roundtrip() {
 #[test]
 #[ignore]
 fn vulkan_qmatvec_q4_0_matches_dequant_reference() {
-    use fuel_graph_vulkan::VulkanBackend;
+    use fuel_vulkan_backend::VulkanBackend;
     for (n, k_blocks, seed) in [
         (8,   4,  1u32),   // K=128,  small
         (64,  16, 2),      // K=512

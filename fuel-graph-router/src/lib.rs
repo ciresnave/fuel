@@ -59,7 +59,7 @@ use fuel_aocl_cpu_backend::AoclBackend;
 use fuel_mkl_cpu_backend::MklBackend;
 
 #[cfg(feature = "vulkan")]
-use fuel_graph_vulkan::{VulkanBackend, VulkanStorage};
+use fuel_vulkan_backend::{VulkanBackend, VulkanStorage};
 
 #[cfg(feature = "cuda")]
 use fuel_cuda_backend::CudaBackend;
@@ -808,7 +808,7 @@ impl Router {
         #[cfg(feature = "vulkan")]
         {
             if let Ok(vk) = VulkanBackend::with_selection(
-                fuel_graph_vulkan::DeviceSelection::PreferDiscrete
+                fuel_vulkan_backend::DeviceSelection::PreferDiscrete
             ) {
                 r = r.add_vulkan(vk);
             }

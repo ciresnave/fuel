@@ -64,7 +64,7 @@ pub trait HostStorage {
 /// - `fuel_cpu_backend::CpuStorageBytes` (Phase A3.0)
 /// - `fuel_metal_backend::MetalStorageBytes` (Phase A3.1)
 /// - `fuel_cuda_backend::CudaStorageBytes` (Phase A3.2)
-/// - `fuel_graph_vulkan::VulkanStorageBytes` (Phase A3.3)
+/// - `fuel_vulkan_backend::VulkanStorageBytes` (Phase A3.3)
 pub trait BackendStorage: Send + Sync + std::fmt::Debug {
     /// Total addressable byte count, regardless of dtype.
     ///

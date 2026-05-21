@@ -31,7 +31,7 @@ Fuel is six conceptual layers stacked downward. Dependencies flow only downward 
 │  fuel-graph-executor, fuel-storage, fuel-core-types                        │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Backends / Kernels                                                        │
-│  fuel-cpu-backend, fuel-cuda-backend, fuel-graph-vulkan,                  │
+│  fuel-cpu-backend, fuel-cuda-backend, fuel-vulkan-backend,                  │
 │  fuel-metal-backend, fuel-aocl-cpu-backend, fuel-mkl-cpu-backend,         │
 │  fuel-cuda-kernels, fuel-flash-attn-cuda, fuel-conv, fuel-quantized       │
 └────────────────────────────────────────────────────────────────────────────┘

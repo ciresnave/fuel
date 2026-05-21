@@ -180,7 +180,7 @@ because they were needed before any retreat to inference-only.
 
 Two short prerequisites surfaced 2026-05-21:
 
-**V.0.1 — Rename `fuel-graph-vulkan` → `fuel-vulkan-backend`** so
+**V.0.1 — Rename `fuel-vulkan-backend` → `fuel-vulkan-backend`** so
 the directory structure mirrors `fuel-cuda-backend` exactly.
 Different backends should have roughly equivalent crates so a
 developer switching from one to another doesn't have to relearn
@@ -189,12 +189,12 @@ where things live.
 Scope (mechanical find/replace):
 - Rename crate dir + `Cargo.toml` package name
 - Update workspace `Cargo.toml` member entry
-- Update ~25 `use fuel_graph_vulkan::*` references across
+- Update ~25 `use fuel_vulkan_backend::*` references across
   `fuel-core`, `fuel-core-types`, `fuel-cuda-backend`,
   `fuel-graph-router`, `fuel-lazy-examples`, `fuel-storage`, plus
   the crate's own `tests/` and `src/`
 - Update `fuel-storage/src/lib.rs:52`
-  (`pub use fuel_graph_vulkan::VulkanStorageBytes as VulkanStorage`)
+  (`pub use fuel_vulkan_backend::VulkanStorageBytes as VulkanStorage`)
 
 Estimated effort: 1 session, mostly find/replace + workspace
 build verification.
@@ -206,8 +206,8 @@ Compared Vulkan's per-launch state plumbing with CUDA's:
 | Concept | CUDA (baracuda) | Vulkan (existing) |
 |---|---|---|
 | Per-launch params | Typed C function arguments (`stride: u32`, etc.) | `ConstantBuffer<Params>` (uniform buffer) bound to descriptor set, or HLSL `push_constant`; existing fuel kernels use `ConstantBuffer<Params>` |
-| Per-launch scratch | Caller passes `workspace: *mut c_void, workspace_bytes: usize` | Inline `alloc_device(bytes, ...)` before dispatch + descriptor-set binding as an additional storage buffer (already in use — see `conv2d` im2col `patches` scratch at `fuel-graph-vulkan/src/lib.rs:2067`) |
-| Pipeline-level state | None (each kernel is a function pointer) | Pre-created `PipelineLayout` cached in a pipeline cache (lazy init at first use; structure already exists in `fuel-graph-vulkan/src/pipelines.rs`) |
+| Per-launch scratch | Caller passes `workspace: *mut c_void, workspace_bytes: usize` | Inline `alloc_device(bytes, ...)` before dispatch + descriptor-set binding as an additional storage buffer (already in use — see `conv2d` im2col `patches` scratch at `fuel-vulkan-backend/src/lib.rs:2067`) |
+| Pipeline-level state | None (each kernel is a function pointer) | Pre-created `PipelineLayout` cached in a pipeline cache (lazy init at first use; structure already exists in `fuel-vulkan-backend/src/pipelines.rs`) |
 | Stream / queue | `CUstream` per call | Vulkan command buffer recorded onto the device's queue (existing pattern via the `recorder.rs`) |
 
 **Conclusion**: no new architecture needed. The Vulkan pattern
@@ -217,7 +217,7 @@ plumbing handles parameter passing. New V.3 Slang kernels follow
 the existing fuel Vulkan pattern (`ConstantBuffer<Params>` +
 storage buffer descriptors); the `register_vulkan_kernels`
 wrappers in V.1/V.2 follow the existing `conv2d` /
-`flash_attention` wrapper pattern in `fuel-graph-vulkan/src/lib.rs`.
+`flash_attention` wrapper pattern in `fuel-vulkan-backend/src/lib.rs`.
 
 ### V.1 — Foundation (mandatory; blocks everything downstream)
 
@@ -230,7 +230,7 @@ dispatch system with ONE op working end-to-end.
    allocation match arm to handle `BackendId::Vulkan`. Mirror the
    CUDA shape: derive the device handle from the first input's
    `BackendStorage::Vulkan(_)` variant, allocate via
-   `fuel_graph_vulkan::VulkanStorageBytes::alloc(device, n_bytes)`
+   `fuel_vulkan_backend::VulkanStorageBytes::alloc(device, n_bytes)`
    (or equivalent — verify the API).
 2. Extend `fuel-storage/src/pipelined.rs::auto_contiguize` with a
    `BackendStorage::Vulkan(_)` arm. For V.1, the slow path (D2H →
@@ -239,7 +239,7 @@ dispatch system with ONE op working end-to-end.
 3. Create `fuel-storage/src/vulkan_dispatch.rs` parallel to
    `baracuda_dispatch.rs`. Mirror the macro-based dispatch wrapper
    pattern. Empty `register_vulkan_kernels` initially.
-4. In `fuel-graph-vulkan` (or a new `fuel-vulkan-backend` crate, TBD
+4. In `fuel-vulkan-backend` (or a new `fuel-vulkan-backend` crate, TBD
    — see "Architectural questions" below): expose per-kernel Rust
    functions that pipeline SPIR-V → descriptor sets → dispatch.
    Pattern: each kernel takes `&VulkanDevice, &VulkanStorageBytes,
@@ -355,8 +355,8 @@ with test updates.
 All four originally-open questions closed by the 2026-05-21 audit
 round:
 
-1. **`fuel-vulkan-backend` crate vs extending `fuel-graph-vulkan`**:
-   resolved → rename `fuel-graph-vulkan` to `fuel-vulkan-backend`
+1. **`fuel-vulkan-backend` crate vs extending `fuel-vulkan-backend`**:
+   resolved → rename `fuel-vulkan-backend` to `fuel-vulkan-backend`
    in V.0.1. Different backends should have roughly equivalent
    crate structures so developers can switch contexts without
    relearning where things live.
@@ -410,7 +410,7 @@ round:
 
 ## Recommendation
 
-Start with **V.0.1** (crate rename `fuel-graph-vulkan` →
+Start with **V.0.1** (crate rename `fuel-vulkan-backend` →
 `fuel-vulkan-backend`). It's bounded, mechanical, removes a
 naming-asymmetry papercut, and produces no ambiguity later when
 V.1's new modules need a home that mirrors `fuel-cuda-backend`.

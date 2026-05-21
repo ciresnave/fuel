@@ -229,7 +229,7 @@ impl VulkanBackend {
         let instance = Instance::new(InstanceCreateInfo {
             application_name: Some("fuel"),
             application_version: ApiVersion::V1_0,
-            engine_name: Some("fuel-graph-vulkan"),
+            engine_name: Some("fuel-vulkan-backend"),
             engine_version: ApiVersion::V1_0,
             api_version: ApiVersion::V1_2,
             ..Default::default()
@@ -377,7 +377,7 @@ impl VulkanBackend {
         let instance = Instance::new(InstanceCreateInfo {
             application_name: Some("fuel"),
             application_version: ApiVersion::V1_0,
-            engine_name: Some("fuel-graph-vulkan"),
+            engine_name: Some("fuel-vulkan-backend"),
             engine_version: ApiVersion::V1_0,
             api_version: ApiVersion::V1_2,
             ..Default::default()

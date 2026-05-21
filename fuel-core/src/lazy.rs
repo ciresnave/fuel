@@ -878,7 +878,7 @@ impl LazyTensor {
     #[cfg(feature = "vulkan")]
     pub fn realize_f32_vulkan(
         &self,
-        executor: &mut GraphExecutor<fuel_graph_vulkan::VulkanBackend>,
+        executor: &mut GraphExecutor<fuel_vulkan_backend::VulkanBackend>,
     ) -> Vec<f32> {
         executor.realize_f32(&self.inner).into_vec()
     }
@@ -3507,7 +3507,7 @@ pub type GpuKVCache = KVCache<fuel_cuda_backend::CudaBackend>;
 // primitives.
 
 #[cfg(feature = "vulkan")]
-impl KVCache<fuel_graph_vulkan::VulkanBackend> {
+impl KVCache<fuel_vulkan_backend::VulkanBackend> {
     /// Evict all layer K/V storage to the given residency file,
     /// freeing VRAM. `cached_len`, `parked` flag, and layer metadata
     /// are preserved so `unpark` can bring it back faithfully.
@@ -3519,8 +3519,8 @@ impl KVCache<fuel_graph_vulkan::VulkanBackend> {
     ///   own kernel path to preserve block structure).
     pub fn park(
         &mut self,
-        backend: &fuel_graph_vulkan::VulkanBackend,
-        file: &std::sync::Arc<fuel_graph_vulkan::residency::ResidencyFile>,
+        backend: &fuel_vulkan_backend::VulkanBackend,
+        file: &std::sync::Arc<fuel_vulkan_backend::residency::ResidencyFile>,
     ) -> crate::Result<()> {
         if self.parked {
             fuel_core_types::bail!("KVCache::park: cache is already parked");
@@ -3558,7 +3558,7 @@ impl KVCache<fuel_graph_vulkan::VulkanBackend> {
     /// [`Self::park`]. Fails if the cache isn't parked.
     pub fn unpark(
         &mut self,
-        backend: &fuel_graph_vulkan::VulkanBackend,
+        backend: &fuel_vulkan_backend::VulkanBackend,
     ) -> crate::Result<()> {
         if !self.parked {
             fuel_core_types::bail!("KVCache::unpark: cache is not parked");

@@ -257,8 +257,8 @@ fn measure_h2d_d2h(
         #[cfg(feature = "vulkan")]
         BackendId::Vulkan => {
             use fuel_graph_executor::GraphBackend;
-            let backend = fuel_graph_vulkan::VulkanBackend::with_selection(
-                fuel_graph_vulkan::DeviceSelection::Index(device.device_index as usize),
+            let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
+                fuel_vulkan_backend::DeviceSelection::Index(device.device_index as usize),
             ).ok()?;
             measure_round_trip_via_backend(&backend, &host_buf, &shape, bytes, iters)
         }

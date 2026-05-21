@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fuel::lazy::{LlamaModel, LlamaTokenizer, WeightStorage};
     use fuel::train::{self, OptimizerConfig, Parameter, TrainState};
     use fuel_graph_executor::GraphExecutor;
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use fuel::Shape;
     use std::io::Write;
     use std::sync::Arc;

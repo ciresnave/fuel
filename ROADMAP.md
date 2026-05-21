@@ -1551,7 +1551,7 @@ Historical state: CUDA was split across `fuel-cuda` (cudarc wrapper
 plus ML-layer dispatch code inherited from candle-cuda) and
 `fuel-cuda-backend` (lazy-graph integration on top of it). Vulkan
 parallel already looked different — `vulkane` (external FFI) feeding
-`fuel-graph-vulkan` (ML-layer + graph) directly with no intermediate
+`fuel-vulkan-backend` (ML-layer + graph) directly with no intermediate
 wrapper crate.
 
 With the cudarc → baracuda migration in flight, the two sides were
@@ -1575,7 +1575,7 @@ Parallel to:
 ```text
 vulkane              (external, Vulkan FFI)
    │
-fuel-graph-vulkan    (ML-layer + graph integration)
+fuel-vulkan-backend    (ML-layer + graph integration)
 fuel-vulkan-kernels  (SPIR-V bundle)
    │
 fuel-core vulkan_backend (future — same delegation shape)
