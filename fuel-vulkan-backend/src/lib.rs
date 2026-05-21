@@ -1320,6 +1320,136 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f32 batched matrix multiply on the byte-storage path. Mirrors
+    /// the legacy `GraphBackend::matmul` but writes into a pre-allocated
+    /// `out` buffer (the pipelined-executor pattern). Pipeline selection:
+    /// - `m == 1` → matvec (subgroup-reduced dot, one wg per output col)
+    /// - `m < 32` → matmul (small-M reg-tile)
+    /// - `m >= 32` → matmul_tiled (shared-memory tiled)
+    ///
+    /// Inputs must be contiguous (auto-contiguize handles that upstream);
+    /// strides are derived from m,n,k + batch counts. GQA broadcast
+    /// honored via per-batch-dim n_rep: when `total_lhs_batch >
+    /// total_rhs_batch && lhs_batch % rhs_batch == 0`, the kernel
+    /// repeats each rhs batch head `lhs/rhs` times. Reverse broadcast
+    /// (rhs > lhs) bails — falls back to CPU/CUDA alternative.
+    ///
+    /// Mixed-bf16 + cooperative-matrix paths are deferred to V.3.
+    pub fn matmul_f32_bytes(
+        &self,
+        lhs: &VulkanStorageBytes,
+        rhs: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> fuel_core_types::Result<()> {
+        if lhs_batch_dims.len() != rhs_batch_dims.len() {
+            fuel_core_types::bail!(
+                "matmul_f32_bytes: batch ranks must match (lhs={}, rhs={})",
+                lhs_batch_dims.len(), rhs_batch_dims.len(),
+            );
+        }
+        let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+        let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+        let (batch, n_rep) = if lhs_batch == rhs_batch {
+            (lhs_batch, 1usize)
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+            (lhs_batch, lhs_batch / rhs_batch)
+        } else {
+            fuel_core_types::bail!(
+                "matmul_f32_bytes: unsupported batch combo (lhs={lhs_batch}, rhs={rhs_batch}); \
+                 only equal or GQA-divisible (lhs > rhs && lhs % rhs == 0) — falls back to CPU/CUDA",
+            );
+        };
+
+        let elem = std::mem::size_of::<f32>();
+        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(elem);
+        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(elem);
+        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(elem);
+        if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "matmul_f32_bytes: buffer too small (lhs need {need_lhs} have {}; \
+                 rhs need {need_rhs} have {}; out need {need_out} have {})",
+                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct MatmulParams {
+            m: u32, n: u32, k: u32,
+            sa_batch: u32, sa_row: u32, sa_col: u32,
+            sb_batch: u32, sb_row: u32, sb_col: u32,
+            sc_batch: u32,
+            n_rep: u32,
+            _pad: u32,
+        }
+        let params = MatmulParams {
+            m: m as u32, n: n as u32, k: k as u32,
+            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
+            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
+            sc_batch: (m * n) as u32,
+            n_rep: n_rep as u32, _pad: 0,
+        };
+
+        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_f32_bytes: lhs is host-evicted; fault back first".into(),
+        ))?;
+        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_f32_bytes: rhs is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_f32_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&params)?;
+        let params_size = std::mem::size_of::<MatmulParams>() as u64;
+
+        let (pipeline, pipe_layout, op_name, gx, gy, gz) = if m == 1 {
+            (
+                &self.pipelines.matvec_pipeline,
+                &self.pipelines.matvec_layout,
+                "matvec",
+                n as u32, 1u32, batch as u32,
+            )
+        } else if m < 32 {
+            (
+                &self.pipelines.matmul_pipeline,
+                &self.pipelines.matmul_layout,
+                "matmul",
+                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+            )
+        } else {
+            (
+                &self.pipelines.matmul_tiled_pipeline,
+                &self.pipelines.matmul_tiled_layout,
+                "matmul_tiled",
+                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+            )
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+
+        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (gx, gy, gz),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 binary concat along `dim`. Output shape == inputs with
     /// `dim` replaced by `a_dim + b_dim`. Rank ≤ 4 (the legacy
     /// kernel's limit). Inputs must be contiguous on the non-concat

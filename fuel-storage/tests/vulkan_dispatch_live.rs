@@ -533,6 +533,172 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
     }
 }
 
+/// Helper for matmul: builds storages, dispatches, returns output.
+fn run_matmul_f32(
+    backend: &Arc<VulkanBackend>,
+    lhs: &[f32], lhs_batch: &[usize],
+    rhs: &[f32], rhs_batch: &[usize],
+    m: usize, n: usize, k: usize,
+) -> Vec<f32> {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let lhs_storage = upload_f32(backend, lhs);
+    let rhs_storage = upload_f32(backend, rhs);
+    let lhs_total: usize = lhs_batch.iter().product::<usize>().max(1);
+    let out_n = lhs_total * m * n;
+    let out_bytes = backend.alloc_bytes_handle(out_n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let lhs_arc = Arc::new(RwLock::new(lhs_storage));
+    let rhs_arc = Arc::new(RwLock::new(rhs_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MatMul,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let mut lhs_dims = lhs_batch.to_vec();
+    lhs_dims.extend_from_slice(&[m, k]);
+    let mut rhs_dims = rhs_batch.to_vec();
+    rhs_dims.extend_from_slice(&[k, n]);
+    let mut out_dims = lhs_batch.to_vec();
+    out_dims.extend_from_slice(&[m, n]);
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&lhs_dims)),
+        Layout::contiguous(Shape::from_dims(&rhs_dims)),
+        Layout::contiguous(Shape::from_dims(&out_dims)),
+    ];
+    kernel(
+        &[Arc::clone(&lhs_arc), Arc::clone(&rhs_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Matmul {
+            lhs_batch_dims: lhs_batch.to_vec(),
+            rhs_batch_dims: rhs_batch.to_vec(),
+            m, n, k,
+        },
+    ).expect("matmul dispatch");
+    download_f32(backend, &out_arc.read().unwrap())
+}
+
+/// Matvec path: m == 1. 1×3 @ 3×2 → 1×2.
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_matvec_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    // A = [[1, 2, 3]] (1×3); B = [[1, 2], [3, 4], [5, 6]] (3×2).
+    // A @ B = [[1+6+15, 2+8+18]] = [[22, 28]].
+    let got = run_matmul_f32(
+        &backend,
+        &[1.0, 2.0, 3.0], &[],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[],
+        1, 2, 3,
+    );
+    assert_eq!(got, vec![22.0, 28.0]);
+}
+
+/// Small-M path: 2 ≤ m < 32. 2×3 @ 3×2 → 2×2.
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_small_m_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    // A = [[1, 2, 3], [4, 5, 6]]; B = [[1, 2], [3, 4], [5, 6]].
+    // Row 0: [22, 28]; Row 1: [4+15+30, 8+20+36] = [49, 64].
+    let got = run_matmul_f32(
+        &backend,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[],
+        2, 2, 3,
+    );
+    assert_eq!(got, vec![22.0, 28.0, 49.0, 64.0]);
+}
+
+/// Tiled-M path: m >= 32. Build a 32×4 @ 4×3 with deterministic values.
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_tiled_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let m = 32usize;
+    let n = 3usize;
+    let k = 4usize;
+    // A[i, j] = i; B[i, j] = j+1. Row sum across k is i * sum(j+1 for j..k=4)
+    //                                          = i * (1+1+1+1) for each col? No.
+    // Actually A[i,j] = i. So row i is [i,i,i,i]. B[i,j] = j+1.
+    // (A @ B)[i, j] = sum_k(A[i,k] * B[k,j]) = sum_k(i * (j+1)) = i * k * (j+1).
+    // Wait B[k,j] = j+1 (depends only on j). So sum_k(i * (j+1)) = i * k * (j+1) = i * 4 * (j+1).
+    let mut a = Vec::with_capacity(m * k);
+    for i in 0..m {
+        for _j in 0..k {
+            a.push(i as f32);
+        }
+    }
+    let mut b = Vec::with_capacity(k * n);
+    for _i in 0..k {
+        for j in 0..n {
+            b.push((j + 1) as f32);
+        }
+    }
+    let got = run_matmul_f32(&backend, &a, &[], &b, &[], m, n, k);
+    for i in 0..m {
+        for j in 0..n {
+            let expected = (i * k * (j + 1)) as f32;
+            let g = got[i * n + j];
+            assert!((g - expected).abs() < 1e-3,
+                "tiled matmul [{i}, {j}]: got {g}, expected {expected}");
+        }
+    }
+}
+
+/// Batched matmul: B=2 batch heads. lhs [2, 2, 3] @ rhs [2, 3, 2] → [2, 2, 2].
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_batched_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    // Batch 0: same as small_m_f32 → [22, 28, 49, 64]
+    // Batch 1: A=[[1,1,1],[2,2,2]], B=[[1,1],[1,1],[1,1]] → [[3,3],[6,6]]
+    let lhs: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,  // batch 0
+        1.0, 1.0, 1.0, 2.0, 2.0, 2.0,  // batch 1
+    ];
+    let rhs: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,  // batch 0
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,  // batch 1
+    ];
+    let got = run_matmul_f32(&backend, &lhs, &[2], &rhs, &[2], 2, 2, 3);
+    assert_eq!(got, vec![
+        22.0, 28.0, 49.0, 64.0,        // batch 0
+        3.0, 3.0, 6.0, 6.0,            // batch 1
+    ]);
+}
+
+/// GQA: lhs has 2× the batch heads of rhs. lhs[4,1,3] @ rhs[2,3,2] → [4,1,2].
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_gqa_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    // 4 query heads share 2 key heads (GQA factor = 2).
+    // Q[head_q] @ K[head_q / 2].
+    let lhs: Vec<f32> = vec![
+        1.0, 2.0, 3.0,    // q0
+        4.0, 5.0, 6.0,    // q1
+        1.0, 0.0, 0.0,    // q2
+        0.0, 1.0, 0.0,    // q3
+    ];
+    let rhs: Vec<f32> = vec![
+        // k0 (used by q0, q1): same B as small_m
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+        // k1 (used by q2, q3): identity-like 3x2
+        1.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+    ];
+    let got = run_matmul_f32(&backend, &lhs, &[4], &rhs, &[2], 1, 2, 3);
+    // q0 @ k0 = [22, 28] (same as 1x3 @ 3x2)
+    // q1 @ k0 = [4*1+5*3+6*5, 4*2+5*4+6*6] = [49, 64]
+    // q2 @ k1 = [1*1+0*0+0*1, 1*0+0*1+0*1] = [1, 0]
+    // q3 @ k1 = [0*1+1*0+0*1, 0*0+1*1+0*1] = [0, 1]
+    assert_eq!(got, vec![22.0, 28.0, 49.0, 64.0, 1.0, 0.0, 0.0, 1.0]);
+}
+
 /// Concat binary along last dim: [[1,2,3], [4,5,6]] + [[7,8], [9,10]]
 /// → [[1,2,3,7,8], [4,5,6,9,10]].
 #[test]
