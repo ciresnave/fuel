@@ -20,13 +20,13 @@
 //! Run explicitly:
 //!
 //! ```sh
-//! cargo test -p fuel-graph-vulkan --test conv2d_oracle -- --ignored --nocapture
+//! cargo test -p fuel-vulkan-backend --test conv2d_oracle -- --ignored --nocapture
 //! ```
 
 use fuel_core_types::{HostBuffer, Layout, Shape};
 use fuel_graph::Tensor;
 use fuel_graph_executor::{GraphBackend, GraphExecutor};
-use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 /// Lazily constructed Vulkan executor; skips tests if the backend
 /// doesn't initialize on this host.

@@ -271,7 +271,7 @@ fn cpu_capabilities_match_impl() {
 #[test]
 #[ignore] // Requires a Vulkan device.
 fn vulkan_capabilities_match_impl() {
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     let vk = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("Vulkan device available");
     assert_capabilities_match_impl(&vk);
@@ -622,7 +622,7 @@ fn cpu_router_advertises_core_capabilities_not_q4_0() {
 #[ignore] // Requires Vulkan.
 fn vulkan_router_advertises_q4_0_matmul() {
     use fuel_core_types::Capability;
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
     let vk = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("Vulkan device available");
@@ -679,7 +679,7 @@ fn router_cpu_copy_to_cpu_is_identity() {
 #[test]
 #[ignore] // Requires a Vulkan device.
 fn router_copy_to_roundtrips_cpu_to_vulkan_to_cpu() {
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
     let vk = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("Vulkan device available");
@@ -715,7 +715,7 @@ fn router_copy_to_roundtrips_cpu_to_vulkan_to_cpu() {
 #[test]
 #[ignore] // Requires a Vulkan device.
 fn router_vulkan_default_realizes_graph() {
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
     let vk = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("Vulkan device available");
@@ -747,7 +747,7 @@ fn router_vulkan_default_realizes_graph() {
 #[test]
 #[ignore] // Requires Vulkan.
 fn auto_insert_copies_reconciles_mixed_placement_graph() {
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
     let vk = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("Vulkan device available");
@@ -800,7 +800,7 @@ fn auto_insert_copies_reconciles_mixed_placement_graph() {
 #[test]
 #[ignore]
 fn router_graph_with_explicit_moves() {
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
     let vk = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("Vulkan device available");
@@ -834,7 +834,7 @@ fn router_graph_with_explicit_moves() {
 #[ignore]
 fn residency_planner_analyzes_vulkan_graph_against_vram_budget() {
     use fuel_graph_router::residency_planner::ResidencyPlanner;
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::sync::Arc as StdArc;
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -1335,7 +1335,7 @@ fn cuda_rms_norm_last_dim_matches_cpu_reference() {
 fn router_cpu_plus_vulkan_plus_cuda_routes_per_placement() {
     use fuel_cuda_backend::CudaDevice;
     use fuel_cuda_backend::CudaBackend;
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
     let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
         Ok(b) => b,

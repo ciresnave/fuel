@@ -30,7 +30,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 fuel-cuda-kernels = { workspace = true, optional = true }
 fuel-cuda-backend = { workspace = true, optional = true }
-fuel-graph-vulkan = { workspace = true, optional = true }
+fuel-vulkan-backend = { workspace = true, optional = true }
 fuel-metal-backend = { workspace = true, optional = true }
 fuel-metal-kernels = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
@@ -140,7 +140,7 @@ metal = [
 # Cross-vendor GPU backend via Vulkan (vulkane + precompiled SPIR-V).
 # Use: cargo build --features vulkan. No toolchain required at build
 # time — shaders are precompiled and committed.
-vulkan = ["dep:fuel-graph-vulkan"]
+vulkan = ["dep:fuel-vulkan-backend"]
 
 # fuel-ug (μGPU) experimental backend.
 # Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the

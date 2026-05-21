@@ -366,7 +366,7 @@ CUDA backend (fuel-cuda-backend):
 - q-matmul × {q4_0, q4_k_m, q8_0}
 - flash-attn × {f16, bf16}
 
-Vulkan backend (fuel-graph-vulkan):
+Vulkan backend (fuel-vulkan-backend):
 
 - matmul × {f32, f16}
 - elementwise × {f32, f16, u32}

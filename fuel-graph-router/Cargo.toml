@@ -14,7 +14,7 @@ fuel-graph             = { workspace = true }
 fuel-graph-executor    = { workspace = true }
 fuel-graph-cpu         = { workspace = true }
 fuel-reference-backend = { workspace = true }
-fuel-graph-vulkan      = { workspace = true, optional = true }
+fuel-vulkan-backend      = { workspace = true, optional = true }
 fuel-cuda-backend      = { workspace = true, optional = true }
 fuel-aocl-cpu-backend  = { workspace = true, optional = true }
 fuel-mkl-cpu-backend   = { workspace = true, optional = true }
@@ -22,7 +22,7 @@ half                   = { workspace = true }
 
 [features]
 default = []
-vulkan  = ["dep:fuel-graph-vulkan"]
+vulkan  = ["dep:fuel-vulkan-backend"]
 cuda    = ["dep:fuel-cuda-backend"]
 aocl    = ["dep:fuel-aocl-cpu-backend"]
 onemkl  = ["dep:fuel-mkl-cpu-backend"]

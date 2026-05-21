@@ -24,7 +24,7 @@ fn main() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fuel::lazy::{LlamaModel, LlamaTokenizer, SamplingStrategy};
     use fuel_graph_executor::GraphExecutor;
-    use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::io::Write;
     use std::time::Instant;
 

@@ -218,11 +218,11 @@ pub struct VulkanFactory;
 impl BackendFactory for VulkanFactory {
     fn id(&self) -> BackendId { BackendId::Vulkan }
     fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_graph_vulkan::probe::enumerate_devices()
+        fuel_vulkan_backend::probe::enumerate_devices()
     }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
-        let backend = fuel_graph_vulkan::VulkanBackend::with_selection(
-            fuel_graph_vulkan::DeviceSelection::Index(device_index as usize),
+        let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
+            fuel_vulkan_backend::DeviceSelection::Index(device_index as usize),
         ).map_err(|e| fuel_core_types::Error::Msg(
             format!("VulkanBackend init failed: {e}")
         ))?;

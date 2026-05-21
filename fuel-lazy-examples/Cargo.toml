@@ -15,7 +15,7 @@
     fuel-graph = { workspace = true }
     fuel-cuda-backend = { workspace = true, optional = true }
     fuel-graph-executor = { workspace = true }
-    fuel-graph-vulkan = { workspace = true, optional = true }
+    fuel-vulkan-backend = { workspace = true, optional = true }
     hf-hub = { workspace = true }
     tracing = { workspace = true }
     tracing-chrome = { workspace = true }
@@ -24,4 +24,4 @@
 [features]
     default = []
     cuda = ["fuel/cuda", "dep:fuel-cuda-backend"]
-    vulkan = ["fuel/vulkan", "dep:fuel-graph-vulkan"]
+    vulkan = ["fuel/vulkan", "dep:fuel-vulkan-backend"]

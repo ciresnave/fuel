@@ -71,7 +71,7 @@ pub enum BackendId {
     Cpu,
     /// `fuel-cuda-backend` via baracuda.
     Cuda,
-    /// `fuel-graph-vulkan` via vulkane.
+    /// `fuel-vulkan-backend` via vulkane.
     Vulkan,
     /// `fuel-metal-backend` (future — not yet probe-wired).
     Metal,

@@ -21,7 +21,7 @@
 //!   Bytes-based, 64-byte aligned, `Arc`-clonable, CoW on mutation.
 //! - `fuel_metal_backend::MetalStorageBytes` — Metal storage (A3.1, pending).
 //! - `fuel_cuda_backend::CudaStorageBytes` — CUDA storage (A3.2, pending).
-//! - `fuel_graph_vulkan::VulkanStorageBytes` — Vulkan storage (A3.3, pending).
+//! - `fuel_vulkan_backend::VulkanStorageBytes` — Vulkan storage (A3.3, pending).
 //!
 //! ## Status
 //!
@@ -46,10 +46,10 @@ pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
 pub use plan::{compile_plan, resolve_kernel, ExecutionPlan, NodeKernelBinding, TolerancePolicy};
 
-/// Vulkan storage variant — re-exported from fuel-graph-vulkan when
+/// Vulkan storage variant — re-exported from fuel-vulkan-backend when
 /// the vulkan feature is enabled.
 #[cfg(feature = "vulkan")]
-pub use fuel_graph_vulkan::VulkanStorageBytes as VulkanStorage;
+pub use fuel_vulkan_backend::VulkanStorageBytes as VulkanStorage;
 
 /// CUDA storage variant — re-exported from fuel-cuda-backend when
 /// the cuda feature is enabled.

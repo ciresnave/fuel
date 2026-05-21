@@ -10,7 +10,7 @@
 use fuel_core::lazy::LazyTensor;
 use fuel_core_types::Shape;
 use fuel_graph_executor::GraphExecutor;
-use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
     let n: usize = shape.iter().product();

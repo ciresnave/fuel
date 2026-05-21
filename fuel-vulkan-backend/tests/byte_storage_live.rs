@@ -3,10 +3,10 @@
 //! run with:
 //!
 //! ```sh
-//! cargo test -p fuel-graph-vulkan --test byte_storage_live -- --ignored --nocapture
+//! cargo test -p fuel-vulkan-backend --test byte_storage_live -- --ignored --nocapture
 //! ```
 
-use fuel_graph_vulkan::{DeviceSelection, VulkanBackend};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 fn backend_or_skip() -> Option<VulkanBackend> {
     match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {

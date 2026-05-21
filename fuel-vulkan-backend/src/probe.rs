@@ -31,7 +31,7 @@ fn vk_err(e: impl std::fmt::Debug) -> Error {
 /// `Device`, queue, or any allocations on GPU memory.
 pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
     let instance = Instance::new(InstanceCreateInfo {
-        engine_name: Some("fuel-graph-vulkan probe"),
+        engine_name: Some("fuel-vulkan-backend probe"),
         api_version: ApiVersion::V1_2,
         ..Default::default()
     }).map_err(vk_err)?;

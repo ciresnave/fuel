@@ -27,7 +27,7 @@ members = [
     "fuel-cuda-backend",
     "fuel-graph-executor",
     "fuel-graph-router",
-    "fuel-graph-vulkan",
+    "fuel-vulkan-backend",
     "fuel-inference",
     "fuel-kernels-source",
     "fuel-vulkan-kernels",
@@ -63,7 +63,7 @@ default-members = [
     "fuel-cuda-backend",
     "fuel-graph-executor",
     "fuel-graph-router",
-    "fuel-graph-vulkan",
+    "fuel-vulkan-backend",
     "fuel-kernels-source",
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
@@ -123,7 +123,7 @@ fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
 fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.2" }
 fuel-graph-executor = { path = "./fuel-graph-executor", version = "0.10.2" }
 fuel-graph-router = { path = "./fuel-graph-router", version = "0.10.2" }
-fuel-graph-vulkan = { path = "./fuel-graph-vulkan", version = "0.10.2" }
+fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }
 fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.10.2" }
 fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }

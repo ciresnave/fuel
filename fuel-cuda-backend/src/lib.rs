@@ -1,6 +1,6 @@
 //! CUDA GPU executor for `fuel-graph` computation graphs + low-level
 //! CUDA primitives (storage, device, kernel dispatch, cuBLAS / cuDNN
-//! wrappers). The parallel Vulkan stack (`vulkane` → `fuel-graph-vulkan`)
+//! wrappers). The parallel Vulkan stack (`vulkane` → `fuel-vulkan-backend`)
 //! uses the same shape: the external FFI crate family (`baracuda-*` here,
 //! `vulkane` there) provides raw bindings; this crate layers the
 //! ML-specific dtype-tagged storage, kernel dispatch, and graph
