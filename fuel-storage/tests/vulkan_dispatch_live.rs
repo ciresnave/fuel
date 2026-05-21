@@ -1062,6 +1062,130 @@ fn vulkan_dispatch_matmul_gqa_f32() {
     assert_eq!(got, vec![22.0, 28.0, 49.0, 64.0, 1.0, 0.0, 0.0, 1.0]);
 }
 
+/// Concat N=3 along last dim: chains via one intermediate allocation.
+#[test]
+#[ignore]
+fn vulkan_dispatch_concat_n3_along_last_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // 3 inputs, each [2 rows]:
+    //   a (2×2): [[1, 2], [3, 4]]
+    //   b (2×3): [[10, 20, 30], [40, 50, 60]]
+    //   c (2×1): [[100], [200]]
+    // Concat along dim=1 → 2×6: [[1, 2, 10, 20, 30, 100],
+    //                            [3, 4, 40, 50, 60, 200]]
+    let a_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    let b_data: Vec<f32> = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0];
+    let c_data: Vec<f32> = vec![100.0, 200.0];
+
+    let a_storage = upload_f32(&backend, &a_data);
+    let b_storage = upload_f32(&backend, &b_data);
+    let c_storage = upload_f32(&backend, &c_data);
+    let out_bytes = backend.alloc_bytes_handle(12 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let c_arc = Arc::new(RwLock::new(c_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Concat,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[2, 2])),
+        Layout::contiguous(Shape::from_dims(&[2, 3])),
+        Layout::contiguous(Shape::from_dims(&[2, 1])),
+        Layout::contiguous(Shape::from_dims(&[2, 6])),
+    ];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc), Arc::clone(&c_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Concat {
+            outer_count: 2,
+            input_dim_sizes: vec![2, 3, 1],
+            inner_count: 1,
+        },
+    ).expect("N=3 concat dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![
+        1.0, 2.0, 10.0, 20.0, 30.0, 100.0,
+        3.0, 4.0, 40.0, 50.0, 60.0, 200.0,
+    ]);
+}
+
+/// Concat N=4 along the leading dim: tests the chain ping-pong.
+#[test]
+#[ignore]
+fn vulkan_dispatch_concat_n4_along_leading_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // 4 inputs, each shape [?, 2]:
+    //   a (1×2): [[1, 2]]
+    //   b (2×2): [[3, 4], [5, 6]]
+    //   c (1×2): [[7, 8]]
+    //   d (1×2): [[9, 10]]
+    // Concat dim=0 → 5×2.
+    let a = vec![1.0_f32, 2.0];
+    let b = vec![3.0_f32, 4.0, 5.0, 6.0];
+    let c = vec![7.0_f32, 8.0];
+    let d = vec![9.0_f32, 10.0];
+
+    let arc_for = |v: &[f32], dim0: usize| {
+        let st = upload_f32(&backend, v);
+        (Arc::new(RwLock::new(st)), Layout::contiguous(Shape::from_dims(&[dim0, 2])))
+    };
+    let (a_arc, a_l) = arc_for(&a, 1);
+    let (b_arc, b_l) = arc_for(&b, 2);
+    let (c_arc, c_l) = arc_for(&c, 1);
+    let (d_arc, d_l) = arc_for(&d, 1);
+
+    let out_n = 5 * 2;
+    let out_bytes = backend.alloc_bytes_handle(out_n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Concat,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![a_l, b_l, c_l, d_l, Layout::contiguous(Shape::from_dims(&[5, 2]))];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc), Arc::clone(&c_arc), Arc::clone(&d_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Concat {
+            outer_count: 1,
+            input_dim_sizes: vec![1, 2, 1, 1],
+            inner_count: 2,
+        },
+    ).expect("N=4 concat dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![
+        1.0, 2.0,
+        3.0, 4.0,
+        5.0, 6.0,
+        7.0, 8.0,
+        9.0, 10.0,
+    ]);
+}
+
 /// Concat binary along last dim: [[1,2,3], [4,5,6]] + [[7,8], [9,10]]
 /// → [[1,2,3,7,8], [4,5,6,9,10]].
 #[test]

@@ -597,6 +597,8 @@ pub mod matmul {
 
 pub mod concat {
     use super::*;
+    use crate::BackendStorage;
+    use fuel_core_types::Shape;
 
     pub fn concat_f32(
         inputs: &[Arc<RwLock<Storage>>],
@@ -610,15 +612,15 @@ pub mod concat {
                 outputs.len(),
             )).bt());
         }
-        if inputs.len() != 2 {
-            return Err(Error::Msg(format!(
-                "vulkan_dispatch::concat::concat_f32: Vulkan supports N==2 only (V.2.D); \
-                 got {} inputs. N>2 chaining is V.3 work — falling back to next alternative.",
-                inputs.len(),
-            )).bt());
+        if inputs.is_empty() {
+            return Err(Error::Msg(
+                "vulkan_dispatch::concat::concat_f32: 0 inputs".to_string(),
+            ).bt());
         }
-        let outer_count = match params {
-            OpParams::Concat { outer_count, .. } => *outer_count,
+        let (outer_count, input_dim_sizes, inner_count) = match params {
+            OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+                (*outer_count, input_dim_sizes.clone(), *inner_count)
+            }
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::concat::concat_f32: expected OpParams::Concat, got {:?}",
@@ -626,10 +628,16 @@ pub mod concat {
                 )).bt());
             }
         };
-        if layouts.len() < 2 {
+        if input_dim_sizes.len() != inputs.len() {
             return Err(Error::Msg(format!(
-                "vulkan_dispatch::concat::concat_f32: layouts.len() = {} < 2",
-                layouts.len(),
+                "vulkan_dispatch::concat::concat_f32: OpParams declares {} inputs but work item carries {}",
+                input_dim_sizes.len(), inputs.len(),
+            )).bt());
+        }
+        if layouts.len() < inputs.len() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::concat_f32: layouts.len() = {} < inputs.len() = {}",
+                layouts.len(), inputs.len(),
             )).bt());
         }
         // Recover the concat dim: outer_count = prod(dims[..dim]).
@@ -644,7 +652,6 @@ pub mod concat {
             acc = acc.saturating_mul(*d);
         }
         let dim = dim_opt.or_else(|| {
-            // outer_count == 1 → dim is the leading axis (i=0)
             if outer_count == 1 { Some(0) } else { None }
         }).ok_or_else(|| {
             Error::Msg(format!(
@@ -653,21 +660,145 @@ pub mod concat {
             )).bt()
         })?;
 
-        let a_guard = read_storage(&inputs[0])?;
-        let b_guard = read_storage(&inputs[1])?;
-        let mut out_guard = write_storage(&outputs[0])?;
-        let a = vulkan_input(&a_guard)?;
-        let b = vulkan_input(&b_guard)?;
-        let backend = a.backend().ok_or_else(|| {
+        let n_inputs = inputs.len();
+
+        // N == 1 degenerate: copy input → out.
+        if n_inputs == 1 {
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in_guard)?;
+            let _backend = a.backend().ok_or_else(|| {
+                Error::Msg(
+                    "vulkan_dispatch::concat::concat_f32: input has no VulkanBackend handle."
+                        .to_string(),
+                ).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            let a_bytes = a.buffer_opt().ok_or_else(|| Error::Msg(
+                "concat_f32 N=1: a is host-evicted".into()).bt())?;
+            let out_buf = out.buffer_opt().ok_or_else(|| Error::Msg(
+                "concat_f32 N=1: out is host-evicted".into()).bt())?;
+            // Equal sizes — direct memcpy via the legacy queue.one_shot.
+            // For now, error: N=1 should be optimized at the graph level
+            // (skip the concat entirely), not via dispatch.
+            let _ = (a_bytes, out_buf);
+            return Err(Error::Msg(
+                "vulkan_dispatch::concat::concat_f32: N=1 concat unsupported \
+                 (should be elided at graph level)".into(),
+            ).bt());
+        }
+
+        // Fast path: N == 2. Direct single-call.
+        if n_inputs == 2 {
+            let a_guard = read_storage(&inputs[0])?;
+            let b_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&a_guard)?;
+            let b = vulkan_input(&b_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(
+                    "vulkan_dispatch::concat::concat_f32: a has no VulkanBackend handle."
+                        .to_string(),
+                ).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            return backend.concat_along_dim_f32_bytes(a, b, out, dim, &layouts[0], &layouts[1]);
+        }
+
+        // N > 2: chain pair-wise via intermediate byte-storages. The
+        // accumulator grows by `input_dim_sizes[i]` at each step.
+        // We acquire all input guards up front to satisfy the borrow
+        // checker (concat reads inputs sequentially).
+        let in_guards: Vec<_> = inputs.iter().map(read_storage).collect::<Result<Vec<_>>>()?;
+        let mut in_vk: Vec<&fuel_vulkan_backend::VulkanStorageBytes> = Vec::with_capacity(n_inputs);
+        for g in &in_guards {
+            in_vk.push(vulkan_input(g)?);
+        }
+        let backend = in_vk[0].backend().ok_or_else(|| {
             Error::Msg(
-                "vulkan_dispatch::concat::concat_f32: a has no VulkanBackend handle. \
+                "vulkan_dispatch::concat::concat_f32: inputs[0] has no VulkanBackend handle. \
                  Storages flowing through the pipelined-executor binding-table dispatch \
                  must come from alloc_bytes_handle / upload_bytes_handle."
                     .to_string(),
             ).bt()
-        })?;
-        let out = vulkan_output(&mut out_guard)?;
-        backend.concat_along_dim_f32_bytes(a, b, out, dim, &layouts[0], &layouts[1])
+        })?.clone();
+
+        // Helper: construct the layout for an intermediate whose
+        // concat-dim size is `cum_dim`.
+        let make_layout = |cum_dim: usize| -> Layout {
+            let mut dims = a_dims.to_vec();
+            dims[dim] = cum_dim;
+            Layout::contiguous(Shape::from_dims(&dims))
+        };
+
+        // Step 0: concat inputs[0] + inputs[1] → tmp0 (or out if N==2).
+        let mut acc_dim = input_dim_sizes[0] + input_dim_sizes[1];
+        let acc_elems = outer_count * acc_dim * inner_count;
+        let mut acc_storage = if n_inputs == 2 {
+            // unreachable here — N==2 fast path returned earlier.
+            unreachable!()
+        } else {
+            let bytes = backend.alloc_bytes_handle(acc_elems * 4).map_err(|e| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::concat::concat_f32: alloc intermediate failed: {e}",
+                )).bt()
+            })?;
+            Storage::new(BackendStorage::Vulkan(bytes), DType::F32)
+        };
+        {
+            let acc_vk = match &mut acc_storage.inner {
+                BackendStorage::Vulkan(v) => v,
+                _ => unreachable!("just allocated as Vulkan"),
+            };
+            backend.concat_along_dim_f32_bytes(
+                in_vk[0], in_vk[1], acc_vk, dim,
+                &layouts[0], &layouts[1],
+            )?;
+        }
+
+        // Middle steps: concat acc + inputs[i] → new tmp.
+        for i in 2..(n_inputs - 1) {
+            let new_acc_dim = acc_dim + input_dim_sizes[i];
+            let new_elems = outer_count * new_acc_dim * inner_count;
+            let new_bytes = backend.alloc_bytes_handle(new_elems * 4).map_err(|e| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::concat::concat_f32: alloc intermediate {i} failed: {e}",
+                )).bt()
+            })?;
+            let mut new_storage = Storage::new(BackendStorage::Vulkan(new_bytes), DType::F32);
+
+            let acc_layout = make_layout(acc_dim);
+            let acc_vk_ref = match &acc_storage.inner {
+                BackendStorage::Vulkan(v) => v,
+                _ => unreachable!(),
+            };
+            let new_vk = match &mut new_storage.inner {
+                BackendStorage::Vulkan(v) => v,
+                _ => unreachable!(),
+            };
+            backend.concat_along_dim_f32_bytes(
+                acc_vk_ref, in_vk[i], new_vk, dim,
+                &acc_layout, &layouts[i],
+            )?;
+
+            // Drop old acc (releases its buffer back to the VMA pool).
+            acc_storage = new_storage;
+            acc_dim = new_acc_dim;
+        }
+
+        // Final step: concat acc + inputs[N-1] → outputs[0] (the
+        // pre-allocated final output).
+        let acc_layout = make_layout(acc_dim);
+        let acc_vk_ref = match &acc_storage.inner {
+            BackendStorage::Vulkan(v) => v,
+            _ => unreachable!(),
+        };
+        let mut out_guard = write_storage(&outputs[0])?;
+        let out_vk = vulkan_output(&mut out_guard)?;
+        backend.concat_along_dim_f32_bytes(
+            acc_vk_ref, in_vk[n_inputs - 1], out_vk, dim,
+            &acc_layout, &layouts[n_inputs - 1],
+        )
     }
 }
 
