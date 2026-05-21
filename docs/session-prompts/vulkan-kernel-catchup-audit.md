@@ -37,6 +37,29 @@ Slang authoring time (some kernels are trivial — Triu/Tril are
 ~30 lines of Slang; some are non-trivial — Cast pairs explode to
 the same 64-symbol surface CUDA has).
 
+**Update 2026-05-21**: Three corrections from the initial audit
+based on user pushback + verification:
+
+- **Slang generics work** — Slang supports full generic kernels via
+  `T:IFloat` / `T:IInteger` interface constraints (see [Slang
+  Interfaces and Generics docs](http://shader-slang.org/slang/user-guide/interfaces-generics)).
+  The per-dtype Slang files in our codebase are a WGSL-port artifact,
+  not a Slang limitation. **Preference: write generic kernels** and
+  emit per-dtype SPIR-V via Slang's compile-time specialization;
+  fall back to per-dtype source only when a kernel needs SPIR-V
+  intrinsics the generic path can't reach (e.g., bf16 hardware ops
+  on architectures that need them, FP8 emit paths if/when SPIR-V
+  gains them).
+- **F8E4M3 cast is NOT deferred** — software pack/unpack + f32 math
+  is dtype-agnostic Slang code. Moved to Tier 3 with the other Cast
+  pairs. (Hardware FP8 *matmul* would be deferred since it needs
+  device support; Cast is pure software.)
+- **Workspace handling is not a decision** — see "V.0 — Audited"
+  below; the Vulkan side already has a clean per-launch pattern
+  (descriptor sets for buffers + ConstantBuffer for params + inline
+  `alloc_device` for scratch) that maps cleanly to CUDA's
+  `workspace, workspace_bytes` pattern.
+
 ---
 
 ## Current Vulkan kernel inventory
@@ -133,7 +156,7 @@ half/bf16) OR a single `f16` -> f32 -> f16 detour pattern:
 | `Recip` / `Abs` | ❌ | ✅ | Adds 2 ops to unary.slang; trivial |
 | `LogSoftmaxLastDim` + backward | ❌ | ✅ | ~80 lines forward + backward; 1 session |
 | `Triu` / `Tril` | ❌ | ✅ | Counted above |
-| F8E4M3 cast | ❌ | ✅ (6 pairs) | Slang FP8 support depends on Slang version + hardware; probably defer until Vulkan FP8 use case emerges |
+| F8E4M3 cast | ❌ | ✅ (6 pairs) | Software pack/unpack + f32 math in Slang; same templated dispatch as other Cast pairs. ~0.5 session. (Hardware FP8 *matmul* is separate and depends on Vulkan device extensions.) |
 | `ConvTranspose2D` | ❌ | ✅ (cuDNN-backed) | Conv-transpose Slang; ~200 lines; 1-2 sessions |
 | `PagedAttn` | ❌ | ✅ | Significant work — block-table addressing; 2-3 sessions |
 | `FusedLinear` | ❌ | ✅ | Composes from existing matmul + bias-add; mostly registration |
@@ -152,6 +175,49 @@ because they were needed before any retreat to inference-only.
 ---
 
 ## Phased migration plan
+
+### V.0 — Crate rename + workspace audit (prerequisite)
+
+Two short prerequisites surfaced 2026-05-21:
+
+**V.0.1 — Rename `fuel-graph-vulkan` → `fuel-vulkan-backend`** so
+the directory structure mirrors `fuel-cuda-backend` exactly.
+Different backends should have roughly equivalent crates so a
+developer switching from one to another doesn't have to relearn
+where things live.
+
+Scope (mechanical find/replace):
+- Rename crate dir + `Cargo.toml` package name
+- Update workspace `Cargo.toml` member entry
+- Update ~25 `use fuel_graph_vulkan::*` references across
+  `fuel-core`, `fuel-core-types`, `fuel-cuda-backend`,
+  `fuel-graph-router`, `fuel-lazy-examples`, `fuel-storage`, plus
+  the crate's own `tests/` and `src/`
+- Update `fuel-storage/src/lib.rs:52`
+  (`pub use fuel_graph_vulkan::VulkanStorageBytes as VulkanStorage`)
+
+Estimated effort: 1 session, mostly find/replace + workspace
+build verification.
+
+**V.0.2 — Workspace audit (done, results below)**:
+
+Compared Vulkan's per-launch state plumbing with CUDA's:
+
+| Concept | CUDA (baracuda) | Vulkan (existing) |
+|---|---|---|
+| Per-launch params | Typed C function arguments (`stride: u32`, etc.) | `ConstantBuffer<Params>` (uniform buffer) bound to descriptor set, or HLSL `push_constant`; existing fuel kernels use `ConstantBuffer<Params>` |
+| Per-launch scratch | Caller passes `workspace: *mut c_void, workspace_bytes: usize` | Inline `alloc_device(bytes, ...)` before dispatch + descriptor-set binding as an additional storage buffer (already in use — see `conv2d` im2col `patches` scratch at `fuel-graph-vulkan/src/lib.rs:2067`) |
+| Pipeline-level state | None (each kernel is a function pointer) | Pre-created `PipelineLayout` cached in a pipeline cache (lazy init at first use; structure already exists in `fuel-graph-vulkan/src/pipelines.rs`) |
+| Stream / queue | `CUstream` per call | Vulkan command buffer recorded onto the device's queue (existing pattern via the `recorder.rs`) |
+
+**Conclusion**: no new architecture needed. The Vulkan pattern
+maps cleanly onto CUDA's workspace concept — kernels that need
+scratch allocate it inline; the pipeline / descriptor-set
+plumbing handles parameter passing. New V.3 Slang kernels follow
+the existing fuel Vulkan pattern (`ConstantBuffer<Params>` +
+storage buffer descriptors); the `register_vulkan_kernels`
+wrappers in V.1/V.2 follow the existing `conv2d` /
+`flash_attention` wrapper pattern in `fuel-graph-vulkan/src/lib.rs`.
 
 ### V.1 — Foundation (mandatory; blocks everything downstream)
 
@@ -241,17 +307,21 @@ priority (Tier 1 first, then Tier 3 in expected-frequency order).
 11. **PagedAttn / ConvTranspose2D** — large; defer unless a model
     demands them.
 
-**Architectural decisions to make before V.3**:
-- **Slang multi-dtype**: per-dtype variants (one Slang file per dtype)
-  vs templated (one Slang file with `T` substituted at compile time).
-  Slang's generics support is incomplete; the existing kernels are
-  per-dtype-instantiated (verify by reading matmul_tiled_bf16_b.slang
-  vs matmul_tiled.slang).
-- **Workspace handling**: CUDA's kernels take workspace pointers
-  (used by some). Vulkan's compute pipeline model has push constants
-  + descriptor sets; transient scratch likely needs explicit binding.
-  Audit the existing Vulkan kernel infrastructure for how this is
-  handled today.
+**Architectural notes for V.3** (the audit closed both questions
+that were originally framed as decisions):
+
+- **Slang multi-dtype**: prefer generic kernels via `T:IFloat` /
+  `T:IInteger` interface constraints — Slang's generics work, and
+  the existing per-dtype Slang files are a WGSL-port artifact, not
+  a Slang limitation. Each generic source compiles to N SPIR-V
+  binaries (one per concrete dtype) via Slang specialization; the
+  source code stays single. Fall back to per-dtype source only
+  when a kernel needs SPIR-V intrinsics the generic path can't
+  reach (rare; only some bf16-hardware-op-specific patterns).
+- **Workspace handling**: already audited (see V.0.2 above). No
+  decision; just translate CUDA's `workspace, workspace_bytes`
+  pattern to Vulkan's "inline `alloc_device` + descriptor-set
+  binding" pattern, which fuel's Vulkan kernels already use.
 
 ### V.4 — Migration + retirement
 
@@ -280,35 +350,30 @@ with test updates.
 
 ---
 
-## Architectural questions to settle before V.1
+## Architectural questions — resolved
 
-These are decisions that shape the V.1 design and shouldn't be made
-mid-flight:
+All four originally-open questions closed by the 2026-05-21 audit
+round:
 
-1. **`fuel-vulkan-backend` crate vs extending `fuel-graph-vulkan`**?
-   The CUDA side has `fuel-cuda-backend` (kernel wrappers) separate
-   from `fuel-graph-vulkan`'s equivalent (`fuel-graph-vulkan` mixes
-   pipeline cache, recorder, residency, and would gain kernel
-   wrappers if we extend it). A new `fuel-vulkan-backend` crate
-   parallels CUDA cleanly but adds workspace churn. Recommendation:
-   add to `fuel-graph-vulkan` for V.1 to defer the crate-split
-   decision; revisit if the dispatch wrappers reach ~10 modules.
+1. **`fuel-vulkan-backend` crate vs extending `fuel-graph-vulkan`**:
+   resolved → rename `fuel-graph-vulkan` to `fuel-vulkan-backend`
+   in V.0.1. Different backends should have roughly equivalent
+   crate structures so developers can switch contexts without
+   relearning where things live.
 
-2. **Slang per-dtype variants vs templates**? See V.3 architectural
-   decisions above.
+2. **Slang per-dtype variants vs templates**: resolved → prefer
+   generic `T:IFloat` / `T:IInteger` kernels. See V.3 architectural
+   notes above.
 
-3. **Vulkan device handle threading through the pipelined executor**?
-   The CUDA path derives `CudaDevice` from the first input's
-   `BackendStorage::Cuda(_)`. Vulkan would do the same with
-   `BackendStorage::Vulkan(_)`. Validate the `VulkanStorageBytes`
-   API exposes a `device()` accessor.
+3. **Vulkan device handle threading through the pipelined executor**:
+   verify `VulkanStorageBytes::device()` accessor exists during
+   V.1. Mechanical (mirror `CudaStorageBytes::device()`).
 
-4. **Backend choice when Vulkan + CUDA both compiled**? The
-   judge/route picker already handles multi-alternative selection
-   per `(OpKind, dtypes, BackendId)`. The user's existing telemetry
-   pipeline (Phase 6b probe→judge→dispatch) should pick automatically.
-   No new architectural work; just confirm V.1's kernel registers
-   as `BackendId::Vulkan` (not aliased to Cuda or similar).
+4. **Backend choice when Vulkan + CUDA both compiled**: the existing
+   judge/route picker (Phase 6b probe→judge→dispatch) handles
+   multi-alternative selection automatically. No new architectural
+   work; just confirm V.1's kernel registers under
+   `BackendId::Vulkan`.
 
 ---
 
@@ -324,9 +389,11 @@ mid-flight:
   use these (`matmul_coop.glsl`); new Slang authoring should follow
   the same patterns. Not a gating concern; just an authoring style
   note.
-- **F8E4M3 / sub-byte FP8 Slang**. Slang's FP8 support depends on
-  hardware + extension availability. Defer until a Vulkan FP8 use
-  case emerges (none today).
+- **Hardware-FP8 Vulkan matmul**. Vulkan FP8 *matmul* depends on
+  device support (per-vendor; sparse on consumer hardware). F8E4M3
+  *cast* is software pack/unpack and IS in scope (Tier 3). Hardware
+  FP8 matmul stays parked until a Vulkan FP8 matmul use case
+  emerges + a target-device audit.
 - **Vulkane (the sibling project)**. Vulkane is the Vulkan-side
   analogue of baracuda. For kernel needs, fuel ships Slang sources
   in `fuel-kernels-source` rather than waiting on vulkane. Vulkane
@@ -337,11 +404,17 @@ mid-flight:
 
 ## Recommendation
 
-Start with **V.1** (foundation). Until the binding-table dispatch
-is wired for Vulkan, all the Slang in the world has no consumer.
+Start with **V.0.1** (crate rename `fuel-graph-vulkan` →
+`fuel-vulkan-backend`). It's bounded, mechanical, removes a
+naming-asymmetry papercut, and produces no ambiguity later when
+V.1's new modules need a home that mirrors `fuel-cuda-backend`.
+
+Then **V.1** (foundation). Until the binding-table dispatch is
+wired for Vulkan, all the Slang in the world has no consumer.
 V.1 establishes the path; V.2 fans out mechanically; V.3 is where
-the actual kernel-authoring work happens; V.4 finishes the E.3.3.D
-retirement.
+the actual kernel-authoring work happens (write generic
+`T:IFloat` kernels per V.0.2's audit conclusion); V.4 finishes
+the E.3.3.D retirement.
 
 Once V.1 lands, V.3 work can start in parallel with V.2 since they
 touch different code (V.2 = dispatch registrations; V.3 = Slang
@@ -351,15 +424,18 @@ The two work units in V.3 that unblock E.3.3.D's full retirement
 are **WriteSlice (Slang)** and **Contiguize signed-stride extension**.
 If the priority is "finish E.3.3.D entirely as fast as possible,"
 sequencing is:
-  - V.1 (foundation, any op)
-  - V.3.1 (WriteSlice Slang)
-  - V.3.2 (Contiguize signed-stride extension)
-  - V.4.1 (LlamaModel::forward_with_kv_context Vulkan support)
-  - V.4.2 (Vulkan example bin migration)
-  - V.4.3 (legacy retirement)
 
-That's a ~4-6 session path from V.1 to E.3.3.D's full cleanup,
-deferring the broader Vulkan op-surface catch-up until after.
+- V.0.1 (crate rename)
+- V.1 (foundation, any op)
+- V.3.1 (WriteSlice Slang — write generic, get all dtypes for free)
+- V.3.2 (Contiguize signed-stride extension)
+- V.4.1 (LlamaModel::forward_with_kv_context Vulkan support)
+- V.4.2 (Vulkan example bin migration)
+- V.4.3 (legacy retirement)
+
+That's a ~5–7 session path from V.0.1 to E.3.3.D's full cleanup,
+with the broader Vulkan op-surface catch-up (V.2 + the rest of
+V.3) tracked separately.
 
 ---
 
