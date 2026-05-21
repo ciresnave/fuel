@@ -533,6 +533,215 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
     }
 }
 
+/// Concat binary along last dim: [[1,2,3], [4,5,6]] + [[7,8], [9,10]]
+/// → [[1,2,3,7,8], [4,5,6,9,10]].
+#[test]
+#[ignore]
+fn vulkan_dispatch_concat_along_last_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let a_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2×3
+    let b_data: Vec<f32> = vec![7.0, 8.0, 9.0, 10.0];          // 2×2
+
+    let a_storage = upload_f32(&backend, &a_data);
+    let b_storage = upload_f32(&backend, &b_data);
+    let out_n = 2 * 5;
+    let out_bytes = backend.alloc_bytes_handle(out_n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Concat,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let a_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let b_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 5]));
+    let layouts = vec![a_layout, b_layout, out_layout];
+    // concat dim = 1 (last). outer_count = prod(dims[..1]) = 2; inner_count = 1.
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Concat {
+            outer_count: 2,
+            input_dim_sizes: vec![3, 2],
+            inner_count: 1,
+        },
+    ).expect("concat dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![1.0, 2.0, 3.0, 7.0, 8.0,   4.0, 5.0, 6.0, 9.0, 10.0]);
+}
+
+/// Helper for V.2.D reduce tests — uploads `data` of shape `dims`,
+/// dispatches `op` with the supplied reduce dims + keepdim flag, and
+/// returns the downloaded result. Output buffer is sized to fit the
+/// largest legal output (full-reduce = 1 elem; last-dim = n_rows).
+fn run_reduce_f32(
+    backend: &Arc<VulkanBackend>,
+    op: OpKind,
+    data: &[f32],
+    dims: &[usize],
+    reduce_dims: Vec<usize>,
+) -> Vec<f32> {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let in_storage = upload_f32(backend, data);
+    // Output element count: 1 for full reduce; n_rows for last-dim
+    // reduce (n_rows = product of dims[..rank-1]).
+    let rank = dims.len();
+    let out_elems = if reduce_dims.is_empty() || reduce_dims.len() == rank {
+        1
+    } else if reduce_dims.len() == 1 && reduce_dims[0] == rank - 1 {
+        dims[..rank - 1].iter().product::<usize>().max(1)
+    } else {
+        panic!("test helper only supports full + last-dim reduce")
+    };
+    let out_bytes = backend.alloc_bytes_handle(out_elems * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let kernel = table
+        .lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(dims));
+    let out_layout = if reduce_dims.is_empty() || reduce_dims.len() == rank {
+        Layout::contiguous(Shape::from_dims(&[1]))
+    } else {
+        Layout::contiguous(Shape::from_dims(&dims[..rank - 1]))
+    };
+    let layouts = vec![layout, out_layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Reduce { dims: reduce_dims, keepdim: false },
+    ).expect("reduce dispatch");
+    download_f32(backend, &out_arc.read().unwrap())
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_sum_full_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_reduce_f32(
+        &backend, OpKind::SumReduce,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        &[2, 3],
+        vec![0, 1],
+    );
+    assert_eq!(got.len(), 1);
+    assert!((got[0] - 21.0).abs() < 1e-5, "sum got {got:?}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_max_full_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_reduce_f32(
+        &backend, OpKind::MaxReduce,
+        &[1.0, 7.0, 3.0, 4.0, 2.0, 6.0],
+        &[2, 3],
+        vec![0, 1],
+    );
+    assert_eq!(got, vec![7.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_min_full_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_reduce_f32(
+        &backend, OpKind::MinReduce,
+        &[5.0, 2.0, 3.0, -1.0, 4.0, 0.0],
+        &[2, 3],
+        vec![0, 1],
+    );
+    assert_eq!(got, vec![-1.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_sum_last_dim_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    // 2 rows × 3 cols → per-row sum: [6, 15]
+    let got = run_reduce_f32(
+        &backend, OpKind::SumReduce,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        &[2, 3],
+        vec![1],
+    );
+    assert_eq!(got, vec![6.0, 15.0]);
+}
+
+/// IndexSelect along dim 0: pick rows 0, 2, 1 from a 4×3 matrix.
+#[test]
+#[ignore]
+fn vulkan_dispatch_index_select_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // src shape [4, 3] — rows: [1..3], [4..6], [7..9], [10..12].
+    let src_data: Vec<f32> = vec![
+        1.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+        7.0, 8.0, 9.0,
+        10.0, 11.0, 12.0,
+    ];
+    let ids_data: Vec<u32> = vec![0, 2, 1];
+
+    let src_storage = upload_f32(&backend, &src_data);
+    let ids_bytes: &[u8] = bytemuck::cast_slice(&ids_data);
+    let ids_vk = backend.upload_bytes_handle(ids_bytes).expect("ids upload");
+    let ids_storage = Storage::new(BackendStorage::Vulkan(ids_vk), DType::U32);
+
+    let outer_count = 1usize;        // dims before axis 0
+    let source_dim_size = 4usize;    // src.dims[0]
+    let n_indices = 3usize;          // ids.len()
+    let inner_count = 3usize;        // dims after axis 0
+    let out_n = outer_count * n_indices * inner_count;
+    let out_bytes = backend.alloc_bytes_handle(out_n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let ids_arc = Arc::new(RwLock::new(ids_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::IndexSelect,
+            &[DType::F32, DType::U32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[4, 3]));
+    let ids_layout = Layout::contiguous(Shape::from_dims(&[3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[3, 3]));
+    let layouts = vec![src_layout, ids_layout, out_layout];
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&ids_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count },
+    ).expect("index_select dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    // Row 0 → [1,2,3]; Row 2 → [7,8,9]; Row 1 → [4,5,6].
+    assert_eq!(got, vec![1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 4.0, 5.0, 6.0]);
+}
+
 /// RoPE round-trip with `cos = [1,1,...]`, `sin = [0,0,...]` — should
 /// be the identity (kernel emits `x` unchanged). Proves the 3-input
 /// dispatch wiring + backend handle propagation work.
