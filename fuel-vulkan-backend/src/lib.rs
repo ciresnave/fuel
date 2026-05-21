@@ -348,11 +348,23 @@ impl VulkanBackend {
         let has_coop_matrix = ext_props.iter()
             .any(|e| e.name() == "VK_KHR_cooperative_matrix");
 
-        let features = if has_coop_matrix {
-            Some(DeviceFeatures::new().with_cooperative_matrix())
-        } else {
-            None
-        };
+        // Enable the optional float-precision features we use in our
+        // kernels: shaderFloat16 + storageBuffer16BitAccess for the
+        // V.3.E half-precision kernels (binary_f16, unary_f16, ...),
+        // shaderFloat64 + shaderInt64 for f64 / i64 paths. Modern
+        // discrete GPUs (NVIDIA Turing+, AMD RDNA, Intel Arc) support
+        // all of these; if the device doesn't, vkCreateDevice returns
+        // VK_ERROR_FEATURE_NOT_PRESENT and we'd need to degrade. For
+        // RTX 4070 (per the dev-env memory) all four are supported.
+        let mut features_builder = DeviceFeatures::new()
+            .with_shader_float16()
+            .with_storage_buffer16_bit_access()
+            .with_shader_float64()
+            .with_shader_int64();
+        if has_coop_matrix {
+            features_builder = features_builder.with_cooperative_matrix();
+        }
+        let features = Some(features_builder);
         let extensions = if has_coop_matrix {
             Some(DeviceExtensions::new().khr_cooperative_matrix())
         } else {
@@ -1091,6 +1103,104 @@ impl VulkanBackend {
     /// rank ≤ 4. Mirrors the legacy `GraphBackend::binary(...)`
     /// flow but for byte-storage. f32-only today; multi-dtype
     /// expansion is V.3 work.
+    /// f16 binary op (Add/Sub/Mul/Div/Max/Min). Per-operand strides
+    /// + broadcast handled by binary_f16.slang. Same shape contract
+    /// as [`Self::binary_f32_bytes`] — only the buffer element type
+    /// changes. Inputs/output are f16 storage (2 bytes per elem).
+    pub fn binary_f16_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        la: &Layout,
+        lb: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let out_dims = la.shape().dims();
+        let out_elem = la.shape().elem_count();
+        if out_elem != lb.shape().elem_count() {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: shape mismatch a={:?} b={:?}",
+                la.shape(), lb.shape()
+            );
+        }
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("VulkanBackend::{op_name}: rank {rank} > 4");
+        }
+        let need_bytes = out_elem * 2;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        let mut shape = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            a_s[pad + i] = la.stride()[i] as u32;
+            b_s[pad + i] = lb.stride()[i] as u32;
+        }
+        let a_contig = la.is_contiguous()
+            && la.shape().dims() == out_dims
+            && la.stride().iter().all(|&s| s != 0);
+        let b_contig = lb.is_contiguous()
+            && lb.shape().dims() == out_dims
+            && lb.stride().iter().all(|&s| s != 0);
+        let flags = (a_contig as u32) | ((b_contig as u32) << 1);
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct BParams {
+            out_size: u32, op_id: u32, rank: u32, flags: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
+        let p = BParams {
+            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+        };
+
+        let a_buf = a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input a is host-evicted; fault back first"),
+        ))?;
+        let b_buf = b.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input b is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<BParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.binary_f16_pipeline,
+            &self.pipelines.binary_f16_layout,
+            desc,
+            (Self::workgroups(out_elem), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     pub fn binary_f32_bytes(
         &self,
         op_id: u32,
@@ -2439,6 +2549,63 @@ impl VulkanBackend {
             &self.pipelines.rope_layout,
             desc,
             (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Element-wise f16 unary op. Same 13-op surface as
+    /// [`Self::unary_f32_bytes`] but operates on native `float16_t`
+    /// via `shaderFloat16` + 16-bit-storage. Computation stays in
+    /// f16 throughout (no f32 widen). One thread per element.
+    pub fn unary_f16_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+    ) -> fuel_core_types::Result<()> {
+        let n = input.len_bytes() / 2; // 2 bytes per f16 element
+        let need_bytes = n * 2;
+        if input.len_bytes() != need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of f16 size",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct UParams { n: u32, op_id: u32 }
+        let p = UParams { n: n as u32, op_id };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.unary_f16_pipeline,
+            &self.pipelines.unary_f16_layout,
+            desc,
+            (Self::workgroups(n), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
