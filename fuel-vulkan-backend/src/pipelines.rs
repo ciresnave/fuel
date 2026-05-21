@@ -60,6 +60,8 @@ pub struct Pipelines {
     pub cast_f32_to_bf16_layout: PipelineLayout,
     pub cast_bf16_to_f32_pipeline: ComputePipeline,
     pub cast_bf16_to_f32_layout: PipelineLayout,
+    pub write_slice_b4_pipeline: ComputePipeline,
+    pub write_slice_b4_layout: PipelineLayout,
     /// WGSL matmul (4x4 register tile, no shared memory). Fast for
     /// short M where the shared-memory tiled version's barriers cost
     /// more than they save.
@@ -297,6 +299,7 @@ impl Pipelines {
         let cast_f16_to_f32_mod  = registry.load_module(device, shaders::CAST_F16_TO_F32)?;
         let cast_f32_to_bf16_mod = registry.load_module(device, shaders::CAST_F32_TO_BF16)?;
         let cast_bf16_to_f32_mod = registry.load_module(device, shaders::CAST_BF16_TO_F32)?;
+        let write_slice_b4_mod   = registry.load_module(device, shaders::WRITE_SLICE_B4)?;
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
@@ -338,6 +341,8 @@ impl Pipelines {
         let cast_f16_to_f32_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
         let cast_f32_to_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let cast_bf16_to_f32_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        // write_slice uses 3 storage (src + dst + shape_buf) + 1 uniform.
+        let write_slice_b4_layout   = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -379,6 +384,7 @@ impl Pipelines {
         let cast_f16_to_f32_pipeline  = ComputePipeline::new(device, &cast_f16_to_f32_layout,  &cast_f16_to_f32_mod,  "main")?;
         let cast_f32_to_bf16_pipeline = ComputePipeline::new(device, &cast_f32_to_bf16_layout, &cast_f32_to_bf16_mod, "main")?;
         let cast_bf16_to_f32_pipeline = ComputePipeline::new(device, &cast_bf16_to_f32_layout, &cast_bf16_to_f32_mod, "main")?;
+        let write_slice_b4_pipeline   = ComputePipeline::new(device, &write_slice_b4_layout,   &write_slice_b4_mod,   "main")?;
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let matmul_tiled_pipeline = ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
@@ -420,6 +426,7 @@ impl Pipelines {
             cast_f16_to_f32_pipeline, cast_f16_to_f32_layout,
             cast_f32_to_bf16_pipeline, cast_f32_to_bf16_layout,
             cast_bf16_to_f32_pipeline, cast_bf16_to_f32_layout,
+            write_slice_b4_pipeline, write_slice_b4_layout,
             matmul_pipeline, matmul_layout,
             matmul_tiled_pipeline, matmul_tiled_layout,
             matvec_pipeline, matvec_layout,

@@ -383,6 +383,67 @@ pub mod powi {
 }
 
 // ===========================================================================
+// WriteSlice — in-place rectangular slab assign (V.3.J)
+// ===========================================================================
+//
+// Backs `Op::WriteSlice` for persistent KV-cache writes (matches the
+// CUDA pattern from baracuda alpha.29). The pipelined executor wires
+// `inputs=[source]` + `outputs=[dest_arc]` where outputs[0]'s Arc IS
+// the destination's Storage Arc (zero-copy in-place adoption). The
+// wrapper holds a write lock on outputs[0] and a read lock on
+// inputs[0]; the kernel mutates dest in place.
+//
+// 4-byte-keyed (f32/i32/u32 only in V.3.J — b2/b8 are follow-up).
+
+pub mod write_slice {
+    use super::*;
+
+    pub fn write_slice_b4(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::write_slice::write_slice_b4: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (dest_shape, ranges) = match params {
+            OpParams::WriteSlice { dest_shape, ranges } => (dest_shape, ranges),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::write_slice::write_slice_b4: expected OpParams::WriteSlice, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let rank = dest_shape.len();
+        let mut source_shape = Vec::with_capacity(rank);
+        let mut range_start = Vec::with_capacity(rank);
+        for &(start, end) in ranges.iter() {
+            source_shape.push(end - start);
+            range_start.push(start);
+        }
+
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src_vk = vulkan_input(&in_guard)?;
+        let backend = src_vk.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::write_slice::write_slice_b4: src has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let dst_vk = vulkan_output(&mut out_guard)?;
+        backend.write_slice_b4_bytes(src_vk, dst_vk, dest_shape, &source_shape, &range_start)
+    }
+}
+
+// ===========================================================================
 // Cast — f32↔f16, f32↔bf16 (V.3.B)
 // ===========================================================================
 //
@@ -1083,4 +1144,9 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half);
     table.register(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half);
     table.register(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half);
+
+    // ----- WriteSlice (V.3.J) — 4-byte elements (f32/i32/u32) -----
+    table.register(OpKind::WriteSlice, &u(f32),         vk, write_slice::write_slice_b4);
+    table.register(OpKind::WriteSlice, &u(DType::I32),  vk, write_slice::write_slice_b4);
+    table.register(OpKind::WriteSlice, &u(DType::U32),  vk, write_slice::write_slice_b4);
 }
