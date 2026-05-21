@@ -455,3 +455,255 @@ fn vulkan_dispatch_binary_add_f32_rank2_contig() {
     let got = download_f32(&backend, &out_arc.read().unwrap());
     assert_eq!(got, vec![11.0, 22.0, 33.0, 44.0, 55.0, 66.0]);
 }
+
+// ===========================================================================
+// V.2.C — Softmax + RmsNorm last-dim (Fused ops, f32)
+// ===========================================================================
+
+/// Presence check: both ops register on `[F32, F32]` against Vulkan.
+#[test]
+fn vulkan_dispatch_softmax_norm_registered() {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let key = [DType::F32, DType::F32];
+    for op in [OpKind::SoftmaxLastDim, OpKind::RmsNormLastDim, OpKind::Rope] {
+        let alts = table.lookup_alternatives(op, &key, BackendId::Vulkan);
+        assert_eq!(
+            alts.len(), 1,
+            "expected 1 Vulkan alternative for {op:?} f32 after register_vulkan_kernels, got {}",
+            alts.len(),
+        );
+    }
+}
+
+/// Softmax row-wise: 2 rows × 4 cols. Each row should sum to ~1.0.
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host: Vec<f32> = vec![
+        // row 0
+        1.0, 2.0, 3.0, 4.0,
+        // row 1 — shift-invariant
+        -1.0, 0.0, 1.0, 2.0,
+    ];
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDim,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let layouts = vec![layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    // Row sums to ~1
+    for row in 0..outer {
+        let s: f32 = got[row * last .. (row + 1) * last].iter().sum();
+        assert!((s - 1.0).abs() < 1e-5, "softmax row {row} sum {s} != 1.0");
+    }
+    // Both rows have the same shape (shift-invariant), so the two
+    // rows should agree element-wise.
+    for c in 0..last {
+        let a = got[c];
+        let b = got[last + c];
+        assert!((a - b).abs() < 1e-5,
+            "softmax shift-invariance broken at col {c}: row0={a} row1={b}");
+    }
+}
+
+/// RoPE round-trip with `cos = [1,1,...]`, `sin = [0,0,...]` — should
+/// be the identity (kernel emits `x` unchanged). Proves the 3-input
+/// dispatch wiring + backend handle propagation work.
+#[test]
+#[ignore]
+fn vulkan_dispatch_rope_identity_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // x has shape [outer=1, seq=2, head_dim=4]. head_dim must be even.
+    let outer = 1usize;
+    let seq = 2usize;
+    let head_dim = 4usize;
+
+    let x_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0,   5.0, 6.0, 7.0, 8.0];
+    // cos = 1, sin = 0 → identity rotation. Shape is [seq, head_dim]
+    // (the kernel reads `cos[s, i]` for i in [0, head_dim), not just
+    // the first half).
+    let cos_data: Vec<f32> = vec![1.0; seq * head_dim];
+    let sin_data: Vec<f32> = vec![0.0; seq * head_dim];
+
+    let x_storage = upload_f32(&backend, &x_data);
+    let cos_storage = upload_f32(&backend, &cos_data);
+    let sin_storage = upload_f32(&backend, &sin_data);
+    let n = outer * seq * head_dim;
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+
+    let x_arc = Arc::new(RwLock::new(x_storage));
+    let cos_arc = Arc::new(RwLock::new(cos_storage));
+    let sin_arc = Arc::new(RwLock::new(sin_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Rope,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let x_layout = Layout::contiguous(Shape::from_dims(&[outer, seq, head_dim]));
+    let cos_layout = Layout::contiguous(Shape::from_dims(&[seq, head_dim]));
+    let sin_layout = Layout::contiguous(Shape::from_dims(&[seq, head_dim]));
+    let out_layout = x_layout.clone();
+    let layouts = vec![x_layout, cos_layout, sin_layout, out_layout];
+    kernel(
+        &[Arc::clone(&x_arc), Arc::clone(&cos_arc), Arc::clone(&sin_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Rope { outer_count: outer, seq, head_dim },
+    ).expect("rope dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, x)) in got.iter().zip(x_data.iter()).enumerate() {
+        assert!((g - x).abs() < 1e-5, "rope identity mismatch at {i}: got {g}, expected {x}");
+    }
+}
+
+/// RoPE π/2 rotation: cos=0, sin=1. The kernel's rotate-half formula
+/// then gives `out[i] = -x[i+h]` and `out[i+h] = x[i]`.
+#[test]
+#[ignore]
+fn vulkan_dispatch_rope_quarter_rotation_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 1usize;
+    let seq = 1usize;
+    let head_dim = 4usize;
+    let h = head_dim / 2;
+
+    let x_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0]; // (x0, x1, x2, x3); h=2 → pairs (1,3) and (2,4).
+    let cos_data: Vec<f32> = vec![0.0; seq * head_dim];
+    let sin_data: Vec<f32> = vec![1.0; seq * head_dim];
+
+    let x_storage = upload_f32(&backend, &x_data);
+    let cos_storage = upload_f32(&backend, &cos_data);
+    let sin_storage = upload_f32(&backend, &sin_data);
+    let n = outer * seq * head_dim;
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+
+    let x_arc = Arc::new(RwLock::new(x_storage));
+    let cos_arc = Arc::new(RwLock::new(cos_storage));
+    let sin_arc = Arc::new(RwLock::new(sin_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Rope,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let x_layout = Layout::contiguous(Shape::from_dims(&[outer, seq, head_dim]));
+    let cs_layout = Layout::contiguous(Shape::from_dims(&[seq, head_dim]));
+    let layouts = vec![x_layout.clone(), cs_layout.clone(), cs_layout, x_layout];
+    kernel(
+        &[Arc::clone(&x_arc), Arc::clone(&cos_arc), Arc::clone(&sin_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Rope { outer_count: outer, seq, head_dim },
+    ).expect("rope dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    // Per shader formula with cos=0, sin=1:
+    //   out[i]   = x[i] * 0 - x[i+h] * 1 = -x[i+h]
+    //   out[i+h] = x[i+h] * 0 + x[i] * 1 = x[i]
+    let _ = h;
+    let expected: Vec<f32> = vec![-3.0, -4.0, 1.0, 2.0];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-5, "rope π/2 mismatch at {i}: got {g}, expected {e}");
+    }
+}
+
+/// RmsNorm row-wise: each row's RMS should be ~1.0 after normalization
+/// (eps small relative to data). 2 rows × 4 cols.
+#[test]
+#[ignore]
+fn vulkan_dispatch_rms_norm_last_dim_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        2.0, 4.0, 6.0, 8.0,
+    ];
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::RmsNormLastDim,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let layouts = vec![layout.clone(), layout];
+    let eps = 1e-6f64;
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("rmsnorm dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    // Reference RmsNorm: y = x / sqrt(mean(x^2) + eps).
+    for row in 0..outer {
+        let xs = &host[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let mean_sq: f32 = xs.iter().map(|x| x * x).sum::<f32>() / last as f32;
+        let scale = (mean_sq + eps as f32).sqrt();
+        for (i, (x, y)) in xs.iter().zip(ys.iter()).enumerate() {
+            let expected = x / scale;
+            assert!((y - expected).abs() < 1e-4,
+                "rmsnorm row {row} col {i}: got {y}, expected {expected}");
+        }
+    }
+}

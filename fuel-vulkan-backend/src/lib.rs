@@ -1210,6 +1210,247 @@ impl VulkanBackend {
         self.binary_f32_bytes(0, "binary_add_f32_bytes", a, b, out, la, lb)
     }
 
+    /// f32 softmax along the last dim. `outer_count` rows × `last_dim`
+    /// elements each. Mirrors the legacy `softmax_last_dim` dispatch
+    /// but for byte storage with pre-allocated output. Inputs/outputs
+    /// must be contiguous (`outer_count * last_dim * 4` bytes each).
+    pub fn softmax_last_dim_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * std::mem::size_of::<f32>();
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::softmax_last_dim_f32_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SoftParams { n_rows: u32, n_cols: u32 }
+        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_f32_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_f32_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "softmax_last_dim_f32_bytes",
+            &self.pipelines.softmax_pipeline,
+            &self.pipelines.softmax_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// f32 RMS-norm along the last dim. Same row × col layout as
+    /// softmax; `eps` is the standard `1 / sqrt(mean(x²) + eps)`
+    /// stabilizer. No affine gain (that's a separate broadcast_mul
+    /// upstream).
+    pub fn rms_norm_last_dim_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * std::mem::size_of::<f32>();
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::rms_norm_last_dim_f32_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        let p = RmsParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+            eps: eps as f32,
+            _pad: 0,
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_f32_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_f32_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "rms_norm_last_dim_f32_bytes",
+            &self.pipelines.rms_norm_last_dim_pipeline,
+            &self.pipelines.rms_norm_last_dim_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// f32 RoPE with pre-computed cos/sin tables. Three storage
+    /// inputs: `x` is `[..., seq, head_dim]`, `cos` and `sin` are
+    /// `[seq, head_dim/2]` (or `[seq, head_dim]` — the kernel only
+    /// reads `seq * head_dim/2` floats). Mirrors the legacy `rope`
+    /// dispatch but for byte storage with pre-allocated output. The
+    /// `outer_count * seq * head_dim` element count must match the
+    /// pre-allocated `out` buffer.
+    ///
+    /// Contiguous-x fast path; non-contiguous-x falls through to the
+    /// stride-aware shader code. Inputs are auto-contiguized upstream
+    /// for non-contiguous cos/sin (the kernel assumes contiguous
+    /// tables).
+    pub fn rope_f32_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        cos: &VulkanStorageBytes,
+        sin: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        x_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let dims = x_layout.shape().dims();
+        let rank = dims.len();
+        if rank < 2 {
+            fuel_core_types::bail!(
+                "VulkanBackend::rope_f32_bytes: rank >= 2 required, got {dims:?}",
+            );
+        }
+        let seq = dims[rank - 2] as u32;
+        let head_dim = dims[rank - 1] as u32;
+        if head_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend::rope_f32_bytes: head_dim must be even, got {head_dim}",
+            );
+        }
+        let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
+        let half = head_dim / 2;
+        let total = outer * seq * half;
+
+        let need_bytes = (outer as usize) * (seq as usize) * (head_dim as usize)
+            * std::mem::size_of::<f32>();
+        if x.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::rope_f32_bytes: buffer too small \
+                 (need {need_bytes}; x={}, out={})",
+                x.len_bytes(), out.len_bytes(),
+            );
+        }
+
+        let x_strides = x_layout.stride();
+        let contiguous = x_layout.is_contiguous();
+        let (x_s0, x_s1, x_s_seq, x_s_hd, x_outer1) = if contiguous {
+            (0u32, 0u32, 0u32, 0u32, 1u32)
+        } else {
+            match rank {
+                2 => (
+                    (x_strides[0] as usize * dims[0]) as u32,
+                    (x_strides[0] as usize * dims[0]) as u32,
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    1u32,
+                ),
+                3 => (
+                    x_strides[0] as u32,
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    1u32,
+                ),
+                4 => (
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    x_strides[3] as u32,
+                    dims[1] as u32,
+                ),
+                _ => fuel_core_types::bail!(
+                    "VulkanBackend::rope_f32_bytes: stride-aware path supports rank 2-4, got {rank}",
+                ),
+            }
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RopeParams {
+            outer: u32, seq: u32, head_dim: u32, total: u32,
+            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
+            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+        }
+        let p = RopeParams {
+            outer, seq, head_dim, total,
+            x_s0, x_s1, x_s_seq, x_s_hd,
+            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+        };
+
+        let x_buf = x.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_f32_bytes: x is host-evicted; fault back first".into(),
+        ))?;
+        let cos_buf = cos.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_f32_bytes: cos is host-evicted; fault back first".into(),
+        ))?;
+        let sin_buf = sin.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_f32_bytes: sin is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_f32_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<RopeParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos_buf, 0, cos.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin_buf, 0, sin.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+
+        let groups = ((total + 63) / 64).max(1);
+        let rb = [x_buf.raw() as u64, cos_buf.raw() as u64, sin_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "rope_f32_bytes",
+            &self.pipelines.rope_pipeline,
+            &self.pipelines.rope_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Element-wise f32 unary op. `op_id` matches the constants in
     /// `unary.slang`: 0=Neg, 1=Sqr, 2=Sqrt, 3=Exp, 4=Log, 5=Sin,
     /// 6=Cos, 7=Tanh, 8=Sigmoid, 9=Silu, 10=Gelu, 11=Relu, 12=Step.
