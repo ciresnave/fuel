@@ -1103,10 +1103,8 @@ impl VulkanBackend {
     /// rank ≤ 4. Mirrors the legacy `GraphBackend::binary(...)`
     /// flow but for byte-storage. f32-only today; multi-dtype
     /// expansion is V.3 work.
-    /// f16 binary op (Add/Sub/Mul/Div/Max/Min). Per-operand strides
-    /// + broadcast handled by binary_f16.slang. Same shape contract
-    /// as [`Self::binary_f32_bytes`] — only the buffer element type
-    /// changes. Inputs/output are f16 storage (2 bytes per elem).
+    /// f16 binary op (Add/Sub/Mul/Div/Max/Min) via native float16_t.
+    /// Per-operand strides + broadcast same as binary_f32_bytes.
     pub fn binary_f16_bytes(
         &self,
         op_id: u32,
@@ -1116,6 +1114,46 @@ impl VulkanBackend {
         out: &mut VulkanStorageBytes,
         la: &Layout,
         lb: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.binary_typed_bytes(
+            2, op_id, op_name, a, b, out, la, lb,
+            &self.pipelines.binary_f16_pipeline,
+            &self.pipelines.binary_f16_layout,
+        )
+    }
+
+    /// f64 binary op via `double` (shaderFloat64).
+    pub fn binary_f64_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        la: &Layout,
+        lb: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.binary_typed_bytes(
+            8, op_id, op_name, a, b, out, la, lb,
+            &self.pipelines.binary_f64_pipeline,
+            &self.pipelines.binary_f64_layout,
+        )
+    }
+
+    /// Internal helper for element-wise binary ops. Element size +
+    /// pipeline selected by caller.
+    fn binary_typed_bytes(
+        &self,
+        elem_size: usize,
+        op_id: u32,
+        op_name: &'static str,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        la: &Layout,
+        lb: &Layout,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
     ) -> fuel_core_types::Result<()> {
         let out_dims = la.shape().dims();
         let out_elem = la.shape().elem_count();
@@ -1129,7 +1167,7 @@ impl VulkanBackend {
         if rank > 4 {
             fuel_core_types::bail!("VulkanBackend::{op_name}: rank {rank} > 4");
         }
-        let need_bytes = out_elem * 2;
+        let need_bytes = out_elem * elem_size;
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
@@ -1189,10 +1227,7 @@ impl VulkanBackend {
         let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name,
-            &self.pipelines.binary_f16_pipeline,
-            &self.pipelines.binary_f16_layout,
-            desc,
+            op_name, pipeline, pipe_layout, desc,
             (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
@@ -2556,10 +2591,10 @@ impl VulkanBackend {
         Ok(())
     }
 
-    /// Element-wise f16 unary op. Same 13-op surface as
-    /// [`Self::unary_f32_bytes`] but operates on native `float16_t`
-    /// via `shaderFloat16` + 16-bit-storage. Computation stays in
-    /// f16 throughout (no f32 widen). One thread per element.
+    /// Element-wise f16 unary op via native `float16_t`
+    /// (`shaderFloat16` + 16-bit-storage). Same 13-op surface as
+    /// [`Self::unary_f32_bytes`]; computation stays in f16
+    /// throughout. One thread per element.
     pub fn unary_f16_bytes(
         &self,
         op_id: u32,
@@ -2567,11 +2602,46 @@ impl VulkanBackend {
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
     ) -> fuel_core_types::Result<()> {
-        let n = input.len_bytes() / 2; // 2 bytes per f16 element
-        let need_bytes = n * 2;
+        self.unary_typed_bytes(
+            2, op_id, op_name, input, out,
+            &self.pipelines.unary_f16_pipeline,
+            &self.pipelines.unary_f16_layout,
+        )
+    }
+
+    /// Element-wise f64 unary op via `double` (`shaderFloat64`).
+    pub fn unary_f64_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+    ) -> fuel_core_types::Result<()> {
+        self.unary_typed_bytes(
+            8, op_id, op_name, input, out,
+            &self.pipelines.unary_f64_pipeline,
+            &self.pipelines.unary_f64_layout,
+        )
+    }
+
+    /// Internal helper: element-wise unary op for any element size,
+    /// dispatching to the supplied pipeline. Caller picks the
+    /// pipeline corresponding to the dtype's native element type.
+    fn unary_typed_bytes(
+        &self,
+        elem_size: usize,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let n = input.len_bytes() / elem_size;
+        let need_bytes = n * elem_size;
         if input.len_bytes() != need_bytes {
             fuel_core_types::bail!(
-                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of f16 size",
+                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of elem size {elem_size}",
                 input.len_bytes(),
             );
         }
@@ -2601,10 +2671,7 @@ impl VulkanBackend {
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
-            op_name,
-            &self.pipelines.unary_f16_pipeline,
-            &self.pipelines.unary_f16_layout,
-            desc,
+            op_name, pipeline, pipe_layout, desc,
             (Self::workgroups(n), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,

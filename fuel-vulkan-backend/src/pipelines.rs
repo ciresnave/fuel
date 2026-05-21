@@ -46,10 +46,14 @@ pub struct Pipelines {
     pub unary_layout: PipelineLayout,
     pub unary_f16_pipeline: ComputePipeline,
     pub unary_f16_layout: PipelineLayout,
+    pub unary_f64_pipeline: ComputePipeline,
+    pub unary_f64_layout: PipelineLayout,
     pub binary_pipeline: ComputePipeline,
     pub binary_layout: PipelineLayout,
     pub binary_f16_pipeline: ComputePipeline,
     pub binary_f16_layout: PipelineLayout,
+    pub binary_f64_pipeline: ComputePipeline,
+    pub binary_f64_layout: PipelineLayout,
     pub affine_pipeline: ComputePipeline,
     pub affine_layout: PipelineLayout,
     pub clamp_pipeline: ComputePipeline,
@@ -300,8 +304,10 @@ impl Pipelines {
         let registry = shader_registry();
         let unary_mod = registry.load_module(device, shaders::UNARY)?;
         let unary_f16_mod = registry.load_module(device, shaders::UNARY_F16)?;
+        let unary_f64_mod = registry.load_module(device, shaders::UNARY_F64)?;
         let binary_mod = registry.load_module(device, shaders::BINARY)?;
         let binary_f16_mod = registry.load_module(device, shaders::BINARY_F16)?;
+        let binary_f64_mod = registry.load_module(device, shaders::BINARY_F64)?;
         let affine_mod = registry.load_module(device, shaders::AFFINE)?;
         let clamp_mod = registry.load_module(device, shaders::CLAMP)?;
         let powi_mod = registry.load_module(device, shaders::POWI)?;
@@ -346,8 +352,10 @@ impl Pipelines {
         // No push constants — params go through uniform buffers.
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let unary_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let unary_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let binary_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let binary_f16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let binary_f64_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let affine_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let clamp_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let powi_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -393,8 +401,10 @@ impl Pipelines {
 
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
         let unary_f16_pipeline = ComputePipeline::new(device, &unary_f16_layout, &unary_f16_mod, "main")?;
+        let unary_f64_pipeline = ComputePipeline::new(device, &unary_f64_layout, &unary_f64_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
         let binary_f16_pipeline = ComputePipeline::new(device, &binary_f16_layout, &binary_f16_mod, "main")?;
+        let binary_f64_pipeline = ComputePipeline::new(device, &binary_f64_layout, &binary_f64_mod, "main")?;
         let affine_pipeline = ComputePipeline::new(device, &affine_layout, &affine_mod, "main")?;
         let clamp_pipeline = ComputePipeline::new(device, &clamp_layout, &clamp_mod, "main")?;
         let powi_pipeline = ComputePipeline::new(device, &powi_layout, &powi_mod, "main")?;
@@ -439,8 +449,10 @@ impl Pipelines {
             layout_2s1u, layout_3s1u, layout_4s1u, layout_5s1u,
             unary_pipeline, unary_layout,
             unary_f16_pipeline, unary_f16_layout,
+            unary_f64_pipeline, unary_f64_layout,
             binary_pipeline, binary_layout,
             binary_f16_pipeline, binary_f16_layout,
+            binary_f64_pipeline, binary_f64_layout,
             affine_pipeline, affine_layout,
             clamp_pipeline, clamp_layout,
             powi_pipeline, powi_layout,
