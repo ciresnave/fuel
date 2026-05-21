@@ -521,6 +521,65 @@ pub mod matmul {
         let out = vulkan_output(&mut out_guard)?;
         backend.matmul_f32_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
     }
+
+    /// Mixed-precision matmul: f32 LHS × bf16 RHS → f32 output.
+    /// Vulkan-specific decision-point (CUDA registers full-bf16
+    /// `[bf16, bf16, bf16]` instead). The route picker prefers this
+    /// when the input dtypes match exactly; otherwise falls back to
+    /// f32 matmul (after a Cast).
+    pub fn matmul_f32_bf16_b(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::matmul::matmul_f32_bf16_b: expected 2 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::matmul::matmul_f32_bf16_b: expected OpParams::Matmul, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let lhs_guard = read_storage(&inputs[0])?;
+        let rhs_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        if lhs_guard.dtype != DType::F32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::matmul::matmul_f32_bf16_b: lhs must be F32, got {:?}",
+                lhs_guard.dtype,
+            )).bt());
+        }
+        if rhs_guard.dtype != DType::BF16 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::matmul::matmul_f32_bf16_b: rhs must be BF16, got {:?}",
+                rhs_guard.dtype,
+            )).bt());
+        }
+        let lhs = vulkan_input(&lhs_guard)?;
+        let rhs = vulkan_input(&rhs_guard)?;
+        let backend = lhs.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::matmul::matmul_f32_bf16_b: lhs has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.matmul_f32_bf16_b_bytes(
+            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+        )
+    }
 }
 
 // ===========================================================================
@@ -810,6 +869,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- MatMul f32 (V.2.D) — matvec/reg-tile/tiled by m; GQA-aware -----
     table.register(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32);
+
+    // ----- MatMul mixed f32 × bf16 → f32 (V.3.D) — Vulkan-specific
+    // decision point; uses matvec_bf16_b / matmul_tiled_bf16_b /
+    // matmul_coop (tensor cores) based on m,n,k. -----
+    let bf16 = DType::BF16;
+    table.register(OpKind::MatMul, &[f32, bf16, f32], vk, matmul::matmul_f32_bf16_b);
 
     // ----- Affine f32 (V.2.E) — y = mul*x + add -----
     table.register(OpKind::Affine, &u(f32), vk, affine::affine_f32);
