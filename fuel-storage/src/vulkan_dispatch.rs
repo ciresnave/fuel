@@ -339,6 +339,59 @@ pub mod attention {
 }
 
 // ===========================================================================
+// MatMul — f32 (V.2.D)
+// ===========================================================================
+//
+// Selects among matvec (m==1) / reg-tile (m<32) / tiled (m>=32)
+// kernels via `VulkanBackend::matmul_f32_bytes`. Mixed-bf16 and
+// cooperative-matrix paths are deferred to V.3. GQA broadcast is
+// honored (lhs_batch > rhs_batch with even divisibility).
+
+pub mod matmul {
+    use super::*;
+
+    pub fn matmul_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::matmul::matmul_f32: expected 2 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::matmul::matmul_f32: expected OpParams::Matmul, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let lhs_guard = read_storage(&inputs[0])?;
+        let rhs_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let lhs = vulkan_input(&lhs_guard)?;
+        let rhs = vulkan_input(&rhs_guard)?;
+        let backend = lhs.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::matmul::matmul_f32: lhs has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.matmul_f32_bytes(lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k)
+    }
+}
+
+// ===========================================================================
 // Concat — f32, binary (V.2.D)
 // ===========================================================================
 //
@@ -618,4 +671,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- Concat f32 (V.2.D) — N==2 only; N>2 falls back to next alt -----
     table.register(OpKind::Concat, &u(f32), vk, concat::concat_f32);
+
+    // ----- MatMul f32 (V.2.D) — matvec/reg-tile/tiled by m; GQA-aware -----
+    table.register(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32);
 }
