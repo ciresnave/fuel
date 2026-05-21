@@ -533,6 +533,45 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
     }
 }
 
+/// Affine y = 2*x + 3 across 6 elements.
+#[test]
+#[ignore]
+fn vulkan_dispatch_affine_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let n = host.len();
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Affine,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Affine { mul: 2.0, add: 3.0 },
+    ).expect("affine dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let expected: Vec<f32> = host.iter().map(|x| 2.0 * x + 3.0).collect();
+    assert_eq!(got, expected);
+}
+
 /// Helper for matmul: builds storages, dispatches, returns output.
 fn run_matmul_f32(
     backend: &Arc<VulkanBackend>,
