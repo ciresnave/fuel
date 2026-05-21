@@ -1320,15 +1320,22 @@ impl VulkanBackend {
         Ok(())
     }
 
-    /// In-place rectangular slab write for 4-byte elements (f32/i32/u32).
-    /// Mirrors `Op::WriteSlice` semantics: reads `src` (contiguous in
-    /// its own `src_shape`) and writes into the matching slab of `dst`
+    /// In-place rectangular slab write, byte-width-keyed dispatch.
+    /// `byte_width` ∈ {2, 4, 8} selects the pipeline (b2 covers
+    /// f16/bf16, b4 covers f32/i32/u32, b8 covers f64/i64). Mirrors
+    /// `Op::WriteSlice` semantics: reads `src` (contiguous in its
+    /// own `src_shape`) and writes into the matching slab of `dst`
     /// (contiguous in `dst_shape`) at `range_start`. Mutates `dst`
     /// in place. Backs persistent KV-cache writes on Vulkan.
     ///
     /// Rank limit: 8 (covers every shape Fuel uses in practice).
-    pub fn write_slice_b4_bytes(
+    ///
+    /// b2 constraint: `range_start[last_dim]` and `src_shape[last_dim]`
+    /// must both be EVEN (the kernel writes one u32 = pair of half
+    /// elements at a time; odd-aligned slabs would race on u32 writes).
+    pub fn write_slice_bytes(
         &self,
+        byte_width: usize,
         src: &VulkanStorageBytes,
         dst: &mut VulkanStorageBytes,
         dst_shape: &[usize],
@@ -1338,41 +1345,56 @@ impl VulkanBackend {
         let rank = dst_shape.len();
         if src_shape.len() != rank || range_start.len() != rank {
             fuel_core_types::bail!(
-                "write_slice_b4_bytes: rank mismatch (dst={}, src={}, range_start={})",
+                "write_slice_bytes: rank mismatch (dst={}, src={}, range_start={})",
                 rank, src_shape.len(), range_start.len(),
             );
         }
         if rank == 0 {
-            fuel_core_types::bail!("write_slice_b4_bytes: rank-0 unsupported");
+            fuel_core_types::bail!("write_slice_bytes: rank-0 unsupported");
         }
         if rank > 8 {
             fuel_core_types::bail!(
-                "write_slice_b4_bytes: rank {rank} > 8 (kernel limit; bump if needed)",
+                "write_slice_bytes: rank {rank} > 8 (kernel limit; bump if needed)",
             );
         }
         for i in 0..rank {
             if range_start[i] + src_shape[i] > dst_shape[i] {
                 fuel_core_types::bail!(
-                    "write_slice_b4_bytes: axis {i} out of range \
+                    "write_slice_bytes: axis {i} out of range \
                      (start={}, src_dim={}, dst_dim={})",
                     range_start[i], src_shape[i], dst_shape[i],
                 );
             }
         }
         let n_src: usize = src_shape.iter().product::<usize>().max(1);
-        let need_src = n_src.saturating_mul(4);
-        let need_dst = dst_shape.iter().product::<usize>().max(1).saturating_mul(4);
+        let need_src = n_src.saturating_mul(byte_width);
+        let need_dst = dst_shape.iter().product::<usize>().max(1).saturating_mul(byte_width);
         if src.len_bytes() < need_src {
             fuel_core_types::bail!(
-                "write_slice_b4_bytes: src {} bytes < required {need_src}",
+                "write_slice_bytes: src {} bytes < required {need_src} (byte_width={byte_width})",
                 src.len_bytes(),
             );
         }
         if dst.len_bytes() < need_dst {
             fuel_core_types::bail!(
-                "write_slice_b4_bytes: dst {} bytes < required {need_dst}",
+                "write_slice_bytes: dst {} bytes < required {need_dst} (byte_width={byte_width})",
                 dst.len_bytes(),
             );
+        }
+
+        // b2 alignment constraint: last-dim slab must lie on u32
+        // boundaries (the kernel writes one u32 = pair of half
+        // elements per thread). Falls back to CPU via the route
+        // picker for unaligned cases.
+        if byte_width == 2 {
+            let last = rank - 1;
+            if range_start[last] % 2 != 0 || src_shape[last] % 2 != 0 {
+                fuel_core_types::bail!(
+                    "write_slice_bytes b2: last-dim range_start ({}) and src_shape ({}) \
+                     must both be even (half-precision writes pack 2/u32)",
+                    range_start[last], src_shape[last],
+                );
+            }
         }
 
         // Pack: src_shape + dst_shape + range_start (3 * rank u32s).
@@ -1383,17 +1405,40 @@ impl VulkanBackend {
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
+        // b2 dispatches by source-pair count, not source-element count.
+        let n_dispatch = if byte_width == 2 { n_src / 2 } else { n_src };
         #[repr(C)] #[derive(Clone, Copy)]
-        struct WsParams { n_src: u32, rank: u32 }
-        let p = WsParams { n_src: n_src as u32, rank: rank as u32 };
+        struct WsParams { n: u32, rank: u32 }
+        let p = WsParams { n: n_dispatch as u32, rank: rank as u32 };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "write_slice_b4_bytes: src is host-evicted; fault back first".into(),
+            "write_slice_bytes: src is host-evicted; fault back first".into(),
         ))?;
         let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "write_slice_b4_bytes: dst is host-evicted; fault back first".into(),
+            "write_slice_bytes: dst is host-evicted; fault back first".into(),
         ))?;
+
+        let (pipeline, pipe_layout, op_name) = match byte_width {
+            2 => (
+                &self.pipelines.write_slice_b2_pipeline,
+                &self.pipelines.write_slice_b2_layout,
+                "write_slice_b2",
+            ),
+            4 => (
+                &self.pipelines.write_slice_b4_pipeline,
+                &self.pipelines.write_slice_b4_layout,
+                "write_slice_b4",
+            ),
+            8 => (
+                &self.pipelines.write_slice_b8_pipeline,
+                &self.pipelines.write_slice_b8_layout,
+                "write_slice_b8",
+            ),
+            other => fuel_core_types::bail!(
+                "write_slice_bytes: byte_width {other} unsupported (have b2/b4/b8; b1/b16 are follow-ups)",
+            ),
+        };
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
@@ -1401,13 +1446,13 @@ impl VulkanBackend {
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
 
-        let groups = Self::workgroups(n_src);
+        let groups = Self::workgroups(n_dispatch);
         let rb = [src_buf.raw() as u64];
         let wb = [dst_buf.raw() as u64];
         self.record_dispatch_batched(
-            "write_slice_b4",
-            &self.pipelines.write_slice_b4_pipeline,
-            &self.pipelines.write_slice_b4_layout,
+            op_name,
+            pipeline,
+            pipe_layout,
             desc,
             (groups, 1, 1),
             vec![(sd_buf, sd_mem), (pbuf, pmem)],
