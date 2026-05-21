@@ -748,6 +748,119 @@ fn vulkan_dispatch_unary_sigmoid_f16() {
 }
 
 // ===========================================================================
+// V.3.E.5 — f64 unary + binary (native double)
+// ===========================================================================
+
+fn upload_f64(backend: &Arc<VulkanBackend>, host: &[f64]) -> Storage {
+    let bytes: &[u8] = bytemuck::cast_slice(host);
+    let vk_bytes = backend
+        .upload_bytes_handle(bytes)
+        .expect("vulkan upload_bytes_handle f64");
+    Storage::new(BackendStorage::Vulkan(vk_bytes), DType::F64)
+}
+
+fn download_f64(backend: &Arc<VulkanBackend>, s: &Storage) -> Vec<f64> {
+    let bytes = match &s.inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    bytemuck::cast_slice::<u8, f64>(&bytes).to_vec()
+}
+
+#[test]
+fn vulkan_dispatch_f64_registered() {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    for op in [
+        OpKind::NegElementwise,
+        OpKind::SqrElementwise,
+        OpKind::ReluElementwise,
+    ] {
+        let alts = table.lookup_alternatives(
+            op, &[DType::F64, DType::F64], BackendId::Vulkan,
+        );
+        assert_eq!(alts.len(), 1, "expected 1 Vulkan alt for {op:?} f64");
+    }
+    for op in [OpKind::AddElementwise, OpKind::MulElementwise] {
+        let alts = table.lookup_alternatives(
+            op, &[DType::F64, DType::F64, DType::F64], BackendId::Vulkan,
+        );
+        assert_eq!(alts.len(), 1, "expected 1 Vulkan alt for {op:?} f64 binary");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_neg_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f64> = vec![1.5, -2.25, 0.0, 3.125];
+    let n = host.len();
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::NegElementwise, &[DType::F64, DType::F64], BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::None,
+    ).expect("neg f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    let expected: Vec<f64> = host.iter().map(|x| -x).collect();
+    for (g, e) in got.iter().zip(expected.iter()) {
+        assert!((g - e).abs() < 1e-12, "neg f64: got={g}, expected={e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_binary_add_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let a = vec![1.0_f64, 2.0, 3.0, 4.0];
+    let b = vec![10.0_f64, 20.0, 30.0, 40.0];
+    let n = a.len();
+    let a_storage = upload_f64(&backend, &a);
+    let b_storage = upload_f64(&backend, &b);
+    let out_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::AddElementwise,
+            &[DType::F64, DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::None,
+    ).expect("add f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![11.0, 22.0, 33.0, 44.0]);
+}
+
+// ===========================================================================
 // V.3.J — WriteSlice (in-place slab assign)
 // ===========================================================================
 
