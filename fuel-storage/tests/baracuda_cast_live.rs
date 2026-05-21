@@ -75,7 +75,7 @@ fn alloc_out(dev: &CudaDevice, dt: DType, n_elems: usize) -> Storage {
         DType::F32 | DType::I32 | DType::U32 => 4,
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 => 2,
-        DType::U8 => 1,
+        DType::U8 | DType::F8E4M3 => 1,
         other => panic!("unsupported test dtype {other:?}"),
     };
     let buf = CudaStorageBytes::alloc(dev, n_elems * elem_size).expect("alloc");
@@ -229,4 +229,68 @@ fn dual_register_appends_cast_alternative() {
         after, 2,
         "baracuda registers a second F32→F64 cast alternative"
     );
+}
+
+// ---- F8E4M3 casts (alpha.29 CastSubBytePlan, OCP/NV FP8 family) ----------
+
+/// F32 → F8E4M3 → F32 round-trip. F8E4M3 has ~3 bits of mantissa, so
+/// values lose precision but should round to nearby representable
+/// values. We pick inputs that hit exact representable points to keep
+/// the assertion tight.
+#[test]
+#[ignore]
+fn baracuda_cast_f32_to_f8e4m3_round_trip() {
+    let Some(_dev) = dev_or_skip() else { return };
+    let table = dual_table();
+    // 0, ±0.5, ±1.0, ±2.0, ±4.0 — all exactly representable in F8E4M3.
+    let input: Vec<f32> = vec![0.0, 0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0];
+    let src_bytes: &[u8] = bytemuck::cast_slice(&input);
+    let mid = run_cast(&table, DType::F32, DType::F8E4M3, src_bytes, input.len());
+    assert_eq!(mid.len(), input.len(), "F32 → F8E4M3 should produce 1 byte per element");
+
+    let back = run_cast(&table, DType::F8E4M3, DType::F32, &mid, input.len());
+    let got: &[f32] = bytemuck::cast_slice(&back);
+    for (i, (&want, &g)) in input.iter().zip(got.iter()).enumerate() {
+        assert_eq!(
+            want, g,
+            "F32 → F8E4M3 → F32 mismatch at index {i}: want {want}, got {g}",
+        );
+    }
+}
+
+/// F8E4M3 → BF16 → F8E4M3 round-trip for the same exactly-representable
+/// set. Verifies the F16/BF16 sibling paths also land cleanly.
+#[test]
+#[ignore]
+fn baracuda_cast_f8e4m3_through_bf16_round_trip() {
+    let Some(_dev) = dev_or_skip() else { return };
+    let table = dual_table();
+    let input: Vec<f32> = vec![0.0, 0.5, 1.0, 2.0];
+    let src_bytes: &[u8] = bytemuck::cast_slice(&input);
+    // F32 → F8E4M3.
+    let fp8 = run_cast(&table, DType::F32, DType::F8E4M3, src_bytes, input.len());
+    // F8E4M3 → BF16.
+    let bf = run_cast(&table, DType::F8E4M3, DType::BF16, &fp8, input.len());
+    assert_eq!(bf.len(), input.len() * 2, "BF16 is 2 bytes/elem");
+    // BF16 → F8E4M3.
+    let fp8_back = run_cast(&table, DType::BF16, DType::F8E4M3, &bf, input.len());
+    assert_eq!(fp8, fp8_back, "F8E4M3 → BF16 → F8E4M3 should be bit-stable for representable inputs");
+}
+
+#[test]
+fn f8e4m3_cast_registered_for_3_target_dtypes() {
+    let table = dual_table();
+    for other in [DType::F32, DType::F16, DType::BF16] {
+        for (src, dst) in [(DType::F8E4M3, other), (other, DType::F8E4M3)] {
+            let alts = table.lookup_alternatives(
+                OpKind::Cast,
+                &[src, dst],
+                BackendId::Cuda,
+            );
+            assert!(
+                !alts.is_empty(),
+                "no Cast CUDA registration for ({src:?} → {dst:?})",
+            );
+        }
+    }
 }

@@ -28,9 +28,17 @@
 //!
 //! - **I8 pairs.** Fuel has no `DType::I8`. Baracuda's 16 I8-touching
 //!   pairs (i8↔*) stay live in the FFI but aren't surfaced.
-//! - **Sub-byte dtypes** (`F8E4M3`, `F6E2M3`, etc.). Fuel's existing
-//!   `byte_kernels::cast` already rejects them; baracuda doesn't ship
-//!   these as input/output of Cast.
+//! - **Sub-byte dtypes outside OCP/NV FP8.**
+//!   * `F8E4M3 ↔ {F32, F16, BF16}` IS wired (alpha.29's CastSubBytePlan
+//!     family — see entries below the I8 block).
+//!   * F8E5M2 / S4 / U4 / Bool — baracuda alpha.29 ships these but
+//!     Fuel's DType enum doesn't carry them; would require the
+//!     multi-crate I8-style cascade before any registration here.
+//!   * F6E2M3 / F6E3M2 / F4 / F8E8M0 — Fuel HAS these in DType, but
+//!     they're MX (Microscaling) formats with separate scale tensors,
+//!     distinct from baracuda's OCP/NV CastSubByte family. baracuda
+//!     alpha.29 doesn't cover them (separate kernel family). Real
+//!     baracuda gap when Fuel grows a consumer.
 
 use std::sync::Arc;
 
@@ -217,6 +225,23 @@ cast_kernel!(cast_i8_to_i64, 1, 8, i8_i64, "cast_i8_to_i64");
 cast_kernel!(cast_i8_to_u8, 1, 1, i8_u8, "cast_i8_to_u8");
 cast_kernel!(cast_i8_to_i8, 1, 1, i8_i8, "cast_i8_to_i8");
 
+// F8E4M3 ↔ {f32, f16, bf16} — alpha.29's CastSubBytePlan family.
+// baracuda exposes these as `fp8e4m3_*` / `*_fp8e4m3` symbol stems.
+// Fuel's DType::F8E4M3 maps to a 1-byte element; the FP8 OCP/NV
+// format (Fp8E4M3 / Fp8E5M2) is what baracuda ships casts for —
+// distinct from the MX-format F4/F6/F8E8M0 dtypes Fuel also carries
+// (those have separate scale tensors and would need different
+// baracuda kernels, not in alpha.29).
+//
+// F8E5M2 isn't in Fuel's DType enum yet, so its 6 pairs are
+// available in baracuda but not registered here.
+cast_kernel!(cast_f8e4m3_to_f32,  1, 4, fp8e4m3_f32,  "cast_f8e4m3_to_f32");
+cast_kernel!(cast_f8e4m3_to_f16,  1, 2, fp8e4m3_f16,  "cast_f8e4m3_to_f16");
+cast_kernel!(cast_f8e4m3_to_bf16, 1, 2, fp8e4m3_bf16, "cast_f8e4m3_to_bf16");
+cast_kernel!(cast_f32_to_f8e4m3,  4, 1, f32_fp8e4m3,  "cast_f32_to_f8e4m3");
+cast_kernel!(cast_f16_to_f8e4m3,  2, 1, f16_fp8e4m3,  "cast_f16_to_f8e4m3");
+cast_kernel!(cast_bf16_to_f8e4m3, 2, 1, bf16_fp8e4m3, "cast_bf16_to_f8e4m3");
+
 /// Fuel `DType` → baracuda dtype tag. Returns `None` for dtypes
 /// baracuda's cast surface doesn't expose. `U32` collapses to `i32` —
 /// see module docs for why this is safe for Fuel's usage.
@@ -229,6 +254,7 @@ fn baracuda_dtype_tag(dt: DType) -> Option<BaracudaCastDt> {
         DType::I32 | DType::U32 => BaracudaCastDt::I32,
         DType::I64 => BaracudaCastDt::I64,
         DType::U8 => BaracudaCastDt::U8,
+        DType::F8E4M3 => BaracudaCastDt::F8E4M3,
         _ => return None,
     })
 }
@@ -242,6 +268,7 @@ enum BaracudaCastDt {
     I32,
     I64,
     U8,
+    F8E4M3,
 }
 
 /// Dispatch a single (src_dtype, dst_dtype) pair to the matching
@@ -318,5 +345,24 @@ pub fn dispatch(
         (U8, I32) => cast_u8_to_i32(src),
         (U8, I64) => cast_u8_to_i64(src),
         (U8, U8) => cast_u8_to_u8(src),
+
+        // F8E4M3 ↔ {F32, F16, BF16}. Baracuda alpha.29's CastSubBytePlan
+        // family. Pairs outside this set (F8E4M3 ↔ {I32, I64, U8, F64,
+        // F8E4M3-to-F8E4M3}) aren't shipped — they'd require f32-detour
+        // chaining if Fuel ever needs them.
+        (F8E4M3, F32)    => cast_f8e4m3_to_f32(src),
+        (F8E4M3, F16)    => cast_f8e4m3_to_f16(src),
+        (F8E4M3, Bf16)   => cast_f8e4m3_to_bf16(src),
+        (F32,    F8E4M3) => cast_f32_to_f8e4m3(src),
+        (F16,    F8E4M3) => cast_f16_to_f8e4m3(src),
+        (Bf16,   F8E4M3) => cast_bf16_to_f8e4m3(src),
+
+        // Unsupported pairs through baracuda's CastSubByte family.
+        (F8E4M3, _) | (_, F8E4M3) => Err(Error::Msg(format!(
+            "baracuda cast: F8E4M3 ↔ {:?} / {:?} not in baracuda alpha.29's \
+             CastSubBytePlan surface (supported: F8E4M3 ↔ {{F32, F16, BF16}}). \
+             Compose via an intermediate f32 cast if needed.",
+            src_dt, dst_dt,
+        )).bt()),
     }
 }
