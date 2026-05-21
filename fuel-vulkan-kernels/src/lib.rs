@@ -40,6 +40,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("add_assign_scaled",         include_bytes!("../spv/add_assign_scaled.spv")),
     ("affine",                    include_bytes!("../spv/affine.spv")),
     ("binary",                    include_bytes!("../spv/binary.spv")),
+    ("clamp",                     include_bytes!("../spv/clamp.spv")),
+    ("powi",                      include_bytes!("../spv/powi.spv")),
     ("concat_along_dim",          include_bytes!("../spv/concat_along_dim.spv")),
     ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
     ("flash_attention",           include_bytes!("../spv/flash_attention.spv")),
@@ -85,6 +87,10 @@ pub const UNARY: &str = "unary";
 pub const BINARY: &str = "binary";
 /// Affine transform: y = x * mul + add.
 pub const AFFINE: &str = "affine";
+/// Element-wise clamp: y = clamp(x, lo, hi).
+pub const CLAMP: &str = "clamp";
+/// Element-wise integer power: y = x ^ exp.
+pub const POWI: &str = "powi";
 /// Tiled matrix multiply with 4x4 register tiling (WGSL).
 pub const MATMUL: &str = "matmul";
 /// GLSL matmul with shared-memory blocking.

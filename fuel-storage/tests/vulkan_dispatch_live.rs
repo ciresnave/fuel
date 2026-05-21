@@ -533,6 +533,124 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
     }
 }
 
+/// PowI y = x^3 across mixed-sign inputs.
+#[test]
+#[ignore]
+fn vulkan_dispatch_powi_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f32> = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
+    let n = host.len();
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::PowIElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::PowI { exp: 3 },
+    ).expect("powi dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let expected: Vec<f32> = host.iter().map(|x| x.powi(3)).collect();
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-5, "powi at {i}: got {g}, expected {e}");
+    }
+}
+
+/// PowI y = x^2 across the same inputs (hits the x*x fast path).
+#[test]
+#[ignore]
+fn vulkan_dispatch_powi_squared_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f32> = vec![-2.5, -1.0, 0.0, 0.5, 1.5, 3.0];
+    let n = host.len();
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::PowIElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::PowI { exp: 2 },
+    ).expect("powi dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let expected: Vec<f32> = host.iter().map(|x| x * x).collect();
+    assert_eq!(got, expected);
+}
+
+/// Clamp y = clamp(x, -1, 1) across 6 elements spanning the bounds.
+#[test]
+#[ignore]
+fn vulkan_dispatch_clamp_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f32> = vec![-3.0, -1.5, -0.5, 0.5, 1.5, 3.0];
+    let n = host.len();
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::ClampElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Clamp { min: -1.0, max: 1.0 },
+    ).expect("clamp dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![-1.0, -1.0, -0.5, 0.5, 1.0, 1.0]);
+}
+
 /// Affine y = 2*x + 3 across 6 elements.
 #[test]
 #[ignore]
@@ -873,6 +991,34 @@ fn vulkan_dispatch_reduce_min_full_f32() {
         vec![0, 1],
     );
     assert_eq!(got, vec![-1.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_mean_full_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_reduce_f32(
+        &backend, OpKind::MeanReduce,
+        &[2.0, 4.0, 6.0, 8.0],
+        &[2, 2],
+        vec![0, 1],
+    );
+    assert_eq!(got.len(), 1);
+    assert!((got[0] - 5.0).abs() < 1e-5, "mean got {got:?}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_mean_last_dim_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    // 2 rows × 3 cols → per-row mean: [2, 5]
+    let got = run_reduce_f32(
+        &backend, OpKind::MeanReduce,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        &[2, 3],
+        vec![1],
+    );
+    assert_eq!(got, vec![2.0, 5.0]);
 }
 
 #[test]

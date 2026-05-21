@@ -339,6 +339,94 @@ pub mod attention {
 }
 
 // ===========================================================================
+// PowI — y = x^exp, f32 (V.3.A.3)
+// ===========================================================================
+
+pub mod powi {
+    use super::*;
+
+    pub fn powi_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::powi::powi_f32: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let exp = match params {
+            OpParams::PowI { exp } => *exp,
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::powi::powi_f32: expected OpParams::PowI, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::powi::powi_f32: input has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.powi_f32_bytes(a, out, exp)
+    }
+}
+
+// ===========================================================================
+// Clamp — y = clamp(x, lo, hi), f32 (V.3.A.1)
+// ===========================================================================
+
+pub mod clamp {
+    use super::*;
+
+    pub fn clamp_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::clamp::clamp_f32: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (lo, hi) = match params {
+            OpParams::Clamp { min, max } => (*min, *max),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::clamp::clamp_f32: expected OpParams::Clamp, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::clamp::clamp_f32: input has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.clamp_f32_bytes(a, out, lo, hi)
+    }
+}
+
+// ===========================================================================
 // Affine — y = mul*x + add, f32 (V.2.E)
 // ===========================================================================
 
@@ -586,9 +674,12 @@ macro_rules! vk_reduce_f32_wrapper {
 pub mod reduce {
     use super::*;
 
-    vk_reduce_f32_wrapper!(sum_f32, 0, "reduce_sum_f32");
-    vk_reduce_f32_wrapper!(max_f32, 1, "reduce_max_f32");
-    vk_reduce_f32_wrapper!(min_f32, 2, "reduce_min_f32");
+    vk_reduce_f32_wrapper!(sum_f32,  0, "reduce_sum_f32");
+    vk_reduce_f32_wrapper!(max_f32,  1, "reduce_max_f32");
+    vk_reduce_f32_wrapper!(min_f32,  2, "reduce_min_f32");
+    // V.3.A.2: Mean added to reduce.slang + reduce_last_dim.slang as
+    // op_id=3 (sum then divide by element count).
+    vk_reduce_f32_wrapper!(mean_f32, 3, "reduce_mean_f32");
 }
 
 // ===========================================================================
@@ -708,10 +799,11 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     let idx_dts = [f32, DType::U32, f32];
     table.register(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32);
 
-    // ----- Reduce f32 (V.2.D) — Sum / Max / Min (Mean deferred to V.3) -----
-    table.register(OpKind::SumReduce, &u(f32), vk, reduce::sum_f32);
-    table.register(OpKind::MaxReduce, &u(f32), vk, reduce::max_f32);
-    table.register(OpKind::MinReduce, &u(f32), vk, reduce::min_f32);
+    // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean -----
+    table.register(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32);
+    table.register(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32);
+    table.register(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32);
+    table.register(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32);
 
     // ----- Concat f32 (V.2.D) — N==2 only; N>2 falls back to next alt -----
     table.register(OpKind::Concat, &u(f32), vk, concat::concat_f32);
@@ -721,4 +813,10 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- Affine f32 (V.2.E) — y = mul*x + add -----
     table.register(OpKind::Affine, &u(f32), vk, affine::affine_f32);
+
+    // ----- Clamp f32 (V.3.A.1) — new Slang -----
+    table.register(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32);
+
+    // ----- PowI f32 (V.3.A.3) — new Slang -----
+    table.register(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32);
 }

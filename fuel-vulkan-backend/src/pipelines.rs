@@ -48,6 +48,10 @@ pub struct Pipelines {
     pub binary_layout: PipelineLayout,
     pub affine_pipeline: ComputePipeline,
     pub affine_layout: PipelineLayout,
+    pub clamp_pipeline: ComputePipeline,
+    pub clamp_layout: PipelineLayout,
+    pub powi_pipeline: ComputePipeline,
+    pub powi_layout: PipelineLayout,
     /// WGSL matmul (4x4 register tile, no shared memory). Fast for
     /// short M where the shared-memory tiled version's barriers cost
     /// more than they save.
@@ -279,6 +283,8 @@ impl Pipelines {
         let unary_mod = registry.load_module(device, shaders::UNARY)?;
         let binary_mod = registry.load_module(device, shaders::BINARY)?;
         let affine_mod = registry.load_module(device, shaders::AFFINE)?;
+        let clamp_mod = registry.load_module(device, shaders::CLAMP)?;
+        let powi_mod = registry.load_module(device, shaders::POWI)?;
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
@@ -314,6 +320,8 @@ impl Pipelines {
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let binary_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let affine_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let clamp_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let powi_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let matmul_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -349,6 +357,8 @@ impl Pipelines {
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
         let affine_pipeline = ComputePipeline::new(device, &affine_layout, &affine_mod, "main")?;
+        let clamp_pipeline = ComputePipeline::new(device, &clamp_layout, &clamp_mod, "main")?;
+        let powi_pipeline = ComputePipeline::new(device, &powi_layout, &powi_mod, "main")?;
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let matmul_tiled_pipeline = ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
@@ -384,6 +394,8 @@ impl Pipelines {
             unary_pipeline, unary_layout,
             binary_pipeline, binary_layout,
             affine_pipeline, affine_layout,
+            clamp_pipeline, clamp_layout,
+            powi_pipeline, powi_layout,
             matmul_pipeline, matmul_layout,
             matmul_tiled_pipeline, matmul_tiled_layout,
             matvec_pipeline, matvec_layout,
