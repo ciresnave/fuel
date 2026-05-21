@@ -38,6 +38,7 @@
 //! extensions — they do not require changes to the bridge's
 //! structural design.
 
+use crate::inference_context::{InferenceContext, KvCache, KvSlot};
 use crate::{DType, Device, Shape};
 use fuel_graph_executor::GraphExecutor;
 use std::sync::Arc;
@@ -1373,6 +1374,47 @@ impl LazyTensor {
         }
     }
 
+    /// Push a [`fuel_graph::Op::Const`] node on the same graph as
+    /// `self` **without** populating the graph's storage_map. The
+    /// caller binds the storage Arc into the realize call via
+    /// [`InferenceContext::insert`](crate::inference_context::InferenceContext::insert).
+    ///
+    /// Used by the Phase E.3.3 forward path to bind pre-allocated
+    /// KV-cache storage Arcs (`Arc<RwLock<fuel_storage::Storage>>`)
+    /// into a per-step graph — the graph's legacy storage_map only
+    /// holds `fuel_core_types::Storage`, so direct binding isn't
+    /// possible without a type conversion.
+    pub fn const_placeholder_like(
+        &self,
+        shape: impl Into<Shape>,
+        dtype: fuel_core_types::DType,
+    ) -> Self {
+        Self {
+            inner: self.inner.const_placeholder_like(shape, dtype),
+        }
+    }
+
+    /// Append an [`fuel_graph::Op::WriteSlice`] node. Copies `source`'s
+    /// bytes into `self` at the rectangular slab defined by `ranges`
+    /// and returns a tensor whose Storage Arc is `self`'s — i.e. the
+    /// post-write reference to the same underlying buffer.
+    ///
+    /// Destructive on `self`: after the write, downstream consumers
+    /// must read the bytes through the returned tensor's NodeId, not
+    /// `self`'s.
+    ///
+    /// **Returns `Result`**: rank/shape/range mismatches surface as a
+    /// typed error.
+    pub fn write_slice(
+        &self,
+        source: &Self,
+        ranges: Vec<(usize, usize)>,
+    ) -> crate::Result<Self> {
+        let inner = self.inner.write_slice(&source.inner, ranges)
+            .map_err(crate::Error::from)?;
+        Ok(Self { inner })
+    }
+
     /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
     /// `Tensor::conv2d` for the full shape contract: `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
@@ -2538,6 +2580,290 @@ impl LlamaModel {
         cache.cached_len += seq;
 
         logits_vec
+    }
+
+    // ===== Phase 7.6 step 9c E.3.3.B — InferenceContext + KvCache + WriteSlice =====
+    //
+    // The new forward path. Uses pre-allocated KV-cache buffers
+    // (`KvCache::with_capacity`) + `Op::WriteSlice` in-graph to mutate
+    // them, replacing the legacy concat-cached-and-fresh / download-
+    // fresh / host-append pattern. Runs on CPU or CUDA via the
+    // pipelined executor; Vulkan callers keep using the legacy
+    // host-resident path until Vulkan WriteSlice ships.
+
+    /// Variant of [`apply_layer_with_cache`] that uses pre-allocated
+    /// KV-cache buffers + `Op::WriteSlice`. The K/V caches are bound
+    /// via `k_cache_const` / `v_cache_const` (Const placeholders that
+    /// the caller has wired into [`InferenceContext`]); the post-
+    /// write tensors are sliced to the `cached_len + seq` extent for
+    /// attention. No fresh K/V is returned — the cache mutation is
+    /// in-graph as a side effect of the WriteSlice nodes.
+    fn apply_layer_with_kv_writes(
+        &self,
+        x: &LazyTensor,
+        layer: &LayerWeights,
+        k_cache_const: &LazyTensor,
+        v_cache_const: &LazyTensor,
+        cached_len: usize,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let dims = x.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+        let total_seq = cached_len + seq;
+
+        let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
+
+        // Q/K/V projections + optional biases — identical to apply_layer_with_cache.
+        let q = apply_optional_bias(
+            layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim),
+            layer.attn_q_bias.as_ref(), cfg.dim);
+        let k = apply_optional_bias(
+            layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim),
+            layer.attn_k_bias.as_ref(), kv_dim);
+        let v = apply_optional_bias(
+            layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim),
+            layer.attn_v_bias.as_ref(), kv_dim);
+
+        let q_h = q
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+        let k_h = k
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .permute(&[0, 2, 1, 3]);
+
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
+
+        // Write fresh K/V slabs into the pre-allocated cache buffers
+        // via Op::WriteSlice. Source slab shape is
+        // `[batch, n_kv_heads, seq, head_dim]`; dest range along axis
+        // 2 is `(cached_len, cached_len + seq)`. The returned tensor's
+        // Storage Arc IS the cache const's Arc — post-write reference
+        // to the same underlying buffer (the executor's
+        // WorkItemKind::WriteSlice branch adopts dest's Arc as the
+        // kernel output, mutating in place).
+        let write_ranges = vec![
+            (0, batch),
+            (0, cfg.n_kv_heads),
+            (cached_len, cached_len + seq),
+            (0, cfg.head_dim),
+        ];
+        let k_full_buffer = k_cache_const.write_slice(&k_r, write_ranges.clone())?;
+        let v_full_buffer = v_cache_const.write_slice(&v_h, write_ranges)?;
+
+        // Slice the post-write full buffer down to the visible prefix
+        // `[..., 0..total_seq, ...]` along axis 2. This is what
+        // attention reads; bytes past `total_seq` in the cache buffer
+        // are stale / zero and excluded by the slice.
+        let full_k = k_full_buffer.slice(2, 0, total_seq);
+        let full_v = v_full_buffer.slice(2, 0, total_seq);
+
+        // Attention path — identical to apply_layer_with_cache from here.
+        let k_t = full_k.transpose();
+        let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
+        let scores = q_r.matmul(&k_t);
+
+        let mut mask_data = vec![0.0_f32; seq * total_seq];
+        for q_idx in 0..seq {
+            let abs_q = cached_len + q_idx;
+            for k_idx in (abs_q + 1)..total_seq {
+                mask_data[q_idx * total_seq + k_idx] = f32::NEG_INFINITY;
+            }
+        }
+        let mask = x.const_f32_like(
+            mask_data,
+            Shape::from_dims(&[1, 1, seq, total_seq]),
+        );
+        let scores_scaled = LazyTensor {
+            inner: scores.inner.mul_scalar(scale),
+        };
+        let scores_masked = scores_scaled.broadcast_add(&mask);
+        let attn = scores_masked.softmax_last_dim();
+        let attn_v = attn.matmul(&full_v);
+
+        let merged = attn_v
+            .permute(&[0, 2, 1, 3])
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
+
+        let h1 = x.add(&attn_out);
+        let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
+
+        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
+        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
+        let swiglu = gate.silu().mul(&up);
+        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
+
+        Ok(h1.add(&ffn_out))
+    }
+
+    /// Forward pass using pre-allocated KV-cache buffers and
+    /// `Op::WriteSlice`. The cache must have been constructed via
+    /// [`KvCache::with_capacity`] (the legacy `with_dims` grow-by-
+    /// replacement constructor is rejected — its layers carry no
+    /// pre-allocated storage to write into).
+    ///
+    /// ## Architectural notes
+    ///
+    /// - The cache's K + V Storage Arcs are bound to per-step Const
+    ///   NodeIds via [`InferenceContext::insert`]. The
+    ///   `const_placeholder_like` helper pushes Const nodes WITHOUT
+    ///   populating the graph's legacy `storage_map` — the realize
+    ///   call's `initial` StorageCache (cloned from `ctx.persistent`)
+    ///   short-circuits the `build_const_cache` walk.
+    /// - The cache buffers are mutated in place by
+    ///   `Op::WriteSlice`'s kernel; the cache's Arcs persist outside
+    ///   the graph (the graph is built fresh per forward step and
+    ///   dropped after realize). Subsequent forward steps see the
+    ///   accumulated K/V state via the same Arcs.
+    /// - Logits return shape: rank-1 `[vocab_size]` — last-position
+    ///   only, same as [`Self::forward_with_cache_on`].
+    /// - Vulkan: not yet supported (Vulkan WriteSlice kernel
+    ///   pending). Callers that need a Vulkan backend stay on the
+    ///   legacy [`Self::forward_with_cache_on`] path.
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let cached_len = cache.cached_len;
+
+        if seq == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "forward_with_kv_context: zero tokens".to_string(),
+            ).bt());
+        }
+        if cache.n_layers() != cfg.n_layers {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "forward_with_kv_context: cache n_layers {} != model n_layers {}",
+                cache.n_layers(), cfg.n_layers,
+            )).bt());
+        }
+        let max_seq_len = cache.max_seq_len.ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "forward_with_kv_context: cache was constructed via with_dims (no \
+                 pre-allocated buffers); call KvCache::with_capacity(...) for the \
+                 WriteSlice path".to_string(),
+            ).bt()
+        })?;
+        if cached_len + seq > max_seq_len {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "forward_with_kv_context: cached_len ({cached_len}) + seq ({seq}) > \
+                 max_seq_len ({max_seq_len})",
+            )).bt());
+        }
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
+        if cache.n_kv_heads != cfg.n_kv_heads || cache.head_dim != cfg.head_dim {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "forward_with_kv_context: cache shape (n_kv_heads={}, head_dim={}) \
+                 disagrees with model config (n_kv_heads={}, head_dim={})",
+                cache.n_kv_heads, cache.head_dim, cfg.n_kv_heads, cfg.head_dim,
+            )).bt());
+        }
+
+        // Embed lookup + reshape to [batch, seq, dim].
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids)
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+
+        // RoPE cos/sin tables shared across layers.
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, cached_len, seq, cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
+        // dispatch through the WriteSlice variant. Track the NodeIds
+        // we insert into ctx so we can clean them up after realize
+        // (the per-step NodeIds reference a graph that drops at end
+        // of this method; leaving them in ctx.persistent would leak).
+        let cache_shape = Shape::from_dims(
+            &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
+        );
+        let mut bound_node_ids: Vec<fuel_graph::NodeId> =
+            Vec::with_capacity(2 * cfg.n_layers);
+        for (li, layer_weights) in weights.layers.iter().enumerate() {
+            let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "forward_with_kv_context: cache layer {li} has no K slot \
+                     (with_capacity should have populated all layers)",
+                )).bt()
+            })?;
+            let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "forward_with_kv_context: cache layer {li} has no V slot",
+                )).bt()
+            })?;
+            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let k_id = k_cache_node.inner.id();
+            let v_id = v_cache_node.inner.id();
+            ctx.insert(k_id, k_arc);
+            ctx.insert(v_id, v_arc);
+            bound_node_ids.push(k_id);
+            bound_node_ids.push(v_id);
+
+            h = self.apply_layer_with_kv_writes(
+                &h,
+                layer_weights,
+                &k_cache_node,
+                &v_cache_node,
+                cached_len,
+                &rope_cos,
+                &rope_sin,
+            )?;
+        }
+
+        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let last_pos = seq - 1;
+        let last_logits = logits
+            .slice(1, last_pos, 1)
+            .reshape(Shape::from_dims(&[cfg.vocab_size]));
+
+        // Realize through InferenceContext. The WriteSlice nodes
+        // mutate the cache buffers as a side effect; downstream
+        // attention reads through the post-write Slice views.
+        let logits_vec = ctx.realize_one_as::<f32>(
+            last_logits.inner.graph(),
+            last_logits.inner.id(),
+        )?;
+
+        // Clean up per-step bindings from ctx so they don't accumulate
+        // across decode steps (each step gets a fresh graph; the
+        // previous step's NodeIds are dead).
+        for id in bound_node_ids {
+            ctx.remove(id);
+        }
+
+        // Bump cache state.
+        cache.cached_len += seq;
+        for li in 0..cfg.n_layers {
+            cache.bump_version(li, KvSlot::K);
+            cache.bump_version(li, KvSlot::V);
+        }
+
+        Ok(logits_vec)
     }
 }
 
@@ -6049,6 +6375,241 @@ mod generate_tests {
                 "logit[{i}]: cached={a}, non-cached={b}, diff={diff}",
             );
         }
+    }
+
+    // ---- forward_with_kv_context (Phase 7.6 step 9c E.3.3.B) -----------
+
+    /// Prefill + decode through the new `forward_with_kv_context` path
+    /// should produce the same last-position logits as a non-cached
+    /// forward over the full sequence. Mirrors the
+    /// `forward_with_cache_decode_step_matches_full_forward` test but
+    /// uses `KvCache::with_capacity` + `InferenceContext` + `Op::
+    /// WriteSlice` instead of the legacy host-resident `LlamaKVCache`
+    /// + concat-and-download path.
+    #[test]
+    fn forward_with_kv_context_decode_matches_non_cached_forward() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+
+        let prompt = [1_u32, 2, 3];
+        let next_token = 4_u32;
+        let full = [prompt[0], prompt[1], prompt[2], next_token];
+
+        // Non-cached reference: full forward over all 4 tokens.
+        let full_logits = model.forward(&full, 0);
+        let last_pos = full.len() - 1;
+        let expected = full_logits
+            .slice(1, last_pos, 1)
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .realize_f32();
+
+        // New cached path: KvCache::with_capacity + forward_with_kv_context.
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            /*max_seq_len*/ full.len(),
+            DType::F32,
+            &device,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(device);
+
+        // Prefill: write the 3-token prompt's K/V into the cache.
+        let _prefill_logits = model
+            .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
+            .expect("prefill");
+        assert_eq!(cache.cached_len, prompt.len());
+
+        // Decode: one step with the new token.
+        let actual = model
+            .forward_with_kv_context(&[next_token], &mut cache, &mut ctx)
+            .expect("decode");
+        assert_eq!(cache.cached_len, full.len());
+        assert_eq!(actual.len(), expected.len());
+
+        // Same tolerance as the legacy cached vs non-cached test: the
+        // attention matmul accumulates along the seq dim in a slightly
+        // different order between the prefill (one tensor of length
+        // total_seq) and the prefill+decode (cached prefix + 1 fresh
+        // row) paths. This is the standard O(ε) gemm drift, not a
+        // correctness bug.
+        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            let diff = (a - b).abs();
+            let rel = diff / a.abs().max(b.abs()).max(1e-6);
+            assert!(
+                diff < 5e-3 || rel < 1e-2,
+                "logit[{i}]: new-cached={a}, non-cached={b}, diff={diff}",
+            );
+        }
+
+        // Side effect: every layer's K and V version should have
+        // bumped once per forward step (2 steps × 1 bump each = 2).
+        for li in 0..cfg.n_layers {
+            assert_eq!(cache.layer(li).unwrap().k_version, 2);
+            assert_eq!(cache.layer(li).unwrap().v_version, 2);
+        }
+    }
+
+    /// Prefill-only forward through `forward_with_kv_context` should
+    /// match a non-cached forward over the same prompt (no decode
+    /// step, just the prefill). This is the cleanest correctness gate
+    /// — `cached_len == 0` means WriteSlice writes into the head of a
+    /// zero-initialized buffer and the subsequent attention slice
+    /// equals the fresh K/V.
+    #[test]
+    fn forward_with_kv_context_prefill_matches_non_cached_forward() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+
+        let prompt = [1_u32, 2, 3, 4];
+
+        // Non-cached reference.
+        let full_logits = model.forward(&prompt, 0);
+        let last_pos = prompt.len() - 1;
+        let expected = full_logits
+            .slice(1, last_pos, 1)
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .realize_f32();
+
+        // New path, single prefill call.
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            prompt.len(),
+            DType::F32,
+            &device,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(device);
+        let actual = model
+            .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
+            .expect("prefill");
+
+        assert_eq!(cache.cached_len, prompt.len());
+        assert_eq!(actual.len(), expected.len());
+
+        // Tighter tolerance than the prefill+decode test: this is
+        // structurally one forward pass through the model with the
+        // same input shape — the only added work is WriteSlice +
+        // Slice (both byte-exact ops). Drift should be at the rng-
+        // initial-noise level.
+        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            let diff = (a - b).abs();
+            assert!(
+                diff < 1e-5,
+                "logit[{i}]: new-prefill={a}, non-cached={b}, diff={diff}",
+            );
+        }
+    }
+
+    /// `forward_with_kv_context` rejects a cache built via `with_dims`
+    /// (no pre-allocated buffers) with a clear error pointing at the
+    /// `with_capacity` constructor.
+    #[test]
+    fn forward_with_kv_context_rejects_with_dims_cache() {
+        let cfg = LlamaConfig {
+            vocab_size: 4, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
+            head_dim: 2, ffn_dim: 4, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let mut cache = KvCache::with_dims(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
+        let mut ctx = InferenceContext::new(Device::cpu());
+
+        let err = model.forward_with_kv_context(&[1_u32], &mut cache, &mut ctx);
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("with_capacity"),
+            "expected error message to mention with_capacity, got: {msg}",
+        );
+    }
+
+    /// `forward_with_kv_context` rejects when `cached_len + seq`
+    /// exceeds the cache's `max_seq_len`.
+    #[test]
+    fn forward_with_kv_context_rejects_overflow() {
+        let cfg = LlamaConfig {
+            vocab_size: 4, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
+            head_dim: 2, ffn_dim: 4, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            /*max_seq_len*/ 2, DType::F32, &device,
+        ).unwrap();
+        let mut ctx = InferenceContext::new(device);
+
+        // 3 tokens into a cache with max_seq_len=2 → overflow.
+        let err = model.forward_with_kv_context(&[1_u32, 2, 3], &mut cache, &mut ctx);
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("max_seq_len"),
+            "expected error message to mention max_seq_len, got: {msg}",
+        );
+    }
+
+    /// After each forward call, the per-step Const NodeIds inserted
+    /// into ctx are cleaned up — ctx.persistent should NOT accumulate
+    /// across decode steps.
+    #[test]
+    fn forward_with_kv_context_does_not_leak_context_entries() {
+        let cfg = LlamaConfig {
+            vocab_size: 4, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
+            head_dim: 2, ffn_dim: 4, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            4, DType::F32, &device,
+        ).unwrap();
+        let mut ctx = InferenceContext::new(device);
+
+        assert_eq!(ctx.len(), 0);
+        model.forward_with_kv_context(&[1_u32, 2], &mut cache, &mut ctx).unwrap();
+        assert_eq!(ctx.len(), 0, "ctx.persistent should be empty after forward");
+        model.forward_with_kv_context(&[3_u32], &mut cache, &mut ctx).unwrap();
+        assert_eq!(ctx.len(), 0, "ctx.persistent should stay empty across steps");
     }
 
     #[test]

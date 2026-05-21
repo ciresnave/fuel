@@ -1743,6 +1743,43 @@ impl Tensor {
         }
     }
 
+    /// Push a `Const` node on the same graph as `self` **without**
+    /// populating the graph's storage_map. The caller is responsible
+    /// for binding the storage Arc into the realize call's initial
+    /// StorageCache, typically via
+    /// [`InferenceContext::insert`](../fuel_core/inference_context/struct.InferenceContext.html#method.insert).
+    ///
+    /// Used by the Phase 7.6 step 9c E.3.3 forward path to bind
+    /// pre-allocated KV-cache storage Arcs (held as the new
+    /// `Arc<RwLock<fuel_storage::Storage>>` type, not the legacy
+    /// `fuel_core_types::Storage` that `const_like_from_storage` takes)
+    /// into a per-step graph without re-uploading or type-converting.
+    ///
+    /// **Caller contract**: the same NodeId must appear in the
+    /// `initial` StorageCache passed to the realize call. If not, the
+    /// executor surfaces a clean error pointing at the missing slot
+    /// — there's no implicit fallback to `graph.storage_map`.
+    pub fn const_placeholder_like(
+        &self,
+        shape: impl Into<Shape>,
+        dtype: DType,
+    ) -> Self {
+        let shape = shape.into();
+        let id = {
+            let mut g = self.graph.write().unwrap();
+            g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape,
+                dtype,
+            })
+        };
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Phase 7.5 work item G2: build a second `Const` leaf on the same
     /// graph as `self` whose realized bytes already live in `storage`.
     /// Companion to [`Tensor::from_storage`] for the multi-input case.
