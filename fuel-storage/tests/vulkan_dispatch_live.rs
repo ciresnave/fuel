@@ -533,6 +533,220 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
     }
 }
 
+// ===========================================================================
+// V.3.B — Cast (f32 ↔ f16, f32 ↔ bf16)
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_f32_to_bf16() {
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host_f32: Vec<f32> = vec![1.0, -2.5, 3.25, 0.0, 1e-3, 1e3];
+    let n = host_f32.len();
+
+    let in_storage = upload_f32(&backend, &host_f32);
+    let out_bytes_h = backend.alloc_bytes_handle(n * 2).expect("alloc bf16 out");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Cast,
+            &[DType::F32, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[n])),
+        Layout::contiguous(Shape::from_dims(&[n])),
+    ];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("cast f32→bf16 dispatch");
+
+    // Download bf16 bytes and reinterpret.
+    let raw = match &out_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    let got: Vec<bf16> = bytemuck::cast_slice::<u8, bf16>(&raw).to_vec();
+    for (i, (g, src)) in got.iter().zip(host_f32.iter()).enumerate() {
+        let expected = bf16::from_f32(*src);
+        // The kernel uses truncation (bits >> 16), not round-to-nearest;
+        // bf16::from_f32 also truncates. Should be bit-identical.
+        assert_eq!(g.to_bits(), expected.to_bits(),
+            "cast[{i}]: f32={src}, got bf16 bits={:#x}, expected {:#x}",
+            g.to_bits(), expected.to_bits());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_bf16_to_f32() {
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host_bf16: Vec<bf16> = vec![
+        bf16::from_f32(1.0),
+        bf16::from_f32(-2.5),
+        bf16::from_f32(3.25),
+        bf16::from_f32(0.0),
+        bf16::from_f32(1e-3),
+        bf16::from_f32(1e3),
+    ];
+    let n = host_bf16.len();
+
+    let bf16_bytes: &[u8] = bytemuck::cast_slice(&host_bf16);
+    let in_vk = backend.upload_bytes_handle(bf16_bytes).expect("upload bf16");
+    let in_storage = Storage::new(BackendStorage::Vulkan(in_vk), DType::BF16);
+    let out_bytes_h = backend.alloc_bytes_handle(n * 4).expect("alloc f32 out");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Cast,
+            &[DType::BF16, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[n])),
+        Layout::contiguous(Shape::from_dims(&[n])),
+    ];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("cast bf16→f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, src)) in got.iter().zip(host_bf16.iter()).enumerate() {
+        let expected = src.to_f32();
+        assert!((g - expected).abs() < 1e-3,
+            "cast[{i}]: bf16={}, got f32={g}, expected {expected}", src.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_f32_to_f16() {
+    use half::f16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host_f32: Vec<f32> = vec![1.0, -2.5, 3.25, 0.0, 1e-3, 1e3];
+    let n = host_f32.len();
+
+    let in_storage = upload_f32(&backend, &host_f32);
+    let out_bytes_h = backend.alloc_bytes_handle(n * 2).expect("alloc f16 out");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Cast,
+            &[DType::F32, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[n])),
+        Layout::contiguous(Shape::from_dims(&[n])),
+    ];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("cast f32→f16 dispatch");
+
+    let raw = match &out_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    let got: Vec<f16> = bytemuck::cast_slice::<u8, f16>(&raw).to_vec();
+    for (i, (g, src)) in got.iter().zip(host_f32.iter()).enumerate() {
+        let expected = f16::from_f32(*src);
+        // f16 round-to-nearest-even; allow 1 ULP slack.
+        let g_bits = g.to_bits() as i32;
+        let e_bits = expected.to_bits() as i32;
+        assert!((g_bits - e_bits).abs() <= 1,
+            "cast[{i}]: f32={src}, got f16 bits={g_bits:#x}, expected {e_bits:#x}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_f16_to_f32() {
+    use half::f16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host_f16: Vec<f16> = vec![
+        f16::from_f32(1.0),
+        f16::from_f32(-2.5),
+        f16::from_f32(3.25),
+        f16::from_f32(0.0),
+        f16::from_f32(1e-3),
+        f16::from_f32(1e3),
+    ];
+    let n = host_f16.len();
+
+    let f16_bytes: &[u8] = bytemuck::cast_slice(&host_f16);
+    let in_vk = backend.upload_bytes_handle(f16_bytes).expect("upload f16");
+    let in_storage = Storage::new(BackendStorage::Vulkan(in_vk), DType::F16);
+    let out_bytes_h = backend.alloc_bytes_handle(n * 4).expect("alloc f32 out");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Cast,
+            &[DType::F16, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[n])),
+        Layout::contiguous(Shape::from_dims(&[n])),
+    ];
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("cast f16→f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, src)) in got.iter().zip(host_f16.iter()).enumerate() {
+        let expected = src.to_f32();
+        // f16 → f32 is exact (no rounding); allow tight tolerance.
+        assert!((g - expected).abs() < 1e-3,
+            "cast[{i}]: f16={}, got f32={g}, expected {expected}", src.to_f32());
+    }
+}
+
 /// PowI y = x^3 across mixed-sign inputs.
 #[test]
 #[ignore]

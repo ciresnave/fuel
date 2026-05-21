@@ -383,6 +383,66 @@ pub mod powi {
 }
 
 // ===========================================================================
+// Cast — f32↔f16, f32↔bf16 (V.3.B)
+// ===========================================================================
+//
+// One wrapper handles all 4 supported (src, dst) pairs by inspecting
+// Storage.dtype. Element count derived from src bytes / src elem-size.
+// Requires `n` even (half-precision dtypes are u32-packed 2-per-word);
+// odd-count tensors return Err and the route picker falls back to CPU.
+
+pub mod cast {
+    use super::*;
+
+    pub fn cast_f32_half(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::cast::cast_f32_half: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src_dtype = in_guard.dtype;
+        let dst_dtype = out_guard.dtype;
+        let a = vulkan_input(&in_guard)?;
+        let n_bytes = a.len_bytes();
+        let src_elem = match src_dtype {
+            DType::F32  => 4,
+            DType::F16  => 2,
+            DType::BF16 => 2,
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::cast::cast_f32_half: unsupported src dtype {other:?}",
+                )).bt());
+            }
+        };
+        if n_bytes % src_elem != 0 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::cast::cast_f32_half: input bytes {n_bytes} not a multiple of \
+                 src elem size {src_elem} ({src_dtype:?})",
+            )).bt());
+        }
+        let n = n_bytes / src_elem;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::cast::cast_f32_half: input has no VulkanBackend handle. \
+                 Storages flowing through the pipelined-executor binding-table dispatch \
+                 must come from alloc_bytes_handle / upload_bytes_handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.cast_f32_bytes(a, out, n, src_dtype, dst_dtype)
+    }
+}
+
+// ===========================================================================
 // Clamp — y = clamp(x, lo, hi), f32 (V.3.A.1)
 // ===========================================================================
 
@@ -1015,4 +1075,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- PowI f32 (V.3.A.3) — new Slang -----
     table.register(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32);
+
+    // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (new Slang) -----
+    let f16 = DType::F16;
+    let bf16_d = DType::BF16;
+    table.register(OpKind::Cast, &[f32,    f16],    vk, cast::cast_f32_half);
+    table.register(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half);
+    table.register(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half);
+    table.register(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half);
 }

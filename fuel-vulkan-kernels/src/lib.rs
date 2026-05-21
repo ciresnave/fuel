@@ -42,6 +42,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("binary",                    include_bytes!("../spv/binary.spv")),
     ("clamp",                     include_bytes!("../spv/clamp.spv")),
     ("powi",                      include_bytes!("../spv/powi.spv")),
+    ("cast_f32_to_f16",           include_bytes!("../spv/cast_f32_to_f16.spv")),
+    ("cast_f16_to_f32",           include_bytes!("../spv/cast_f16_to_f32.spv")),
+    ("cast_f32_to_bf16",          include_bytes!("../spv/cast_f32_to_bf16.spv")),
+    ("cast_bf16_to_f32",          include_bytes!("../spv/cast_bf16_to_f32.spv")),
     ("concat_along_dim",          include_bytes!("../spv/concat_along_dim.spv")),
     ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
     ("flash_attention",           include_bytes!("../spv/flash_attention.spv")),
@@ -91,6 +95,14 @@ pub const AFFINE: &str = "affine";
 pub const CLAMP: &str = "clamp";
 /// Element-wise integer power: y = x ^ exp.
 pub const POWI: &str = "powi";
+/// Cast f32 → f16 (rounded to nearest-even via f32tof16).
+pub const CAST_F32_TO_F16: &str = "cast_f32_to_f16";
+/// Cast f16 → f32 (exact, via f16tof32).
+pub const CAST_F16_TO_F32: &str = "cast_f16_to_f32";
+/// Cast f32 → bf16 (truncate-toward-zero: bits >> 16).
+pub const CAST_F32_TO_BF16: &str = "cast_f32_to_bf16";
+/// Cast bf16 → f32 (exact: bits << 16).
+pub const CAST_BF16_TO_F32: &str = "cast_bf16_to_f32";
 /// Tiled matrix multiply with 4x4 register tiling (WGSL).
 pub const MATMUL: &str = "matmul";
 /// GLSL matmul with shared-memory blocking.
