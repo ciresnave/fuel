@@ -2419,168 +2419,24 @@ impl LlamaModel {
         }
     }
 
-    /// Run a forward pass that consumes a growing KV cache. The model
-    /// prepends each layer's previously cached K/V in front of the
-    /// freshly computed K/V before attention, and afterwards materializes
-    /// the fresh K/V (along with the logits) in a single executor walk
-    /// so the cache can be grown in place.
-    ///
-    /// Returns only the **last-position** logits — shape `[vocab_size]`
-    /// — since the caller almost always wants to sample from that
-    /// single slice, and realizing the full `[1, seq, vocab]` logits
-    /// tensor would be the single largest allocation of the decode
-    /// step for large vocabs.
-    /// Backend-agnostic cached forward pass. Realizes the graph on
-    /// whichever `GraphBackend` the caller's `executor` is using, and
-    /// stores the fresh K/V tensors for every layer on the host side
-    /// so the next call's cache lookup is cheap.
-    ///
-    /// The K/V cache itself is host-resident (`LlamaKVCache`) — it
-    /// holds `Vec<f32>`, which is the same data regardless of which
-    /// backend produced it. That keeps the cache type backend-agnostic;
-    /// only the realize call differs. Backends that want GPU-resident
-    /// KV cache to skip the D2H/H2D round-trip should use
-    /// [`forward_with_gpu_cache`](Self::forward_with_gpu_cache) (still
-    /// CUDA-only as of this writing; a generic version is pending).
-    pub fn forward_with_cache_on<B: fuel_graph_executor::GraphBackend>(
-        &self,
-        tokens: &[u32],
-        cache: &mut LlamaKVCache,
-        executor: &mut GraphExecutor<B>,
-    ) -> Vec<f32> {
-        let cfg = &self.config;
-        let weights = &self.weights;
-        let seq = tokens.len();
-        let batch = 1;
-        let cached_len = cache.cached_len;
-
-        assert_eq!(
-            cache.layers.len(),
-            cfg.n_layers,
-            "forward_with_cache_on: cache layer count {} does not match model n_layers {}",
-            cache.layers.len(),
-            cfg.n_layers,
-        );
-        assert!(seq > 0, "forward_with_cache_on: cannot forward zero tokens");
-
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &Device::cpu(),
-        );
-        let token_ids =
-            embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
-
-        // RoPE cos/sin tables — shared across layers.
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base,
-            cached_len,
-            seq,
-            cfg.head_dim,
-        );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
-
-        let mut fresh_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
-        let mut fresh_vs: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);
-
-        for (li, layer) in weights.layers.iter().enumerate() {
-            let out = self.apply_layer_with_cache(
-                &h,
-                layer,
-                &cache.layers[li],
-                cached_len,
-                &rope_cos,
-                &rope_sin,
-            );
-            h = out.h;
-            // Host-resident cache wants fresh-only — appending to the
-            // growing Vec<f32> is O(fresh); downloading full would be
-            // O(cached + fresh) per step.
-            fresh_ks.push(out.fresh_k);
-            fresh_vs.push(out.fresh_v);
-        }
-
-        let h_norm = apply_affine_rms_norm(
-            &h,
-            &weights.final_norm_gain,
-            cfg.dim,
-            cfg.norm_eps,
-        );
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
-
-        let last_pos = seq - 1;
-        let last_logits = logits
-            .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]));
-
-        let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
-        roots.push(&last_logits);
-        for fk in &fresh_ks {
-            roots.push(fk);
-        }
-        for fv in &fresh_vs {
-            roots.push(fv);
-        }
-
-        let inner: Vec<&fuel_graph::Tensor> = roots.iter().map(|lt| &lt.inner).collect();
-        let realized: Vec<Vec<f32>> = executor
-            .realize_many_f32(&inner)
-            .into_iter()
-            .map(|t| t.into_vec())
-            .collect();
-        Self::unpack_kv_cache(realized, cache, cfg.n_layers, seq)
-    }
-
-    /// Cached forward pass on CPU. Thin wrapper over
-    /// [`forward_with_cache_on`](Self::forward_with_cache_on) with a
-    /// fresh `CpuBackend` executor.
-    pub fn forward_with_cache(
-        &self,
-        tokens: &[u32],
-        cache: &mut LlamaKVCache,
-    ) -> Vec<f32> {
-        let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
-        self.forward_with_cache_on(tokens, cache, &mut exe)
-    }
-
-    /// Cached forward pass on CUDA. Thin wrapper over
-    /// [`forward_with_cache_on`](Self::forward_with_cache_on).
-    #[cfg(feature = "cuda")]
-    pub fn forward_with_cache_cuda(
-        &self,
-        tokens: &[u32],
-        cache: &mut LlamaKVCache,
-        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
-    ) -> Vec<f32> {
-        self.forward_with_cache_on(tokens, cache, executor)
-    }
-
-    fn unpack_kv_cache(
-        mut realized: Vec<Vec<f32>>,
-        cache: &mut LlamaKVCache,
-        n_layers: usize,
-        seq: usize,
-    ) -> Vec<f32> {
-        let logits_vec = realized.remove(0);
-        let fresh_k_vecs: Vec<Vec<f32>> = realized.drain(..n_layers).collect();
-        let fresh_v_vecs: Vec<Vec<f32>> = realized.drain(..n_layers).collect();
-
-        for (li, (fk_vec, fv_vec)) in fresh_k_vecs
-            .into_iter()
-            .zip(fresh_v_vecs.into_iter())
-            .enumerate()
-        {
-            cache.append_layer(li, &fk_vec, &fv_vec, seq);
-        }
-        cache.cached_len += seq;
-
-        logits_vec
-    }
+    // ===== Phase 7.6 step 9c E.3.3.D — host-resident forward retired =====
+    //
+    // The legacy host-resident cached forward path
+    // (`forward_with_cache_on`, `forward_with_cache`,
+    // `forward_with_cache_cuda`, `unpack_kv_cache`) and its supporting
+    // types (`LayerKVCache`, `LlamaKVCache`) were retired in favor of
+    // [`Self::forward_with_kv_context`] + [`KvCache`] +
+    // [`InferenceContext`]. Greedy token-sequence parity vs the
+    // retired path was confirmed by
+    // `generate_with_kv_context_matches_legacy_generate` immediately
+    // before retirement; bitwise prefill parity vs non-cached forward
+    // is checked by
+    // `forward_with_kv_context_prefill_matches_non_cached_forward`.
+    //
+    // The host-resident helper `apply_layer_with_cache` (above) STAYS
+    // because the device-resident GPU cache path
+    // (`forward_with_cache_gpu_on`) shares it — that path is still
+    // active for Vulkan callers until Vulkan WriteSlice ships.
 
     // ===== Phase 7.6 step 9c E.3.3.B — InferenceContext + KvCache + WriteSlice =====
     //
@@ -2867,70 +2723,31 @@ impl LlamaModel {
     }
 }
 
-/// Per-layer KV cache: contiguous `f32` storage for the keys and values
-/// the layer has seen so far, laid out as `[n_kv_heads, cached_len,
-/// head_dim]` (batch is always 1 for the current decode loop).
+/// Per-layer host-side K/V scratch — `[n_kv_heads, cached_len, head_dim]`
+/// laid out flat. Phase 7.6 step 9c E.3.3.D: the `LlamaKVCache`
+/// wrapper that held a `Vec<LayerKVCache>` + `cached_len` was retired
+/// (succeeded by `KvCache` in `crate::inference_context`). `LayerKVCache`
+/// itself stays alive as a shape carrier — the device-resident path
+/// (`forward_with_cache_gpu_on`) uses it as a zero-filled proxy that
+/// feeds `apply_layer_with_cache`'s graph-building so the right Const
+/// shapes are emitted; the proxy bytes are overwritten with real
+/// device storage before realize and never read.
+///
+/// Once the device-resident path migrates to `KvCache` +
+/// `forward_with_kv_context` too (gated on Vulkan WriteSlice landing),
+/// this type can retire.
 #[derive(Debug, Clone, Default)]
 pub struct LayerKVCache {
-    k: Vec<f32>,
-    v: Vec<f32>,
+    pub(crate) k: Vec<f32>,
+    pub(crate) v: Vec<f32>,
 }
 
-/// Whole-model KV cache for a [`LlamaModel`]. One [`LayerKVCache`] per
-/// decoder layer plus the shared `cached_len` counter. Rebuild a fresh
-/// cache between independent generations — the cache's shape is tied
-/// to a specific prompt prefix.
-#[derive(Debug, Clone)]
-pub struct LlamaKVCache {
-    pub layers:     Vec<LayerKVCache>,
-    pub cached_len: usize,
-    n_kv_heads:     usize,
-    head_dim:       usize,
-}
-
-impl LlamaKVCache {
-    /// Build an empty cache sized for a given model config.
-    pub fn new(config: &LlamaConfig) -> Self {
-        Self {
-            layers: (0..config.n_layers)
-                .map(|_| LayerKVCache::default())
-                .collect(),
-            cached_len: 0,
-            n_kv_heads: config.n_kv_heads,
-            head_dim: config.head_dim,
-        }
-    }
-
-    /// Append `seq` freshly computed keys and values for a given layer.
-    /// Both `fresh_k` and `fresh_v` must be laid out as
-    /// `[1, n_kv_heads, seq, head_dim]` (batch=1), matching the shape
-    /// the graph produced them in.
-    fn append_layer(&mut self, layer_idx: usize, fresh_k: &[f32], fresh_v: &[f32], seq: usize) {
-        let n_kv = self.n_kv_heads;
-        let hd = self.head_dim;
-        let cached_len = self.cached_len;
-        let new_len = cached_len + seq;
-
-        debug_assert_eq!(fresh_k.len(), n_kv * seq * hd);
-        debug_assert_eq!(fresh_v.len(), n_kv * seq * hd);
-
-        let cache = &mut self.layers[layer_idx];
-        let mut new_k = Vec::with_capacity(n_kv * new_len * hd);
-        let mut new_v = Vec::with_capacity(n_kv * new_len * hd);
-        for h in 0..n_kv {
-            let old_off = h * cached_len * hd;
-            let old_end = old_off + cached_len * hd;
-            new_k.extend_from_slice(&cache.k[old_off..old_end]);
-            new_v.extend_from_slice(&cache.v[old_off..old_end]);
-            let new_off = h * seq * hd;
-            let new_end = new_off + seq * hd;
-            new_k.extend_from_slice(&fresh_k[new_off..new_end]);
-            new_v.extend_from_slice(&fresh_v[new_off..new_end]);
-        }
-        cache.k = new_k;
-        cache.v = new_v;
-    }
-}
+// Phase 7.6 step 9c E.3.3.D — host-resident `LlamaKVCache` retired.
+// Its successor is `KvCache` in `crate::inference_context`, which
+// stores backend-erased `Arc<RwLock<fuel_storage::Storage>>` per slot
+// and supports both the legacy `with_dims` grow-by-replace shape and
+// the new `with_capacity` pre-allocated-buffer shape that
+// `forward_with_kv_context` writes into via `Op::WriteSlice`.
 
 /// Broadcast-add a 1-D bias along the last axis of `x`, or return
 /// `x` unchanged if `bias` is `None`. Used for the Qwen2-style
@@ -3368,7 +3185,16 @@ impl LlamaModel {
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
     ) -> crate::Result<Vec<u32>> {
-        self.generate_streaming(prompt_tokens, max_new_tokens, strategy, eos_id, |_| {})
+        // Phase 7.6 step 9c E.3.3.D: re-pointed to the new KvCache +
+        // InferenceContext + Op::WriteSlice path on CPU + F32. The
+        // greedy parity test
+        // `generate_with_kv_context_matches_legacy_generate` confirms
+        // bitwise token-sequence equivalence with the retired
+        // `generate_streaming_on` / `LlamaKVCache` host-resident path.
+        self.generate_with_kv_context(
+            prompt_tokens, max_new_tokens, strategy, eos_id,
+            &Device::cpu(), DType::F32,
+        )
     }
 
     /// Same contract as [`generate`], but invokes `on_token` once per
@@ -3383,68 +3209,19 @@ impl LlamaModel {
     /// free — the Vulkan demo gets KV cache by calling this with a
     /// `GraphExecutor<VulkanBackend>`.
     ///
-    /// For GPU-resident KV cache (keeps K/V on the device across
-    /// decode steps), use [`generate_streaming_cuda`](Self::generate_streaming_cuda)
-    /// — still CUDA-only as of this writing.
-    pub fn generate_streaming_on<B: fuel_graph_executor::GraphBackend>(
-        &self,
-        prompt_tokens: &[u32],
-        max_new_tokens: usize,
-        strategy: SamplingStrategy,
-        eos_id: Option<u32>,
-        executor: &mut GraphExecutor<B>,
-        mut on_token: impl FnMut(u32),
-    ) -> crate::Result<Vec<u32>> {
-        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
-        let mut rng_state: u64 = match strategy {
-            SamplingStrategy::Temperature { seed, .. } => seed,
-            _ => 0,
-        };
+    // ===== Phase 7.6 step 9c E.3.3.D — host-resident streaming retired =====
+    //
+    // The legacy `generate_streaming_on<B>` (host-resident KV cache via
+    // LlamaKVCache + per-step D2H/H2D round-trip) and its CPU-wrapper
+    // `generate_streaming` were retired in favor of
+    // `generate_streaming_with_kv_context`. Greedy token-sequence parity
+    // was confirmed by `generate_with_kv_context_matches_legacy_generate`
+    // before retirement. CUDA + CPU callers use the new path
+    // (forward_with_kv_context + WriteSlice in-graph); Vulkan callers
+    // keep using `generate_streaming_gpu_on<B>` until Vulkan WriteSlice
+    // ships.
 
-        // Prefill: one forward pass over the full prompt, populating
-        // the KV cache for every layer. This is the only O(prompt²)
-        // matmul in the whole generation.
-        let mut cache = LlamaKVCache::new(&self.config);
-        let mut last_logits = self.forward_with_cache_on(&tokens, &mut cache, executor);
-
-        for _ in 0..max_new_tokens {
-            let next = sample_logits(&last_logits, strategy, &mut rng_state);
-            tokens.push(next);
-            on_token(next);
-            if let Some(eos) = eos_id {
-                if next == eos {
-                    break;
-                }
-            }
-            // Decode step: feed just the one new token. The cache does
-            // the work of making this O(total_seq) instead of O(total_seq²).
-            last_logits = self.forward_with_cache_on(&[next], &mut cache, executor);
-        }
-        Ok(tokens)
-    }
-
-    /// Streaming decode on CPU. Thin wrapper over
-    /// [`generate_streaming_on`](Self::generate_streaming_on).
-    pub fn generate_streaming(
-        &self,
-        prompt_tokens: &[u32],
-        max_new_tokens: usize,
-        strategy: SamplingStrategy,
-        eos_id: Option<u32>,
-        on_token: impl FnMut(u32),
-    ) -> crate::Result<Vec<u32>> {
-        let mut exe = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
-        self.generate_streaming_on(
-            prompt_tokens,
-            max_new_tokens,
-            strategy,
-            eos_id,
-            &mut exe,
-            on_token,
-        )
-    }
-
-    // ===== Phase 7.6 step 9c E.3.3.C — new streaming with KvCache + InferenceContext =====
+    // ===== Phase 7.6 step 9c E.3.3.C — streaming with KvCache + InferenceContext =====
     //
     // These replace the legacy `generate_streaming_on` /
     // `generate_streaming_gpu_on` pair for CPU + CUDA callers. The
@@ -6311,49 +6088,12 @@ mod generate_tests {
         assert_eq!(*with_eos.last().unwrap(), picked);
     }
 
-    #[test]
-    fn forward_with_cache_matches_forward_on_prefill() {
-        // Single forward pass on the full prompt via the cached path
-        // must produce the same last-position logits as a non-cached
-        // forward followed by the same last-position slice.
-        let cfg = LlamaConfig {
-            vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
-            n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
-        };
-        let model = LlamaModel {
-            config:  cfg.clone(),
-            weights: make_tiny_weights(&cfg),
-        };
-        let tokens = [1_u32, 2, 3, 4];
-
-        // Non-cached: full forward, slice last position.
-        let logits_full = model.forward(&tokens, 0);
-        let last_pos = tokens.len() - 1;
-        let expected = logits_full
-            .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))
-            .realize_f32();
-
-        // Cached: forward_with_cache already returns the last-position slice.
-        let mut cache = LlamaKVCache::new(&cfg);
-        let actual = model.forward_with_cache(&tokens, &mut cache);
-
-        assert_eq!(cache.cached_len, tokens.len());
-        assert_eq!(actual.len(), expected.len());
-        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < 1e-4,
-                "logit[{i}]: cached={a}, non-cached={b}",
-            );
-        }
-    }
+    // The host-resident-cache prefill-parity test
+    // (`forward_with_cache_matches_forward_on_prefill`) was retired in
+    // E.3.3.D. Its successor is
+    // `forward_with_kv_context_prefill_matches_non_cached_forward`,
+    // which exercises the same correctness bar via the new
+    // KvCache + InferenceContext + Op::WriteSlice path.
 
     #[test]
     fn generate_with_cache_matches_non_cached_generate() {
@@ -6513,72 +6253,12 @@ mod generate_tests {
         assert_eq!(bounded[prompt.len()], first_generated);
     }
 
-    #[test]
-    fn forward_with_cache_decode_step_matches_full_forward() {
-        // Prefill a 3-token prompt, run one decode step through the
-        // cache, and confirm the last-position logits match what the
-        // non-cached forward() would produce for the same 4-token
-        // sequence. This is the real correctness bar: concatenation of
-        // cached K/V with fresh K/V must exactly equal computing K/V
-        // from scratch over the whole seen sequence.
-        let cfg = LlamaConfig {
-            vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
-            n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
-        };
-        // dim / n_heads * n_heads check: dim=8, head_dim*n_heads=16 ≠ 8.
-        // Adjust dim so n_heads * head_dim == dim.
-        let cfg = LlamaConfig {
-            dim: cfg.n_heads * cfg.head_dim,
-            ..cfg
-        };
-        let model = LlamaModel {
-            config:  cfg.clone(),
-            weights: make_tiny_weights(&cfg),
-        };
-
-        let prompt = [1_u32, 2, 3];
-        let next_token = 4_u32;
-
-        // Non-cached reference: full forward over all 4 tokens, slice last.
-        let full = [prompt[0], prompt[1], prompt[2], next_token];
-        let full_logits = model.forward(&full, 0);
-        let last_pos = full.len() - 1;
-        let expected = full_logits
-            .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))
-            .realize_f32();
-
-        // Cached: prefill with prompt, then one decode step with the new token.
-        let mut cache = LlamaKVCache::new(&cfg);
-        let _prefill_logits = model.forward_with_cache(&prompt, &mut cache);
-        let actual = model.forward_with_cache(&[next_token], &mut cache);
-
-        assert_eq!(cache.cached_len, full.len());
-        assert_eq!(actual.len(), expected.len());
-        // Tolerance is slightly looser than the prefill-match test:
-        // the cached decode path builds K/V via a `concat(cached,
-        // fresh)` along the seq dim, which causes `gemm` to accumulate
-        // along a contiguous dimension in a different order than the
-        // single-tensor path does. That's a standard O(ε) FP drift on
-        // matmul, not a correctness bug — the greedy-tokens test
-        // elsewhere confirms it never crosses an argmax boundary on
-        // these weights.
-        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
-            let diff = (a - b).abs();
-            let rel = diff / a.abs().max(b.abs()).max(1e-6);
-            assert!(
-                diff < 5e-3 || rel < 1e-2,
-                "logit[{i}]: cached={a}, non-cached={b}, diff={diff}",
-            );
-        }
-    }
+    // The host-resident-cache prefill+decode parity test
+    // (`forward_with_cache_decode_step_matches_full_forward`) was
+    // retired in E.3.3.D. Its successor is
+    // `forward_with_kv_context_decode_matches_non_cached_forward`
+    // below, which exercises the same correctness bar via the new
+    // KvCache + InferenceContext + Op::WriteSlice path.
 
     // ---- forward_with_kv_context (Phase 7.6 step 9c E.3.3.B) -----------
 
