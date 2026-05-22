@@ -39,7 +39,9 @@
 pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("add_assign_scaled",         include_bytes!("../spv/add_assign_scaled.spv")),
     ("affine",                    include_bytes!("../spv/affine.spv")),
+    ("unary_bf16",                include_bytes!("../spv/unary_bf16.spv")),
     ("binary",                    include_bytes!("../spv/binary.spv")),
+    ("binary_bf16",               include_bytes!("../spv/binary_bf16.spv")),
     ("binary_f16",                include_bytes!("../spv/binary_f16.spv")),
     ("binary_f64",                include_bytes!("../spv/binary_f64.spv")),
     ("clamp",                     include_bytes!("../spv/clamp.spv")),
@@ -48,6 +50,28 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("cast_f16_to_f32",           include_bytes!("../spv/cast_f16_to_f32.spv")),
     ("cast_f32_to_bf16",          include_bytes!("../spv/cast_f32_to_bf16.spv")),
     ("cast_bf16_to_f32",          include_bytes!("../spv/cast_bf16_to_f32.spv")),
+    ("cast_f32_to_f8e4m3",        include_bytes!("../spv/cast_f32_to_f8e4m3.spv")),
+    ("cast_f8e4m3_to_f32",        include_bytes!("../spv/cast_f8e4m3_to_f32.spv")),
+    ("cast_f16_to_f8e4m3",        include_bytes!("../spv/cast_f16_to_f8e4m3.spv")),
+    ("cast_f8e4m3_to_f16",        include_bytes!("../spv/cast_f8e4m3_to_f16.spv")),
+    ("cast_bf16_to_f8e4m3",       include_bytes!("../spv/cast_bf16_to_f8e4m3.spv")),
+    ("cast_f8e4m3_to_bf16",       include_bytes!("../spv/cast_f8e4m3_to_bf16.spv")),
+    ("flip_b2",                   include_bytes!("../spv/flip_b2.spv")),
+    ("flip_b4",                   include_bytes!("../spv/flip_b4.spv")),
+    ("flip_b8",                   include_bytes!("../spv/flip_b8.spv")),
+    ("roll_b2",                   include_bytes!("../spv/roll_b2.spv")),
+    ("roll_b4",                   include_bytes!("../spv/roll_b4.spv")),
+    ("roll_b8",                   include_bytes!("../spv/roll_b8.spv")),
+    ("triu_b2",                   include_bytes!("../spv/triu_b2.spv")),
+    ("triu_b4",                   include_bytes!("../spv/triu_b4.spv")),
+    ("triu_b8",                   include_bytes!("../spv/triu_b8.spv")),
+    ("tril_b2",                   include_bytes!("../spv/tril_b2.spv")),
+    ("tril_b4",                   include_bytes!("../spv/tril_b4.spv")),
+    ("tril_b8",                   include_bytes!("../spv/tril_b8.spv")),
+    ("strided_copy_signed_b2",    include_bytes!("../spv/strided_copy_signed_b2.spv")),
+    ("strided_copy_signed_b4",    include_bytes!("../spv/strided_copy_signed_b4.spv")),
+    ("strided_copy_signed_b8",    include_bytes!("../spv/strided_copy_signed_b8.spv")),
+    ("write_slice_b1",            include_bytes!("../spv/write_slice_b1.spv")),
     ("write_slice_b2",            include_bytes!("../spv/write_slice_b2.spv")),
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
     ("write_slice_b8",            include_bytes!("../spv/write_slice_b8.spv")),
@@ -99,6 +123,10 @@ pub const UNARY: &str = "unary";
 pub const UNARY_F16: &str = "unary_f16";
 /// Element-wise unary ops, f64 (needs shaderFloat64).
 pub const UNARY_F64: &str = "unary_f64";
+/// Element-wise unary ops, bf16. Same 13-op surface as UNARY but
+/// stores bf16 packed two-per-u32 and does math at f32 with manual
+/// round-trip conversion (no native bfloat16_t in Slang).
+pub const UNARY_BF16: &str = "unary_bf16";
 /// Element-wise binary ops (6 ops via uniform selector).
 pub const BINARY: &str = "binary";
 /// Element-wise binary ops, f16. Same 6-op surface as BINARY but
@@ -106,6 +134,9 @@ pub const BINARY: &str = "binary";
 pub const BINARY_F16: &str = "binary_f16";
 /// Element-wise binary ops, f64.
 pub const BINARY_F64: &str = "binary_f64";
+/// Element-wise binary ops, bf16. Stride-aware via the same Params
+/// layout as BINARY_F16; bf16<->f32 round-trip via manual bit shifts.
+pub const BINARY_BF16: &str = "binary_bf16";
 /// Affine transform: y = x * mul + add.
 pub const AFFINE: &str = "affine";
 /// Element-wise clamp: y = clamp(x, lo, hi).
@@ -120,12 +151,49 @@ pub const CAST_F16_TO_F32: &str = "cast_f16_to_f32";
 pub const CAST_F32_TO_BF16: &str = "cast_f32_to_bf16";
 /// Cast bf16 → f32 (exact: bits << 16).
 pub const CAST_BF16_TO_F32: &str = "cast_bf16_to_f32";
+/// Cast f32 → F8E4M3 (round-to-nearest-even, saturate to ±448).
+pub const CAST_F32_TO_F8E4M3: &str = "cast_f32_to_f8e4m3";
+/// Cast F8E4M3 → f32 (exact reverse).
+pub const CAST_F8E4M3_TO_F32: &str = "cast_f8e4m3_to_f32";
+/// Cast f16 → F8E4M3 (via f32; same round-to-nearest-even + saturate).
+pub const CAST_F16_TO_F8E4M3: &str = "cast_f16_to_f8e4m3";
+/// Cast F8E4M3 → f16 (via f32; uses f32tof16 final round).
+pub const CAST_F8E4M3_TO_F16: &str = "cast_f8e4m3_to_f16";
+/// Cast bf16 → F8E4M3 (via f32).
+pub const CAST_BF16_TO_F8E4M3: &str = "cast_bf16_to_f8e4m3";
+/// Cast F8E4M3 → bf16 (via f32).
+pub const CAST_F8E4M3_TO_BF16: &str = "cast_f8e4m3_to_bf16";
+/// In-place rectangular slab write for 1-byte elements (u8/i8).
+/// `range_start[last]` and `src_shape[last]` must both be multiples
+/// of 4 — wrapper falls back to CPU otherwise.
+pub const WRITE_SLICE_B1: &str = "write_slice_b1";
 /// In-place rectangular slab write for 2-byte elements (f16/bf16).
 pub const WRITE_SLICE_B2: &str = "write_slice_b2";
 /// In-place rectangular slab write for 4-byte elements (f32/i32/u32).
 pub const WRITE_SLICE_B4: &str = "write_slice_b4";
 /// In-place rectangular slab write for 8-byte elements (f64/i64).
 pub const WRITE_SLICE_B8: &str = "write_slice_b8";
+/// Triu mask along the last two dims (4-byte elements).
+pub const TRIU_B2: &str = "triu_b2";
+pub const TRIU_B4: &str = "triu_b4";
+pub const TRIU_B8: &str = "triu_b8";
+/// Tril mask along the last two dims.
+pub const TRIL_B2: &str = "tril_b2";
+pub const TRIL_B4: &str = "tril_b4";
+pub const TRIL_B8: &str = "tril_b8";
+/// Flip along one dim (flat 3-tuple view: outer × dim_size × inner).
+pub const FLIP_B2: &str = "flip_b2";
+pub const FLIP_B4: &str = "flip_b4";
+pub const FLIP_B8: &str = "flip_b8";
+/// Cyclic shift along one dim.
+pub const ROLL_B2: &str = "roll_b2";
+pub const ROLL_B4: &str = "roll_b4";
+pub const ROLL_B8: &str = "roll_b8";
+/// Strided copy with signed strides (Contiguize on negative-stride
+/// views from Flip / Roll / layout-on-Node).
+pub const STRIDED_COPY_SIGNED_B2: &str = "strided_copy_signed_b2";
+pub const STRIDED_COPY_SIGNED_B4: &str = "strided_copy_signed_b4";
+pub const STRIDED_COPY_SIGNED_B8: &str = "strided_copy_signed_b8";
 /// Tiled matrix multiply with 4x4 register tiling (WGSL).
 pub const MATMUL: &str = "matmul";
 /// GLSL matmul with shared-memory blocking.

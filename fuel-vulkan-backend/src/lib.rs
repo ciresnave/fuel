@@ -1527,9 +1527,10 @@ impl VulkanBackend {
             );
         }
 
-        // b2 alignment constraint: last-dim slab must lie on u32
-        // boundaries (the kernel writes one u32 = pair of half
-        // elements per thread). Falls back to CPU via the route
+        // Sub-u32 alignment constraints: last-dim slab must lie on u32
+        // boundaries because the kernel writes one u32 (= 2 / 4 elements)
+        // per thread. b4 has no constraint; b2 needs even alignment; b1
+        // needs 4-aligned. Wrapper falls back to CPU via the route
         // picker for unaligned cases.
         if byte_width == 2 {
             let last = rank - 1;
@@ -1537,6 +1538,16 @@ impl VulkanBackend {
                 fuel_core_types::bail!(
                     "write_slice_bytes b2: last-dim range_start ({}) and src_shape ({}) \
                      must both be even (half-precision writes pack 2/u32)",
+                    range_start[last], src_shape[last],
+                );
+            }
+        }
+        if byte_width == 1 {
+            let last = rank - 1;
+            if range_start[last] % 4 != 0 || src_shape[last] % 4 != 0 {
+                fuel_core_types::bail!(
+                    "write_slice_bytes b1: last-dim range_start ({}) and src_shape ({}) \
+                     must both be multiples of 4 (byte writes pack 4/u32)",
                     range_start[last], src_shape[last],
                 );
             }
@@ -1550,8 +1561,12 @@ impl VulkanBackend {
         let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
         let sd_byte_size = (sd.len() * 4) as u64;
 
-        // b2 dispatches by source-pair count, not source-element count.
-        let n_dispatch = if byte_width == 2 { n_src / 2 } else { n_src };
+        // Sub-u32 variants dispatch by pair / quad count, not element count.
+        let n_dispatch = match byte_width {
+            1 => n_src / 4,
+            2 => n_src / 2,
+            _ => n_src,
+        };
         #[repr(C)] #[derive(Clone, Copy)]
         struct WsParams { n: u32, rank: u32 }
         let p = WsParams { n: n_dispatch as u32, rank: rank as u32 };
@@ -1565,6 +1580,11 @@ impl VulkanBackend {
         ))?;
 
         let (pipeline, pipe_layout, op_name) = match byte_width {
+            1 => (
+                &self.pipelines.write_slice_b1_pipeline,
+                &self.pipelines.write_slice_b1_layout,
+                "write_slice_b1",
+            ),
             2 => (
                 &self.pipelines.write_slice_b2_pipeline,
                 &self.pipelines.write_slice_b2_layout,
@@ -1581,7 +1601,7 @@ impl VulkanBackend {
                 "write_slice_b8",
             ),
             other => fuel_core_types::bail!(
-                "write_slice_bytes: byte_width {other} unsupported (have b2/b4/b8; b1/b16 are follow-ups)",
+                "write_slice_bytes: byte_width {other} unsupported (have b1/b2/b4/b8)",
             ),
         };
 
@@ -2673,6 +2693,536 @@ impl VulkanBackend {
         self.record_dispatch_batched(
             op_name, pipeline, pipe_layout, desc,
             (Self::workgroups(n), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Element-wise bf16 unary op. Storage is bf16 (2 bytes/elem), packed
+    /// two-per-u32 in the kernel; one thread per pair.
+    pub fn unary_bf16_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+    ) -> fuel_core_types::Result<()> {
+        let elem_size = 2usize;
+        let n = input.len_bytes() / elem_size;
+        if n % 2 != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: bf16 element count {n} must be even (pair-packed kernel)"
+            );
+        }
+        let need_bytes = n * elem_size;
+        if input.len_bytes() != need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of bf16 size",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+        let n_pairs = n / 2;
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct UParams { n_pairs: u32, op_id: u32 }
+        let p = UParams { n_pairs: n_pairs as u32, op_id };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.unary_bf16_pipeline,
+            &self.pipelines.unary_bf16_layout,
+            desc,
+            (Self::workgroups(n_pairs), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Element-wise bf16 binary op (Add/Sub/Mul/Div/Max/Min). Same
+    /// stride-aware shape as binary_f16_bytes.
+    pub fn binary_bf16_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        la: &Layout,
+        lb: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let out_dims = la.shape().dims();
+        let out_elem = la.shape().elem_count();
+        if out_elem != lb.shape().elem_count() {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: shape mismatch a={:?} b={:?}",
+                la.shape(), lb.shape()
+            );
+        }
+        if out_elem % 2 != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: bf16 element count {out_elem} must be even"
+            );
+        }
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("VulkanBackend::{op_name}: rank {rank} > 4");
+        }
+        let elem_size = 2usize;
+        let need_bytes = out_elem * elem_size;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        let mut shape = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            a_s[pad + i] = la.stride()[i] as u32;
+            b_s[pad + i] = lb.stride()[i] as u32;
+        }
+        let a_contig = la.is_contiguous()
+            && la.shape().dims() == out_dims
+            && la.stride().iter().all(|&s| s != 0);
+        let b_contig = lb.is_contiguous()
+            && lb.shape().dims() == out_dims
+            && lb.stride().iter().all(|&s| s != 0);
+        let flags = (a_contig as u32) | ((b_contig as u32) << 1);
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct BParams {
+            out_size: u32, op_id: u32, rank: u32, flags: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
+        let p = BParams {
+            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+        };
+
+        let a_buf = a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input a is host-evicted; fault back first"),
+        ))?;
+        let b_buf = b.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input b is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<BParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.binary_bf16_pipeline,
+            &self.pipelines.binary_bf16_layout,
+            desc,
+            (Self::workgroups(out_elem / 2), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Triu / Tril (selectable via `keep_upper`). Element-wise mask
+    /// against the matrix triangle (last two dims). Byte-width-keyed
+    /// dispatch: 2/4/8.
+    #[allow(clippy::too_many_arguments)]
+    pub fn triangular_bytes(
+        &self,
+        byte_width: usize,
+        keep_upper: bool,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        batch_count: usize,
+        rows: usize,
+        cols: usize,
+        diagonal: i64,
+    ) -> fuel_core_types::Result<()> {
+        let op_name = if keep_upper { "triu" } else { "tril" };
+        // b2 alignment: even cols (kernel processes pairs on the last
+        // axis, so each pair must fit in one u32).
+        if byte_width == 2 && cols % 2 != 0 {
+            fuel_core_types::bail!(
+                "triangular_bytes b2: cols ({cols}) must be even (pair-packed kernel)",
+            );
+        }
+        let total = batch_count.checked_mul(rows).and_then(|x| x.checked_mul(cols))
+            .ok_or_else(|| fuel_core_types::Error::Msg(format!(
+                "{op_name}: element count overflow"
+            )))?;
+        let need_bytes = total * byte_width;
+        if input.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: input {} bytes < required {need_bytes}", input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: output {} bytes < required {need_bytes}", out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct TParams { batch_count: u32, rows: u32, cols: u32, diagonal: i32 }
+        let p = TParams {
+            batch_count: batch_count as u32,
+            rows: rows as u32,
+            cols: cols as u32,
+            diagonal: diagonal as i32,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout, n_dispatch) = match (keep_upper, byte_width) {
+            (true,  2) => (&self.pipelines.triu_b2_pipeline, &self.pipelines.triu_b2_layout, batch_count * rows * (cols / 2)),
+            (true,  4) => (&self.pipelines.triu_b4_pipeline, &self.pipelines.triu_b4_layout, total),
+            (true,  8) => (&self.pipelines.triu_b8_pipeline, &self.pipelines.triu_b8_layout, total),
+            (false, 2) => (&self.pipelines.tril_b2_pipeline, &self.pipelines.tril_b2_layout, batch_count * rows * (cols / 2)),
+            (false, 4) => (&self.pipelines.tril_b4_pipeline, &self.pipelines.tril_b4_layout, total),
+            (false, 8) => (&self.pipelines.tril_b8_pipeline, &self.pipelines.tril_b8_layout, total),
+            (_, other) => fuel_core_types::bail!(
+                "triangular_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name, pipeline, pipe_layout, desc,
+            (Self::workgroups(n_dispatch), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Flip along one axis. (outer, dim_size, inner) flat view.
+    pub fn flip_bytes(
+        &self,
+        byte_width: usize,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        dim_size: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        let total = outer_count * dim_size * inner_count;
+        let need_bytes = total * byte_width;
+        if input.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "flip_bytes: input {} bytes < required {need_bytes}", input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "flip_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct FParams { outer_count: u32, dim_size: u32, inner_count: u32 }
+        let p = FParams {
+            outer_count: outer_count as u32,
+            dim_size: dim_size as u32,
+            inner_count: inner_count as u32,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "flip_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "flip_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout) = match byte_width {
+            2 => (&self.pipelines.flip_b2_pipeline, &self.pipelines.flip_b2_layout),
+            4 => (&self.pipelines.flip_b4_pipeline, &self.pipelines.flip_b4_layout),
+            8 => (&self.pipelines.flip_b8_pipeline, &self.pipelines.flip_b8_layout),
+            other => fuel_core_types::bail!(
+                "flip_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 12);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "flip", pipeline, pipe_layout, desc,
+            (Self::workgroups(total), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Cyclic shift along one axis. `shift` is normalized into
+    /// `(-dim_size, dim_size)` by the caller before dispatch.
+    pub fn roll_bytes(
+        &self,
+        byte_width: usize,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        dim_size: usize,
+        inner_count: usize,
+        shift: i64,
+    ) -> fuel_core_types::Result<()> {
+        if dim_size == 0 {
+            fuel_core_types::bail!("roll_bytes: dim_size must be > 0");
+        }
+        let total = outer_count * dim_size * inner_count;
+        let need_bytes = total * byte_width;
+        if input.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "roll_bytes: input {} bytes < required {need_bytes}", input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "roll_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
+            );
+        }
+        // Normalize shift into (-dim_size, dim_size) — kernel uses %.
+        let d = dim_size as i64;
+        let shift_norm = ((shift % d) + d) % d;  // ∈ [0, dim_size)
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RParams { outer_count: u32, dim_size: u32, inner_count: u32, shift: i32 }
+        let p = RParams {
+            outer_count: outer_count as u32,
+            dim_size: dim_size as u32,
+            inner_count: inner_count as u32,
+            shift: shift_norm as i32,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "roll_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "roll_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout) = match byte_width {
+            2 => (&self.pipelines.roll_b2_pipeline, &self.pipelines.roll_b2_layout),
+            4 => (&self.pipelines.roll_b4_pipeline, &self.pipelines.roll_b4_layout),
+            8 => (&self.pipelines.roll_b8_pipeline, &self.pipelines.roll_b8_layout),
+            other => fuel_core_types::bail!(
+                "roll_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "roll", pipeline, pipe_layout, desc,
+            (Self::workgroups(total), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Strided copy with SIGNED strides (Contiguize on negative-stride
+    /// views). `src_offset` may itself be negative when the view's base
+    /// points past the start of the underlying allocation.
+    pub fn strided_copy_signed_bytes(
+        &self,
+        byte_width: usize,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        shape: &[usize],
+        strides_signed: &[i64],
+        src_offset: i64,
+        dst_offset: usize,
+    ) -> fuel_core_types::Result<()> {
+        let rank = shape.len();
+        if strides_signed.len() != rank {
+            fuel_core_types::bail!(
+                "strided_copy_signed_bytes: rank mismatch (shape={rank}, strides={})",
+                strides_signed.len(),
+            );
+        }
+        let out_size = shape.iter().product::<usize>().max(1);
+
+        // Pack shape + strides into a u32 buffer; strides reinterpreted
+        // via `asint` in the kernel.
+        let mut sd: Vec<u32> = Vec::with_capacity(rank * 2);
+        for &d in shape { sd.push(d as u32); }
+        for &s in strides_signed {
+            // i64 → i32 → u32 (bit-cast). Strides past ±2^31 would be a
+            // wild view; ergonomic to fail loudly here.
+            let s32: i32 = s.try_into().map_err(|_| fuel_core_types::Error::Msg(
+                format!("strided_copy_signed_bytes: stride {s} exceeds i32 range"),
+            ))?;
+            sd.push(s32 as u32);
+        }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+
+        let src_offset_i32: i32 = src_offset.try_into().map_err(|_| fuel_core_types::Error::Msg(
+            format!("strided_copy_signed_bytes: src_offset {src_offset} exceeds i32 range"),
+        ))?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SParams { out_size: u32, rank: u32, src_offset: i32, dst_offset: u32 }
+        let p = SParams {
+            out_size: out_size as u32,
+            rank: rank as u32,
+            src_offset: src_offset_i32,
+            dst_offset: dst_offset as u32,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "strided_copy_signed_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "strided_copy_signed_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+
+        let (pipeline, pipe_layout) = match byte_width {
+            2 => (&self.pipelines.strided_copy_signed_b2_pipeline, &self.pipelines.strided_copy_signed_b2_layout),
+            4 => (&self.pipelines.strided_copy_signed_b4_pipeline, &self.pipelines.strided_copy_signed_b4_layout),
+            8 => (&self.pipelines.strided_copy_signed_b8_pipeline, &self.pipelines.strided_copy_signed_b8_layout),
+            other => fuel_core_types::bail!(
+                "strided_copy_signed_bytes: byte_width {other} unsupported (have b2/b4/b8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        let sd_byte_size = (sd.len() * 4) as u64;
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "strided_copy_signed", pipeline, pipe_layout, desc,
+            (Self::workgroups(out_size), 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Cast between F8E4M3 and (F32 | F16 | BF16). Direction is picked
+    /// from the (src_dtype, dst_dtype) pair. `n` is the element count
+    /// and MUST be a multiple of 4 (kernels process 4 elements per
+    /// thread for u32-aligned access).
+    pub fn cast_f8e4m3_bytes(
+        &self,
+        src_dtype: DType,
+        dst_dtype: DType,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        n: usize,
+    ) -> fuel_core_types::Result<()> {
+        if n % 4 != 0 {
+            fuel_core_types::bail!(
+                "cast_f8e4m3_bytes: element count {n} must be a multiple of 4 \
+                 (kernel packs 4 F8E4M3 per u32)"
+            );
+        }
+        let src_size = dtype_size(src_dtype);
+        let dst_size = dtype_size(dst_dtype);
+        if input.len_bytes() < n * src_size {
+            fuel_core_types::bail!(
+                "cast_f8e4m3_bytes: input {} bytes < required {}", input.len_bytes(), n * src_size,
+            );
+        }
+        if out.len_bytes() < n * dst_size {
+            fuel_core_types::bail!(
+                "cast_f8e4m3_bytes: output {} bytes < required {}", out.len_bytes(), n * dst_size,
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct CParams { n: u32, _pad: u32 }
+        let p = CParams { n: n as u32, _pad: 0 };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "cast_f8e4m3_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "cast_f8e4m3_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout, op_name) = match (src_dtype, dst_dtype) {
+            (DType::F32,    DType::F8E4M3) => (&self.pipelines.cast_f32_to_f8e4m3_pipeline, &self.pipelines.cast_f32_to_f8e4m3_layout, "cast_f32_to_f8e4m3"),
+            (DType::F8E4M3, DType::F32)    => (&self.pipelines.cast_f8e4m3_to_f32_pipeline, &self.pipelines.cast_f8e4m3_to_f32_layout, "cast_f8e4m3_to_f32"),
+            (DType::F16,    DType::F8E4M3) => (&self.pipelines.cast_f16_to_f8e4m3_pipeline, &self.pipelines.cast_f16_to_f8e4m3_layout, "cast_f16_to_f8e4m3"),
+            (DType::F8E4M3, DType::F16)    => (&self.pipelines.cast_f8e4m3_to_f16_pipeline, &self.pipelines.cast_f8e4m3_to_f16_layout, "cast_f8e4m3_to_f16"),
+            (DType::BF16,   DType::F8E4M3) => (&self.pipelines.cast_bf16_to_f8e4m3_pipeline, &self.pipelines.cast_bf16_to_f8e4m3_layout, "cast_bf16_to_f8e4m3"),
+            (DType::F8E4M3, DType::BF16)   => (&self.pipelines.cast_f8e4m3_to_bf16_pipeline, &self.pipelines.cast_f8e4m3_to_bf16_layout, "cast_f8e4m3_to_bf16"),
+            (a, b) => fuel_core_types::bail!(
+                "cast_f8e4m3_bytes: unsupported dtype pair ({a:?} → {b:?})",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        // Each thread does 4 elements.
+        let groups = Self::workgroups(n / 4);
+        self.record_dispatch_batched(
+            op_name, pipeline, pipe_layout, desc,
+            (groups, 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;

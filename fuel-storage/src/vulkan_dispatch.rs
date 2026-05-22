@@ -650,6 +650,7 @@ pub mod write_slice {
         };
     }
 
+    vk_write_slice_wrapper!(write_slice_b1, 1);
     vk_write_slice_wrapper!(write_slice_b2, 2);
     vk_write_slice_wrapper!(write_slice_b4, 4);
     vk_write_slice_wrapper!(write_slice_b8, 8);
@@ -1268,6 +1269,302 @@ pub mod indexing {
 }
 
 // ===========================================================================
+// V.3.E.3+4 — bf16 fan-out via u32-packed manual math
+// ===========================================================================
+
+macro_rules! vk_unary_bf16_wrapper {
+    ($name:ident, $op_id:expr, $label:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::unary_bf16::{}: expected 1 input + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::unary_bf16::{}: input has no VulkanBackend handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.unary_bf16_bytes($op_id, $label, a, out)
+        }
+    };
+}
+
+pub mod unary_bf16 {
+    use super::*;
+    vk_unary_bf16_wrapper!(neg_bf16,     0,  "unary_neg_bf16");
+    vk_unary_bf16_wrapper!(sqr_bf16,     1,  "unary_sqr_bf16");
+    vk_unary_bf16_wrapper!(sqrt_bf16,    2,  "unary_sqrt_bf16");
+    vk_unary_bf16_wrapper!(exp_bf16,     3,  "unary_exp_bf16");
+    vk_unary_bf16_wrapper!(log_bf16,     4,  "unary_log_bf16");
+    vk_unary_bf16_wrapper!(sin_bf16,     5,  "unary_sin_bf16");
+    vk_unary_bf16_wrapper!(cos_bf16,     6,  "unary_cos_bf16");
+    vk_unary_bf16_wrapper!(tanh_bf16,    7,  "unary_tanh_bf16");
+    vk_unary_bf16_wrapper!(sigmoid_bf16, 8,  "unary_sigmoid_bf16");
+    vk_unary_bf16_wrapper!(silu_bf16,    9,  "unary_silu_bf16");
+    vk_unary_bf16_wrapper!(gelu_bf16,    10, "unary_gelu_bf16");
+    vk_unary_bf16_wrapper!(relu_bf16,    11, "unary_relu_bf16");
+    vk_unary_bf16_wrapper!(step_bf16,    12, "unary_step_bf16");
+}
+
+macro_rules! vk_binary_bf16_wrapper {
+    ($name:ident, $op_id:expr, $label:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::binary_bf16::{}: expected 2 inputs + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            if layouts.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::binary_bf16::{}: layouts.len() = {} < 2",
+                    $label, layouts.len(),
+                )).bt());
+            }
+            let in0_guard = read_storage(&inputs[0])?;
+            let in1_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in0_guard)?;
+            let b = vulkan_input(&in1_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::binary_bf16::{}: input[0] has no VulkanBackend handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.binary_bf16_bytes($op_id, $label, a, b, out, &layouts[0], &layouts[1])
+        }
+    };
+}
+
+pub mod binary_bf16 {
+    use super::*;
+    vk_binary_bf16_wrapper!(add_bf16,     0, "binary_add_bf16");
+    vk_binary_bf16_wrapper!(sub_bf16,     1, "binary_sub_bf16");
+    vk_binary_bf16_wrapper!(mul_bf16,     2, "binary_mul_bf16");
+    vk_binary_bf16_wrapper!(div_bf16,     3, "binary_div_bf16");
+    vk_binary_bf16_wrapper!(maximum_bf16, 4, "binary_maximum_bf16");
+    vk_binary_bf16_wrapper!(minimum_bf16, 5, "binary_minimum_bf16");
+}
+
+// ===========================================================================
+// Triu / Tril / Flip / Roll — byte-width-keyed (b2/b4/b8) via dtype
+// ===========================================================================
+
+fn byte_width_for_dtype(label: &str, dt: DType) -> Result<usize> {
+    match dt {
+        DType::F32 | DType::I32 | DType::U32 => Ok(4),
+        DType::F16 | DType::BF16 => Ok(2),
+        DType::F64 | DType::I64 => Ok(8),
+        other => Err(Error::Msg(format!(
+            "{label}: unsupported dtype {other:?} (need 2/4/8-byte elem)"
+        )).bt()),
+    }
+}
+
+macro_rules! vk_triangular_wrapper {
+    ($name:ident, $keep_upper:expr, $label:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::triangular::{}: expected 1 input + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (batch_count, rows, cols, diagonal) = match params {
+                OpParams::Triangular { batch_count, rows, cols, diagonal } => {
+                    (*batch_count, *rows, *cols, *diagonal)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::triangular::{}: expected OpParams::Triangular, got {:?}",
+                        $label, other,
+                    )).bt());
+                }
+            };
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let dt = in_guard.dtype;
+            let byte_width = byte_width_for_dtype($label, dt)?;
+            let a = vulkan_input(&in_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::triangular::{}: input has no VulkanBackend handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.triangular_bytes(
+                byte_width, $keep_upper, a, out,
+                batch_count, rows, cols, diagonal,
+            )
+        }
+    };
+}
+
+pub mod triangular {
+    use super::*;
+    vk_triangular_wrapper!(triu, true,  "triu");
+    vk_triangular_wrapper!(tril, false, "tril");
+}
+
+pub mod flip {
+    use super::*;
+
+    pub fn flip(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flip::flip: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, dim_size, inner_count) = match params {
+            OpParams::Flip { outer_count, dim_size, inner_count } => {
+                (*outer_count, *dim_size, *inner_count)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flip::flip: expected OpParams::Flip, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let byte_width = byte_width_for_dtype("flip", in_guard.dtype)?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::flip::flip: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.flip_bytes(byte_width, a, out, outer_count, dim_size, inner_count)
+    }
+}
+
+pub mod roll {
+    use super::*;
+
+    pub fn roll(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::roll::roll: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, dim_size, inner_count, shift) = match params {
+            OpParams::Roll { outer_count, dim_size, inner_count, shift } => {
+                (*outer_count, *dim_size, *inner_count, *shift)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::roll::roll: expected OpParams::Roll, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let byte_width = byte_width_for_dtype("roll", in_guard.dtype)?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::roll::roll: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.roll_bytes(byte_width, a, out, outer_count, dim_size, inner_count, shift)
+    }
+}
+
+// ===========================================================================
+// Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper dispatches by dtype pair
+// ===========================================================================
+
+pub mod cast_f8e4m3 {
+    use super::*;
+
+    pub fn cast_f8e4m3(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::cast_f8e4m3: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src_dtype = in_guard.dtype;
+        let dst_dtype = out_guard.dtype;
+        let src_elem = match src_dtype {
+            DType::F32    => 4,
+            DType::F16    => 2,
+            DType::BF16   => 2,
+            DType::F8E4M3 => 1,
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::cast_f8e4m3: unsupported src dtype {other:?}",
+                )).bt());
+            }
+        };
+        let a = vulkan_input(&in_guard)?;
+        let n_bytes = a.len_bytes();
+        if n_bytes % src_elem != 0 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::cast_f8e4m3: input bytes {n_bytes} not a multiple of \
+                 src elem size {src_elem} ({src_dtype:?})",
+            )).bt());
+        }
+        let n = n_bytes / src_elem;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::cast_f8e4m3: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.cast_f8e4m3_bytes(src_dtype, dst_dtype, a, out, n)
+    }
+}
+
+// ===========================================================================
 // register_vulkan_kernels — binding-table population
 // ===========================================================================
 
@@ -1411,8 +1708,11 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64);
     table.register(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64);
 
-    // ----- WriteSlice (V.3.J) — byte-width-keyed (b2/b4/b8) -----
-    // b4: f32 / i32 / u32; b2: f16 / bf16; b8: f64 / i64
+    // ----- WriteSlice (V.3.J) — byte-width-keyed (b1/b2/b4/b8) -----
+    // b1: u8 / i8; b4: f32 / i32 / u32; b2: f16 / bf16; b8: f64 / i64.
+    // The b1 wrapper reuses write_slice::write_slice_b1 below, which
+    // calls write_slice_bytes(1, ...) — the backend method now accepts
+    // byte_width=1 with a 4-aligned constraint on the last dim.
     table.register(OpKind::WriteSlice, &u(f32),         vk, write_slice::write_slice_b4);
     table.register(OpKind::WriteSlice, &u(DType::I32),  vk, write_slice::write_slice_b4);
     table.register(OpKind::WriteSlice, &u(DType::U32),  vk, write_slice::write_slice_b4);
@@ -1420,4 +1720,53 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::WriteSlice, &u(bf16_d),      vk, write_slice::write_slice_b2);
     table.register(OpKind::WriteSlice, &u(DType::F64),  vk, write_slice::write_slice_b8);
     table.register(OpKind::WriteSlice, &u(DType::I64),  vk, write_slice::write_slice_b8);
+    table.register(OpKind::WriteSlice, &u(DType::U8),   vk, write_slice::write_slice_b1);
+    table.register(OpKind::WriteSlice, &u(DType::I8),   vk, write_slice::write_slice_b1);
+
+    // ----- Binary bf16 (V.3.E.3+4) — u32-packed math via Slang. -----
+    table.register(OpKind::AddElementwise,     &b(bf16_d), vk, binary_bf16::add_bf16);
+    table.register(OpKind::SubElementwise,     &b(bf16_d), vk, binary_bf16::sub_bf16);
+    table.register(OpKind::MulElementwise,     &b(bf16_d), vk, binary_bf16::mul_bf16);
+    table.register(OpKind::DivElementwise,     &b(bf16_d), vk, binary_bf16::div_bf16);
+    table.register(OpKind::MaximumElementwise, &b(bf16_d), vk, binary_bf16::maximum_bf16);
+    table.register(OpKind::MinimumElementwise, &b(bf16_d), vk, binary_bf16::minimum_bf16);
+
+    // ----- Unary bf16 (V.3.E.3+4) — full 13-op surface via u32 packing. -----
+    table.register(OpKind::NegElementwise,     &u(bf16_d), vk, unary_bf16::neg_bf16);
+    table.register(OpKind::SqrElementwise,     &u(bf16_d), vk, unary_bf16::sqr_bf16);
+    table.register(OpKind::SqrtElementwise,    &u(bf16_d), vk, unary_bf16::sqrt_bf16);
+    table.register(OpKind::ExpElementwise,     &u(bf16_d), vk, unary_bf16::exp_bf16);
+    table.register(OpKind::LogElementwise,     &u(bf16_d), vk, unary_bf16::log_bf16);
+    table.register(OpKind::SinElementwise,     &u(bf16_d), vk, unary_bf16::sin_bf16);
+    table.register(OpKind::CosElementwise,     &u(bf16_d), vk, unary_bf16::cos_bf16);
+    table.register(OpKind::TanhElementwise,    &u(bf16_d), vk, unary_bf16::tanh_bf16);
+    table.register(OpKind::SigmoidElementwise, &u(bf16_d), vk, unary_bf16::sigmoid_bf16);
+    table.register(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16);
+    table.register(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16);
+    table.register(OpKind::ReluElementwise,    &u(bf16_d), vk, unary_bf16::relu_bf16);
+    table.register(OpKind::StepElementwise,    &u(bf16_d), vk, unary_bf16::step_bf16);
+
+    // ----- Triu / Tril / Flip / Roll — byte-width-keyed per dtype.
+    // Dispatch wrapper computes byte_width from input dtype at run
+    // time; binding-table registers each dtype individually so a
+    // missing dtype falls through to CPU rather than dispatching the
+    // wrong kernel. -----
+    for &dt in &[DType::F32, DType::F16, DType::BF16, DType::F64,
+                 DType::I32, DType::U32, DType::I64] {
+        table.register(OpKind::Triu,  &u(dt), vk, triangular::triu);
+        table.register(OpKind::Tril,  &u(dt), vk, triangular::tril);
+        table.register(OpKind::Flip,  &u(dt), vk, flip::flip);
+        table.register(OpKind::Roll,  &u(dt), vk, roll::roll);
+    }
+
+    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper, 6 dtype
+    // pairs. F8E4M3 is 1 byte (4 packed per u32); kernel constraints
+    // require element count to be a multiple of 4. -----
+    let f8 = DType::F8E4M3;
+    table.register(OpKind::Cast, &[f32,    f8],   vk, cast_f8e4m3::cast_f8e4m3);
+    table.register(OpKind::Cast, &[f8,     f32],  vk, cast_f8e4m3::cast_f8e4m3);
+    table.register(OpKind::Cast, &[f16,    f8],   vk, cast_f8e4m3::cast_f8e4m3);
+    table.register(OpKind::Cast, &[f8,     f16],  vk, cast_f8e4m3::cast_f8e4m3);
+    table.register(OpKind::Cast, &[bf16_d, f8],   vk, cast_f8e4m3::cast_f8e4m3);
+    table.register(OpKind::Cast, &[f8,     bf16_d], vk, cast_f8e4m3::cast_f8e4m3);
 }
