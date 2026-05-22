@@ -5439,13 +5439,17 @@ pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTab
 }
 
 /// Auto-register every cargo-feature-gated backend that built. CPU is
-/// always present (registered above); CUDA paths are conditionally
-/// added. Future Vulkan / Metal / etc. paths hook in here.
+/// always present (registered above); CUDA and Vulkan paths are
+/// conditionally added. Future Metal / etc. paths hook in here.
 fn register_optional_backends(table: &mut KernelBindingTable) {
     #[cfg(feature = "cuda")]
     {
         register_cuda_kernels(table);
         crate::baracuda_dispatch::register_baracuda_cuda_kernels(table);
+    }
+    #[cfg(feature = "vulkan")]
+    {
+        crate::vulkan_dispatch::register_vulkan_kernels(table);
     }
     let _ = table;
 }

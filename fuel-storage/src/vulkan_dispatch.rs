@@ -1739,7 +1739,11 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::RmsNormLastDim,  &u(f32), vk, norm::rms_f32);
 
     // ----- RoPE (V.2.C, f32) — 3-input via pre-computed cos/sin -----
-    table.register(OpKind::Rope, &u(f32), vk, attention::rope_f32);
+    // Binding-shape MUST match the CPU registration `[x, cos, sin, out]`
+    // (4 dtypes) — the binding-table key is `(op, dtypes)`, so a 2-
+    // dtype `u(f32)` registration never matches the canonical 4-dtype
+    // Rope key the executor looks up.
+    table.register(OpKind::Rope, &[f32, f32, f32, f32], vk, attention::rope_f32);
 
     // ----- IndexSelect (V.2.D, f32 src + u32 ids) -----
     let idx_dts = [f32, DType::U32, f32];

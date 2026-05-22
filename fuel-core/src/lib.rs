@@ -84,6 +84,8 @@ pub mod layout;
 // directly via per-sequence `context_lens`.
 pub mod metal_backend;
 pub mod model_progress;
+#[cfg(feature = "vulkan")]
+pub mod vulkan_backend;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod dispatch;
