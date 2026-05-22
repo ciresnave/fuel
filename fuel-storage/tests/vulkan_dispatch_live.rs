@@ -823,6 +823,210 @@ fn vulkan_dispatch_unary_neg_f64() {
     }
 }
 
+// ===========================================================================
+// V.3.E.5 transcendentals — polynomial approximations in Slang
+// ===========================================================================
+//
+// Target precision: 1e-12 relative error (matches the kernel's
+// design target; far below libm's ULP-correct standard but
+// adequate for inference / training workloads at f64). For
+// composites (sigmoid / silu / gelu) we expect ~1e-11 because
+// errors accumulate across the composed exp / tanh calls.
+
+fn run_unary_f64(
+    backend: &Arc<VulkanBackend>,
+    op: OpKind,
+    data: &[f64],
+) -> Vec<f64> {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let n = data.len();
+    let in_storage = upload_f64(backend, data);
+    let out_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let kernel = table
+        .lookup_alternatives(op, &[DType::F64, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::None,
+    ).expect("kernel dispatch");
+    download_f64(backend, &out_arc.read().unwrap())
+}
+
+/// Assert error ≤ `tol`. For "ordinary" magnitudes (≥ 1e-14) the
+/// check is relative; for near-zero expected values it switches to
+/// absolute (relative-error against a value of magnitude 1e-16 would
+/// blow up at any actual difference). NaN and ±inf require bit
+/// equality; ±0 of either sign treats as zero.
+fn check_f64(label: &str, got: &[f64], expected: &[f64], tol: f64) -> f64 {
+    assert_eq!(got.len(), expected.len(), "{label}: length mismatch");
+    let mut worst: f64 = 0.0;
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        if e.is_nan() {
+            assert!(g.is_nan(), "{label}[{i}]: expected NaN, got {g}");
+            continue;
+        }
+        if e.is_infinite() {
+            assert_eq!(g.is_sign_positive(), e.is_sign_positive(),
+                "{label}[{i}]: sign mismatch (got {g}, expected {e})");
+            assert!(g.is_infinite(), "{label}[{i}]: expected {e}, got {g}");
+            continue;
+        }
+        let abs_err = (g - e).abs();
+        // When the expected magnitude is at f64-noise level (~1e-14),
+        // the kernel returning an exact zero or a slightly different
+        // tiny value is more accurate than libm — relative-error
+        // comparison would falsely fail. Switch to absolute error.
+        if e.abs() < 1e-14 {
+            assert!(abs_err < 1e-14,
+                "{label}[{i}]: near-zero expected {e}, got {g}, abs err {abs_err:e}");
+            continue;
+        }
+        let rel = abs_err / e.abs();
+        if rel > worst { worst = rel; }
+        assert!(rel <= tol,
+            "{label}[{i}]: got {g}, expected {e}, rel err {rel:e} > tol {tol:e}");
+    }
+    worst
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_exp_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    // Cover the full natural range: tiny, small, 1, larger, near-overflow,
+    // negative, very negative (underflow neighborhood).
+    let host = vec![
+        0.0, 1e-10, 0.5, 1.0, std::f64::consts::E, 2.71828, 10.0, 100.0, 500.0, 700.0,
+        -1e-10, -0.5, -1.0, -10.0, -100.0, -700.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::ExpElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| x.exp()).collect();
+    let worst = check_f64("exp f64", &got, &expected, 5e-12);
+    eprintln!("exp f64: worst rel err = {worst:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_log_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let host = vec![
+        f64::MIN_POSITIVE, 1e-15, 1e-10, 0.001, 0.5, 1.0, std::f64::consts::E,
+        10.0, 100.0, 1e10, 1e100, 1e300,
+    ];
+    let got = run_unary_f64(&backend, OpKind::LogElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| x.ln()).collect();
+    // Allow slightly looser tolerance for the very small / very large
+    // inputs where range reduction is the bottleneck.
+    let worst = check_f64("log f64", &got, &expected, 5e-12);
+    eprintln!("log f64: worst rel err = {worst:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_sin_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    use std::f64::consts::{PI, FRAC_PI_2, FRAC_PI_4, FRAC_PI_6};
+    let host = vec![
+        0.0, 1e-10, FRAC_PI_6, FRAC_PI_4, FRAC_PI_2, PI, 1.5 * PI, 2.0 * PI,
+        -FRAC_PI_4, -PI, 10.0, 100.0, -100.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::SinElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| x.sin()).collect();
+    // Loosen for large |x| where naive range reduction loses ~log10(|x|/π)
+    // digits. 100 / π ≈ 32 → ~1.5 digits lost; 100 of these is enough to
+    // need ~5e-11 tolerance. Specific check below for the small-|x| set.
+    let worst = check_f64("sin f64", &got, &expected, 1e-10);
+    eprintln!("sin f64: worst rel err = {worst:e}");
+
+    // Tight check on the small-|x| subset where naive reduction is fine.
+    let small_host: Vec<f64> = host[..9].to_vec();
+    let small_got = run_unary_f64(&backend, OpKind::SinElementwise, &small_host);
+    let small_expected: Vec<f64> = small_host.iter().map(|x| x.sin()).collect();
+    let worst_small = check_f64("sin f64 (|x|<=2π)", &small_got, &small_expected, 5e-12);
+    eprintln!("sin f64 (|x|<=2π): worst rel err = {worst_small:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_cos_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    use std::f64::consts::{PI, FRAC_PI_2, FRAC_PI_4};
+    let host = vec![
+        0.0, FRAC_PI_4, FRAC_PI_2, PI, 2.0 * PI, -FRAC_PI_4, -PI, 1.0, 5.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::CosElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| x.cos()).collect();
+    let worst = check_f64("cos f64", &got, &expected, 5e-12);
+    eprintln!("cos f64: worst rel err = {worst:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_tanh_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let host = vec![
+        0.0, 1e-10, 0.5, 1.0, 2.0, 5.0, 10.0, 18.0, 50.0,
+        -0.5, -1.0, -5.0, -18.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::TanhElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| x.tanh()).collect();
+    // tanh composes from exp so errors compound slightly. Tolerance
+    // 5e-12 relative; at |x|>=18 the saturation case lands at ±1 exactly.
+    let worst = check_f64("tanh f64", &got, &expected, 5e-12);
+    eprintln!("tanh f64: worst rel err = {worst:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_sigmoid_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let host = vec![
+        -10.0, -3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0, 10.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::SigmoidElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
+    let worst = check_f64("sigmoid f64", &got, &expected, 5e-12);
+    eprintln!("sigmoid f64: worst rel err = {worst:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_silu_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let host = vec![
+        -5.0, -1.0, -0.1, 0.0, 0.1, 1.0, 5.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::SiluElementwise, &host);
+    let expected: Vec<f64> = host.iter().map(|x| x / (1.0 + (-x).exp())).collect();
+    let worst = check_f64("silu f64", &got, &expected, 5e-12);
+    eprintln!("silu f64: worst rel err = {worst:e}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_gelu_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let host = vec![
+        -3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::GeluElementwise, &host);
+    // Reference matches the kernel's tanh-approx form exactly.
+    let expected: Vec<f64> = host.iter().map(|x| {
+        let inner = 0.7978845608028654 * (x + 0.044715 * x * x * x);
+        0.5 * x * (1.0 + inner.tanh())
+    }).collect();
+    // Gelu composes tanh which composes exp — error budget around 1e-11.
+    let worst = check_f64("gelu f64", &got, &expected, 1e-11);
+    eprintln!("gelu f64: worst rel err = {worst:e}");
+}
+
 #[test]
 #[ignore]
 fn vulkan_dispatch_binary_add_f64() {
