@@ -2679,3 +2679,476 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
         }
     }
 }
+
+// ===========================================================================
+// V.3 fan-out: triu/tril, flip, roll, bf16 unary+binary, F8E4M3 cast,
+// write_slice b1.
+// ===========================================================================
+
+fn upload_bf16(backend: &Arc<VulkanBackend>, host: &[half::bf16]) -> Storage {
+    let bytes: &[u8] = bytemuck::cast_slice(host);
+    let vk_bytes = backend.upload_bytes_handle(bytes).expect("vulkan upload bf16");
+    Storage::new(BackendStorage::Vulkan(vk_bytes), DType::BF16)
+}
+
+fn download_bf16(backend: &Arc<VulkanBackend>, s: &Storage) -> Vec<half::bf16> {
+    let bytes = match &s.inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    bytemuck::cast_slice::<u8, half::bf16>(&bytes).to_vec()
+}
+
+fn upload_raw(backend: &Arc<VulkanBackend>, bytes: &[u8], dtype: DType) -> Storage {
+    let vk_bytes = backend.upload_bytes_handle(bytes).expect("vulkan upload raw");
+    Storage::new(BackendStorage::Vulkan(vk_bytes), dtype)
+}
+
+fn download_raw(backend: &Arc<VulkanBackend>, s: &Storage) -> Vec<u8> {
+    match &s.inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    }
+}
+
+// ----- Triu / Tril ---------------------------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_triu_f32() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let rows = 4usize;
+    let cols = 4usize;
+    let mat = vec![1.0_f32; rows * cols];
+
+    for diagonal in [0i64, 1, -1] {
+        let kernel = table
+            .lookup_alternatives(OpKind::Triu, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+            .kernel;
+        let in_storage = upload_f32(&backend, &mat);
+        let out_bytes = backend.alloc_bytes_handle(rows * cols * 4).expect("alloc");
+        let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+        let in_arc = Arc::new(RwLock::new(in_storage));
+        let out_arc = Arc::new(RwLock::new(out_storage));
+        let layout = Layout::contiguous(Shape::from_dims(&[rows, cols]));
+        kernel(
+            &[Arc::clone(&in_arc)],
+            &mut [Arc::clone(&out_arc)],
+            &[layout.clone(), layout],
+            &OpParams::Triangular { batch_count: 1, rows, cols, diagonal },
+        ).expect("triu");
+        let got = download_f32(&backend, &out_arc.read().unwrap());
+        for i in 0..rows {
+            for j in 0..cols {
+                let expected = if (j as i64) >= (i as i64) + diagonal { 1.0 } else { 0.0 };
+                assert_eq!(got[i * cols + j], expected,
+                    "triu(diag={diagonal})[{i},{j}]: got {} expected {expected}", got[i * cols + j]);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_tril_f32() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let rows = 4usize;
+    let cols = 4usize;
+    let mat = vec![1.0_f32; rows * cols];
+
+    for diagonal in [0i64, 1, -1] {
+        let kernel = table
+            .lookup_alternatives(OpKind::Tril, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+            .kernel;
+        let in_storage = upload_f32(&backend, &mat);
+        let out_bytes = backend.alloc_bytes_handle(rows * cols * 4).expect("alloc");
+        let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+        let in_arc = Arc::new(RwLock::new(in_storage));
+        let out_arc = Arc::new(RwLock::new(out_storage));
+        let layout = Layout::contiguous(Shape::from_dims(&[rows, cols]));
+        kernel(
+            &[Arc::clone(&in_arc)],
+            &mut [Arc::clone(&out_arc)],
+            &[layout.clone(), layout],
+            &OpParams::Triangular { batch_count: 1, rows, cols, diagonal },
+        ).expect("tril");
+        let got = download_f32(&backend, &out_arc.read().unwrap());
+        for i in 0..rows {
+            for j in 0..cols {
+                let expected = if (j as i64) <= (i as i64) + diagonal { 1.0 } else { 0.0 };
+                assert_eq!(got[i * cols + j], expected,
+                    "tril(diag={diagonal})[{i},{j}]: got {} expected {expected}", got[i * cols + j]);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_triu_f16() {
+    use fuel_storage::kernel::OpParams;
+    use half::f16;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let rows = 3usize;
+    let cols = 4usize;  // even cols (b2 constraint)
+    let mat: Vec<f16> = (0..rows * cols).map(|k| f16::from_f32(k as f32 + 1.0)).collect();
+    let kernel = table
+        .lookup_alternatives(OpKind::Triu, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f16(&backend, &mat);
+    let out_bytes = backend.alloc_bytes_handle(rows * cols * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[rows, cols]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::Triangular { batch_count: 1, rows, cols, diagonal: 0 },
+    ).expect("triu f16");
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    for i in 0..rows {
+        for j in 0..cols {
+            let v = got[i * cols + j].to_f32();
+            let expected = if j >= i { (i * cols + j) as f32 + 1.0 } else { 0.0 };
+            assert_eq!(v, expected, "triu f16[{i},{j}]");
+        }
+    }
+}
+
+// ----- Flip ----------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_flip_f32() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // 1D flip of [0,1,2,3,4]
+    let host = vec![0.0_f32, 1.0, 2.0, 3.0, 4.0];
+    let kernel = table
+        .lookup_alternatives(OpKind::Flip, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::Flip { outer_count: 1, dim_size: host.len(), inner_count: 1 },
+    ).expect("flip 1D");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![4.0, 3.0, 2.0, 1.0, 0.0]);
+
+    // 3D-shaped flip on dim 1 of (2, 3, 2): outer=2, dim_size=3, inner=2
+    let host: Vec<f32> = (0..12).map(|k| k as f32).collect();
+    let kernel = table
+        .lookup_alternatives(OpKind::Flip, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[2, 3, 2]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::Flip { outer_count: 2, dim_size: 3, inner_count: 2 },
+    ).expect("flip 3D");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    // batch 0: [[0,1],[2,3],[4,5]] -> [[4,5],[2,3],[0,1]]
+    // batch 1: [[6,7],[8,9],[10,11]] -> [[10,11],[8,9],[6,7]]
+    assert_eq!(got, vec![4.0, 5.0, 2.0, 3.0, 0.0, 1.0,
+                         10.0, 11.0, 8.0, 9.0, 6.0, 7.0]);
+}
+
+// ----- Roll ----------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_roll_f32() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host = vec![0.0_f32, 1.0, 2.0, 3.0, 4.0];
+    let kernel = table
+        .lookup_alternatives(OpKind::Roll, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+
+    // shift = 2: out[i] = in[(i-2) mod 5]
+    // i=0 -> in[3]=3, i=1 -> in[4]=4, i=2 -> in[0]=0, i=3 -> in[1]=1, i=4 -> in[2]=2
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone()],
+        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: 2 },
+    ).expect("roll +2");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![3.0, 4.0, 0.0, 1.0, 2.0]);
+
+    // shift = -1 (Euclidean: -1 mod 5 = 4): out[i] = in[(i+1) mod 5]
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone()],
+        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: -1 },
+    ).expect("roll -1");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![1.0, 2.0, 3.0, 4.0, 0.0]);
+
+    // shift = 7 (= 2 mod 5): same as shift=2
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: 7 },
+    ).expect("roll +7");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![3.0, 4.0, 0.0, 1.0, 2.0]);
+}
+
+// ----- bf16 unary + binary -------------------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_bf16() {
+    use half::bf16;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Easy round-trip: Neg
+    let host: Vec<bf16> = [1.0_f32, -2.0, 3.5, -4.25].iter()
+        .map(|&x| bf16::from_f32(x)).collect();
+    let kernel = table
+        .lookup_alternatives(OpKind::NegElementwise, &[DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_bf16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::None,
+    ).expect("neg bf16");
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let expected: Vec<f32> = host.iter().map(|x| -x.to_f32()).collect();
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g.to_f32() - e).abs() < 1e-2, "neg bf16[{i}]: got {} expected {e}", g.to_f32());
+    }
+
+    // Exp: compare with f32::exp at bf16 precision (~1e-2 absolute)
+    let host: Vec<bf16> = [0.0_f32, 0.5, 1.0, 2.0, -1.0, -0.5].iter()
+        .map(|&x| bf16::from_f32(x)).collect();
+    let kernel = table
+        .lookup_alternatives(OpKind::ExpElementwise, &[DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_bf16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::None,
+    ).expect("exp bf16");
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    for (i, (h, g)) in host.iter().zip(got.iter()).enumerate() {
+        let truth = h.to_f32().exp();
+        let abs_err = (g.to_f32() - truth).abs();
+        // bf16's 7-bit mantissa gives ~1% precision; tolerance follows.
+        let tol = truth.abs() * 0.01 + 1e-3;
+        assert!(abs_err <= tol,
+            "exp bf16[{i}]: got {} truth {truth} abs_err {abs_err}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_binary_bf16() {
+    use half::bf16;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let a: Vec<bf16> = (0..8).map(|k| bf16::from_f32(k as f32 + 1.0)).collect();
+    let b: Vec<bf16> = (0..8).map(|k| bf16::from_f32(k as f32 + 0.5)).collect();
+    let kernel = table
+        .lookup_alternatives(OpKind::AddElementwise,
+            &[DType::BF16, DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+        .kernel;
+    let a_storage = upload_bf16(&backend, &a);
+    let b_storage = upload_bf16(&backend, &b);
+    let out_bytes = backend.alloc_bytes_handle(a.len() * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::None,
+    ).expect("add bf16");
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    for i in 0..a.len() {
+        let expected = a[i].to_f32() + b[i].to_f32();
+        let actual = got[i].to_f32();
+        assert!((actual - expected).abs() < 1e-2,
+            "add bf16[{i}]: got {actual} expected {expected}");
+    }
+}
+
+// ----- F8E4M3 cast (f32 round-trip) ----------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_f8e4m3_roundtrip() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Element count must be a multiple of 4 (kernel packs 4 per u32).
+    let host = vec![
+        0.0_f32, 0.5, 1.0, 1.5,
+        2.0, 3.5, 7.0, 12.0,
+        -0.5, -1.0, -7.0, -12.0,
+        448.0, -448.0, 600.0, -600.0,  // 600 should saturate to ±448
+    ];
+
+    // f32 -> f8e4m3
+    let kernel = table
+        .lookup_alternatives(OpKind::Cast, &[DType::F32, DType::F8E4M3], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len()).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F8E4M3);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let mid_arc = Arc::new(RwLock::new(out_storage));
+    let layout_in = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&mid_arc)],
+        &[layout_in.clone(), layout_in.clone()],
+        &OpParams::None,
+    ).expect("f32 -> f8e4m3");
+
+    // f8e4m3 -> f32 (round-trip)
+    let kernel = table
+        .lookup_alternatives(OpKind::Cast, &[DType::F8E4M3, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    kernel(
+        &[Arc::clone(&mid_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout_in.clone(), layout_in],
+        &OpParams::None,
+    ).expect("f8e4m3 -> f32");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+
+    // Spot checks: small values round-trip exactly (within F8E4M3 grid),
+    // and 600 saturates to 448.
+    let expect = vec![
+        0.0, 0.5, 1.0, 1.5,
+        2.0, 3.5, 7.0, 12.0,
+        -0.5, -1.0, -7.0, -12.0,
+        448.0, -448.0, 448.0, -448.0,
+    ];
+    for (i, (g, e)) in got.iter().zip(expect.iter()).enumerate() {
+        // F8E4M3 has at most 4% relative error on small finite values;
+        // exact on grid points like 0.5, 1.0, 2.0, 448.
+        let abs_err = (g - e).abs();
+        let rel_tol = e.abs() * 0.05 + 1e-3;
+        assert!(abs_err <= rel_tol,
+            "roundtrip[{i}]: input {} got {g} expected {e}", host[i]);
+    }
+}
+
+// ----- write_slice b1 ------------------------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_write_slice_b1_u8() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Write a [2,4] u8 slab into a [4,8] u8 destination at offset (1,4).
+    // Last-dim range_start=4 and src_shape[last]=4: both multiples of 4. ✓
+    let src_bytes: Vec<u8> = vec![10, 20, 30, 40, 50, 60, 70, 80];   // 2x4 = 8 elements
+    let dst_bytes: Vec<u8> = vec![0; 4 * 8];                          // 4x8 = 32 elements
+
+    let kernel = table
+        .lookup_alternatives(OpKind::WriteSlice, &[DType::U8, DType::U8], BackendId::Vulkan)[0]
+        .kernel;
+    let src_storage = upload_raw(&backend, &src_bytes, DType::U8);
+    let dst_storage = upload_raw(&backend, &dst_bytes, DType::U8);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let dst_arc = Arc::new(RwLock::new(dst_storage));
+    let layout_src = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    let layout_dst = Layout::contiguous(Shape::from_dims(&[4, 8]));
+    kernel(
+        &[Arc::clone(&src_arc)],
+        &mut [Arc::clone(&dst_arc)],
+        &[layout_src, layout_dst],
+        &OpParams::WriteSlice {
+            dest_shape: vec![4, 8],
+            ranges: vec![(1, 3), (4, 8)],
+        },
+    ).expect("write_slice b1");
+
+    let got = download_raw(&backend, &dst_arc.read().unwrap());
+    let mut expected = vec![0u8; 4 * 8];
+    expected[1 * 8 + 4] = 10; expected[1 * 8 + 5] = 20; expected[1 * 8 + 6] = 30; expected[1 * 8 + 7] = 40;
+    expected[2 * 8 + 4] = 50; expected[2 * 8 + 5] = 60; expected[2 * 8 + 6] = 70; expected[2 * 8 + 7] = 80;
+    assert_eq!(got, expected);
+}

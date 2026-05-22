@@ -3031,16 +3031,22 @@ impl VulkanBackend {
                 "roll_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
             );
         }
-        // Normalize shift into (-dim_size, dim_size) — kernel uses %.
+        // Convert (j - shift) mod dim_size into (j + offset) mod dim_size
+        // so the kernel can stay entirely unsigned (HLSL/Slang's `%` on
+        // negative signed values is C-semantics-fine but the
+        // load-bitcast-sub chain through OpSRem is one more place a
+        // GPU driver can mis-fold; the unsigned formulation is
+        // simpler and matches the CPU reference behavior exactly).
         let d = dim_size as i64;
         let shift_norm = ((shift % d) + d) % d;  // ∈ [0, dim_size)
+        let offset = ((d - shift_norm) % d) as u32;
         #[repr(C)] #[derive(Clone, Copy)]
-        struct RParams { outer_count: u32, dim_size: u32, inner_count: u32, shift: i32 }
+        struct RParams { outer_count: u32, dim_size: u32, inner_count: u32, offset: u32 }
         let p = RParams {
             outer_count: outer_count as u32,
             dim_size: dim_size as u32,
             inner_count: inner_count as u32,
-            shift: shift_norm as i32,
+            offset,
         };
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
             "roll_bytes: input is host-evicted; fault back first".into(),
@@ -5434,7 +5440,7 @@ fn dtype_size(dtype: DType) -> usize {
         DType::F32 | DType::U32 | DType::I32 => 4,
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 | DType::I16 => 2,
-        DType::U8 => 1,
+        DType::U8 | DType::I8 | DType::F8E4M3 => 1,
         _ => 4,
     }
 }
