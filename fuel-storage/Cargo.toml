@@ -25,6 +25,8 @@ fuel-metal-backend = { workspace = true, optional = true }
 [dev-dependencies]
 # QMatMul tests construct Q4_0 weight blocks directly.
 fuel-quantized = { workspace = true }
+# Conv2D live-GPU tests compare against fuel-conv's CPU reference.
+fuel-conv = { workspace = true }
 
 [features]
 default = []

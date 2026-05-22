@@ -1574,6 +1574,70 @@ pub mod qmatmul {
 }
 
 // ===========================================================================
+// Conv2D f32 — im2col + matmul, groups=1.
+// ===========================================================================
+
+pub mod conv2d {
+    use super::*;
+
+    pub fn conv2d_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() < 2 || inputs.len() > 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::conv2d::conv2d_f32: expected 2-3 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        if inputs.len() == 3 {
+            // Vulkan conv2d doesn't fuse bias yet; route picker should
+            // pick a different alternative (CPU/CUDA fused). Bail loudly
+            // rather than silently producing wrong output.
+            return Err(Error::Msg(
+                "vulkan_dispatch::conv2d::conv2d_f32: bias-fused conv2d not supported \
+                 on Vulkan yet; bias is a follow-up. Route picker should choose a \
+                 fused-conv alternative (CPU/CUDA) when bias is present.".to_string(),
+            ).bt());
+        }
+        let (x_shape, w_shape, stride, padding, dilation, groups) = match params {
+            OpParams::Conv2D { x_shape, w_shape, out_shape: _, stride, padding, dilation, groups } => {
+                (*x_shape, *w_shape, *stride, *padding, *dilation, *groups)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::conv2d::conv2d_f32: expected OpParams::Conv2D, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        if dilation != (1, 1) {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::conv2d::conv2d_f32: dilation {dilation:?} != (1,1) \
+                 not yet supported on Vulkan; route picker should fall back to CPU/CUDA"
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let w_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let input = vulkan_input(&in_guard)?;
+        let weight = vulkan_input(&w_guard)?;
+        let backend = input.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::conv2d::conv2d_f32: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.conv2d_f32_bytes(
+            input, weight, out,
+            x_shape, w_shape, stride, padding, groups,
+        )
+    }
+}
+
+// ===========================================================================
 // Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper dispatches by dtype pair
 // ===========================================================================
 
@@ -1829,6 +1893,17 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         &[DType::F32, DType::U32, DType::F32],
         vk,
         qmatmul::qmatmul_vk,
+    );
+
+    // ----- Conv2D f32 (V.3.I) — im2col + matmul, groups=1, dilation=(1,1).
+    // Dispatched on input (NCHW) + weight (OIHW); bias fold-in is a
+    // follow-up. Falls back via the route picker when bias/dilation/
+    // depthwise constraints aren't met. -----
+    table.register(
+        OpKind::Conv2D,
+        &[DType::F32, DType::F32, DType::F32],
+        vk,
+        conv2d::conv2d_f32,
     );
 
     // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper, 6 dtype
