@@ -2183,6 +2183,348 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Variant of `matmul_f32_bytes` for `B` stored in [N, K] row-major
+    /// instead of [K, N]. Identical pipeline selection — the only
+    /// difference is the `sb_row` / `sb_col` strides in the uniform
+    /// (1 and K instead of N and 1). Used by the dequant-then-matmul
+    /// paths (`matmul_q4_km_bytes`, `matmul_q8_0_bytes`) where weights
+    /// come out of the dequant kernel in [N, K] layout.
+    pub fn matmul_f32_bt_bytes(
+        &self,
+        lhs: &VulkanStorageBytes,
+        rhs: &VulkanStorageBytes,    // [N, K] row-major
+        out: &mut VulkanStorageBytes,
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> fuel_core_types::Result<()> {
+        if lhs_batch_dims.len() != rhs_batch_dims.len() {
+            fuel_core_types::bail!(
+                "matmul_f32_bt_bytes: batch ranks must match (lhs={}, rhs={})",
+                lhs_batch_dims.len(), rhs_batch_dims.len(),
+            );
+        }
+        let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+        let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+        let (batch, n_rep) = if lhs_batch == rhs_batch {
+            (lhs_batch, 1usize)
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+            (lhs_batch, lhs_batch / rhs_batch)
+        } else {
+            fuel_core_types::bail!(
+                "matmul_f32_bt_bytes: unsupported batch combo (lhs={lhs_batch}, rhs={rhs_batch})",
+            );
+        };
+
+        let elem = std::mem::size_of::<f32>();
+        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(elem);
+        let need_rhs = rhs_batch.saturating_mul(n).saturating_mul(k).saturating_mul(elem);
+        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(elem);
+        if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "matmul_f32_bt_bytes: buffer too small (lhs need {need_lhs} have {}; \
+                 rhs need {need_rhs} have {}; out need {need_out} have {})",
+                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct MatmulParams {
+            m: u32, n: u32, k: u32,
+            sa_batch: u32, sa_row: u32, sa_col: u32,
+            sb_batch: u32, sb_row: u32, sb_col: u32,
+            sc_batch: u32,
+            n_rep: u32,
+            _pad: u32,
+        }
+        // B is [N, K] row-major: B[n][k] = b_buf[n*K + k]. The kernel
+        // reads B[b_off + gk * sb_row + gc * sb_col], so we need
+        // sb_row = 1 (one step along K) and sb_col = K (one row jumps K).
+        let params = MatmulParams {
+            m: m as u32, n: n as u32, k: k as u32,
+            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
+            sb_batch: (n * k) as u32, sb_row: 1,         sb_col: k as u32,
+            sc_batch: (m * n) as u32,
+            n_rep: n_rep as u32, _pad: 0,
+        };
+
+        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_f32_bt_bytes: lhs is host-evicted; fault back first".into(),
+        ))?;
+        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_f32_bt_bytes: rhs is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_f32_bt_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&params)?;
+        let params_size = std::mem::size_of::<MatmulParams>() as u64;
+
+        let (pipeline, pipe_layout, op_name, gx, gy, gz) = if m == 1 {
+            (
+                &self.pipelines.matvec_pipeline,
+                &self.pipelines.matvec_layout,
+                "matvec",
+                n as u32, 1u32, batch as u32,
+            )
+        } else if m < 32 {
+            (
+                &self.pipelines.matmul_pipeline,
+                &self.pipelines.matmul_layout,
+                "matmul",
+                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+            )
+        } else {
+            (
+                &self.pipelines.matmul_tiled_pipeline,
+                &self.pipelines.matmul_tiled_layout,
+                "matmul_tiled",
+                ((n + 63) / 64) as u32, ((m + 63) / 64) as u32, batch as u32,
+            )
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+
+        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name, pipeline, pipe_layout, desc,
+            (gx, gy, gz),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Fused Q4_0 × F32 matmul over byte-storage.
+    /// - M=1 dispatches `qmatvec_q4_0` (subgroup-reduced dot product, one
+    ///   workgroup per output column).
+    /// - M>1 dispatches `matmul_q4_0_tiled` (TM=8 rows per tile).
+    ///
+    /// Batches > 1 loop the kernel per batch index. Weights are shared
+    /// across batches (the [N, K/32] block layout is batch-invariant).
+    pub fn matmul_q4_0_bytes(
+        &self,
+        a_f32: &VulkanStorageBytes,
+        w_q4_0: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        batch: usize,
+        m: usize, k: usize, n: usize,
+    ) -> fuel_core_types::Result<()> {
+        if k % 32 != 0 {
+            fuel_core_types::bail!(
+                "matmul_q4_0_bytes: k ({k}) must be a multiple of 32 (Q4_0 block size)",
+            );
+        }
+        let batch = batch.max(1);
+        let need_a   = batch * m * k * 4;
+        let need_w   = n * (k / 32) * 18;  // 18 bytes per Q4_0 block
+        let need_out = batch * m * n * 4;
+        if a_f32.len_bytes()  < need_a   { fuel_core_types::bail!("matmul_q4_0_bytes: A {} < {need_a}",  a_f32.len_bytes()); }
+        if w_q4_0.len_bytes() < need_w   { fuel_core_types::bail!("matmul_q4_0_bytes: W {} < {need_w}",  w_q4_0.len_bytes()); }
+        if out.len_bytes()    < need_out { fuel_core_types::bail!("matmul_q4_0_bytes: O {} < {need_out}", out.len_bytes()); }
+
+        let a_buf  = a_f32.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q4_0_bytes: A is host-evicted; fault back first".into()))?;
+        let w_buf  = w_q4_0.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q4_0_bytes: W is host-evicted; fault back first".into()))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q4_0_bytes: O is host-evicted; fault back first".into()))?;
+
+        if m == 1 {
+            // qmatvec path: one dispatch per batch row.
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct QmvParams { n: u32, k: u32, blocks_per_row: u32, _pad: u32 }
+            let p = QmvParams {
+                n: n as u32, k: k as u32,
+                blocks_per_row: (k / 32) as u32, _pad: 0,
+            };
+            for b in 0..batch {
+                let (pbuf, pmem) = self.upload_params(&p)?;
+                let a_byte_off = (b * k * 4) as u64;
+                let out_byte_off = (b * n * 4) as u64;
+                let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+                desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf,   a_byte_off,   (k * 4) as u64);
+                desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf,   0,            need_w as u64);
+                desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, out_byte_off, (n * 4) as u64);
+                desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<QmvParams>() as u64);
+                let rb = [a_buf.raw() as u64, w_buf.raw() as u64];
+                let wb = [out_buf.raw() as u64];
+                self.record_dispatch_batched(
+                    "qmatvec_q4_0",
+                    &self.pipelines.qmatvec_q4_0_pipeline,
+                    &self.pipelines.qmatvec_q4_0_layout,
+                    desc,
+                    (n as u32, 1, 1),
+                    vec![(pbuf, pmem)],
+                    &rb, &wb,
+                )?;
+            }
+        } else {
+            // tiled path: one dispatch per batch, grid (n, n_tiles_m).
+            const TM: usize = 8;
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct TiledParams { m: u32, n: u32, k: u32, blocks_per_row: u32 }
+            let p = TiledParams {
+                m: m as u32, n: n as u32, k: k as u32,
+                blocks_per_row: (k / 32) as u32,
+            };
+            let n_tiles_m = ((m + TM - 1) / TM) as u32;
+            for b in 0..batch {
+                let (pbuf, pmem) = self.upload_params(&p)?;
+                let a_byte_off = (b * m * k * 4) as u64;
+                let out_byte_off = (b * m * n * 4) as u64;
+                let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+                desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf,   a_byte_off,   (m * k * 4) as u64);
+                desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf,   0,            need_w as u64);
+                desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, out_byte_off, (m * n * 4) as u64);
+                desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<TiledParams>() as u64);
+                let rb = [a_buf.raw() as u64, w_buf.raw() as u64];
+                let wb = [out_buf.raw() as u64];
+                self.record_dispatch_batched(
+                    "matmul_q4_0_tiled",
+                    &self.pipelines.matmul_q4_0_tiled_pipeline,
+                    &self.pipelines.matmul_q4_0_tiled_layout,
+                    desc,
+                    (n as u32, n_tiles_m, 1),
+                    vec![(pbuf, pmem)],
+                    &rb, &wb,
+                )?;
+            }
+        }
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Q4_K_M × F32 matmul over byte-storage. No fused kernel yet — this
+    /// dequantizes weights to f32 in a scratch buffer, then dispatches the
+    /// standard f32 matmul. Functional today; a fused gemv is a future
+    /// kernel-author follow-up if Q4_K_M decode performance matters.
+    pub fn matmul_q4_km_bytes(
+        &self,
+        a_f32: &VulkanStorageBytes,
+        w_q4_km: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        batch: usize,
+        m: usize, k: usize, n: usize,
+    ) -> fuel_core_types::Result<()> {
+        const QK_K: usize = 256;
+        if k % QK_K != 0 {
+            fuel_core_types::bail!(
+                "matmul_q4_km_bytes: k ({k}) must be a multiple of {QK_K} (Q4_K_M super-block size)",
+            );
+        }
+        let n_blocks = n * (k / QK_K);
+        let w_f32_bytes = n * k * 4;
+        let mut w_f32 = self.alloc_bytes(w_f32_bytes)?;
+
+        // Dequantize: 2-buffer dispatch (input W bytes, output f32 bytes).
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Q4KMParams { n_blocks: u32, out_elements: u32, _p0: u32, _p1: u32 }
+        let dp = Q4KMParams {
+            n_blocks: n_blocks as u32,
+            out_elements: (n * k) as u32,
+            _p0: 0, _p1: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&dp)?;
+        let w_q_buf = w_q4_km.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q4_km_bytes: W is host-evicted; fault back first".into()))?;
+        let w_f32_buf = w_f32.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q4_km_bytes: scratch alloc failed to expose buffer".into()))?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_q_buf,   0, w_q4_km.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_f32_buf, 0, w_f32_bytes as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<Q4KMParams>() as u64);
+        let rb = [w_q_buf.raw() as u64];
+        let wb = [w_f32_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "dequant_q4_km",
+            &self.pipelines.dequant_q4_km_pipeline,
+            &self.pipelines.dequant_q4_km_layout,
+            desc,
+            (n_blocks as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+
+        // f32 matmul with B-transposed: dequant produces W in [N, K]
+        // row-major, but the standard matmul wants B in [K, N]. The
+        // `matmul_f32_bt_bytes` variant flips sb_row / sb_col to read
+        // W as if it were [K, N]^T.
+        let lhs_batch_dims: Vec<usize> = if batch <= 1 { vec![] } else { vec![batch] };
+        let rhs_batch_dims: Vec<usize> = vec![];
+        self.matmul_f32_bt_bytes(
+            a_f32, &w_f32, out,
+            &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+        )
+    }
+
+    /// Q8_0 × F32 matmul over byte-storage. Same dequant-then-matmul path
+    /// as `matmul_q4_km_bytes`. No fused kernel yet.
+    pub fn matmul_q8_0_bytes(
+        &self,
+        a_f32: &VulkanStorageBytes,
+        w_q8_0: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        batch: usize,
+        m: usize, k: usize, n: usize,
+    ) -> fuel_core_types::Result<()> {
+        const BLCK_SIZE: usize = 32;
+        if k % BLCK_SIZE != 0 {
+            fuel_core_types::bail!(
+                "matmul_q8_0_bytes: k ({k}) must be a multiple of {BLCK_SIZE} (Q8_0 block size)",
+            );
+        }
+        let n_blocks = n * (k / BLCK_SIZE);
+        let n_elements = n * k;
+        let w_f32_bytes = n_elements * 4;
+        let mut w_f32 = self.alloc_bytes(w_f32_bytes)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Q8Params { n_blocks: u32, out_elements: u32, _pad0: u32, _pad1: u32 }
+        let dp = Q8Params {
+            n_blocks: n_blocks as u32,
+            out_elements: n_elements as u32,
+            _pad0: 0, _pad1: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&dp)?;
+        let w_q_buf = w_q8_0.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q8_0_bytes: W is host-evicted; fault back first".into()))?;
+        let w_f32_buf = w_f32.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_q8_0_bytes: scratch alloc failed to expose buffer".into()))?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_q_buf,   0, w_q8_0.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_f32_buf, 0, w_f32_bytes as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<Q8Params>() as u64);
+        let rb = [w_q_buf.raw() as u64];
+        let wb = [w_f32_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "dequant_q8_0",
+            &self.pipelines.dequant_q8_0_pipeline,
+            &self.pipelines.dequant_q8_0_layout,
+            desc,
+            (Self::workgroups(n_elements), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+
+        let lhs_batch_dims: Vec<usize> = if batch <= 1 { vec![] } else { vec![batch] };
+        let rhs_batch_dims: Vec<usize> = vec![];
+        self.matmul_f32_bt_bytes(
+            a_f32, &w_f32, out,
+            &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+        )
+    }
+
     /// f32 binary concat along `dim`. Output shape == inputs with
     /// `dim` replaced by `a_dim + b_dim`. Rank ≤ 4 (the legacy
     /// kernel's limit). Inputs must be contiguous on the non-concat
