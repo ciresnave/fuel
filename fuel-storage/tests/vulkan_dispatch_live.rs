@@ -908,7 +908,11 @@ fn vulkan_dispatch_unary_exp_f64() {
     ];
     let got = run_unary_f64(&backend, OpKind::ExpElementwise, &host);
     let expected: Vec<f64> = host.iter().map(|x| x.exp()).collect();
-    let worst = check_f64("exp f64", &got, &expected, 5e-12);
+    // 1 ULP at f64 ≈ 2.22e-16. Practical limit for 14-term Horner
+    // without hardware FMA on doubles is ~5-10 ULP per evaluation;
+    // the 2^k scaling at |k| up to 1010 for exp(700) adds another
+    // ~3 ULP. Total budget ~50 ULP. Tolerance 5e-14 leaves headroom.
+    let worst = check_f64("exp f64", &got, &expected, 5e-14);
     eprintln!("exp f64: worst rel err = {worst:e}");
 }
 
@@ -933,24 +937,37 @@ fn vulkan_dispatch_unary_log_f64() {
 fn vulkan_dispatch_unary_sin_f64() {
     let Some(backend) = backend_or_skip() else { return };
     use std::f64::consts::{PI, FRAC_PI_2, FRAC_PI_4, FRAC_PI_6};
-    let host = vec![
-        0.0, 1e-10, FRAC_PI_6, FRAC_PI_4, FRAC_PI_2, PI, 1.5 * PI, 2.0 * PI,
-        -FRAC_PI_4, -PI, 10.0, 100.0, -100.0,
-    ];
-    let got = run_unary_f64(&backend, OpKind::SinElementwise, &host);
-    let expected: Vec<f64> = host.iter().map(|x| x.sin()).collect();
-    // Loosen for large |x| where naive range reduction loses ~log10(|x|/π)
-    // digits. 100 / π ≈ 32 → ~1.5 digits lost; 100 of these is enough to
-    // need ~5e-11 tolerance. Specific check below for the small-|x| set.
-    let worst = check_f64("sin f64", &got, &expected, 1e-10);
-    eprintln!("sin f64: worst rel err = {worst:e}");
 
-    // Tight check on the small-|x| subset where naive reduction is fine.
-    let small_host: Vec<f64> = host[..9].to_vec();
-    let small_got = run_unary_f64(&backend, OpKind::SinElementwise, &small_host);
-    let small_expected: Vec<f64> = small_host.iter().map(|x| x.sin()).collect();
-    let worst_small = check_f64("sin f64 (|x|<=2π)", &small_got, &small_expected, 5e-12);
-    eprintln!("sin f64 (|x|<=2π): worst rel err = {worst_small:e}");
+    // Tight tolerance for small |x| (no significant reduction).
+    let small = vec![
+        0.0, 1e-10, FRAC_PI_6, FRAC_PI_4, FRAC_PI_2, PI, 1.5 * PI, 2.0 * PI,
+        -FRAC_PI_4, -PI, 10.0, 100.0,
+        -100.0,
+    ];
+    let got = run_unary_f64(&backend, OpKind::SinElementwise, &small);
+    let expected: Vec<f64> = small.iter().map(|x| x.sin()).collect();
+    let worst_small = check_f64("sin f64 (|x| <= 100)", &got, &expected, 5e-14);
+    eprintln!("sin f64 (|x| <= 100): worst rel err = {worst_small:e}");
+
+    // Moderate |x|: two-term Cody-Waite degrades as ~k*ULP(2π) ≈
+    // k*5e-17. For k up to ~160 (|x| up to 1000), error budget ~1e-14.
+    let moderate = vec![300.0, 500.0, -700.0, 1000.0];
+    let got = run_unary_f64(&backend, OpKind::SinElementwise, &moderate);
+    let expected: Vec<f64> = moderate.iter().map(|x| x.sin()).collect();
+    // Cos/sin near zeros amplify relative error — when true value is
+    // small (close to k*π for sin), 5e-13 absolute → much larger relative.
+    let worst_mod = check_f64("sin f64 (|x| <= 1000)", &got, &expected, 5e-13);
+    eprintln!("sin f64 (|x| <= 1000): worst rel err = {worst_mod:e}");
+
+    // Large |x|: 2-term Cody-Waite scales unfavorably. Error grows
+    // as ~k * ULP(2π) for k = round(x/2π). For |x|=1e5, k ≈ 16000,
+    // so absolute error ~1e-12 → rel err depends on |sin(x)|.
+    // Full Payne-Hanek would tighten this.
+    let large = vec![10000.0, 100000.0, -10000.0];
+    let got = run_unary_f64(&backend, OpKind::SinElementwise, &large);
+    let expected: Vec<f64> = large.iter().map(|x| x.sin()).collect();
+    let worst_lg = check_f64("sin f64 (|x| <= 1e5)", &got, &expected, 1e-9);
+    eprintln!("sin f64 (|x| <= 1e5): worst rel err = {worst_lg:e}");
 }
 
 #[test]
@@ -958,13 +975,23 @@ fn vulkan_dispatch_unary_sin_f64() {
 fn vulkan_dispatch_unary_cos_f64() {
     let Some(backend) = backend_or_skip() else { return };
     use std::f64::consts::{PI, FRAC_PI_2, FRAC_PI_4};
-    let host = vec![
+
+    let small = vec![
         0.0, FRAC_PI_4, FRAC_PI_2, PI, 2.0 * PI, -FRAC_PI_4, -PI, 1.0, 5.0,
+        100.0,
     ];
-    let got = run_unary_f64(&backend, OpKind::CosElementwise, &host);
-    let expected: Vec<f64> = host.iter().map(|x| x.cos()).collect();
-    let worst = check_f64("cos f64", &got, &expected, 5e-12);
-    eprintln!("cos f64: worst rel err = {worst:e}");
+    let got = run_unary_f64(&backend, OpKind::CosElementwise, &small);
+    let expected: Vec<f64> = small.iter().map(|x| x.cos()).collect();
+    let worst_small = check_f64("cos f64 (|x| <= 100)", &got, &expected, 5e-14);
+    eprintln!("cos f64 (|x| <= 100): worst rel err = {worst_small:e}");
+
+    let moderate = vec![300.0, 1000.0, -500.0];
+    let got = run_unary_f64(&backend, OpKind::CosElementwise, &moderate);
+    let expected: Vec<f64> = moderate.iter().map(|x| x.cos()).collect();
+    // cos(300) ≈ -0.022 is small — small expected magnitudes inflate
+    // relative error. Absolute error here is still ~6e-15.
+    let worst_mod = check_f64("cos f64 (|x| <= 1000)", &got, &expected, 5e-12);
+    eprintln!("cos f64 (|x| <= 1000): worst rel err = {worst_mod:e}");
 }
 
 #[test]
