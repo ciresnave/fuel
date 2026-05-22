@@ -1389,19 +1389,25 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64);
     table.register(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64);
 
-    // ----- Unary f64 (V.3.E.5) — non-transcendentals only.
-    // GLSL.std.450's Exp/Log/Sin/Cos/Tanh opcodes are spec-restricted to
-    // 16/32-bit floats. We tried importing OpenCL.std (whose double
-    // transcendentals are spec-allowed): SPV passes spirv-val but
-    // NVIDIA's Windows Vulkan driver rejects OpenCL.std imports at
-    // vkCreateShaderModule, which kills VulkanBackend::new() for every
-    // test (driver-level, not just the offending kernel). For now the
-    // route picker falls back to CPU for f64 transcendentals; the
-    // longer-term plan is graph-level Cast(f64→f32) → unary_f32 →
-    // Cast(f32→f64), per the V.3.E.5 design discussion. -----
+    // ----- Unary f64 (V.3.E.5) — full 13-op surface. Transcendentals
+    // implemented via polynomial approximations (Horner-form Taylor +
+    // range reduction) in unary_f64.slang; target precision ~1e-12
+    // relative. The polynomials use only arithmetic ops (OpFAdd /
+    // OpFMul / OpFDiv on double) so they're portable across any
+    // Vulkan driver that exposes shaderFloat64, avoiding both the
+    // GLSL.std.450 type restriction and the NVIDIA Windows
+    // OpenCL.std rejection. -----
     table.register(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64);
     table.register(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64);
     table.register(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64);
+    table.register(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64);
+    table.register(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64);
+    table.register(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64);
+    table.register(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64);
+    table.register(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64);
+    table.register(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64);
+    table.register(OpKind::SiluElementwise,    &u(f64_d), vk, unary_f64::silu_f64);
+    table.register(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64);
     table.register(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64);
     table.register(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64);
 
