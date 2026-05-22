@@ -16,32 +16,39 @@
 //! 2. Sets `target_backend` on every reachable computational node
 //!    (the legacy executor implicitly used `self.backend`; the
 //!    pipelined path reads it from the graph side-table).
-//! 3. Calls [`PipelinedExecutor::realize_many`] for multi-target or
-//!    `PipelinedExecutor::realize` for single-target.
-//! 4. D2H's the resulting `Storage` Arc back into a `Vec<T>` for the
-//!    caller via [`BackendStorage::read_to_cpu_bytes`].
+//! 3. For non-CPU realize devices, splices an
+//!    `Op::Copy { target: Cpu }` at each realize root so D2H runs
+//!    as a graph node the optimizer can see (bridge-retirement
+//!    Phase 2, post-9c). The Op::Copy node's kernel is registered
+//!    at `(OpKind::Copy, [dt, dt], source_backend)`; the executor's
+//!    `WorkItemKind::Copy` arm allocates the output on the target
+//!    location and runs the source-backend's download wrapper.
+//! 4. Calls [`PipelinedExecutor::realize_many`] for multi-target or
+//!    `PipelinedExecutor::realize` for single-target on the spliced
+//!    targets — the executor returns a `BackendStorage::Cpu` for
+//!    each.
+//! 5. Reads the CPU bytes into a typed `Vec<T>` via `bytemuck`.
 //!
-//! This module owns steps 1–4 so [`crate::lazy::LazyTensor`]'s
+//! This module owns steps 1–5 so [`crate::lazy::LazyTensor`]'s
 //! `realize_*` methods stay one-liners.
 //!
-//! ## Not yet covered (Phase E.3+)
+//! ## Not yet covered (Phase E.3+ / bridge-retirement Phase 3+)
 //!
 //! - `KVCache<B>` and `forward_with_cache_on<B>` — autoregressive
 //!   decoding needs a const cache that survives realize calls; the
 //!   pattern is "caller holds a long-lived `StorageCache` across
 //!   calls" but the API surface for that lands in Phase E.3.
 //! - `generate_*` and speculative decoding loops — same.
-//! - `realize_f32_vulkan` — `BackendStorage::read_to_cpu_bytes`
-//!   for Vulkan isn't wired yet (the byte-storage substrate doesn't
-//!   carry a `VulkanBackend` handle); kept on the legacy executor
-//!   until that gap closes.
+//! - H2D + zero-alloc through `Op::Alloc` + `Op::Copy` (Phase 3 of
+//!   bridge-retirement). `alloc_zeroed_on` + `upload_host_buffer`
+//!   below are still ad-hoc.
 
 use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Result,
 };
-use fuel_graph::{Graph, NodeId, Op, topo_order_multi};
+use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_storage::{
     pipelined::{PipelinedExecutor, StorageCache},
     BackendStorage, Storage,
@@ -61,10 +68,12 @@ use crate::Device;
 ///    reachable computational node.
 /// 2. `prepare_const_cache` — D2H + re-upload every reachable
 ///    `Op::Const` slot onto `device`.
-/// 3. `PipelinedExecutor::realize` — kick the compile + execute
-///    pipeline.
-/// 4. `read_to_cpu_bytes` — D2H the result.
-/// 5. `bytemuck::cast_slice` — reinterpret the bytes as `T`.
+/// 3. For non-CPU `device`: splice an `Op::Copy { target: Cpu }` at
+///    the realize root so D2H is a binding-table-dispatched graph
+///    node (bridge-retirement Phase 2).
+/// 4. `PipelinedExecutor::realize` — kick the compile + execute
+///    pipeline; returns a `BackendStorage::Cpu` for the spliced root.
+/// 5. `bytemuck::cast_slice` — reinterpret the CPU bytes as `T`.
 pub fn realize_one_as<T: bytemuck::Pod>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
@@ -96,14 +105,14 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     device: &Device,
     initial: StorageCache,
 ) -> Result<Vec<T>> {
-    let (cache, _backend_id) = prepare(graph, &[target], device, initial)?;
+    let (cache, _backend_id, mut effective_targets) =
+        prepare(graph, &[target], device, initial)?;
+    let cpu_target = effective_targets
+        .pop()
+        .expect("prepare returns one effective target per input target");
     let (storage, _layout) =
-        PipelinedExecutor::realize(graph.clone(), target, cache)?;
-    let guard = storage
-        .read()
-        .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
-    let bytes = guard.inner.read_to_cpu_bytes()?;
-    Ok(bytemuck::cast_slice::<u8, T>(&bytes).to_vec())
+        PipelinedExecutor::realize(graph.clone(), cpu_target, cache)?;
+    extract_cpu_bytes_typed::<T>(&storage)
 }
 
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
@@ -116,17 +125,47 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let (cache, _) = prepare(graph, targets, device, initial)?;
-    let results = PipelinedExecutor::realize_many(graph.clone(), targets, cache)?;
+    let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
+    let results = PipelinedExecutor::realize_many(
+        graph.clone(), &effective_targets, cache,
+    )?;
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
-        let guard = storage
-            .read()
-            .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
-        let bytes = guard.inner.read_to_cpu_bytes()?;
-        out.push(bytemuck::cast_slice::<u8, T>(&bytes).to_vec());
+        out.push(extract_cpu_bytes_typed::<T>(&storage)?);
     }
     Ok(out)
+}
+
+/// Read a realize result's CPU bytes and reinterpret them as `Vec<T>`.
+///
+/// Post bridge-retirement Phase 2: the executor produced this Storage
+/// through the spliced `Op::Copy { target: Cpu }` node (for non-CPU
+/// devices) or directly on CPU (for CPU realizes). Either way, this
+/// is a `BackendStorage::Cpu` — extract its bytes via the
+/// CPU-variant pattern.
+fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
+    storage: &Arc<RwLock<Storage>>,
+) -> Result<Vec<T>> {
+    let guard = storage
+        .read()
+        .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
+    let bytes: &[u8] = match &guard.inner {
+        BackendStorage::Cpu(s) => s.bytes(),
+        // The other arms are feature-gated; on default-features-only
+        // builds CPU is the sole variant and this arm is unreachable
+        // — but suppress the lint so it still parses with `--features
+        // cuda` / `--features vulkan`.
+        #[allow(unreachable_patterns)]
+        other => {
+            return Err(Error::Msg(format!(
+                "pipelined_bridge: realize root produced non-CPU storage \
+                 ({other:?}) — the Op::Copy splice in `prepare()` should \
+                 have made the root CPU-resident. This is a bug.",
+            ))
+            .bt());
+        }
+    };
+    Ok(bytemuck::cast_slice::<u8, T>(bytes).to_vec())
 }
 
 // ---------------------------------------------------------------------------
@@ -134,22 +173,77 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
 // ---------------------------------------------------------------------------
 
 /// One-shot prep: derive a `BackendId` from `device`, propagate it to
-/// every reachable computational node, and build a `StorageCache`
-/// containing every reachable `Op::Const`. Mutates the graph (takes a
-/// write lock); the executor takes its own read lock after this
-/// returns.
+/// every reachable computational node, build a `StorageCache`
+/// containing every reachable `Op::Const`, and (post-9c Phase 2 of
+/// bridge-retirement) splice an `Op::Copy { target: Cpu }` at each
+/// non-CPU realize root so the executor produces a CPU storage at the
+/// returned `effective_targets`.
+///
+/// Returns `(cache, backend_id, effective_targets)`:
+/// - `effective_targets[i]` mirrors `targets[i]`'s order. For CPU
+///   realizes it equals `targets[i]`; for GPU realizes it is the
+///   NodeId of the spliced Op::Copy node, whose output the executor
+///   produces as a fresh `BackendStorage::Cpu`.
+///
+/// Mutates the graph (takes a write lock); the executor takes its own
+/// read lock after this returns.
 fn prepare(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     device: &Device,
     initial: StorageCache,
-) -> Result<(StorageCache, BackendId)> {
+) -> Result<(StorageCache, BackendId, Vec<NodeId>)> {
     let backend_id = device_to_backend_id(device);
+
+    // Phase 2 of bridge-retirement: splice an `Op::Copy { target:
+    // Cpu }` at every realize root, regardless of source backend, so
+    // D2H runs as a graph node the optimizer can see (architecture
+    // identity check #1).
+    //
+    // Why always — even for CPU realizes:
+    //   1. Strided / sliced / permuted realize roots are common; the
+    //      executor's WorkItemKind::Copy arm runs `auto_contiguize`
+    //      on the input before the kernel, so the output is the
+    //      LOGICAL view's bytes, not the parent storage's full bytes.
+    //      Without the splice on CPU, a `realize_f32` of a slice view
+    //      returned the parent's full bytes (a long-standing bug
+    //      inherited from the pre-9c `read_to_cpu_bytes`); routing
+    //      through Op::Copy fixes it uniformly.
+    //   2. The CPU→CPU Copy kernel is one memcpy that replaces the
+    //      `.to_vec()` `read_to_cpu_bytes` used to do; no extra cost
+    //      in the contiguous case.
+    //   3. One code path through Op::Copy keeps the executor's
+    //      semantics consistent across devices.
+    //
+    // The spliced node's shape + dtype match the source; the
+    // executor's WorkItemKind::Copy arm allocates a fresh CPU storage
+    // and runs the source-backend's registered Copy kernel.
+    let effective_targets = {
+        let mut g = graph
+            .write()
+            .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+        targets
+            .iter()
+            .map(|&src_id| {
+                let (shape, dtype) = {
+                    let n = g.node(src_id);
+                    (n.shape.clone(), n.dtype)
+                };
+                g.push(Node {
+                    op: Op::Copy { target: DeviceLocation::Cpu },
+                    inputs: vec![src_id],
+                    shape,
+                    dtype,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
     let order = {
         let g = graph
             .read()
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-        topo_order_multi(&g, targets)
+        topo_order_multi(&g, &effective_targets)
     };
 
     // Build the StorageCache on top of `initial` (which may carry
@@ -160,6 +254,14 @@ fn prepare(
     // Now set target_backend on every computational node. View ops,
     // Reshape, Const, and Release inherit/don't need it — see
     // `compile_one` in fuel-storage::pipelined.
+    //
+    // For Op::Copy { target: Cpu } spliced at realize roots: we want
+    // target_backend = backend_id (the SOURCE backend, where the
+    // download kernel runs). That's exactly what this overwrite does
+    // — `Op::Copy` is computational, not a view, so it gets the same
+    // backend_id stamp. The executor's WorkItemKind::Copy arm reads
+    // `target_location` from the op's variant field for output
+    // allocation; `target_backend` drives the kernel lookup.
     //
     // We *always* overwrite rather than preserving prior values. The
     // reason: graphs are shared (`Arc<RwLock<Graph>>`) and a single
@@ -189,7 +291,7 @@ fn prepare(
         }
     }
 
-    Ok((cache, backend_id))
+    Ok((cache, backend_id, effective_targets))
 }
 
 /// For each reachable `Op::Const`, take its legacy storage slot,

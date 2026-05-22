@@ -870,11 +870,14 @@ impl LazyTensor {
     /// CUDA helper above so the Phase 6b Judge can profile Vulkan
     /// equivalence classes uniformly with CUDA.
     ///
-    /// **NOT migrated to PipelinedExecutor yet** — `BackendStorage::
-    /// read_to_cpu_bytes` for the Vulkan variant returns Err because
-    /// D2H needs a `VulkanBackend` handle the byte-storage substrate
-    /// doesn't carry. Migration follows the Vulkan d2h wiring (its
-    /// own follow-up).
+    /// **NOT migrated to PipelinedExecutor yet** — kept on the
+    /// legacy executor for Judge-loop measurement parity with
+    /// CUDA's `realize_f32_cuda`. The PipelinedExecutor path for
+    /// Vulkan-resident realize is wired via the
+    /// [`Op::Copy { target: Cpu }`](fuel_graph::Op::Copy) splice in
+    /// [`crate::pipelined_bridge::realize_one_as_with_initial`]
+    /// (bridge-retirement Phase 2, post-9c) and is exercised through
+    /// `realize_f32` on the live-Vulkan tests.
     #[cfg(feature = "vulkan")]
     pub fn realize_f32_vulkan(
         &self,

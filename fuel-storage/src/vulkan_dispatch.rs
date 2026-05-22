@@ -1691,6 +1691,56 @@ pub mod cast_f8e4m3 {
 }
 
 // ===========================================================================
+// Op::Copy D2H — Vulkan → CPU (bridge-retirement Phase 2, post-9c)
+// ===========================================================================
+
+/// Dispatch wrapper for `(OpKind::Copy, [T, T], Vulkan)` — D2H from a
+/// Vulkan source storage into a freshly-allocated CPU output. The
+/// executor allocates the CPU output before this wrapper runs
+/// (see [`crate::pipelined::WorkItemKind::Copy`]); the wrapper calls
+/// `VulkanBackend::download_bytes` on the input's attached backend
+/// handle and copies the result into the CPU storage.
+///
+/// Dtype-agnostic at the byte level — one wrapper covers every dtype
+/// registered at this key.
+///
+/// Replaces the Vulkan branch of `BackendStorage::read_to_cpu_bytes`
+/// (deleted alongside) — the placeholder that
+/// [commit 7a95001a](https://github.com/anthropics/fuel/commit/7a95001a)
+/// introduced. After this lands, D2H is a graph node the optimizer
+/// can see (identity check #1: "more decisions visible to the
+/// DAG-level optimizer").
+pub fn copy_to_cpu_vulkan(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "copy_to_cpu_vulkan: expected 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        )).bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let vk_src = vulkan_input(&in_guard)?;
+    let backend = vk_src.backend().ok_or_else(|| {
+        Error::Msg(
+            "copy_to_cpu_vulkan: Vulkan input has no backend handle. \
+             Storages flowing through the pipelined-executor binding-table \
+             Copy path must come from VulkanBackend::alloc_bytes_handle / \
+             upload_bytes_handle.".to_string()
+        ).bt()
+    })?;
+    let bytes = backend.download_bytes(vk_src)?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dst = crate::dispatch::cpu_output(&mut out_guard)?;
+    let n = bytes.len().min(dst.len_bytes());
+    dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
+    Ok(())
+}
+
+// ===========================================================================
 // register_vulkan_kernels — binding-table population
 // ===========================================================================
 
@@ -1920,4 +1970,21 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register(OpKind::Cast, &[f8,     f16],  vk, cast_f8e4m3::cast_f8e4m3);
     table.register(OpKind::Cast, &[bf16_d, f8],   vk, cast_f8e4m3::cast_f8e4m3);
     table.register(OpKind::Cast, &[f8,     bf16_d], vk, cast_f8e4m3::cast_f8e4m3);
+
+    // ----- Op::Copy D2H — `(OpKind::Copy, [dt, dt], Vulkan)` ---------
+    // Bridge-retirement Phase 2 (post-9c): every realize root resident
+    // on Vulkan gets an `Op::Copy { target: Cpu }` spliced in before
+    // realize; the kernel dispatch resolves on the source backend
+    // (= Vulkan), running this wrapper. Output is CPU storage,
+    // allocated by the executor's `WorkItemKind::Copy` arm. Same
+    // canonical `[dt, dt]` key shape every backend's Copy
+    // registration uses (audit discipline from
+    // `project_phase_7_6_step_9c_parity_audit`).
+    let copy_dtypes = [
+        f32, f16, bf16_d, DType::F64, DType::U32, DType::U8,
+        DType::I16, DType::I32, DType::I64,
+    ];
+    for dt in copy_dtypes {
+        table.register(OpKind::Copy, &[dt, dt], vk, copy_to_cpu_vulkan);
+    }
 }

@@ -41,7 +41,7 @@ use std::thread;
 
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Error, Layout, Result};
+use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
 use fuel_graph::{topo_order, topo_order_multi, Graph, Node, NodeId, Op};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
@@ -109,6 +109,26 @@ enum WorkItemKind {
     WriteSlice {
         dest: NodeId,
         source: NodeId,
+    },
+    /// `Op::Copy { target }` — produce a fresh Storage on
+    /// `target_location`, copying bytes from `inputs[0]`'s residency.
+    ///
+    /// The kernel lookup goes through the standard binding-table path
+    /// at `(OpKind::Copy, [dt, dt], source_backend)`, so D2H is a peer
+    /// of every other op (architecture identity check #1). The
+    /// dedicated WorkItemKind exists because Op::Copy is the one op
+    /// whose output's device differs from `target_backend`:
+    /// `target_backend` is the **source** backend (where the kernel
+    /// runs — it owns the download path), while `target_location`
+    /// drives output allocation. WorkItemKind::Kernel always allocates
+    /// output on `target_backend`; Copy needs the override.
+    ///
+    /// Phase 2 of the bridge-retirement trajectory. Replaces the
+    /// per-variant `match self` in `BackendStorage::read_to_cpu_bytes`
+    /// (deleted alongside this commit) with a graph-level node the
+    /// optimizer can see, cost, and eventually fuse.
+    Copy {
+        target_location: DeviceLocation,
     },
 }
 
@@ -608,6 +628,56 @@ fn compile_one(
         });
     }
 
+    if let Op::Copy { target } = node.op {
+        // Op::Copy { target }: download bytes from the source residency
+        // to a fresh Storage allocated on `target`. Kernel lookup uses
+        // `target_backend` = source backend (set by `prepare()` on the
+        // realize device the source is on); the wrapper does the actual
+        // transfer (e.g. Vulkan::download_bytes → memcpy into a CPU
+        // CpuStorageBytes). The output Storage's variant is determined
+        // by `target_location` and allocated in `execute_work_item`'s
+        // WorkItemKind::Copy arm.
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::Copy expects 1 input, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: Op::Copy node {:?} has no target_backend \
+                 set (= source backend, the one whose kernel runs the \
+                 download)",
+                id
+            ))
+            .bt()
+        })?;
+        let op_params = OpParams::None;
+        let dtypes = build_lookup_dtypes(graph, node);
+        let compiled = compile_node(
+            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
+        )?;
+        // Output layout: contiguous in the node's shape (mirrors the
+        // source's logical shape). Auto-contiguize on the input side
+        // (in execute_work_item) handles strided source views by
+        // materializing them into a contiguous source buffer before
+        // the kernel runs.
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::Copy { target_location: target },
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+        });
+    }
+
     if matches!(node.op, Op::Reshape(_)) {
         if inputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -893,6 +963,14 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
             Some(OpKind::QMatMul)
         }
         Op::WriteSlice { .. } => Some(OpKind::WriteSlice),
+        // Phase 2 of bridge-retirement (post-9c): Op::Copy dispatches
+        // through the binding table at OpKind::Copy. The BackendId
+        // axis encodes the source backend (the kernel runs there —
+        // download from local memory). The executor handles output
+        // allocation on the target via a dedicated WorkItemKind::Copy
+        // arm, since target_location differs from target_backend for
+        // this op (the only one with that property today).
+        Op::Copy { .. } => Some(OpKind::Copy),
         _ => None,
     }
 }
@@ -2063,6 +2141,91 @@ fn execute_work_item(
             // dest's own NodeId from the cache afterward — downstream
             // readers go through this node's NodeId.
             cache.insert(item.node_id, dest_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::Copy { target_location } => {
+            // Op::Copy { target }: kernel lookup at (OpKind::Copy,
+            // [dt, dt], source_backend) — the wrapper downloads from
+            // its own residency into a freshly-allocated output on
+            // `target_location`. We auto-contiguize the input first
+            // so the kernel always sees the logical view's bytes (a
+            // transpose-view source materializes into a contiguous
+            // buffer before download).
+            let compiled = item.compiled.as_ref().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: Copy work item {:?} has no compiled node",
+                    item.node_id,
+                ))
+                .bt()
+            })?;
+            if item.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "PipelinedExecutor: Copy work item {:?} expects 1 input, got {}",
+                    item.node_id, item.inputs.len(),
+                )).bt());
+            }
+            let src_id = item.inputs[0];
+            let src_arc = cache.get(&src_id).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: Copy input {:?} of {:?} not realized",
+                    src_id, item.node_id,
+                ))
+                .bt()
+            })?;
+            let src_layout = layout_cache.get(&src_id).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: Copy input {:?} of {:?} has no cached layout",
+                    src_id, item.node_id,
+                ))
+                .bt()
+            })?;
+            let src_dtype = src_arc
+                .read()
+                .map_err(|_| poisoned("Copy source storage"))?
+                .dtype;
+            let src_len_bytes = src_arc
+                .read()
+                .map_err(|_| poisoned("Copy source storage"))?
+                .inner
+                .len_bytes();
+            let layout_bytes =
+                src_layout.shape().elem_count() * src_dtype.size_in_bytes();
+            let bytes_match_shape = src_len_bytes == layout_bytes;
+            let already_contig = src_layout.is_contiguous()
+                && src_layout.start_offset() == 0
+                && bytes_match_shape;
+            let src_input = if already_contig {
+                src_arc
+            } else {
+                auto_contiguize(&src_arc, &src_layout)?
+            };
+            let kernel_input_layout =
+                fuel_core_types::Layout::contiguous(src_layout.shape().clone());
+            // Allocate the output on `target_location`. Today's
+            // bridge-retirement Phase 2 only covers D2H (target=Cpu);
+            // future phases register H2D / D2D kernels at this same
+            // OpKind::Copy decision-point key.
+            let output = match target_location {
+                DeviceLocation::Cpu => {
+                    crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "PipelinedExecutor: Op::Copy target_location {:?} not yet \
+                         wired (D2H is the only target the bridge-retirement \
+                         Phase 2 covers; H2D + D2D land in Phase 3+).",
+                        other
+                    )).bt());
+                }
+            };
+            let input_arcs = vec![src_input];
+            let mut output_arcs = vec![Arc::new(RwLock::new(output))];
+            let kernel_layouts =
+                vec![kernel_input_layout, item.output_layout.clone()];
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            let arc = output_arcs.into_iter().next().expect("one output");
+            cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }

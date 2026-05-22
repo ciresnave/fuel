@@ -65,11 +65,6 @@ pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
 use fuel_core_types::{DType, Result};
-#[cfg(any(
-    feature = "vulkan",
-    all(feature = "metal", any(target_os = "macos", target_os = "ios")),
-))]
-use fuel_core_types::Error;
 use fuel_cpu_backend::CpuStorageBytes;
 
 /// Closed enum over backend storage variants. The `Cpu` variant
@@ -130,42 +125,6 @@ impl BackendStorage {
     /// Total addressable byte count, regardless of dtype.
     pub fn len_bytes(&self) -> usize {
         dispatch_storage!(self, inner => inner.len_bytes())
-    }
-
-    /// Phase 7.5 A4 substrate D2H. Read this storage's bytes back
-    /// to host as a fresh `Vec<u8>`. Universal across backends —
-    /// every variant can produce its bytes on demand. Used as the
-    /// host-staging fallback for cross-backend `Op::Copy` /
-    /// `Op::Move` and as the test-side oracle for D2H paths.
-    ///
-    /// CPU is a memcpy from the underlying `Arc<[u8]>`; GPU
-    /// variants run a synchronous D2H. Vulkan walks the storage's
-    /// attached `Arc<VulkanBackend>` handle (populated by
-    /// `upload_bytes_handle` / `alloc_bytes_handle`) to reach the
-    /// allocator + queue required for the staged readback.
-    pub fn read_to_cpu_bytes(&self) -> Result<Vec<u8>> {
-        match self {
-            BackendStorage::Cpu(s) => Ok(s.bytes().to_vec()),
-            #[cfg(feature = "cuda")]
-            BackendStorage::Cuda(s) => s.to_cpu_bytes(),
-            #[cfg(feature = "vulkan")]
-            BackendStorage::Vulkan(s) => {
-                let backend = s.backend().ok_or_else(|| Error::Msg(
-                    "BackendStorage::read_to_cpu_bytes: Vulkan storage has no \
-                     attached VulkanBackend handle. Construct via \
-                     `VulkanBackend::alloc_bytes_handle` / `upload_bytes_handle` \
-                     (the handle-attached constructors) so D2H can reach the \
-                     backend's allocator + queue.".to_string(),
-                ).bt())?;
-                backend.download_bytes(s)
-            }
-            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            BackendStorage::Metal(_) => Err(Error::Msg(
-                "BackendStorage::read_to_cpu_bytes: Metal A4 D2H \
-                 substrate not yet wired (follow-on commit)".to_string(),
-            )
-            .bt()),
-        }
     }
 }
 
@@ -265,16 +224,59 @@ mod tests {
         assert_eq!(s.len_bytes(), 16);
     }
 
-    /// A4: BackendStorage::read_to_cpu_bytes returns the exact byte
-    /// stream on the CPU variant.
+    /// Bridge-retirement Phase 2 (post-9c): round-trip a CPU storage
+    /// through `Op::Copy { target: Cpu }` via the PipelinedExecutor.
+    /// Replaces the deleted `read_to_cpu_bytes_cpu_variant` test.
+    ///
+    /// The CPU→CPU Copy kernel registered in
+    /// [`crate::dispatch::register_cpu_kernels`] is the universal
+    /// memcpy noop; this exercises the binding-table-dispatch path
+    /// end-to-end on the universal fallback. Per-source-backend D2H
+    /// (CUDA, Vulkan) is exercised by the live-GPU test sets.
     #[test]
-    fn read_to_cpu_bytes_cpu_variant() {
+    fn op_copy_to_cpu_round_trip_via_pipelined_executor() {
+        use crate::pipelined::{PipelinedExecutor, StorageCache};
+        use fuel_core_types::{probe::BackendId, DeviceLocation, Shape};
+        use fuel_graph::{Graph, Node, NodeId, Op};
+        use std::sync::{Arc, RwLock};
+
         let data = [1.0_f32, 2.0, 3.0, 4.0];
-        let s = from_slice_cpu(&data);
-        let bytes = s.inner.read_to_cpu_bytes().expect("d2h");
-        assert_eq!(bytes.len(), 16);
-        let got: &[f32] = bytemuck::cast_slice(&bytes);
-        assert_eq!(got, &data);
+        let src_storage = from_slice_cpu(&data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, copy_id): (NodeId, NodeId) = {
+            let mut g = graph.write().unwrap();
+            let src = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
+            });
+            let copy = g.push(Node {
+                op: Op::Copy { target: DeviceLocation::Cpu },
+                inputs: vec![src],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(copy, BackendId::Cpu);
+            (src, copy)
+        };
+
+        let mut cache = StorageCache::new();
+        cache.insert(src_id, Arc::new(RwLock::new(src_storage)));
+
+        let (result_arc, _result_layout) =
+            PipelinedExecutor::realize(graph, copy_id, cache)
+                .expect("Op::Copy { target: Cpu } realize");
+
+        let guard = result_arc.read().unwrap();
+        if let BackendStorage::Cpu(c) = &guard.inner {
+            assert_eq!(c.len_bytes(), 16);
+            let got: &[f32] = c.as_slice().expect("f32 cast");
+            assert_eq!(got, &data);
+        } else {
+            panic!("Op::Copy {{ target: Cpu }} must produce BackendStorage::Cpu");
+        }
     }
 
     /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes
