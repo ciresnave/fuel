@@ -3459,3 +3459,91 @@ fn vulkan_dispatch_qmatmul_q8_0() {
     // realistic for the mixed CPU-ref / GPU dequant comparison.
     assert!(max_rel < 2e-2, "Q8_0 worst rel err {max_rel:e} > 2e-2");
 }
+
+// ===========================================================================
+// Conv2D f32 live test
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_conv2d_f32() {
+    use fuel_conv::{ConvShape, conv2d_direct};
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Small but non-trivial conv: 1 batch × 3 in-channels × 8×8 image
+    // through a 4-out-channel 3×3 kernel with stride=1, pad=1.
+    let shape = ConvShape {
+        batch: 1, c_in: 3, c_out: 4,
+        h: 8, w: 8, k_h: 3, k_w: 3,
+        stride: (1, 1), padding: (1, 1), groups: 1,
+    };
+    shape.validate().unwrap();
+
+    let n_in = shape.batch * shape.c_in * shape.h * shape.w;
+    let n_w  = shape.c_out * shape.c_in * shape.k_h * shape.k_w;
+    let n_out = shape.output_len();
+
+    let input: Vec<f32> = (0..n_in)
+        .map(|i| (i as f32 * 0.013).sin() * 0.5)
+        .collect();
+    let weight: Vec<f32> = (0..n_w)
+        .map(|i| ((i as f32 + 1.0) * 0.027).cos() * 0.3)
+        .collect();
+
+    // CPU reference.
+    let mut cpu_out = vec![0.0_f32; n_out];
+    conv2d_direct(&input, &weight, None, &shape, &mut cpu_out);
+
+    // GPU dispatch.
+    let in_storage  = upload_f32(&backend, &input);
+    let w_storage   = upload_f32(&backend, &weight);
+    let out_bytes   = backend.alloc_bytes_handle(n_out * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc  = Arc::new(RwLock::new(in_storage));
+    let w_arc   = Arc::new(RwLock::new(w_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table.lookup_alternatives(
+        OpKind::Conv2D,
+        &[DType::F32, DType::F32, DType::F32],
+        BackendId::Vulkan,
+    )[0].kernel;
+
+    let in_layout  = Layout::contiguous(Shape::from_dims(&[shape.batch, shape.c_in, shape.h, shape.w]));
+    let w_layout   = Layout::contiguous(Shape::from_dims(&[shape.c_out, shape.c_in, shape.k_h, shape.k_w]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[shape.batch, shape.c_out, shape.h_out(), shape.w_out()]));
+    kernel(
+        &[Arc::clone(&in_arc), Arc::clone(&w_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, w_layout, out_layout],
+        &OpParams::Conv2D {
+            x_shape: [shape.batch, shape.c_in, shape.h, shape.w],
+            w_shape: [shape.c_out, shape.c_in, shape.k_h, shape.k_w],
+            out_shape: [shape.batch, shape.c_out, shape.h_out(), shape.w_out()],
+            stride: shape.stride,
+            padding: shape.padding,
+            dilation: (1, 1),
+            groups: 1,
+        },
+    ).expect("conv2d dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let mut max_abs = 0.0_f32;
+    let mut max_rel = 0.0_f32;
+    for (g, r) in got.iter().zip(cpu_out.iter()) {
+        let abs = (g - r).abs();
+        if abs > max_abs { max_abs = abs; }
+        if r.abs() > 1e-4 {
+            let rel = abs / r.abs();
+            if rel > max_rel { max_rel = rel; }
+        }
+    }
+    eprintln!("conv2d f32: max abs err = {max_abs:e}, max rel err = {max_rel:e}");
+    // f32 conv2d via im2col + register-tile matmul should be ULP-tight
+    // (no quantization, just float reordering). 5e-5 absolute is the
+    // observed scale with k = 27 contractions.
+    assert!(max_abs < 5e-5, "conv2d worst abs err {max_abs:e} > 5e-5");
+    assert!(max_rel < 1e-4, "conv2d worst rel err {max_rel:e} > 1e-4");
+}
