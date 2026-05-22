@@ -1512,6 +1512,68 @@ pub mod roll {
 }
 
 // ===========================================================================
+// QMatMul Q4_0 / Q4_K_M / Q8_0 — F32 activation × quant weight → F32 output.
+// ===========================================================================
+//
+// The quantization type is carried in `OpParams::QMatMul.quant_type`; the
+// wrapper switches per family to the right Vulkan kernel:
+//   - Q4_0  → fused qmatvec_q4_0 (M=1) or matmul_q4_0_tiled (M>1).
+//   - Q4_K_M → dequantize_q4_km to f32 scratch, then matmul_f32_bytes.
+//   - Q8_0   → dequantize_q8_0  to f32 scratch, then matmul_f32_bytes.
+// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K/Q6K, Q8_1) are not yet wired —
+// the wrapper returns an error so the route picker falls back to CPU.
+
+pub mod qmatmul {
+    use super::*;
+    use fuel_graph::QuantType;
+
+    pub fn qmatmul_vk(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::qmatmul: expected 2 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (quant_type, batch_count, m, n, k) = match params {
+            OpParams::QMatMul { quant_type, batch_count, m, n, k } => {
+                (*quant_type, *batch_count, *m, *n, *k)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::qmatmul: expected OpParams::QMatMul, got {:?}",
+                    other,
+                )).bt());
+            }
+        };
+        let a_guard = read_storage(&inputs[0])?;
+        let w_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&a_guard)?;
+        let w = vulkan_input(&w_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::qmatmul: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        match quant_type {
+            QuantType::Q4_0   => backend.matmul_q4_0_bytes(a, w, out, batch_count, m, k, n),
+            QuantType::Q4_K_M => backend.matmul_q4_km_bytes(a, w, out, batch_count, m, k, n),
+            QuantType::Q8_0   => backend.matmul_q8_0_bytes(a, w, out, batch_count, m, k, n),
+            other => Err(Error::Msg(format!(
+                "vulkan_dispatch::qmatmul: QuantType {other:?} not wired on Vulkan; \
+                 add a dequant-then-matmul path or a fused kernel and retry"
+            )).bt()),
+        }
+    }
+}
+
+// ===========================================================================
 // Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper dispatches by dtype pair
 // ===========================================================================
 
@@ -1758,6 +1820,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register(OpKind::Flip,  &u(dt), vk, flip::flip);
         table.register(OpKind::Roll,  &u(dt), vk, roll::roll);
     }
+
+    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 activation × U32-byte
+    // weight stream → F32 output. The quant_type lives in
+    // OpParams::QMatMul; dtype key is (F32, U32, F32) regardless. -----
+    table.register(
+        OpKind::QMatMul,
+        &[DType::F32, DType::U32, DType::F32],
+        vk,
+        qmatmul::qmatmul_vk,
+    );
 
     // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper, 6 dtype
     // pairs. F8E4M3 is 1 byte (4 packed per u32); kernel constraints
