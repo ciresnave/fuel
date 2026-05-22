@@ -48,12 +48,16 @@ pub struct Pipelines {
     pub unary_f16_layout: PipelineLayout,
     pub unary_f64_pipeline: ComputePipeline,
     pub unary_f64_layout: PipelineLayout,
+    pub unary_bf16_pipeline: ComputePipeline,
+    pub unary_bf16_layout: PipelineLayout,
     pub binary_pipeline: ComputePipeline,
     pub binary_layout: PipelineLayout,
     pub binary_f16_pipeline: ComputePipeline,
     pub binary_f16_layout: PipelineLayout,
     pub binary_f64_pipeline: ComputePipeline,
     pub binary_f64_layout: PipelineLayout,
+    pub binary_bf16_pipeline: ComputePipeline,
+    pub binary_bf16_layout: PipelineLayout,
     pub affine_pipeline: ComputePipeline,
     pub affine_layout: PipelineLayout,
     pub clamp_pipeline: ComputePipeline,
@@ -68,12 +72,56 @@ pub struct Pipelines {
     pub cast_f32_to_bf16_layout: PipelineLayout,
     pub cast_bf16_to_f32_pipeline: ComputePipeline,
     pub cast_bf16_to_f32_layout: PipelineLayout,
+    pub cast_f32_to_f8e4m3_pipeline: ComputePipeline,
+    pub cast_f32_to_f8e4m3_layout: PipelineLayout,
+    pub cast_f8e4m3_to_f32_pipeline: ComputePipeline,
+    pub cast_f8e4m3_to_f32_layout: PipelineLayout,
+    pub cast_f16_to_f8e4m3_pipeline: ComputePipeline,
+    pub cast_f16_to_f8e4m3_layout: PipelineLayout,
+    pub cast_f8e4m3_to_f16_pipeline: ComputePipeline,
+    pub cast_f8e4m3_to_f16_layout: PipelineLayout,
+    pub cast_bf16_to_f8e4m3_pipeline: ComputePipeline,
+    pub cast_bf16_to_f8e4m3_layout: PipelineLayout,
+    pub cast_f8e4m3_to_bf16_pipeline: ComputePipeline,
+    pub cast_f8e4m3_to_bf16_layout: PipelineLayout,
+    pub write_slice_b1_pipeline: ComputePipeline,
+    pub write_slice_b1_layout: PipelineLayout,
     pub write_slice_b2_pipeline: ComputePipeline,
     pub write_slice_b2_layout: PipelineLayout,
     pub write_slice_b4_pipeline: ComputePipeline,
     pub write_slice_b4_layout: PipelineLayout,
     pub write_slice_b8_pipeline: ComputePipeline,
     pub write_slice_b8_layout: PipelineLayout,
+    pub strided_copy_signed_b2_pipeline: ComputePipeline,
+    pub strided_copy_signed_b2_layout: PipelineLayout,
+    pub strided_copy_signed_b4_pipeline: ComputePipeline,
+    pub strided_copy_signed_b4_layout: PipelineLayout,
+    pub strided_copy_signed_b8_pipeline: ComputePipeline,
+    pub strided_copy_signed_b8_layout: PipelineLayout,
+    pub triu_b2_pipeline: ComputePipeline,
+    pub triu_b2_layout: PipelineLayout,
+    pub triu_b4_pipeline: ComputePipeline,
+    pub triu_b4_layout: PipelineLayout,
+    pub triu_b8_pipeline: ComputePipeline,
+    pub triu_b8_layout: PipelineLayout,
+    pub tril_b2_pipeline: ComputePipeline,
+    pub tril_b2_layout: PipelineLayout,
+    pub tril_b4_pipeline: ComputePipeline,
+    pub tril_b4_layout: PipelineLayout,
+    pub tril_b8_pipeline: ComputePipeline,
+    pub tril_b8_layout: PipelineLayout,
+    pub flip_b2_pipeline: ComputePipeline,
+    pub flip_b2_layout: PipelineLayout,
+    pub flip_b4_pipeline: ComputePipeline,
+    pub flip_b4_layout: PipelineLayout,
+    pub flip_b8_pipeline: ComputePipeline,
+    pub flip_b8_layout: PipelineLayout,
+    pub roll_b2_pipeline: ComputePipeline,
+    pub roll_b2_layout: PipelineLayout,
+    pub roll_b4_pipeline: ComputePipeline,
+    pub roll_b4_layout: PipelineLayout,
+    pub roll_b8_pipeline: ComputePipeline,
+    pub roll_b8_layout: PipelineLayout,
     /// WGSL matmul (4x4 register tile, no shared memory). Fast for
     /// short M where the shared-memory tiled version's barriers cost
     /// more than they save.
@@ -305,9 +353,11 @@ impl Pipelines {
         let unary_mod = registry.load_module(device, shaders::UNARY)?;
         let unary_f16_mod = registry.load_module(device, shaders::UNARY_F16)?;
         let unary_f64_mod = registry.load_module(device, shaders::UNARY_F64)?;
+        let unary_bf16_mod = registry.load_module(device, shaders::UNARY_BF16)?;
         let binary_mod = registry.load_module(device, shaders::BINARY)?;
         let binary_f16_mod = registry.load_module(device, shaders::BINARY_F16)?;
         let binary_f64_mod = registry.load_module(device, shaders::BINARY_F64)?;
+        let binary_bf16_mod = registry.load_module(device, shaders::BINARY_BF16)?;
         let affine_mod = registry.load_module(device, shaders::AFFINE)?;
         let clamp_mod = registry.load_module(device, shaders::CLAMP)?;
         let powi_mod = registry.load_module(device, shaders::POWI)?;
@@ -315,9 +365,31 @@ impl Pipelines {
         let cast_f16_to_f32_mod  = registry.load_module(device, shaders::CAST_F16_TO_F32)?;
         let cast_f32_to_bf16_mod = registry.load_module(device, shaders::CAST_F32_TO_BF16)?;
         let cast_bf16_to_f32_mod = registry.load_module(device, shaders::CAST_BF16_TO_F32)?;
+        let cast_f32_to_f8e4m3_mod  = registry.load_module(device, shaders::CAST_F32_TO_F8E4M3)?;
+        let cast_f8e4m3_to_f32_mod  = registry.load_module(device, shaders::CAST_F8E4M3_TO_F32)?;
+        let cast_f16_to_f8e4m3_mod  = registry.load_module(device, shaders::CAST_F16_TO_F8E4M3)?;
+        let cast_f8e4m3_to_f16_mod  = registry.load_module(device, shaders::CAST_F8E4M3_TO_F16)?;
+        let cast_bf16_to_f8e4m3_mod = registry.load_module(device, shaders::CAST_BF16_TO_F8E4M3)?;
+        let cast_f8e4m3_to_bf16_mod = registry.load_module(device, shaders::CAST_F8E4M3_TO_BF16)?;
+        let write_slice_b1_mod   = registry.load_module(device, shaders::WRITE_SLICE_B1)?;
         let write_slice_b2_mod   = registry.load_module(device, shaders::WRITE_SLICE_B2)?;
         let write_slice_b4_mod   = registry.load_module(device, shaders::WRITE_SLICE_B4)?;
         let write_slice_b8_mod   = registry.load_module(device, shaders::WRITE_SLICE_B8)?;
+        let strided_copy_signed_b2_mod = registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B2)?;
+        let strided_copy_signed_b4_mod = registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B4)?;
+        let strided_copy_signed_b8_mod = registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B8)?;
+        let triu_b2_mod = registry.load_module(device, shaders::TRIU_B2)?;
+        let triu_b4_mod = registry.load_module(device, shaders::TRIU_B4)?;
+        let triu_b8_mod = registry.load_module(device, shaders::TRIU_B8)?;
+        let tril_b2_mod = registry.load_module(device, shaders::TRIL_B2)?;
+        let tril_b4_mod = registry.load_module(device, shaders::TRIL_B4)?;
+        let tril_b8_mod = registry.load_module(device, shaders::TRIL_B8)?;
+        let flip_b2_mod = registry.load_module(device, shaders::FLIP_B2)?;
+        let flip_b4_mod = registry.load_module(device, shaders::FLIP_B4)?;
+        let flip_b8_mod = registry.load_module(device, shaders::FLIP_B8)?;
+        let roll_b2_mod = registry.load_module(device, shaders::ROLL_B2)?;
+        let roll_b4_mod = registry.load_module(device, shaders::ROLL_B4)?;
+        let roll_b8_mod = registry.load_module(device, shaders::ROLL_B8)?;
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
@@ -353,9 +425,11 @@ impl Pipelines {
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let unary_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let unary_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let unary_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let binary_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let binary_f16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let binary_f64_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let binary_bf16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let affine_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let clamp_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let powi_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -363,10 +437,34 @@ impl Pipelines {
         let cast_f16_to_f32_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
         let cast_f32_to_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let cast_bf16_to_f32_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f32_to_f8e4m3_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f8e4m3_to_f32_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f16_to_f8e4m3_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f8e4m3_to_f16_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_bf16_to_f8e4m3_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f8e4m3_to_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         // write_slice uses 3 storage (src + dst + shape_buf) + 1 uniform.
+        let write_slice_b1_layout   = PipelineLayout::new(device, &[&layout_3s1u])?;
         let write_slice_b2_layout   = PipelineLayout::new(device, &[&layout_3s1u])?;
         let write_slice_b4_layout   = PipelineLayout::new(device, &[&layout_3s1u])?;
         let write_slice_b8_layout   = PipelineLayout::new(device, &[&layout_3s1u])?;
+        // strided_copy_signed uses 3 storage (input, output, shape_strides) + 1 uniform.
+        let strided_copy_signed_b2_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let strided_copy_signed_b4_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let strided_copy_signed_b8_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        // triu / tril / flip / roll all use 2 storage (in, out) + 1 uniform.
+        let triu_b2_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let triu_b4_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let triu_b8_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let tril_b2_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let tril_b4_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let tril_b8_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let flip_b2_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let flip_b4_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let flip_b8_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let roll_b2_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let roll_b4_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let roll_b8_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let matmul_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -402,9 +500,11 @@ impl Pipelines {
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
         let unary_f16_pipeline = ComputePipeline::new(device, &unary_f16_layout, &unary_f16_mod, "main")?;
         let unary_f64_pipeline = ComputePipeline::new(device, &unary_f64_layout, &unary_f64_mod, "main")?;
+        let unary_bf16_pipeline = ComputePipeline::new(device, &unary_bf16_layout, &unary_bf16_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
         let binary_f16_pipeline = ComputePipeline::new(device, &binary_f16_layout, &binary_f16_mod, "main")?;
         let binary_f64_pipeline = ComputePipeline::new(device, &binary_f64_layout, &binary_f64_mod, "main")?;
+        let binary_bf16_pipeline = ComputePipeline::new(device, &binary_bf16_layout, &binary_bf16_mod, "main")?;
         let affine_pipeline = ComputePipeline::new(device, &affine_layout, &affine_mod, "main")?;
         let clamp_pipeline = ComputePipeline::new(device, &clamp_layout, &clamp_mod, "main")?;
         let powi_pipeline = ComputePipeline::new(device, &powi_layout, &powi_mod, "main")?;
@@ -412,9 +512,31 @@ impl Pipelines {
         let cast_f16_to_f32_pipeline  = ComputePipeline::new(device, &cast_f16_to_f32_layout,  &cast_f16_to_f32_mod,  "main")?;
         let cast_f32_to_bf16_pipeline = ComputePipeline::new(device, &cast_f32_to_bf16_layout, &cast_f32_to_bf16_mod, "main")?;
         let cast_bf16_to_f32_pipeline = ComputePipeline::new(device, &cast_bf16_to_f32_layout, &cast_bf16_to_f32_mod, "main")?;
+        let cast_f32_to_f8e4m3_pipeline  = ComputePipeline::new(device, &cast_f32_to_f8e4m3_layout,  &cast_f32_to_f8e4m3_mod,  "main")?;
+        let cast_f8e4m3_to_f32_pipeline  = ComputePipeline::new(device, &cast_f8e4m3_to_f32_layout,  &cast_f8e4m3_to_f32_mod,  "main")?;
+        let cast_f16_to_f8e4m3_pipeline  = ComputePipeline::new(device, &cast_f16_to_f8e4m3_layout,  &cast_f16_to_f8e4m3_mod,  "main")?;
+        let cast_f8e4m3_to_f16_pipeline  = ComputePipeline::new(device, &cast_f8e4m3_to_f16_layout,  &cast_f8e4m3_to_f16_mod,  "main")?;
+        let cast_bf16_to_f8e4m3_pipeline = ComputePipeline::new(device, &cast_bf16_to_f8e4m3_layout, &cast_bf16_to_f8e4m3_mod, "main")?;
+        let cast_f8e4m3_to_bf16_pipeline = ComputePipeline::new(device, &cast_f8e4m3_to_bf16_layout, &cast_f8e4m3_to_bf16_mod, "main")?;
+        let write_slice_b1_pipeline   = ComputePipeline::new(device, &write_slice_b1_layout,   &write_slice_b1_mod,   "main")?;
         let write_slice_b2_pipeline   = ComputePipeline::new(device, &write_slice_b2_layout,   &write_slice_b2_mod,   "main")?;
         let write_slice_b4_pipeline   = ComputePipeline::new(device, &write_slice_b4_layout,   &write_slice_b4_mod,   "main")?;
         let write_slice_b8_pipeline   = ComputePipeline::new(device, &write_slice_b8_layout,   &write_slice_b8_mod,   "main")?;
+        let strided_copy_signed_b2_pipeline = ComputePipeline::new(device, &strided_copy_signed_b2_layout, &strided_copy_signed_b2_mod, "main")?;
+        let strided_copy_signed_b4_pipeline = ComputePipeline::new(device, &strided_copy_signed_b4_layout, &strided_copy_signed_b4_mod, "main")?;
+        let strided_copy_signed_b8_pipeline = ComputePipeline::new(device, &strided_copy_signed_b8_layout, &strided_copy_signed_b8_mod, "main")?;
+        let triu_b2_pipeline = ComputePipeline::new(device, &triu_b2_layout, &triu_b2_mod, "main")?;
+        let triu_b4_pipeline = ComputePipeline::new(device, &triu_b4_layout, &triu_b4_mod, "main")?;
+        let triu_b8_pipeline = ComputePipeline::new(device, &triu_b8_layout, &triu_b8_mod, "main")?;
+        let tril_b2_pipeline = ComputePipeline::new(device, &tril_b2_layout, &tril_b2_mod, "main")?;
+        let tril_b4_pipeline = ComputePipeline::new(device, &tril_b4_layout, &tril_b4_mod, "main")?;
+        let tril_b8_pipeline = ComputePipeline::new(device, &tril_b8_layout, &tril_b8_mod, "main")?;
+        let flip_b2_pipeline = ComputePipeline::new(device, &flip_b2_layout, &flip_b2_mod, "main")?;
+        let flip_b4_pipeline = ComputePipeline::new(device, &flip_b4_layout, &flip_b4_mod, "main")?;
+        let flip_b8_pipeline = ComputePipeline::new(device, &flip_b8_layout, &flip_b8_mod, "main")?;
+        let roll_b2_pipeline = ComputePipeline::new(device, &roll_b2_layout, &roll_b2_mod, "main")?;
+        let roll_b4_pipeline = ComputePipeline::new(device, &roll_b4_layout, &roll_b4_mod, "main")?;
+        let roll_b8_pipeline = ComputePipeline::new(device, &roll_b8_layout, &roll_b8_mod, "main")?;
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let matmul_tiled_pipeline = ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
@@ -450,9 +572,11 @@ impl Pipelines {
             unary_pipeline, unary_layout,
             unary_f16_pipeline, unary_f16_layout,
             unary_f64_pipeline, unary_f64_layout,
+            unary_bf16_pipeline, unary_bf16_layout,
             binary_pipeline, binary_layout,
             binary_f16_pipeline, binary_f16_layout,
             binary_f64_pipeline, binary_f64_layout,
+            binary_bf16_pipeline, binary_bf16_layout,
             affine_pipeline, affine_layout,
             clamp_pipeline, clamp_layout,
             powi_pipeline, powi_layout,
@@ -460,9 +584,31 @@ impl Pipelines {
             cast_f16_to_f32_pipeline, cast_f16_to_f32_layout,
             cast_f32_to_bf16_pipeline, cast_f32_to_bf16_layout,
             cast_bf16_to_f32_pipeline, cast_bf16_to_f32_layout,
+            cast_f32_to_f8e4m3_pipeline, cast_f32_to_f8e4m3_layout,
+            cast_f8e4m3_to_f32_pipeline, cast_f8e4m3_to_f32_layout,
+            cast_f16_to_f8e4m3_pipeline, cast_f16_to_f8e4m3_layout,
+            cast_f8e4m3_to_f16_pipeline, cast_f8e4m3_to_f16_layout,
+            cast_bf16_to_f8e4m3_pipeline, cast_bf16_to_f8e4m3_layout,
+            cast_f8e4m3_to_bf16_pipeline, cast_f8e4m3_to_bf16_layout,
+            write_slice_b1_pipeline, write_slice_b1_layout,
             write_slice_b2_pipeline, write_slice_b2_layout,
             write_slice_b4_pipeline, write_slice_b4_layout,
             write_slice_b8_pipeline, write_slice_b8_layout,
+            strided_copy_signed_b2_pipeline, strided_copy_signed_b2_layout,
+            strided_copy_signed_b4_pipeline, strided_copy_signed_b4_layout,
+            strided_copy_signed_b8_pipeline, strided_copy_signed_b8_layout,
+            triu_b2_pipeline, triu_b2_layout,
+            triu_b4_pipeline, triu_b4_layout,
+            triu_b8_pipeline, triu_b8_layout,
+            tril_b2_pipeline, tril_b2_layout,
+            tril_b4_pipeline, tril_b4_layout,
+            tril_b8_pipeline, tril_b8_layout,
+            flip_b2_pipeline, flip_b2_layout,
+            flip_b4_pipeline, flip_b4_layout,
+            flip_b8_pipeline, flip_b8_layout,
+            roll_b2_pipeline, roll_b2_layout,
+            roll_b4_pipeline, roll_b4_layout,
+            roll_b8_pipeline, roll_b8_layout,
             matmul_pipeline, matmul_layout,
             matmul_tiled_pipeline, matmul_tiled_layout,
             matvec_pipeline, matvec_layout,
