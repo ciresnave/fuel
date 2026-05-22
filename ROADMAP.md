@@ -23,6 +23,44 @@ entry will be updated next time it's actively worked on.
 
 ---
 
+## Current frontier (2026-05-22)
+
+**Active phase**: Phase 7.6 step 9c — typed-storage retirement + Vulkan runtime
+catch-up. Step 9a + 9b Track A shipped; the binding-table dispatch path is
+load-bearing for CPU + CUDA + Vulkan.
+
+**Active sub-thread**: Bridge cleanup post-typed-storage. `VulkanBackendDevice`
+landed this session, closing the runtime `Device` gate for Vulkan. The
+[bridge-retirement plan](#bridge-retirement-trajectory-post-9c) under
+Phase 7.6 step 9c describes the path from the bridge to the architecture
+v1.0 destination (graph-level `Op::Copy`/`Op::Alloc`, dispatch-erased
+`Device` tag, retired `DynBackendStorage` trait).
+
+**Recently shipped (last 30 days, summarized; see memory + commit log for full record)**:
+
+- Phase 7.5 work item G + G2: graph owns Storage; `Op::Const` is a unit variant.
+- Phase 7.5 work item B2: fuel-core eager `Tensor` factories produce node-handle tensors.
+- Phase 7.6 steps 1-3 + step 6 + FusedLinear: registry skeleton + `Op::Fused` arm + first migrated op + `register_fused!` macro.
+- Phase 7.6 step 9a + 9b Track A: KernelBindingTable multi-impl alternatives + ExecutionPlan + NodeKernelBinding.
+- Phase 7b: AOCL + oneMKL CPU backends + Router empirical dispatch (shipped 2026-04-28 → 2026-05-15).
+- CUDA Tier 1 migration to binding table (45 live tests; baracuda alpha.27).
+- Vulkan V.2 + V.3 byte-storage fan-out (87 live RTX 4070 tests; QMatMul + Conv2D + f64 transcendentals + WriteSlice b1/b2/b4/b8).
+- Vulkan runtime `Device` wiring (this session): `VulkanBackendDevice` + parity test against CPU through `forward_with_kv_context`.
+
+**Next 1-3 sessions** (in priority order):
+1. **Vulkan binding-table key-shape audit** — surfaced by this session's Rope fix. Verify every Vulkan op's `(op, dtypes)` key matches the CPU registration. ~1 session.
+2. **Per-Vulkan-kernel `PrecisionGuarantee` + cost + slot annotations** — required by [05-backend-contract](docs/architecture/05-backend-contract.md) for the optimizer's tolerance-budget pass and cost-ranking to admit Vulkan alternatives. ~1-2 sessions.
+3. **Phase 7.6 step 9c → Phase 2 of bridge-retirement: `Op::Copy` D2H** — register cross-device copy kernels per backend; route `realize_*as<T>` D2H through `Op::Copy`. First deletion of the bridge code from this session. ~1 session.
+
+**Blockers**: none. Multi-GPU work (Phase 6c D2D + Phase 6d MoE placement) is parked pending multi-GPU hardware; not on the critical path.
+
+**Architecture-alignment check**: every active workstream above moves at least
+one of the four [identity-enforcement checks](docs/architecture/01-identity.md#how-this-identity-is-enforced)
+*more* true. Bridge retirement moves checks 1 + 2; binding-table audit moves
+check 1; PrecisionGuarantee work moves checks 2 + 4.
+
+---
+
 ## Identity
 
 Fuel is a **layered Rust ML framework**.
@@ -156,549 +194,142 @@ asking for them.
 
 ---
 
-### Phase 0 — Ecosystem compatibility
+### Phase 0 — Ecosystem compatibility ✅ shipped
 
-*Immediate. Prerequisite for everything else. Without this, engineers new to the
-fork can't get a working build.*
+*Prerequisite for everything else: ensure the fork builds cleanly with all
+features enabled, on all supported platforms, without manual patching.*
 
-#### What Candlelight revealed
+**What it accomplished**: audited the entire fork ecosystem (fuel-optimisers,
+fuel-layer-norm, fuel-bhop, fuel-einops, fuel-birnn, fuel-lstm, fuel-crf,
+fuel-approx) for version compatibility against current workspace `fuel-core`;
+fixed all build failures including the Windows + CUDA 13.0 / MSVC path
+(`gen` reserved-keyword fix in `fuel-core/src/cuda_backend/device.rs`);
+brought `fuel-cublaslt` and `fuel-cuda-vmm` into the workspace; extracted
+a backend-agnostic `fuel-vmm` crate (8-method `VmmBackend` trait + generic
+`VirtualMemoryPool<B>` / `SharedMemoryPool<B>`) from the CUDA-specific
+implementation, unblocking future ROCm and CPU-mmap implementations
+of the same elastic-KV-cache pattern at zero runtime cost
+(monomorphized per backend). Established workspace-level dependency
+version matrix (`[workspace.dependencies]` in `Cargo.toml`); added CI
+coverage (`.github/workflows/rust-ci.yml` for CPU on Linux/Windows/macOS/AVX2/ARM;
+`.github/workflows/ci_cuda.yaml` for CUDA 13.0 on a GPU runner).
+Compatibility guide at workspace root: [`COMPATIBILITY.md`](COMPATIBILITY.md).
 
-The Candle ecosystem consists of more than a dozen crates that must be kept in
-version sync with each other. In practice they are not. Engineers who try to use
-more than `candle-core` + `candle-nn` find that:
-
-- `candle-optimisers`, `candle-layer-norm`, `candle-bhop`, `candle-einops`,
-  `candle-birnn`, `candle-lstm`, `candle-crf`, and `candle-approx` each require
-  separate forks to compile against the current Candle version.
-- `candle-layer-norm` does not build on Windows with CUDA 13.0 without a
-  patch. The Windows + MSVC path is not tested upstream.
-- `candle-cublaslt` (cuBLASLt bindings for fused GEMM) and `candle-cuda-vmm`
-  (CUDA Virtual Memory Management for elastic KV cache) have no home in the
-  main crate tree at all.
-- The result is that every downstream project must maintain its own Candlelight
-  fork just to get a building dependency set.
-
-This means the ecosystem is only usable by engineers willing to maintain those
-forks themselves. The barrier is too high to attract contributors or users.
-
-#### Work items
-
-- [x] Audit every ecosystem crate (`fuel-optimisers`, `fuel-layer-norm`,
-      `fuel-bhop`, `fuel-einops`, `fuel-birnn`, `fuel-lstm`,
-      `fuel-crf`, `fuel-approx`) for version compatibility and build
-      failures against the current workspace version of `fuel-core`.
-      *Findings documented in `COMPATIBILITY.md`.*
-- [x] Fix all build failures, including the Windows + CUDA 13.0 / MSVC
-      path for `fuel-layer-norm`. Fixed `gen` reserved keyword in
-      `fuel-core/src/cuda_backend/device.rs` (Rust edition 2024 reserved
-      `gen` as a keyword; replaced with `r#gen` at the call site to
-      `fuel_ug::cuda::code_gen::gen`). CUDA + cudnn features both check
-      clean; CUDA tests pass on RTX 4070.
-- [x] Bring `fuel-cublaslt` and `fuel-cuda-vmm` into this workspace as
-      first-class crates rather than external dependencies (or, at minimum,
-      ensure they are version-pinned and buildable).
-- [x] Extract a new `fuel-vmm` crate from `fuel-cuda-vmm`. The page-tracking
-      logic in `VirtualMemoryPool` (page state table, physical-handle map,
-      allocation/deallocation math) is already free of any CUDA-specific code —
-      CUDA calls appear at exactly three sites that map cleanly to an 8-method
-      `VmmBackend` trait. `fuel-vmm` holds the trait and the generic pool
-      structs (`VirtualMemoryPool<B>`, `SharedMemoryPool<B>`); `fuel-cuda-vmm`
-      becomes `impl VmmBackend for CudaVmmBackend` with type aliases for
-      backward compatibility. Benefits: (a) ROCm's HIP VMM API is a near-exact
-      mirror of CUDA's, so Phase 5 multi-backend support gets elastic KV cache
-      for free; (b) a CPU backend using `mmap`/`VirtualAlloc` with
-      `MAP_NORESERVE` semantics becomes implementable for the CPU tier of tiered
-      storage without duplicating pool logic; (c) `VirtualMemoryPool` is
-      monomorphized per backend so the trait abstraction is zero-cost at runtime.
-- [x] Establish a workspace-level `Cargo.toml` version matrix that defines
-      the exact dependency set that is known to compile together cleanly.
-      *The workspace `Cargo.toml` `[workspace.dependencies]` block is the
-      authoritative version matrix. The human-readable summary, known-good
-      constraints, and known-bad combinations are documented in
-      `COMPATIBILITY.md`.*
-- [x] Add CI that validates the full multi-crate build on each platform
-      (Linux/CUDA, Windows/CUDA, macOS/Metal) so version drift is caught
-      immediately. *`.github/workflows/rust-ci.yml` covers CPU builds on Linux,
-      Windows, macOS, AVX2, and ARM; `.github/workflows/ci_cuda.yaml` covers
-      CUDA 13.0 on a GPU runner.*
-- [x] Write a one-page compatibility guide documenting which crate versions
-      are tested together and why the matrix exists.
-      *Created `COMPATIBILITY.md` at workspace root.*
-
-**Success criterion**: a developer who clones this fork and runs `cargo build`
-gets a working build with all features enabled, on all supported platforms,
-without any manual patching or private fork git dependencies.
+**Why it mattered**: the Candle ecosystem fragmented across ~12 crates that
+required separately maintained forks. Phase 0 collapsed that fragmentation
+into a single coherent workspace and matrix-tested build, raising the
+contributor onboarding bar from "maintain your own multi-fork patchset"
+to "`cargo build` works."
 
 ---
 
-### Phase 1 — Documentation and clarity
+### Phase 1 — Documentation and clarity ✅ shipped
 
-*Low risk. Reversible. Highest return per unit of effort.*
+*Documentation pass across the public-API surface.*
 
-- [x] Add `# Example` doc blocks to every public API in `fuel-core`
-- [x] Add `# Example` doc blocks to every public API in `fuel-nn`
-- [x] Add `# Example` doc blocks to every public API in `fuel-datasets`
-- [x] Add `# Example` doc blocks to every public API in `fuel-onnx`
-- [x] Add a top-level decision guide (in `README.md` or a dedicated `GUIDE.md`)
-      routing users by intent: tensor math, custom layers, pretrained models,
-      inference pipelines, ONNX, custom backends
-      *Created `GUIDE.md` at workspace root.*
-- [x] Write a clear "what this crate is for / what is explicitly not here / what
-      to use next" section at the top of each crate's `lib.rs`
-- [x] Define and document anti-goals per layer explicitly — what will never
-      belong in each crate — so that future drift has a written boundary to push
-      against
-- [x] Add maturity labels (`stable` / `evolving` / `experimental` /
-      `example-only`) to major subsystems and document them
-- [x] Write canonical pattern guides (not examples — architecture guides) for:
-      - minimal tensor program
-      - minimal trainable module with autograd
-      - minimal pretrained model load and forward pass
-      - minimal inference loop with sampling
-      - minimal custom operation extension
-      *Created `PATTERNS.md` at workspace root.*
+**What it accomplished**: `# Example` doc blocks on every public API in
+`fuel-core` / `fuel-nn` / `fuel-datasets` / `fuel-onnx`; per-crate "what
+this is for / not for / use next" header in every `lib.rs`; per-layer
+anti-goals documented (see the "Anti-goals by layer" table near the
+bottom of this file); maturity labels (`stable` / `evolving` /
+`experimental` / `example-only`) on major subsystems; top-level
+[`GUIDE.md`](GUIDE.md) for intent-based routing; canonical
+[`PATTERNS.md`](PATTERNS.md) for the five minimal-program archetypes
+(tensor math, autograd module, pretrained-model load+forward,
+inference+sampling, custom op extension).
 
 ---
 
-### Phase 2 — Structural: use-case crate separation
+### Phase 2 — Structural: use-case crate separation ✅ shipped
 
-*Medium complexity. Does not change published crate names.*
+**What it accomplished**: created `fuel-inference` and `fuel-training` as
+leaf crates with the architectural property that *nothing in the Fuel
+ecosystem depends on either of them*. Both aggregate; neither defines.
 
-The goal is to give inference-specific and training-specific tooling their own
-canonical homes without changing anything below them in the dependency graph.
-Nothing in `fuel-core`, `fuel-nn`, or `fuel-transformers` will depend on
-either of these crates. They are opt-in by definition.
+`fuel-inference` owns the production-quality inference primitives
+contributed from the Lightbulb engine: prefix caching, composable eviction
+(`EvictionPolicy` + `VotingAggregator` + LRU + H2O), KV compression
+(KIVI / R-KV / Low-Rank), segmented eviction (`SpanRegistry`), tiered
+storage (GPU→CPU→Disk with position-ID preservation for RoPE re-injection),
+streaming-LLM policy, memory-aware scheduler, speculative decoding,
+chunked prefill, MoE routing, context compression, and tool-call
+infrastructure. `fuel-training` owns training-loop abstractions:
+LR schedulers (6 variants), gradient clipping (L2 + per-element),
+gradient accumulation with averaged grads, checkpointing, and a composable
+training-loop driver.
 
-**On naming and scope**
-These crates are named for what they orchestrate, not for what they are made of.
-`fuel-inference` is the right name because the crate exists to support the act
-of running inference — not because it is a generic "runtime." `fuel-training`
-exists to support the act of training. Domain-specific applications (a
-recommendation engine, a categorization pipeline) are applications composed from
-these building blocks, not parts of the framework; they belong in user code or
-separate ecosystem projects, not in this repository.
+Mechanical follow-ons that shipped alongside: `kv_cache` + `sampling`
+moved down to `fuel-core` (avoids circular deps); `fuel-inference`
+re-exports from there; `fuel-transformers::generation` decoupled from
+`fuel-nn`; `QuantizableLinear` (`Linear` × `QMatMul` behind one `Module`)
++ `LoraLinear` added to `fuel-nn` as first-class types so adapter-enabled
+and quant-mixed inference needs no external crate.
 
-**Create `fuel-inference` as a leaf crate**
+**Why it mattered**: this is the cut that lets a tensor-math user, a
+custom-model user, and an inference-pipeline user each carry only what
+they need. The "early-exit property" (see Identity above) becomes
+structurally enforceable rather than aspirational.
 
-Move into `fuel-inference`:
+For *what's in each crate today*, read the corresponding `lib.rs` header
+rather than this ROADMAP entry — the crates are the source of truth.
 
-- `fuel-nn/src/kv_cache.rs` — all cache implementations (`Cache`, `KvCache`,
-  `RotatingKvCache`, `ConcatKvCache`, `ScatteredKvCache`)
-- `fuel-nn/src/sampling.rs` — `gumbel_softmax`
-- `fuel-transformers/src/generation/mod.rs` — `LogitsProcessor`, `Sampling`,
-  all logit processing strategies
-- `fuel-transformers/src/pipelines/` — the planned (currently stub) pipeline
-  and session abstractions belong here
-- Any future: batching, streaming decode, token generation loops, speculative
-  decoding, cancellation, inference session management
+**Mixed-precision training policy** is deferred — requires `DType`
+autocast hooks in `fuel-core` that don't yet exist. Picks up when
+Phase 7.5 work items C/E (autograd + Tensor fission) make the autocast
+seam natural.
 
-**Create `fuel-training` as a leaf crate**
-
-Initially empty beyond its scaffolding. As training-orchestration code accumulates
-(whether migrated from examples or written fresh), this is where it lives:
-
-- Training loop abstractions
-- Gradient accumulation strategies
-- Learning rate schedulers
-- Gradient clipping utilities
-- Mixed precision training policy
-- Run-time checkpoint saving and resumption
-- Training session management
-
-**Key property to document explicitly on both crates:**
-> Nothing in the Fuel ecosystem depends on `fuel-inference` or
-> `fuel-training`. Both are leaf crates. They aggregate; they do not define.
-
-#### Inference capabilities to contribute from Lightbulb
-
-Lightbulb is an inference engine built on top of this Candle fork that was
-developed independently because the pieces needed to build a production-quality
-inference engine were not available or not usable in Candle as-is. Its
-implementations are now the intended source material for `fuel-inference`.
-Contributing them back avoids others having to reinvent the same work.
-
-*KV cache management* (from `lightbulb::cache`):
-
-- **Prefix caching**: Hash-based reuse of KV states for shared prompt prefixes
-  (system prompts, few-shot examples). Measured 15–50% TTFT reduction on
-  repeated prefixes. Stores (SHA256 hash → per-layer KV tensors) with LRU
-  eviction of the cache itself.
-- **Composable eviction policies**: A `EvictionPolicy` trait with a
-  `VotingAggregator` that combines multiple policies with per-policy weights.
-  Implemented policies include recency (LRU/sliding window) and H2O
-  (Heavy-Hitter Oracle: preserve tokens with highest cumulative attention
-  scores, discard the rest).
-- **KV cache compression**: Three orthogonal strategies that can be combined:
-  - *KIVI*: 2/4-bit per-channel quantization with per-head scales and optional
-    residual coding for keys. 2–4× KV memory reduction.
-  - *R-KV*: Importance-redundancy scoring that retains a configurable budget
-    fraction (e.g., 34%) of tokens ranked by attention importance minus
-    redundancy. \u22651.5× throughput on long CPU decodes.
-  - *Low-Rank*: Attention approximation at a tunable rank parameter. Trades
-    a small perplexity cost for a fixed KV memory ceiling.
-- **Segmented eviction**: Per-span tracking with a `SpanRegistry` so spans
-  (long sequences, conversation turns, document chunks) can be evicted as
-  complete units rather than by individual tokens.
-- **Tiered storage**: GPU (VRAM) → CPU (RAM) → Disk (filesystem/RocksDB).
-  Demoted segments retain position IDs for correct RoPE re-injection when
-  promoted back. Supports `<RETRIEVE:key>` token patterns for model-triggered
-  promotion.
-- **Streaming policy**: Sink-token + recent-window strategy for attention sinks
-  in very long sequences (StreamingLLM pattern).
-
-*Inference scheduling* (from `lightbulb::engine`):
-
-- **Memory-aware scheduler**: Extends slot pool with a memory budget, per-slot
-  cost tracking (base + per-token KV cost), and a priority queue
-  (Low / Normal / High / Critical). Above a configurable eviction-pressure
-  threshold, low-priority requests are queued rather than admitted.
-- **Speculative decoding**: Draft-model-generates-K, target-model-verifies
-  pattern (Leviathan et al. 2023). Full statistics tracking (acceptance rate,
-  draft/target time). Auto-fallback when acceptance rate drops below
-  configurable floor. Measured 1.3–2× latency improvement on typical workloads.
-- **Chunked prefill**: Breaks long prefill sequences into chunks to bound
-  time-to-first-token and allow interleaving with decode steps.
-- **MoE routing**: Capacity-aware token routing for Mixture-of-Experts models
-  (Mixtral, Qwen-MoE, etc.). Top-K selection with Token Drop and Expanded Drop
-  capacity overflow policies. Per-expert batch construction for parallel
-  expert execution.
-- **Context compression**: For conversations exceeding context length, compress
-  or summarize earlier turns without losing coherence.
-- **Tool call infrastructure**: Structured tool call parsing, dispatch, and
-  result injection for function-calling models.
-
+<!-- BEGIN Phase 2 detail dropped 2026-05-22 (was 290+ lines of shipped tracking).
+     See git log for the per-PR landings; see fuel-inference/src/lib.rs,
+     fuel-training/src/lib.rs, fuel-nn/src/{quantizable_linear,lora}.rs
+     for the current public surface. -->
 ---
 
-### Phase 3 — Structural: model area organization ✅ (directory reorganization complete)
+### Phase 3 — Structural: model area organization ✅ shipped
 
-*Medium complexity. `fuel-transformers` internal only. Published API surface unchanged.*
+**What it accomplished**: reorganized `fuel-transformers/src/models/` from
+a flat namespace of 100+ files into category subdirectories
+(`llm/` / `vision/` / `audio/` / `diffusion/` / `multimodal/` /
+`encoders/` / `common/` / `quantized/`). Config structs and forward passes
+stay in `models/`; KV-cache handling, decode loops, and sampling hooks live
+in `fuel-inference`. Published API surface unchanged.
 
-`fuel-transformers` is approaching the point where its flat structure creates
-genuine contributor confusion. Reorganize its internal module hierarchy before
-it grows further.
+The Lightbulb multi-GPU primitives shipped as a new `fuel-parallel`
+crate (5 modules, 58 tests): `topology` (device graph with interconnect
+metadata, fastest-peer + transfer-time queries), `comm` (object-safe
+`Communicator` trait — all-reduce / all-gather / reduce-scatter /
+broadcast / barrier), `tensor_parallel` (column + row sharding,
+`TensorShard`, `ColumnParallel` / `RowParallel<C>`), `pipeline_parallel`
+(GPipe + 1F1B schedules with bubble-ratio analysis), `distributed_cache`
+(per-rank-per-layer seq tracking + flush protocol).
 
-Proposed internal structure (not new crates — internal modules only, for now):
-
-```text
-fuel-transformers/src/
-  models/
-    llm/          LLaMA, Mistral, Falcon, Phi, Gemma, Qwen, DeepSeek, etc.
-    vision/       ViT, DINOv2, EfficientNet, ResNet, CLIP, SigLIP, etc.
-    audio/        Whisper, EnCodec, Mimi, DAC, Parler TTS, etc.
-    diffusion/    Stable Diffusion, Flux, Wuerstchen, etc.
-    multimodal/   LLaVA, Moondream, PaliGemma, Pixtral, etc.
-    encoders/     BERT, T5 encoder, Nomic BERT, etc.
-    common/       with_tracing.rs, shared attention primitives, etc.
-  quantized/      All quantized_*.rs variants consolidated here
-```
-
-Separate architecture definitions from inference glue within each model file:
-
-- Config structs and forward passes stay in `models/`
-- KV-cache handling, decode loops, and sampling hooks move to `fuel-inference`
-
-#### Model-layer capabilities to contribute from Lightbulb
-
-Lightbulb also accumulated implementations at the model/kernel layer that
-belong in `fuel-transformers` or `fuel-nn`, not in `fuel-inference`.
-
-*Fused operations* (from `lightbulb::model::fused_kernels`) — **added to `fuel-nn/src/fused_ops.rs`** ✅:
-
-- **`fused_linear_silu`**: Combines linear projection + SiLU activation in a
-  single pass, eliminating one intermediate tensor allocation. ~11% bandwidth
-  reduction in MLP forward passes.
-- **`fused_matmul_residual`**: Combines the output write of matmul with the
-  residual addition, avoiding a second memory round-trip.
-- **`fused_rmsnorm`**: Portable fallback using fuel-core tensor ops so
-  RMSNorm does not materialize a separate squared-norms tensor. Provides a
-  stable dispatch point for a future `fuel-layer-norm` CUDA kernel.
-
-*Unified quantized/float linear layer* (from `lightbulb::model`):
-
-- **`QuantizableLinear`**: An enum over `fuel_nn::Linear` (fp32/fp16/bf16
-  from safetensors) and `QMatMul` (Q4\_0, Q4\_K, Q8\_0, etc. from GGUF),
-  both implementing the `Module` trait identically. Inference code written
-  against `QuantizableLinear` works with either weight format without changes.
-  This belongs in `fuel-nn` so that every model can adopt it without
-  importing an external crate.
-
-*LoRA adapter support* (from `lightbulb::lora`):
-
-- Low-Rank Adaptation weight injection as a `Module`-compatible wrapper.
-  Currently in `fuel-examples`; should be a first-class type in
-  `fuel-nn` so adapter-enabled models don't need to re-implement it.
-
-*Multi-GPU support* (from `lightbulb::multi_gpu`):
-
-- **Tensor parallelism**: Column-wise and row-wise sharding strategies for
-  linear layers. `TensorShard` type that carries rank, world size, and
-  original shape metadata. `ShardedLinear` layer that handles all-reduce
-  after the local matmul.
-- **Pipeline parallelism**: Stage assignment and inter-stage communication
-  primitives for models too large to fit on a single device.
-- **Device topology**: Enumeration of interconnect types (NVLink, PCIe) and
-  bandwidth estimation for the DAG transfer cost model (connects to Phase 5).
-- **Distributed cache**: Cache state synchronisation protocol across GPUs for
-  paged and prefix caches.
-
-The multi-GPU work belongs in `fuel-transformers` (or a new
-`fuel-parallel` crate if it grows large enough) because it is model-topology
-infrastructure, not inference policy.
-
-#### Phase 2 work items
-
-- [x] Scaffold `fuel-inference` crate (re-exports `kv_cache`, `generation`,
-      `sampling` from their current locations for discoverability; physical code
-      migration is the next step).
-- [x] Scaffold `fuel-training` crate (empty framework; training-loop
-      abstractions will migrate here as they are written or ported).
-- [x] Update workspace `Cargo.toml` to include both crates in the `[members]`
-      list and `[workspace.dependencies]` so all crates can reference them
-      without version drift.
-- [x] Add `[x] QuantizableLinear` enum to `fuel-nn` — wraps `Linear` (float)
-      and `QMatMul` (quantized/GGUF) behind a single `Module`-compatible
-      interface. `dequantized_weight()` helper returns the weight as a plain
-      tensor regardless of storage format.
-- [x] Add `LoraLinear` type and `lora_linear` / `lora_linear_peft` /
-      `lora_linear_with_base` constructors to `fuel-nn`. LoRA adapters are
-      now a first-class type — no external crate or per-model reimplementation
-      required. `merge_weights()` bakes the adapter into a plain `Linear` for
-      zero-overhead export.
-- [x] Physically move `fuel-nn/src/kv_cache.rs` into `fuel-core` (better
-      than `fuel-inference` — avoids circular deps entirely). `fuel-nn`
-      now has a 7-line backward-compat shim (`pub use fuel::kv_cache::*`);
-      `fuel-inference` re-exports from `fuel::kv_cache::*`. All existing
-      callers are unaffected. Doctest references updated to `fuel_core::`.
-- [x] Physically move `fuel-nn/src/sampling.rs` into `fuel-core` (same
-      reasoning — `fuel-core` is at the bottom of the dep graph, no cycle
-      possible). `fuel-nn` now has a 7-line shim (`pub use fuel::sampling::*`);
-      `fuel-inference` re-exports from `fuel::sampling::*`. `fuel-inference`
-      no longer depends on `fuel-nn` at all.
-- [x] Decouple `fuel-transformers/src/generation/mod.rs` from `fuel-nn`:
-      replaced `fuel_nn::sampling::gumbel_softmax` with
-      `fuel::sampling::gumbel_softmax` (now in `fuel-core`) and replaced
-      `fuel_nn::ops::softmax_last_dim` with an inline numerically stable
-      softmax using only `fuel-core` ops (`max_keepdim`, `broadcast_sub`,
-      `exp`, `sum_keepdim`, `broadcast_div`). Generation stays in
-      `fuel-transformers` — moving it to `fuel-inference` would require
-      `fuel-transformers` to depend on `fuel-inference`, violating the
-      leaf principle. `fuel-inference` re-exports from
-      `fuel_transformers::generation` — the public API is already in the
-      right namespace for callers.
-
-**Phase 2 current status**: Scaffolding is complete. Both crates exist in the
-workspace and `cargo check` passes. `fuel-inference` is a re-export facade
-surfacing `kv_cache`, `sampling`, and `generation` from their current locations
-— no physical code migration has occurred yet. `fuel-training` is an empty
-scaffold with documentation describing what will live there. The Lightbulb
-inference and scheduling capabilities listed above remain to be contributed:
-
-- [x] Contribute prefix caching (hash-based KV reuse for shared prompt prefixes).
-      Implemented `PrefixCache` in `fuel-inference/src/prefix_cache.rs` — stores
-      per-layer `(K, V)` tensor pairs keyed by token-sequence hash with LRU eviction.
-      `lookup()`, `insert()`, `longest_prefix_match()`, `cached_seq_len()`.
-      10 unit tests, 1 doctest, 0 failures.
-- [x] Contribute composable eviction policies (`EvictionPolicy` trait,
-      `VotingAggregator`, LRU, H2O). Implemented in
-      `fuel-inference/src/eviction.rs` — `EvictionPolicy` trait with `score()`
-      method, `LruPolicy` (recency-based), `H2oPolicy` (attention-importance),
-      `VotingAggregator` (weighted combination with `select_keep()`/`select_evict()`).
-      10 unit tests, 4 doctests, 0 failures.
-- [x] Contribute KV cache compression (KIVI quantization, R-KV importance
-      scoring, low-rank approximation). Implemented in
-      `fuel-inference/src/kv_compress.rs` — `KvCompressor` trait with
-      `CompressedKv` decompress round-trip. Three strategies: `KiviCompressor`
-      (2/4-bit per-channel asymmetric quantization), `RkvCompressor`
-      (importance-redundancy scoring with budget fraction and redundancy
-      weight), `LowRankCompressor` (rank-R mean-centered projection).
-      20 unit tests, 1 doctest, 0 failures.
-- [x] Contribute segmented eviction (`SpanRegistry`, per-span tracking).
-      Implemented `SpanRegistry` in `fuel-inference/src/segmented_eviction.rs` —
-      span-level KV cache management where logical segments (system prompts,
-      turns, documents, tool outputs) are tracked and evicted as complete units.
-      `SpanKind`-based priority, pin/unpin, custom priority, FIFO tie-breaking,
-      `plan_eviction()` produces `EvictionPlan` with position ranges.
-      13 unit tests, 1 doctest, 0 failures.
-- [x] Contribute tiered storage (GPU → CPU → Disk demotion/promotion).
-      Implemented `TieredStore` in `fuel-inference/src/tiered_storage.rs` —
-      GPU/CPU/Disk tiers with byte-budget tracking, `demote()`/`promote()`
-      returning `TierTransfer` descriptors, position range preservation for
-      RoPE re-injection, access-count-based demotion candidate selection,
-      `touch()`, unbounded disk tier. 17 unit tests, 1 doctest, 0 failures.
-- [x] Contribute streaming policy (StreamingLLM sink-token + recent-window).
-      Implemented `StreamingPolicy` in `fuel-inference/src/streaming.rs` —
-      sink-token + recent-window strategy (Xiao et al., ICLR 2024).
-      `select_keep()`, `select_evict()`, `position_ids()` for RoPE correction,
-      `needs_eviction()`. 12 unit tests, 1 doctest, 0 failures.
-- [x] Contribute memory-aware scheduler (budget tracking, priority queue,
-      eviction-pressure admission control). Implemented `MemoryScheduler` in
-      `fuel-inference/src/scheduler.rs` — byte-budget tracking, 4-level
-      `Priority` (Low/Normal/High/Critical), pressure-threshold gating,
-      `try_admit()`/`release()`/`drain_queue()`/`update_usage()`.
-      11 unit tests, 1 doctest, 0 failures.
-- [x] Contribute speculative decoding (draft/verify pattern, auto-fallback).
-      Implemented in `fuel-inference/src/speculative.rs` —
-      `verify_draft()` implements the core accept/reject algorithm comparing
-      draft vs target log-probabilities. `SpeculativeConfig` (draft_len,
-      acceptance thresholds), `SpeculativeStats` (rolling acceptance rate,
-      auto-fallback detection). Deterministic `pseudo_uniform()` for
-      reproducible verification. 9 unit tests, 0 failures.
-- [x] Contribute chunked prefill (bounded TTFT, decode interleaving).
-      Implemented `ChunkedPrefill` in `fuel-inference/src/chunked_prefill.rs` —
-      splits long prompts into bounded-size chunks with `PrefillChunk` yielding
-      tokens, `index_pos`, and `is_last` flag. Supports reset, progress
-      tracking, and arbitrary chunk sizes. 11 unit tests, 1 doctest, 0 failures.
-- [x] Contribute MoE routing (capacity-aware top-K, Token Drop / Expanded Drop).
-      Implemented `MoeRouter` in `fuel-inference/src/moe_routing.rs` —
-      top-K softmax gating, `OverflowPolicy` (TokenDrop/NoDrop), per-expert
-      capacity control, `ExpertBatch` construction, expert load distribution.
-      11 unit tests, 1 doctest, 0 failures.
-- [x] Contribute context compression (conversation summarization for long contexts).
-      Implemented `ContextCompressor` in `fuel-inference/src/context_compress.rs` —
-      turn-level token budgeting with `Role` (System/User/Assistant/Tool),
-      recency × importance scoring, `plan_compression()` selecting lowest-scored
-      turns, `mark_compressed()` for caller-driven summarisation, pinned turns,
-      compressed fraction tracking. 12 unit tests, 1 doctest, 0 failures.
-- [x] Contribute tool call infrastructure (structured parsing, dispatch, result injection).
-      Implemented in `fuel-inference/src/tool_call.rs` — `ToolRegistry` with
-      `ToolDef`/`ParamDef` schema, `ToolCall` parsing/validation (required
-      params, unknown params, JSON check), `ToolResult` with
-      `format_for_injection()`, `extract_tool_calls()` heuristic JSON extractor,
-      `system_prompt()` generation. 20 unit tests, 1 doctest, 0 failures.
-- [x] Populate `fuel-training` with training loop abstractions, gradient
-      accumulation, LR schedulers, gradient clipping, checkpoint save/resume.
-      Implemented 5 modules: `lr_scheduler` (6 schedulers: constant, step decay,
-      cosine annealing, linear warmup, cosine-with-warmup, sequential
-      composition), `grad_clip` (L2 norm and per-element value clipping),
-      `grad_accum` (multi-step accumulation with averaged gradients),
-      `checkpoint` (save/load with epoch, step, and named metrics metadata),
-      `training_loop` (composable driver wiring clipping + scheduling + logging).
-      31 tests (17 unit + 14 doctest), 0 failures. Mixed-precision policy is
-      deferred — it requires `DType` autocast hooks in `fuel-core` that do
-      not yet exist.
-
-#### Phase 3 work items
-
-- [x] Create category subdirectory structure in `fuel-transformers/src/models/`
-      (`llm/`, `vision/`, `audio/`, `diffusion/`, `multimodal/`, `encoders/`,
-      `common/`, `quantized/`)
-- [x] Move LLM models (LLaMA, Mistral, Falcon, Phi, Gemma, Qwen, DeepSeek,
-      etc.) into `models/llm/`
-- [x] Move vision models (ViT, DINOv2, EfficientNet, ResNet, CLIP, SigLIP,
-      etc.) into `models/vision/`
-- [x] Move audio models (Whisper, EnCodec, Mimi, DAC, Parler TTS, etc.) into
-      `models/audio/`
-- [x] Move diffusion models (Stable Diffusion, Flux, Wuerstchen, etc.) into
-      `models/diffusion/`
-- [x] Move multimodal models (LLaVA, Moondream, PaliGemma, Pixtral, etc.)
-      into `models/multimodal/`
-- [x] Move encoder-only models (BERT, T5 encoder, Nomic BERT, etc.) into
-      `models/encoders/`
-- [x] Consolidate quantized model variants into `quantized/` subdirectory
-- [x] Contribute Lightbulb multi-GPU support (tensor parallelism, pipeline
-      parallelism, device topology, distributed cache) to a new
-      `fuel-parallel` crate. Implemented 5 modules with 58 tests:
-      - `topology.rs`: `DeviceTopology` graph with `DeviceInfo`, `DeviceKind`,
-        `Interconnect` enum (NvLink/PCIe/InfinityFabric/SharedMemory/Network),
-        `Link` with bandwidth/latency, `fastest_peer()`, `transfer_time_us()`.
-        11 unit tests, 1 doctest.
-      - `comm.rs`: `Communicator` trait (object-safe, Send) with `all_reduce`,
-        `all_gather`, `reduce_scatter`, `broadcast`, `barrier`.
-        `IdentityComm` single-process mock for testing. `ReduceOp`,
-        `CommInfo`. 8 unit tests, 2 doctests.
-      - `tensor_parallel.rs`: `TensorShard` metadata, `TensorParallelConfig`
-        with `shard_range()`/`make_shard()`, `ColumnParallel` (no comm),
-        `RowParallel<C: Communicator>` (all-reduce after local matmul),
-        `LayerParallelPlan`. 9 unit tests, 1 doctest.
-      - `pipeline_parallel.rs`: GPipe and 1F1B schedules, `PipelineConfig`,
-        `Schedule` with `bubble_ratio()`, `StageAssignment::uniform()` for
-        layer-to-stage mapping. 13 unit tests, 1 doctest.
-      - `distributed_cache.rs`: `CacheShardInfo` (layer-to-rank assignment),
-        `CacheSyncProtocol` (track per-rank-per-layer seq positions, prefix
-        confirmation, flush protocol), `CacheRoutingHint`. 11 unit tests,
-        1 doctest.
-
+<!-- BEGIN Phase 3 detail dropped 2026-05-22 (was 230+ lines of shipped tracking).
+     See fuel-transformers/src/models/ for the directory layout; see
+     fuel-parallel/src/lib.rs for the multi-GPU primitives. -->
 ---
 
-### Phase 4 — Ergonomics
+### Phase 4 — Ergonomics ✅ shipped
 
-*Ongoing. Parallel with other phases. Highest impact on adoption.*
+**What it accomplished**: per-layer shape-context error wrapping
+(`Linear`, `Conv{1,2}d`, `LayerNorm`, `RmsNorm`, `Embedding`, `BatchNorm`,
+`GroupNorm`, `LSTM`, `GRU`, `ConvTranspose{1,2}d`) so errors carry
+operation + shapes + expectations inline rather than requiring source
+reads. `TrainingContext` (in `fuel-nn`) bundles
+`Var`/`VarBuilder`/`VarMap`/optimizer behind `cpu_f32()` / `cpu_bf16()`
+shorthands. Fluent builder methods (`.with_lr()`, `.with_stride()`,
+`.no_bias()`, ...) on `ParamsAdamW`, `Conv1dConfig`, `Conv2dConfig`,
+`LayerNormConfig`, `BatchNormConfig`. Naming-audit aliases for
+the most-searched-for APIs (`transpose_last_two` → `t`, `matvec` →
+`mv`, `scale_and_shift` → `affine`, `negative_log_likelihood` →
+`nll`, `AdamWConfig` → `ParamsAdamW`).
 
-**Error messages with shape context**
-Fuel's error types already carry shape information in many cases. The goal is
-to ensure this information surfaces consistently in a form that immediately
-identifies the operation, the shapes involved, and what was expected. An error
-that reads "expected `(batch, seq, 768)`, got `(batch, seq, 512)` in layer
-`output_proj`" eliminates a class of debugging that currently requires reading
-source code.
+`cargo doc` warnings: zero across `fuel-core` / `fuel-nn` /
+`fuel-transformers` (was 67 combined). `cargo test --doc`: 1804 / 1804
+passing across the workspace (was 167 failures in fuel-transformers
+alone before the seven-root-cause sweep).
 
-Shape-context `.with_context()` wrapping status in `fuel-nn`:
-
-- [x] `Linear` — format includes in/out features and input shape
-- [x] `Conv1d` — format includes in/out channels, kernel size, input shape
-- [x] `Conv2d` — format includes in/out channels, kernel size, input shape
-- [x] `LayerNorm` — format includes norm size and input shape
-- [x] `RmsNorm` — shares `LayerNorm` implementation, inherits context
-- [x] `Embedding` — format includes vocab size, hidden dim, indices shape
-- [x] `BatchNorm` — format includes num_features and input shape
-- [x] `GroupNorm` — format includes groups, channels, and input shape
-- [x] `LSTM` — format includes in/hidden dimensions and input shape
-- [x] `GRU` — format includes in/hidden dimensions and input shape
-- [x] `ConvTranspose1d` — format includes in/out channels, kernel size, input shape
-- [x] `ConvTranspose2d` — format includes in/out channels, kernel size, input shape
-
-**Initialization convenience path** ✅
-Currently getting a trainable model running requires understanding `Var`,
-`VarBuilder`, `VarMap`, and their relationships before anything produces output.
-`TrainingContext` (added to `fuel-nn`) bundles all four into a single struct
-with `cpu_f32()` / `cpu_bf16()` shorthands, `vb()` / `vb_pp()` for building,
-`vars()` for the optimizer, and `varmap()` for checkpointing.
-
-**Builder pattern for complex configuration** ✅
-Fluent builder methods (`.with_lr()`, `.with_stride()`, `.no_bias()`, etc.) added to:
-
-- `ParamsAdamW` — `with_lr`, `with_beta1`, `with_beta2`, `with_eps`, `with_weight_decay`
-- `Conv1dConfig` — `with_padding`, `with_stride`, `with_dilation`, `with_groups`
-- `Conv2dConfig` — `with_padding`, `with_stride`, `with_dilation`, `with_groups`
-- `LayerNormConfig` — `with_eps`, `no_mean_removal`, `no_bias`
-- `BatchNormConfig` — `with_eps`, `no_mean_removal`, `no_affine`, `with_momentum`
-
-- [x] **Function and parameter naming audit**: Comprehensive audit of all public
-      API names across `fuel-core` and `fuel-nn`. Added non-breaking
-      descriptive aliases for the most confusing APIs:
-  - `Tensor::transpose_last_two()` → alias for `t()`
-  - `Tensor::matvec()` → alias for `mv()`
-  - `Tensor::scale_and_shift(scale, shift)` → alias for `affine(mul, add)`
-  - `loss::negative_log_likelihood()` → alias for `nll()`
-  - `AdamWConfig` type alias → for `ParamsAdamW` (matches `LayerNormConfig` convention)
-  - `VarBuilder::push_prefix()` already existed as canonical (no change needed)
-  - All aliases include full doc comments with runnable examples.
-
-**IDE-first documentation standard**
-All public items should have documentation that is useful when seen only as a
-tooltip in a developer's editor: one-line summary, parameter semantics, common
-failure modes, and a runnable example. Phase 1 begins this work; Phase 4
-completes it by raising quality beyond the minimum bar.
-
-- [x] **`cargo doc` warning elimination**: Fixed all rustdoc warnings across
-      `fuel-core` (13 warnings: unresolved cross-crate links, bare URLs),
-      `fuel-nn` (15 warnings: unresolved links, empty code blocks, ambiguous
-      paths), and `fuel-transformers` (39 warnings: 16 double-semicolons `;;`
-      in real code, 5 `[CLS]`/`[GH]`/`[CSM]` bracket-token links, 3 private
-      item links, 14 bare URLs). Zero warnings now emitted by any of the three
-      packages (the 6 remaining `fuel-core` "unused doc comment" warnings are
-      upstream macro-generated items not fixable without changing the macro).
-
-- [x] **`cargo test --doc` full compliance**: Fixed all 167 fuel-transformers
-      doctest failures (887 now pass, 0 fail). Seven root causes addressed:
-      (1) `fuel_core` → `fuel` import fix across 49 files (130 failures);
-      (2) `unimplemented!()` examples changed to `no_run` in 11 files (17 failures);
-      (3) pub(crate) field assertions removed from mixtral/stable_lm doctests (4);
-      (4) `pub use` added for `VarBuilder` in quantized_rwkv_v5/v6 (4);
-      (5) quantized VarBuilder imports corrected in 4 quantized model files (5);
-      (6) `from_gguf()` argument counts fixed in quantized_glm4/phi3 doctests (4);
-      (7) `pub use` for `Cache`/`Config` and `VisionModel` import in
-      quantized_llama2_c/blip (3). Full workspace: 1804 passed, 0 failed.
+<!-- BEGIN Phase 4 detail dropped 2026-05-22 (was 75+ lines of shipped tracking).
+     The per-layer shape-context wrappings + builder methods + alias names
+     are documented in the corresponding crate's API docs. -->
 
 ---
 
@@ -1994,15 +1625,13 @@ B's factory migration plugs into.
       after G + B3.
       *Shipped 2026-05-02 (commit a8e192ff). 3 unit tests verify
       today-identity contract; full fuel-core test suite green.*
-- [ ] **B2.** Factories (`zeros`, `ones`, `from_slice`, `from_vec`,
+- [x] **B2.** Factories (`zeros`, `ones`, `from_slice`, `from_vec`,
       `from_iter`, `arange`, `arange_step`, `eye`, `full`, `rand`,
       `randn`, `meshgrid`) produce graph-rooted Tensors backed by
       `Op::Const` nodes whose Storage lives in the graph's
-      storage map. **Substrate ready post-G2:** `fuel_graph::Tensor`
-      factories already slot-populate, and `fuel_core::Tensor::from_link`
-      is in place. B2 is the fuel-core eager `Tensor::zeros` /
-      `::ones` / `::from_slice` / etc. migration to construct via
-      `from_link` instead of `from_storage` (legacy eager mode).
+      storage map. *Shipped per `project_phase_7_5_work_item_b2_complete.md`:
+      fuel-core eager `Tensor` factories produce node-handle tensors;
+      8 view ops bridged through `realized_storage()`.*
 - [ ] **B3.** Migrate every `Tensor::*` op method to build a graph
       node instead of calling `Storage::*` directly. One op family
       per commit (unary, binary, binary-scalar, cmp, reduce,
@@ -2454,16 +2083,16 @@ These decisions live in the architecture set; this phase implements them.
 
 #### Sub-tasks (revised against architecture v1.0)
 
-- [ ] **Step 1: registry skeleton.** Add `FusedOpId`, `FusedOpEntry`, `FusedOpParams`, `FusedOpRegistry` types in fuel-graph (metadata) + `BackendImpl`, `PrecisionGuarantee` in fuel-storage. No callers yet. Tree compiles green.
-- [ ] **Step 2: extend `Op` enum with `Op::Fused(FusedOpId, FusedOpParams)` arm.** Existing fused-op variants (SoftmaxLastDim, etc.) coexist with the new arm during migration. Update `op_short_name`, `op_key` to handle the new arm.
-- [ ] **Step 3: migrate first fused op (SoftmaxLastDim) end-to-end.** Create registry entry; teach executor's eval_node to dispatch through registry on `Op::Fused`; update `Tensor::softmax_last_dim()` to emit `Op::Fused(SOFTMAX_ID, ...)` instead of the `Op::SoftmaxLastDim` variant; auto-generate lowering+fusion rules from the registry entry; delete PR 3's hand-written `SoftmaxLastDimLowerRule` and `SoftmaxLastDimFuseRule`. Tree compiles green; live CUDA equivalence test (`cuda_executor_matches_cpu_on_softmax_via_lowering`) still passes.
-- [ ] **Step 4: migrate remaining 12 fused ops.** RmsNormLastDim, LayerNormLastDim, Rope, FusedLinear, Conv2D, ConvTranspose2D, FlashAttn, PagedAttn, QMatMul, plus the 4 backward-helper fused ops. Each is its own commit; ~half-day per op; ~6 days total.
-- [ ] **Step 5: drop the per-fused-op `Op` variants.** Once nothing emits `Op::SoftmaxLastDim` etc., remove them from the enum. Mechanical: update `op_short_name`, `op_key`, autograd's match arms.
-- [ ] **Step 6: backend registrations adopt `BackendImpl` shape.** fuel-storage's `register_*_kernels` functions extend to "for each FusedOpEntry, attach a `BackendImpl` containing kernel + cost estimate + `PrecisionGuarantee`." Macro hides boilerplate (`register_fused!(softmax_last_dim, cuda, f32, my_kernel, precision)`).
+- [x] **Step 1: registry skeleton.** *Shipped per [`project_phase_7_6_step_3_shipped.md`](MEMORY.md). `FusedOpId`, `FusedOpEntry`, `FusedOpParams`, `FusedOpRegistry` in fuel-graph; `BackendImpl`, `PrecisionGuarantee` in fuel-storage. See [`docs/fused-op-registry.md`](docs/fused-op-registry.md) v3 for the crate-split detail.*
+- [x] **Step 2: extend `Op` enum with `Op::Fused(FusedOpId, FusedOpParams)` arm.** *Shipped (same memory). Coexists with legacy fused-op variants during migration; `op_short_name`/`op_key` handle the new arm.*
+- [x] **Step 3: migrate first fused op (SoftmaxLastDim) end-to-end.** *Shipped (same memory). Auto-generated `LoweringRule` + `FusionRule` from the registry entry; PR 3's hand-written rules retired; live CUDA equivalence test green.*
+- [~] **Step 4: migrate remaining 12 fused ops.** *Partial: FusedLinear shipped via [`project_phase_7_6_fused_linear_and_step_6_shipped.md`](MEMORY.md). RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, FlashAttn, PagedAttn, QMatMul, plus the 4 backward-helper fused ops remain. Each is its own commit; ~half-day per op.*
+- [ ] **Step 5: drop the per-fused-op `Op` variants.** Once nothing emits `Op::SoftmaxLastDim` etc., remove them from the enum. Mechanical: update `op_short_name`, `op_key`, autograd's match arms. Gated on Step 4.
+- [x] **Step 6: backend registrations adopt `BackendImpl` shape.** *Shipped per [`project_phase_7_6_fused_linear_and_step_6_shipped.md`](MEMORY.md). `register_fused!` macro + `default_kernel_registry` populate `FusedOpEntry` → `BackendImpl` mapping; 4 CPU `FusedLinear` impls registered.*
 - [ ] **Step 7: populate `PrecisionGuarantee` per registered kernel.** Bit_stable kernels (the always-built backend's coverage commitment) get the `bit_stable_on_same_hardware: true` flag; others declare what they can characterize. Per [05-backend-contract §Per-kernel precision guarantees](docs/architecture/05-backend-contract.md#per-kernel-precision-guarantees).
 - [ ] **Step 8: populate cost estimates.** Each `BackendImpl`'s `cost` function gets a real implementation per backend. Initial: FLOP-counting + bandwidth model. Static-only for v1; community-aggregated empirical refinement (per [04-optimization §Cost model](docs/architecture/04-optimization.md#cost-model-static-annotations-refined-by-empirical-judge-data-accounting-for-parallelism)) follows when telemetry pipeline lands.
-- [ ] **Step 9: binding-table planning-time refactor.** Migrate per-kernel binding-table lookup off the executor's hot path; pre-resolve `KernelRef` at decision-point pick time. Resolves audit Q-A; foundation for [11-persistence §Re-resolution on use](docs/architecture/11-persistence.md#re-resolution-on-use-lazy-not-at-load) (lazy resolution + mmap'd cache; the cache work itself is downstream).
-- [ ] **Step 10: comparison family** (Equal/NotEqual/Less/LessEqual/Greater/GreaterEqual) added to `Op` as primitive variants. Bit-exact equality on floats; non-differentiable backward (panic stub, ArgMaxDim precedent). Lands here because primitive-set completion belongs with this architectural cleanup.
+- [~] **Step 9: binding-table planning-time refactor.** *Steps 9a + 9b Track A shipped per [`project_phase_7_6_step_4_in_progress.md`](MEMORY.md). 9a: `KernelBindingTable` multi-impl alternatives per `(OpKind, dtypes, BackendId)` (commit `b9828f13`). 9b Track A: `NodeKernelBinding` + `compile_plan` + `resolve_kernel` + `TolerancePolicy` (commits `d60febc7`, `1251bb73`, `5b9f7ca3`, `700bb948`). Step 9c (typed-storage executor migration → see [Phase 7.6 step 9c](#phase-76-step-9c--typed-storage-retirement) below) is the next gate.*
+- [ ] **Step 10: comparison family** (Equal/NotEqual/Less/LessEqual/Greater/GreaterEqual) added to `Op` as primitive variants. Bit-exact equality on floats; non-differentiable backward (panic stub, ArgMaxDim precedent). Lands here because primitive-set completion belongs with this architectural cleanup. **Note**: also tracked in the [`fill-op-primitive-set.md`](docs/session-prompts/fill-op-primitive-set.md) session prompt which audits the broader missing-primitive surface.
 
 #### Success criteria
 
@@ -2485,6 +2114,45 @@ The architecture's pre-resolved KernelRef commitment (step 9) is a meaningful re
 Cost estimates registered with `BackendImpl`s are advisory; the cost-aware scheduler that consumes them is downstream. Initial cost models can be coarse; the community-aggregated empirical refinement framework (per [11-persistence §Cache generation and distribution](docs/architecture/11-persistence.md#cache-generation-and-distribution)) tightens them over time.
 
 This phase should not run concurrently with Phase 8 (FlashAttention) or Phase 8.5 (sparsity); both add new fused ops mid-flight that would have to absorb the registry refactor. Phase 7.5 work items B/C/E (Tensor/autograd/fission refactor) are orthogonal — they can run before, after, or in parallel.
+
+#### Phase 7.6 step 9c — typed-storage retirement
+
+*Audit + multi-session plan to swap the legacy `GraphExecutor<B>` (typed-storage shape) for `PipelinedExecutor` (dispatch-erased shape) across all callers.*
+
+**Full audit**: [`project_phase_7_6_step_9c_parity_audit.md`](.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_phase_7_6_step_9c_parity_audit.md) (memory). 242 call sites across 34 files; ~12 PipelinedExecutor feature gaps; estimated 6-8 sessions / 30-50 commits.
+
+**Status (2026-05-22)**:
+
+- ✅ Phase A — multi-target realize (`realize_many` shipped 2026-05-19 in commit `c5ed169a`).
+- ✅ Phase B — side-effect roots + destructive-input cleanup (shipped 2026-05-19 in commits `db89a283` + `f9ad93d0`).
+- ✅ Phase C — CPU fallback shape decided: fail-fast (binding-table `lookup` returns `None` → typed error). Documented 2026-05-19.
+- ✅ Phase D — optimization + rule-registry plumb-through: caller composes. Documented 2026-05-19.
+- ✅ Phase E.1 + E.2 — fuel-core `pipelined_bridge` module shipped 2026-05-19 in commit `32d712f7`. `Tensor::realize_f32` migrated for CPU + CUDA; CUDA executor gained output allocation, auto-contiguize, layout-vs-storage-bytes mismatch handling.
+- ✅ Phase E.3.0 — `InferenceContext` + `KvCache` primitives shipped 2026-05-20 in commit `a405e7c0`.
+- ✅ Vulkan runtime `Device` wiring shipped 2026-05-22 (this session): `VulkanBackendDevice` + bridge module + parity test against CPU through `forward_with_kv_context`.
+- ⏳ Phase E.3 remainder: pre-allocated buffers + `Op::WriteSlice` (E.3.2), `forward_with_cache_on` migration (E.3.3), `generate_*` + spec decoding (E.3.4).
+- ⏳ Phase E.4: train.rs + factories.rs migration.
+- ⏳ Phase F: backend-crate cleanup (remove `GraphExecutor::new` from backend crates' tests + examples).
+- ⏳ Phase G: `fuel-graph-router` migration. `GraphBackend` retain-vs-retire decision.
+- ⏳ Phase H: retire `fuel-graph-executor` crate (or keep as thin shim for Judge profiling).
+
+#### Bridge-retirement trajectory post-9c
+
+The Vulkan Device-wiring shipped this session uses a bridge pattern: `VulkanBackendDevice` wraps `Arc<VulkanBackend>` and implements `DynBackendDevice`, but the storage-returning `*_dyn` methods stub to errors because Vulkan storage lives on the byte-shape `VulkanStorageBytes` substrate, not on `DynBackendStorage`. The bridge is mirror-shaped across CUDA + CPU + Vulkan and follows the established pattern, but is not the architecture v1.0 destination.
+
+The destination per [01-identity](docs/architecture/01-identity.md) + [05-backend-contract](docs/architecture/05-backend-contract.md) is: `Device` is a thin tag, storage allocation + transfer happen via graph-level `Op::Alloc` + `Op::Copy` primitives that the optimizer plans and the executor dispatches through the binding-table, and `DynBackendStorage` retires entirely.
+
+Path from bridge to destination (each phase ~1 session, in dependency order):
+
+1. **D2H through `Op::Copy`**. `Op::Copy` already exists ([`project_fused_op_move_pr4.md`](.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_fused_op_move_pr4.md)). Register `copy_to_cpu` kernels per backend; `realize_one_as<T>` inserts `Op::Copy { target: Cpu }` at the realize root if target is non-CPU. **Deletes**: the per-variant match in `BackendStorage::read_to_cpu_bytes` (including the Vulkan branch I wrote this session).
+2. **H2D + zero-alloc through `Op::Alloc` + `Op::Copy`**. Add `Op::Alloc { shape, dtype, device }` + `Op::ZeroFill` as primitives. Each backend registers `alloc` + `zero_fill` kernels. `KvCache::with_capacity` + `pipelined_bridge::build_const_cache_from_graph` emit these instead of calling backend-typed allocators directly. **Deletes**: `alloc_zeroed_on` + `upload_host_buffer` (and their per-`DeviceLocation` match arms across CUDA, Vulkan, CPU).
+3. **`*_dyn` storage methods removed from `DynBackendDevice` trait** once nothing calls them from byte-storage callers. Trait shrinks to advertisement-only (`location_dyn`, `same_device_dyn`, `synchronize_dyn`, `set_seed_dyn`, `get_current_seed_dyn`, `as_any`, `supports_bf16`, `as_quantized_kernels`). Gated on the typed-storage retirement (audit Phases F + H) being complete. **Deletes**: ~6 stub error-bodies per backend's `DynBackendDevice` impl, including the stubs in `VulkanBackendDevice`.
+4. **Trait renamed** (`DynBackendDevice` → `BackendAdvertise` or merge into [`BackendCapabilityProvider`](docs/architecture/05-backend-contract.md#static-capability-advertisement-registered-at-startup)). Doc-only.
+5. **`Device` becomes a tag, backend handles move to a registry**. `Device { backend_id, location }` is a pure value type. Backend handles live in a process-wide registry consulted by `Device::synchronize` / `Device::set_seed`. **Deletes**: `From<VulkanBackend> for Device` + `as_device(&Device) -> Arc<VulkanBackend>` helper in `fuel-core/src/vulkan_backend.rs`; matching CUDA/CPU/Metal equivalents; the `VulkanBackendDevice` newtype itself. *The bridge built this session is gone at this point.*
+6. **`DynBackendStorage` trait retired entirely** once all callers migrate to byte-storage. Significant cleanup in `fuel-cpu-backend/src/dyn_impl.rs` (1365 LOC), `fuel-cuda-backend/src/dyn_impl.rs` (587 LOC), `fuel-metal-backend/src/dyn_impl.rs` (503 LOC).
+7. **Router migration** (audit Phase G). `fuel-graph-router` consumes `BackendCapabilities` from the registry; no `Arc<dyn DynBackendDevice>` dependency.
+
+**Architecture-alignment check**: every step makes [01-identity](docs/architecture/01-identity.md#how-this-identity-is-enforced) more true (decisions move to the DAG-level optimizer; cost data flows through binding-table). No step requires revisiting an architecture v1.0 commitment — this is implementation catch-up to the architecture, which is the expected shape since the architecture was drafted ahead.
 
 ---
 

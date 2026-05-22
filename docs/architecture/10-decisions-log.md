@@ -166,6 +166,33 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-05-22 — Planning-surface reconcile pass + bridge-retirement trajectory recorded
+
+**Sections affected**: none (architecture set unchanged). ROADMAP + session-prompts + memory cross-references updated.
+**Phase / PR**: organizational cleanup — no code.
+**Bumped to**: no section version bumps. This is a *cross-reference* decision, not an architecture-set change.
+
+**What changed**: a "Current frontier" stanza, a "Recently shipped (last 30 days)" pointer, and a "Next 1-3 sessions" priority list were added to the top of `ROADMAP.md`. Phase 7.5 work item B2, Phase 7.6 steps 1-3 + 6 + partial-9, were updated from `[ ]` to `[x]` / `[~]` to reflect the shipped/in-progress states already recorded in memory. A new Phase 7.6 step 9c subsection captures the typed-storage-retirement audit summary and adds a bridge-retirement-trajectory subsection that maps the path from this session's `VulkanBackendDevice` bridge to the architecture v1.0 destination (graph-level `Op::Copy` / `Op::Alloc`, dispatch-erased `Device` tag, retired `DynBackendStorage` trait). 10 session prompts whose work has shipped were moved to `docs/session-prompts/shipped/` with a README explaining the archive policy; 3 active prompts remain in the top-level directory (`baracuda-cutlass-alpha-13-integration.md`, `fill-op-primitive-set.md`, `onemkl-v0-2-followups.md`).
+
+**Why**: through May 2026 the planning surfaces drifted apart. ROADMAP entries for Phase 7.5 / 7.6 were drafted before the architecture set existed; many sub-tasks completed and were tracked in memory rather than reflected back into ROADMAP. Multiple "Phase" numbering schemes nested (ROADMAP Phase 7.6 / audit Phase E.3 / bridge-retirement Phase 2-7) made the "you are here" arrow invisible — an LLM session had to reconstruct current state from ~3 audit memos + the in-flight memo every time. The user surfaced the drift; the answer was *use the existing planning surfaces better* rather than create a new central plan (per the [02-layers](02-layers.md#stopping-rule-for-new-crates) stopping rule applied to planning artifacts).
+
+**Alternatives considered**:
+
+- *Create a new top-level "master plan" doc.* Rejected — duplicates ROADMAP's role and violates the stopping rule.
+- *Defer the reconcile until Phase 7.6 ships.* Rejected — the drift is actively costing context-reconstruction time per session; the reconcile is cheap and pays back immediately.
+- *Delete shipped session prompts rather than archive.* Rejected — historical record of *why* a session was framed a certain way is useful when revisiting decisions.
+
+**Implications going forward**:
+
+- The "Current frontier" stanza is the new "you are here" surface; update at session end. One-line maintenance per session.
+- Each shipped session prompt's archive in `shipped/` documents its corresponding `project_*_shipped.md` memory entry; cross-referencing is by filename / phase number.
+- Bridge-retirement trajectory under Phase 7.6 step 9c is now the authoritative map of what code dies when. Future sessions touching the typed-storage / `Device` / `DynBackendDevice` surface should consult that section before writing new bridge-shaped code.
+- The four [01-identity enforcement-check questions](01-identity.md#how-this-identity-is-enforced) become the per-session architecture-alignment gate: every active workstream should be runnable through them at session start, with the result recorded in the session prompt.
+
+**Related artifacts**: this session's `ROADMAP.md` edits; `docs/session-prompts/shipped/README.md`; memory entries `project_phase_7_6_step_9c_parity_audit.md` (updated this session) and `project_vulkan_v3_fanout_shipped.md` (updated this session) for the Vulkan Device-wiring follow-ups.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
