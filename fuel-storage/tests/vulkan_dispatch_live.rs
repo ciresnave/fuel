@@ -908,10 +908,12 @@ fn vulkan_dispatch_unary_exp_f64() {
     ];
     let got = run_unary_f64(&backend, OpKind::ExpElementwise, &host);
     let expected: Vec<f64> = host.iter().map(|x| x.exp()).collect();
-    // 1 ULP at f64 ≈ 2.22e-16. Practical limit for 14-term Horner
-    // without hardware FMA on doubles is ~5-10 ULP per evaluation;
-    // the 2^k scaling at |k| up to 1010 for exp(700) adds another
-    // ~3 ULP. Total budget ~50 ULP. Tolerance 5e-14 leaves headroom.
+    // fdlibm-style rational reconstruction. Aiming for 1 ULP would
+    // require double-double Horner; without that, accumulation
+    // through 5 polynomial steps + division + 2^k scaling gives
+    // up to ~75 ULP in the worst case (exp(500), 2^721 scaling).
+    // Tolerance 5e-14 (~250 ULP relative) — still 100× tighter
+    // than the original 5e-12 target.
     let worst = check_f64("exp f64", &got, &expected, 5e-14);
     eprintln!("exp f64: worst rel err = {worst:e}");
 }
@@ -959,15 +961,19 @@ fn vulkan_dispatch_unary_sin_f64() {
     let worst_mod = check_f64("sin f64 (|x| <= 1000)", &got, &expected, 5e-13);
     eprintln!("sin f64 (|x| <= 1000): worst rel err = {worst_mod:e}");
 
-    // Large |x|: 2-term Cody-Waite scales unfavorably. Error grows
-    // as ~k * ULP(2π) for k = round(x/2π). For |x|=1e5, k ≈ 16000,
-    // so absolute error ~1e-12 → rel err depends on |sin(x)|.
-    // Full Payne-Hanek would tighten this.
-    let large = vec![10000.0, 100000.0, -10000.0];
+    // Large |x|: three-term Cody-Waite works while `k * TWO_PI_1`
+    // remains exact, which requires k_bits + TWO_PI_1_mantissa_bits
+    // ≤ 53. TWO_PI_1 has 33 mantissa bits → k must fit in 20 bits →
+    // |x| must stay below ~2^20 * 2π ≈ 6.6e6. Beyond that the very
+    // first reduction product overflows mantissa precision and the
+    // remaining terms can't recover the lost bits. Full Payne-Hanek
+    // (multi-word table of 2/π + integer multiplication) is needed
+    // to extend further — queued as separate follow-up task.
+    let large = vec![1e5, 5e5, 1e6, 5e6, -1e6];
     let got = run_unary_f64(&backend, OpKind::SinElementwise, &large);
     let expected: Vec<f64> = large.iter().map(|x| x.sin()).collect();
-    let worst_lg = check_f64("sin f64 (|x| <= 1e5)", &got, &expected, 1e-9);
-    eprintln!("sin f64 (|x| <= 1e5): worst rel err = {worst_lg:e}");
+    let worst_lg = check_f64("sin f64 (|x| <= 5e6)", &got, &expected, 5e-10);
+    eprintln!("sin f64 (|x| <= 5e6): worst rel err = {worst_lg:e}");
 }
 
 #[test]
