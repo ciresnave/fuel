@@ -5,12 +5,14 @@
 //! backend for fuel's generic `GraphExecutor<B>`.
 
 pub mod byte_storage;
+pub mod dyn_impl;
 pub mod pipelines;
 pub mod probe;
 mod recorder;
 pub mod residency;
 
 pub use byte_storage::VulkanStorageBytes;
+pub use dyn_impl::VulkanBackendDevice;
 
 use fuel_core_types::{DType, Layout, Shape};
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
@@ -197,6 +199,12 @@ pub struct VulkanBackend {
     pub queue_family: u32,
     pub pipelines: Pipelines,
     pub device_name: String,
+    /// Index of the picked physical device in the loader's
+    /// `enumerate_physical_devices()` ordering. Surfaced through
+    /// [`fuel_core_types::DeviceLocation::Vulkan { gpu_id }`] so a
+    /// `Device` handle constructed from this backend reports the
+    /// same `gpu_id` the probe / Router pipeline would assign.
+    pub gpu_id: usize,
     /// Shared VMA-style sub-allocator. Every buffer we create goes
     /// through this so the number of live `VkDeviceMemory` blocks
     /// stays O(GB-of-memory / 256MB), not O(number-of-buffers).
@@ -287,39 +295,40 @@ impl VulkanBackend {
             return Err(fuel_core_types::Error::Msg("no Vulkan devices found".into()));
         }
 
-        let physical = match selection {
+        let (gpu_id, physical) = match selection {
             DeviceSelection::Index(idx) => {
-                physicals.into_iter().nth(idx)
+                let p = physicals.into_iter().nth(idx)
                     .ok_or_else(|| fuel_core_types::Error::Msg(
                         format!("Vulkan device index {idx} out of range"),
-                    ))?
+                    ))?;
+                (idx, p)
             }
             DeviceSelection::PreferDiscrete => {
                 // Try discrete first, then any GPU, then anything.
-                let mut best = None;
-                for p in &physicals {
+                let mut best: Option<(usize, &PhysicalDevice)> = None;
+                for (i, p) in physicals.iter().enumerate() {
                     let props = p.properties();
                     let dt = props.device_type();
                     if dt == PhysicalDeviceType::DISCRETE_GPU {
-                        best = Some(p);
+                        best = Some((i, p));
                         break;
                     }
                     if best.is_none()
                         && dt != PhysicalDeviceType::CPU
                         && dt != PhysicalDeviceType::OTHER
                     {
-                        best = Some(p);
+                        best = Some((i, p));
                     }
                 }
                 match best {
-                    Some(p) => p.clone(),
-                    None => physicals.into_iter().next().unwrap(),
+                    Some((i, p)) => (i, p.clone()),
+                    None => (0, physicals.into_iter().next().unwrap()),
                 }
             }
             DeviceSelection::ByName(ref needle) => {
                 let needle_lower = needle.to_lowercase();
-                physicals.into_iter()
-                    .find(|p| {
+                physicals.into_iter().enumerate()
+                    .find(|(_, p)| {
                         p.properties().device_name().to_lowercase().contains(&needle_lower)
                     })
                     .ok_or_else(|| fuel_core_types::Error::Msg(
@@ -427,12 +436,22 @@ impl VulkanBackend {
             queue_family,
             pipelines,
             device_name,
+            gpu_id,
             allocator,
             recorder,
             op_stats: OpStats::default(),
             coop_matrix_shapes,
             buffer_pool,
         })
+    }
+
+    /// Drain any pending async-submitted command buffers and wait for
+    /// the GPU to finish. Mirrors the trait-level
+    /// [`fuel_core_types::dyn_backend::DynBackendDevice::synchronize_dyn`]
+    /// contract: when this returns, every kernel previously dispatched
+    /// on `self` is observable to subsequent reads.
+    pub fn synchronize_pending(&self) -> fuel_core_types::Result<()> {
+        self.flush_pending()
     }
 
     /// List all available Vulkan physical devices.

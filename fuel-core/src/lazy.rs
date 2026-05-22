@@ -2435,17 +2435,18 @@ impl LlamaModel {
     //
     // The host-resident helper `apply_layer_with_cache` (above) STAYS
     // because the device-resident GPU cache path
-    // (`forward_with_cache_gpu_on`) shares it — that path is still
-    // active for Vulkan callers until Vulkan WriteSlice ships.
+    // (`forward_with_cache_gpu_on`) shares it — that path is the
+    // generic-over-`GraphBackend` fallback that downstream callers
+    // who haven't migrated to `Device` + `forward_with_kv_context`
+    // still depend on.
 
     // ===== Phase 7.6 step 9c E.3.3.B — InferenceContext + KvCache + WriteSlice =====
     //
     // The new forward path. Uses pre-allocated KV-cache buffers
     // (`KvCache::with_capacity`) + `Op::WriteSlice` in-graph to mutate
     // them, replacing the legacy concat-cached-and-fresh / download-
-    // fresh / host-append pattern. Runs on CPU or CUDA via the
-    // pipelined executor; Vulkan callers keep using the legacy
-    // host-resident path until Vulkan WriteSlice ships.
+    // fresh / host-append pattern. Runs on CPU, CUDA, and Vulkan via
+    // the pipelined executor + binding-table dispatch.
 
     /// Variant of [`apply_layer_with_cache`] that uses pre-allocated
     /// KV-cache buffers + `Op::WriteSlice`. The K/V caches are bound
@@ -2581,9 +2582,8 @@ impl LlamaModel {
     ///   accumulated K/V state via the same Arcs.
     /// - Logits return shape: rank-1 `[vocab_size]` — last-position
     ///   only, same as [`Self::forward_with_cache_on`].
-    /// - Vulkan: not yet supported (Vulkan WriteSlice kernel
-    ///   pending). Callers that need a Vulkan backend stay on the
-    ///   legacy [`Self::forward_with_cache_on`] path.
+    /// - Backends: CPU, CUDA, and Vulkan all run this path via the
+    ///   pipelined executor + binding-table dispatch.
     pub fn forward_with_kv_context(
         &self,
         tokens: &[u32],
@@ -2733,9 +2733,10 @@ impl LlamaModel {
 /// shapes are emitted; the proxy bytes are overwritten with real
 /// device storage before realize and never read.
 ///
-/// Once the device-resident path migrates to `KvCache` +
-/// `forward_with_kv_context` too (gated on Vulkan WriteSlice landing),
-/// this type can retire.
+/// Once the device-resident `forward_with_cache_gpu_on` callers
+/// migrate to `KvCache` + `forward_with_kv_context`, this type can
+/// retire — the pipelined executor's WriteSlice path subsumes the
+/// proxy-shape role.
 #[derive(Debug, Clone, Default)]
 pub struct LayerKVCache {
     pub(crate) k: Vec<f32>,
@@ -3216,18 +3217,16 @@ impl LlamaModel {
     // `generate_streaming` were retired in favor of
     // `generate_streaming_with_kv_context`. Greedy token-sequence parity
     // was confirmed by `generate_with_kv_context_matches_legacy_generate`
-    // before retirement. CUDA + CPU callers use the new path
-    // (forward_with_kv_context + WriteSlice in-graph); Vulkan callers
-    // keep using `generate_streaming_gpu_on<B>` until Vulkan WriteSlice
-    // ships.
+    // before retirement. CPU, CUDA, and Vulkan callers all use the new
+    // path (forward_with_kv_context + WriteSlice in-graph).
 
     // ===== Phase 7.6 step 9c E.3.3.C — streaming with KvCache + InferenceContext =====
     //
     // These replace the legacy `generate_streaming_on` /
-    // `generate_streaming_gpu_on` pair for CPU + CUDA callers. The
-    // device is passed in directly (no `GraphBackend` parameter); the
-    // pipelined executor handles backend dispatch. Vulkan callers
-    // stay on the legacy methods until Vulkan WriteSlice ships.
+    // `generate_streaming_gpu_on` pair across CPU, CUDA, and Vulkan.
+    // The device is passed in directly (no `GraphBackend` parameter);
+    // the pipelined executor handles backend dispatch through the
+    // binding-table lookup.
 
     /// Streaming generation through the new `forward_with_kv_context`
     /// path. Allocates a pre-allocated `KvCache` of capacity
@@ -3241,9 +3240,9 @@ impl LlamaModel {
     /// dtype_size`. For TinyLlama-1.1B at 1024-token max context, F32:
     /// 22 * 2 * 4 * 1024 * 64 * 4 ≈ 46 MiB.
     ///
-    /// Vulkan callers: use [`Self::generate_streaming_on`] instead —
-    /// the new path requires `Op::WriteSlice` kernel coverage that
-    /// hasn't shipped for Vulkan yet (CPU + CUDA only as of alpha.29).
+    /// Works on CPU, CUDA, and Vulkan — the pipelined executor's
+    /// binding-table dispatch picks the registered kernel per op
+    /// based on the device passed in.
     pub fn generate_streaming_with_kv_context(
         &self,
         prompt_tokens: &[u32],
@@ -6493,6 +6492,94 @@ mod generate_tests {
         assert_eq!(ctx.len(), 0, "ctx.persistent should be empty after forward");
         model.forward_with_kv_context(&[3_u32], &mut cache, &mut ctx).unwrap();
         assert_eq!(ctx.len(), 0, "ctx.persistent should stay empty across steps");
+    }
+
+    /// Vulkan parity: prefill+decode through `forward_with_kv_context`
+    /// on a Vulkan `Device` matches the CPU reference for the same
+    /// model + prompt. Closes the runtime Device-abstraction gate that
+    /// the audit memo `project_phase_7_6_step_9c_parity_audit.md`
+    /// flagged: previously `Device::new(...)` rejected Vulkan because
+    /// no `DynBackendDevice` impl existed, so `KvCache::with_capacity`
+    /// + `InferenceContext` could not run on Vulkan even though every
+    /// kernel-side gate (WriteSlice b1/b2/b4/b8 + byte-storage Vulkan
+    /// D2H) was open. With `VulkanBackendDevice` wired through
+    /// `Device::custom`, the pipelined executor + binding-table
+    /// dispatch route the per-op kernels to Vulkan SPIR-V.
+    ///
+    /// Skips with a logged message if no Vulkan device is available
+    /// so CI machines without a GPU stay green.
+    #[test]
+    #[cfg(feature = "vulkan")]
+    fn forward_with_kv_context_vulkan_matches_cpu() {
+        use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
+
+        let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("skipping: no Vulkan device ({e:?})");
+                return;
+            }
+        };
+        let vk_device: Device = vk_backend.into();
+
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+
+        let prompt = [1_u32, 2, 3];
+        let next_token = 4_u32;
+        let max_seq_len = prompt.len() + 1;
+
+        // CPU reference.
+        let cpu_device = Device::cpu();
+        let mut cpu_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            max_seq_len, DType::F32, &cpu_device,
+        ).expect("cpu with_capacity");
+        let mut cpu_ctx = InferenceContext::new(cpu_device);
+        model.forward_with_kv_context(&prompt, &mut cpu_cache, &mut cpu_ctx)
+            .expect("cpu prefill");
+        let expected = model
+            .forward_with_kv_context(&[next_token], &mut cpu_cache, &mut cpu_ctx)
+            .expect("cpu decode");
+
+        // Vulkan path through the new Device wiring.
+        let mut vk_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            max_seq_len, DType::F32, &vk_device,
+        ).expect("vulkan with_capacity");
+        let mut vk_ctx = InferenceContext::new(vk_device);
+        model.forward_with_kv_context(&prompt, &mut vk_cache, &mut vk_ctx)
+            .expect("vulkan prefill");
+        let actual = model
+            .forward_with_kv_context(&[next_token], &mut vk_cache, &mut vk_ctx)
+            .expect("vulkan decode");
+
+        assert_eq!(actual.len(), expected.len());
+        // Same tolerance band as `forward_with_kv_context_decode_matches_
+        // non_cached_forward`: cross-backend matmul accumulation order
+        // differs, producing standard O(ε) gemm drift on the f32 path.
+        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            let diff = (a - b).abs();
+            let rel = diff / a.abs().max(b.abs()).max(1e-6);
+            assert!(
+                diff < 5e-3 || rel < 1e-2,
+                "logit[{i}]: vulkan={a}, cpu={b}, diff={diff}, rel={rel}",
+            );
+        }
     }
 
     #[test]

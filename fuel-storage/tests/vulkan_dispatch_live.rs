@@ -460,20 +460,30 @@ fn vulkan_dispatch_binary_add_f32_rank2_contig() {
 // V.2.C — Softmax + RmsNorm last-dim (Fused ops, f32)
 // ===========================================================================
 
-/// Presence check: both ops register on `[F32, F32]` against Vulkan.
+/// Presence check: SoftmaxLastDim + RmsNormLastDim register on
+/// `[F32, F32]` (unary shape); Rope registers on the canonical
+/// `[F32, F32, F32, F32]` 4-dtype key that matches CPU's
+/// `register_cpu_kernels` registration (x, cos, sin, out).
 #[test]
 fn vulkan_dispatch_softmax_norm_registered() {
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
-    let key = [DType::F32, DType::F32];
-    for op in [OpKind::SoftmaxLastDim, OpKind::RmsNormLastDim, OpKind::Rope] {
-        let alts = table.lookup_alternatives(op, &key, BackendId::Vulkan);
+    let unary = [DType::F32, DType::F32];
+    for op in [OpKind::SoftmaxLastDim, OpKind::RmsNormLastDim] {
+        let alts = table.lookup_alternatives(op, &unary, BackendId::Vulkan);
         assert_eq!(
             alts.len(), 1,
             "expected 1 Vulkan alternative for {op:?} f32 after register_vulkan_kernels, got {}",
             alts.len(),
         );
     }
+    let rope_key = [DType::F32, DType::F32, DType::F32, DType::F32];
+    let alts = table.lookup_alternatives(OpKind::Rope, &rope_key, BackendId::Vulkan);
+    assert_eq!(
+        alts.len(), 1,
+        "expected 1 Vulkan alternative for Rope [x,cos,sin,out]=f32 after register_vulkan_kernels, got {}",
+        alts.len(),
+    );
 }
 
 /// Softmax row-wise: 2 rows × 4 cols. Each row should sum to ~1.0.
@@ -2543,7 +2553,7 @@ fn vulkan_dispatch_rope_identity_f32() {
     let kernel = table
         .lookup_alternatives(
             OpKind::Rope,
-            &[DType::F32, DType::F32],
+            &[DType::F32, DType::F32, DType::F32, DType::F32],
             BackendId::Vulkan,
         )[0]
     .kernel;
@@ -2599,7 +2609,7 @@ fn vulkan_dispatch_rope_quarter_rotation_f32() {
     let kernel = table
         .lookup_alternatives(
             OpKind::Rope,
-            &[DType::F32, DType::F32],
+            &[DType::F32, DType::F32, DType::F32, DType::F32],
             BackendId::Vulkan,
         )[0]
     .kernel;

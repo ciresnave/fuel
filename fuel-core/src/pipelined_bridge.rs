@@ -292,9 +292,27 @@ fn upload_host_buffer(
                 .into(),
         )
         .bt()),
+        #[cfg(feature = "vulkan")]
+        DeviceLocation::Vulkan { .. } => {
+            // `upload_bytes_handle` allocates a fresh device buffer +
+            // attaches the `Arc<VulkanBackend>` handle so the resulting
+            // `VulkanStorageBytes` flows through the pipelined-executor
+            // binding-table dispatch (kernels reach the backend through
+            // an input's storage).
+            let backend = crate::vulkan_backend::as_device(device)?;
+            let vk_bytes = backend.upload_bytes_handle(&bytes)?;
+            Ok(Storage::new(BackendStorage::Vulkan(vk_bytes), dtype))
+        }
+        #[cfg(not(feature = "vulkan"))]
+        DeviceLocation::Vulkan { .. } => Err(Error::Msg(
+            "pipelined_bridge: Vulkan device requested but fuel-core wasn't built \
+             with --features vulkan"
+                .into(),
+        )
+        .bt()),
         other => Err(Error::Msg(format!(
-            "pipelined_bridge: upload to {other:?} not yet wired (Vulkan / Metal \
-             D2H integration pending — these stay on the legacy executor for now)",
+            "pipelined_bridge: upload to {other:?} not yet wired (Metal D2H \
+             integration pending — these stay on the legacy executor for now)",
         ))
         .bt()),
     }

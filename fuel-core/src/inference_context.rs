@@ -321,9 +321,29 @@ fn alloc_zeroed_on(
              built with --features cuda".to_string(),
         )
         .bt()),
+        #[cfg(feature = "vulkan")]
+        DeviceLocation::Vulkan { .. } => {
+            // Vulkan has no native vkCmdFillBuffer-based zero-alloc helper
+            // on the byte-storage surface yet; stage a host-zero vec
+            // through `upload_bytes_handle` (a single H2D copy). Correct
+            // today; if KV-cache init bandwidth shows up in profiles,
+            // replace with a `alloc_bytes_zeroed_handle` that uses
+            // `vkCmdFillBuffer` after `alloc_bytes_handle`.
+            let backend = crate::vulkan_backend::as_device(device)?;
+            let n_bytes = elem_count * dtype.size_in_bytes();
+            let zeros = vec![0_u8; n_bytes];
+            let vk_bytes = backend.upload_bytes_handle(&zeros)?;
+            Ok(Storage::new(BackendStorage::Vulkan(vk_bytes), dtype))
+        }
+        #[cfg(not(feature = "vulkan"))]
+        DeviceLocation::Vulkan { .. } => Err(Error::Msg(
+            "KvCache::with_capacity: Vulkan device requested but fuel-core wasn't \
+             built with --features vulkan".to_string(),
+        )
+        .bt()),
         other => Err(Error::Msg(format!(
-            "KvCache::with_capacity: device {other:?} not wired (CPU + CUDA today; \
-             Vulkan/Metal pending their byte-storage substrate)",
+            "KvCache::with_capacity: device {other:?} not wired (CPU + CUDA + Vulkan \
+             today; Metal pending its byte-storage substrate)",
         ))
         .bt()),
     }

@@ -139,26 +139,26 @@ impl BackendStorage {
     /// `Op::Move` and as the test-side oracle for D2H paths.
     ///
     /// CPU is a memcpy from the underlying `Arc<[u8]>`; GPU
-    /// variants run a synchronous D2H. For Vulkan, this is not
-    /// yet wired — the legacy `VulkanBackend::download_*` path
-    /// requires a backend-runtime handle that the byte-storage
-    /// type doesn't carry today; that's a follow-on commit.
+    /// variants run a synchronous D2H. Vulkan walks the storage's
+    /// attached `Arc<VulkanBackend>` handle (populated by
+    /// `upload_bytes_handle` / `alloc_bytes_handle`) to reach the
+    /// allocator + queue required for the staged readback.
     pub fn read_to_cpu_bytes(&self) -> Result<Vec<u8>> {
         match self {
             BackendStorage::Cpu(s) => Ok(s.bytes().to_vec()),
             #[cfg(feature = "cuda")]
             BackendStorage::Cuda(s) => s.to_cpu_bytes(),
             #[cfg(feature = "vulkan")]
-            BackendStorage::Vulkan(_) => Err(Error::Msg(
-                "BackendStorage::read_to_cpu_bytes: Vulkan D2H requires a \
-                 VulkanBackend handle (allocator + queue) that this \
-                 enum-level method can't reach. Use \
-                 `VulkanBackend::download_bytes(&storage)` directly. \
-                 Cross-backend dispatch through this method will be \
-                 unified at the Router/registry layer in a later phase."
-                .to_string(),
-            )
-            .bt()),
+            BackendStorage::Vulkan(s) => {
+                let backend = s.backend().ok_or_else(|| Error::Msg(
+                    "BackendStorage::read_to_cpu_bytes: Vulkan storage has no \
+                     attached VulkanBackend handle. Construct via \
+                     `VulkanBackend::alloc_bytes_handle` / `upload_bytes_handle` \
+                     (the handle-attached constructors) so D2H can reach the \
+                     backend's allocator + queue.".to_string(),
+                ).bt())?;
+                backend.download_bytes(s)
+            }
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             BackendStorage::Metal(_) => Err(Error::Msg(
                 "BackendStorage::read_to_cpu_bytes: Metal A4 D2H \
