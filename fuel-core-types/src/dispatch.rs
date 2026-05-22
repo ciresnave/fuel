@@ -333,6 +333,18 @@ pub enum OpKind {
     /// contract and [`OpParams::WriteSlice`](super::dispatch::OpKind)
     /// for the kernel-side params.
     WriteSlice,
+    /// Cross-device copy: produce a fresh tensor on the target
+    /// device, copying bytes from the input's residency. Backs
+    /// [`Op::Copy`](fuel_graph::Op::Copy) for the bridge-retirement
+    /// trajectory's Phase 2 (D2H through the binding table).
+    ///
+    /// Binding-table key shape `[T, T]` (input dtype, output dtype —
+    /// always equal). The `BackendId` axis encodes the **source**
+    /// backend (where the kernel runs — the source owns its own
+    /// download path); the executor allocates the output Storage on
+    /// the `Op::Copy { target }` location field via a dedicated
+    /// `WorkItemKind::Copy` arm.
+    Copy,
 }
 
 impl OpKind {
@@ -419,6 +431,7 @@ impl OpKind {
             OpKind::ArgMinDim         => "argmin_dim",
             OpKind::QMatMul           => "qmatmul",
             OpKind::WriteSlice        => "write_slice",
+            OpKind::Copy              => "copy",
         }
     }
 }

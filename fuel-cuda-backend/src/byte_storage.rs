@@ -124,10 +124,10 @@ impl CudaStorageBytes {
     }
 
     /// Phase 7.5 A4 substrate D2H. Reads the device buffer's bytes
-    /// back to host as a fresh `Vec<u8>`. Used by `Op::Copy` /
-    /// `Op::Move` when the destination is CPU and by
-    /// `BackendStorage::read_to_cpu_bytes` for the universal D2H
-    /// fallback.
+    /// back to host as a fresh `Vec<u8>`. Called by the
+    /// `(OpKind::Copy, [dt, dt], Cuda)` binding-table wrapper in
+    /// `fuel-storage::dispatch::copy_to_cpu_cuda_wrapper`
+    /// (bridge-retirement Phase 2, post-9c).
     pub fn to_cpu_bytes(&self) -> Result<Vec<u8>> {
         let mut out = vec![0_u8; self.len_bytes];
         if self.len_bytes > 0 {

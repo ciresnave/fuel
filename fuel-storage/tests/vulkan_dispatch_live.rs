@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_storage::{
+    alloc_cpu_zeroed,
     kernel::{KernelBindingTable, OpParams},
     vulkan_dispatch::register_vulkan_kernels,
     BackendStorage, Storage,
@@ -3556,4 +3557,69 @@ fn vulkan_dispatch_conv2d_f32() {
     // observed scale with k = 27 contractions.
     assert!(max_abs < 5e-5, "conv2d worst abs err {max_abs:e} > 5e-5");
     assert!(max_rel < 1e-4, "conv2d worst rel err {max_rel:e} > 1e-4");
+}
+
+// ===========================================================================
+// Op::Copy D2H — bridge-retirement Phase 2 (post-9c) parity + live test
+// ===========================================================================
+
+/// Dispatch-table presence check (no GPU required). Confirms the
+/// `(OpKind::Copy, [F32, F32], Vulkan)` row is registered after
+/// `register_vulkan_kernels` runs — Phase 2 of bridge-retirement.
+#[test]
+fn vulkan_dispatch_copy_f32_registered() {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let alts = table.lookup_alternatives(
+        OpKind::Copy, &[DType::F32, DType::F32], BackendId::Vulkan,
+    );
+    assert_eq!(
+        alts.len(), 1,
+        "expected 1 Vulkan alternative for OpKind::Copy [F32, F32] after \
+         register_vulkan_kernels, got {}", alts.len(),
+    );
+}
+
+/// Live-Vulkan D2H through the bind-table `(OpKind::Copy, [F32, F32],
+/// Vulkan)` wrapper. Uploads f32 data to Vulkan, invokes the
+/// `copy_to_cpu_vulkan` wrapper directly into a pre-allocated CPU
+/// output, and checks the bytes round-trip.
+#[test]
+#[ignore]
+fn vulkan_dispatch_copy_to_cpu_f32_direct_wrapper() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f32> = (0..32).map(|i| i as f32 * 0.5).collect();
+    let n = host.len();
+    let vk_storage = upload_f32(&backend, &host);
+    let cpu_out = alloc_cpu_zeroed(DType::F32, n).expect("alloc cpu out");
+
+    let vk_arc = Arc::new(RwLock::new(vk_storage));
+    let cpu_arc = Arc::new(RwLock::new(cpu_out));
+
+    let alts = table.lookup_alternatives(
+        OpKind::Copy, &[DType::F32, DType::F32], BackendId::Vulkan,
+    );
+    assert!(!alts.is_empty(), "no Vulkan Op::Copy registration");
+    let kernel = alts[0].kernel;
+
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
+
+    kernel(
+        &[Arc::clone(&vk_arc)],
+        &mut [Arc::clone(&cpu_arc)],
+        &layouts,
+        &OpParams::None,
+    ).expect("copy_to_cpu_vulkan dispatch");
+
+    let guard = cpu_arc.read().unwrap();
+    let got: &[f32] = match &guard.inner {
+        BackendStorage::Cpu(c) => c.as_slice().expect("f32 cast"),
+        _ => panic!("output must be BackendStorage::Cpu after Op::Copy {{ target: Cpu }}"),
+    };
+    assert_eq!(got, host.as_slice(), "Vulkan→CPU Op::Copy bytes mismatch");
 }

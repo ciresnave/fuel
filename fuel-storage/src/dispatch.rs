@@ -232,7 +232,7 @@ fn cpu_input(s: &Storage) -> Result<&fuel_cpu_backend::CpuStorageBytes> {
 }
 
 /// Helper: extract `&mut CpuStorageBytes` from `&mut Storage`.
-fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes> {
+pub(crate) fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes> {
     match &mut s.inner {
         BackendStorage::Cpu(c) => Ok(c),
         #[allow(unreachable_patterns)]
@@ -2943,6 +2943,42 @@ fn matmul_f64_cpu_wrapper(
     )
 }
 
+/// Dispatch wrapper for `(OpKind::Copy, [T, T], Cpu)` — D2H from a
+/// CPU source storage into a freshly-allocated CPU output. Dtype-
+/// agnostic at the byte level: the wrapper memcpys the input's bytes
+/// into the pre-allocated output. The executor allocates the output
+/// on `target_location` via [`crate::pipelined::WorkItemKind::Copy`]
+/// before this wrapper runs.
+///
+/// CPU→CPU is mostly a uniformity move so the binding-table key
+/// shape stays `[dt, dt]` across every source backend — see the
+/// architecture-aligned dispatch contract in
+/// `docs/architecture/05-backend-contract.md`.
+///
+/// Phase 2 of the bridge-retirement trajectory (post-9c). Replaces
+/// the per-variant `match self` in
+/// `BackendStorage::read_to_cpu_bytes` (deleted alongside).
+fn copy_to_cpu_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "copy_to_cpu_cpu_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        )).bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let src = cpu_input(&in_guard)?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dst = cpu_output(&mut out_guard)?;
+    let n = src.len_bytes().min(dst.len_bytes());
+    dst.bytes_mut()[..n].copy_from_slice(&src.bytes()[..n]);
+    Ok(())
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -3436,6 +3472,24 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Affine,             &unary(f64_dt),  cpu, affine_f64_cpu_wrapper);
     table.register(Affine,             &unary(bf16_dt), cpu, affine_bf16_cpu_wrapper);
     table.register(Affine,             &unary(f16_dt),  cpu, affine_f16_cpu_wrapper);
+
+    // Op::Copy — D2H / SameDevice byte-level transfer. The CPU
+    // registration here is the CPU→CPU memcpy noop; per-source-
+    // backend registrations live in their dispatch crates
+    // (`register_cuda_kernels`, `vulkan_dispatch::register_vulkan_kernels`).
+    // Bridge-retirement Phase 2 (post-9c): every realize root that
+    // isn't on CPU gets an `Op::Copy { target: Cpu }` spliced in
+    // before realize; the kernel dispatch resolves on the *source*
+    // backend's BackendId. CPU→CPU is registered for uniformity (the
+    // splice doesn't fire when device == Cpu, but kernels registered
+    // here let direct executor tests round-trip through OpKind::Copy
+    // on the universal fallback).
+    let copy_dtypes = [
+        f32_dt, f64_dt, bf16_dt, f16_dt, u32_dt, u8_dt, DType::I16, DType::I32, DType::I64,
+    ];
+    for dt in copy_dtypes {
+        table.register(Copy, &[dt, dt], cpu, copy_to_cpu_cpu_wrapper);
+    }
     table.register(ClampElementwise,   &unary(f64_dt),  cpu, clamp_f64_cpu_wrapper);
     table.register(ClampElementwise,   &unary(bf16_dt), cpu, clamp_bf16_cpu_wrapper);
     table.register(ClampElementwise,   &unary(f16_dt),  cpu, clamp_f16_cpu_wrapper);
@@ -5083,6 +5137,41 @@ fn matmul_f16_cuda_wrapper(
     Ok(())
 }
 
+/// Dispatch wrapper for `(OpKind::Copy, [T, T], Cuda)` — D2H from a
+/// CUDA source storage into a freshly-allocated CPU output. The
+/// executor allocates the CPU output before this wrapper runs
+/// (see [`crate::pipelined::WorkItemKind::Copy`]); the wrapper
+/// calls `CudaStorageBytes::to_cpu_bytes` and copies the result.
+///
+/// Dtype-agnostic at the byte level — one wrapper covers every dtype
+/// registered at this key.
+///
+/// Phase 2 of the bridge-retirement trajectory (post-9c). Replaces
+/// the CUDA branch of `BackendStorage::read_to_cpu_bytes` (deleted
+/// alongside).
+#[cfg(feature = "cuda")]
+fn copy_to_cpu_cuda_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    _params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 1 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "copy_to_cpu_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            inputs.len(), outputs.len(),
+        )).bt());
+    }
+    let in_guard = read_storage(&inputs[0])?;
+    let cuda_src = cuda_input(&in_guard)?;
+    let bytes = cuda_src.to_cpu_bytes()?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let dst = cpu_output(&mut out_guard)?;
+    let n = bytes.len().min(dst.len_bytes());
+    dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
+    Ok(())
+}
+
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
 /// into the unified binding table. Same shape as
 /// `register_cpu_kernels` but on the Cuda backend.
@@ -5191,6 +5280,18 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     for &(src, dst) in CAST_PAIRS {
         table.register(Cast, &[src, dst], cuda, cast_cuda_wrapper);
     }
+
+    // Op::Copy D2H — register at `(OpKind::Copy, [dt, dt], Cuda)` for
+    // every dtype the byte-storage substrate supports. Source-backend
+    // key (= Cuda); the wrapper produces a CPU output, copying through
+    // `CudaStorageBytes::to_cpu_bytes`. Bridge-retirement Phase 2.
+    let copy_dtypes = [
+        f32_dt, bf16_dt, f16_dt, u32_dt,
+        DType::F64, DType::U8, DType::I16, DType::I32, DType::I64,
+    ];
+    for dt in copy_dtypes {
+        table.register(Copy, &[dt, dt], cuda, copy_to_cpu_cuda_wrapper);
+    }
 }
 
 // =============================================================================
@@ -5267,6 +5368,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         IndexAdd,
         ScatterAdd,
         QMatMul,
+        Copy,
     ] {
         op_dtype_support.insert((op, f32_dt));
     }
@@ -5978,6 +6080,7 @@ mod tests {
             OpKind::IndexAdd, OpKind::ScatterAdd,
             OpKind::ArgMaxDim, OpKind::ArgMinDim,
             OpKind::QMatMul,
+            OpKind::Copy,
         ];
 
         // Populate the binding table the same way the production
@@ -6136,6 +6239,7 @@ mod tests {
             OpKind::IndexAdd, OpKind::ScatterAdd,
             OpKind::ArgMaxDim, OpKind::ArgMinDim,
             OpKind::QMatMul,
+            OpKind::Copy,
         ];
 
         let mut table = KernelBindingTable::new();

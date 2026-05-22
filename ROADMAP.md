@@ -45,19 +45,22 @@ v1.0 destination (graph-level `Op::Copy`/`Op::Alloc`, dispatch-erased
 - Phase 7b: AOCL + oneMKL CPU backends + Router empirical dispatch (shipped 2026-04-28 → 2026-05-15).
 - CUDA Tier 1 migration to binding table (45 live tests; baracuda alpha.27).
 - Vulkan V.2 + V.3 byte-storage fan-out (87 live RTX 4070 tests; QMatMul + Conv2D + f64 transcendentals + WriteSlice b1/b2/b4/b8).
-- Vulkan runtime `Device` wiring (this session): `VulkanBackendDevice` + parity test against CPU through `forward_with_kv_context`.
+- Vulkan runtime `Device` wiring (2026-05-22): `VulkanBackendDevice` + parity test against CPU through `forward_with_kv_context`.
+- Vulkan binding-table key-shape audit (2026-05-22): every Vulkan registration cross-checked against its CPU peer; zero further mismatches beyond the Rope fix in `7a95001a`. Full coverage table in [`project_phase_7_6_step_9c_parity_audit.md`](.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_phase_7_6_step_9c_parity_audit.md).
+- **Bridge-retirement Phase 2 — `Op::Copy` D2H through the binding table** (2026-05-22): `OpKind::Copy` registered; CPU/CUDA/Vulkan each provide a `copy_to_cpu` wrapper at `(OpKind::Copy, [dt, dt], source_backend)`. `realize_one_as<T>` / `realize_many_as<T>` splice `Op::Copy { target: Cpu }` at every realize root; executor's `WorkItemKind::Copy { target_location }` arm allocates output on target while keying kernel lookup on source backend. First deletion of bridge code from `7a95001a`: `BackendStorage::read_to_cpu_bytes` is gone. Also fixed a pre-existing CPU bug where realize on a view (slice/permute) returned the parent's full bytes instead of the logical view's bytes — Op::Copy's `auto_contiguize` materializes view layouts uniformly. See [`project_phase_7_6_step_9c_parity_audit.md`](.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_phase_7_6_step_9c_parity_audit.md) "Bridge-retirement Phase 2 shipped" follow-up.
 
 **Next 1-3 sessions** (in priority order):
-1. **Vulkan binding-table key-shape audit** — surfaced by this session's Rope fix. Verify every Vulkan op's `(op, dtypes)` key matches the CPU registration. ~1 session.
-2. **Per-Vulkan-kernel `PrecisionGuarantee` + cost + slot annotations** — required by [05-backend-contract](docs/architecture/05-backend-contract.md) for the optimizer's tolerance-budget pass and cost-ranking to admit Vulkan alternatives. ~1-2 sessions.
-3. **Phase 7.6 step 9c → Phase 2 of bridge-retirement: `Op::Copy` D2H** — register cross-device copy kernels per backend; route `realize_*as<T>` D2H through `Op::Copy`. First deletion of the bridge code from this session. ~1 session.
+
+1. **Per-Vulkan-kernel `PrecisionGuarantee` + cost + slot annotations** — required by [05-backend-contract](docs/architecture/05-backend-contract.md) for the optimizer's tolerance-budget pass and cost-ranking to admit Vulkan alternatives. ~1-2 sessions.
+2. **Phase 7.6 step 9c → Phase 3 of bridge-retirement: H2D + zero-alloc through `Op::Alloc` + `Op::Copy`** — add `Op::Alloc { shape, dtype, device }` + `Op::ZeroFill` as primitives, register `alloc` + `zero_fill` kernels per backend, migrate `KvCache::with_capacity` + `build_const_cache_from_graph` to emit these. Second deletion of bridge code from `7a95001a`: `alloc_zeroed_on` + `upload_host_buffer`. ~1 session.
+3. **Phase 7.6 step 9c Phase E.3 remainder** — `forward_with_cache_on` migration + `generate_*` + spec decoding migration to `PipelinedExecutor`. Each is its own session; the `KvCache` primitive from E.3.0 unblocks them.
 
 **Blockers**: none. Multi-GPU work (Phase 6c D2D + Phase 6d MoE placement) is parked pending multi-GPU hardware; not on the critical path.
 
 **Architecture-alignment check**: every active workstream above moves at least
 one of the four [identity-enforcement checks](docs/architecture/01-identity.md#how-this-identity-is-enforced)
-*more* true. Bridge retirement moves checks 1 + 2; binding-table audit moves
-check 1; PrecisionGuarantee work moves checks 2 + 4.
+*more* true. Bridge retirement moves checks 1 + 2; PrecisionGuarantee work
+moves checks 2 + 4; E.3 caller migration moves check 1.
 
 ---
 
@@ -2144,7 +2147,7 @@ The destination per [01-identity](docs/architecture/01-identity.md) + [05-backen
 
 Path from bridge to destination (each phase ~1 session, in dependency order):
 
-1. **D2H through `Op::Copy`**. `Op::Copy` already exists ([`project_fused_op_move_pr4.md`](.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_fused_op_move_pr4.md)). Register `copy_to_cpu` kernels per backend; `realize_one_as<T>` inserts `Op::Copy { target: Cpu }` at the realize root if target is non-CPU. **Deletes**: the per-variant match in `BackendStorage::read_to_cpu_bytes` (including the Vulkan branch I wrote this session).
+1. ✅ **D2H through `Op::Copy`** — *shipped 2026-05-22.* `OpKind::Copy` registered in the binding table; CPU/CUDA/Vulkan each provide a `copy_to_cpu` wrapper at the canonical `[dt, dt]` key. `realize_one_as<T>` / `realize_many_as<T>` splice `Op::Copy { target: Cpu }` at every realize root (CPU + GPU) so the spliced node's `auto_contiguize` honors view-op layouts uniformly — the pre-9c "ignore strides, return full source bytes" CPU bug is fixed alongside. Executor uses a dedicated `WorkItemKind::Copy { target_location }` arm so output allocation goes on the target while the kernel lookup keys on the source backend. **Deleted**: the per-variant match in `BackendStorage::read_to_cpu_bytes` (including the Vulkan branch from `7a95001a`) — first deletion of bridge code from `7a95001a`. See [`project_phase_7_6_step_9c_parity_audit.md`](.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_phase_7_6_step_9c_parity_audit.md) "Bridge-retirement Phase 2 shipped" follow-up.
 2. **H2D + zero-alloc through `Op::Alloc` + `Op::Copy`**. Add `Op::Alloc { shape, dtype, device }` + `Op::ZeroFill` as primitives. Each backend registers `alloc` + `zero_fill` kernels. `KvCache::with_capacity` + `pipelined_bridge::build_const_cache_from_graph` emit these instead of calling backend-typed allocators directly. **Deletes**: `alloc_zeroed_on` + `upload_host_buffer` (and their per-`DeviceLocation` match arms across CUDA, Vulkan, CPU).
 3. **`*_dyn` storage methods removed from `DynBackendDevice` trait** once nothing calls them from byte-storage callers. Trait shrinks to advertisement-only (`location_dyn`, `same_device_dyn`, `synchronize_dyn`, `set_seed_dyn`, `get_current_seed_dyn`, `as_any`, `supports_bf16`, `as_quantized_kernels`). Gated on the typed-storage retirement (audit Phases F + H) being complete. **Deletes**: ~6 stub error-bodies per backend's `DynBackendDevice` impl, including the stubs in `VulkanBackendDevice`.
 4. **Trait renamed** (`DynBackendDevice` → `BackendAdvertise` or merge into [`BackendCapabilityProvider`](docs/architecture/05-backend-contract.md#static-capability-advertisement-registered-at-startup)). Doc-only.

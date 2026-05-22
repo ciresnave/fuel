@@ -724,6 +724,15 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         // ArgMax/ArgMin.
         ArgMaxDim | ArgMinDim => cost_argindex_cpu,
 
+        // Op::Copy — cross-device byte transfer. No FLOPs; bandwidth-
+        // bound (read source + write destination). Same shape as
+        // Concat / shape-op costs. The per-source-backend kernel
+        // overhead (PCIe latency for D2H) is the dominant term for
+        // small tensors; the family default underestimates that but
+        // is correct for the bytes-moved axis. A Layer-2 empirical
+        // refinement can attach later.
+        Copy => cost_shape_op_cpu,
+
         // OpKind is `#[non_exhaustive]` — new variants get
         // [`unknown_cost`] until an explicit arm is added here.
         // The step-8 lint catches this immediately by asserting
