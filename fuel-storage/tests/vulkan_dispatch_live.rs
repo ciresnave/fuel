@@ -3580,6 +3580,36 @@ fn vulkan_dispatch_copy_f32_registered() {
     );
 }
 
+/// Bridge-retirement Phase 3a follow-up: live-Vulkan test of the
+/// `Op::Alloc (uninit) → Op::ZeroFill (vkCmdFillBuffer)` chain.
+/// Allocates an uninit Vulkan buffer via `alloc_bytes_handle`,
+/// invokes `VulkanBackend::fill_bytes_zero` directly, then downloads
+/// + checks every byte is zero. Catches regressions in the
+/// vkCmdFillBuffer recording path.
+#[test]
+#[ignore]
+fn vulkan_fill_bytes_zero_lives_on_device() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    // Allocate uninit Vulkan storage of 64 elements * 4 bytes = 256
+    // bytes (16× the 16-byte minimum a typical Vulkan device uses
+    // for storage-buffer alignment).
+    let n_bytes = 64 * 4;
+    let storage = backend.alloc_bytes_handle(n_bytes).expect("alloc_bytes_handle");
+
+    // Issue the device-side zero-fill.
+    backend.fill_bytes_zero(&storage).expect("fill_bytes_zero");
+
+    // Download and verify.
+    let bytes = backend.download_bytes(&storage).expect("download_bytes");
+    assert_eq!(bytes.len(), n_bytes);
+    assert!(
+        bytes.iter().all(|&b| b == 0),
+        "fill_bytes_zero must produce all-zero bytes; got first few = {:?}",
+        &bytes[..bytes.len().min(8)],
+    );
+}
+
 /// Live-Vulkan D2H through the bind-table `(OpKind::Copy, [F32, F32],
 /// Vulkan)` wrapper. Uploads f32 data to Vulkan, invokes the
 /// `copy_to_cpu_vulkan` wrapper directly into a pre-allocated CPU

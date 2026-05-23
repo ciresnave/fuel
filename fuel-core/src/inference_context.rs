@@ -227,15 +227,34 @@ impl KvCache {
             };
             cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
         }
-        let alloc_ids: Vec<NodeId> = {
+        // Emit pairs of (Op::Alloc, Op::ZeroFill) per K/V slot. The
+        // ZeroFill consumes the Alloc destructively (in-place fill,
+        // output adopts the Alloc's Storage Arc). Realizing the
+        // ZeroFill IDs produces zero-initialized device storages.
+        //
+        // Phase 3a follow-up architecture: Op::Alloc gives uninit
+        // memory; Op::ZeroFill explicitly fills with zero. On Vulkan
+        // this replaces the host-staged-zeros path with device-side
+        // `vkCmdFillBuffer` (~2× the bandwidth saved). On CUDA the
+        // pair becomes uninit `cuMemAlloc` + async `cuMemsetD8Async`
+        // — same total cost as the old `alloc_zeros` but exposes the
+        // ZeroFill as a first-class graph node the optimizer can
+        // see (and skip if a downstream op covers the full buffer).
+        let zero_fill_ids: Vec<NodeId> = {
             let mut g = graph
                 .write()
                 .map_err(|_| Error::Msg("graph lock poisoned during KvCache build".into()).bt())?;
             (0..(2 * n_layers))
                 .map(|_| {
-                    g.push(Node {
+                    let alloc_id = g.push(Node {
                         op: Op::Alloc { target: target_loc },
                         inputs: vec![],
+                        shape: shape.clone(),
+                        dtype,
+                    });
+                    g.push(Node {
+                        op: Op::ZeroFill,
+                        inputs: vec![alloc_id],
                         shape: shape.clone(),
                         dtype,
                     })
@@ -243,16 +262,19 @@ impl KvCache {
                 .collect()
         };
 
-        // Realize all 2*n_layers Op::Alloc targets in one pass —
+        // Realize all 2*n_layers Op::ZeroFill targets in one pass —
         // PipelinedExecutor::realize_many shares the compile/execute
-        // pipeline across them so device-handle reuse is automatic.
+        // pipeline so device-handle reuse is automatic, and the
+        // executor's destructive_input cleanup evicts the Op::Alloc
+        // intermediate NodeIds while the ZeroFill targets adopt the
+        // same Arcs (post-fill bytes).
         let realized = PipelinedExecutor::realize_many(
-            Arc::clone(&graph), &alloc_ids, cache,
+            Arc::clone(&graph), &zero_fill_ids, cache,
         )?;
         if realized.len() != 2 * n_layers {
             return Err(Error::Msg(format!(
                 "KvCache::with_capacity: realize_many returned {} storages \
-                 for {} Op::Alloc targets — internal bug",
+                 for {} Op::ZeroFill targets — internal bug",
                 realized.len(), 2 * n_layers,
             )).bt());
         }

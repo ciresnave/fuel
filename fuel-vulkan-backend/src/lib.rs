@@ -622,6 +622,50 @@ impl VulkanBackend {
         ))
     }
 
+    /// Bridge-retirement Phase 3a follow-up: in-place device-side
+    /// zero-fill via `vkCmdFillBuffer`. Replaces the host-staged
+    /// `upload_bytes_handle(vec![0u8; n])` path the old
+    /// `alloc_zeroed_on` used — that one round-tripped zeros through
+    /// a host buffer + a copy_buffer command; this one stays on-
+    /// device end-to-end (~2× the bandwidth saved on KV-cache init).
+    ///
+    /// Pairs with [`Self::alloc_bytes_handle`] (uninit alloc) to
+    /// implement the executor's `Op::Alloc` → `Op::ZeroFill` chain.
+    /// Used by `fuel-storage::vulkan_dispatch::zero_fill_vulkan` for
+    /// the `WorkItemKind::ZeroFill` arm.
+    ///
+    /// `vkCmdFillBuffer` takes a 32-bit data word; we pass `0` so
+    /// every byte ends up zero regardless of dtype.
+    pub fn fill_bytes_zero(
+        &self,
+        storage: &VulkanStorageBytes,
+    ) -> fuel_core_types::Result<()> {
+        let byte_size = storage.len_bytes() as u64;
+        if byte_size == 0 {
+            return Ok(());
+        }
+        let _span = debug_span!("vk_fill_bytes_zero", bytes = byte_size).entered();
+        let buffer = storage.buffer_opt().ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "fill_bytes_zero: storage is host-evicted; \
+                 fault back via residency machinery before filling".into(),
+            )
+        })?;
+        self.flush_pending()?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                // vkCmdFillBuffer requires size to be a multiple of 4;
+                // pad up since our byte buffers are 4-byte aligned from
+                // alloc_bytes_handle and overwriting trailing bytes
+                // past `byte_size` is fine for uninit memory.
+                let rounded = (byte_size + 3) & !3;
+                cmd.fill_buffer(buffer, 0, rounded, 0_u32);
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        Ok(())
+    }
+
     /// Phase 7.5 A4 substrate D2H. Reads a `VulkanStorageBytes`'s
     /// bytes back to host as a fresh `Vec<u8>`. Flushes any pending
     /// async ops first, then runs a one-shot device→staging copy

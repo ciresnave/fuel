@@ -727,6 +727,25 @@ pub enum Op {
     /// the canonical seeder.
     Alloc { target: DeviceLocation },
 
+    /// Fill the input tensor's bytes with zero, in place. Aliases
+    /// `inputs[0]`'s Storage Arc as the output (same Storage; the
+    /// bytes are mutated). Destructive on `inputs[0]` — readers of
+    /// the input's NodeId after this op see post-fill bytes; new
+    /// readers should use this op's NodeId.
+    ///
+    /// Bridge-retirement Phase 3a follow-up. Paired with
+    /// [`Op::Alloc`] to give the architecturally clean "alloc uninit
+    /// + explicit zero" pipeline. Backends with native device-side
+    /// fills (CUDA `cuMemsetD8Async`, Vulkan `vkCmdFillBuffer`)
+    /// dispatch through their kernels; CPU does an
+    /// `Arc::make_mut`-style in-place memset.
+    ///
+    /// Future extension: an `Op::Fill { value: u8 }` (or `Scalar`)
+    /// for non-zero patterns. ZeroFill is the only variant today
+    /// because zero is the only init pattern any current caller
+    /// needs.
+    ZeroFill,
+
     /// Phase 7.6 single-arm delegate to the open
     /// [`crate::registry::FusedOpRegistry`]. The id selects which
     /// fused op (SoftmaxLastDim, RmsNormLastDim, FlashAttn, ...) and
@@ -750,7 +769,7 @@ impl Op {
     /// via ordering edges derived by [`opt::derive_ordering`].
     pub fn destructive_input(&self) -> Option<usize> {
         match self {
-            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } => Some(0),
+            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::ZeroFill => Some(0),
             _ => None,
         }
     }
@@ -911,6 +930,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Move{..}             => "Move",
         Op::WriteSlice{..}       => "WriteSlice",
         Op::Alloc{..}            => "Alloc",
+        Op::ZeroFill             => "ZeroFill",
         // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
         // names through a static lookup; until then, all fused ops
         // share one short name. Distinguishing in error messages is
@@ -6282,6 +6302,13 @@ impl Tensor {
                     // no derivative. Mirrors Op::Const's treatment.
                     // (Phase 3a of bridge-retirement; see
                     // `WorkItemKind::Alloc` in fuel-storage.)
+                }
+                Op::ZeroFill => {
+                    // Op::ZeroFill writes deterministic constants
+                    // (zeros) to its input's bytes. The output is
+                    // a constant tensor; gradient w.r.t. it is
+                    // meaningless. Like Op::Const / Op::Alloc, no
+                    // gradient propagates back.
                 }
             }
         }

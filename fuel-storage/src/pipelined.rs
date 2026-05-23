@@ -150,6 +150,25 @@ enum WorkItemKind {
     Alloc {
         target_location: DeviceLocation,
     },
+    /// `Op::ZeroFill` — fill the input's storage bytes with zero,
+    /// in place. Adopts the input's Storage Arc as the output (same
+    /// Storage; bytes mutated). Destructive on `inputs[0]`.
+    ///
+    /// Direct executor dispatch (no binding-table lookup) per the
+    /// same rationale as `WorkItemKind::Alloc`: structural op,
+    /// per-backend dispatch. Per-backend behaviour:
+    /// - CPU: `bytes_mut().fill(0)` via the CoW path.
+    /// - CUDA: `CudaStorageBytes::zero_async` via baracuda alpha.30's
+    ///   `DeviceBuffer::zero_async` (cuMemsetD8Async, in-place).
+    /// - Vulkan: `VulkanBackend::fill_bytes_zero` via
+    ///   `vkCmdFillBuffer` — device-side, ~2× the bandwidth of the
+    ///   old host-staged zeros path that `alloc_zeroed_on` used.
+    ///
+    /// Phase 3a follow-up of bridge-retirement (post-9c). Pairs with
+    /// the uninit-alloc `WorkItemKind::Alloc` to give the
+    /// architecturally clean "Op::Alloc (uninit) → Op::ZeroFill
+    /// (explicit fill)" pipeline.
+    ZeroFill,
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -686,6 +705,41 @@ fn compile_one(
         });
     }
 
+    if matches!(node.op, Op::ZeroFill) {
+        // Op::ZeroFill: 1 input (the buffer to zero); output aliases
+        // input's Storage Arc (destructive in-place). No binding-
+        // table lookup — per-backend dispatch in execute_work_item.
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::ZeroFill expects 1 input, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        // Output layout: contiguous in the node's shape. We don't
+        // require the input to be contiguous (auto_contiguize in the
+        // executor handles strided inputs), but the destructive
+        // semantic means callers should only ZeroFill an Op::Alloc
+        // output today.
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::ZeroFill,
+            compiled: None,
+            output_layout,
+            destructive_input,
+        });
+    }
+
     if let Op::Copy { target } = node.op {
         // Op::Copy { target }: download bytes from the source residency
         // to a fresh Storage allocated on `target`. Kernel lookup uses
@@ -1029,6 +1083,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         // arm, since target_location differs from target_backend for
         // this op (the only one with that property today).
         Op::Copy { .. } => Some(OpKind::Copy),
+        // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
+        // ops dispatched directly via `WorkItemKind::Alloc` /
+        // `WorkItemKind::ZeroFill` (no binding-table lookup).
+        // `compile_plan` skips these.
+        Op::Alloc { .. } | Op::ZeroFill => None,
         _ => None,
     }
 }
@@ -2211,6 +2270,11 @@ fn execute_work_item(
             // via `pipelined_bridge::device_seed_storage`).
             let n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let alloced: Storage = match target_location {
+                // CPU has no separate uninit alloc primitive in safe
+                // Rust (`vec![0; n]` is the canonical path). Op::Alloc
+                // on CPU returns zero-init storage; the following
+                // Op::ZeroFill is a redundant memset the optimizer
+                // can elide and LLVM folds away regardless.
                 DeviceLocation::Cpu => crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
                 #[cfg(feature = "cuda")]
                 DeviceLocation::Cuda { gpu_id } => {
@@ -2223,8 +2287,14 @@ fn execute_work_item(
                              device_seed_storage`) before realizing.",
                             gpu_id,
                         )).bt())?;
+                    // Phase 3a follow-up: true uninit alloc via
+                    // baracuda alpha.30's unsafe alloc. The bytes are
+                    // uninit until a subsequent Op::ZeroFill or full-
+                    // overwrite op runs. The byte-storage Arc has no
+                    // typed-slice accessor that would dereference
+                    // uninit bytes.
                     let cuda_bytes =
-                        fuel_cuda_backend::CudaStorageBytes::alloc(&cuda_dev, n_bytes)?;
+                        fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
                     Storage::new(crate::BackendStorage::Cuda(cuda_bytes), item.dtype)
                 }
                 #[cfg(not(feature = "cuda"))]
@@ -2245,13 +2315,13 @@ fn execute_work_item(
                              device_seed_storage`) before realizing.",
                             gpu_id,
                         )).bt())?;
-                    // Vulkan's alloc_bytes_handle is uninitialized;
-                    // stage host zeros to get zero-init semantics.
-                    // Matches the existing `alloc_zeroed_on`'s Vulkan
-                    // branch — see the comment there about
-                    // `vkCmdFillBuffer` as a future optimization.
-                    let zeros = vec![0_u8; n_bytes];
-                    let vk_bytes = backend.upload_bytes_handle(&zeros)?;
+                    // Phase 3a follow-up: true uninit alloc. The old
+                    // `upload_bytes_handle(vec![0u8; n])` host-staged
+                    // zeros (~2× the bandwidth of a device-side fill);
+                    // we now allocate uninit and rely on a paired
+                    // Op::ZeroFill (vkCmdFillBuffer) for the
+                    // initialization. Faster KV-cache init on Vulkan.
+                    let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
                     Storage::new(crate::BackendStorage::Vulkan(vk_bytes), item.dtype)
                 }
                 #[cfg(not(feature = "vulkan"))]
@@ -2271,6 +2341,75 @@ fn execute_work_item(
                 }
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(alloced)));
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::ZeroFill => {
+            // Op::ZeroFill: in-place zero the input's bytes. Output
+            // adopts the input's Storage Arc (same Storage; bytes
+            // are mutated). Direct per-backend dispatch — no kernel
+            // call, no binding-table lookup.
+            if item.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "PipelinedExecutor: ZeroFill work item {:?} expects \
+                     1 input, got {}",
+                    item.node_id, item.inputs.len(),
+                )).bt());
+            }
+            let src_id = item.inputs[0];
+            let src_arc = cache.get(&src_id).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: ZeroFill input {:?} of {:?} \
+                     not realized",
+                    src_id, item.node_id,
+                ))
+                .bt()
+            })?;
+            // Per-backend in-place fill. Acquired the write lock once
+            // for the duration of the fill — kernels on async backends
+            // (CUDA / Vulkan) issue the memset and return; the fence
+            // happens when downstream readers acquire the read lock
+            // through the executor's standard synchronization path.
+            {
+                let mut guard = src_arc
+                    .write()
+                    .map_err(|_| poisoned("ZeroFill destination storage"))?;
+                match &mut guard.inner {
+                    crate::BackendStorage::Cpu(c) => {
+                        let bytes = c.bytes_mut();
+                        bytes.fill(0);
+                    }
+                    #[cfg(feature = "cuda")]
+                    crate::BackendStorage::Cuda(c) => {
+                        c.zero_async()?;
+                    }
+                    #[cfg(feature = "vulkan")]
+                    crate::BackendStorage::Vulkan(v) => {
+                        let backend = v.backend().ok_or_else(|| {
+                            Error::Msg(
+                                "Op::ZeroFill on Vulkan: input has no \
+                                 attached backend handle. Storage must \
+                                 come from VulkanBackend::alloc_bytes_handle \
+                                 / upload_bytes_handle.".to_string()
+                            ).bt()
+                        })?.clone();
+                        backend.fill_bytes_zero(v)?;
+                    }
+                    #[allow(unreachable_patterns)]
+                    other => {
+                        return Err(Error::Msg(format!(
+                            "Op::ZeroFill: backend not wired ({other:?}); \
+                             CPU + CUDA + Vulkan covered, Metal extends \
+                             when its byte-storage substrate is ready.",
+                        )).bt());
+                    }
+                }
+            }
+            // Adopt the (now-zero) Storage Arc at this node's slot.
+            // Downstream readers go through `node_id`; the original
+            // input's NodeId is evicted from the cache by the
+            // realize loop's destructive_input cleanup.
+            cache.insert(item.node_id, src_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }

@@ -106,6 +106,50 @@ impl CudaStorageBytes {
         })
     }
 
+    /// Bridge-retirement Phase 3a follow-up: uninit alloc on `device`.
+    /// Wraps the raw `CudaDevice::alloc::<u8>` (uninit `cuMemAlloc`).
+    /// Callers must zero or write the bytes before reading — typically
+    /// by following with an `Op::ZeroFill` graph node, whose CUDA
+    /// kernel calls [`Self::zero_async`].
+    ///
+    /// The `unsafe` on `CudaDevice::alloc` is wrapped here; the safety
+    /// contract is "bytes are uninitialized; reads before a write are
+    /// UB at the typed-slice boundary". Internal to the executor's
+    /// `WorkItemKind::Alloc` → `WorkItemKind::ZeroFill` (or other
+    /// init op) sequence, this contract is upheld by construction.
+    pub fn alloc_uninit(device: &CudaDevice, byte_count: usize) -> Result<Self> {
+        // SAFETY: returned bytes are uninit; the caller (executor's
+        // WorkItemKind::Alloc arm) guarantees a subsequent Op::ZeroFill
+        // or full-buffer-write op runs before any reader observes the
+        // bytes. The byte-level Arc wrapper has no `as_slice<T>()` arm
+        // that would dereference uninit bytes between Alloc and Fill.
+        let buffer = unsafe { device.alloc::<u8>(byte_count) }?;
+        Ok(Self {
+            buffer: Arc::new(buffer),
+            device: device.clone(),
+            len_bytes: byte_count,
+        })
+    }
+
+    /// Bridge-retirement Phase 3a follow-up: in-place device-side
+    /// zero-fill via baracuda alpha.30's `DeviceBuffer::zero_async`
+    /// (`cuMemsetD8Async`). The buffer's identity (CUdeviceptr)
+    /// doesn't change — `Arc` clones held elsewhere see the same
+    /// post-zero bytes.
+    ///
+    /// Used by `fuel-storage::pipelined::WorkItemKind::ZeroFill` for
+    /// `Op::ZeroFill` nodes. Pairs with [`Self::alloc_uninit`] to
+    /// give the architecturally clean `Op::Alloc` (uninit) →
+    /// `Op::ZeroFill` (explicit fill) pipeline.
+    pub fn zero_async(&self) -> Result<()> {
+        if self.len_bytes == 0 {
+            return Ok(());
+        }
+        let stream = self.device.cuda_stream();
+        self.buffer.zero_async(&stream).w()?;
+        Ok(())
+    }
+
     /// Phase 7.5 A4 substrate H2D. Allocates a fresh device buffer
     /// on `device` of size `src.len()` bytes, then copies the host
     /// slice into it. Used by `Op::Copy` / `Op::Move` from a CPU
