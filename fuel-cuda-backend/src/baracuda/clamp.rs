@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Result};
+use fuel_core_types::{Error, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -46,6 +46,7 @@ type TernaryStridedRun = unsafe extern "C" fn(
 /// the per-dtype wrapper from Fuel's `(min: f64, max: f64)` params.
 fn clamp_run(
     src: &CudaStorageBytes,
+    src_layout: &Layout,
     lo_bytes: &[u8],
     hi_bytes: &[u8],
     dtype_size_bytes: usize,
@@ -62,19 +63,16 @@ fn clamp_run(
         .bt());
     }
     let device = src.device().clone();
-    if src.len_bytes() % dtype_size_bytes != 0 {
-        return Err(Error::Msg(format!(
-            "{op_label}: src.len_bytes={} not a multiple of dtype size {}",
-            src.len_bytes(),
-            dtype_size_bytes,
-        ))
-        .bt());
+    let dims = src_layout.shape().dims();
+    let rank = dims.len();
+    if rank == 0 {
+        return Err(Error::Msg(format!("{op_label}: rank-0 input not supported")).bt());
     }
-    let numel = (src.len_bytes() / dtype_size_bytes) as i64;
+    let numel = src_layout.shape().elem_count() as i64;
     if numel == 0 {
         return CudaStorageBytes::alloc(&device, 0);
     }
-    let out_bytes = src.len_bytes();
+    let out_bytes = (numel as usize) * dtype_size_bytes;
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let lo_buf = CudaStorageBytes::from_cpu_bytes(&device, lo_bytes)?;
     let hi_buf = CudaStorageBytes::from_cpu_bytes(&device, hi_bytes)?;
@@ -86,25 +84,32 @@ fn clamp_run(
     let c_ptr = hi_buf.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
 
-    // Rank-1 reshape: shape=[numel]; src + out are contig (stride 1),
-    // bounds are broadcast (stride 0).
-    let shape: [i32; 1] = [i32::try_from(numel as usize).map_err(|_| {
-        Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 0,
-            dim_value: numel as usize,
-        })
-    })?];
-    let stride_a: [i64; 1] = [1];
-    let stride_b: [i64; 1] = [0];
-    let stride_c: [i64; 1] = [0];
-    let stride_y: [i64; 1] = [1];
+    // Rank-N walk over the input's true layout; bounds are broadcast
+    // (stride 0 on every axis); output is contig over the input's shape.
+    let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
+    for (i, &d) in dims.iter().enumerate() {
+        shape_i32.push(i32::try_from(d).map_err(|_| {
+            Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                op: op_label, dim_index: i, dim_value: d,
+            })
+        })?);
+    }
+    let stride_a: Vec<i64> = src_layout.stride().iter().map(|&s| s as i64).collect();
+    let stride_b: Vec<i64> = vec![0; rank];
+    let stride_c: Vec<i64> = vec![0; rank];
+    let stride_y: Vec<i64> = {
+        let mut s = vec![1_i64; rank];
+        for d in (0..rank.saturating_sub(1)).rev() {
+            s[d] = s[d + 1] * dims[d + 1] as i64;
+        }
+        s
+    };
 
     let status = unsafe {
         kernel(
             numel,
-            1,
-            shape.as_ptr(),
+            rank as i32,
+            shape_i32.as_ptr(),
             stride_a.as_ptr(),
             stride_b.as_ptr(),
             stride_c.as_ptr(),
@@ -127,9 +132,15 @@ fn clamp_run(
     ))
 }
 
-pub fn clamp_f32(src: &CudaStorageBytes, min: f32, max: f32) -> Result<CudaStorageBytes> {
+pub fn clamp_f32(
+    src: &CudaStorageBytes,
+    src_layout: &Layout,
+    min: f32,
+    max: f32,
+) -> Result<CudaStorageBytes> {
     clamp_run(
         src,
+        src_layout,
         &min.to_le_bytes(),
         &max.to_le_bytes(),
         4,
@@ -138,9 +149,15 @@ pub fn clamp_f32(src: &CudaStorageBytes, min: f32, max: f32) -> Result<CudaStora
     )
 }
 
-pub fn clamp_f64(src: &CudaStorageBytes, min: f64, max: f64) -> Result<CudaStorageBytes> {
+pub fn clamp_f64(
+    src: &CudaStorageBytes,
+    src_layout: &Layout,
+    min: f64,
+    max: f64,
+) -> Result<CudaStorageBytes> {
     clamp_run(
         src,
+        src_layout,
         &min.to_le_bytes(),
         &max.to_le_bytes(),
         8,
@@ -149,13 +166,19 @@ pub fn clamp_f64(src: &CudaStorageBytes, min: f64, max: f64) -> Result<CudaStora
     )
 }
 
-pub fn clamp_f16(src: &CudaStorageBytes, min: f32, max: f32) -> Result<CudaStorageBytes> {
+pub fn clamp_f16(
+    src: &CudaStorageBytes,
+    src_layout: &Layout,
+    min: f32,
+    max: f32,
+) -> Result<CudaStorageBytes> {
     // f16 is half_t — 2 bytes. Convert f32 bounds to f16 (lossy but
     // matches the storage's precision).
     let min_h = half::f16::from_f32(min);
     let max_h = half::f16::from_f32(max);
     clamp_run(
         src,
+        src_layout,
         &min_h.to_le_bytes(),
         &max_h.to_le_bytes(),
         2,
@@ -164,11 +187,17 @@ pub fn clamp_f16(src: &CudaStorageBytes, min: f32, max: f32) -> Result<CudaStora
     )
 }
 
-pub fn clamp_bf16(src: &CudaStorageBytes, min: f32, max: f32) -> Result<CudaStorageBytes> {
+pub fn clamp_bf16(
+    src: &CudaStorageBytes,
+    src_layout: &Layout,
+    min: f32,
+    max: f32,
+) -> Result<CudaStorageBytes> {
     let min_b = half::bf16::from_f32(min);
     let max_b = half::bf16::from_f32(max);
     clamp_run(
         src,
+        src_layout,
         &min_b.to_le_bytes(),
         &max_b.to_le_bytes(),
         2,

@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Result};
+use fuel_core_types::{DType, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -47,14 +47,18 @@ type SoftmaxRun = unsafe extern "C" fn(
 /// bytes.
 fn softmax_last_dim_run(
     src: &CudaStorageBytes,
-    outer_count: usize,
-    last_dim: usize,
+    src_layout: &Layout,
     kernel: SoftmaxRun,
     op_label: &'static str,
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     let device = src.device().clone();
-    let numel: i64 = (outer_count * last_dim) as i64;
+    let dims = src_layout.shape().dims();
+    let rank = dims.len();
+    let last_dim = *dims.last().ok_or_else(|| fuel_core_types::Error::Msg(
+        format!("{op_label}: rank-0 input not supported"),
+    ).bt())?;
+    let numel: i64 = src_layout.shape().elem_count() as i64;
     let out_bytes = (numel as usize) * dtype_size_bytes;
     if out_bytes == 0 {
         return CudaStorageBytes::alloc(&device, 0);
@@ -63,27 +67,32 @@ fn softmax_last_dim_run(
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
-    let oc = i32::try_from(outer_count).map_err(|_| {
+    // Build rank-N shape + per-input strides from the layout.
+    let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
+    for (i, &d) in dims.iter().enumerate() {
+        shape_i32.push(i32::try_from(d).map_err(|_| {
+            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                op: op_label, dim_index: i, dim_value: d,
+            })
+        })?);
+    }
+    let stride_x: Vec<i64> = src_layout.stride().iter().map(|&s| s as i64).collect();
+    // Output is freshly allocated contig over the input's shape.
+    let stride_y: Vec<i64> = {
+        let mut s = vec![1_i64; rank];
+        for d in (0..rank.saturating_sub(1)).rev() {
+            s[d] = s[d + 1] * dims[d + 1] as i64;
+        }
+        s
+    };
+    let ld_i32 = i32::try_from(last_dim).map_err(|_| {
         fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 0,
-            dim_value: outer_count,
+            op: op_label, dim_index: rank - 1, dim_value: last_dim,
         })
     })?;
-    let ld = i32::try_from(last_dim).map_err(|_| {
-        fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 1,
-            dim_value: last_dim,
-        })
-    })?;
-    let shape: [i32; 2] = [oc, ld];
-    let stride_x: [i64; 2] = [last_dim as i64, 1];
-    let stride_y: [i64; 2] = [last_dim as i64, 1];
-    // softmax-axis stride is the stride along the normalized axis
-    // (last axis → stride 1 in row-major).
-    let softmax_stride_x: i64 = 1;
-    let softmax_stride_y: i64 = 1;
+    let softmax_axis = (rank - 1) as i32;
+    let softmax_stride_x: i64 = stride_x[rank - 1];
+    let softmax_stride_y: i64 = stride_y[rank - 1];
 
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
@@ -91,12 +100,12 @@ fn softmax_last_dim_run(
     let status = unsafe {
         kernel(
             numel,
-            2,
-            shape.as_ptr(),
+            rank as i32,
+            shape_i32.as_ptr(),
             stride_x.as_ptr(),
             stride_y.as_ptr(),
-            1, // last axis (rank-1 = 1 for rank-2)
-            ld,
+            softmax_axis,
+            ld_i32,
             softmax_stride_x,
             softmax_stride_y,
             x_ptr,
@@ -121,13 +130,11 @@ macro_rules! softmax_kernel {
             #[doc = concat!("Baracuda `", $op_label, "` LastDim kernel.")]
             pub fn $name(
                 src: &CudaStorageBytes,
-                outer_count: usize,
-                last_dim: usize,
+                src_layout: &Layout,
             ) -> Result<CudaStorageBytes> {
                 softmax_last_dim_run(
                     src,
-                    outer_count,
-                    last_dim,
+                    src_layout,
                     sys::[<baracuda_kernels_ $sys_stem _run>],
                     $op_label,
                     $dtype_size,

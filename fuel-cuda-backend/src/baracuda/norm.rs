@@ -23,13 +23,61 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Result};
+use fuel_core_types::{DType, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 use crate::error::CudaError;
 
 use super::scratch::Workspace;
 use super::status::check;
+
+/// Build the rank-N `shape` (i32) + `stride_x` (i64) buffers baracuda
+/// expects from a Fuel `Layout`. Also returns `stride_y` (contig over
+/// the same shape; baracuda always writes the output contig) and
+/// `stride_aux` — the rank-N stride for an `[outer_count]` aux buffer
+/// where the normalized (last) axis carries stride 0.
+fn shape_and_strides_from_layout(
+    layout: &Layout,
+    op_label: &'static str,
+) -> Result<(Vec<i32>, Vec<i64>, Vec<i64>, Vec<i64>)> {
+    let dims = layout.shape().dims();
+    let rank = dims.len();
+    if rank == 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: rank-0 input not supported",
+        )).bt());
+    }
+    let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
+    for (i, &d) in dims.iter().enumerate() {
+        shape_i32.push(i32::try_from(d).map_err(|_| {
+            fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
+                op: op_label, dim_index: i, dim_value: d,
+            })
+        })?);
+    }
+    let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+    // Output is freshly allocated contig over the input's shape.
+    let stride_y: Vec<i64> = {
+        let mut s = vec![1_i64; rank];
+        for d in (0..rank.saturating_sub(1)).rev() {
+            s[d] = s[d + 1] * dims[d + 1] as i64;
+        }
+        s
+    };
+    // Aux buffer ([outer_count] flat) — contig stride over leading dims,
+    // stride 0 for the normalized (last) axis.
+    let stride_aux: Vec<i64> = {
+        let mut s = vec![0_i64; rank];
+        if rank >= 2 {
+            s[rank - 2] = 1;
+            for d in (0..rank.saturating_sub(2)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+        }
+        s
+    };
+    Ok((shape_i32, stride_x, stride_y, stride_aux))
+}
 
 type RmsNormRun = unsafe extern "C" fn(
     eps: f32,
@@ -78,15 +126,20 @@ type LayerNormRun = unsafe extern "C" fn(
 /// after the call.
 fn rms_norm_last_dim_run(
     src: &CudaStorageBytes,
-    outer_count: usize,
-    last_dim: usize,
+    src_layout: &Layout,
     eps: f64,
     kernel: RmsNormRun,
     op_label: &'static str,
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     let device = src.device().clone();
-    let numel: i64 = (outer_count * last_dim) as i64;
+    let dims = src_layout.shape().dims();
+    let rank = dims.len();
+    let last_dim = *dims.last().ok_or_else(|| fuel_core_types::Error::Msg(
+        format!("{op_label}: rank-0 input not supported"),
+    ).bt())?;
+    let numel: i64 = src_layout.shape().elem_count() as i64;
+    let outer_count = (numel as usize) / last_dim.max(1);
     let out_bytes = (numel as usize) * dtype_size_bytes;
     if out_bytes == 0 {
         return CudaStorageBytes::alloc(&device, 0);
@@ -96,30 +149,14 @@ fn rms_norm_last_dim_run(
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
-    // Flattened [outer_count, last_dim] rank-2 representation; the
-    // axis mask is the bit for the last axis.
-    let oc = i32::try_from(outer_count).map_err(|_| {
+    let (shape_i32, stride_x, stride_y, stride_rms) =
+        shape_and_strides_from_layout(src_layout, op_label)?;
+    let ld_i32 = i32::try_from(last_dim).map_err(|_| {
         fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 0,
-            dim_value: outer_count,
+            op: op_label, dim_index: rank - 1, dim_value: last_dim,
         })
     })?;
-    let ld = i32::try_from(last_dim).map_err(|_| {
-        fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 1,
-            dim_value: last_dim,
-        })
-    })?;
-    let shape: [i32; 2] = [oc, ld];
-    let stride_x: [i64; 2] = [last_dim as i64, 1];
-    let stride_y: [i64; 2] = [last_dim as i64, 1];
-    // rms_out has shape [outer_count]; its stride is rank-1 → [1].
-    // The norm kernel reads `stride_rms` as rank-2 too, with the
-    // norm-axis stride being 0 (no extent in rms_out for the
-    // normalized dim).
-    let stride_rms: [i64; 2] = [1, 0];
+    let axes_mask: i32 = 1 << (rank as i32 - 1);
 
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
@@ -131,13 +168,13 @@ fn rms_norm_last_dim_run(
         kernel(
             eps as f32,
             numel,
-            2,
-            shape.as_ptr(),
+            rank as i32,
+            shape_i32.as_ptr(),
             stride_x.as_ptr(),
             stride_y.as_ptr(),
             stride_rms.as_ptr(),
-            1 << 1, // bit for last (= rank-1 = 1) axis
-            ld,
+            axes_mask,
+            ld_i32,
             x_ptr,
             std::ptr::null(), // no affine gamma
             y_ptr,
@@ -162,15 +199,20 @@ fn rms_norm_last_dim_run(
 /// are scratch (size = outer_count × sizeof(T) each).
 fn layer_norm_last_dim_run(
     src: &CudaStorageBytes,
-    outer_count: usize,
-    last_dim: usize,
+    src_layout: &Layout,
     eps: f64,
     kernel: LayerNormRun,
     op_label: &'static str,
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     let device = src.device().clone();
-    let numel: i64 = (outer_count * last_dim) as i64;
+    let dims = src_layout.shape().dims();
+    let rank = dims.len();
+    let last_dim = *dims.last().ok_or_else(|| fuel_core_types::Error::Msg(
+        format!("{op_label}: rank-0 input not supported"),
+    ).bt())?;
+    let numel: i64 = src_layout.shape().elem_count() as i64;
+    let outer_count = (numel as usize) / last_dim.max(1);
     let out_bytes = (numel as usize) * dtype_size_bytes;
     if out_bytes == 0 {
         return CudaStorageBytes::alloc(&device, 0);
@@ -181,24 +223,14 @@ fn layer_norm_last_dim_run(
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
-    let oc = i32::try_from(outer_count).map_err(|_| {
+    let (shape_i32, stride_x, stride_y, stride_save) =
+        shape_and_strides_from_layout(src_layout, op_label)?;
+    let ld_i32 = i32::try_from(last_dim).map_err(|_| {
         fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 0,
-            dim_value: outer_count,
+            op: op_label, dim_index: rank - 1, dim_value: last_dim,
         })
     })?;
-    let ld = i32::try_from(last_dim).map_err(|_| {
-        fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
-            op: op_label,
-            dim_index: 1,
-            dim_value: last_dim,
-        })
-    })?;
-    let shape: [i32; 2] = [oc, ld];
-    let stride_x: [i64; 2] = [last_dim as i64, 1];
-    let stride_y: [i64; 2] = [last_dim as i64, 1];
-    let stride_save: [i64; 2] = [1, 0];
+    let axes_mask: i32 = 1 << (rank as i32 - 1);
 
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
@@ -209,13 +241,13 @@ fn layer_norm_last_dim_run(
         kernel(
             eps as f32,
             numel,
-            2,
-            shape.as_ptr(),
+            rank as i32,
+            shape_i32.as_ptr(),
             stride_x.as_ptr(),
             stride_y.as_ptr(),
             stride_save.as_ptr(),
-            1 << 1,
-            ld,
+            axes_mask,
+            ld_i32,
             x_ptr,
             std::ptr::null(),
             std::ptr::null(),
@@ -244,14 +276,12 @@ macro_rules! rms_norm_kernel {
             #[doc = concat!("Baracuda `rms_norm_", stringify!($dtype_stem), "` LastDim kernel.")]
             pub fn $name(
                 src: &CudaStorageBytes,
-                outer_count: usize,
-                last_dim: usize,
+                src_layout: &Layout,
                 eps: f64,
             ) -> Result<CudaStorageBytes> {
                 rms_norm_last_dim_run(
                     src,
-                    outer_count,
-                    last_dim,
+                    src_layout,
                     eps,
                     sys::[<baracuda_kernels_rms_norm_ $dtype_stem _run>],
                     $op_label,
@@ -268,14 +298,12 @@ macro_rules! layer_norm_kernel {
             #[doc = concat!("Baracuda `layer_norm_", stringify!($dtype_stem), "` LastDim kernel.")]
             pub fn $name(
                 src: &CudaStorageBytes,
-                outer_count: usize,
-                last_dim: usize,
+                src_layout: &Layout,
                 eps: f64,
             ) -> Result<CudaStorageBytes> {
                 layer_norm_last_dim_run(
                     src,
-                    outer_count,
-                    last_dim,
+                    src_layout,
                     eps,
                     sys::[<baracuda_kernels_layer_norm_ $dtype_stem _run>],
                     $op_label,

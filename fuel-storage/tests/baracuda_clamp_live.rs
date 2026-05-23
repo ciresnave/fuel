@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType};
+use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_storage::{
     baracuda_dispatch::register_baracuda_cuda_kernels,
@@ -81,10 +81,11 @@ fn run_clamp<T: bytemuck::Pod>(
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
     let kernel = pick_alt(table, OpKind::ClampElementwise, &[dt, dt], expected);
+    let layout = Layout::contiguous(Shape::from_dims(&[input.len()]));
     kernel(
         &[src_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &[layout.clone(), layout],
         &OpParams::Clamp { min, max },
     )
     .expect("kernel call");
