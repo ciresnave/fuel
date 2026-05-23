@@ -2028,15 +2028,15 @@ impl VulkanBackend {
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
         exp: i32,
+        layout: &Layout,
     ) -> fuel_core_types::Result<()> {
-        let n = input.len_bytes() / std::mem::size_of::<f32>();
-        let need_bytes = n * std::mem::size_of::<f32>();
-        if input.len_bytes() != need_bytes {
-            fuel_core_types::bail!(
-                "powi_f32_bytes: input bytes {} not a multiple of f32 size",
-                input.len_bytes(),
-            );
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("powi_f32_bytes: rank {rank} > 4");
         }
+        let need_bytes = out_elem * std::mem::size_of::<f32>();
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "powi_f32_bytes: out {} bytes < required {}",
@@ -2044,9 +2044,29 @@ impl VulkanBackend {
             );
         }
 
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct PowiParams { n: u32, exp: i32 }
-        let p = PowiParams { n: n as u32, exp };
+        struct PowiParams {
+            out_size: u32, flags: u32, exp: i32, _pad: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
+        let p = PowiParams {
+            out_size: out_elem as u32, flags, exp, _pad: 0,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+        };
 
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
             "powi_f32_bytes: input is host-evicted; fault back first".into(),
@@ -2055,11 +2075,12 @@ impl VulkanBackend {
             "powi_f32_bytes: out is host-evicted; fault back first".into(),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<PowiParams>() as u64;
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -2067,7 +2088,7 @@ impl VulkanBackend {
             &self.pipelines.powi_pipeline,
             &self.pipelines.powi_layout,
             desc,
-            (Self::workgroups(n), 1, 1),
+            (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
@@ -2084,15 +2105,15 @@ impl VulkanBackend {
         out: &mut VulkanStorageBytes,
         lo: f64,
         hi: f64,
+        layout: &Layout,
     ) -> fuel_core_types::Result<()> {
-        let n = input.len_bytes() / std::mem::size_of::<f32>();
-        let need_bytes = n * std::mem::size_of::<f32>();
-        if input.len_bytes() != need_bytes {
-            fuel_core_types::bail!(
-                "clamp_f32_bytes: input bytes {} not a multiple of f32 size",
-                input.len_bytes(),
-            );
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("clamp_f32_bytes: rank {rank} > 4");
         }
+        let need_bytes = out_elem * std::mem::size_of::<f32>();
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "clamp_f32_bytes: out {} bytes < required {}",
@@ -2100,11 +2121,29 @@ impl VulkanBackend {
             );
         }
 
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct ClampParams { n: u32, _pad: u32, lo: f32, hi: f32 }
+        struct ClampParams {
+            out_size: u32, flags: u32, lo: f32, hi: f32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
         let p = ClampParams {
-            n: n as u32, _pad: 0,
+            out_size: out_elem as u32, flags,
             lo: lo as f32, hi: hi as f32,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
         };
 
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
@@ -2114,11 +2153,12 @@ impl VulkanBackend {
             "clamp_f32_bytes: out is host-evicted; fault back first".into(),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<ClampParams>() as u64;
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -2126,7 +2166,7 @@ impl VulkanBackend {
             &self.pipelines.clamp_pipeline,
             &self.pipelines.clamp_layout,
             desc,
-            (Self::workgroups(n), 1, 1),
+            (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
@@ -2143,15 +2183,15 @@ impl VulkanBackend {
         out: &mut VulkanStorageBytes,
         mul: f64,
         add: f64,
+        layout: &Layout,
     ) -> fuel_core_types::Result<()> {
-        let n = input.len_bytes() / std::mem::size_of::<f32>();
-        let need_bytes = n * std::mem::size_of::<f32>();
-        if input.len_bytes() != need_bytes {
-            fuel_core_types::bail!(
-                "affine_f32_bytes: input bytes {} not a multiple of f32 size",
-                input.len_bytes(),
-            );
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("affine_f32_bytes: rank {rank} > 4");
         }
+        let need_bytes = out_elem * std::mem::size_of::<f32>();
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "affine_f32_bytes: out {} bytes < required {}",
@@ -2159,11 +2199,29 @@ impl VulkanBackend {
             );
         }
 
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct AffParams { n: u32, _pad: u32, mul: f32, add: f32 }
+        struct AffParams {
+            out_size: u32, flags: u32, mul: f32, add: f32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
         let p = AffParams {
-            n: n as u32, _pad: 0,
+            out_size: out_elem as u32, flags,
             mul: mul as f32, add: add as f32,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
         };
 
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
@@ -2173,11 +2231,12 @@ impl VulkanBackend {
             "affine_f32_bytes: out is host-evicted; fault back first".into(),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<AffParams>() as u64;
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -2185,7 +2244,7 @@ impl VulkanBackend {
             &self.pipelines.affine_pipeline,
             &self.pipelines.affine_layout,
             desc,
-            (Self::workgroups(n), 1, 1),
+            (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
@@ -3266,9 +3325,10 @@ impl VulkanBackend {
         op_name: &'static str,
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
+        layout: &Layout,
     ) -> fuel_core_types::Result<()> {
         self.unary_typed_bytes(
-            2, op_id, op_name, input, out,
+            2, op_id, op_name, input, out, layout,
             &self.pipelines.unary_f16_pipeline,
             &self.pipelines.unary_f16_layout,
         )
@@ -3281,9 +3341,10 @@ impl VulkanBackend {
         op_name: &'static str,
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
+        layout: &Layout,
     ) -> fuel_core_types::Result<()> {
         self.unary_typed_bytes(
-            8, op_id, op_name, input, out,
+            8, op_id, op_name, input, out, layout,
             &self.pipelines.unary_f64_pipeline,
             &self.pipelines.unary_f64_layout,
         )
@@ -3299,17 +3360,19 @@ impl VulkanBackend {
         op_name: &'static str,
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
+        layout: &Layout,
         pipeline: &ComputePipeline,
         pipe_layout: &PipelineLayout,
     ) -> fuel_core_types::Result<()> {
-        let n = input.len_bytes() / elem_size;
-        let need_bytes = n * elem_size;
-        if input.len_bytes() != need_bytes {
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
             fuel_core_types::bail!(
-                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of elem size {elem_size}",
-                input.len_bytes(),
+                "VulkanBackend::{op_name}: rank {rank} > 4"
             );
         }
+        let need_bytes = out_elem * elem_size;
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {}",
@@ -3317,9 +3380,30 @@ impl VulkanBackend {
             );
         }
 
+        // Pad shape and strides to rank 4 (leading dims = 1, strides = 0).
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct UParams { n: u32, op_id: u32 }
-        let p = UParams { n: n as u32, op_id };
+        struct UParams {
+            out_size: u32, op_id: u32, rank: u32, flags: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
+        let p = UParams {
+            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+        };
 
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
             format!("{op_name}: input is host-evicted; fault back first"),
@@ -3328,16 +3412,17 @@ impl VulkanBackend {
             format!("{op_name}: output is host-evicted; fault back first"),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<UParams>() as u64;
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
             op_name, pipeline, pipe_layout, desc,
-            (Self::workgroups(n), 1, 1),
+            (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
@@ -3896,15 +3981,17 @@ impl VulkanBackend {
         op_name: &'static str,
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
+        layout: &Layout,
     ) -> fuel_core_types::Result<()> {
-        let n = input.len_bytes() / std::mem::size_of::<f32>();
-        let need_bytes = n * std::mem::size_of::<f32>();
-        if input.len_bytes() != need_bytes {
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
             fuel_core_types::bail!(
-                "VulkanBackend::{op_name}: input bytes ({}) not a multiple of f32 size",
-                input.len_bytes(),
+                "VulkanBackend::{op_name}: rank {rank} > 4 (unary.slang supports rank 1-4)"
             );
         }
+        let need_bytes = out_elem * std::mem::size_of::<f32>();
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "VulkanBackend::{op_name}: output buffer {} bytes < required {} bytes",
@@ -3912,9 +3999,33 @@ impl VulkanBackend {
             );
         }
 
+        // Pad shape and strides to rank 4 (leading dims = 1, strides = 0).
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+
+        // Fast-path flag: contiguous AND matches output shape exactly
+        // (no stride-0 broadcast axes). Same gate as binary_f32_bytes.
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct UParams { n: u32, op_id: u32 }
-        let p = UParams { n: n as u32, op_id };
+        struct UParams {
+            out_size: u32, op_id: u32, rank: u32, flags: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
+        let p = UParams {
+            out_size: out_elem as u32, op_id, rank: rank as u32, flags,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+        };
 
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
             format!("{op_name}: input is host-evicted; fault back first"),
@@ -3937,7 +4048,7 @@ impl VulkanBackend {
             &self.pipelines.unary_pipeline,
             &self.pipelines.unary_layout,
             desc,
-            (Self::workgroups(n), 1, 1),
+            (Self::workgroups(out_elem), 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
