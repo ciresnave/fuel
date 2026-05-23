@@ -609,10 +609,10 @@ impl KernelBindingTable {
     /// runs at module init via `Lazy`/`OnceLock`, so a panic there
     /// fails fast at startup rather than at runtime).
     ///
-    /// PrecisionGuarantee defaults to [`PrecisionGuarantee::UNKNOWN`].
+    /// PrecisionGuarantee defaults to [`PrecisionGuarantee::UNAUDITED`].
     /// Step-7b convention: the always-built backend
     /// (fuel-cpu-backend) runs [`Self::fill_unset_cpu_precision`] at
-    /// the end of its bulk registration pass to upgrade every UNKNOWN
+    /// the end of its bulk registration pass to upgrade every UNAUDITED
     /// CPU entry to `PRIMITIVE_DETERMINISTIC_CPU` (bit-stable per
     /// hardware). Kernels with weaker guarantees should call
     /// [`Self::register_with_precision`] explicitly *before* the fill
@@ -627,7 +627,7 @@ impl KernelBindingTable {
         self.register_full(
             op, dtypes, backend, kernel,
             KernelCaps::empty(),
-            crate::fused::PrecisionGuarantee::UNKNOWN,
+            crate::fused::PrecisionGuarantee::UNAUDITED,
             unknown_cost,
         );
     }
@@ -646,7 +646,7 @@ impl KernelBindingTable {
     ) {
         self.register_full(
             op, dtypes, backend, kernel, caps,
-            crate::fused::PrecisionGuarantee::UNKNOWN,
+            crate::fused::PrecisionGuarantee::UNAUDITED,
             unknown_cost,
         );
     }
@@ -723,7 +723,7 @@ impl KernelBindingTable {
         alts.push(entry);
     }
 
-    /// Phase 7.6 step 7b: upgrade every UNKNOWN-precision CPU
+    /// Phase 7.6 step 7b: upgrade every UNAUDITED-precision CPU
     /// registration to the supplied `default`. Convention is to call
     /// this at the *end* of bulk registration, so any
     /// `register_with_precision(...)` calls that explicitly claimed a
@@ -732,17 +732,17 @@ impl KernelBindingTable {
     /// primitive registrations that all share the deterministic
     /// F32-accumulator property, a fill pass keeps the call sites
     /// concise without sacrificing the architectural commitment
-    /// (every entry ends up with an explicit, non-UNKNOWN precision
+    /// (every entry ends up with an explicit, non-UNAUDITED precision
     /// claim before lookup is ever exercised).
     ///
     /// Only entries with `backend == BackendId::Cpu` and the current
-    /// `PrecisionGuarantee::UNKNOWN` sentinel are touched. Non-CPU
-    /// backends register their own precision claims; non-UNKNOWN
+    /// `PrecisionGuarantee::UNAUDITED` sentinel are touched. Non-CPU
+    /// backends register their own precision claims; non-UNAUDITED
     /// entries are preserved.
     ///
     /// Step 9a: applies to **every alternative** registered under a
     /// CPU key, not just the first — so a key with N siblings all
-    /// starting at UNKNOWN ends with N entries upgraded to `default`.
+    /// starting at UNAUDITED ends with N entries upgraded to `default`.
     pub fn fill_unset_cpu_precision(&mut self, default: crate::fused::PrecisionGuarantee) {
         for ((_, _, backend), alts) in self.bindings.iter_mut() {
             if *backend != BackendId::Cpu {
@@ -755,9 +755,9 @@ impl KernelBindingTable {
                     && p.max_relative.is_none()
                     && p.max_absolute.is_none()
                 {
-                    // Heuristic for "this is an UNKNOWN sentinel": all
-                    // four bound fields are the UNKNOWN defaults. A real
-                    // weaker claim would set at least one bound field.
+                    // Structural detection of UNAUDITED: all four
+                    // value fields at sentinel defaults. A real
+                    // weaker claim would set at least one of them.
                     *p = default;
                 }
             }
@@ -825,7 +825,7 @@ impl KernelBindingTable {
     /// registered `(op, dtypes, backend)` triple. Returns the **first
     /// alternative**'s precision; multi-impl callers wanting all
     /// alternatives use [`Self::lookup_alternatives`]. Returns
-    /// `PrecisionGuarantee::UNKNOWN` if the binding is missing —
+    /// `PrecisionGuarantee::UNAUDITED` if the binding is missing —
     /// callers (notably the step-7b lint) treat that as "no claim"
     /// rather than panicking.
     pub fn lookup_precision(
@@ -839,7 +839,7 @@ impl KernelBindingTable {
             .get(&key)
             .and_then(|alts| alts.first())
             .map(|e| e.precision)
-            .unwrap_or(crate::fused::PrecisionGuarantee::UNKNOWN)
+            .unwrap_or(crate::fused::PrecisionGuarantee::UNAUDITED)
     }
 
     /// Look up the [`CostFn`] for a registered `(op, dtypes, backend)`
@@ -1160,7 +1160,7 @@ mod tests {
         table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
         table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel_alt);
 
-        // Both start at UNKNOWN.
+        // Both start at UNAUDITED.
         for e in table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu) {
             assert!(!e.precision.bit_stable_on_same_hardware);
         }
