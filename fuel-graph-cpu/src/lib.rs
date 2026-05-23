@@ -758,6 +758,16 @@ fn eval_node(
                  eager fuel-graph-cpu path should never see it.",
             );
         }
+        Op::ZeroFill => {
+            // Phase 3a follow-up: explicit in-place zero-fill paired
+            // with the uninit Op::Alloc. Pipelined-executor-only op,
+            // dispatched via `WorkItemKind::ZeroFill`.
+            unreachable!(
+                "fuel-graph-cpu eval_node: Op::ZeroFill is a pipelined-\
+                 executor-only op (in-place zero-fill); the eager \
+                 fuel-graph-cpu path should never see it.",
+            );
+        }
     }
 }
 

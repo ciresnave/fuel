@@ -838,6 +838,15 @@ pub fn eval_node_with_op(
                  reference-backend tests should not invoke it.",
             );
         }
+        Op::ZeroFill => {
+            // Phase 3a follow-up: explicit in-place zero-fill paired
+            // with the uninit Op::Alloc. Pipelined-executor-only op.
+            unreachable!(
+                "fuel-reference-backend eval_node: Op::ZeroFill is a \
+                 pipelined-executor-only op (in-place zero-fill); \
+                 reference-backend tests should not invoke it.",
+            );
+        }
     }
 }
 

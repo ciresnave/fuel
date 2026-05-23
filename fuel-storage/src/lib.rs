@@ -224,6 +224,54 @@ mod tests {
         assert_eq!(s.len_bytes(), 16);
     }
 
+    /// Bridge-retirement Phase 3a follow-up: realize an
+    /// `Op::Alloc → Op::ZeroFill` chain on CPU and verify the
+    /// resulting storage is zeroed. Exercises the executor's
+    /// `WorkItemKind::ZeroFill` arm on the CPU branch (which does an
+    /// explicit `bytes_mut().fill(0)` even though CPU's Op::Alloc
+    /// already returns zero-init storage — the explicit fill is the
+    /// architecturally-honest path; future uninit-CPU-alloc would
+    /// still need it).
+    #[test]
+    fn op_zero_fill_cpu_zeroes_alloc_output() {
+        use crate::pipelined::{PipelinedExecutor, StorageCache};
+        use fuel_core_types::{DeviceLocation, Shape};
+        use fuel_graph::{Graph, Node, Op};
+        use std::sync::{Arc, RwLock};
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let zero_id = {
+            let mut g = graph.write().unwrap();
+            let alloc_id = g.push(Node {
+                op: Op::Alloc { target: DeviceLocation::Cpu },
+                inputs: vec![],
+                shape: Shape::from_dims(&[16]),
+                dtype: DType::F32,
+            });
+            g.push(Node {
+                op: Op::ZeroFill,
+                inputs: vec![alloc_id],
+                shape: Shape::from_dims(&[16]),
+                dtype: DType::F32,
+            })
+        };
+
+        let (storage_arc, _layout) =
+            PipelinedExecutor::realize(graph, zero_id, StorageCache::new())
+                .expect("Op::Alloc → Op::ZeroFill realize");
+
+        let guard = storage_arc.read().unwrap();
+        match &guard.inner {
+            BackendStorage::Cpu(c) => {
+                assert_eq!(c.len_bytes(), 64);  // 16 * sizeof(f32) = 64
+                let typed: &[f32] = c.as_slice().expect("f32 cast");
+                assert!(typed.iter().all(|&x| x == 0.0_f32),
+                    "Op::ZeroFill must produce all-zero bytes; got {typed:?}");
+            }
+            other => panic!("expected CPU storage; got {other:?}"),
+        }
+    }
+
     /// Bridge-retirement Phase 3a (post-9c): realize an `Op::Alloc {
     /// target: Cpu }` and verify the executor produces a zero-init CPU
     /// storage. Exercises the executor's `WorkItemKind::Alloc` arm on
