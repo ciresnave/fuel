@@ -3560,6 +3560,83 @@ fn vulkan_dispatch_conv2d_f32() {
 }
 
 // ===========================================================================
+// Per-Vulkan-kernel PrecisionGuarantee + cost coverage lint
+// (Phase 7.6 step 9c follow-up, 2026-05-23)
+// ===========================================================================
+
+/// Coverage lint: every Vulkan registration must carry a non-`UNKNOWN`
+/// `PrecisionGuarantee` and a non-`unknown_cost` `CostFn`. Required by
+/// [05-backend-contract](../docs/architecture/05-backend-contract.md) so
+/// the optimizer's tolerance-budget pass and cost-ranking can admit
+/// Vulkan alternatives.
+///
+/// Mirrors the CPU lint
+/// (`precision_guarantee_lint_bit_stable_cpu_coverage_primitives`) but
+/// scoped to "every Vulkan registration has a real claim" rather than
+/// "every OpKind has a CPU registration" — Vulkan doesn't need to
+/// cover every OpKind; it just needs every registered kernel to have
+/// audited metadata.
+#[test]
+fn vulkan_dispatch_per_kernel_precision_and_cost_coverage() {
+    use fuel_storage::fused::PrecisionGuarantee;
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // The UNKNOWN sentinel is distinguished from intentional "not bit-
+    // stable, no static bound" claims (e.g., VULKAN_REDUCTION_PRECISION)
+    // only by its `notes` text — both have `bit_stable=false` and a
+    // None triple. Compare against the canonical UNKNOWN notes string.
+    let unknown_notes = PrecisionGuarantee::UNKNOWN.notes;
+
+    let mut precision_failures: Vec<String> = Vec::new();
+    for (op, dtypes, backend, precision) in table.iter_precision() {
+        if backend != BackendId::Vulkan {
+            continue;
+        }
+        if precision.notes == unknown_notes {
+            precision_failures.push(format!(
+                "(OpKind::{:?}, {:?}, Vulkan) still has PrecisionGuarantee::\
+                 UNKNOWN. Annotate via `register_with_precision` in \
+                 `vulkan_dispatch::register_vulkan_kernels` with the \
+                 appropriate VULKAN_*_PRECISION constant from \
+                 `fuel-storage::fused`.",
+                op, dtypes,
+            ));
+        }
+    }
+
+    let mut cost_failures: Vec<String> = Vec::new();
+    let unknown_cost_sentinel = fuel_storage::kernel::unknown_cost as usize;
+    for (op, dtypes, backend, cost) in table.iter_cost() {
+        if backend != BackendId::Vulkan {
+            continue;
+        }
+        if (cost as usize) == unknown_cost_sentinel {
+            cost_failures.push(format!(
+                "(OpKind::{:?}, {:?}, Vulkan) still uses `unknown_cost`. \
+                 Either add a Vulkan-aware arm in `default_cost_for_op_kind` \
+                 or call `register_full` with an explicit CostFn before \
+                 `fill_unset_cost_for_backend(Vulkan, ...)` at the end of \
+                 `register_vulkan_kernels`.",
+                op, dtypes,
+            ));
+        }
+    }
+
+    assert!(
+        precision_failures.is_empty(),
+        "Vulkan PrecisionGuarantee coverage lint failed:\n{}",
+        precision_failures.join("\n"),
+    );
+    assert!(
+        cost_failures.is_empty(),
+        "Vulkan CostFn coverage lint failed:\n{}",
+        cost_failures.join("\n"),
+    );
+}
+
+// ===========================================================================
 // Op::Copy D2H — bridge-retirement Phase 2 (post-9c) parity + live test
 // ===========================================================================
 

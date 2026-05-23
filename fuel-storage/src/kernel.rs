@@ -784,9 +784,33 @@ impl KernelBindingTable {
     /// each sibling entry at a key starting at `unknown_cost` is
     /// upgraded independently.
     pub fn fill_unset_cpu_cost(&mut self, dispatcher: fn(OpKind) -> CostFn) {
+        self.fill_unset_cost_for_backend(BackendId::Cpu, dispatcher);
+    }
+
+    /// Per-backend variant of [`Self::fill_unset_cpu_cost`]. Walks
+    /// every alternative whose backend matches `backend` and replaces
+    /// `unknown_cost` entries with the dispatcher's choice for the
+    /// op. Used by [`crate::vulkan_dispatch::register_vulkan_kernels`]
+    /// to bulk-fill cost functions after per-kernel precision
+    /// registration; future MKL/AOCL/Metal backends register through
+    /// this same helper.
+    ///
+    /// Backend-specific cost adjustments (e.g. higher
+    /// `kernel_overhead_ns` for Vulkan command-buffer submission vs
+    /// CPU's nested-loop call overhead) are a Layer-2 refinement —
+    /// today's `default_cost_for_op_kind` returns the same CPU-flavored
+    /// functions regardless of backend, which over-estimates Vulkan
+    /// throughput on small tensors. Either pass a Vulkan-flavored
+    /// dispatcher to this method, or rely on the empirical calibration
+    /// framework's per-(op, dtype, backend) refinement.
+    pub fn fill_unset_cost_for_backend(
+        &mut self,
+        backend: BackendId,
+        dispatcher: fn(OpKind) -> CostFn,
+    ) {
         let sentinel = unknown_cost as usize;
-        for ((op, _, backend), alts) in self.bindings.iter_mut() {
-            if *backend != BackendId::Cpu {
+        for ((op, _, this_backend), alts) in self.bindings.iter_mut() {
+            if *this_backend != backend {
                 continue;
             }
             for entry in alts.iter_mut() {

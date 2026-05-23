@@ -1756,235 +1756,240 @@ pub fn copy_to_cpu_vulkan(
 /// SPIR-V kernels; V.3 adds new Slang for the kernel families CUDA
 /// has and Vulkan doesn't.
 pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
+    use crate::fused::{
+        VULKAN_BYTE_LEVEL_PRECISION, VULKAN_CAST_PRECISION,
+        VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
+        VULKAN_MATMUL_PRECISION, VULKAN_MATMUL_TENSORCORE_PRECISION,
+        VULKAN_QMATMUL_PRECISION, VULKAN_REDUCTION_PRECISION,
+        VULKAN_TRANSCENDENTAL_PRECISION,
+    };
     let vk = BackendId::Vulkan;
     let f32 = DType::F32;
     let u = |t: DType| [t, t];     // (in, out)
     let b = |t: DType| [t, t, t];  // (lhs, rhs, out)
 
-    // ----- Binary f32 (V.2.A) — all 6 ops via binary.slang's op_id -----
-    table.register(OpKind::AddElementwise,     &b(f32), vk, binary::add_f32);
-    table.register(OpKind::SubElementwise,     &b(f32), vk, binary::sub_f32);
-    table.register(OpKind::MulElementwise,     &b(f32), vk, binary::mul_f32);
-    table.register(OpKind::DivElementwise,     &b(f32), vk, binary::div_f32);
-    table.register(OpKind::MaximumElementwise, &b(f32), vk, binary::maximum_f32);
-    table.register(OpKind::MinimumElementwise, &b(f32), vk, binary::minimum_f32);
+    // Phase 7.6 step 9c follow-up (2026-05-23): every Vulkan registration
+    // gets a per-kernel PrecisionGuarantee so the optimizer's tolerance-
+    // budget pass can admit Vulkan alternatives. Cost functions are
+    // bulk-filled at the end via `fill_unset_cost_for_backend(Vulkan,
+    // default_cost_for_op_kind)` — reuses the CPU cost dispatcher
+    // (FLOP/bandwidth model is backend-agnostic); a Vulkan-specific
+    // dispatcher with higher `kernel_overhead_ns` for command-buffer
+    // submission lands as a Layer-2 calibration refinement.
 
-    // ----- Unary f32 (V.2.B) — all 13 ops via unary.slang's op_id -----
-    table.register(OpKind::NegElementwise,     &u(f32), vk, unary::neg_f32);
-    table.register(OpKind::SqrElementwise,     &u(f32), vk, unary::sqr_f32);
-    table.register(OpKind::SqrtElementwise,    &u(f32), vk, unary::sqrt_f32);
-    table.register(OpKind::ExpElementwise,     &u(f32), vk, unary::exp_f32);
-    table.register(OpKind::LogElementwise,     &u(f32), vk, unary::log_f32);
-    table.register(OpKind::SinElementwise,     &u(f32), vk, unary::sin_f32);
-    table.register(OpKind::CosElementwise,     &u(f32), vk, unary::cos_f32);
-    table.register(OpKind::TanhElementwise,    &u(f32), vk, unary::tanh_f32);
-    table.register(OpKind::SigmoidElementwise, &u(f32), vk, unary::sigmoid_f32);
-    table.register(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32);
-    table.register(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32);
-    table.register(OpKind::ReluElementwise,    &u(f32), vk, unary::relu_f32);
-    table.register(OpKind::StepElementwise,    &u(f32), vk, unary::step_f32);
+    // ----- Binary f32 (V.2.A) — IEEE-754 pointwise via binary.slang -----
+    table.register_with_precision(OpKind::AddElementwise,     &b(f32), vk, binary::add_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SubElementwise,     &b(f32), vk, binary::sub_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MulElementwise,     &b(f32), vk, binary::mul_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::DivElementwise,     &b(f32), vk, binary::div_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MaximumElementwise, &b(f32), vk, binary::maximum_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MinimumElementwise, &b(f32), vk, binary::minimum_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) -----
-    table.register(OpKind::SoftmaxLastDim,  &u(f32), vk, softmax::softmax_f32);
-    table.register(OpKind::RmsNormLastDim,  &u(f32), vk, norm::rms_f32);
+    // ----- Unary f32 (V.2.B) — split between pointwise + transcendental -----
+    table.register_with_precision(OpKind::NegElementwise,     &u(f32), vk, unary::neg_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrElementwise,     &u(f32), vk, unary::sqr_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrtElementwise,    &u(f32), vk, unary::sqrt_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::ReluElementwise,    &u(f32), vk, unary::relu_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::StepElementwise,    &u(f32), vk, unary::step_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    // Transcendentals via GLSL.std.450 (3-4 ULP per Vulkan spec).
+    table.register_with_precision(OpKind::ExpElementwise,     &u(f32), vk, unary::exp_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::LogElementwise,     &u(f32), vk, unary::log_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SinElementwise,     &u(f32), vk, unary::sin_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::CosElementwise,     &u(f32), vk, unary::cos_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::TanhElementwise,    &u(f32), vk, unary::tanh_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SigmoidElementwise, &u(f32), vk, unary::sigmoid_f32, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- RoPE (V.2.C, f32) — 3-input via pre-computed cos/sin -----
-    // Binding-shape MUST match the CPU registration `[x, cos, sin, out]`
-    // (4 dtypes) — the binding-table key is `(op, dtypes)`, so a 2-
-    // dtype `u(f32)` registration never matches the canonical 4-dtype
-    // Rope key the executor looks up.
-    table.register(OpKind::Rope, &[f32, f32, f32, f32], vk, attention::rope_f32);
+    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — reductions, NOT bit-stable -----
+    table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, VULKAN_REDUCTION_PRECISION);
+    table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        VULKAN_REDUCTION_PRECISION);
 
-    // ----- IndexSelect (V.2.D, f32 src + u32 ids) -----
+    // ----- RoPE (V.2.C, f32) — pointwise rotation with cos/sin tables.
+    // Pure FMA + table lookup, no reductions; bit-stable on same hardware
+    // like the binary pointwise ops. Binding-shape MUST match the CPU
+    // registration `[x, cos, sin, out]` (4 dtypes). -----
+    table.register_with_precision(OpKind::Rope, &[f32, f32, f32, f32], vk, attention::rope_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+
+    // ----- IndexSelect (V.2.D, f32 src + u32 ids) — pure gather (byte-level). -----
     let idx_dts = [f32, DType::U32, f32];
-    table.register(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32);
+    table.register_with_precision(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32, VULKAN_BYTE_LEVEL_PRECISION);
 
-    // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean -----
-    table.register(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32);
-    table.register(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32);
-    table.register(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32);
-    table.register(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32);
+    // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean.
+    // Subgroup-tree reductions; NOT bit-stable. -----
+    table.register_with_precision(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32,  VULKAN_REDUCTION_PRECISION);
+    table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  VULKAN_REDUCTION_PRECISION);
+    table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  VULKAN_REDUCTION_PRECISION);
+    table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, VULKAN_REDUCTION_PRECISION);
 
-    // ----- Concat f32 (V.2.D) — N==2 only; N>2 falls back to next alt -----
-    table.register(OpKind::Concat, &u(f32), vk, concat::concat_f32);
+    // ----- Concat f32 (V.2.D) — memcpy (byte-level). N==2 only; N>2 falls back. -----
+    table.register_with_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, VULKAN_BYTE_LEVEL_PRECISION);
 
-    // ----- MatMul f32 (V.2.D) — matvec/reg-tile/tiled by m; GQA-aware -----
-    table.register(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32);
+    // ----- MatMul f32 (V.2.D) — deterministic per-output-element FMA accumulation. -----
+    table.register_with_precision(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32, VULKAN_MATMUL_PRECISION);
 
-    // ----- MatMul mixed f32 × bf16 → f32 (V.3.D) — Vulkan-specific
-    // decision point; uses matvec_bf16_b / matmul_tiled_bf16_b /
-    // matmul_coop (tensor cores) based on m,n,k. -----
+    // ----- MatMul mixed f32 × bf16 → f32 (V.3.D) — tensor cores via
+    // matvec_bf16_b / matmul_tiled_bf16_b / matmul_coop. Wider ULP than
+    // pure f32 matmul because bf16 inputs lose 16 mantissa bits. -----
     let bf16 = DType::BF16;
-    table.register(OpKind::MatMul, &[f32, bf16, f32], vk, matmul::matmul_f32_bf16_b);
+    table.register_with_precision(OpKind::MatMul, &[f32, bf16, f32], vk, matmul::matmul_f32_bf16_b, VULKAN_MATMUL_TENSORCORE_PRECISION);
 
-    // ----- Affine f32 (V.2.E) — y = mul*x + add -----
-    table.register(OpKind::Affine, &u(f32), vk, affine::affine_f32);
+    // ----- Affine f32 (V.2.E) — y = mul*x + add. Pointwise FMA. -----
+    table.register_with_precision(OpKind::Affine, &u(f32), vk, affine::affine_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Clamp f32 (V.3.A.1) — new Slang -----
-    table.register(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32);
+    // ----- Clamp f32 (V.3.A.1) — pointwise min/max with constants. -----
+    table.register_with_precision(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- PowI f32 (V.3.A.3) — new Slang -----
-    table.register(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32);
+    // ----- PowI f32 (V.3.A.3) — repeated FMA, bit-stable on same hardware. -----
+    table.register_with_precision(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (new Slang) -----
+    // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (pure dtype conversion). -----
     let f16 = DType::F16;
     let bf16_d = DType::BF16;
-    table.register(OpKind::Cast, &[f32,    f16],    vk, cast::cast_f32_half);
-    table.register(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half);
-    table.register(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half);
-    table.register(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half);
+    table.register_with_precision(OpKind::Cast, &[f32,    f16],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
 
-    // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16 -----
-    table.register(OpKind::AddElementwise,     &b(f16), vk, binary_f16::add_f16);
-    table.register(OpKind::SubElementwise,     &b(f16), vk, binary_f16::sub_f16);
-    table.register(OpKind::MulElementwise,     &b(f16), vk, binary_f16::mul_f16);
-    table.register(OpKind::DivElementwise,     &b(f16), vk, binary_f16::div_f16);
-    table.register(OpKind::MaximumElementwise, &b(f16), vk, binary_f16::maximum_f16);
-    table.register(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16);
+    // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16. -----
+    table.register_with_precision(OpKind::AddElementwise,     &b(f16), vk, binary_f16::add_f16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SubElementwise,     &b(f16), vk, binary_f16::sub_f16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MulElementwise,     &b(f16), vk, binary_f16::mul_f16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::DivElementwise,     &b(f16), vk, binary_f16::div_f16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MaximumElementwise, &b(f16), vk, binary_f16::maximum_f16, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16, VULKAN_HALF_POINTWISE_PRECISION);
 
-    // ----- Unary f16 (V.3.E) — native float16_t via shaderFloat16 -----
-    table.register(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16);
-    table.register(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16);
-    table.register(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16);
-    table.register(OpKind::ExpElementwise,     &u(f16), vk, unary_f16::exp_f16);
-    table.register(OpKind::LogElementwise,     &u(f16), vk, unary_f16::log_f16);
-    table.register(OpKind::SinElementwise,     &u(f16), vk, unary_f16::sin_f16);
-    table.register(OpKind::CosElementwise,     &u(f16), vk, unary_f16::cos_f16);
-    table.register(OpKind::TanhElementwise,    &u(f16), vk, unary_f16::tanh_f16);
-    table.register(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16);
-    table.register(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16);
-    table.register(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16);
-    table.register(OpKind::ReluElementwise,    &u(f16), vk, unary_f16::relu_f16);
-    table.register(OpKind::StepElementwise,    &u(f16), vk, unary_f16::step_f16);
+    // ----- Unary f16 (V.3.E) — split between half-pointwise + half-transcendental. -----
+    table.register_with_precision(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16,    VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::ReluElementwise,    &u(f16), vk, unary_f16::relu_f16,    VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::StepElementwise,    &u(f16), vk, unary_f16::step_f16,    VULKAN_HALF_POINTWISE_PRECISION);
+    // f16 transcendentals — same Vulkan-spec 4-ULP envelope, just at half precision.
+    table.register_with_precision(OpKind::ExpElementwise,     &u(f16), vk, unary_f16::exp_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::LogElementwise,     &u(f16), vk, unary_f16::log_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SinElementwise,     &u(f16), vk, unary_f16::sin_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::CosElementwise,     &u(f16), vk, unary_f16::cos_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::TanhElementwise,    &u(f16), vk, unary_f16::tanh_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64 -----
+    // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64. -----
     let f64_d = DType::F64;
-    table.register(OpKind::AddElementwise,     &b(f64_d), vk, binary_f64::add_f64);
-    table.register(OpKind::SubElementwise,     &b(f64_d), vk, binary_f64::sub_f64);
-    table.register(OpKind::MulElementwise,     &b(f64_d), vk, binary_f64::mul_f64);
-    table.register(OpKind::DivElementwise,     &b(f64_d), vk, binary_f64::div_f64);
-    table.register(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64);
-    table.register(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64);
+    table.register_with_precision(OpKind::AddElementwise,     &b(f64_d), vk, binary_f64::add_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SubElementwise,     &b(f64_d), vk, binary_f64::sub_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MulElementwise,     &b(f64_d), vk, binary_f64::mul_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::DivElementwise,     &b(f64_d), vk, binary_f64::div_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Unary f64 (V.3.E.5) — full 13-op surface. Transcendentals
-    // implemented via polynomial approximations (Horner-form Taylor +
-    // range reduction) in unary_f64.slang; target precision ~1e-12
-    // relative. The polynomials use only arithmetic ops (OpFAdd /
-    // OpFMul / OpFDiv on double) so they're portable across any
-    // Vulkan driver that exposes shaderFloat64, avoiding both the
-    // GLSL.std.450 type restriction and the NVIDIA Windows
-    // OpenCL.std rejection. -----
-    table.register(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64);
-    table.register(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64);
-    table.register(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64);
-    table.register(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64);
-    table.register(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64);
-    table.register(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64);
-    table.register(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64);
-    table.register(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64);
-    table.register(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64);
-    table.register(OpKind::SiluElementwise,    &u(f64_d), vk, unary_f64::silu_f64);
-    table.register(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64);
-    table.register(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64);
-    table.register(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64);
+    // implemented via Horner-polynomial approximations (~1e-12 relative
+    // precision target) in unary_f64.slang; portable across any
+    // shaderFloat64 driver. -----
+    table.register_with_precision(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SiluElementwise,    &u(f64_d), vk, unary_f64::silu_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- WriteSlice (V.3.J) — byte-width-keyed (b1/b2/b4/b8) -----
-    // b1: u8 / i8; b4: f32 / i32 / u32; b2: f16 / bf16; b8: f64 / i64.
-    // The b1 wrapper reuses write_slice::write_slice_b1 below, which
-    // calls write_slice_bytes(1, ...) — the backend method now accepts
-    // byte_width=1 with a 4-aligned constraint on the last dim.
-    table.register(OpKind::WriteSlice, &u(f32),         vk, write_slice::write_slice_b4);
-    table.register(OpKind::WriteSlice, &u(DType::I32),  vk, write_slice::write_slice_b4);
-    table.register(OpKind::WriteSlice, &u(DType::U32),  vk, write_slice::write_slice_b4);
-    table.register(OpKind::WriteSlice, &u(f16),         vk, write_slice::write_slice_b2);
-    table.register(OpKind::WriteSlice, &u(bf16_d),      vk, write_slice::write_slice_b2);
-    table.register(OpKind::WriteSlice, &u(DType::F64),  vk, write_slice::write_slice_b8);
-    table.register(OpKind::WriteSlice, &u(DType::I64),  vk, write_slice::write_slice_b8);
-    table.register(OpKind::WriteSlice, &u(DType::U8),   vk, write_slice::write_slice_b1);
-    table.register(OpKind::WriteSlice, &u(DType::I8),   vk, write_slice::write_slice_b1);
+    // ----- WriteSlice (V.3.J) — byte-width-keyed (b1/b2/b4/b8). Pure
+    // byte-level data movement; no FP math. -----
+    table.register_with_precision(OpKind::WriteSlice, &u(f32),         vk, write_slice::write_slice_b4, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(DType::I32),  vk, write_slice::write_slice_b4, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(DType::U32),  vk, write_slice::write_slice_b4, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(f16),         vk, write_slice::write_slice_b2, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(bf16_d),      vk, write_slice::write_slice_b2, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(DType::F64),  vk, write_slice::write_slice_b8, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(DType::I64),  vk, write_slice::write_slice_b8, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(DType::U8),   vk, write_slice::write_slice_b1, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSlice, &u(DType::I8),   vk, write_slice::write_slice_b1, VULKAN_BYTE_LEVEL_PRECISION);
 
     // ----- Binary bf16 (V.3.E.3+4) — u32-packed math via Slang. -----
-    table.register(OpKind::AddElementwise,     &b(bf16_d), vk, binary_bf16::add_bf16);
-    table.register(OpKind::SubElementwise,     &b(bf16_d), vk, binary_bf16::sub_bf16);
-    table.register(OpKind::MulElementwise,     &b(bf16_d), vk, binary_bf16::mul_bf16);
-    table.register(OpKind::DivElementwise,     &b(bf16_d), vk, binary_bf16::div_bf16);
-    table.register(OpKind::MaximumElementwise, &b(bf16_d), vk, binary_bf16::maximum_bf16);
-    table.register(OpKind::MinimumElementwise, &b(bf16_d), vk, binary_bf16::minimum_bf16);
+    table.register_with_precision(OpKind::AddElementwise,     &b(bf16_d), vk, binary_bf16::add_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SubElementwise,     &b(bf16_d), vk, binary_bf16::sub_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MulElementwise,     &b(bf16_d), vk, binary_bf16::mul_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::DivElementwise,     &b(bf16_d), vk, binary_bf16::div_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MaximumElementwise, &b(bf16_d), vk, binary_bf16::maximum_bf16, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::MinimumElementwise, &b(bf16_d), vk, binary_bf16::minimum_bf16, VULKAN_HALF_POINTWISE_PRECISION);
 
     // ----- Unary bf16 (V.3.E.3+4) — full 13-op surface via u32 packing. -----
-    table.register(OpKind::NegElementwise,     &u(bf16_d), vk, unary_bf16::neg_bf16);
-    table.register(OpKind::SqrElementwise,     &u(bf16_d), vk, unary_bf16::sqr_bf16);
-    table.register(OpKind::SqrtElementwise,    &u(bf16_d), vk, unary_bf16::sqrt_bf16);
-    table.register(OpKind::ExpElementwise,     &u(bf16_d), vk, unary_bf16::exp_bf16);
-    table.register(OpKind::LogElementwise,     &u(bf16_d), vk, unary_bf16::log_bf16);
-    table.register(OpKind::SinElementwise,     &u(bf16_d), vk, unary_bf16::sin_bf16);
-    table.register(OpKind::CosElementwise,     &u(bf16_d), vk, unary_bf16::cos_bf16);
-    table.register(OpKind::TanhElementwise,    &u(bf16_d), vk, unary_bf16::tanh_bf16);
-    table.register(OpKind::SigmoidElementwise, &u(bf16_d), vk, unary_bf16::sigmoid_bf16);
-    table.register(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16);
-    table.register(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16);
-    table.register(OpKind::ReluElementwise,    &u(bf16_d), vk, unary_bf16::relu_bf16);
-    table.register(OpKind::StepElementwise,    &u(bf16_d), vk, unary_bf16::step_bf16);
+    table.register_with_precision(OpKind::NegElementwise,     &u(bf16_d), vk, unary_bf16::neg_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrElementwise,     &u(bf16_d), vk, unary_bf16::sqr_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SqrtElementwise,    &u(bf16_d), vk, unary_bf16::sqrt_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::ReluElementwise,    &u(bf16_d), vk, unary_bf16::relu_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::StepElementwise,    &u(bf16_d), vk, unary_bf16::step_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::ExpElementwise,     &u(bf16_d), vk, unary_bf16::exp_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::LogElementwise,     &u(bf16_d), vk, unary_bf16::log_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SinElementwise,     &u(bf16_d), vk, unary_bf16::sin_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::CosElementwise,     &u(bf16_d), vk, unary_bf16::cos_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::TanhElementwise,    &u(bf16_d), vk, unary_bf16::tanh_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SigmoidElementwise, &u(bf16_d), vk, unary_bf16::sigmoid_bf16, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Triu / Tril / Flip / Roll — byte-width-keyed per dtype.
-    // Dispatch wrapper computes byte_width from input dtype at run
-    // time; binding-table registers each dtype individually so a
-    // missing dtype falls through to CPU rather than dispatching the
-    // wrong kernel. -----
+    // ----- Triu / Tril / Flip / Roll — pure byte-level (memcpy/mask). -----
     for &dt in &[DType::F32, DType::F16, DType::BF16, DType::F64,
                  DType::I32, DType::U32, DType::I64] {
-        table.register(OpKind::Triu,  &u(dt), vk, triangular::triu);
-        table.register(OpKind::Tril,  &u(dt), vk, triangular::tril);
-        table.register(OpKind::Flip,  &u(dt), vk, flip::flip);
-        table.register(OpKind::Roll,  &u(dt), vk, roll::roll);
+        table.register_with_precision(OpKind::Triu, &u(dt), vk, triangular::triu, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Tril, &u(dt), vk, triangular::tril, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Flip, &u(dt), vk, flip::flip,       VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Roll, &u(dt), vk, roll::roll,       VULKAN_BYTE_LEVEL_PRECISION);
     }
 
-    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 activation × U32-byte
-    // weight stream → F32 output. The quant_type lives in
-    // OpParams::QMatMul; dtype key is (F32, U32, F32) regardless. -----
-    table.register(
+    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32. -----
+    table.register_with_precision(
         OpKind::QMatMul,
         &[DType::F32, DType::U32, DType::F32],
         vk,
         qmatmul::qmatmul_vk,
+        VULKAN_QMATMUL_PRECISION,
     );
 
-    // ----- Conv2D f32 (V.3.I) — im2col + matmul, groups=1, dilation=(1,1).
-    // Dispatched on input (NCHW) + weight (OIHW); bias fold-in is a
-    // follow-up. Falls back via the route picker when bias/dilation/
-    // depthwise constraints aren't met. -----
-    table.register(
+    // ----- Conv2D f32 (V.3.I) — im2col + matmul. Numerical character
+    // matches f32 matmul (per-output deterministic FMA accumulation). -----
+    table.register_with_precision(
         OpKind::Conv2D,
         &[DType::F32, DType::F32, DType::F32],
         vk,
         conv2d::conv2d_f32,
+        VULKAN_MATMUL_PRECISION,
     );
 
-    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — single wrapper, 6 dtype
-    // pairs. F8E4M3 is 1 byte (4 packed per u32); kernel constraints
-    // require element count to be a multiple of 4. -----
+    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — pure dtype conversion. -----
     let f8 = DType::F8E4M3;
-    table.register(OpKind::Cast, &[f32,    f8],   vk, cast_f8e4m3::cast_f8e4m3);
-    table.register(OpKind::Cast, &[f8,     f32],  vk, cast_f8e4m3::cast_f8e4m3);
-    table.register(OpKind::Cast, &[f16,    f8],   vk, cast_f8e4m3::cast_f8e4m3);
-    table.register(OpKind::Cast, &[f8,     f16],  vk, cast_f8e4m3::cast_f8e4m3);
-    table.register(OpKind::Cast, &[bf16_d, f8],   vk, cast_f8e4m3::cast_f8e4m3);
-    table.register(OpKind::Cast, &[f8,     bf16_d], vk, cast_f8e4m3::cast_f8e4m3);
+    table.register_with_precision(OpKind::Cast, &[f32,    f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[f8,     f32],    vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[f16,    f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[f8,     f16],    vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[bf16_d, f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
+    table.register_with_precision(OpKind::Cast, &[f8,     bf16_d], vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
 
-    // ----- Op::Copy D2H — `(OpKind::Copy, [dt, dt], Vulkan)` ---------
-    // Bridge-retirement Phase 2 (post-9c): every realize root resident
-    // on Vulkan gets an `Op::Copy { target: Cpu }` spliced in before
-    // realize; the kernel dispatch resolves on the source backend
-    // (= Vulkan), running this wrapper. Output is CPU storage,
-    // allocated by the executor's `WorkItemKind::Copy` arm. Same
-    // canonical `[dt, dt]` key shape every backend's Copy
-    // registration uses (audit discipline from
-    // `project_phase_7_6_step_9c_parity_audit`).
+    // ----- Op::Copy D2H (bridge-retirement Phase 2). Byte-level. -----
     let copy_dtypes = [
         f32, f16, bf16_d, DType::F64, DType::U32, DType::U8,
         DType::I16, DType::I32, DType::I64,
     ];
     for dt in copy_dtypes {
-        table.register(OpKind::Copy, &[dt, dt], vk, copy_to_cpu_vulkan);
+        table.register_with_precision(OpKind::Copy, &[dt, dt], vk, copy_to_cpu_vulkan, VULKAN_BYTE_LEVEL_PRECISION);
     }
+
+    // ----- Bulk-fill cost functions for every Vulkan registration above.
+    // The CPU dispatcher (`default_cost_for_op_kind`) captures the
+    // FLOP/bandwidth model; backend-specific kernel_overhead_ns
+    // adjustments are deferred to a Vulkan-flavored dispatcher (or to
+    // the empirical calibration framework). Every entry above started
+    // at `unknown_cost`; this pass upgrades them to a real cost
+    // function so the optimizer's cost-ranking can admit Vulkan
+    // alternatives.
+    table.fill_unset_cost_for_backend(vk, crate::cost::default_cost_for_op_kind);
 }
