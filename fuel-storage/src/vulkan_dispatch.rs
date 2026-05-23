@@ -1757,11 +1757,10 @@ pub fn copy_to_cpu_vulkan(
 /// has and Vulkan doesn't.
 pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     use crate::fused::{
-        VULKAN_BYTE_LEVEL_PRECISION, VULKAN_CAST_PRECISION,
+        PrecisionGuarantee, VULKAN_BYTE_LEVEL_PRECISION, VULKAN_CAST_PRECISION,
         VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
         VULKAN_MATMUL_PRECISION, VULKAN_MATMUL_TENSORCORE_PRECISION,
-        VULKAN_QMATMUL_PRECISION, VULKAN_REDUCTION_PRECISION,
-        VULKAN_TRANSCENDENTAL_PRECISION,
+        VULKAN_QMATMUL_PRECISION, VULKAN_TRANSCENDENTAL_PRECISION,
     };
     let vk = BackendId::Vulkan;
     let f32 = DType::F32;
@@ -1801,9 +1800,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — reductions, NOT bit-stable -----
-    table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, VULKAN_REDUCTION_PRECISION);
-    table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        VULKAN_REDUCTION_PRECISION);
+    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — reductions; NO
+    // static bound (subgroup composition is scheduler-determined per
+    // dispatch). UNAUDITED is the right value; the
+    // `vulkan_dispatch_per_kernel_precision_and_cost_coverage` lint's
+    // KNOWN_GAPS allowlist accepts these specific (op, dtypes) tuples. -----
+    table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::UNAUDITED);
+    table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::UNAUDITED);
 
     // ----- RoPE (V.2.C, f32) — pointwise rotation with cos/sin tables.
     // Pure FMA + table lookup, no reductions; bit-stable on same hardware
@@ -1816,11 +1819,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32, VULKAN_BYTE_LEVEL_PRECISION);
 
     // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean.
-    // Subgroup-tree reductions; NOT bit-stable. -----
-    table.register_with_precision(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32,  VULKAN_REDUCTION_PRECISION);
-    table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  VULKAN_REDUCTION_PRECISION);
-    table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  VULKAN_REDUCTION_PRECISION);
-    table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, VULKAN_REDUCTION_PRECISION);
+    // Subgroup-tree reductions; no static bound (see Softmax above).
+    // UNAUDITED + KNOWN_GAPS in the coverage lint. -----
+    table.register_with_precision(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32,  PrecisionGuarantee::UNAUDITED);
+    table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  PrecisionGuarantee::UNAUDITED);
+    table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::UNAUDITED);
+    table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::UNAUDITED);
 
     // ----- Concat f32 (V.2.D) — memcpy (byte-level). N==2 only; N>2 falls back. -----
     table.register_with_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, VULKAN_BYTE_LEVEL_PRECISION);

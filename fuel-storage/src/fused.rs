@@ -157,7 +157,7 @@ impl PrecisionGuarantee {
     /// different claim must call
     /// [`crate::kernel::KernelBindingTable::register_with_precision`]
     /// explicitly with the weaker guarantee — those don't get
-    /// bulk-overwritten because the fill only touches UNKNOWN
+    /// bulk-overwritten because the fill only touches UNAUDITED
     /// entries.
     pub const PRIMITIVE_DETERMINISTIC_CPU: PrecisionGuarantee = PrecisionGuarantee {
         bit_stable_on_same_hardware: true,
@@ -171,17 +171,39 @@ impl PrecisionGuarantee {
                 with the step-8 empirical calibration framework.",
     };
 
-    /// Conservative all-unknown defaults. Used as a placeholder during
-    /// the migration when a real PrecisionGuarantee hasn't been audited
-    /// yet. Step 7 replaces every use of this with a real claim and
-    /// adds a CI lint that fails when a registered kernel still uses
-    /// `UNKNOWN`.
-    pub const UNKNOWN: PrecisionGuarantee = PrecisionGuarantee {
+    /// Single sentinel for "no precision claim made." Default value
+    /// when callers don't specify a precision via
+    /// [`crate::kernel::KernelBindingTable::register_with_precision`];
+    /// detected structurally by coverage lints (all bound fields
+    /// `None` AND `bit_stable_on_same_hardware == false`).
+    ///
+    /// Two flavors collapse into this single value:
+    /// 1. **Not yet audited**: the default placeholder for new
+    ///    registrations. The coverage lint flags these.
+    /// 2. **Audited and concluded "no static bound to claim"**:
+    ///    legitimate audit result for kernels whose numerical
+    ///    character depends on runtime conditions (Vulkan subgroup
+    ///    reductions, accumulation order). Sites where this applies
+    ///    are listed in the lint's `KNOWN_GAPS` allowlist with a
+    ///    documented reason — the architectural decision is visible
+    ///    at review time rather than buried in a notes string.
+    ///
+    /// Renamed from `UNKNOWN` (2026-05-23) to make the placeholder
+    /// nature explicit. The "audited, no static bound" case lives
+    /// in the lint's KNOWN_GAPS, not as a separate const — keeping
+    /// the type system honest (UNAUDITED ≡ UNAUDITED; legitimate
+    /// audited-no-bound is a property of the registration, captured
+    /// in the lint's allowlist).
+    pub const UNAUDITED: PrecisionGuarantee = PrecisionGuarantee {
         bit_stable_on_same_hardware: false,
         max_ulp: None,
         max_relative: None,
         max_absolute: None,
-        notes: "PrecisionGuarantee::UNKNOWN — populate via step 7.",
+        notes: "PrecisionGuarantee::UNAUDITED — default placeholder OR \
+                audited result of 'no static bound to claim'. The \
+                distinction lives in the lint's KNOWN_GAPS allowlist; \
+                sites NOT in the allowlist are treated as unaudited \
+                and flagged.",
     };
 }
 
@@ -954,30 +976,20 @@ pub const VULKAN_TRANSCENDENTAL_PRECISION: PrecisionGuarantee = PrecisionGuarant
             hardware; Vulkan spec allows ≤4 ULP, real GPUs typically tighter.",
 };
 
-/// Vulkan reductions — SumReduce, MaxReduce, MinReduce, MeanReduce,
-/// SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, and any kernel
-/// that uses subgroup tree reductions.
-///
-/// **NOT bit-stable on same hardware**: subgroup composition (which
-/// threads form a subgroup) depends on workgroup scheduling decisions
-/// the driver makes per dispatch. Reordering FADDs across subgroups
-/// produces different floating-point results. This is the strongest
-/// distinguishing claim of Vulkan reductions vs the CPU equivalents
-/// (which ARE bit-stable due to deterministic nested-loop order).
-///
-/// ULP bound left unclaimed; the empirical relative error is bounded
-/// by the reduction depth (`O(log N)` rounding accumulations). The
-/// step-8 empirical calibration framework populates per-shape bounds
-/// when it lands.
-pub const VULKAN_REDUCTION_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
-    bit_stable_on_same_hardware: false,
-    max_ulp: None,
-    max_relative: None,
-    max_absolute: None,
-    notes: "fuel-vulkan-backend reductions: subgroup tree reductions; NOT \
-            bit-stable — subgroup composition depends on driver scheduling. \
-            Relative error bounded by reduction depth (O(log N) accumulations).",
-};
+// Vulkan reductions — SumReduce, MaxReduce, MinReduce, MeanReduce,
+// SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, and any kernel
+// that uses subgroup tree reductions — use `PrecisionGuarantee::
+// UNAUDITED` (audited result of "no static bound to claim"). The
+// reasoning: subgroup composition is scheduler-determined per
+// dispatch, so reordering FADDs across subgroups produces different
+// floating-point results; no static ULP / relative / absolute bound
+// applies. Their (op, dtypes, Vulkan) tuples are listed in the
+// `vulkan_dispatch_per_kernel_precision_and_cost_coverage` lint's
+// `KNOWN_GAPS` allowlist so the lint accepts UNAUDITED for these
+// specific kernels; new Vulkan reduction kernels must be added to
+// KNOWN_GAPS at registration time. The architectural decision is
+// thus visible at review time rather than buried in a per-kernel
+// constant.
 
 /// Vulkan matmul (f32 standard, no tensor cores) — tiled / reg-tile /
 /// matvec kernels. Accumulation order is deterministic per kernel
@@ -1104,7 +1116,7 @@ mod tests {
             kernel: dummy_kernel,
             dtypes: DUMMY_DTYPES,
             cost: dummy_cost,
-            precision: PrecisionGuarantee::UNKNOWN,
+            precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
         }
@@ -1401,8 +1413,8 @@ mod tests {
             kernel: dummy_kernel,
             dtypes: DUMMY_DTYPES,
             cost: dummy_cost,
-            // UNKNOWN has bit_stable_on_same_hardware: false.
-            precision: PrecisionGuarantee::UNKNOWN,
+            // UNAUDITED has bit_stable_on_same_hardware: false.
+            precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
         };
@@ -1411,7 +1423,7 @@ mod tests {
             *backend == BackendId::Cpu && impl_.precision.bit_stable_on_same_hardware
         });
         assert!(!has_bit_stable_cpu,
-            "an UNKNOWN-precision CPU impl must not satisfy the bit-stable lint");
+            "an UNAUDITED-precision CPU impl must not satisfy the bit-stable lint");
     }
 
     /// Step 6 + backward-helper follow-up — coverage assertion for

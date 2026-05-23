@@ -3563,19 +3563,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // Phase 7.6 step 7b — populate `PrecisionGuarantee` for every
     // CPU primitive registration. Every `table.register(...)` call
-    // above defaulted to `PrecisionGuarantee::UNKNOWN`; this fill
+    // above defaulted to `PrecisionGuarantee::UNAUDITED`; this fill
     // pass upgrades them to `PRIMITIVE_DETERMINISTIC_CPU` (bit-stable
     // per hardware, deterministic iteration order, F32 accumulator
     // for half-precision). Sites that need a weaker claim should
     // call `table.register_with_precision(...)` explicitly *before*
     // this point — those won't be overwritten because the fill only
-    // touches UNKNOWN entries.
+    // touches UNAUDITED entries.
     //
     // The architecture-target shape is precision-per-call-site,
     // but the 335+ CPU primitive registrations all share the same
     // deterministic property; bulk-applying the claim here keeps
     // the call sites concise while still ensuring every entry
-    // carries an explicit, non-UNKNOWN PrecisionGuarantee that the
+    // carries an explicit, non-UNAUDITED PrecisionGuarantee that the
     // step-7b coverage lint can enforce.
     table.fill_unset_cpu_precision(crate::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU);
 

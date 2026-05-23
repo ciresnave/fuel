@@ -737,7 +737,7 @@ mod tests {
             &[DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
             ok_kernel_a,
-            PrecisionGuarantee::UNKNOWN, // non-bit-stable
+            PrecisionGuarantee::UNAUDITED, // non-bit-stable
         );
         register(
             &mut table,
@@ -777,7 +777,7 @@ mod tests {
             &[DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
             ok_kernel_a,
-            PrecisionGuarantee::UNKNOWN,
+            PrecisionGuarantee::UNAUDITED,
         );
         register(
             &mut table,
@@ -785,7 +785,7 @@ mod tests {
             &[DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
             ok_kernel_b,
-            PrecisionGuarantee::UNKNOWN,
+            PrecisionGuarantee::UNAUDITED,
         );
 
         let mut binding = empty_binding(
@@ -818,7 +818,7 @@ mod tests {
             &[DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
             ok_kernel_a,
-            PrecisionGuarantee::UNKNOWN,
+            PrecisionGuarantee::UNAUDITED,
         );
         register(
             &mut table,
