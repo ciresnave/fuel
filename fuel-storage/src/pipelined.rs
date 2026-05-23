@@ -130,6 +130,26 @@ enum WorkItemKind {
     Copy {
         target_location: DeviceLocation,
     },
+    /// `Op::Alloc { target }` — produce a freshly-allocated, zero-
+    /// initialized Storage on `target_location` with the node's shape
+    /// + dtype. Zero inputs.
+    ///
+    /// Doesn't dispatch through the binding table — the executor's
+    /// arm calls each backend's native allocator directly. For
+    /// non-CPU targets it derives the device handle by searching the
+    /// input cache for any storage on `target_location`'s backend
+    /// (callers seed this via
+    /// `fuel-core::pipelined_bridge::device_seed_storage`).
+    ///
+    /// Phase 3a of the bridge-retirement trajectory (post-9c).
+    /// Replaces `fuel-core::inference_context::alloc_zeroed_on`'s
+    /// per-`DeviceLocation` match with a graph node the optimizer
+    /// can see; the per-backend match moves from fuel-core's bridge
+    /// layer into fuel-storage's executor (the architectural dispatch
+    /// layer).
+    Alloc {
+        target_location: DeviceLocation,
+    },
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -623,6 +643,44 @@ fn compile_one(
             target_backend,
             kind: WorkItemKind::WriteSlice { dest: inputs[0], source: inputs[1] },
             compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+        });
+    }
+
+    if let Op::Alloc { target } = node.op {
+        // Op::Alloc { target }: produce a fresh zero-init Storage on
+        // `target` with node.shape * node.dtype. Zero inputs.
+        // Direct executor dispatch via WorkItemKind::Alloc — no
+        // binding-table lookup (the device handle threading isn't
+        // expressible through the binding table's current key shape).
+        if !inputs.is_empty() {
+            return Err(Error::Msg(format!(
+                "Op::Alloc expects 0 inputs, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        // target_backend is informational here (the executor's Alloc
+        // arm consults target_location for allocation routing); set
+        // it to target's backend for consistency with how downstream
+        // nodes inherit/read it.
+        let target_backend = match target {
+            DeviceLocation::Cpu => BackendId::Cpu,
+            DeviceLocation::Cuda { .. } => BackendId::Cuda,
+            DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
+            DeviceLocation::Metal { .. } => BackendId::Metal,
+        };
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::Alloc { target_location: target },
+            compiled: None,
             output_layout,
             destructive_input,
         });
@@ -2144,6 +2202,78 @@ fn execute_work_item(
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }
+        WorkItemKind::Alloc { target_location } => {
+            // Op::Alloc { target }: allocate a fresh, zero-init storage
+            // on target_location. No inputs, no kernel call — direct
+            // executor dispatch. For non-CPU targets we derive the
+            // per-backend device handle by searching the input cache
+            // for any storage on the target backend (callers seed this
+            // via `pipelined_bridge::device_seed_storage`).
+            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            let alloced: Storage = match target_location {
+                DeviceLocation::Cpu => crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
+                #[cfg(feature = "cuda")]
+                DeviceLocation::Cuda { gpu_id } => {
+                    let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
+                        .ok_or_else(|| Error::Msg(format!(
+                            "Op::Alloc on Cuda {{ gpu_id: {} }}: no CUDA \
+                             storage in input cache to derive the device \
+                             handle from. The caller must seed the cache \
+                             (e.g. via `fuel-core::pipelined_bridge::\
+                             device_seed_storage`) before realizing.",
+                            gpu_id,
+                        )).bt())?;
+                    let cuda_bytes =
+                        fuel_cuda_backend::CudaStorageBytes::alloc(&cuda_dev, n_bytes)?;
+                    Storage::new(crate::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                }
+                #[cfg(not(feature = "cuda"))]
+                DeviceLocation::Cuda { .. } => {
+                    return Err(Error::Msg(
+                        "Op::Alloc on Cuda but fuel-storage wasn't built \
+                         with --features cuda".to_string(),
+                    ).bt());
+                }
+                #[cfg(feature = "vulkan")]
+                DeviceLocation::Vulkan { gpu_id } => {
+                    let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
+                        .ok_or_else(|| Error::Msg(format!(
+                            "Op::Alloc on Vulkan {{ gpu_id: {} }}: no Vulkan \
+                             storage in input cache to derive the backend \
+                             handle from. The caller must seed the cache \
+                             (e.g. via `fuel-core::pipelined_bridge::\
+                             device_seed_storage`) before realizing.",
+                            gpu_id,
+                        )).bt())?;
+                    // Vulkan's alloc_bytes_handle is uninitialized;
+                    // stage host zeros to get zero-init semantics.
+                    // Matches the existing `alloc_zeroed_on`'s Vulkan
+                    // branch — see the comment there about
+                    // `vkCmdFillBuffer` as a future optimization.
+                    let zeros = vec![0_u8; n_bytes];
+                    let vk_bytes = backend.upload_bytes_handle(&zeros)?;
+                    Storage::new(crate::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                }
+                #[cfg(not(feature = "vulkan"))]
+                DeviceLocation::Vulkan { .. } => {
+                    return Err(Error::Msg(
+                        "Op::Alloc on Vulkan but fuel-storage wasn't built \
+                         with --features vulkan".to_string(),
+                    ).bt());
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "Op::Alloc on {:?}: target not yet wired (CPU + \
+                         CUDA + Vulkan land in Phase 3a of bridge-retirement; \
+                         Metal extends when its byte-storage substrate is \
+                         ready).", other,
+                    )).bt());
+                }
+            };
+            cache.insert(item.node_id, Arc::new(RwLock::new(alloced)));
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
         WorkItemKind::Copy { target_location } => {
             // Op::Copy { target }: kernel lookup at (OpKind::Copy,
             // [dt, dt], source_backend) — the wrapper downloads from
@@ -2467,6 +2597,57 @@ fn execute_work_item(
 
 fn poisoned(what: &'static str) -> Error {
     Error::Msg(format!("PipelinedExecutor: {} poisoned", what)).bt()
+}
+
+/// Search the input cache for any `BackendStorage::Cuda(s)` whose
+/// device matches `gpu_id`. Returns a clone of the `CudaDevice` Arc
+/// the storage carries — the caller uses it to call
+/// `CudaStorageBytes::alloc` for `Op::Alloc` on Cuda. Returns `None`
+/// if no matching storage exists.
+///
+/// Phase 3a of bridge-retirement: callers seed the cache with a 0-byte
+/// CUDA storage (`fuel-core::pipelined_bridge::device_seed_storage`)
+/// so this lookup succeeds for the first Op::Alloc; subsequent
+/// Op::Allocs see prior Op::Alloc outputs in the cache.
+#[cfg(feature = "cuda")]
+fn find_cuda_device_in_cache(
+    cache: &StorageCache,
+    gpu_id: usize,
+) -> Option<fuel_cuda_backend::CudaDevice> {
+    for arc in cache.values() {
+        let guard = arc.read().ok()?;
+        if let crate::BackendStorage::Cuda(c) = &guard.inner {
+            // CudaDevice carries its DeviceLocation (gpu_id ordinal)
+            // through `location()`; match against the target gpu_id.
+            // Multi-GPU future work can refine the match; today's
+            // single-GPU setups always match.
+            if matches!(c.device().location(), DeviceLocation::Cuda { gpu_id: g } if g == gpu_id) {
+                return Some(c.device().clone());
+            }
+        }
+    }
+    None
+}
+
+/// Vulkan counterpart of [`find_cuda_device_in_cache`]. Returns an
+/// `Arc<VulkanBackend>` clone derived from any cached Vulkan storage
+/// whose backend's `gpu_id` matches.
+#[cfg(feature = "vulkan")]
+fn find_vulkan_backend_in_cache(
+    cache: &StorageCache,
+    gpu_id: usize,
+) -> Option<std::sync::Arc<fuel_vulkan_backend::VulkanBackend>> {
+    for arc in cache.values() {
+        let guard = arc.read().ok()?;
+        if let crate::BackendStorage::Vulkan(v) = &guard.inner {
+            if let Some(backend) = v.backend() {
+                if backend.gpu_id == gpu_id {
+                    return Some(backend.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Materialize a contiguous Storage Arc from a non-contiguous one.

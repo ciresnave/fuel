@@ -824,6 +824,20 @@ pub fn eval_node_with_op(
                  reference-backend tests should not invoke it.",
             );
         }
+        Op::Alloc { .. } => {
+            // Phase 3a of bridge-retirement (post-9c): zero-init
+            // device allocation through the PipelinedExecutor's
+            // `WorkItemKind::Alloc` arm. The reference backend has
+            // no notion of devices; if a test surfaces Op::Alloc
+            // through this path, the test is mis-targeted — Op::Alloc
+            // belongs on the PipelinedExecutor path (used today by
+            // `KvCache::with_capacity` for KV-buffer init).
+            unreachable!(
+                "fuel-reference-backend eval_node: Op::Alloc is a \
+                 pipelined-executor-only op (graph-level alloc); \
+                 reference-backend tests should not invoke it.",
+            );
+        }
     }
 }
 

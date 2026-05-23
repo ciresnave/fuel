@@ -46,8 +46,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape};
-use fuel_graph::{Graph, NodeId};
-use fuel_storage::{pipelined::StorageCache, BackendStorage, Storage};
+use fuel_graph::{Graph, Node, NodeId, Op};
+use fuel_storage::{
+    pipelined::{PipelinedExecutor, StorageCache},
+    BackendStorage, Storage,
+};
 
 use crate::Device;
 
@@ -189,20 +192,79 @@ impl KvCache {
         dtype: DType,
         device: &Device,
     ) -> Result<Self> {
+        // Bridge-retirement Phase 3a (post-9c): allocate the 2N K/V
+        // buffers via `Op::Alloc` graph emission, not direct backend
+        // calls. The executor's `WorkItemKind::Alloc` arm dispatches
+        // per-backend; the per-`DeviceLocation` match that used to
+        // live in `alloc_zeroed_on` is now in the executor (the
+        // architectural dispatch layer).
+        let shape = Shape::from_dims(&[1, n_kv_heads, max_seq_len, head_dim]);
+        let layout = Layout::contiguous(shape.clone());
+        let target_loc = device.location();
+
+        // Build the transient graph. For non-CPU targets the first
+        // node is an `Op::Const` placeholder whose StorageCache entry
+        // carries a small "device anchor" storage — the executor's
+        // Alloc arm searches the cache for any storage on the target
+        // backend to derive the device handle, so this entry makes
+        // the first Op::Alloc's device lookup succeed. The anchor's
+        // NodeId must exist in the graph so `realize_many`'s
+        // `layout_cache` seeding (which calls `g.layout(id)` on every
+        // cache key) doesn't panic.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let mut cache = StorageCache::new();
+        if let Some(seed) = crate::pipelined_bridge::device_seed_storage(device)? {
+            let anchor_id = {
+                let mut g = graph
+                    .write()
+                    .map_err(|_| Error::Msg("graph lock poisoned during KvCache build".into()).bt())?;
+                g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::U8,
+                })
+            };
+            cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+        }
+        let alloc_ids: Vec<NodeId> = {
+            let mut g = graph
+                .write()
+                .map_err(|_| Error::Msg("graph lock poisoned during KvCache build".into()).bt())?;
+            (0..(2 * n_layers))
+                .map(|_| {
+                    g.push(Node {
+                        op: Op::Alloc { target: target_loc },
+                        inputs: vec![],
+                        shape: shape.clone(),
+                        dtype,
+                    })
+                })
+                .collect()
+        };
+
+        // Realize all 2*n_layers Op::Alloc targets in one pass —
+        // PipelinedExecutor::realize_many shares the compile/execute
+        // pipeline across them so device-handle reuse is automatic.
+        let realized = PipelinedExecutor::realize_many(
+            Arc::clone(&graph), &alloc_ids, cache,
+        )?;
+        if realized.len() != 2 * n_layers {
+            return Err(Error::Msg(format!(
+                "KvCache::with_capacity: realize_many returned {} storages \
+                 for {} Op::Alloc targets — internal bug",
+                realized.len(), 2 * n_layers,
+            )).bt());
+        }
+
+        let mut realized_iter = realized.into_iter();
         let mut layers: Vec<Option<KvLayer>> = Vec::with_capacity(n_layers);
-        let elem_count = n_kv_heads * max_seq_len * head_dim;
-        // K/V layout reflects the FULL pre-allocated buffer. The
-        // "visible extent" (cached_len) is the cache's job to track;
-        // graph-side reads slice this layout down to the prefix.
-        let layout = Layout::contiguous(Shape::from_dims(&[
-            1, n_kv_heads, max_seq_len, head_dim,
-        ]));
         for _ in 0..n_layers {
-            let k = alloc_zeroed_on(device, dtype, elem_count)?;
-            let v = alloc_zeroed_on(device, dtype, elem_count)?;
+            let (k_arc, _) = realized_iter.next().expect("checked above");
+            let (v_arc, _) = realized_iter.next().expect("checked above");
             layers.push(Some(KvLayer {
-                k: Arc::new(RwLock::new(k)),
-                v: Arc::new(RwLock::new(v)),
+                k: k_arc,
+                v: v_arc,
                 k_layout: layout.clone(),
                 v_layout: layout.clone(),
                 k_version: 0,
@@ -211,6 +273,11 @@ impl KvCache {
                 v_authority: AuthorityState::Host,
             }));
         }
+
+        // Silence the unused-bind lint for elem_count when this
+        // path no longer needs the legacy alloc helper.
+        let _ = (n_kv_heads, max_seq_len, head_dim);
+
         Ok(Self {
             layers,
             cached_len: 0,
@@ -297,57 +364,13 @@ impl KvCache {
     }
 }
 
-/// Allocate a zero-initialized `Storage` of `elem_count` elements at
-/// `dtype` on `device`. Mirrors [`pipelined_bridge::upload_host_buffer`]'s
-/// device dispatch but starts from zeros (no host bytes to copy).
-fn alloc_zeroed_on(
-    device: &Device,
-    dtype: DType,
-    elem_count: usize,
-) -> Result<Storage> {
-    match device.location() {
-        DeviceLocation::Cpu => fuel_storage::alloc_cpu_zeroed(dtype, elem_count),
-        #[cfg(feature = "cuda")]
-        DeviceLocation::Cuda { .. } => {
-            let cuda_dev = crate::cuda_backend::as_device(device)?;
-            let n_bytes = elem_count * dtype.size_in_bytes();
-            let cuda_bytes =
-                fuel_cuda_backend::CudaStorageBytes::alloc(cuda_dev, n_bytes)?;
-            Ok(Storage::new(BackendStorage::Cuda(cuda_bytes), dtype))
-        }
-        #[cfg(not(feature = "cuda"))]
-        DeviceLocation::Cuda { .. } => Err(Error::Msg(
-            "KvCache::with_capacity: CUDA device requested but fuel-core wasn't \
-             built with --features cuda".to_string(),
-        )
-        .bt()),
-        #[cfg(feature = "vulkan")]
-        DeviceLocation::Vulkan { .. } => {
-            // Vulkan has no native vkCmdFillBuffer-based zero-alloc helper
-            // on the byte-storage surface yet; stage a host-zero vec
-            // through `upload_bytes_handle` (a single H2D copy). Correct
-            // today; if KV-cache init bandwidth shows up in profiles,
-            // replace with a `alloc_bytes_zeroed_handle` that uses
-            // `vkCmdFillBuffer` after `alloc_bytes_handle`.
-            let backend = crate::vulkan_backend::as_device(device)?;
-            let n_bytes = elem_count * dtype.size_in_bytes();
-            let zeros = vec![0_u8; n_bytes];
-            let vk_bytes = backend.upload_bytes_handle(&zeros)?;
-            Ok(Storage::new(BackendStorage::Vulkan(vk_bytes), dtype))
-        }
-        #[cfg(not(feature = "vulkan"))]
-        DeviceLocation::Vulkan { .. } => Err(Error::Msg(
-            "KvCache::with_capacity: Vulkan device requested but fuel-core wasn't \
-             built with --features vulkan".to_string(),
-        )
-        .bt()),
-        other => Err(Error::Msg(format!(
-            "KvCache::with_capacity: device {other:?} not wired (CPU + CUDA + Vulkan \
-             today; Metal pending its byte-storage substrate)",
-        ))
-        .bt()),
-    }
-}
+// `alloc_zeroed_on` retired 2026-05-22 (bridge-retirement Phase 3a).
+// Zero-init device allocation now flows through `Op::Alloc` graph
+// emission + the executor's `WorkItemKind::Alloc` arm. The per-
+// `DeviceLocation` match this function used to carry lives in
+// `fuel-storage::pipelined::execute_work_item`'s Alloc arm; the
+// residual "0-byte device anchor" helper lives in
+// `crate::pipelined_bridge::device_seed_storage`.
 
 // ===========================================================================
 // InferenceContext

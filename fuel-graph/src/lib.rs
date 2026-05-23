@@ -708,6 +708,25 @@ pub enum Op {
     /// panics — KV-cache writes are forward-only.
     WriteSlice { ranges: Vec<(usize, usize)> },
 
+    /// Allocate a fresh, zero-initialized Storage of the node's shape +
+    /// dtype on `target`. Zero inputs — `Op::Alloc` is a *source* op
+    /// like [`Op::Const`], but its bytes are computed (zeros) rather
+    /// than seeded from the host.
+    ///
+    /// Bridge-retirement Phase 3a (post-9c). Replaces the per-device-
+    /// location match in `fuel-core::inference_context::alloc_zeroed_on`
+    /// with a graph-level node the optimizer can see + the executor's
+    /// `WorkItemKind::Alloc` arm dispatches per-backend.
+    ///
+    /// **Device-handle requirement**: the executor's Alloc arm derives
+    /// the per-backend handle (e.g. `&CudaDevice`, `&Arc<VulkanBackend>`)
+    /// by searching the input cache for any Storage already on
+    /// `target`'s backend. Callers must seed the cache with at least
+    /// one such storage before realizing an Op::Alloc on a non-CPU
+    /// target. `fuel-core::pipelined_bridge::device_seed_storage` is
+    /// the canonical seeder.
+    Alloc { target: DeviceLocation },
+
     /// Phase 7.6 single-arm delegate to the open
     /// [`crate::registry::FusedOpRegistry`]. The id selects which
     /// fused op (SoftmaxLastDim, RmsNormLastDim, FlashAttn, ...) and
@@ -891,6 +910,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
         Op::WriteSlice{..}       => "WriteSlice",
+        Op::Alloc{..}            => "Alloc",
         // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
         // names through a static lookup; until then, all fused ops
         // share one short name. Distinguishing in error messages is
@@ -6253,6 +6273,15 @@ impl Tensor {
                              to the registry.",
                         );
                     }
+                }
+                Op::Alloc { .. } => {
+                    // Op::Alloc is a source op (zero inputs) that
+                    // produces a fresh zero-init buffer. No upstream
+                    // gradient to propagate — the alloc's "input" is
+                    // the abstract notion of fresh memory, which has
+                    // no derivative. Mirrors Op::Const's treatment.
+                    // (Phase 3a of bridge-retirement; see
+                    // `WorkItemKind::Alloc` in fuel-storage.)
                 }
             }
         }

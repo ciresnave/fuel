@@ -224,6 +224,46 @@ mod tests {
         assert_eq!(s.len_bytes(), 16);
     }
 
+    /// Bridge-retirement Phase 3a (post-9c): realize an `Op::Alloc {
+    /// target: Cpu }` and verify the executor produces a zero-init CPU
+    /// storage. Exercises the executor's `WorkItemKind::Alloc` arm on
+    /// the CPU branch (the only branch that doesn't need a device
+    /// anchor in the cache).
+    #[test]
+    fn op_alloc_cpu_produces_zero_init_storage() {
+        use crate::pipelined::{PipelinedExecutor, StorageCache};
+        use fuel_core_types::{DeviceLocation, Shape};
+        use fuel_graph::{Graph, Node, Op};
+        use std::sync::{Arc, RwLock};
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let alloc_id = {
+            let mut g = graph.write().unwrap();
+            g.push(Node {
+                op: Op::Alloc { target: DeviceLocation::Cpu },
+                inputs: vec![],
+                shape: Shape::from_dims(&[8]),
+                dtype: DType::F32,
+            })
+        };
+
+        let (storage_arc, _layout) =
+            PipelinedExecutor::realize(graph, alloc_id, StorageCache::new())
+                .expect("Op::Alloc { target: Cpu } realize");
+
+        let guard = storage_arc.read().unwrap();
+        match &guard.inner {
+            BackendStorage::Cpu(c) => {
+                assert_eq!(c.len_bytes(), 32);  // 8 * sizeof(f32) = 32
+                let typed: &[f32] = c.as_slice().expect("f32 cast");
+                assert!(typed.iter().all(|&x| x == 0.0_f32),
+                    "Op::Alloc must produce zero-init storage; got {typed:?}");
+            }
+            other => panic!("Op::Alloc {{ target: Cpu }} must produce \
+                BackendStorage::Cpu; got {other:?}"),
+        }
+    }
+
     /// Bridge-retirement Phase 2 (post-9c): round-trip a CPU storage
     /// through `Op::Copy { target: Cpu }` via the PipelinedExecutor.
     /// Replaces the deleted `read_to_cpu_bytes_cpu_variant` test.
