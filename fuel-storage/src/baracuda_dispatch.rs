@@ -566,7 +566,7 @@ macro_rules! cuda_clamp_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -584,10 +584,16 @@ macro_rules! cuda_clamp_baracuda_wrapper {
                     )).bt());
                 }
             };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(concat!(
+                    stringify!($wrapper_name),
+                    ": Clamp requires an input layout (call with layouts[0])",
+                ).to_string()).bt()
+            })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, min_f64 as $scalar_ty, max_f64 as $scalar_ty)?;
+            let result = $baracuda_fn(src_cuda, layout, min_f64 as $scalar_ty, max_f64 as $scalar_ty)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1263,7 +1269,7 @@ macro_rules! cuda_softmax_last_dim_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1276,13 +1282,11 @@ macro_rules! cuda_softmax_last_dim_baracuda_wrapper {
                 ))
                 .bt());
             }
-            let (outer_count, last_dim) = match params {
-                OpParams::SoftmaxLastDim { outer_count, last_dim } => {
-                    (*outer_count, *last_dim)
-                }
-                OpParams::LogSoftmaxLastDim { outer_count, last_dim } => {
-                    (*outer_count, *last_dim)
-                }
+            // Validate params shape (outer_count + last_dim are now
+            // implicit in the layout — the wrapper consumes only the
+            // discriminant to confirm we got the expected OpKind).
+            match params {
+                OpParams::SoftmaxLastDim { .. } | OpParams::LogSoftmaxLastDim { .. } => {}
                 other => {
                     return Err(Error::Msg(format!(
                         concat!(
@@ -1293,11 +1297,17 @@ macro_rules! cuda_softmax_last_dim_baracuda_wrapper {
                     ))
                     .bt());
                 }
-            };
+            }
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(concat!(
+                    stringify!($wrapper_name),
+                    ": SoftmaxLastDim requires an input layout (call with layouts[0])",
+                ).to_string()).bt()
+            })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, outer_count, last_dim)?;
+            let result = $baracuda_fn(src_cuda, layout)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1346,7 +1356,7 @@ macro_rules! cuda_norm_last_dim_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1359,10 +1369,8 @@ macro_rules! cuda_norm_last_dim_baracuda_wrapper {
                 ))
                 .bt());
             }
-            let (outer_count, last_dim, eps) = match params {
-                OpParams::NormLastDim { outer_count, last_dim, eps } => {
-                    (*outer_count, *last_dim, *eps)
-                }
+            let eps = match params {
+                OpParams::NormLastDim { eps, .. } => *eps,
                 other => {
                     return Err(Error::Msg(format!(
                         concat!(
@@ -1374,10 +1382,16 @@ macro_rules! cuda_norm_last_dim_baracuda_wrapper {
                     .bt());
                 }
             };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(concat!(
+                    stringify!($wrapper_name),
+                    ": NormLastDim requires an input layout (call with layouts[0])",
+                ).to_string()).bt()
+            })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, outer_count, last_dim, eps)?;
+            let result = $baracuda_fn(src_cuda, layout, eps)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1692,15 +1706,17 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(MeanReduce, &u(f64),  cuda, reduce::mean_f64, strided);
 
     // ----- Norm LastDim (RmsNorm + LayerNorm) -----
-    table.register(RmsNormLastDim,   &u(f32),  cuda, norm::rms_f32);
-    table.register(RmsNormLastDim,   &u(f16),  cuda, norm::rms_f16);
-    table.register(RmsNormLastDim,   &u(bf16), cuda, norm::rms_bf16);
-    table.register(RmsNormLastDim,   &u(f64),  cuda, norm::rms_f64);
+    // Wrapper now passes the input's true rank-N shape + strides to
+    // baracuda's stride-driven norm FFI; auto-Contiguize skipped.
+    table.register_with_caps(RmsNormLastDim,   &u(f32),  cuda, norm::rms_f32,  strided);
+    table.register_with_caps(RmsNormLastDim,   &u(f16),  cuda, norm::rms_f16,  strided);
+    table.register_with_caps(RmsNormLastDim,   &u(bf16), cuda, norm::rms_bf16, strided);
+    table.register_with_caps(RmsNormLastDim,   &u(f64),  cuda, norm::rms_f64,  strided);
 
-    table.register(LayerNormLastDim, &u(f32),  cuda, norm::layer_f32);
-    table.register(LayerNormLastDim, &u(f16),  cuda, norm::layer_f16);
-    table.register(LayerNormLastDim, &u(bf16), cuda, norm::layer_bf16);
-    table.register(LayerNormLastDim, &u(f64),  cuda, norm::layer_f64);
+    table.register_with_caps(LayerNormLastDim, &u(f32),  cuda, norm::layer_f32,  strided);
+    table.register_with_caps(LayerNormLastDim, &u(f16),  cuda, norm::layer_f16,  strided);
+    table.register_with_caps(LayerNormLastDim, &u(bf16), cuda, norm::layer_bf16, strided);
+    table.register_with_caps(LayerNormLastDim, &u(f64),  cuda, norm::layer_f64,  strided);
 
     // ----- Attention — RoPE -----
     table.register(Rope, &u(f32),  cuda, attention::rope_f32);
@@ -1709,15 +1725,17 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(Rope, &u(f64),  cuda, attention::rope_f64);
 
     // ----- Softmax + LogSoftmax LastDim -----
-    table.register(SoftmaxLastDim,    &u(f32),  cuda, softmax::softmax_f32);
-    table.register(SoftmaxLastDim,    &u(f16),  cuda, softmax::softmax_f16);
-    table.register(SoftmaxLastDim,    &u(bf16), cuda, softmax::softmax_bf16);
-    table.register(SoftmaxLastDim,    &u(f64),  cuda, softmax::softmax_f64);
+    // Wrapper now passes the input's true rank-N shape + strides to
+    // baracuda's stride-driven softmax FFI; auto-Contiguize skipped.
+    table.register_with_caps(SoftmaxLastDim,    &u(f32),  cuda, softmax::softmax_f32,  strided);
+    table.register_with_caps(SoftmaxLastDim,    &u(f16),  cuda, softmax::softmax_f16,  strided);
+    table.register_with_caps(SoftmaxLastDim,    &u(bf16), cuda, softmax::softmax_bf16, strided);
+    table.register_with_caps(SoftmaxLastDim,    &u(f64),  cuda, softmax::softmax_f64,  strided);
 
-    table.register(LogSoftmaxLastDim, &u(f32),  cuda, softmax::log_softmax_f32);
-    table.register(LogSoftmaxLastDim, &u(f16),  cuda, softmax::log_softmax_f16);
-    table.register(LogSoftmaxLastDim, &u(bf16), cuda, softmax::log_softmax_bf16);
-    table.register(LogSoftmaxLastDim, &u(f64),  cuda, softmax::log_softmax_f64);
+    table.register_with_caps(LogSoftmaxLastDim, &u(f32),  cuda, softmax::log_softmax_f32,  strided);
+    table.register_with_caps(LogSoftmaxLastDim, &u(f16),  cuda, softmax::log_softmax_f16,  strided);
+    table.register_with_caps(LogSoftmaxLastDim, &u(bf16), cuda, softmax::log_softmax_bf16, strided);
+    table.register_with_caps(LogSoftmaxLastDim, &u(f64),  cuda, softmax::log_softmax_f64,  strided);
 
     // ----- IndexSelect / Gather / MaskedFill / ScatterAdd
     // Dtype keys mirror the existing CPU registrations:
@@ -1778,10 +1796,12 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     // ----- Clamp — scalar bounds → broadcast-tensor ternary clamp.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    table.register(ClampElementwise, &u(f32),  cuda, clamp::clamp_f32);
-    table.register(ClampElementwise, &u(f64),  cuda, clamp::clamp_f64);
-    table.register(ClampElementwise, &u(f16),  cuda, clamp::clamp_f16);
-    table.register(ClampElementwise, &u(bf16), cuda, clamp::clamp_bf16);
+    // Wrapper now passes the input's true rank-N shape + strides;
+    // bounds are broadcast (stride 0 on every axis).
+    table.register_with_caps(ClampElementwise, &u(f32),  cuda, clamp::clamp_f32,  strided);
+    table.register_with_caps(ClampElementwise, &u(f64),  cuda, clamp::clamp_f64,  strided);
+    table.register_with_caps(ClampElementwise, &u(f16),  cuda, clamp::clamp_f16,  strided);
+    table.register_with_caps(ClampElementwise, &u(bf16), cuda, clamp::clamp_bf16, strided);
 
     // ----- Concat — N-ary via chained baracuda concat2.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.

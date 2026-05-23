@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Result};
+use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Result, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_storage::{
     baracuda_dispatch::register_baracuda_cuda_kernels,
@@ -66,10 +66,11 @@ fn run_norm_f32(
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
     let kernel = pick_alt(&table, op, expected);
+    let layout = Layout::contiguous(Shape::from_dims(&[outer_count, last_dim]));
     kernel(
         &[src_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &[layout.clone(), layout],
         &OpParams::NormLastDim {
             outer_count,
             last_dim,

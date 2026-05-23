@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Result};
+use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Result, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_storage::{
     baracuda_dispatch::register_baracuda_cuda_kernels,
@@ -100,6 +100,8 @@ fn run_softmax_f32(
     expected_fn: fuel_storage::KernelRef,
     op_params: OpParams,
     input: &[f32],
+    outer_count: usize,
+    last_dim: usize,
 ) -> Result<Vec<f32>> {
     let dev = CudaDevice::new(0).expect("cuda");
     let mut table = KernelBindingTable::new();
@@ -111,10 +113,11 @@ fn run_softmax_f32(
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
     let kernel = pick_alt(&table, op, expected_fn);
+    let layout = Layout::contiguous(Shape::from_dims(&[outer_count, last_dim]));
     kernel(
         &[src_arc.clone()],
         &mut [out_arc.clone()],
-        &[],
+        &[layout.clone(), layout],
         &op_params,
     )?;
     Ok(download_f32(&out_arc.read().unwrap()))
@@ -136,6 +139,8 @@ fn baracuda_softmax_last_dim_f32_matches_reference() {
             last_dim: 4,
         },
         &input,
+        2,
+        4,
     )
     .expect("kernel call");
     assert_close(&got, &expected, 1e-5);
@@ -157,6 +162,8 @@ fn baracuda_log_softmax_last_dim_f32_matches_reference() {
             last_dim: 4,
         },
         &input,
+        2,
+        4,
     )
     .expect("kernel call");
     assert_close(&got, &expected, 1e-5);
