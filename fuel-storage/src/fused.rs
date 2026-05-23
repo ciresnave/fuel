@@ -876,6 +876,207 @@ pub fn cost_qmatmul_cpu(
     }
 }
 
+// =============================================================================
+// Vulkan PrecisionGuarantee constants (Phase 7.6 step 9c follow-up,
+// 2026-05-23). Per-kernel precision claims so the optimizer's
+// tolerance-budget pass can admit Vulkan alternatives. The constants
+// group Vulkan kernels by their numerical character: pointwise IEEE-
+// 754 ops (bit-stable, ~1 ULP), half-precision pointwise (bit-stable
+// at lower mantissa), transcendentals (vendor lib ~2-4 ULP),
+// reductions (NOT bit-stable due to subgroup composition), matmul
+// (deterministic accumulation), tensor-core matmul (FMA chains),
+// byte-level (memcpy, bit-identical), cast, and qmatmul.
+// =============================================================================
+
+/// Vulkan f32 / f64 pointwise ops — Add, Sub, Mul, Div, Maximum,
+/// Minimum, Neg, Sqr, Sqrt, Relu, Step, Affine, Clamp.
+///
+/// IEEE-754 conformant per the Vulkan SPIR-V spec: direct hardware
+/// FADD / FMUL / FMA per thread, no atomic accumulators, no
+/// cross-thread communication. Bit-stable on same hardware (kernel
+/// scheduling doesn't affect per-thread outputs). ULP is the
+/// standard IEEE-754 round-to-nearest tolerance (≤0.5 ULP for FADD/
+/// FMUL/FDIV, ≤1 ULP for FMA chains).
+///
+/// Not REFERENCE-grade because we don't claim ULP=0 across all
+/// implementations — Vulkan compilers may reorder commutative ops
+/// or fuse multiply-adds in ways that differ from a strict
+/// IEEE-754-strict reference. Within those bounds, every conforming
+/// Vulkan implementation produces results within 1 ULP.
+pub const VULKAN_FLOAT_POINTWISE_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: Some(1),
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend f32/f64 pointwise: direct hardware FADD/\
+            FMUL/FMA per thread; no atomics; bit-stable on same hardware. \
+            Within 1 ULP of IEEE-754 round-to-nearest; small variation \
+            across implementations due to commutative-reorder + FMA fusion.",
+};
+
+/// Vulkan f16 / bf16 pointwise ops — same op surface as
+/// [`VULKAN_FLOAT_POINTWISE_PRECISION`] at half precision. f16 uses
+/// shaderFloat16 native ops (where available); bf16 packs two values
+/// per u32 with software upcast/downcast through f32 for the arithmetic.
+///
+/// Bit-stable on same hardware (no atomics, deterministic per-thread).
+/// ULP claim is 1 in the dtype's mantissa space — meaningful for f16
+/// (10-bit mantissa) and bf16 (7-bit mantissa) precision budgeting.
+/// Absolute error scales with magnitude × 2^(-mantissa_bits).
+pub const VULKAN_HALF_POINTWISE_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: Some(1),
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend f16/bf16 pointwise: shaderFloat16 native or \
+            u32-packed bf16; bit-stable on same hardware; within 1 ULP in \
+            the dtype's mantissa space (10-bit f16, 7-bit bf16).",
+};
+
+/// Vulkan transcendentals — Exp, Log, Sin, Cos, Tanh, Sigmoid, Silu,
+/// Gelu (f32/f16/bf16/f64). f32/f16 go through GLSL.std.450's vendor-
+/// library implementations (variable ULP per GPU/driver); f64 uses
+/// the Horner-polynomial approximations in `unary_f64.slang`
+/// (target ~1e-12 relative error).
+///
+/// Bit-stable on same hardware (driver-deterministic; the
+/// transcendental implementation is fixed per build). ULP bound is
+/// loose: Vulkan spec allows 3-4 ULP for GLSL.std.450 transcendentals;
+/// real implementations are typically tighter (~1-2 ULP on NVIDIA's
+/// libdevice).
+pub const VULKAN_TRANSCENDENTAL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: Some(4),
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend transcendentals: GLSL.std.450 vendor lib \
+            (f32/f16/bf16) or Horner polynomial (f64); bit-stable on same \
+            hardware; Vulkan spec allows ≤4 ULP, real GPUs typically tighter.",
+};
+
+/// Vulkan reductions — SumReduce, MaxReduce, MinReduce, MeanReduce,
+/// SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, and any kernel
+/// that uses subgroup tree reductions.
+///
+/// **NOT bit-stable on same hardware**: subgroup composition (which
+/// threads form a subgroup) depends on workgroup scheduling decisions
+/// the driver makes per dispatch. Reordering FADDs across subgroups
+/// produces different floating-point results. This is the strongest
+/// distinguishing claim of Vulkan reductions vs the CPU equivalents
+/// (which ARE bit-stable due to deterministic nested-loop order).
+///
+/// ULP bound left unclaimed; the empirical relative error is bounded
+/// by the reduction depth (`O(log N)` rounding accumulations). The
+/// step-8 empirical calibration framework populates per-shape bounds
+/// when it lands.
+pub const VULKAN_REDUCTION_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: false,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend reductions: subgroup tree reductions; NOT \
+            bit-stable — subgroup composition depends on driver scheduling. \
+            Relative error bounded by reduction depth (O(log N) accumulations).",
+};
+
+/// Vulkan matmul (f32 standard, no tensor cores) — tiled / reg-tile /
+/// matvec kernels. Accumulation order is deterministic per kernel
+/// dispatch (each output element's reduction runs in a single thread
+/// with no cross-thread atomic adds); the kernel is bit-stable on
+/// same hardware.
+///
+/// ULP claim left unspecified; the per-element error is bounded by
+/// `K · ULP(2 · max_abs_product)` from the K-deep FMA chain.
+pub const VULKAN_MATMUL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend f32 matmul: tiled / reg-tile / matvec \
+            kernels with per-thread sequential FMA accumulation; bit-stable \
+            on same hardware; error bounded by O(K · ULP) from K-deep \
+            reduction.",
+};
+
+/// Vulkan tensor-core mixed-precision matmul (f32 × bf16 → f32, via
+/// `matmul_coop` cooperative kernels on Ampere+ tensor cores).
+///
+/// Tensor-core FMAs accumulate in extended precision (f32 internal,
+/// IEEE-754 conformant FMA chain); the cross-tile reduction happens
+/// with full f32 precision. Bit-stable on same hardware per the
+/// Ampere/Ada spec (the tensor cores are deterministic given the
+/// same inputs + scheduling). ULP claim is wider than pure f32
+/// because the bf16 inputs lose 16 mantissa bits before the FMA.
+pub const VULKAN_MATMUL_TENSORCORE_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend tensor-core matmul (f32 × bf16 → f32): \
+            cooperative-matrix FMAs with f32 internal accumulator; bit-stable \
+            on same hardware; per-tile error bounded by O(K · ULP_bf16 + \
+            tile_K · ULP_f32).",
+};
+
+/// Vulkan byte-level (memcpy-style) ops — Triu, Tril, Flip, Roll,
+/// WriteSlice, IndexSelect, Concat, Copy (D2H/H2D). Pure data movement
+/// with no FP arithmetic; output bytes are bit-identical to input
+/// bytes selected/permuted according to the op.
+///
+/// Bit-stable on same hardware, ULP/relative/absolute = 0 (byte-level
+/// equivalence). The strongest precision claim, equivalent to
+/// REFERENCE but earned through "no FP math" rather than "explicit
+/// IEEE-754 evaluation."
+pub const VULKAN_BYTE_LEVEL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: Some(0),
+    max_relative: Some(0.0),
+    max_absolute: Some(0.0),
+    notes: "fuel-vulkan-backend byte-level ops (Triu/Tril/Flip/Roll/\
+            WriteSlice/IndexSelect/Concat/Copy): pure data movement, no FP \
+            math; bit-identical to input bytes.",
+};
+
+/// Vulkan dtype cast — f32↔f16, f32↔bf16, F8E4M3↔{f32,f16,bf16}.
+/// Pure conversion with no accumulation; output is the IEEE-754
+/// round-to-nearest representation of the input in the target dtype.
+///
+/// Bit-stable on same hardware (no atomics, no cross-thread comm).
+/// ULP=0 vs the IEEE-754 round-to-nearest reference for the target
+/// dtype (the cast itself is exact within the target's representable
+/// range; any precision loss is inherent to the dtype, not the
+/// implementation).
+pub const VULKAN_CAST_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: Some(0),
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend Cast: pure dtype conversion via SPIR-V \
+            OpFConvert / OpConvertFToS / OpConvertSToF; bit-stable on same \
+            hardware; ULP=0 vs IEEE-754 round-to-nearest in target dtype \
+            (loss is inherent to the target dtype, not the implementation).",
+};
+
+/// Vulkan QMatMul (Q4_0 / Q4_K_M / Q8_0 weights × F32 activation).
+/// Per-block dequant + per-output-element FMA accumulation; same
+/// deterministic structure as the CPU QMatMul kernel (bit-stable on
+/// same hardware).
+///
+/// The inherent precision loss from quantization is a property of
+/// the QuantType (captured separately when the calibration framework
+/// lands); the kernel itself contributes only the matmul accumulation
+/// error.
+pub const VULKAN_QMATMUL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-vulkan-backend QMatMul (Q4_0/Q4_K_M/Q8_0 × F32): per-block \
+            dequant + per-output-element FMA; bit-stable on same hardware. \
+            Quantization precision loss is a QuantType property, not the \
+            kernel's contribution.",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

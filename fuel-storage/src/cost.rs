@@ -733,6 +733,13 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         // refinement can attach later.
         Copy => cost_shape_op_cpu,
 
+        // Op::WriteSlice — in-place rectangular scatter write. No
+        // FLOPs; bandwidth-bound (read source slab + write
+        // destination slab). Same shape-op cost; the per-backend
+        // overhead (kernel launch on GPU vs nested loop on CPU) is
+        // a Layer-2 calibration concern.
+        WriteSlice => cost_shape_op_cpu,
+
         // OpKind is `#[non_exhaustive]` — new variants get
         // [`unknown_cost`] until an explicit arm is added here.
         // The step-8 lint catches this immediately by asserting
