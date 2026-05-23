@@ -18,7 +18,7 @@ use fuel_core_types::{Layout, Error, Result, probe::BackendId};
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::DType;
 
-use crate::kernel::{KernelBindingTable, OpParams};
+use crate::kernel::{KernelBindingTable, KernelCaps, OpParams};
 use crate::Storage;
 
 // Re-use the storage-helpers from dispatch.rs so we read/write
@@ -1630,57 +1630,66 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     let bf16 = DType::BF16;
     let f64 = DType::F64;
 
+    // Baracuda binary kernels ship both contig and strided variants;
+    // the wrapper in fuel-cuda-backend/src/baracuda/binary.rs picks
+    // per-call via `is_contiguous_zero_offset(layout)`. Advertise
+    // `strided_input` so Fuel's auto-Contiguize gate stays out of the
+    // way — the strided FFI is the fallback for non-contig views.
+    let strided = KernelCaps::strided_input();
+
     // ----- F32 binary -----
-    table.register(AddElementwise,     &b(f32), cuda, binary::add_f32);
-    table.register(SubElementwise,     &b(f32), cuda, binary::sub_f32);
-    table.register(MulElementwise,     &b(f32), cuda, binary::mul_f32);
-    table.register(DivElementwise,     &b(f32), cuda, binary::div_f32);
-    table.register(MaximumElementwise, &b(f32), cuda, binary::maximum_f32);
-    table.register(MinimumElementwise, &b(f32), cuda, binary::minimum_f32);
+    table.register_with_caps(AddElementwise,     &b(f32), cuda, binary::add_f32,     strided);
+    table.register_with_caps(SubElementwise,     &b(f32), cuda, binary::sub_f32,     strided);
+    table.register_with_caps(MulElementwise,     &b(f32), cuda, binary::mul_f32,     strided);
+    table.register_with_caps(DivElementwise,     &b(f32), cuda, binary::div_f32,     strided);
+    table.register_with_caps(MaximumElementwise, &b(f32), cuda, binary::maximum_f32, strided);
+    table.register_with_caps(MinimumElementwise, &b(f32), cuda, binary::minimum_f32, strided);
 
     // ----- F16 / BF16 / F64 binary (net-new dtype coverage on CUDA) -----
-    table.register(AddElementwise,     &b(f16), cuda, binary::add_f16);
-    table.register(SubElementwise,     &b(f16), cuda, binary::sub_f16);
-    table.register(MulElementwise,     &b(f16), cuda, binary::mul_f16);
-    table.register(DivElementwise,     &b(f16), cuda, binary::div_f16);
-    table.register(MaximumElementwise, &b(f16), cuda, binary::maximum_f16);
-    table.register(MinimumElementwise, &b(f16), cuda, binary::minimum_f16);
+    table.register_with_caps(AddElementwise,     &b(f16), cuda, binary::add_f16,     strided);
+    table.register_with_caps(SubElementwise,     &b(f16), cuda, binary::sub_f16,     strided);
+    table.register_with_caps(MulElementwise,     &b(f16), cuda, binary::mul_f16,     strided);
+    table.register_with_caps(DivElementwise,     &b(f16), cuda, binary::div_f16,     strided);
+    table.register_with_caps(MaximumElementwise, &b(f16), cuda, binary::maximum_f16, strided);
+    table.register_with_caps(MinimumElementwise, &b(f16), cuda, binary::minimum_f16, strided);
 
-    table.register(AddElementwise,     &b(bf16), cuda, binary::add_bf16);
-    table.register(SubElementwise,     &b(bf16), cuda, binary::sub_bf16);
-    table.register(MulElementwise,     &b(bf16), cuda, binary::mul_bf16);
-    table.register(DivElementwise,     &b(bf16), cuda, binary::div_bf16);
-    table.register(MaximumElementwise, &b(bf16), cuda, binary::maximum_bf16);
-    table.register(MinimumElementwise, &b(bf16), cuda, binary::minimum_bf16);
+    table.register_with_caps(AddElementwise,     &b(bf16), cuda, binary::add_bf16,     strided);
+    table.register_with_caps(SubElementwise,     &b(bf16), cuda, binary::sub_bf16,     strided);
+    table.register_with_caps(MulElementwise,     &b(bf16), cuda, binary::mul_bf16,     strided);
+    table.register_with_caps(DivElementwise,     &b(bf16), cuda, binary::div_bf16,     strided);
+    table.register_with_caps(MaximumElementwise, &b(bf16), cuda, binary::maximum_bf16, strided);
+    table.register_with_caps(MinimumElementwise, &b(bf16), cuda, binary::minimum_bf16, strided);
 
-    table.register(AddElementwise,     &b(f64), cuda, binary::add_f64);
-    table.register(SubElementwise,     &b(f64), cuda, binary::sub_f64);
-    table.register(MulElementwise,     &b(f64), cuda, binary::mul_f64);
-    table.register(DivElementwise,     &b(f64), cuda, binary::div_f64);
-    table.register(MaximumElementwise, &b(f64), cuda, binary::maximum_f64);
-    table.register(MinimumElementwise, &b(f64), cuda, binary::minimum_f64);
+    table.register_with_caps(AddElementwise,     &b(f64), cuda, binary::add_f64,     strided);
+    table.register_with_caps(SubElementwise,     &b(f64), cuda, binary::sub_f64,     strided);
+    table.register_with_caps(MulElementwise,     &b(f64), cuda, binary::mul_f64,     strided);
+    table.register_with_caps(DivElementwise,     &b(f64), cuda, binary::div_f64,     strided);
+    table.register_with_caps(MaximumElementwise, &b(f64), cuda, binary::maximum_f64, strided);
+    table.register_with_caps(MinimumElementwise, &b(f64), cuda, binary::minimum_f64, strided);
 
     // ----- Reduce (single dispatch covers all axis configurations;
     //       the wrapper destructures OpParams::Reduce { dims, keepdim }) -----
-    table.register(SumReduce,  &u(f32),  cuda, reduce::sum_f32);
-    table.register(MaxReduce,  &u(f32),  cuda, reduce::max_f32);
-    table.register(MinReduce,  &u(f32),  cuda, reduce::min_f32);
-    table.register(MeanReduce, &u(f32),  cuda, reduce::mean_f32);
+    // Baracuda reduce FFI is fully stride-driven; the wrapper passes
+    // `current_layout.stride()` as `stride_x` each iteration.
+    table.register_with_caps(SumReduce,  &u(f32),  cuda, reduce::sum_f32,  strided);
+    table.register_with_caps(MaxReduce,  &u(f32),  cuda, reduce::max_f32,  strided);
+    table.register_with_caps(MinReduce,  &u(f32),  cuda, reduce::min_f32,  strided);
+    table.register_with_caps(MeanReduce, &u(f32),  cuda, reduce::mean_f32, strided);
 
-    table.register(SumReduce,  &u(f16),  cuda, reduce::sum_f16);
-    table.register(MaxReduce,  &u(f16),  cuda, reduce::max_f16);
-    table.register(MinReduce,  &u(f16),  cuda, reduce::min_f16);
-    table.register(MeanReduce, &u(f16),  cuda, reduce::mean_f16);
+    table.register_with_caps(SumReduce,  &u(f16),  cuda, reduce::sum_f16,  strided);
+    table.register_with_caps(MaxReduce,  &u(f16),  cuda, reduce::max_f16,  strided);
+    table.register_with_caps(MinReduce,  &u(f16),  cuda, reduce::min_f16,  strided);
+    table.register_with_caps(MeanReduce, &u(f16),  cuda, reduce::mean_f16, strided);
 
-    table.register(SumReduce,  &u(bf16), cuda, reduce::sum_bf16);
-    table.register(MaxReduce,  &u(bf16), cuda, reduce::max_bf16);
-    table.register(MinReduce,  &u(bf16), cuda, reduce::min_bf16);
-    table.register(MeanReduce, &u(bf16), cuda, reduce::mean_bf16);
+    table.register_with_caps(SumReduce,  &u(bf16), cuda, reduce::sum_bf16,  strided);
+    table.register_with_caps(MaxReduce,  &u(bf16), cuda, reduce::max_bf16,  strided);
+    table.register_with_caps(MinReduce,  &u(bf16), cuda, reduce::min_bf16,  strided);
+    table.register_with_caps(MeanReduce, &u(bf16), cuda, reduce::mean_bf16, strided);
 
-    table.register(SumReduce,  &u(f64),  cuda, reduce::sum_f64);
-    table.register(MaxReduce,  &u(f64),  cuda, reduce::max_f64);
-    table.register(MinReduce,  &u(f64),  cuda, reduce::min_f64);
-    table.register(MeanReduce, &u(f64),  cuda, reduce::mean_f64);
+    table.register_with_caps(SumReduce,  &u(f64),  cuda, reduce::sum_f64,  strided);
+    table.register_with_caps(MaxReduce,  &u(f64),  cuda, reduce::max_f64,  strided);
+    table.register_with_caps(MinReduce,  &u(f64),  cuda, reduce::min_f64,  strided);
+    table.register_with_caps(MeanReduce, &u(f64),  cuda, reduce::mean_f64, strided);
 
     // ----- Norm LastDim (RmsNorm + LayerNorm) -----
     table.register(RmsNormLastDim,   &u(f32),  cuda, norm::rms_f32);
@@ -1750,14 +1759,15 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // Net-new dtype coverage on CUDA: PTX path is F32-only.
     let u32_dt = DType::U32;
     let arg_dts = |dt: DType| [dt, u32_dt];
-    table.register(ArgMaxDim, &arg_dts(f32),  cuda, arg_reduce::argmax_dim_u32_f32);
-    table.register(ArgMinDim, &arg_dts(f32),  cuda, arg_reduce::argmin_dim_u32_f32);
-    table.register(ArgMaxDim, &arg_dts(f64),  cuda, arg_reduce::argmax_dim_u32_f64);
-    table.register(ArgMinDim, &arg_dts(f64),  cuda, arg_reduce::argmin_dim_u32_f64);
-    table.register(ArgMaxDim, &arg_dts(f16),  cuda, arg_reduce::argmax_dim_u32_f16);
-    table.register(ArgMinDim, &arg_dts(f16),  cuda, arg_reduce::argmin_dim_u32_f16);
-    table.register(ArgMaxDim, &arg_dts(bf16), cuda, arg_reduce::argmax_dim_u32_bf16);
-    table.register(ArgMinDim, &arg_dts(bf16), cuda, arg_reduce::argmin_dim_u32_bf16);
+    // arg_reduce wrapper passes `src_layout.stride()` as stride_x.
+    table.register_with_caps(ArgMaxDim, &arg_dts(f32),  cuda, arg_reduce::argmax_dim_u32_f32,  strided);
+    table.register_with_caps(ArgMinDim, &arg_dts(f32),  cuda, arg_reduce::argmin_dim_u32_f32,  strided);
+    table.register_with_caps(ArgMaxDim, &arg_dts(f64),  cuda, arg_reduce::argmax_dim_u32_f64,  strided);
+    table.register_with_caps(ArgMinDim, &arg_dts(f64),  cuda, arg_reduce::argmin_dim_u32_f64,  strided);
+    table.register_with_caps(ArgMaxDim, &arg_dts(f16),  cuda, arg_reduce::argmax_dim_u32_f16,  strided);
+    table.register_with_caps(ArgMinDim, &arg_dts(f16),  cuda, arg_reduce::argmin_dim_u32_f16,  strided);
+    table.register_with_caps(ArgMaxDim, &arg_dts(bf16), cuda, arg_reduce::argmax_dim_u32_bf16, strided);
+    table.register_with_caps(ArgMinDim, &arg_dts(bf16), cuda, arg_reduce::argmin_dim_u32_bf16, strided);
 
     // ----- PowI — integer-exponent power (alpha.28).
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
@@ -1896,69 +1906,73 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
         table.register(Cast, &[dst, DType::F8E4M3], cuda, cast::cast_baracuda_wrapper);
     }
 
+    // Baracuda unary kernels ship both contig + `<sym>_strided_run`
+    // variants; the wrapper in fuel-cuda-backend/src/baracuda/elementwise.rs
+    // picks per-call via `is_contiguous_zero_offset(layout)`.
+
     // ----- F32 unary -----
-    table.register(NegElementwise,    &u(f32), cuda, unary::neg_f32);
-    table.register(AbsElementwise,    &u(f32), cuda, unary::abs_f32);
-    table.register(SignElementwise,   &u(f32), cuda, unary::sign_f32);
-    table.register(SqrElementwise,    &u(f32), cuda, unary::sqr_f32);
-    table.register(SqrtElementwise,   &u(f32), cuda, unary::sqrt_f32);
-    table.register(RecipElementwise,  &u(f32), cuda, unary::recip_f32);
-    table.register(ExpElementwise,    &u(f32), cuda, unary::exp_f32);
-    table.register(LogElementwise,    &u(f32), cuda, unary::log_f32);
-    table.register(SinElementwise,    &u(f32), cuda, unary::sin_f32);
-    table.register(CosElementwise,    &u(f32), cuda, unary::cos_f32);
-    table.register(TanhElementwise,   &u(f32), cuda, unary::tanh_f32);
-    table.register(ReluElementwise,   &u(f32), cuda, unary::relu_f32);
-    table.register(GeluElementwise,   &u(f32), cuda, unary::gelu_f32);
-    table.register(SiluElementwise,   &u(f32), cuda, unary::silu_f32);
-    table.register(SigmoidElementwise, &u(f32), cuda, unary::sigmoid_f32);
+    table.register_with_caps(NegElementwise,     &u(f32), cuda, unary::neg_f32,     strided);
+    table.register_with_caps(AbsElementwise,     &u(f32), cuda, unary::abs_f32,     strided);
+    table.register_with_caps(SignElementwise,    &u(f32), cuda, unary::sign_f32,    strided);
+    table.register_with_caps(SqrElementwise,     &u(f32), cuda, unary::sqr_f32,     strided);
+    table.register_with_caps(SqrtElementwise,    &u(f32), cuda, unary::sqrt_f32,    strided);
+    table.register_with_caps(RecipElementwise,   &u(f32), cuda, unary::recip_f32,   strided);
+    table.register_with_caps(ExpElementwise,     &u(f32), cuda, unary::exp_f32,     strided);
+    table.register_with_caps(LogElementwise,     &u(f32), cuda, unary::log_f32,     strided);
+    table.register_with_caps(SinElementwise,     &u(f32), cuda, unary::sin_f32,     strided);
+    table.register_with_caps(CosElementwise,     &u(f32), cuda, unary::cos_f32,     strided);
+    table.register_with_caps(TanhElementwise,    &u(f32), cuda, unary::tanh_f32,    strided);
+    table.register_with_caps(ReluElementwise,    &u(f32), cuda, unary::relu_f32,    strided);
+    table.register_with_caps(GeluElementwise,    &u(f32), cuda, unary::gelu_f32,    strided);
+    table.register_with_caps(SiluElementwise,    &u(f32), cuda, unary::silu_f32,    strided);
+    table.register_with_caps(SigmoidElementwise, &u(f32), cuda, unary::sigmoid_f32, strided);
 
     // ----- F16 unary (net-new dtype coverage for CUDA — PTX path is
     //       f32-only today) -----
-    table.register(NegElementwise,    &u(f16), cuda, unary::neg_f16);
-    table.register(AbsElementwise,    &u(f16), cuda, unary::abs_f16);
-    table.register(SqrElementwise,    &u(f16), cuda, unary::sqr_f16);
-    table.register(SqrtElementwise,   &u(f16), cuda, unary::sqrt_f16);
-    table.register(RecipElementwise,  &u(f16), cuda, unary::recip_f16);
-    table.register(ExpElementwise,    &u(f16), cuda, unary::exp_f16);
-    table.register(LogElementwise,    &u(f16), cuda, unary::log_f16);
-    table.register(SinElementwise,    &u(f16), cuda, unary::sin_f16);
-    table.register(CosElementwise,    &u(f16), cuda, unary::cos_f16);
-    table.register(TanhElementwise,   &u(f16), cuda, unary::tanh_f16);
-    table.register(ReluElementwise,   &u(f16), cuda, unary::relu_f16);
-    table.register(GeluElementwise,   &u(f16), cuda, unary::gelu_f16);
-    table.register(SiluElementwise,   &u(f16), cuda, unary::silu_f16);
-    table.register(SigmoidElementwise, &u(f16), cuda, unary::sigmoid_f16);
+    table.register_with_caps(NegElementwise,     &u(f16), cuda, unary::neg_f16,     strided);
+    table.register_with_caps(AbsElementwise,     &u(f16), cuda, unary::abs_f16,     strided);
+    table.register_with_caps(SqrElementwise,     &u(f16), cuda, unary::sqr_f16,     strided);
+    table.register_with_caps(SqrtElementwise,    &u(f16), cuda, unary::sqrt_f16,    strided);
+    table.register_with_caps(RecipElementwise,   &u(f16), cuda, unary::recip_f16,   strided);
+    table.register_with_caps(ExpElementwise,     &u(f16), cuda, unary::exp_f16,     strided);
+    table.register_with_caps(LogElementwise,     &u(f16), cuda, unary::log_f16,     strided);
+    table.register_with_caps(SinElementwise,     &u(f16), cuda, unary::sin_f16,     strided);
+    table.register_with_caps(CosElementwise,     &u(f16), cuda, unary::cos_f16,     strided);
+    table.register_with_caps(TanhElementwise,    &u(f16), cuda, unary::tanh_f16,    strided);
+    table.register_with_caps(ReluElementwise,    &u(f16), cuda, unary::relu_f16,    strided);
+    table.register_with_caps(GeluElementwise,    &u(f16), cuda, unary::gelu_f16,    strided);
+    table.register_with_caps(SiluElementwise,    &u(f16), cuda, unary::silu_f16,    strided);
+    table.register_with_caps(SigmoidElementwise, &u(f16), cuda, unary::sigmoid_f16, strided);
 
     // ----- BF16 unary -----
-    table.register(NegElementwise,    &u(bf16), cuda, unary::neg_bf16);
-    table.register(AbsElementwise,    &u(bf16), cuda, unary::abs_bf16);
-    table.register(SqrElementwise,    &u(bf16), cuda, unary::sqr_bf16);
-    table.register(SqrtElementwise,   &u(bf16), cuda, unary::sqrt_bf16);
-    table.register(RecipElementwise,  &u(bf16), cuda, unary::recip_bf16);
-    table.register(ExpElementwise,    &u(bf16), cuda, unary::exp_bf16);
-    table.register(LogElementwise,    &u(bf16), cuda, unary::log_bf16);
-    table.register(SinElementwise,    &u(bf16), cuda, unary::sin_bf16);
-    table.register(CosElementwise,    &u(bf16), cuda, unary::cos_bf16);
-    table.register(TanhElementwise,   &u(bf16), cuda, unary::tanh_bf16);
-    table.register(ReluElementwise,   &u(bf16), cuda, unary::relu_bf16);
-    table.register(GeluElementwise,   &u(bf16), cuda, unary::gelu_bf16);
-    table.register(SiluElementwise,   &u(bf16), cuda, unary::silu_bf16);
-    table.register(SigmoidElementwise, &u(bf16), cuda, unary::sigmoid_bf16);
+    table.register_with_caps(NegElementwise,     &u(bf16), cuda, unary::neg_bf16,     strided);
+    table.register_with_caps(AbsElementwise,     &u(bf16), cuda, unary::abs_bf16,     strided);
+    table.register_with_caps(SqrElementwise,     &u(bf16), cuda, unary::sqr_bf16,     strided);
+    table.register_with_caps(SqrtElementwise,    &u(bf16), cuda, unary::sqrt_bf16,    strided);
+    table.register_with_caps(RecipElementwise,   &u(bf16), cuda, unary::recip_bf16,   strided);
+    table.register_with_caps(ExpElementwise,     &u(bf16), cuda, unary::exp_bf16,     strided);
+    table.register_with_caps(LogElementwise,     &u(bf16), cuda, unary::log_bf16,     strided);
+    table.register_with_caps(SinElementwise,     &u(bf16), cuda, unary::sin_bf16,     strided);
+    table.register_with_caps(CosElementwise,     &u(bf16), cuda, unary::cos_bf16,     strided);
+    table.register_with_caps(TanhElementwise,    &u(bf16), cuda, unary::tanh_bf16,    strided);
+    table.register_with_caps(ReluElementwise,    &u(bf16), cuda, unary::relu_bf16,    strided);
+    table.register_with_caps(GeluElementwise,    &u(bf16), cuda, unary::gelu_bf16,    strided);
+    table.register_with_caps(SiluElementwise,    &u(bf16), cuda, unary::silu_bf16,    strided);
+    table.register_with_caps(SigmoidElementwise, &u(bf16), cuda, unary::sigmoid_bf16, strided);
 
     // ----- F64 unary -----
-    table.register(NegElementwise,    &u(f64), cuda, unary::neg_f64);
-    table.register(AbsElementwise,    &u(f64), cuda, unary::abs_f64);
-    table.register(SqrElementwise,    &u(f64), cuda, unary::sqr_f64);
-    table.register(SqrtElementwise,   &u(f64), cuda, unary::sqrt_f64);
-    table.register(RecipElementwise,  &u(f64), cuda, unary::recip_f64);
-    table.register(ExpElementwise,    &u(f64), cuda, unary::exp_f64);
-    table.register(LogElementwise,    &u(f64), cuda, unary::log_f64);
-    table.register(SinElementwise,    &u(f64), cuda, unary::sin_f64);
-    table.register(CosElementwise,    &u(f64), cuda, unary::cos_f64);
-    table.register(TanhElementwise,   &u(f64), cuda, unary::tanh_f64);
-    table.register(ReluElementwise,   &u(f64), cuda, unary::relu_f64);
-    table.register(GeluElementwise,   &u(f64), cuda, unary::gelu_f64);
-    table.register(SiluElementwise,   &u(f64), cuda, unary::silu_f64);
-    table.register(SigmoidElementwise, &u(f64), cuda, unary::sigmoid_f64);
+    table.register_with_caps(NegElementwise,     &u(f64), cuda, unary::neg_f64,     strided);
+    table.register_with_caps(AbsElementwise,     &u(f64), cuda, unary::abs_f64,     strided);
+    table.register_with_caps(SqrElementwise,     &u(f64), cuda, unary::sqr_f64,     strided);
+    table.register_with_caps(SqrtElementwise,    &u(f64), cuda, unary::sqrt_f64,    strided);
+    table.register_with_caps(RecipElementwise,   &u(f64), cuda, unary::recip_f64,   strided);
+    table.register_with_caps(ExpElementwise,     &u(f64), cuda, unary::exp_f64,     strided);
+    table.register_with_caps(LogElementwise,     &u(f64), cuda, unary::log_f64,     strided);
+    table.register_with_caps(SinElementwise,     &u(f64), cuda, unary::sin_f64,     strided);
+    table.register_with_caps(CosElementwise,     &u(f64), cuda, unary::cos_f64,     strided);
+    table.register_with_caps(TanhElementwise,    &u(f64), cuda, unary::tanh_f64,    strided);
+    table.register_with_caps(ReluElementwise,    &u(f64), cuda, unary::relu_f64,    strided);
+    table.register_with_caps(GeluElementwise,    &u(f64), cuda, unary::gelu_f64,    strided);
+    table.register_with_caps(SiluElementwise,    &u(f64), cuda, unary::silu_f64,    strided);
+    table.register_with_caps(SigmoidElementwise, &u(f64), cuda, unary::sigmoid_f64, strided);
 }
