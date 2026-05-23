@@ -3564,114 +3564,48 @@ fn vulkan_dispatch_conv2d_f32() {
 // (Phase 7.6 step 9c follow-up, 2026-05-23)
 // ===========================================================================
 
-/// Coverage lint: every Vulkan registration must carry a non-UNAUDITED
-/// `PrecisionGuarantee` and a non-`unknown_cost` `CostFn`. Required by
-/// [05-backend-contract](../docs/architecture/05-backend-contract.md) so
-/// the optimizer's tolerance-budget pass and cost-ranking can admit
-/// Vulkan alternatives.
+/// Coverage lint: every Vulkan registration must carry a non-
+/// `UNAUDITED` `PrecisionGuarantee` and a non-`unknown_cost` `CostFn`.
+/// Required by [05-backend-contract](../docs/architecture/05-backend-contract.md)
+/// so the optimizer's tolerance-budget pass and cost-ranking can
+/// admit Vulkan alternatives.
 ///
-/// Mirrors the CPU lint
-/// (`precision_guarantee_lint_bit_stable_cpu_coverage_primitives`) but
-/// scoped to "every Vulkan registration has a real claim" rather than
-/// "every OpKind has a CPU registration" — Vulkan doesn't need to
-/// cover every OpKind; it just needs every registered kernel to have
-/// audited metadata.
+/// **Detection of unaudited**: `precision.notes ==
+/// PrecisionGuarantee::UNAUDITED.notes`. The only way a registration
+/// ends up with UNAUDITED's specific notes string is by using the
+/// literal `PrecisionGuarantee::UNAUDITED` const (the default in
+/// unannotated `register(...)` / `register_with_caps(...)` calls).
+/// Audited claims with no static bound use
+/// [`PrecisionGuarantee::none(reason)`](fuel_storage::fused::PrecisionGuarantee::none)
+/// — same value-field shape but different notes (the audit reason),
+/// which the lint passes.
 ///
-/// **Detection is structural**: a precision claim is UNAUDITED iff
-/// `bit_stable_on_same_hardware == false AND all max_* fields are
-/// None`. This catches both the literal `PrecisionGuarantee::UNAUDITED`
-/// sentinel and any new precision constant accidentally constructed
-/// with the same value-field shape.
-///
-/// **`KNOWN_GAPS`**: some Vulkan kernels are LEGITIMATELY structurally
-/// UNAUDITED — the audit concluded "no static bound to claim." Their
-/// `(op, dtypes)` tuples are listed here with a documented reason.
-/// Adding a new Vulkan reduction (or similar scheduler-dependent)
-/// kernel requires a deliberate edit to this list.
+/// No allowlist needed. The audit reasoning lives on each value (in
+/// `notes`) at the registration site, not in a separate file.
 #[test]
 fn vulkan_dispatch_per_kernel_precision_and_cost_coverage() {
-    use fuel_core_types::DType;
-
-    /// (op, dtypes, reason) — Vulkan kernels whose audited result IS
-    /// UNAUDITED-structurally (no static bound). Sites listed here
-    /// have been deliberately reviewed; sites NOT listed are treated
-    /// as unaudited placeholders and flagged.
-    const KNOWN_GAPS: &[(OpKind, &[DType], &str)] = &[
-        (OpKind::SumReduce,       &[DType::F32, DType::F32], "Vulkan subgroup tree reduction; FADD order depends on workgroup scheduling per dispatch. No static ULP / relative / absolute bound applies."),
-        (OpKind::MaxReduce,       &[DType::F32, DType::F32], "Vulkan subgroup tree reduction; element selection deterministic but accumulated mask depends on subgroup composition."),
-        (OpKind::MinReduce,       &[DType::F32, DType::F32], "Vulkan subgroup tree reduction; same reasoning as MaxReduce."),
-        (OpKind::MeanReduce,      &[DType::F32, DType::F32], "Vulkan subgroup tree reduction + division; accumulation order is scheduler-determined."),
-        (OpKind::SoftmaxLastDim,  &[DType::F32, DType::F32], "Vulkan softmax: per-row max + exp + sum (subgroup-tree reduction internally); no static bound."),
-        (OpKind::RmsNormLastDim,  &[DType::F32, DType::F32], "Vulkan rms_norm: per-row x² + sum (subgroup-tree reduction) + sqrt + divide; no static bound."),
-    ];
+    use fuel_storage::fused::PrecisionGuarantee;
 
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
 
-    let is_structurally_unaudited = |p: &fuel_storage::fused::PrecisionGuarantee| -> bool {
-        !p.bit_stable_on_same_hardware
-            && p.max_ulp.is_none()
-            && p.max_relative.is_none()
-            && p.max_absolute.is_none()
-    };
+    let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
 
     let mut precision_failures: Vec<String> = Vec::new();
     for (op, dtypes, backend, precision) in table.iter_precision() {
         if backend != BackendId::Vulkan {
             continue;
         }
-        if !is_structurally_unaudited(&precision) {
-            continue;
-        }
-        // Structurally UNAUDITED — accept only if on the KNOWN_GAPS list.
-        let allowed = KNOWN_GAPS.iter().any(|(allow_op, allow_dts, _)| {
-            *allow_op == op && *allow_dts == dtypes
-        });
-        if !allowed {
+        if precision.notes == unaudited_notes {
             precision_failures.push(format!(
-                "(OpKind::{:?}, {:?}, Vulkan) is structurally UNAUDITED \
-                 (bit_stable=false, all bounds None) and is NOT on the \
-                 KNOWN_GAPS allowlist. Either annotate via \
-                 `register_with_precision` in \
-                 `vulkan_dispatch::register_vulkan_kernels` with a \
-                 VULKAN_*_PRECISION constant from `fuel-storage::fused`, \
-                 or add the (op, dtypes) tuple to KNOWN_GAPS in this \
-                 lint with a documented reason for why no static bound \
-                 applies.",
+                "(OpKind::{:?}, {:?}, Vulkan) is `PrecisionGuarantee::\
+                 UNAUDITED` (placeholder for not-yet-audited kernels). \
+                 Either annotate via `register_with_precision` in \
+                 `vulkan_dispatch::register_vulkan_kernels` with a real \
+                 VULKAN_*_PRECISION constant, or use \
+                 `PrecisionGuarantee::none(\"<audit reason>\")` if the \
+                 audit concluded no static bound applies.",
                 op, dtypes,
-            ));
-        }
-    }
-
-    // Sanity: every KNOWN_GAPS entry must actually be UNAUDITED-shaped
-    // (catches stale allowlist entries when a kernel acquires a real
-    // precision claim).
-    let mut allowlist_drift: Vec<String> = Vec::new();
-    for (allow_op, allow_dts, _reason) in KNOWN_GAPS {
-        let mut found_unaudited = false;
-        let mut found_any = false;
-        for (op, dtypes, backend, precision) in table.iter_precision() {
-            if backend != BackendId::Vulkan || op != *allow_op || dtypes != *allow_dts {
-                continue;
-            }
-            found_any = true;
-            if is_structurally_unaudited(&precision) {
-                found_unaudited = true;
-            }
-        }
-        if !found_any {
-            allowlist_drift.push(format!(
-                "KNOWN_GAPS entry (OpKind::{:?}, {:?}, Vulkan) has no \
-                 matching Vulkan registration. Remove the stale entry \
-                 or fix the registration.",
-                allow_op, allow_dts,
-            ));
-        } else if !found_unaudited {
-            allowlist_drift.push(format!(
-                "KNOWN_GAPS entry (OpKind::{:?}, {:?}, Vulkan) now has a \
-                 non-UNAUDITED PrecisionGuarantee. The kernel acquired a \
-                 real claim; remove the allowlist entry.",
-                allow_op, allow_dts,
             ));
         }
     }
@@ -3698,11 +3632,6 @@ fn vulkan_dispatch_per_kernel_precision_and_cost_coverage() {
         precision_failures.is_empty(),
         "Vulkan PrecisionGuarantee coverage lint failed:\n{}",
         precision_failures.join("\n"),
-    );
-    assert!(
-        allowlist_drift.is_empty(),
-        "Vulkan KNOWN_GAPS allowlist is stale:\n{}",
-        allowlist_drift.join("\n"),
     );
     assert!(
         cost_failures.is_empty(),

@@ -120,8 +120,17 @@ pub struct PrecisionGuarantee {
     pub max_relative: Option<f64>,
     /// Maximum absolute error: `|out - ref|`.
     pub max_absolute: Option<f64>,
-    /// Free-text qualifier — implementation hints, vendor citation,
-    /// known caveats. Surfaces in error messages; not load-bearing.
+    /// Free-text qualifier — for audited claims, this carries the
+    /// audit reason (vendor citation, scheduler-dependence note,
+    /// implementation hint). For the [`UNAUDITED`] sentinel, this
+    /// is a fixed placeholder string the coverage lint matches
+    /// against to distinguish unaudited placeholders from audited
+    /// claims that happen to have no static bound. **If you change
+    /// `UNAUDITED.notes`, the lint's detector picks up the new value
+    /// automatically — it reads `PrecisionGuarantee::UNAUDITED.notes`
+    /// at test time, not a hardcoded string.**
+    ///
+    /// [`UNAUDITED`]: PrecisionGuarantee::UNAUDITED
     pub notes: &'static str,
 }
 
@@ -171,40 +180,64 @@ impl PrecisionGuarantee {
                 with the step-8 empirical calibration framework.",
     };
 
-    /// Single sentinel for "no precision claim made." Default value
-    /// when callers don't specify a precision via
-    /// [`crate::kernel::KernelBindingTable::register_with_precision`];
-    /// detected structurally by coverage lints (all bound fields
-    /// `None` AND `bit_stable_on_same_hardware == false`).
+    /// Default placeholder for kernels whose precision hasn't been
+    /// audited yet. Identified by the coverage lint via notes-
+    /// equality against `PrecisionGuarantee::UNAUDITED.notes` —
+    /// the only way a registration ends up with this specific
+    /// notes string is by using the literal `UNAUDITED` const
+    /// (the default in unannotated `register(...)` / `register_with_caps(...)`
+    /// calls).
     ///
-    /// Two flavors collapse into this single value:
-    /// 1. **Not yet audited**: the default placeholder for new
-    ///    registrations. The coverage lint flags these.
-    /// 2. **Audited and concluded "no static bound to claim"**:
-    ///    legitimate audit result for kernels whose numerical
-    ///    character depends on runtime conditions (Vulkan subgroup
-    ///    reductions, accumulation order). Sites where this applies
-    ///    are listed in the lint's `KNOWN_GAPS` allowlist with a
-    ///    documented reason — the architectural decision is visible
-    ///    at review time rather than buried in a notes string.
+    /// **For kernels audited and concluded "no static bound
+    /// applies"** (e.g. Vulkan subgroup reductions where FADD
+    /// order is scheduler-determined per dispatch), use
+    /// [`none`] instead. It returns a structurally-similar
+    /// PrecisionGuarantee but with the audit reason in `notes`,
+    /// captured at the registration site. The lint accepts any
+    /// notes value other than UNAUDITED's specific text.
     ///
-    /// Renamed from `UNKNOWN` (2026-05-23) to make the placeholder
-    /// nature explicit. The "audited, no static bound" case lives
-    /// in the lint's KNOWN_GAPS, not as a separate const — keeping
-    /// the type system honest (UNAUDITED ≡ UNAUDITED; legitimate
-    /// audited-no-bound is a property of the registration, captured
-    /// in the lint's allowlist).
+    /// [`none`]: PrecisionGuarantee::none
     pub const UNAUDITED: PrecisionGuarantee = PrecisionGuarantee {
         bit_stable_on_same_hardware: false,
         max_ulp: None,
         max_relative: None,
         max_absolute: None,
-        notes: "PrecisionGuarantee::UNAUDITED — default placeholder OR \
-                audited result of 'no static bound to claim'. The \
-                distinction lives in the lint's KNOWN_GAPS allowlist; \
-                sites NOT in the allowlist are treated as unaudited \
-                and flagged.",
+        notes: "PrecisionGuarantee::UNAUDITED — default placeholder for \
+                kernels whose precision hasn't been audited yet. Coverage \
+                lints flag these. Sites must either annotate via \
+                `register_with_precision` with a real claim or use \
+                `PrecisionGuarantee::none(reason)` if the audit \
+                concluded no static bound applies.",
     };
+
+    /// Constructor for the "audited, no static guarantee could be
+    /// established" conclusion. Used by Vulkan subgroup reductions
+    /// (where FADD order is scheduler-determined per dispatch) and
+    /// similar kernels whose numerical character can't be
+    /// summarized by static ULP / relative / absolute bounds.
+    ///
+    /// The `reason` is captured in `notes`, so the audit reasoning
+    /// lives at the registration site — visible in code review,
+    /// not buried in a separate lint allowlist file. Any `reason`
+    /// other than `UNAUDITED.notes` makes the resulting value pass
+    /// the coverage lint.
+    ///
+    /// Distinguished from [`UNAUDITED`] by `notes` content alone
+    /// (the value-field shape is identical). The lint uses
+    /// `precision.notes == PrecisionGuarantee::UNAUDITED.notes` as
+    /// the unaudited detector — robust to UNAUDITED's notes text
+    /// drifting because it reads from the const itself.
+    ///
+    /// [`UNAUDITED`]: PrecisionGuarantee::UNAUDITED
+    pub const fn none(reason: &'static str) -> PrecisionGuarantee {
+        PrecisionGuarantee {
+            bit_stable_on_same_hardware: false,
+            max_ulp: None,
+            max_relative: None,
+            max_absolute: None,
+            notes: reason,
+        }
+    }
 }
 
 /// Opaque revision hash of a registered kernel. Persisted optimization
