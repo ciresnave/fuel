@@ -1800,13 +1800,14 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — reductions; NO
-    // static bound (subgroup composition is scheduler-determined per
-    // dispatch). UNAUDITED is the right value; the
-    // `vulkan_dispatch_per_kernel_precision_and_cost_coverage` lint's
-    // KNOWN_GAPS allowlist accepts these specific (op, dtypes) tuples. -----
-    table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::UNAUDITED);
-    table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::UNAUDITED);
+    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — reductions; no
+    // static guarantee. `PrecisionGuarantee::none(reason)` captures
+    // the audit reasoning at the registration site (the coverage
+    // lint accepts any notes ≠ UNAUDITED's sentinel text). -----
+    const SOFTMAX_REASON: &str = "fuel-vulkan-backend SoftmaxLastDim: per-row max + exp + sum (subgroup-tree reduction internally); no static ULP / relative / absolute bound — FADD order is scheduler-determined per dispatch.";
+    const RMS_NORM_REASON: &str = "fuel-vulkan-backend RmsNormLastDim: per-row x² + sum (subgroup-tree reduction) + sqrt + divide; no static bound — FADD order is scheduler-determined per dispatch.";
+    table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::none(SOFTMAX_REASON));
+    table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::none(RMS_NORM_REASON));
 
     // ----- RoPE (V.2.C, f32) — pointwise rotation with cos/sin tables.
     // Pure FMA + table lookup, no reductions; bit-stable on same hardware
@@ -1819,12 +1820,15 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32, VULKAN_BYTE_LEVEL_PRECISION);
 
     // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean.
-    // Subgroup-tree reductions; no static bound (see Softmax above).
-    // UNAUDITED + KNOWN_GAPS in the coverage lint. -----
-    table.register_with_precision(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32,  PrecisionGuarantee::UNAUDITED);
-    table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  PrecisionGuarantee::UNAUDITED);
-    table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::UNAUDITED);
-    table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::UNAUDITED);
+    // Subgroup-tree reductions; no static guarantee (see Softmax above). -----
+    const SUM_REASON: &str = "fuel-vulkan-backend SumReduce: subgroup tree reduction; FADD order depends on workgroup scheduling per dispatch. No static bound applies.";
+    const MAX_REASON: &str = "fuel-vulkan-backend MaxReduce: subgroup tree reduction; element selection is deterministic but the comparison order across subgroups depends on scheduling.";
+    const MIN_REASON: &str = "fuel-vulkan-backend MinReduce: subgroup tree reduction; same scheduler-dependence as MaxReduce.";
+    const MEAN_REASON: &str = "fuel-vulkan-backend MeanReduce: subgroup tree reduction + scalar division; accumulation order is scheduler-determined.";
+    table.register_with_precision(OpKind::SumReduce,  &u(f32), vk, reduce::sum_f32,  PrecisionGuarantee::none(SUM_REASON));
+    table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  PrecisionGuarantee::none(MAX_REASON));
+    table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::none(MIN_REASON));
+    table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::none(MEAN_REASON));
 
     // ----- Concat f32 (V.2.D) — memcpy (byte-level). N==2 only; N>2 falls back. -----
     table.register_with_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, VULKAN_BYTE_LEVEL_PRECISION);
