@@ -1762,29 +1762,62 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         VULKAN_MATMUL_PRECISION, VULKAN_MATMUL_TENSORCORE_PRECISION,
         VULKAN_QMATMUL_PRECISION, VULKAN_TRANSCENDENTAL_PRECISION,
     };
+    use crate::kernel::KernelCaps;
     let vk = BackendId::Vulkan;
     let f32 = DType::F32;
     let u = |t: DType| [t, t];     // (in, out)
     let b = |t: DType| [t, t, t];  // (lhs, rhs, out)
 
-    // Phase 7.6 step 9c follow-up (2026-05-23): every Vulkan registration
-    // gets a per-kernel PrecisionGuarantee so the optimizer's tolerance-
-    // budget pass can admit Vulkan alternatives. Cost functions are
-    // bulk-filled at the end via `fill_unset_cost_for_backend(Vulkan,
-    // default_cost_for_op_kind)` — reuses the CPU cost dispatcher
-    // (FLOP/bandwidth model is backend-agnostic); a Vulkan-specific
-    // dispatcher with higher `kernel_overhead_ns` for command-buffer
-    // submission lands as a Layer-2 calibration refinement.
+    // Phase 7.6 step 9c follow-up (2026-05-23 + 2026-05-24):
+    // - Per-kernel `PrecisionGuarantee` + cost (session 1, shipped).
+    // - Per-kernel `KernelCaps::strided_input` (session 2, this commit).
+    //   Each Slang kernel was audited to determine whether it walks
+    //   per-input strides (and so can consume non-contiguous inputs
+    //   like broadcast / transpose / slice views directly) or
+    //   requires the executor's auto-Contiguize pass to materialize
+    //   contiguous inputs first.
+    //
+    // **Conventions for this file**:
+    // - Stride-aware kernels opt in via
+    //   `KernelCaps::strided_input()`. The executor skips
+    //   auto-Contiguize for these so lazy views reach the kernel
+    //   unmaterialized.
+    // - Contiguous-only kernels keep `KernelCaps::empty()`
+    //   (the default) AND get a `// strided-input candidate: <reason>`
+    //   comment iff the kernel SHAPE would support an arbitrary-
+    //   stride extension. Future perf sweeps grep for that marker
+    //   to find conversion work.
+    // - Contiguous-only kernels whose shape inherently needs flat
+    //   layout (subgroup-tree reductions, tiled matmul, im2col,
+    //   destination-as-layout WriteSlice, byte-level
+    //   Triu/Tril/Flip/Roll) carry a family-level comment but no
+    //   candidate marker.
+    //
+    // Cost functions are bulk-filled at the end via
+    // `fill_unset_cost_for_backend(Vulkan, default_cost_for_op_kind)`.
 
-    // ----- Binary f32 (V.2.A) — IEEE-754 pointwise via binary.slang -----
-    table.register_with_precision(OpKind::AddElementwise,     &b(f32), vk, binary::add_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SubElementwise,     &b(f32), vk, binary::sub_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MulElementwise,     &b(f32), vk, binary::mul_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::DivElementwise,     &b(f32), vk, binary::div_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MaximumElementwise, &b(f32), vk, binary::maximum_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MinimumElementwise, &b(f32), vk, binary::minimum_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // ----- Binary f32 (V.2.A) — IEEE-754 pointwise via binary.slang.
+    // STRIDE-AWARE: the Slang kernel decomposes the output index into
+    // per-dim coordinates and applies per-input strides (with stride=0
+    // for broadcast axes). The `binary_f32_bytes` wrapper packs the
+    // input layouts' strides into the Params struct; non-contiguous
+    // inputs (broadcast, transpose, slice views) reach the kernel
+    // unmaterialized. -----
+    let strided = KernelCaps::strided_input();
+    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(f32), vk, binary::add_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(f32), vk, binary::sub_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(f32), vk, binary::mul_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(f32), vk, binary::div_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(f32), vk, binary::maximum_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f32), vk, binary::minimum_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Unary f32 (V.2.B) — split between pointwise + transcendental -----
+    // ----- Unary f32 (V.2.B) — split between pointwise + transcendental.
+    // strided-input candidate: unary.slang currently uses flat
+    // indexing (one thread per element, no per-dim stride logic) and
+    // the `unary_f32_bytes` backend method takes no Layout. Extending
+    // to strided would mirror binary.slang's per-dim decomposition +
+    // require the backend method to accept a Layout and pack its
+    // strides. Same shape across all 4 dtype variants below. -----
     table.register_with_precision(OpKind::NegElementwise,     &u(f32), vk, unary::neg_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrElementwise,     &u(f32), vk, unary::sqr_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrtElementwise,    &u(f32), vk, unary::sqrt_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
@@ -1800,27 +1833,44 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — reductions; no
-    // static guarantee. `PrecisionGuarantee::none(reason)` captures
-    // the audit reasoning at the registration site (the coverage
-    // lint accepts any notes ≠ UNAUDITED's sentinel text). -----
+    // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — per-row reductions
+    // with subgroup-tree internal accumulation. CONTIGUOUS-ONLY by
+    // design: the kernel issues one workgroup per row and reads the
+    // row's elements flat; an arbitrary stride on the last-dim axis
+    // would break the workgroup-shared-memory reduction. Auto-
+    // Contiguize materializes broadcast/transpose views first. -----
     const SOFTMAX_REASON: &str = "fuel-vulkan-backend SoftmaxLastDim: per-row max + exp + sum (subgroup-tree reduction internally); no static ULP / relative / absolute bound — FADD order is scheduler-determined per dispatch.";
     const RMS_NORM_REASON: &str = "fuel-vulkan-backend RmsNormLastDim: per-row x² + sum (subgroup-tree reduction) + sqrt + divide; no static bound — FADD order is scheduler-determined per dispatch.";
     table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::none(SOFTMAX_REASON));
     table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::none(RMS_NORM_REASON));
 
     // ----- RoPE (V.2.C, f32) — pointwise rotation with cos/sin tables.
-    // Pure FMA + table lookup, no reductions; bit-stable on same hardware
-    // like the binary pointwise ops. Binding-shape MUST match the CPU
-    // registration `[x, cos, sin, out]` (4 dtypes). -----
-    table.register_with_precision(OpKind::Rope, &[f32, f32, f32, f32], vk, attention::rope_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // STRIDE-AWARE on `x`: rope.slang's Params struct carries
+    // `x_s0/x_s1/x_s_seq/x_s_hd` + an `x_contiguous` fast-path flag
+    // and decomposes per-thread index into per-dim coordinates. cos/sin
+    // are documented as always-contiguous (the wrapper enforces).
+    // Binding-shape MUST match the CPU registration `[x, cos, sin, out]`
+    // (4 dtypes). The strided_input cap signals "ANY input may be non-
+    // contiguous" — for Rope specifically, only x; the wrapper handles
+    // forcing cos/sin contiguous through its own path. -----
+    table.register_with_caps_and_precision(OpKind::Rope, &[f32, f32, f32, f32], vk, attention::rope_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- IndexSelect (V.2.D, f32 src + u32 ids) — pure gather (byte-level). -----
+    // ----- IndexSelect (V.2.D, f32 src + u32 ids) — pure gather (byte-level).
+    // strided-input candidate: index_select.slang flattens input to
+    // (outer, axis, inner) and reads via own-shape strides. Could be
+    // extended to walk arbitrary input layout strides at gather time
+    // (saves an auto-Contiguize when the source is a transpose view).
+    // Indices are u32; their layout-strided variant is a follow-up. -----
     let idx_dts = [f32, DType::U32, f32];
     table.register_with_precision(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32, VULKAN_BYTE_LEVEL_PRECISION);
 
     // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean.
-    // Subgroup-tree reductions; no static guarantee (see Softmax above). -----
+    // CONTIGUOUS-ONLY by design: reduce.slang does a tree reduction
+    // into workgroup-shared memory; the input is read flat. Strided
+    // inputs would require either pre-materialization (current
+    // behaviour via auto-Contiguize) or a redesigned reduction
+    // schedule that's unlikely to outperform the auto-Contiguize +
+    // current kernel. -----
     const SUM_REASON: &str = "fuel-vulkan-backend SumReduce: subgroup tree reduction; FADD order depends on workgroup scheduling per dispatch. No static bound applies.";
     const MAX_REASON: &str = "fuel-vulkan-backend MaxReduce: subgroup tree reduction; element selection is deterministic but the comparison order across subgroups depends on scheduling.";
     const MIN_REASON: &str = "fuel-vulkan-backend MinReduce: subgroup tree reduction; same scheduler-dependence as MaxReduce.";
@@ -1830,28 +1880,49 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::none(MIN_REASON));
     table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::none(MEAN_REASON));
 
-    // ----- Concat f32 (V.2.D) — memcpy (byte-level). N==2 only; N>2 falls back. -----
-    table.register_with_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, VULKAN_BYTE_LEVEL_PRECISION);
+    // ----- Concat f32 (V.2.D) — memcpy (byte-level).
+    // STRIDE-AWARE: concat_along_dim.slang explicitly supports per-
+    // operand stride support so either input may be a lazy view
+    // (permute, broadcast). N==2 only; N>2 falls back to next alt. -----
+    table.register_with_caps_and_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, strided, VULKAN_BYTE_LEVEL_PRECISION);
 
-    // ----- MatMul f32 (V.2.D) — deterministic per-output-element FMA accumulation. -----
+    // ----- MatMul f32 (V.2.D) — deterministic per-output-element FMA
+    // accumulation. CONTIGUOUS-ONLY: tiled / reg-tile / matvec
+    // kernels load via vec4 / cooperative loads that require
+    // contiguous row-major layout; strided inputs go through
+    // auto-Contiguize. -----
     table.register_with_precision(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32, VULKAN_MATMUL_PRECISION);
 
     // ----- MatMul mixed f32 × bf16 → f32 (V.3.D) — tensor cores via
     // matvec_bf16_b / matmul_tiled_bf16_b / matmul_coop. Wider ULP than
-    // pure f32 matmul because bf16 inputs lose 16 mantissa bits. -----
+    // pure f32 matmul because bf16 inputs lose 16 mantissa bits.
+    // CONTIGUOUS-ONLY: tensor-core cooperative-matrix kernels
+    // require canonical row-major tile layout. -----
     let bf16 = DType::BF16;
     table.register_with_precision(OpKind::MatMul, &[f32, bf16, f32], vk, matmul::matmul_f32_bf16_b, VULKAN_MATMUL_TENSORCORE_PRECISION);
 
-    // ----- Affine f32 (V.2.E) — y = mul*x + add. Pointwise FMA. -----
+    // ----- Affine f32 (V.2.E) — y = mul*x + add. Pointwise FMA.
+    // strided-input candidate: affine.slang uses flat indexing; the
+    // backend method `affine_f32_bytes` doesn't take a Layout. Same
+    // shape as unary's conversion. -----
     table.register_with_precision(OpKind::Affine, &u(f32), vk, affine::affine_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Clamp f32 (V.3.A.1) — pointwise min/max with constants. -----
+    // ----- Clamp f32 (V.3.A.1) — pointwise min/max with constants.
+    // strided-input candidate: clamp.slang mirrors affine.slang shape
+    // (1 input, scalar params, flat indexing). -----
     table.register_with_precision(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- PowI f32 (V.3.A.3) — repeated FMA, bit-stable on same hardware. -----
+    // ----- PowI f32 (V.3.A.3) — repeated FMA, bit-stable on same hardware.
+    // strided-input candidate: powi.slang mirrors affine.slang shape. -----
     table.register_with_precision(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (pure dtype conversion). -----
+    // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (pure dtype conversion).
+    // strided-input candidate (with caveat): cast kernels pack pairs
+    // of f16/bf16 per u32 for storage efficiency, so the input/output
+    // must be aligned to even element counts; that constraint
+    // composes awkwardly with arbitrary strides. A strided extension
+    // is plausible but requires careful handling of the packing
+    // boundary. -----
     let f16 = DType::F16;
     let bf16_d = DType::BF16;
     table.register_with_precision(OpKind::Cast, &[f32,    f16],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
@@ -1859,15 +1930,20 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
     table.register_with_precision(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
 
-    // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16. -----
-    table.register_with_precision(OpKind::AddElementwise,     &b(f16), vk, binary_f16::add_f16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SubElementwise,     &b(f16), vk, binary_f16::sub_f16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MulElementwise,     &b(f16), vk, binary_f16::mul_f16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::DivElementwise,     &b(f16), vk, binary_f16::div_f16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MaximumElementwise, &b(f16), vk, binary_f16::maximum_f16, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16, VULKAN_HALF_POINTWISE_PRECISION);
+    // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16.
+    // STRIDE-AWARE: binary_f16.slang mirrors binary.slang's stride-
+    // aware Params layout exactly (only the buffer element type differs).
+    // The `binary_f16_bytes` wrapper delegates to `binary_typed_bytes`
+    // which packs strides identically to the f32 variant. -----
+    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(f16), vk, binary_f16::add_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(f16), vk, binary_f16::sub_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(f16), vk, binary_f16::mul_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(f16), vk, binary_f16::div_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(f16), vk, binary_f16::maximum_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
 
-    // ----- Unary f16 (V.3.E) — split between half-pointwise + half-transcendental. -----
+    // ----- Unary f16 (V.3.E) — split between half-pointwise + half-transcendental.
+    // strided-input candidate: same shape as unary f32 above. -----
     table.register_with_precision(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16,     VULKAN_HALF_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16,     VULKAN_HALF_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16,    VULKAN_HALF_POINTWISE_PRECISION);
@@ -1883,19 +1959,22 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64. -----
+    // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64.
+    // STRIDE-AWARE: binary_f64.slang mirrors binary.slang's stride-aware
+    // Params layout exactly. -----
     let f64_d = DType::F64;
-    table.register_with_precision(OpKind::AddElementwise,     &b(f64_d), vk, binary_f64::add_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SubElementwise,     &b(f64_d), vk, binary_f64::sub_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MulElementwise,     &b(f64_d), vk, binary_f64::mul_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::DivElementwise,     &b(f64_d), vk, binary_f64::div_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(f64_d), vk, binary_f64::add_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(f64_d), vk, binary_f64::sub_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(f64_d), vk, binary_f64::mul_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(f64_d), vk, binary_f64::div_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Unary f64 (V.3.E.5) — full 13-op surface. Transcendentals
     // implemented via Horner-polynomial approximations (~1e-12 relative
     // precision target) in unary_f64.slang; portable across any
-    // shaderFloat64 driver. -----
+    // shaderFloat64 driver.
+    // strided-input candidate: same shape as unary f32 above. -----
     table.register_with_precision(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
@@ -1911,7 +1990,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
 
     // ----- WriteSlice (V.3.J) — byte-width-keyed (b1/b2/b4/b8). Pure
-    // byte-level data movement; no FP math. -----
+    // byte-level data movement; no FP math.
+    // CONTIGUOUS-ONLY: write_slice_b*.slang reads `src` contiguously
+    // in its own rank-N shape and writes the matching slab inside
+    // `dst` (also contiguous in its larger rank-N shape). The
+    // destination's slab geometry IS the layout — strided inputs
+    // wouldn't compose with the slab-walk's own-shape strides.
+    // Auto-Contiguize materializes any non-contiguous source. -----
     table.register_with_precision(OpKind::WriteSlice, &u(f32),         vk, write_slice::write_slice_b4, VULKAN_BYTE_LEVEL_PRECISION);
     table.register_with_precision(OpKind::WriteSlice, &u(DType::I32),  vk, write_slice::write_slice_b4, VULKAN_BYTE_LEVEL_PRECISION);
     table.register_with_precision(OpKind::WriteSlice, &u(DType::U32),  vk, write_slice::write_slice_b4, VULKAN_BYTE_LEVEL_PRECISION);
@@ -1922,15 +2007,19 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::WriteSlice, &u(DType::U8),   vk, write_slice::write_slice_b1, VULKAN_BYTE_LEVEL_PRECISION);
     table.register_with_precision(OpKind::WriteSlice, &u(DType::I8),   vk, write_slice::write_slice_b1, VULKAN_BYTE_LEVEL_PRECISION);
 
-    // ----- Binary bf16 (V.3.E.3+4) — u32-packed math via Slang. -----
-    table.register_with_precision(OpKind::AddElementwise,     &b(bf16_d), vk, binary_bf16::add_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SubElementwise,     &b(bf16_d), vk, binary_bf16::sub_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MulElementwise,     &b(bf16_d), vk, binary_bf16::mul_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::DivElementwise,     &b(bf16_d), vk, binary_bf16::div_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MaximumElementwise, &b(bf16_d), vk, binary_bf16::maximum_bf16, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::MinimumElementwise, &b(bf16_d), vk, binary_bf16::minimum_bf16, VULKAN_HALF_POINTWISE_PRECISION);
+    // ----- Binary bf16 (V.3.E.3+4) — u32-packed math via Slang.
+    // STRIDE-AWARE: binary_bf16.slang mirrors binary.slang's
+    // stride-aware Params layout exactly; only the bf16↔f32
+    // round-trip on read/write differs. -----
+    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(bf16_d), vk, binary_bf16::add_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(bf16_d), vk, binary_bf16::sub_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(bf16_d), vk, binary_bf16::mul_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(bf16_d), vk, binary_bf16::div_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(bf16_d), vk, binary_bf16::maximum_bf16, strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(bf16_d), vk, binary_bf16::minimum_bf16, strided, VULKAN_HALF_POINTWISE_PRECISION);
 
-    // ----- Unary bf16 (V.3.E.3+4) — full 13-op surface via u32 packing. -----
+    // ----- Unary bf16 (V.3.E.3+4) — full 13-op surface via u32 packing.
+    // strided-input candidate: same shape as unary f32. -----
     table.register_with_precision(OpKind::NegElementwise,     &u(bf16_d), vk, unary_bf16::neg_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrElementwise,     &u(bf16_d), vk, unary_bf16::sqr_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
     table.register_with_precision(OpKind::SqrtElementwise,    &u(bf16_d), vk, unary_bf16::sqrt_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
@@ -1945,7 +2034,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Triu / Tril / Flip / Roll — pure byte-level (memcpy/mask). -----
+    // ----- Triu / Tril / Flip / Roll — pure byte-level (memcpy/mask).
+    // CONTIGUOUS-ONLY by design: flip_b4 / triu_b4 / tril_b4 / roll_b4
+    // view inputs as a flat (outer, dim_size, inner) 3-tuple and index
+    // via own-shape strides. Arbitrary layout strides would require
+    // a different decomposition; auto-Contiguize handles non-contiguous
+    // inputs upstream. -----
     for &dt in &[DType::F32, DType::F16, DType::BF16, DType::F64,
                  DType::I32, DType::U32, DType::I64] {
         table.register_with_precision(OpKind::Triu, &u(dt), vk, triangular::triu, VULKAN_BYTE_LEVEL_PRECISION);
@@ -1954,7 +2048,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::Roll, &u(dt), vk, roll::roll,       VULKAN_BYTE_LEVEL_PRECISION);
     }
 
-    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32. -----
+    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32.
+    // CONTIGUOUS-ONLY: the quantized weight stream has a fixed block
+    // layout (per-block scale + N quantized lanes); arbitrary strides
+    // on the weight buffer would break the dequant kernel's block
+    // walk. Activations could in principle be strided but are
+    // contiguous in practice — extending is a follow-up if profiles
+    // show repeated auto-Contiguize hits on the activation side. -----
     table.register_with_precision(
         OpKind::QMatMul,
         &[DType::F32, DType::U32, DType::F32],
@@ -1964,7 +2064,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     );
 
     // ----- Conv2D f32 (V.3.I) — im2col + matmul. Numerical character
-    // matches f32 matmul (per-output deterministic FMA accumulation). -----
+    // matches f32 matmul (per-output deterministic FMA accumulation).
+    // CONTIGUOUS-ONLY: conv2d_im2col reads NCHW with the kernel's
+    // assumed canonical stride layout. The im2col view materializes
+    // a contiguous buffer for the matmul stage; a strided input
+    // would require either an explicit pre-Contiguize or an
+    // im2col-with-strides variant (significant kernel work). -----
     table.register_with_precision(
         OpKind::Conv2D,
         &[DType::F32, DType::F32, DType::F32],
@@ -1973,7 +2078,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         VULKAN_MATMUL_PRECISION,
     );
 
-    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — pure dtype conversion. -----
+    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — pure dtype conversion.
+    // strided-input candidate (with caveat): F8E4M3 packs 4 elements
+    // per u32 (1 byte each), so element count must be a multiple of 4
+    // and stride arithmetic gets awkward at the packing boundary.
+    // A strided extension is plausible but requires careful handling
+    // of the 4-element-aligned pack/unpack. -----
     let f8 = DType::F8E4M3;
     table.register_with_precision(OpKind::Cast, &[f32,    f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
     table.register_with_precision(OpKind::Cast, &[f8,     f32],    vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
@@ -1982,7 +2092,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::Cast, &[bf16_d, f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
     table.register_with_precision(OpKind::Cast, &[f8,     bf16_d], vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
 
-    // ----- Op::Copy D2H (bridge-retirement Phase 2). Byte-level. -----
+    // ----- Op::Copy D2H (bridge-retirement Phase 2). Byte-level.
+    // CONTIGUOUS-ONLY: the wrapper downloads the source's bytes via
+    // a Vulkan staging buffer (vkCmdCopyBuffer). The staging buffer
+    // is sized to the source's flat byte count; stride-aware D2H
+    // would require either per-row staging or an explicit pre-
+    // Contiguize step. Auto-Contiguize handles non-contiguous
+    // sources upstream of this kernel. -----
     let copy_dtypes = [
         f32, f16, bf16_d, DType::F64, DType::U32, DType::U8,
         DType::I16, DType::I32, DType::I64,
