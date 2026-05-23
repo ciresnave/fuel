@@ -264,10 +264,15 @@ fn run_unary_f32(
         BackendId::Vulkan,
     );
     let kernel = alts[0].kernel;
+    // Rank-1 contiguous layout — the stride-aware unary kernel needs
+    // the input layout to pack into Params; the contig flag in Params
+    // takes the fast path.
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let layouts = vec![layout.clone(), layout];
     kernel(
         &[Arc::clone(&a_arc)],
         &mut [Arc::clone(&out_arc)],
-        &[],
+        &layouts,
         &OpParams::None,
     ).expect("kernel dispatch");
     download_f32(backend, &out_arc.read().unwrap())

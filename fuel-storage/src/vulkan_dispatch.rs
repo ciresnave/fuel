@@ -237,13 +237,19 @@ macro_rules! vk_unary_f32_wrapper {
         pub fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary::{}: expected 1 input + 1 output, got {} + {}",
                     $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            if layouts.is_empty() {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::unary::{}: layouts.len() = 0, expected >= 1",
+                    $label,
                 )).bt());
             }
             let in_guard = read_storage(&inputs[0])?;
@@ -258,7 +264,7 @@ macro_rules! vk_unary_f32_wrapper {
                 )).bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
-            backend.unary_f32_bytes($op_id, $label, a, out)
+            backend.unary_f32_bytes($op_id, $label, a, out, &layouts[0])
         }
     };
 }
@@ -288,13 +294,19 @@ macro_rules! vk_unary_f16_wrapper {
         pub fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_f16::{}: expected 1 input + 1 output, got {} + {}",
                     $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            if layouts.is_empty() {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::unary_f16::{}: layouts.len() = 0, expected >= 1",
+                    $label,
                 )).bt());
             }
             let in_guard = read_storage(&inputs[0])?;
@@ -309,7 +321,7 @@ macro_rules! vk_unary_f16_wrapper {
                 )).bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
-            backend.unary_f16_bytes($op_id, $label, a, out)
+            backend.unary_f16_bytes($op_id, $label, a, out, &layouts[0])
         }
     };
 }
@@ -339,13 +351,19 @@ macro_rules! vk_unary_f64_wrapper {
         pub fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             _params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::unary_f64::{}: expected 1 input + 1 output, got {} + {}",
                     $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            if layouts.is_empty() {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::unary_f64::{}: layouts.len() = 0, expected >= 1",
+                    $label,
                 )).bt());
             }
             let in_guard = read_storage(&inputs[0])?;
@@ -360,7 +378,7 @@ macro_rules! vk_unary_f64_wrapper {
                 )).bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
-            backend.unary_f64_bytes($op_id, $label, a, out)
+            backend.unary_f64_bytes($op_id, $label, a, out, &layouts[0])
         }
     };
 }
@@ -552,7 +570,7 @@ pub mod powi {
     pub fn powi_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
+        layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
         if inputs.len() != 1 || outputs.len() != 1 {
@@ -560,6 +578,11 @@ pub mod powi {
                 "vulkan_dispatch::powi::powi_f32: expected 1 input + 1 output, got {} + {}",
                 inputs.len(), outputs.len(),
             )).bt());
+        }
+        if layouts.is_empty() {
+            return Err(Error::Msg(
+                "vulkan_dispatch::powi::powi_f32: layouts.len() = 0, expected >= 1".into(),
+            ).bt());
         }
         let exp = match params {
             OpParams::PowI { exp } => *exp,
@@ -582,7 +605,7 @@ pub mod powi {
             ).bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.powi_f32_bytes(a, out, exp)
+        backend.powi_f32_bytes(a, out, exp, &layouts[0])
     }
 }
 
@@ -726,7 +749,7 @@ pub mod clamp {
     pub fn clamp_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
+        layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
         if inputs.len() != 1 || outputs.len() != 1 {
@@ -734,6 +757,11 @@ pub mod clamp {
                 "vulkan_dispatch::clamp::clamp_f32: expected 1 input + 1 output, got {} + {}",
                 inputs.len(), outputs.len(),
             )).bt());
+        }
+        if layouts.is_empty() {
+            return Err(Error::Msg(
+                "vulkan_dispatch::clamp::clamp_f32: layouts.len() = 0, expected >= 1".into(),
+            ).bt());
         }
         let (lo, hi) = match params {
             OpParams::Clamp { min, max } => (*min, *max),
@@ -756,7 +784,7 @@ pub mod clamp {
             ).bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.clamp_f32_bytes(a, out, lo, hi)
+        backend.clamp_f32_bytes(a, out, lo, hi, &layouts[0])
     }
 }
 
@@ -770,7 +798,7 @@ pub mod affine {
     pub fn affine_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
+        layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
         if inputs.len() != 1 || outputs.len() != 1 {
@@ -778,6 +806,11 @@ pub mod affine {
                 "vulkan_dispatch::affine::affine_f32: expected 1 input + 1 output, got {} + {}",
                 inputs.len(), outputs.len(),
             )).bt());
+        }
+        if layouts.is_empty() {
+            return Err(Error::Msg(
+                "vulkan_dispatch::affine::affine_f32: layouts.len() = 0, expected >= 1".into(),
+            ).bt());
         }
         let (mul, add) = match params {
             OpParams::Affine { mul, add } => (*mul, *add),
@@ -800,7 +833,7 @@ pub mod affine {
             ).bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.affine_f32_bytes(a, out, mul, add)
+        backend.affine_f32_bytes(a, out, mul, add, &layouts[0])
     }
 }
 
@@ -1812,26 +1845,24 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f32), vk, binary::minimum_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Unary f32 (V.2.B) — split between pointwise + transcendental.
-    // strided-input candidate: unary.slang currently uses flat
-    // indexing (one thread per element, no per-dim stride logic) and
-    // the `unary_f32_bytes` backend method takes no Layout. Extending
-    // to strided would mirror binary.slang's per-dim decomposition +
-    // require the backend method to accept a Layout and pack its
-    // strides. Same shape across all 4 dtype variants below. -----
-    table.register_with_precision(OpKind::NegElementwise,     &u(f32), vk, unary::neg_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrElementwise,     &u(f32), vk, unary::sqr_f32,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrtElementwise,    &u(f32), vk, unary::sqrt_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::ReluElementwise,    &u(f32), vk, unary::relu_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::StepElementwise,    &u(f32), vk, unary::step_f32,    VULKAN_FLOAT_POINTWISE_PRECISION);
+    // STRIDE-AWARE (converted 2026-05-24): unary.slang now mirrors
+    // binary.slang's per-dim decomposition + contig fast path; the
+    // `unary_f32_bytes` backend method accepts a Layout and packs
+    // strides into the Params. -----
+    table.register_with_caps_and_precision(OpKind::NegElementwise,     &u(f32), vk, unary::neg_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SqrElementwise,     &u(f32), vk, unary::sqr_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SqrtElementwise,    &u(f32), vk, unary::sqrt_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::ReluElementwise,    &u(f32), vk, unary::relu_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::StepElementwise,    &u(f32), vk, unary::step_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
     // Transcendentals via GLSL.std.450 (3-4 ULP per Vulkan spec).
-    table.register_with_precision(OpKind::ExpElementwise,     &u(f32), vk, unary::exp_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::LogElementwise,     &u(f32), vk, unary::log_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SinElementwise,     &u(f32), vk, unary::sin_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::CosElementwise,     &u(f32), vk, unary::cos_f32,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::TanhElementwise,    &u(f32), vk, unary::tanh_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SigmoidElementwise, &u(f32), vk, unary::sigmoid_f32, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f32), vk, unary::exp_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f32), vk, unary::log_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f32), vk, unary::sin_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f32), vk, unary::cos_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f32), vk, unary::tanh_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f32), vk, unary::sigmoid_f32, strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
 
     // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — per-row reductions
     // with subgroup-tree internal accumulation. CONTIGUOUS-ONLY by
@@ -1902,19 +1933,21 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::MatMul, &[f32, bf16, f32], vk, matmul::matmul_f32_bf16_b, VULKAN_MATMUL_TENSORCORE_PRECISION);
 
     // ----- Affine f32 (V.2.E) — y = mul*x + add. Pointwise FMA.
-    // strided-input candidate: affine.slang uses flat indexing; the
-    // backend method `affine_f32_bytes` doesn't take a Layout. Same
-    // shape as unary's conversion. -----
-    table.register_with_precision(OpKind::Affine, &u(f32), vk, affine::affine_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // STRIDE-AWARE (converted 2026-05-24): affine.slang now carries
+    // the same per-dim shape/stride + flags Params as unary.slang.
+    // `affine_f32_bytes` packs the layout identically to the unary
+    // path. -----
+    table.register_with_caps_and_precision(OpKind::Affine, &u(f32), vk, affine::affine_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Clamp f32 (V.3.A.1) — pointwise min/max with constants.
-    // strided-input candidate: clamp.slang mirrors affine.slang shape
-    // (1 input, scalar params, flat indexing). -----
-    table.register_with_precision(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // STRIDE-AWARE (converted 2026-05-24): clamp.slang mirrors the
+    // affine.slang stride-aware Params shape. -----
+    table.register_with_caps_and_precision(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- PowI f32 (V.3.A.3) — repeated FMA, bit-stable on same hardware.
-    // strided-input candidate: powi.slang mirrors affine.slang shape. -----
-    table.register_with_precision(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // STRIDE-AWARE (converted 2026-05-24): powi.slang mirrors the
+    // affine.slang stride-aware Params shape. -----
+    table.register_with_caps_and_precision(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (pure dtype conversion).
     // strided-input candidate (with caveat): cast kernels pack pairs
@@ -1943,21 +1976,24 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
 
     // ----- Unary f16 (V.3.E) — split between half-pointwise + half-transcendental.
-    // strided-input candidate: same shape as unary f32 above. -----
-    table.register_with_precision(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16,    VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::ReluElementwise,    &u(f16), vk, unary_f16::relu_f16,    VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::StepElementwise,    &u(f16), vk, unary_f16::step_f16,    VULKAN_HALF_POINTWISE_PRECISION);
+    // STRIDE-AWARE (converted 2026-05-24): unary_f16.slang now mirrors
+    // binary.slang's stride-aware Params layout. The `unary_f16_bytes`
+    // wrapper delegates to `unary_typed_bytes` which packs strides
+    // identically to the f32 variant. -----
+    table.register_with_caps_and_precision(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::ReluElementwise,    &u(f16), vk, unary_f16::relu_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::StepElementwise,    &u(f16), vk, unary_f16::step_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
     // f16 transcendentals — same Vulkan-spec 4-ULP envelope, just at half precision.
-    table.register_with_precision(OpKind::ExpElementwise,     &u(f16), vk, unary_f16::exp_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::LogElementwise,     &u(f16), vk, unary_f16::log_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SinElementwise,     &u(f16), vk, unary_f16::sin_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::CosElementwise,     &u(f16), vk, unary_f16::cos_f16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::TanhElementwise,    &u(f16), vk, unary_f16::tanh_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f16), vk, unary_f16::exp_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f16), vk, unary_f16::log_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f16), vk, unary_f16::sin_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f16), vk, unary_f16::cos_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f16), vk, unary_f16::tanh_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16, strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
 
     // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64.
     // STRIDE-AWARE: binary_f64.slang mirrors binary.slang's stride-aware
@@ -1974,20 +2010,21 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // implemented via Horner-polynomial approximations (~1e-12 relative
     // precision target) in unary_f64.slang; portable across any
     // shaderFloat64 driver.
-    // strided-input candidate: same shape as unary f32 above. -----
-    table.register_with_precision(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64,     VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64,    VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SiluElementwise,    &u(f64_d), vk, unary_f64::silu_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64,    VULKAN_TRANSCENDENTAL_PRECISION);
+    // STRIDE-AWARE (converted 2026-05-24): same Params layout as the
+    // f32/f16 variants; `unary_f64_bytes` forwards to `unary_typed_bytes`. -----
+    table.register_with_caps_and_precision(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64, strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f64_d), vk, unary_f64::silu_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
 
     // ----- WriteSlice (V.3.J) — byte-width-keyed (b1/b2/b4/b8). Pure
     // byte-level data movement; no FP math.
