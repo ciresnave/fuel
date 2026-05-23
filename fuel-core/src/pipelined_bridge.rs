@@ -32,16 +32,37 @@
 //! This module owns steps 1–5 so [`crate::lazy::LazyTensor`]'s
 //! `realize_*` methods stay one-liners.
 //!
-//! ## Not yet covered (Phase E.3+ / bridge-retirement Phase 3+)
+//! ## Status post-Phase 3
+//!
+//! Bridge-retirement Phases 2 + 3a + 3b complete:
+//! * **Phase 2** (D2H): `realize_*_as` splices `Op::Copy { target: Cpu }`
+//!   at every realize root; the executor's `WorkItemKind::Copy` arm
+//!   downloads bytes via the binding-table-registered source-backend
+//!   wrapper. `BackendStorage::read_to_cpu_bytes` deleted.
+//! * **Phase 3a** (zero-alloc): `KvCache::with_capacity` emits
+//!   `Op::Alloc → Op::ZeroFill` pairs and realizes via
+//!   `PipelinedExecutor::realize_many`. `alloc_zeroed_on` deleted.
+//! * **Phase 3b** (H2D Const upload): [`build_const_cache`] (for
+//!   non-CPU targets) builds a transient graph of `Op::Const →
+//!   Op::Copy { target: device }` pairs and realizes them
+//!   multi-target. The executor's `WorkItemKind::Copy` arm allocates
+//!   the device-side output (uninit) and the `copy_from_cpu_wrapper`
+//!   writes host bytes via per-backend H2D helpers
+//!   (`CudaStorageBytes::write_from_host`,
+//!   `VulkanBackend::write_bytes`). `upload_host_buffer` deleted.
+//!
+//! Residual bridge code: [`device_seed_storage`] (~30 LOC, just the
+//! 0-byte device-handle anchor per backend) and
+//! [`host_buffer_to_bytes`] (per-dtype HostBuffer → bytes
+//! conversion — orthogonal to the device-dispatch concern).
+//!
+//! ## Not yet covered (Phase E.3+)
 //!
 //! - `KVCache<B>` and `forward_with_cache_on<B>` — autoregressive
 //!   decoding needs a const cache that survives realize calls; the
 //!   pattern is "caller holds a long-lived `StorageCache` across
 //!   calls" but the API surface for that lands in Phase E.3.
 //! - `generate_*` and speculative decoding loops — same.
-//! - H2D + zero-alloc through `Op::Alloc` + `Op::Copy` (Phase 3 of
-//!   bridge-retirement). `alloc_zeroed_on` + `upload_host_buffer`
-//!   below are still ad-hoc.
 
 use std::sync::{Arc, RwLock};
 
@@ -295,129 +316,196 @@ fn prepare(
 }
 
 /// For each reachable `Op::Const`, take its legacy storage slot,
-/// extract bytes via the dyn host-buffer interface, and upload to
-/// `device` as a fresh `fuel_storage::Storage`. Insert into a
-/// StorageCache keyed by the Const's NodeId.
+/// extract bytes via the dyn host-buffer interface, and produce a
+/// device-resident `fuel_storage::Storage` keyed in a StorageCache by
+/// the Const's NodeId.
+///
+/// **CPU device** (target == `DeviceLocation::Cpu`): per-Const
+/// CPU-storage construction — no transient graph, no executor
+/// invocation. Just `CpuStorageBytes::from_bytes(host_bytes)`.
+///
+/// **Non-CPU device** (Phase 3b of bridge-retirement, post-9c):
+/// builds a transient graph with one `Op::Const → Op::Copy { target }`
+/// pair per user Const, seeds the transient StorageCache with CPU
+/// storages of host bytes (+ a device-handle anchor), and realizes
+/// the Op::Copy targets via `PipelinedExecutor::realize_many`. The
+/// resulting device storages are inserted at the **original** user-
+/// Const NodeIds. The transient graph isn't observable to the user
+/// — only the user-Const NodeIds appear in the returned cache.
+///
+/// This replaces the deleted `upload_host_buffer`'s per-`DeviceLocation`
+/// match. The per-target match now lives in the executor's
+/// `WorkItemKind::Copy` arm (output allocation) and the
+/// `copy_from_cpu_wrapper` (per-target H2D).
 fn build_const_cache(
     graph: &Arc<RwLock<Graph>>,
     order: &[NodeId],
     device: &Device,
     initial: StorageCache,
 ) -> Result<StorageCache> {
-    let g = graph
-        .read()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
     let mut cache = initial;
     cache.reserve(order.len() / 4);
-    for &id in order {
-        // Persistent slots from InferenceContext (or already-uploaded
-        // Consts from a prior pass) take precedence — don't re-fetch
-        // from the graph's storage_map.
-        if cache.contains_key(&id) {
-            continue;
-        }
-        let node = g.node(id);
-        if !matches!(node.op, Op::Const) {
-            continue;
-        }
-        let slot_arc = match g.storage_for(id) {
-            Some(s) => s,
-            None => {
-                return Err(Error::Msg(format!(
+
+    // Pass 1: collect (user_const_id, host_bytes, dtype, need_bytes)
+    // for every reachable Op::Const that isn't already in the cache
+    // (persistent slots from InferenceContext take precedence).
+    let consts_to_upload: Vec<(NodeId, Vec<u8>, fuel_core_types::DType)> = {
+        let g = graph
+            .read()
+            .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+        let mut out: Vec<(NodeId, Vec<u8>, fuel_core_types::DType)> =
+            Vec::with_capacity(order.len() / 4);
+        for &id in order {
+            if cache.contains_key(&id) {
+                continue;
+            }
+            let node = g.node(id);
+            if !matches!(node.op, Op::Const) {
+                continue;
+            }
+            let slot_arc = g.storage_for(id).ok_or_else(|| {
+                Error::Msg(format!(
                     "pipelined_bridge: Op::Const node {id:?} has no \
                      storage in graph.storage_map (constructor failed \
                      to seed the slot)",
                 ))
-                .bt());
+                .bt()
+            })?;
+            let (host_buf, dtype) = {
+                let slot = slot_arc
+                    .read()
+                    .map_err(|_| Error::Msg("slot lock poisoned".into()).bt())?;
+                (slot.as_dyn().to_host_buffer_dyn()?, slot.dtype())
+            };
+            // Truncate to the node's declared shape. The slot's buffer
+            // may hold more bytes than the node consumes (shared
+            // storage across views, padding for alignment). Same
+            // truncation contract the deleted `upload_host_buffer`'s
+            // `truncate_to` parameter enforced.
+            let need_bytes = node.shape.elem_count() * dtype.size_in_bytes();
+            let mut bytes = host_buffer_to_bytes(&host_buf);
+            if bytes.len() > need_bytes {
+                bytes.truncate(need_bytes);
             }
+            out.push((id, bytes, dtype));
+        }
+        out
+    };
+
+    if consts_to_upload.is_empty() {
+        return Ok(cache);
+    }
+
+    let target_loc = device.location();
+    if target_loc == DeviceLocation::Cpu {
+        // CPU realize: short-circuit. CPU→CPU through the executor
+        // would be one extra memcpy per Const for no architectural
+        // benefit (the per-`DeviceLocation` match in the deleted
+        // `upload_host_buffer` was about routing to the right
+        // backend allocator; for CPU there's no routing decision).
+        for (id, bytes, dtype) in consts_to_upload {
+            let storage = Storage::new(
+                BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
+                    &bytes,
+                )),
+                dtype,
+            );
+            cache.insert(id, Arc::new(RwLock::new(storage)));
+        }
+        return Ok(cache);
+    }
+
+    // Non-CPU realize: build a transient graph with `Op::Const →
+    // Op::Copy { target: target_loc }` pairs and realize the Op::Copy
+    // targets multi-target. The transient graph is internal — the
+    // user's graph stays unmodified.
+    let transient = Arc::new(RwLock::new(Graph::new()));
+    let mut transient_cache = StorageCache::new();
+
+    // Device-handle anchor: the executor's Op::Copy arm derives the
+    // device handle by searching the cache for any storage on the
+    // target backend. Without an anchor, the first Op::Copy can't
+    // resolve a CUDA/Vulkan device handle. Push an Op::Const
+    // placeholder first; its cache entry is the 4-byte device-seed
+    // Storage.
+    if let Some(seed) = device_seed_storage(device)? {
+        let anchor_id = {
+            let mut g = transient
+                .write()
+                .map_err(|_| Error::Msg("transient graph lock poisoned".into()).bt())?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_core_types::Shape::from_dims(&[4]),
+                dtype: fuel_core_types::DType::U8,
+            })
         };
-        let (host_buf, dtype) = {
-            let slot = slot_arc
-                .read()
-                .map_err(|_| Error::Msg("slot lock poisoned".into()).bt())?;
-            (slot.as_dyn().to_host_buffer_dyn()?, slot.dtype())
-        };
-        // Truncate to the node's declared shape. The slot's buffer
-        // may hold more bytes than the node consumes (e.g. when the
-        // slot is shared across multiple views or padded for
-        // alignment). Mirrors the legacy executor's
-        // `backend.upload(&buf, shape)` which is shape-bounded.
-        let need_elem = node.shape.elem_count();
-        let need_bytes = need_elem * dtype.size_in_bytes();
-        let storage = upload_host_buffer(&host_buf, dtype, device, Some(need_bytes))?;
-        cache.insert(id, Arc::new(RwLock::new(storage)));
+        transient_cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+    }
+
+    // Push one Op::Const → Op::Copy pair per user Const. The
+    // transient Const's cache entry is the CPU storage of the host
+    // bytes; the Op::Copy reads it and produces a device-resident
+    // output. Keep parallel vectors of (user_const_id, transient
+    // copy_id) so we can write results into the user's cache.
+    //
+    // target_backend on the Op::Copy nodes = Cpu (the SOURCE
+    // backend; the kernel that runs is `copy_from_cpu_wrapper`,
+    // registered at `(OpKind::Copy, [dt, dt], Cpu)`). The
+    // executor's WorkItemKind::Copy arm reads target_location from
+    // the op's variant to know where to allocate the output.
+    let mut user_to_copy: Vec<(NodeId, NodeId)> =
+        Vec::with_capacity(consts_to_upload.len());
+    {
+        let mut g = transient
+            .write()
+            .map_err(|_| Error::Msg("transient graph lock poisoned".into()).bt())?;
+        for (user_id, bytes, dtype) in consts_to_upload.into_iter() {
+            let n_elem = if dtype.size_in_bytes() == 0 {
+                0
+            } else {
+                bytes.len() / dtype.size_in_bytes()
+            };
+            let shape = fuel_core_types::Shape::from_dims(&[n_elem]);
+            let trans_const_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: shape.clone(),
+                dtype,
+            });
+            let cpu_storage = Storage::new(
+                BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
+                    &bytes,
+                )),
+                dtype,
+            );
+            transient_cache.insert(trans_const_id, Arc::new(RwLock::new(cpu_storage)));
+            let copy_id = g.push(Node {
+                op: Op::Copy { target: target_loc },
+                inputs: vec![trans_const_id],
+                shape,
+                dtype,
+            });
+            g.set_target_backend(copy_id, BackendId::Cpu);
+            user_to_copy.push((user_id, copy_id));
+        }
+    }
+
+    let copy_targets: Vec<NodeId> = user_to_copy.iter().map(|(_, c)| *c).collect();
+    let realized = PipelinedExecutor::realize_many(
+        Arc::clone(&transient), &copy_targets, transient_cache,
+    )?;
+    if realized.len() != user_to_copy.len() {
+        return Err(Error::Msg(format!(
+            "build_const_cache: realize_many returned {} storages for {} \
+             Op::Copy targets — internal bug",
+            realized.len(), user_to_copy.len(),
+        )).bt());
+    }
+    for ((user_id, _), (arc, _layout)) in user_to_copy.into_iter().zip(realized) {
+        cache.insert(user_id, arc);
     }
     Ok(cache)
-}
-
-/// Upload a `HostBuffer` to a `Device`, producing the new
-/// `fuel_storage::Storage` shape. Bytes are extracted via a per-dtype
-/// match (no `HostBuffer::as_bytes` helper exists yet — should land
-/// in fuel-core-types when other call sites need it). `truncate_to`
-/// caps the bytes uploaded — used when a Const slot is shared across
-/// views and only the leading `shape.elem_count() * dtype.size`
-/// bytes are this node's view.
-fn upload_host_buffer(
-    buf: &HostBuffer,
-    dtype: fuel_core_types::DType,
-    device: &Device,
-    truncate_to: Option<usize>,
-) -> Result<Storage> {
-    let mut bytes = host_buffer_to_bytes(buf);
-    if let Some(n) = truncate_to {
-        if bytes.len() > n {
-            bytes.truncate(n);
-        }
-    }
-    match device.location() {
-        DeviceLocation::Cpu => Ok(Storage::new(
-            BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
-                &bytes,
-            )),
-            dtype,
-        )),
-        #[cfg(feature = "cuda")]
-        DeviceLocation::Cuda { .. } => {
-            // Downcast the caller's Device handle to reuse their
-            // CudaDevice (context, stream, cuBLAS handle, etc.).
-            // Constructing a fresh CudaDevice per realize would tear
-            // down + rebuild the context — way too expensive.
-            let cuda_dev = crate::cuda_backend::as_device(device)?;
-            let cuda_bytes =
-                fuel_cuda_backend::CudaStorageBytes::from_cpu_bytes(cuda_dev, &bytes)?;
-            Ok(Storage::new(BackendStorage::Cuda(cuda_bytes), dtype))
-        }
-        #[cfg(not(feature = "cuda"))]
-        DeviceLocation::Cuda { .. } => Err(Error::Msg(
-            "pipelined_bridge: CUDA device requested but fuel-core wasn't built \
-             with --features cuda"
-                .into(),
-        )
-        .bt()),
-        #[cfg(feature = "vulkan")]
-        DeviceLocation::Vulkan { .. } => {
-            // `upload_bytes_handle` allocates a fresh device buffer +
-            // attaches the `Arc<VulkanBackend>` handle so the resulting
-            // `VulkanStorageBytes` flows through the pipelined-executor
-            // binding-table dispatch (kernels reach the backend through
-            // an input's storage).
-            let backend = crate::vulkan_backend::as_device(device)?;
-            let vk_bytes = backend.upload_bytes_handle(&bytes)?;
-            Ok(Storage::new(BackendStorage::Vulkan(vk_bytes), dtype))
-        }
-        #[cfg(not(feature = "vulkan"))]
-        DeviceLocation::Vulkan { .. } => Err(Error::Msg(
-            "pipelined_bridge: Vulkan device requested but fuel-core wasn't built \
-             with --features vulkan"
-                .into(),
-        )
-        .bt()),
-        other => Err(Error::Msg(format!(
-            "pipelined_bridge: upload to {other:?} not yet wired (Metal D2H \
-             integration pending — these stay on the legacy executor for now)",
-        ))
-        .bt()),
-    }
 }
 
 /// Extract the raw bytes from a `HostBuffer` via a per-variant match

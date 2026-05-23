@@ -622,6 +622,83 @@ impl VulkanBackend {
         ))
     }
 
+    /// Bridge-retirement Phase 3b: H2D into an already-allocated
+    /// Vulkan storage. Pairs with [`Self::alloc_bytes_handle`] for
+    /// the `Op::Alloc → Op::Copy { target: Vulkan }` H2D pattern —
+    /// the executor allocates uninit storage, then the Copy kernel
+    /// writes host bytes into it via a host-visible staging buffer +
+    /// `vkCmdCopyBuffer`.
+    ///
+    /// Replaces the alloc-and-upload-in-one-shot `upload_bytes_handle`
+    /// for the Const-upload path; that helper stays around for
+    /// callers that don't have a pre-allocated destination.
+    ///
+    /// `src.len()` must equal `storage.len_bytes()` — sized by the
+    /// executor's Op::Copy arm to the destination's byte count.
+    /// Empty buffers short-circuit.
+    pub fn write_bytes(
+        &self,
+        storage: &VulkanStorageBytes,
+        src: &[u8],
+    ) -> fuel_core_types::Result<()> {
+        let byte_size = storage.len_bytes() as u64;
+        if byte_size == 0 {
+            return Ok(());
+        }
+        if src.len() as u64 != byte_size {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "VulkanBackend::write_bytes: src.len() ({}) != \
+                 storage.len_bytes ({})",
+                src.len(), byte_size,
+            )).bt());
+        }
+        let _span = debug_span!("vk_write_bytes", bytes = byte_size).entered();
+        let buffer = storage.buffer_opt().ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "write_bytes: storage is host-evicted; fault back via \
+                 residency machinery before writing".into(),
+            )
+        })?;
+        let (staging_buf, staging_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size: byte_size,
+                    usage: BufferUsage::TRANSFER_SRC,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::HostVisible,
+                    mapped: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        let mapped = staging_alloc
+            .mapped_ptr()
+            .ok_or_else(|| fuel_core_types::Error::Msg(
+                "write_bytes: staging alloc not mapped".into()))?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.as_ptr(),
+                mapped as *mut u8,
+                src.len(),
+            );
+        }
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    &staging_buf,
+                    buffer,
+                    &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        drop(staging_buf);
+        drop(staging_alloc);
+        Ok(())
+    }
+
     /// Bridge-retirement Phase 3a follow-up: in-place device-side
     /// zero-fill via `vkCmdFillBuffer`. Replaces the host-staged
     /// `upload_bytes_handle(vec![0u8; n])` path the old

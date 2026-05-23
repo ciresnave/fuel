@@ -2471,19 +2471,69 @@ fn execute_work_item(
             };
             let kernel_input_layout =
                 fuel_core_types::Layout::contiguous(src_layout.shape().clone());
-            // Allocate the output on `target_location`. Today's
-            // bridge-retirement Phase 2 only covers D2H (target=Cpu);
-            // future phases register H2D / D2D kernels at this same
-            // OpKind::Copy decision-point key.
+            // Allocate the output on `target_location`. Phase 2
+            // covered D2H (target=Cpu); Phase 3b extends to H2D
+            // (target=Cuda / Vulkan from a CPU source). For non-CPU
+            // targets the executor's Op::Alloc-style device-handle
+            // search applies (find_cuda_device_in_cache /
+            // find_vulkan_backend_in_cache); callers seed the cache
+            // (e.g. `pipelined_bridge::device_seed_storage`) before
+            // realizing.
+            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let output = match target_location {
                 DeviceLocation::Cpu => {
                     crate::alloc_cpu_zeroed(item.dtype, item.elem_count)?
                 }
+                #[cfg(feature = "cuda")]
+                DeviceLocation::Cuda { gpu_id } => {
+                    let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
+                        .ok_or_else(|| Error::Msg(format!(
+                            "Op::Copy on Cuda {{ gpu_id: {} }}: no CUDA \
+                             storage in input cache to derive the device \
+                             handle from. The caller must seed the cache \
+                             (e.g. via `fuel-core::pipelined_bridge::\
+                             device_seed_storage`) before realizing an \
+                             H2D Op::Copy.",
+                            gpu_id,
+                        )).bt())?;
+                    let cuda_bytes =
+                        fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
+                    Storage::new(crate::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                }
+                #[cfg(not(feature = "cuda"))]
+                DeviceLocation::Cuda { .. } => {
+                    return Err(Error::Msg(
+                        "Op::Copy target Cuda but fuel-storage wasn't built \
+                         with --features cuda".to_string(),
+                    ).bt());
+                }
+                #[cfg(feature = "vulkan")]
+                DeviceLocation::Vulkan { gpu_id } => {
+                    let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
+                        .ok_or_else(|| Error::Msg(format!(
+                            "Op::Copy on Vulkan {{ gpu_id: {} }}: no Vulkan \
+                             storage in input cache to derive the backend \
+                             handle from. The caller must seed the cache \
+                             (e.g. via `fuel-core::pipelined_bridge::\
+                             device_seed_storage`) before realizing an \
+                             H2D Op::Copy.",
+                            gpu_id,
+                        )).bt())?;
+                    let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
+                    Storage::new(crate::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                }
+                #[cfg(not(feature = "vulkan"))]
+                DeviceLocation::Vulkan { .. } => {
+                    return Err(Error::Msg(
+                        "Op::Copy target Vulkan but fuel-storage wasn't built \
+                         with --features vulkan".to_string(),
+                    ).bt());
+                }
                 other => {
                     return Err(Error::Msg(format!(
                         "PipelinedExecutor: Op::Copy target_location {:?} not yet \
-                         wired (D2H is the only target the bridge-retirement \
-                         Phase 2 covers; H2D + D2D land in Phase 3+).",
+                         wired (CPU + CUDA + Vulkan covered; Metal extends when \
+                         its byte-storage substrate is ready).",
                         other
                     )).bt());
                 }
