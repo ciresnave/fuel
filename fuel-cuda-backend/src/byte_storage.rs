@@ -131,6 +131,35 @@ impl CudaStorageBytes {
         })
     }
 
+    /// Bridge-retirement Phase 3b: H2D into an already-allocated
+    /// CUDA buffer. Pairs with [`Self::alloc_uninit`] for the
+    /// `Op::Alloc → Op::Copy { target: Cuda }` H2D pattern — the
+    /// executor allocates uninit storage, then the Copy kernel
+    /// writes host bytes into it.
+    ///
+    /// `src.len()` must equal `self.len_bytes` — the buffer is sized
+    /// by the executor to the destination's exact byte count. Empty
+    /// buffers are a no-op (baracuda's copy_from_host short-circuits
+    /// on zero-length transfers).
+    pub fn write_from_host(&self, src: &[u8]) -> Result<()> {
+        if src.is_empty() {
+            return Ok(());
+        }
+        if src.len() != self.len_bytes {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "CudaStorageBytes::write_from_host: src.len() ({}) != \
+                 storage.len_bytes ({})",
+                src.len(), self.len_bytes,
+            )).bt());
+        }
+        self.buffer.copy_from_host(src).w()?;
+        // copy_from_host is async on the default stream; sync so the
+        // result is observable before the next op picks up the
+        // storage. Mirrors `from_cpu_bytes`'s sync.
+        self.device.synchronize()?;
+        Ok(())
+    }
+
     /// Bridge-retirement Phase 3a follow-up: in-place device-side
     /// zero-fill via baracuda alpha.30's `DeviceBuffer::zero_async`
     /// (`cuMemsetD8Async`). The buffer's identity (CUdeviceptr)

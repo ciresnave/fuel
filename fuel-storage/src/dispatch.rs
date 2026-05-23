@@ -2943,22 +2943,32 @@ fn matmul_f64_cpu_wrapper(
     )
 }
 
-/// Dispatch wrapper for `(OpKind::Copy, [T, T], Cpu)` — D2H from a
-/// CPU source storage into a freshly-allocated CPU output. Dtype-
-/// agnostic at the byte level: the wrapper memcpys the input's bytes
-/// into the pre-allocated output. The executor allocates the output
-/// on `target_location` via [`crate::pipelined::WorkItemKind::Copy`]
-/// before this wrapper runs.
+/// Dispatch wrapper for `(OpKind::Copy, [T, T], Cpu)` — copy from a
+/// CPU source storage into a freshly-allocated output on any target
+/// backend. The executor allocates the output on `target_location`
+/// via [`crate::pipelined::WorkItemKind::Copy`] before this wrapper
+/// runs; the wrapper switches on the output's `BackendStorage`
+/// variant to pick the H2D path.
 ///
-/// CPU→CPU is mostly a uniformity move so the binding-table key
-/// shape stays `[dt, dt]` across every source backend — see the
-/// architecture-aligned dispatch contract in
-/// `docs/architecture/05-backend-contract.md`.
+/// - CPU output → memcpy (CPU→CPU).
+/// - CUDA output → `CudaStorageBytes::write_from_host` (H2D via
+///   `cuMemcpyHtoD`).
+/// - Vulkan output → `VulkanBackend::write_bytes` (H2D via staging
+///   buffer + `vkCmdCopyBuffer`).
 ///
-/// Phase 2 of the bridge-retirement trajectory (post-9c). Replaces
-/// the per-variant `match self` in
-/// `BackendStorage::read_to_cpu_bytes` (deleted alongside).
-fn copy_to_cpu_cpu_wrapper(
+/// Bridge-retirement Phase 2 (CPU→CPU) + Phase 3b (CPU→GPU). The
+/// wrapper-internal match on output variant is the pragmatic shape
+/// while the binding-table key `(op, dtypes, source_backend)` doesn't
+/// yet encode the target. A future binding-table-key extension would
+/// split this into per-(source, target) sub-wrappers without changing
+/// the call surface.
+///
+/// Replaces:
+/// * The per-variant `match self` in `BackendStorage::read_to_cpu_bytes`
+///   (Phase 2 deletion).
+/// * `fuel-core::pipelined_bridge::upload_host_buffer`'s per-
+///   `DeviceLocation` match (Phase 3b deletion).
+fn copy_from_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -2966,16 +2976,70 @@ fn copy_to_cpu_cpu_wrapper(
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
-            "copy_to_cpu_cpu_wrapper: expected 1 input + 1 output, got {} + {}",
+            "copy_from_cpu_wrapper: expected 1 input + 1 output, got {} + {}",
             inputs.len(), outputs.len(),
         )).bt());
     }
     let in_guard = read_storage(&inputs[0])?;
     let src = cpu_input(&in_guard)?;
     let mut out_guard = write_storage(&outputs[0])?;
-    let dst = cpu_output(&mut out_guard)?;
-    let n = src.len_bytes().min(dst.len_bytes());
-    dst.bytes_mut()[..n].copy_from_slice(&src.bytes()[..n]);
+    // Truncate source bytes to the destination's byte count — the
+    // executor allocates the output exactly `node.shape.elem_count *
+    // dtype.size_in_bytes()` bytes. Host buffers from Op::Const slots
+    // may be larger (shared storage across views); we copy only the
+    // destination-sized prefix. Mirrors the deleted
+    // `upload_host_buffer`'s `truncate_to` parameter.
+    let n_out = out_guard.inner.len_bytes();
+    let n_src = src.len_bytes();
+    let n = n_src.min(n_out);
+    let src_slice = &src.bytes()[..n];
+    match &mut out_guard.inner {
+        BackendStorage::Cpu(dst) => {
+            dst.bytes_mut()[..n].copy_from_slice(src_slice);
+        }
+        #[cfg(feature = "cuda")]
+        BackendStorage::Cuda(dst) => {
+            // CUDA write_from_host requires src.len() == dst.len_bytes.
+            // The executor sized the output to `n_out`; we truncated
+            // src to `n` = min(n_src, n_out). When n < n_out the
+            // remaining bytes stay uninit; for the Op::Const upload
+            // path this matches the deleted upload_host_buffer's
+            // behavior (truncated host bytes uploaded as-is).
+            if n == n_out {
+                dst.write_from_host(src_slice)?;
+            } else {
+                // Pad: copy src into a staging vec sized exactly n_out
+                // with trailing zeros. Rare path (size mismatch).
+                let mut staged = vec![0_u8; n_out];
+                staged[..n].copy_from_slice(src_slice);
+                dst.write_from_host(&staged)?;
+            }
+        }
+        #[cfg(feature = "vulkan")]
+        BackendStorage::Vulkan(dst) => {
+            let backend = dst.backend().ok_or_else(|| Error::Msg(
+                "copy_from_cpu_wrapper: Vulkan output has no attached \
+                 backend handle. The executor's Op::Copy arm must allocate \
+                 via VulkanBackend::alloc_bytes_handle (which attaches \
+                 the handle).".to_string()
+            ).bt())?.clone();
+            if n == n_out {
+                backend.write_bytes(dst, src_slice)?;
+            } else {
+                let mut staged = vec![0_u8; n_out];
+                staged[..n].copy_from_slice(src_slice);
+                backend.write_bytes(dst, &staged)?;
+            }
+        }
+        #[allow(unreachable_patterns)]
+        other => {
+            return Err(Error::Msg(format!(
+                "copy_from_cpu_wrapper: output backend not wired ({other:?}); \
+                 CPU + CUDA + Vulkan covered, Metal extends when its \
+                 byte-storage substrate is ready.",
+            )).bt());
+        }
+    }
     Ok(())
 }
 
@@ -3488,7 +3552,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         f32_dt, f64_dt, bf16_dt, f16_dt, u32_dt, u8_dt, DType::I16, DType::I32, DType::I64,
     ];
     for dt in copy_dtypes {
-        table.register(Copy, &[dt, dt], cpu, copy_to_cpu_cpu_wrapper);
+        table.register(Copy, &[dt, dt], cpu, copy_from_cpu_wrapper);
     }
     table.register(ClampElementwise,   &unary(f64_dt),  cpu, clamp_f64_cpu_wrapper);
     table.register(ClampElementwise,   &unary(bf16_dt), cpu, clamp_bf16_cpu_wrapper);
