@@ -746,6 +746,18 @@ fn eval_node(
                  fuel-graph-cpu path should never see it.",
             );
         }
+        Op::Alloc { .. } => {
+            // Phase 3a of bridge-retirement (post-9c): zero-init device
+            // allocation through the PipelinedExecutor's
+            // `WorkItemKind::Alloc` arm. The eager fuel-graph-cpu path
+            // doesn't see Op::Alloc; KvCache::with_capacity emits it
+            // through PipelinedExecutor::realize_many.
+            unreachable!(
+                "fuel-graph-cpu eval_node: Op::Alloc is a pipelined-\
+                 executor-only op (graph-level zero-init alloc); the \
+                 eager fuel-graph-cpu path should never see it.",
+            );
+        }
     }
 }
 
