@@ -3863,6 +3863,161 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Inclusive prefix sum (cumulative sum) along one axis, f32.
+    /// Sequential per-slice walk inside the kernel — one thread per
+    /// `(non-axis coords)` combination. Per-dtype because the
+    /// accumulator needs typed addition (the byte-keyed flip/roll
+    /// kernels can stay dtype-agnostic; cumsum cannot).
+    pub fn cumsum_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        axis: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.cumsum_typed_bytes(
+            4, input, out, layout, axis,
+            "cumsum_f32",
+            &self.pipelines.cumsum_f32_pipeline,
+            &self.pipelines.cumsum_f32_layout,
+        )
+    }
+
+    pub fn cumsum_f64_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        axis: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.cumsum_typed_bytes(
+            8, input, out, layout, axis,
+            "cumsum_f64",
+            &self.pipelines.cumsum_f64_pipeline,
+            &self.pipelines.cumsum_f64_layout,
+        )
+    }
+
+    pub fn cumsum_f16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        axis: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.cumsum_typed_bytes(
+            2, input, out, layout, axis,
+            "cumsum_f16",
+            &self.pipelines.cumsum_f16_pipeline,
+            &self.pipelines.cumsum_f16_layout,
+        )
+    }
+
+    pub fn cumsum_bf16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        axis: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.cumsum_typed_bytes(
+            2, input, out, layout, axis,
+            "cumsum_bf16",
+            &self.pipelines.cumsum_bf16_pipeline,
+            &self.pipelines.cumsum_bf16_layout,
+        )
+    }
+
+    /// Shared cumsum driver. All four dtype variants pack the same
+    /// Params shape; only the FFI pipeline + element-size byte count
+    /// differ. Workgroup count = ceil(slice_count / 256) where
+    /// slice_count = product of shape over non-axis dims.
+    fn cumsum_typed_bytes(
+        &self,
+        elem_size: usize,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        axis: usize,
+        op_label: &'static str,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        if rank == 0 {
+            fuel_core_types::bail!("{op_label}: rank-0 input not supported");
+        }
+        if rank > 4 {
+            fuel_core_types::bail!("{op_label}: rank {rank} > 4");
+        }
+        if axis >= rank {
+            fuel_core_types::bail!(
+                "{op_label}: axis {axis} out of range for rank {rank}",
+            );
+        }
+        let dim_size = dims[axis];
+        let total: usize = layout.shape().elem_count();
+        let need_bytes = total * elem_size;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_label}: output {} bytes < required {need_bytes}",
+                out.len_bytes(),
+            );
+        }
+        let slice_count = if dim_size == 0 { 0 } else { total / dim_size };
+
+        // Pad shape + strides to rank 4 (leading dims = 1 / stride = 0).
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let axis_padded = (axis + pad) as u32;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct CParams {
+            slice_count: u32, axis: u32, dim_size: u32, _pad: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
+        let p = CParams {
+            slice_count: slice_count as u32, axis: axis_padded, dim_size: dim_size as u32, _pad: 0,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+        };
+
+        if slice_count == 0 {
+            return Ok(());
+        }
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_label}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_label}: output is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<CParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_label, pipeline, pipe_layout, desc,
+            (Self::workgroups(slice_count), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Strided copy with SIGNED strides (Contiguize on negative-stride
     /// views). `src_offset` may itself be negative when the view's base
     /// points past the start of the underlying allocation.

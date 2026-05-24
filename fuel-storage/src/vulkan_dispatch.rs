@@ -1534,6 +1534,65 @@ pub mod roll {
     }
 }
 
+pub mod cumsum {
+    use super::*;
+
+    macro_rules! vk_cumsum_wrapper {
+        ($name:ident, $backend_fn:ident, $dt:expr, $op_label:expr) => {
+            pub fn $name(
+                inputs: &[Arc<RwLock<Storage>>],
+                outputs: &mut [Arc<RwLock<Storage>>],
+                layouts: &[Layout],
+                params: &OpParams,
+            ) -> Result<()> {
+                if inputs.len() != 1 || outputs.len() != 1 {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::cumsum::{}: expected 1 input + 1 output, got {} + {}",
+                        $op_label, inputs.len(), outputs.len(),
+                    )).bt());
+                }
+                let axis = match params {
+                    OpParams::CumSum { axis, .. } => *axis,
+                    other => {
+                        return Err(Error::Msg(format!(
+                            "vulkan_dispatch::cumsum::{}: expected OpParams::CumSum, got {:?}",
+                            $op_label, other,
+                        )).bt());
+                    }
+                };
+                let layout = layouts.first().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "vulkan_dispatch::cumsum::{}: CumSum requires an input layout (layouts[0])",
+                        $op_label,
+                    )).bt()
+                })?;
+                let in_guard = read_storage(&inputs[0])?;
+                let mut out_guard = write_storage(&outputs[0])?;
+                if in_guard.dtype != $dt {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::cumsum::{}: dtype mismatch (got {:?}, expected {:?})",
+                        $op_label, in_guard.dtype, $dt,
+                    )).bt());
+                }
+                let a = vulkan_input(&in_guard)?;
+                let backend = a.backend().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "vulkan_dispatch::cumsum::{}: input has no VulkanBackend handle.",
+                        $op_label,
+                    )).bt()
+                })?;
+                let out = vulkan_output(&mut out_guard)?;
+                backend.$backend_fn(a, out, layout, axis)
+            }
+        };
+    }
+
+    vk_cumsum_wrapper!(cumsum_f32, cumsum_f32_bytes, DType::F32, "cumsum_f32");
+    vk_cumsum_wrapper!(cumsum_f64, cumsum_f64_bytes, DType::F64, "cumsum_f64");
+    vk_cumsum_wrapper!(cumsum_f16, cumsum_f16_bytes, DType::F16, "cumsum_f16");
+    vk_cumsum_wrapper!(cumsum_bf16, cumsum_bf16_bytes, DType::BF16, "cumsum_bf16");
+}
+
 // ===========================================================================
 // QMatMul Q4_0 / Q4_K_M / Q8_0 — F32 activation × quant weight → F32 output.
 // ===========================================================================
@@ -2078,6 +2137,18 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_caps_and_precision(OpKind::Flip, &u(dt), vk, flip::flip, strided, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_caps_and_precision(OpKind::Roll, &u(dt), vk, roll::roll, strided, VULKAN_BYTE_LEVEL_PRECISION);
     }
+
+    // ----- CumSum (inclusive prefix sum along one axis) — per-dtype
+    // because the accumulator needs typed addition. Sequential per-
+    // slice walk; stride-aware (rank-N + axis from OpParams::CumSum).
+    // F32/F64 accumulate in their native types; F16 accumulates in
+    // f16 (matches CPU/CUDA semantics — caller casts up to f32 first
+    // if they want long-sum stability); BF16 accumulates in f32 with
+    // bit-level bf16↔f32 conversion at the edges.
+    table.register_with_caps_and_precision(OpKind::CumSum, &u(f32),  vk, cumsum::cumsum_f32,  strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::CumSum, &u(f64_d), vk, cumsum::cumsum_f64,  strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::CumSum, &u(f16),  vk, cumsum::cumsum_f16,  strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::CumSum, &u(bf16_d), vk, cumsum::cumsum_bf16, strided, VULKAN_HALF_POINTWISE_PRECISION);
 
     // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32.
     // CONTIGUOUS-ONLY: the quantized weight stream has a fixed block
