@@ -331,14 +331,17 @@ surface.
 
 ## Open Category B follow-ups
 
-- ~~flip (4 dtypes), roll (4), cumsum (4), concat (4)~~ — **shipped**
-  in commits `a1e67dd3` + `adf3633f`.
-- **Vulkan flip/roll/cumsum/concat** — the IR change unblocks them,
-  but their Slang kernels currently assume the rank-3 reshape too.
-  Extending the kernels to walk arbitrary rank-N + axis (plus a
-  recompile of the SPV files) is its own commit; the OpParams now
-  carries `axis` so the Vulkan dispatch wrappers can pass it through
-  when ready.
+- ~~flip (4 dtypes), roll (4), cumsum (4), concat (4)~~ — **CUDA
+  shipped** in commits `a1e67dd3` + `adf3633f`.
+- ~~Vulkan flip/roll/concat~~ — **shipped** in commit `db9cb5b7`.
+  flip_b2/b4/b8 + roll_b2/b4/b8 Slang kernels rewritten to walk
+  rank-N + axis; concat wrapper simplified to use `OpParams.axis`
+  directly (concat_along_dim.slang was already stride-aware).
+  Coverage: 7 dtypes × 2 ops (flip + roll) = 14 registrations
+  flipped to `KernelCaps::strided_input()`.
+- **Vulkan CumSum** — no Slang kernel today; the IR change still
+  unblocks future wiring when a kernel is added. Out of scope for
+  this audit.
 - indexing (index_select / gather / masked_fill / scatter_add) —
   caveats noted in original audit (gather pattern doesn't always
   compose with arbitrary input strides; gate at the wrapper).
