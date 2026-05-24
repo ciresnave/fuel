@@ -985,7 +985,7 @@ pub mod concat {
             ).bt());
         }
         let (outer_count, input_dim_sizes, inner_count) = match params {
-            OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+            OpParams::Concat { outer_count, input_dim_sizes, inner_count, .. } => {
                 (*outer_count, input_dim_sizes.clone(), *inner_count)
             }
             other => {
@@ -1480,7 +1480,7 @@ pub mod flip {
             )).bt());
         }
         let (outer_count, dim_size, inner_count) = match params {
-            OpParams::Flip { outer_count, dim_size, inner_count } => {
+            OpParams::Flip { outer_count, dim_size, inner_count, .. } => {
                 (*outer_count, *dim_size, *inner_count)
             }
             other => {
@@ -1520,7 +1520,7 @@ pub mod roll {
             )).bt());
         }
         let (outer_count, dim_size, inner_count, shift) = match params {
-            OpParams::Roll { outer_count, dim_size, inner_count, shift } => {
+            OpParams::Roll { outer_count, dim_size, inner_count, shift, .. } => {
                 (*outer_count, *dim_size, *inner_count, *shift)
             }
             other => {

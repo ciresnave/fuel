@@ -2211,6 +2211,7 @@ fn vulkan_dispatch_concat_n3_along_last_f32() {
             outer_count: 2,
             input_dim_sizes: vec![2, 3, 1],
             inner_count: 1,
+            axis: 1,
         },
     ).expect("N=3 concat dispatch");
 
@@ -2271,6 +2272,7 @@ fn vulkan_dispatch_concat_n4_along_leading_f32() {
             outer_count: 1,
             input_dim_sizes: vec![1, 2, 1, 1],
             inner_count: 2,
+            axis: 0,
         },
     ).expect("N=4 concat dispatch");
 
@@ -2327,6 +2329,7 @@ fn vulkan_dispatch_concat_along_last_f32() {
             outer_count: 2,
             input_dim_sizes: vec![3, 2],
             inner_count: 1,
+            axis: 1,
         },
     ).expect("concat dispatch");
 
@@ -2869,7 +2872,7 @@ fn vulkan_dispatch_flip_f32() {
         &[Arc::clone(&in_arc)],
         &mut [Arc::clone(&out_arc)],
         &[layout.clone(), layout],
-        &OpParams::Flip { outer_count: 1, dim_size: host.len(), inner_count: 1 },
+        &OpParams::Flip { outer_count: 1, dim_size: host.len(), inner_count: 1, axis: 0 },
     ).expect("flip 1D");
     let got = download_f32(&backend, &out_arc.read().unwrap());
     assert_eq!(got, vec![4.0, 3.0, 2.0, 1.0, 0.0]);
@@ -2889,7 +2892,7 @@ fn vulkan_dispatch_flip_f32() {
         &[Arc::clone(&in_arc)],
         &mut [Arc::clone(&out_arc)],
         &[layout.clone(), layout],
-        &OpParams::Flip { outer_count: 2, dim_size: 3, inner_count: 2 },
+        &OpParams::Flip { outer_count: 2, dim_size: 3, inner_count: 2, axis: 1 },
     ).expect("flip 3D");
     let got = download_f32(&backend, &out_arc.read().unwrap());
     // batch 0: [[0,1],[2,3],[4,5]] -> [[4,5],[2,3],[0,1]]
@@ -2925,7 +2928,7 @@ fn vulkan_dispatch_roll_f32() {
         &[Arc::clone(&in_arc)],
         &mut [Arc::clone(&out_arc)],
         &[layout.clone(), layout.clone()],
-        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: 2 },
+        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: 2, axis: 0 },
     ).expect("roll +2");
     let got = download_f32(&backend, &out_arc.read().unwrap());
     assert_eq!(got, vec![3.0, 4.0, 0.0, 1.0, 2.0]);
@@ -2940,7 +2943,7 @@ fn vulkan_dispatch_roll_f32() {
         &[Arc::clone(&in_arc)],
         &mut [Arc::clone(&out_arc)],
         &[layout.clone(), layout.clone()],
-        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: -1 },
+        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: -1, axis: 0 },
     ).expect("roll -1");
     let got = download_f32(&backend, &out_arc.read().unwrap());
     assert_eq!(got, vec![1.0, 2.0, 3.0, 4.0, 0.0]);
@@ -2955,7 +2958,7 @@ fn vulkan_dispatch_roll_f32() {
         &[Arc::clone(&in_arc)],
         &mut [Arc::clone(&out_arc)],
         &[layout.clone(), layout],
-        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: 7 },
+        &OpParams::Roll { outer_count: 1, dim_size: host.len(), inner_count: 1, shift: 7, axis: 0 },
     ).expect("roll +7");
     let got = download_f32(&backend, &out_arc.read().unwrap());
     assert_eq!(got, vec![3.0, 4.0, 0.0, 1.0, 2.0]);

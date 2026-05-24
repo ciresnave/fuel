@@ -65,7 +65,7 @@ fn baracuda_roll_f32_1d_shift_plus1() {
     let kernel = alts[0].kernel;
 
     let params = OpParams::Roll {
-        outer_count: 1, dim_size: 5, inner_count: 1, shift: 1,
+        outer_count: 1, dim_size: 5, inner_count: 1, shift: 1, axis: 0,
     };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("roll");
 
@@ -92,7 +92,7 @@ fn baracuda_roll_f32_1d_shift_minus2() {
     let kernel = alts[0].kernel;
 
     let params = OpParams::Roll {
-        outer_count: 1, dim_size: 5, inner_count: 1, shift: -2,
+        outer_count: 1, dim_size: 5, inner_count: 1, shift: -2, axis: 0,
     };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("roll");
 
@@ -127,7 +127,7 @@ fn baracuda_roll_f32_3d_middle_axis() {
     let kernel = alts[0].kernel;
 
     let params = OpParams::Roll {
-        outer_count: 2, dim_size: 3, inner_count: 2, shift: 1,
+        outer_count: 2, dim_size: 3, inner_count: 2, shift: 1, axis: 1,
     };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("roll");
 

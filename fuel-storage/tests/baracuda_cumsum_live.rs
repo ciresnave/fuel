@@ -64,7 +64,7 @@ fn baracuda_cumsum_f32_1d() {
     let kernel = alts[0].kernel;
 
     let params = OpParams::CumSum {
-        outer_count: 1, dim_size: 5, inner_count: 1,
+        outer_count: 1, dim_size: 5, inner_count: 1, axis: 0,
     };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("cumsum");
 
@@ -102,7 +102,7 @@ fn baracuda_cumsum_f32_3d_middle_axis() {
     let kernel = alts[0].kernel;
 
     let params = OpParams::CumSum {
-        outer_count: 2, dim_size: 4, inner_count: 2,
+        outer_count: 2, dim_size: 4, inner_count: 2, axis: 1,
     };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("cumsum");
 

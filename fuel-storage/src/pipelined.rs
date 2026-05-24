@@ -1402,7 +1402,7 @@ fn op_to_op_params(
             let outer_count: usize = in_dims[..*dim].iter().product();
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
-            OpParams::Flip { outer_count, dim_size, inner_count }
+            OpParams::Flip { outer_count, dim_size, inner_count, axis: *dim }
         }
         Op::Roll { dim, shift } => {
             if node.inputs.len() != 1 {
@@ -1425,7 +1425,7 @@ fn op_to_op_params(
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
             OpParams::Roll {
-                outer_count, dim_size, inner_count, shift: *shift,
+                outer_count, dim_size, inner_count, shift: *shift, axis: *dim,
             }
         }
         Op::CumSum { dim } => {
@@ -1448,7 +1448,7 @@ fn op_to_op_params(
             let outer_count: usize = in_dims[..*dim].iter().product();
             let dim_size = in_dims[*dim];
             let inner_count: usize = in_dims[*dim + 1..].iter().product();
-            OpParams::CumSum { outer_count, dim_size, inner_count }
+            OpParams::CumSum { outer_count, dim_size, inner_count, axis: *dim }
         }
         Op::Triu { diagonal } | Op::Tril { diagonal } => {
             if node.inputs.len() != 1 {
@@ -1856,6 +1856,7 @@ fn op_to_op_params(
                 outer_count,
                 input_dim_sizes,
                 inner_count,
+                axis: *dim,
             }
         }
         Op::AddScalar(c) => OpParams::Affine { mul: 1.0, add: *c },
