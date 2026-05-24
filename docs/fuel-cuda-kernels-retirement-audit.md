@@ -114,27 +114,34 @@ on whether baracuda exposes equivalents (sort is mentioned as
 "sourced from Fuel" in the user's LICENSE-thirdparty.md note, so it
 exists upstream).
 
-## Step 3 — recommended baracuda asks
+## Step 3 — comprehensive baracuda ask
 
-Single ask worth raising with the baracuda team:
+Drafted as a single coordinated ask covering all four open items:
 
-- **Non-adaptive AvgPool/MaxPool exposure.** Baracuda has adaptive +
-  Lp + fractional pools (alpha.33). Plain `AvgPool{1,2,3}d` and
-  `MaxPool{1,2,3}d` with explicit (kernel, stride, padding) are the
-  PyTorch defaults that Fuel currently routes through fuel-cuda-kernels.
-  If baracuda already has these (just not surfaced in the FFI we
-  consume), surfacing them would unblock category B.
+- `docs/baracuda-comprehensive-ask-2026-05-25.md` — the document to
+  send upstream.
+- `docs/moe-design-analysis.md` — the MoE deep-dive that backs the
+  Item 4 recommendation (hybrid batched MMVQ × N-experts as the
+  preferred option).
 
-For everything else, the conversation is more nuanced:
+Four items, ordered easy → hard:
 
-- **MoE GEMM (category A.1):** baracuda team's stated direction is
-  MMVQ × N-experts. If they're firm on that, Fuel's path is to
-  rewrite `fuel-nn::moe::moe_gemm` to use MMVQ × N — and then delete
-  the moe subdir. If baracuda would reconsider taking the fused MoE
-  kernels, they could move upstream.
-- **Q8_1 staging (category A.2):** if Vulkan QMatMul's MMVQ approach
-  hits good perf on real models, this is the model for CUDA too —
-  delete Q8_1 staging when CUDA QMatMul ports to baracuda MMVQ.
+1. **Item 1 — Non-adaptive AvgPool/MaxPool exposure.** Low severity;
+   almost certainly already implemented internally for the adaptive
+   variants' fallback path, just not surfaced in the FFI.
+2. **Item 2 — Conv direction.** Ask whether the recommended path is
+   `baracuda-cudnn`'s convolution API or im2col + `baracuda-cublas`
+   GEMM. Then Fuel mirrors the Vulkan im2col + matmul pattern (per
+   `fuel-conv`) on CUDA.
+3. **Item 3 — Q8_1 staging deprecation.** Confirm MMVQ-everywhere is
+   the recommendation; Fuel mirrors Vulkan QMatMul commit `b7360fbc`
+   on the CUDA side.
+4. **Item 4 — MoE direction.** Three options ordered by Fuel's
+   preference: (a) batched MMVQ × N-experts (hybrid; preferred), (b)
+   accept Fuel's fused MoE kernels upstream, (c) Fuel rewrites to
+   MMVQ × N + routing on its side. The design memo quantifies the
+   tradeoffs (3N vs. 3 launches per layer, tensor-core utilization,
+   in-kernel routing).
 
 ## Step 4 — retirement plan
 
