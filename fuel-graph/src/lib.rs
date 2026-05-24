@@ -5669,28 +5669,23 @@ impl Tensor {
                 }
                 Op::PowI(n) => {
                     // y = x^n, dy/dx = n * x^(n-1).
-                    // grad_x = upstream * n * x^(n-1).
+                    // grad_x = upstream * n * x^(n-1). Emitted as a
+                    // single fused PowIBackward node; the executor
+                    // routes it to baracuda's `unary_powi_backward_*`
+                    // kernel (alpha.31) on CUDA, or falls back to the
+                    // primitive decomposition (PowI(n-1) → MulScalar →
+                    // Mul) on backends that haven't registered the
+                    // fused kernel.
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let x_pow_nm1 = push_node(
-                        &graph_handle,
-                        Op::PowI(n - 1),
-                        vec![x],
-                        x_shape.clone(),
-                        dtype,
-                    );
-                    let scaled = push_node(
-                        &graph_handle,
-                        Op::MulScalar(n as f64),
-                        vec![x_pow_nm1],
-                        x_shape.clone(),
-                        dtype,
-                    );
                     let grad_x = push_node(
                         &graph_handle,
-                        Op::Mul,
-                        vec![up_id, scaled],
+                        Op::Fused(
+                            crate::registry::FusedOps::POWI_BACKWARD,
+                            crate::registry::FusedOpParams::PowIBackward { exp: n },
+                        ),
+                        vec![x, up_id],
                         x_shape,
                         dtype,
                     );

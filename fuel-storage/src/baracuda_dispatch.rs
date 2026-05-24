@@ -553,6 +553,56 @@ pub mod powi {
     cuda_powi_baracuda_wrapper!(powi_bf16, bk::powi_bf16);
 }
 
+// PowI backward — `(x, upstream) → grad_x = exp · x^(exp-1) ·
+// upstream`. Two inputs (x at index 0, upstream at index 1); pulls
+// the same `exp` as the forward through OpParams::PowI.
+macro_rules! cuda_powi_backward_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 2 inputs + 1 output, got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let exp = match params {
+                OpParams::PowI { exp } => *exp,
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::PowI, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let layout = layouts.first();
+            let x_guard = read_storage(&inputs[0])?;
+            let up_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cuda = cuda_input(&x_guard)?;
+            let up_cuda = cuda_input(&up_guard)?;
+            let result = $baracuda_fn(x_cuda, up_cuda, layout, exp)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod powi_backward {
+    use super::*;
+    use fuel_cuda_backend::baracuda::powi as bk;
+
+    cuda_powi_backward_baracuda_wrapper!(powi_backward_f32, bk::powi_backward_f32);
+    cuda_powi_backward_baracuda_wrapper!(powi_backward_f64, bk::powi_backward_f64);
+    cuda_powi_backward_baracuda_wrapper!(powi_backward_f16, bk::powi_backward_f16);
+    cuda_powi_backward_baracuda_wrapper!(powi_backward_bf16, bk::powi_backward_bf16);
+}
+
 // ===========================================================================
 // Clamp — scalar (min, max) → broadcast-tensor ternary clamp
 // ===========================================================================
@@ -1814,14 +1864,23 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     // ----- PowI — integer-exponent power (alpha.28).
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    // Baracuda alpha.31 ships strided FW siblings; the wrapper picks
-    // contig vs strided per-call. BW kernels also exist in alpha.31
-    // (baracuda::powi::powi_backward_*) but stay unregistered until
-    // Fuel-IR grows a PowIElementwiseBackward OpKind.
+    // Baracuda alpha.31 ships strided FW + BW siblings; the wrappers
+    // pick contig vs strided per-call.
     table.register_with_caps(PowIElementwise, &u(f32),  cuda, powi::powi_f32,  strided);
     table.register_with_caps(PowIElementwise, &u(f64),  cuda, powi::powi_f64,  strided);
     table.register_with_caps(PowIElementwise, &u(f16),  cuda, powi::powi_f16,  strided);
     table.register_with_caps(PowIElementwise, &u(bf16), cuda, powi::powi_bf16, strided);
+
+    // ----- PowI backward — single-launch alternative to autograd's
+    // 3-node primitive decomposition (PowI(n-1) → MulScalar → Mul).
+    // Two-input shape `(x, upstream) → grad_x`; same dtype on every
+    // operand. Reached from `Op::Fused(POWI_BACKWARD, PowIBackward
+    // { exp })`.
+    let b_same = |t: DType| [t, t, t];
+    table.register_with_caps(PowIElementwiseBackward, &b_same(f32),  cuda, powi_backward::powi_backward_f32,  strided);
+    table.register_with_caps(PowIElementwiseBackward, &b_same(f64),  cuda, powi_backward::powi_backward_f64,  strided);
+    table.register_with_caps(PowIElementwiseBackward, &b_same(f16),  cuda, powi_backward::powi_backward_f16,  strided);
+    table.register_with_caps(PowIElementwiseBackward, &b_same(bf16), cuda, powi_backward::powi_backward_bf16, strided);
 
     // ----- Clamp — scalar bounds → broadcast-tensor ternary clamp.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.

@@ -872,6 +872,48 @@ pub const REDUCE_MAX_TO_BACKWARD_CPU_PRECISION: PrecisionGuarantee = PrecisionGu
             hardware re-run.",
 };
 
+/// Precision guarantee for `(POWI_BACKWARD, Cpu)`. Per-element
+/// `grad_x = exp · x^(exp-1) · upstream` with the same floating-point
+/// determinism guarantees as the forward PowI primitive: deterministic
+/// iteration order, no parallel reductions, F32 compute for half-
+/// precision dtypes via the shared `powi_backward_half_kernel`.
+pub const POWI_BACKWARD_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend PowI backward: single-pass `exp · \
+            x.powi(exp-1) · upstream` per element; deterministic \
+            iteration order; F32 compute for half-precision; bit-\
+            identical same-hardware re-run.",
+};
+
+/// Cost model for `(POWI_BACKWARD, Cpu)` — single pass over the input:
+/// per-element `powi(exp-1)` (≈ log2(|exp|) FMAs) + 2 multiplies. Bandwidth
+/// dominated by reading `x` + `upstream` and writing `grad_x`.
+pub fn cost_powi_backward_cpu(
+    shapes: &[Shape],
+    params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 2, "PowIBackward cost: expected 2 input shapes");
+    let in_count: u64 = shapes[0].dims().iter().map(|&d| d as u64).product();
+    let exp_abs = match params {
+        FusedOpParams::PowIBackward { exp } => (*exp).unsigned_abs().max(1) as u64,
+        _ => 1,
+    };
+    // power-by-squaring: ceil(log2(|exp|)) multiplies for the powi,
+    // +2 multiplies for the coefficient and upstream factors.
+    let powi_muls = 64 - exp_abs.leading_zeros() as u64;
+    let flops = in_count * (powi_muls + 2);
+    let bytes_moved = in_count * 4 /* x */ + in_count * 4 /* upstream */ + in_count * 4 /* grad_x */;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 60,
+    }
+}
+
 /// Cost model for `(REDUCE_MAX_TO_BACKWARD, Cpu)` — five passes over
 /// the input: forward max, mask build, count, scale, broadcast +
 /// gate. Roughly `5 · in_count` FLOPs, with bandwidth dominated by
@@ -1403,10 +1445,13 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 14 registered fused ops covered.
+        // Sanity: we should see all 15 registered fused ops covered.
+        // (14 from the original Phase 7.6 lineup + PowIBackward added
+        // when autograd switched from emitting the primitive
+        // decomposition to emitting Op::Fused(POWI_BACKWARD, _).)
         assert_eq!(
-            covered, 14,
-            "expected 14 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 15,
+            "expected 15 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 

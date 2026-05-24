@@ -151,6 +151,12 @@ pub enum OpKind {
     ClampElementwise,
     /// Element-wise integer power: `y = x.powi(exp)`.
     PowIElementwise,
+    /// Backward of [`PowIElementwise`]: `(x, upstream) → grad_x = exp ·
+    /// x^(exp-1) · upstream`. Two inputs; carries the same `exp: i32`
+    /// in `OpParams::PowI` as the forward. Single-launch alternative
+    /// to the autograd primitive decomposition (PowI(exp-1) →
+    /// MulScalar → Mul, 3 nodes). Per-dtype.
+    PowIElementwiseBackward,
     /// Element-wise tensor maximum: `y[i] = max(lhs[i], rhs[i])`.
     MaximumElementwise,
     /// Element-wise tensor minimum: `y[i] = min(lhs[i], rhs[i])`.
@@ -385,6 +391,7 @@ impl OpKind {
             OpKind::Affine            => "affine",
             OpKind::ClampElementwise  => "clamp",
             OpKind::PowIElementwise   => "powi",
+            OpKind::PowIElementwiseBackward => "powi_backward",
             OpKind::MaximumElementwise => "maximum",
             OpKind::MinimumElementwise => "minimum",
             OpKind::EqualElementwise   => "eq",
