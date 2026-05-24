@@ -312,28 +312,33 @@ strides into baracuda's already-stride-driven FFI, then flipped caps.
 - **clamp** (4): wrapper passes rank-N walk; bounds remain broadcast
   (stride 0 on every axis).
 
-### Category B deferred (Fuel-IR change required)
+### Category B Fuel-IR change shipped (2026-05-24)
 
-**flip / roll / cumsum / concat / indexing / pad** all share a Fuel-IR
-limitation: `OpParams::{Flip, Roll, CumSum, Concat, ...}` carries
-`(outer_count, dim_size, inner_count)` as a flat-3-axis decomposition
-— the original axis index isn't preserved. The wrapper can't compute
-a rank-N `flip_axes` mask (or its equivalent) without it.
+Commits `a1e67dd3` + `adf3633f` added `axis: usize` to
+`OpParams::{Flip, Roll, CumSum, Concat}` and extended the CUDA
+wrappers to thread the input's true rank-N layout into baracuda's
+already stride-driven FFIs. 16 registrations flipped to strided:
 
-The clean fix is to extend the Fuel IR to carry the axis index. That's
-a separate design pass; flagging here so the next session doesn't
-re-discover it. Skip rather than ship a wrapper-side `is_contiguous`
-gate that re-introduces a Contiguize when the input is strided —
-that's just moving the cost, not eliminating it.
+- flip (4 dtypes), roll (4), cumsum (4), concat (4).
+
+Contig fast path preserved bit-for-bit when the layout is contig
+zero-offset (back-compat with the rank-3 reshape). Strided path
+builds rank-N shape + per-input strides + per-axis op mask
+(flip_axes / shifts / scan_axis) from `OpParams::*.axis`.
+
+48/48 live RTX 4070 CUDA tests green across the post-alpha.31
+surface.
 
 ## Open Category B follow-ups
 
-Once `OpParams` is extended:
-
-- flip (4 dtypes), roll (4), cumsum (4) — single-axis ops; same wrapper
-  pattern as norm/softmax once the axis index is in OpParams.
-- concat (4) — per-input rank-N stride arrays; concat dim from
-  OpParams.
+- ~~flip (4 dtypes), roll (4), cumsum (4), concat (4)~~ — **shipped**
+  in commits `a1e67dd3` + `adf3633f`.
+- **Vulkan flip/roll/cumsum/concat** — the IR change unblocks them,
+  but their Slang kernels currently assume the rank-3 reshape too.
+  Extending the kernels to walk arbitrary rank-N + axis (plus a
+  recompile of the SPV files) is its own commit; the OpParams now
+  carries `axis` so the Vulkan dispatch wrappers can pass it through
+  when ready.
 - indexing (index_select / gather / masked_fill / scatter_add) —
   caveats noted in original audit (gather pattern doesn't always
   compose with arbitrary input strides; gate at the wrapper).
@@ -401,9 +406,12 @@ Per the alpha.31 release notes:
 1. ~~Fuel-side caps flip for Category A~~ — **shipped**.
 2. ~~Wrapper extensions for Category B (norm/softmax/clamp)~~ — **shipped**.
 3. ~~Send Category C list to baracuda team~~ — **shipped in alpha.31**.
-4. **Fuel-IR change for axis-index in Flip/Roll/CumSum/Concat OpParams**
-   — unblocks the rest of Category B.
+4. ~~Fuel-IR change for axis-index in Flip/Roll/CumSum/Concat OpParams~~
+   — **shipped** in commit `a1e67dd3`; CUDA wrappers extended in `adf3633f`.
 5. **Fuel-IR `*Backward` OpKinds for PowI / RoPE / SDPA** — unblocks the
    shelved alpha.31 FFI symbols.
-6. **Run the same live-CUDA test sweep we did for Vulkan** after each
+6. **Vulkan flip/roll/cumsum/concat extensions** — Slang kernel rewrites
+   to walk rank-N + axis; OpParams carries `axis` now so dispatch is
+   ready.
+7. **Run the same live-CUDA test sweep we did for Vulkan** after each
    step.
