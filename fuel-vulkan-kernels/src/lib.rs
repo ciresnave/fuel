@@ -62,6 +62,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("roll_b2",                   include_bytes!("../spv/roll_b2.spv")),
     ("roll_b4",                   include_bytes!("../spv/roll_b4.spv")),
     ("roll_b8",                   include_bytes!("../spv/roll_b8.spv")),
+    ("cumsum_f32",                include_bytes!("../spv/cumsum_f32.spv")),
+    ("cumsum_f64",                include_bytes!("../spv/cumsum_f64.spv")),
+    ("cumsum_f16",                include_bytes!("../spv/cumsum_f16.spv")),
+    ("cumsum_bf16",               include_bytes!("../spv/cumsum_bf16.spv")),
     ("triu_b2",                   include_bytes!("../spv/triu_b2.spv")),
     ("triu_b4",                   include_bytes!("../spv/triu_b4.spv")),
     ("triu_b8",                   include_bytes!("../spv/triu_b8.spv")),
@@ -189,6 +193,14 @@ pub const FLIP_B8: &str = "flip_b8";
 pub const ROLL_B2: &str = "roll_b2";
 pub const ROLL_B4: &str = "roll_b4";
 pub const ROLL_B8: &str = "roll_b8";
+/// Inclusive prefix sum (cumulative sum) along one dim. Per-dtype
+/// because the accumulator needs typed addition (unlike flip/roll
+/// which are pure data movement). Sequential per-slice walk;
+/// stride-aware (rank-N + per-input strides + axis from OpParams).
+pub const CUMSUM_F32: &str = "cumsum_f32";
+pub const CUMSUM_F64: &str = "cumsum_f64";
+pub const CUMSUM_F16: &str = "cumsum_f16";
+pub const CUMSUM_BF16: &str = "cumsum_bf16";
 /// Strided copy with signed strides (Contiguize on negative-stride
 /// views from Flip / Roll / layout-on-Node).
 pub const STRIDED_COPY_SIGNED_B2: &str = "strided_copy_signed_b2";

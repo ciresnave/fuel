@@ -122,6 +122,14 @@ pub struct Pipelines {
     pub roll_b4_layout: PipelineLayout,
     pub roll_b8_pipeline: ComputePipeline,
     pub roll_b8_layout: PipelineLayout,
+    pub cumsum_f32_pipeline: ComputePipeline,
+    pub cumsum_f32_layout: PipelineLayout,
+    pub cumsum_f64_pipeline: ComputePipeline,
+    pub cumsum_f64_layout: PipelineLayout,
+    pub cumsum_f16_pipeline: ComputePipeline,
+    pub cumsum_f16_layout: PipelineLayout,
+    pub cumsum_bf16_pipeline: ComputePipeline,
+    pub cumsum_bf16_layout: PipelineLayout,
     /// WGSL matmul (4x4 register tile, no shared memory). Fast for
     /// short M where the shared-memory tiled version's barriers cost
     /// more than they save.
@@ -390,6 +398,10 @@ impl Pipelines {
         let roll_b2_mod = registry.load_module(device, shaders::ROLL_B2)?;
         let roll_b4_mod = registry.load_module(device, shaders::ROLL_B4)?;
         let roll_b8_mod = registry.load_module(device, shaders::ROLL_B8)?;
+        let cumsum_f32_mod = registry.load_module(device, shaders::CUMSUM_F32)?;
+        let cumsum_f64_mod = registry.load_module(device, shaders::CUMSUM_F64)?;
+        let cumsum_f16_mod = registry.load_module(device, shaders::CUMSUM_F16)?;
+        let cumsum_bf16_mod = registry.load_module(device, shaders::CUMSUM_BF16)?;
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
@@ -465,6 +477,11 @@ impl Pipelines {
         let roll_b2_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let roll_b4_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let roll_b8_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        // cumsum (per-dtype, accumulator-typed) — 2 storage (in, out) + 1 uniform.
+        let cumsum_f32_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cumsum_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cumsum_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cumsum_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let matmul_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -537,6 +554,10 @@ impl Pipelines {
         let roll_b2_pipeline = ComputePipeline::new(device, &roll_b2_layout, &roll_b2_mod, "main")?;
         let roll_b4_pipeline = ComputePipeline::new(device, &roll_b4_layout, &roll_b4_mod, "main")?;
         let roll_b8_pipeline = ComputePipeline::new(device, &roll_b8_layout, &roll_b8_mod, "main")?;
+        let cumsum_f32_pipeline = ComputePipeline::new(device, &cumsum_f32_layout, &cumsum_f32_mod, "main")?;
+        let cumsum_f64_pipeline = ComputePipeline::new(device, &cumsum_f64_layout, &cumsum_f64_mod, "main")?;
+        let cumsum_f16_pipeline = ComputePipeline::new(device, &cumsum_f16_layout, &cumsum_f16_mod, "main")?;
+        let cumsum_bf16_pipeline = ComputePipeline::new(device, &cumsum_bf16_layout, &cumsum_bf16_mod, "main")?;
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let matmul_tiled_pipeline = ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
@@ -609,6 +630,10 @@ impl Pipelines {
             roll_b2_pipeline, roll_b2_layout,
             roll_b4_pipeline, roll_b4_layout,
             roll_b8_pipeline, roll_b8_layout,
+            cumsum_f32_pipeline, cumsum_f32_layout,
+            cumsum_f64_pipeline, cumsum_f64_layout,
+            cumsum_f16_pipeline, cumsum_f16_layout,
+            cumsum_bf16_pipeline, cumsum_bf16_layout,
             matmul_pipeline, matmul_layout,
             matmul_tiled_pipeline, matmul_tiled_layout,
             matvec_pipeline, matvec_layout,

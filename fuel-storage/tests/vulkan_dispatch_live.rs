@@ -2964,6 +2964,149 @@ fn vulkan_dispatch_roll_f32() {
     assert_eq!(got, vec![3.0, 4.0, 0.0, 1.0, 2.0]);
 }
 
+// ----- CumSum --------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cumsum_f32_1d() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0];
+    let kernel = table
+        .lookup_alternatives(OpKind::CumSum, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::CumSum { outer_count: 1, dim_size: host.len(), inner_count: 1, axis: 0 },
+    ).expect("cumsum 1D");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![1.0, 3.0, 6.0, 10.0, 15.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cumsum_f32_middle_axis() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // shape [2, 4, 2], cumsum along axis 1.
+    let host: Vec<f32> = vec![
+        // batch 0
+        1.0, 1.0,
+        2.0, 2.0,
+        3.0, 3.0,
+        4.0, 4.0,
+        // batch 1
+        10.0, 20.0,
+        10.0, 20.0,
+        10.0, 20.0,
+        10.0, 20.0,
+    ];
+    let kernel = table
+        .lookup_alternatives(OpKind::CumSum, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[2, 4, 2]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::CumSum { outer_count: 2, dim_size: 4, inner_count: 2, axis: 1 },
+    ).expect("cumsum middle axis");
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    // Per-inner-column running sum within each batch.
+    assert_eq!(got, vec![
+        // batch 0
+        1.0, 1.0,
+        3.0, 3.0,
+        6.0, 6.0,
+        10.0, 10.0,
+        // batch 1
+        10.0, 20.0,
+        20.0, 40.0,
+        30.0, 60.0,
+        40.0, 80.0,
+    ]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cumsum_f64_1d() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+    let alts = table.lookup_alternatives(OpKind::CumSum, &[DType::F64, DType::F64], BackendId::Vulkan);
+    if alts.is_empty() {
+        // Driver may not support shaderFloat64; skip.
+        return;
+    }
+    let kernel = alts[0].kernel;
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::CumSum { outer_count: 1, dim_size: host.len(), inner_count: 1, axis: 0 },
+    ).expect("cumsum f64 1D");
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    assert_eq!(got, vec![1.0, 3.0, 6.0, 10.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cumsum_f16_1d() {
+    use fuel_storage::kernel::OpParams;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host_f32 = vec![1.0_f32, 2.0, 3.0, 4.0];
+    let host: Vec<half::f16> = host_f32.iter().map(|&v| half::f16::from_f32(v)).collect();
+    let kernel = table
+        .lookup_alternatives(OpKind::CumSum, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_storage = upload_f16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+    let layout = Layout::contiguous(Shape::from_dims(&[host.len()]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::CumSum { outer_count: 1, dim_size: host.len(), inner_count: 1, axis: 0 },
+    ).expect("cumsum f16 1D");
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let got_f32: Vec<f32> = got.iter().map(|v| v.to_f32()).collect();
+    assert_eq!(got_f32, vec![1.0, 3.0, 6.0, 10.0]);
+}
+
 // ----- bf16 unary + binary -------------------------------------------------
 
 #[test]
