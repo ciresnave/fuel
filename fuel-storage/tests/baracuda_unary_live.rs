@@ -61,11 +61,14 @@ fn pick_alt(
     dtypes: &[DType],
     expected: fuel_storage::KernelRef,
 ) -> fuel_storage::KernelRef {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // sole CUDA source for these unary ops; PTX path no longer
+    // registers a duplicate. Test verifies baracuda KernelRef is
+    // registered.
     let alternatives = table.lookup_alternatives(op, dtypes, BackendId::Cuda);
     assert!(
-        alternatives.len() >= 2,
-        "expected ≥ 2 alternatives at ({op:?}, {dtypes:?}, Cuda); got {}",
-        alternatives.len(),
+        !alternatives.is_empty(),
+        "expected ≥ 1 alternative at ({op:?}, {dtypes:?}, Cuda); got 0",
     );
     let expected_ptr = expected as usize;
     for alt in alternatives {
@@ -177,7 +180,10 @@ fn baracuda_unary_relu_f32_runs_through_binding_table() {
 /// key — step 9a's contract. Doesn't need GPU; runs without
 /// `#[ignore]`.
 #[test]
-fn dual_register_appends_alternatives() {
+fn baracuda_is_sole_unary_source() {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // single source of truth for CUDA unary ops; the legacy PTX path
+    // no longer registers duplicate alternatives.
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
     let before = table
@@ -195,6 +201,6 @@ fn dual_register_appends_alternatives() {
             BackendId::Cuda,
         )
         .len();
-    assert_eq!(before, 1, "PTX-only registers one F32 neg");
-    assert_eq!(after, 2, "baracuda registers a second F32 neg alternative");
+    assert_eq!(before, 0, "PTX path no longer registers F32 neg");
+    assert_eq!(after, 1, "baracuda is the sole F32 neg source");
 }

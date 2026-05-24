@@ -5304,8 +5304,28 @@ fn copy_to_cpu_cuda_wrapper(
 }
 
 /// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
-/// into the unified binding table. Same shape as
-/// `register_cpu_kernels` but on the Cuda backend.
+/// into the unified binding table.
+///
+/// **Scope (post-fuel-cuda-kernels-cleanup, 2026-05-25):** this
+/// function now registers only kernels that `register_baracuda_cuda_kernels`
+/// does NOT cover:
+///
+/// - **MatMul** (f32/bf16/f16) — routed through fuel-cuda-backend's
+///   `matmul_via_cublas` path. Baracuda's MatMul registrations cover
+///   int-GEMM only (S8/U8 RRR); pure-FP cuBLAS matmul stays here
+///   until baracuda grows an FP MatMul wrapper. See
+///   `project_baracuda_cutlass_critique` memory for the CUTLASS
+///   tracking work.
+/// - **ReduceSumTo / ReduceMaxTo** — broadcast-reverse reductions
+///   used by autograd; no baracuda equivalent today.
+/// - **Op::Copy** — D2H byte-buffer transfer (Fuel-specific cross-
+///   device path, lives at this layer rather than in a kernel crate).
+///
+/// All other op families (Binary, Unary, SumReduce/MaxReduce/MinReduce/
+/// MeanReduce, Affine, Clamp, PowI, Concat, IndexSelect, Gather,
+/// ArgMaxDim, ArgMinDim, Cast) were previously registered here as
+/// PTX-path duplicates of baracuda's per-dtype kernels and were
+/// stripped — baracuda is the single source of truth for those.
 #[cfg(feature = "cuda")]
 pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
@@ -5316,106 +5336,18 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     let unary  = |t: DType| [t, t];
     let binary = |t: DType| [t, t, t];
 
-    // Binary F32 elementwise ops opt in to strided_input — the
-    // PTX BINARY_OP kernels walk per-input strides, so non-contiguous
-    // inputs (broadcast, transpose) reach the wrapper as metadata-only
-    // views rather than going through executor-side auto-Contiguize.
-    let strided = KernelCaps::strided_input();
-    table.register_with_caps(AddElementwise,     &binary(f32_dt), cuda, add_elementwise_f32_cuda_wrapper, strided);
-    table.register_with_caps(SubElementwise,     &binary(f32_dt), cuda, sub_elementwise_f32_cuda_wrapper, strided);
-    table.register_with_caps(MulElementwise,     &binary(f32_dt), cuda, mul_elementwise_f32_cuda_wrapper, strided);
-    table.register_with_caps(DivElementwise,     &binary(f32_dt), cuda, div_elementwise_f32_cuda_wrapper, strided);
-    table.register_with_caps(MaximumElementwise, &binary(f32_dt), cuda, maximum_elementwise_f32_cuda_wrapper, strided);
-    table.register_with_caps(MinimumElementwise, &binary(f32_dt), cuda, minimum_elementwise_f32_cuda_wrapper, strided);
-
-    table.register(ReluElementwise,    &unary(f32_dt), cuda, relu_elementwise_f32_cuda_wrapper);
-    table.register(NegElementwise,     &unary(f32_dt), cuda, neg_elementwise_f32_cuda_wrapper);
-    table.register(SqrElementwise,     &unary(f32_dt), cuda, sqr_elementwise_f32_cuda_wrapper);
-    table.register(SqrtElementwise,    &unary(f32_dt), cuda, sqrt_elementwise_f32_cuda_wrapper);
-    table.register(RecipElementwise,   &unary(f32_dt), cuda, recip_elementwise_f32_cuda_wrapper);
-    table.register(AbsElementwise,     &unary(f32_dt), cuda, abs_elementwise_f32_cuda_wrapper);
-    table.register(TanhElementwise,    &unary(f32_dt), cuda, tanh_elementwise_f32_cuda_wrapper);
-    table.register(ExpElementwise,     &unary(f32_dt), cuda, exp_elementwise_f32_cuda_wrapper);
-    table.register(LogElementwise,     &unary(f32_dt), cuda, log_elementwise_f32_cuda_wrapper);
-    table.register(SinElementwise,     &unary(f32_dt), cuda, sin_elementwise_f32_cuda_wrapper);
-    table.register(CosElementwise,     &unary(f32_dt), cuda, cos_elementwise_f32_cuda_wrapper);
-    table.register(SigmoidElementwise, &unary(f32_dt), cuda, sigmoid_elementwise_f32_cuda_wrapper);
-    table.register(SiluElementwise,    &unary(f32_dt), cuda, silu_elementwise_f32_cuda_wrapper);
-    table.register(GeluElementwise,    &unary(f32_dt), cuda, gelu_elementwise_f32_cuda_wrapper);
-    table.register(StepElementwise,    &unary(f32_dt), cuda, step_elementwise_f32_cuda_wrapper);
-
-    table.register(SumReduce,          &unary(f32_dt), cuda, sum_reduce_f32_cuda_wrapper);
-    table.register(MaxReduce,          &unary(f32_dt), cuda, max_reduce_f32_cuda_wrapper);
-    table.register(MinReduce,          &unary(f32_dt), cuda, min_reduce_f32_cuda_wrapper);
-    table.register(MeanReduce,         &unary(f32_dt), cuda, mean_reduce_f32_cuda_wrapper);
-
     table.register(ReduceSumTo,        &unary(f32_dt), cuda, reduce_sum_to_f32_cuda_wrapper);
     table.register(ReduceMaxTo,        &unary(f32_dt), cuda, reduce_max_to_f32_cuda_wrapper);
 
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(MatMul,             &binary(bf16_dt), cuda, matmul_bf16_cuda_wrapper);
     table.register(MatMul,             &binary(f16_dt), cuda, matmul_f16_cuda_wrapper);
-    table.register(Affine,             &unary(f32_dt),  cuda, affine_f32_cuda_wrapper);
-    table.register(ClampElementwise,   &unary(f32_dt),  cuda, clamp_elementwise_f32_cuda_wrapper);
-    table.register(PowIElementwise,    &unary(f32_dt),  cuda, powi_elementwise_f32_cuda_wrapper);
-    table.register(Concat,             &unary(f32_dt),  cuda, concat_f32_cuda_wrapper);
-
-    // IndexSelect / Gather: gather data from an F32 source via U32
-    // indices. Dtype binding key matches the CPU shape:
-    // `[source_dt, U32, source_dt]`. Other (source, index) pairs
-    // (F32×U8, F32×I64, F64×U32, …) register as their own entries
-    // when their PTX kernels and CPU mirrors are wired through.
-    let u32_dt = DType::U32;
-    table.register(IndexSelect, &[f32_dt, u32_dt, f32_dt], cuda, index_select_f32_cuda_wrapper);
-    table.register(Gather,      &[f32_dt, u32_dt, f32_dt], cuda, gather_f32_cuda_wrapper);
-
-    // ArgMaxDim / ArgMinDim: F32 source → U32 indices into the reduce dim.
-    // Dtype binding key matches the CPU `argmax_dim_u32_cpu_dispatch` shape:
-    // `[source_dt, U32]`. Other source dtypes (F64 / BF16 / F16) register
-    // as their own entries when their PTX paths are wired through.
-    table.register(ArgMaxDim, &[f32_dt, u32_dt], cuda, argmax_dim_u32_f32_cuda_wrapper);
-    table.register(ArgMinDim, &[f32_dt, u32_dt], cuda, argmin_dim_u32_f32_cuda_wrapper);
-
-    // Cast — one binding-table entry per (src, dst) pair the cast.cu
-    // PTX defines. Pairs gated on `__CUDA_ARCH__` in the .cu source
-    // still register here unconditionally; if a specific kernel
-    // wasn't compiled into the in-process PTX (e.g. BF16 paths on a
-    // pre-Ampere GPU) the kernel-load step inside
-    // `byte_kernels::cast` surfaces a clear error with the kernel
-    // name. FP8 pairs are skipped — DType::F8E4M3 isn't yet
-    // exercised through the unified path; trivial follow-up to add.
-    const CAST_PAIRS: &[(DType, DType)] = &[
-        // Always available (sm_500+).
-        (DType::U32, DType::U32), (DType::U32, DType::U8),  (DType::U32, DType::I64),
-        (DType::U32, DType::F32), (DType::U32, DType::F64),
-        (DType::U8,  DType::U32), (DType::U8,  DType::U8),  (DType::U8,  DType::I64),
-        (DType::U8,  DType::F32), (DType::U8,  DType::F64),
-        (DType::I64, DType::U32), (DType::I64, DType::U8),  (DType::I64, DType::I64),
-        (DType::I64, DType::F32), (DType::I64, DType::F64),
-        (DType::F32, DType::U8),  (DType::F32, DType::U32), (DType::F32, DType::I64),
-        (DType::F32, DType::F32), (DType::F32, DType::F64),
-        (DType::F64, DType::U8),  (DType::F64, DType::U32), (DType::F64, DType::I64),
-        (DType::F64, DType::F32), (DType::F64, DType::F64),
-        // sm_530+ (F16).
-        (DType::F16, DType::F16), (DType::F16, DType::U8),  (DType::F16, DType::U32),
-        (DType::F16, DType::F32), (DType::F16, DType::F64),
-        (DType::U8,  DType::F16), (DType::U32, DType::F16), (DType::F32, DType::F16),
-        (DType::F64, DType::F16),
-        // sm_800+ (BF16).
-        (DType::BF16, DType::BF16),
-        (DType::BF16, DType::U32), (DType::BF16, DType::F32), (DType::BF16, DType::F64),
-        (DType::BF16, DType::U8),  (DType::BF16, DType::F16),
-        (DType::U8,   DType::BF16), (DType::U32, DType::BF16), (DType::F32, DType::BF16),
-        (DType::F64,  DType::BF16), (DType::F16, DType::BF16),
-    ];
-    for &(src, dst) in CAST_PAIRS {
-        table.register(Cast, &[src, dst], cuda, cast_cuda_wrapper);
-    }
 
     // Op::Copy D2H — register at `(OpKind::Copy, [dt, dt], Cuda)` for
     // every dtype the byte-storage substrate supports. Source-backend
     // key (= Cuda); the wrapper produces a CPU output, copying through
     // `CudaStorageBytes::to_cpu_bytes`. Bridge-retirement Phase 2.
+    let u32_dt = DType::U32;
     let copy_dtypes = [
         f32_dt, bf16_dt, f16_dt, u32_dt,
         DType::F64, DType::U8, DType::I16, DType::I32, DType::I64,

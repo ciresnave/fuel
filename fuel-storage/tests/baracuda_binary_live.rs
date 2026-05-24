@@ -38,11 +38,14 @@ fn pick_alt(
     dtypes: &[DType],
     expected: fuel_storage::KernelRef,
 ) -> fuel_storage::KernelRef {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // sole CUDA source for these binary ops; the legacy PTX path no
+    // longer registers a duplicate alternative. Test still verifies
+    // the baracuda KernelRef is registered.
     let alternatives = table.lookup_alternatives(op, dtypes, BackendId::Cuda);
     assert!(
-        alternatives.len() >= 2,
-        "expected ≥ 2 alternatives at ({op:?}, {dtypes:?}, Cuda); got {}",
-        alternatives.len(),
+        !alternatives.is_empty(),
+        "expected ≥ 1 alternative at ({op:?}, {dtypes:?}, Cuda); got 0",
     );
     let expected_ptr = expected as usize;
     for alt in alternatives {

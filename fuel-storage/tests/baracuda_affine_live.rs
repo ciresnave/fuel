@@ -189,7 +189,9 @@ fn baracuda_affine_u8() {
 }
 
 #[test]
-fn dual_register_appends_affine_alternative() {
+fn baracuda_is_sole_affine_source() {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // single source of truth for CUDA Affine; PTX path stripped.
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
     let before = table
@@ -199,6 +201,6 @@ fn dual_register_appends_affine_alternative() {
     let after = table
         .lookup_alternatives(OpKind::Affine, &[DType::F32, DType::F32], BackendId::Cuda)
         .len();
-    assert_eq!(before, 1, "PTX-only registers one F32 affine");
-    assert_eq!(after, 2, "baracuda registers a second F32 affine alternative");
+    assert_eq!(before, 0, "PTX path no longer registers F32 affine");
+    assert_eq!(after, 1, "baracuda is the sole F32 affine source");
 }

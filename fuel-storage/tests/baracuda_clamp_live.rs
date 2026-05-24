@@ -131,7 +131,9 @@ fn baracuda_clamp_f64() {
 }
 
 #[test]
-fn dual_register_appends_clamp_alternative() {
+fn baracuda_is_sole_clamp_source() {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // single source of truth for CUDA Clamp; PTX path stripped.
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
     let before = table
@@ -149,6 +151,6 @@ fn dual_register_appends_clamp_alternative() {
             BackendId::Cuda,
         )
         .len();
-    assert_eq!(before, 1, "PTX-only registers one F32 clamp");
-    assert_eq!(after, 2, "baracuda registers a second F32 clamp alternative");
+    assert_eq!(before, 0, "PTX path no longer registers F32 clamp");
+    assert_eq!(after, 1, "baracuda is the sole F32 clamp source");
 }

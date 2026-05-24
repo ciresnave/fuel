@@ -207,7 +207,10 @@ fn baracuda_powi_backward_f32_exp_3() {
 }
 
 #[test]
-fn dual_register_appends_powi_alternative() {
+fn baracuda_is_sole_powi_source() {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // single source of truth for CUDA PowI; the legacy PTX path no
+    // longer registers a duplicate alternative.
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
     let before = table
@@ -225,6 +228,6 @@ fn dual_register_appends_powi_alternative() {
             BackendId::Cuda,
         )
         .len();
-    assert_eq!(before, 1, "PTX-only registers one F32 powi");
-    assert_eq!(after, 2, "baracuda registers a second F32 powi alternative");
+    assert_eq!(before, 0, "PTX path no longer registers F32 powi");
+    assert_eq!(after, 1, "baracuda is the sole F32 powi source");
 }

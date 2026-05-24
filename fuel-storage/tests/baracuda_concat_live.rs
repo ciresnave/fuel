@@ -154,7 +154,9 @@ fn baracuda_concat_f32_single_input_is_copy() {
 }
 
 #[test]
-fn dual_register_appends_concat_alternative() {
+fn baracuda_is_sole_concat_source() {
+    // Post-fuel-cuda-kernels-cleanup (2026-05-25): baracuda is the
+    // single source of truth for CUDA Concat; PTX path stripped.
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
     let before = table
@@ -164,6 +166,6 @@ fn dual_register_appends_concat_alternative() {
     let after = table
         .lookup_alternatives(OpKind::Concat, &[DType::F32, DType::F32], BackendId::Cuda)
         .len();
-    assert_eq!(before, 1, "PTX-only registers one F32 concat");
-    assert_eq!(after, 2, "baracuda registers a second F32 concat alternative");
+    assert_eq!(before, 0, "PTX path no longer registers F32 concat");
+    assert_eq!(after, 1, "baracuda is the sole F32 concat source");
 }
