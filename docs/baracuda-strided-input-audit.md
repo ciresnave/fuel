@@ -339,9 +339,12 @@ surface.
   directly (concat_along_dim.slang was already stride-aware).
   Coverage: 7 dtypes × 2 ops (flip + roll) = 14 registrations
   flipped to `KernelCaps::strided_input()`.
-- **Vulkan CumSum** — no Slang kernel today; the IR change still
-  unblocks future wiring when a kernel is added. Out of scope for
-  this audit.
+- ~~Vulkan CumSum~~ — **shipped** in commit `997cd4ec`. Four
+  per-dtype Slang kernels (f32/f64/f16/bf16) with sequential
+  per-slice walks and rank-N + axis dispatch from the start.
+  4 registrations with `KernelCaps::strided_input()`. Block-scan
+  is a follow-up optimization if profiles show large dim_size on
+  the hot path.
 - indexing (index_select / gather / masked_fill / scatter_add) —
   caveats noted in original audit (gather pattern doesn't always
   compose with arbitrary input strides; gate at the wrapper).
