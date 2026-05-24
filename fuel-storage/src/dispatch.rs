@@ -2185,6 +2185,65 @@ fn powi_elementwise_f32_cpu_wrapper(
     fuel_cpu_backend::byte_kernels::powi_f32(in_cpu, out_cpu, exp)
 }
 
+/// Build a `(2 inputs `(x, upstream)`, 1 output, OpParams::PowI)` CPU
+/// dispatch wrapper for the per-dtype PowIBackward kernels.
+macro_rules! cpu_powi_backward_wrapper {
+    ($wrapper:ident, $kernel:path, $op_name:literal) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "{} wrapper expects 2 inputs + 1 output, got {} + {}",
+                    $op_name, inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let exp = match params {
+                OpParams::PowI { exp } => *exp,
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{} wrapper expects OpParams::PowI, got {other:?}",
+                        $op_name,
+                    ))
+                    .bt())
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let up_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let up_cpu = cpu_input(&up_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(x_cpu, up_cpu, out_cpu, exp)
+        }
+    };
+}
+
+cpu_powi_backward_wrapper!(
+    powi_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_backward_f32,
+    "powi_backward_f32"
+);
+cpu_powi_backward_wrapper!(
+    powi_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_backward_f64,
+    "powi_backward_f64"
+);
+cpu_powi_backward_wrapper!(
+    powi_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_backward_bf16,
+    "powi_backward_bf16"
+);
+cpu_powi_backward_wrapper!(
+    powi_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_backward_f16,
+    "powi_backward_f16"
+);
+
 /// Build a CPU reduction wrapper that calls a typed `(input,
 /// output, input_shape, dims)` reduce kernel. Verifies the
 /// `OpParams::Reduce` variant and forwards the shape + dims to the
@@ -3560,6 +3619,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PowIElementwise,    &unary(f64_dt),  cpu, powi_f64_cpu_wrapper);
     table.register(PowIElementwise,    &unary(bf16_dt), cpu, powi_bf16_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f16_dt),  cpu, powi_f16_cpu_wrapper);
+
+    // PowI backward — `(x, upstream) → grad_x`. Two inputs, same
+    // dtype on both inputs + output. Routes Op::Fused(POWI_BACKWARD,
+    // _) emitted by autograd through the binding table.
+    table.register(PowIElementwiseBackward, &binary(f32_dt),  cpu, powi_backward_f32_cpu_wrapper);
+    table.register(PowIElementwiseBackward, &binary(f64_dt),  cpu, powi_backward_f64_cpu_wrapper);
+    table.register(PowIElementwiseBackward, &binary(bf16_dt), cpu, powi_backward_bf16_cpu_wrapper);
+    table.register(PowIElementwiseBackward, &binary(f16_dt),  cpu, powi_backward_f16_cpu_wrapper);
 
     // Phase 7.6 step 7b — populate `PrecisionGuarantee` for every
     // CPU primitive registration. Every `table.register(...)` call
@@ -5667,12 +5734,13 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
     use crate::fused::{
         cost_attn_cpu, cost_conv2d_cpu, cost_conv_transpose2d_cpu,
-        cost_fused_linear_cpu, cost_norm_family_cpu, cost_qmatmul_cpu,
-        cost_reduce_max_to_backward_cpu, cost_rope_cpu,
+        cost_fused_linear_cpu, cost_norm_family_cpu, cost_powi_backward_cpu,
+        cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
         ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
-        NORM_FAMILY_CPU_PRECISION, QMATMUL_CPU_PRECISION,
-        REDUCE_MAX_TO_BACKWARD_CPU_PRECISION, ROPE_CPU_PRECISION,
+        NORM_FAMILY_CPU_PRECISION, POWI_BACKWARD_CPU_PRECISION,
+        QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
+        ROPE_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
@@ -6050,6 +6118,23 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         reduce_max_to_backward_f16_cpu_wrapper,
         cost = cost_reduce_max_to_backward_cpu,
         precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
+
+    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_F32,
+        powi_backward_f32_cpu_wrapper,
+        cost = cost_powi_backward_cpu,
+        precision = POWI_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_F64,
+        powi_backward_f64_cpu_wrapper,
+        cost = cost_powi_backward_cpu,
+        precision = POWI_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_BF16,
+        powi_backward_bf16_cpu_wrapper,
+        cost = cost_powi_backward_cpu,
+        precision = POWI_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_F16,
+        powi_backward_f16_cpu_wrapper,
+        cost = cost_powi_backward_cpu,
+        precision = POWI_BACKWARD_CPU_PRECISION);
 }
 
 #[cfg(test)]

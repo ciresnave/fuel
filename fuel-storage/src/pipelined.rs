@@ -1047,6 +1047,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
             Some(OpKind::ReduceMaxToBackward)
         }
         Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::POWI_BACKWARD =>
+        {
+            Some(OpKind::PowIElementwiseBackward)
+        }
+        Op::Fused(fid, _)
             if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR =>
         {
             Some(OpKind::FusedLinear)
@@ -1863,6 +1868,12 @@ fn op_to_op_params(
         Op::MulScalar(c) => OpParams::Affine { mul: *c, add: 0.0 },
         Op::Clamp { min, max } => OpParams::Clamp { min: *min, max: *max },
         Op::PowI(exp) => OpParams::PowI { exp: *exp },
+        // PowI backward — `(x, upstream) → grad_x = exp · x^(exp-1) ·
+        // upstream`. Pulls the same `exp` as the forward through
+        // FusedOpParams::PowIBackward (autograd carries it across).
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::PowIBackward { exp }) => {
+            OpParams::PowI { exp: *exp }
+        }
         // Phase 7.6 step 5: legacy `Op::Conv2D` arm retired with the
         // variant; Conv2D routes through `Op::Fused(CONV2D, _)`.
         Op::Fused(_, fuel_graph::registry::FusedOpParams::Conv2D { stride, padding, groups }) => {

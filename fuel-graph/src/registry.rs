@@ -37,6 +37,7 @@ pub mod fused_linear;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
 pub mod paged_attn;
+pub mod powi_backward;
 pub mod qmatmul;
 pub mod reduce_max_to_backward;
 pub mod rms_norm_last_dim;
@@ -160,6 +161,11 @@ pub enum FusedOpParams {
     /// ReduceMaxToBackward — routes upstream to argmax positions
     /// (fair-share on ties). Two inputs (x, upstream); parameterless.
     ReduceMaxToBackward,
+    /// PowIBackward — `grad_x = exp · x^(exp-1) · upstream`. Two
+    /// inputs `(x, upstream)`. Carries the same `exp` as the forward
+    /// `Op::PowI(exp)` so the backward kernel can evaluate the
+    /// derivative coefficient directly.
+    PowIBackward { exp: i32 },
     /// ConvTranspose2D — fractionally-strided 2-D convolution.
     /// Two inputs `[x, weight]` (no bias). Carries the full
     /// stride/padding/output_padding/dilation/groups bundle.
@@ -337,6 +343,11 @@ impl FusedOpParams {
                 // QuantType encoded as stable per-variant i64; k, n
                 // as usize.
                 ints: vec![quant_type_key(*quant_type), *k as i64, *n as i64],
+            },
+            FusedOpParams::PowIBackward { exp } => FusedOpParamsKey {
+                tag: 15,
+                bits: Vec::new(),
+                ints: vec![*exp as i64],
             },
         }
     }
@@ -635,6 +646,16 @@ impl FusedOps {
     /// QMatMul — quantized matmul `C = A @ dequant(W_Q)`. Two
     /// inputs `[a, w_q_bytes]`.
     pub const QMATMUL: FusedOpId = FusedOpId(14);
+    /// PowIBackward — fused backward helper for `Op::PowI(n)`.
+    /// `grad_x = n · x^(n-1) · upstream`. Two inputs `[x, upstream]`,
+    /// carries `exp: i32` in [`FusedOpParams::PowIBackward`]. Replaces
+    /// the autograd primitive decomposition (PowI(n-1) → MulScalar →
+    /// Mul, 3 nodes) with a single launch of baracuda alpha.31's
+    /// `unary_powi_backward_*` kernel. Note this is the backward of a
+    /// primitive (`Op::PowI`), not of a fused forward — autograd
+    /// reaches it directly from `Op::PowI`'s arm rather than via a
+    /// `BackwardKind::Fused` edge.
+    pub const POWI_BACKWARD: FusedOpId = FusedOpId(15);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -663,6 +684,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(flash_attn::entry())
             .with_entry(paged_attn::entry())
             .with_entry(qmatmul::entry())
+            .with_entry(powi_backward::entry())
     })
 }
 

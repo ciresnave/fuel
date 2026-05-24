@@ -2967,6 +2967,78 @@ macro_rules! powi_half_kernel {
 powi_half_kernel!(powi_bf16, half::bf16);
 powi_half_kernel!(powi_f16, half::f16);
 
+// PowI backward — `grad_x = exp * x^(exp-1) * upstream`. Two inputs
+// `(x, upstream)`, single pass per element. Replaces the 3-node
+// primitive decomposition (PowI(exp-1) → MulScalar → Mul) the
+// pre-PowIBackward autograd emitted. Per-dtype.
+
+/// `grad_x[i] = exp * x[i]^(exp-1) * upstream[i]` for f32.
+pub fn powi_backward_f32(
+    x: &CpuStorageBytes,
+    upstream: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    exp: i32,
+) -> Result<()> {
+    check_lens_2("powi_backward_f32", x.len_bytes(), out.len_bytes())?;
+    check_lens_2("powi_backward_f32", upstream.len_bytes(), out.len_bytes())?;
+    let x_view: &[f32] = x.as_slice()?;
+    let up_view: &[f32] = upstream.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    let coeff = exp as f32;
+    let nm1 = exp - 1;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = coeff * x_view[i].powi(nm1) * up_view[i];
+    }
+    Ok(())
+}
+
+/// `grad_x[i] = exp * x[i]^(exp-1) * upstream[i]` for f64.
+pub fn powi_backward_f64(
+    x: &CpuStorageBytes,
+    upstream: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    exp: i32,
+) -> Result<()> {
+    check_lens_2("powi_backward_f64", x.len_bytes(), out.len_bytes())?;
+    check_lens_2("powi_backward_f64", upstream.len_bytes(), out.len_bytes())?;
+    let x_view: &[f64] = x.as_slice()?;
+    let up_view: &[f64] = upstream.as_slice()?;
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    let coeff = exp as f64;
+    let nm1 = exp - 1;
+    for (i, slot) in out_view.iter_mut().enumerate() {
+        *slot = coeff * x_view[i].powi(nm1) * up_view[i];
+    }
+    Ok(())
+}
+
+macro_rules! powi_backward_half_kernel {
+    ($name:ident, $T:ty) => {
+        pub fn $name(
+            x: &CpuStorageBytes,
+            upstream: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            exp: i32,
+        ) -> Result<()> {
+            check_lens_2(stringify!($name), x.len_bytes(), out.len_bytes())?;
+            check_lens_2(stringify!($name), upstream.len_bytes(), out.len_bytes())?;
+            let x_view: &[$T] = x.as_slice()?;
+            let up_view: &[$T] = upstream.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let coeff = exp as f32;
+            let nm1 = exp - 1;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                let v = coeff * x_view[i].to_f32().powi(nm1) * up_view[i].to_f32();
+                *slot = <$T>::from_f32(v);
+            }
+            Ok(())
+        }
+    };
+}
+
+powi_backward_half_kernel!(powi_backward_bf16, half::bf16);
+powi_backward_half_kernel!(powi_backward_f16, half::f16);
+
 // ArgMax/ArgMin extensions to f64/bf16/f16. The existing
 // `argextremum_dim_f32` operates on f32 directly; for other
 // dtypes we widen to f32 for comparison (uniform NaN handling).

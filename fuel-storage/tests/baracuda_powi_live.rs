@@ -169,6 +169,44 @@ fn baracuda_powi_f32_exp_0_returns_ones() {
 }
 
 #[test]
+#[ignore]
+fn baracuda_powi_backward_f32_exp_3() {
+    // grad_x = 3 · x^2 · upstream
+    let Some(_dev) = dev_or_skip() else { return };
+    let dev = CudaDevice::new(0).expect("cuda");
+    let table = dual_table();
+    let x: Vec<f32> = vec![1.0, 2.0, -3.0, 4.0, -5.0];
+    let upstream: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0, 1.0];
+    let x_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &x)));
+    let up_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &upstream)));
+    let out_arc = Arc::new(RwLock::new(alloc_out(&dev, DType::F32, x.len(), 4)));
+
+    let kernel = pick_alt(
+        &table,
+        OpKind::PowIElementwiseBackward,
+        &[DType::F32, DType::F32, DType::F32],
+        fuel_storage::baracuda_dispatch::powi_backward::powi_backward_f32,
+    );
+    let layout = fuel_core_types::Layout::contiguous(
+        fuel_core_types::Shape::from_dims(&[x.len()]),
+    );
+    kernel(
+        &[x_arc, up_arc],
+        &mut [out_arc.clone()],
+        &[layout.clone(), layout],
+        &OpParams::PowI { exp: 3 },
+    ).expect("powi_backward dispatch");
+
+    let bytes = download_bytes(&out_arc.read().unwrap());
+    let got: &[f32] = bytemuck::cast_slice(&bytes);
+    // 3 · x^2 for each input, upstream = 1.
+    let want: Vec<f32> = x.iter().map(|&v| 3.0 * v * v).collect();
+    for (g, w) in got.iter().zip(want.iter()) {
+        assert!((g - w).abs() < 1e-5, "got {g}, want {w}");
+    }
+}
+
+#[test]
 fn dual_register_appends_powi_alternative() {
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
