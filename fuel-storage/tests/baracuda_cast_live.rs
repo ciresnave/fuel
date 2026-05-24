@@ -211,10 +211,11 @@ fn baracuda_cast_i64_to_f32() {
     assert_eq!(got, &want[..]);
 }
 
-/// Dual-register check (CPU-only, no GPU). Confirms baracuda adds a
-/// second alternative at (Cast, [F32, F64], Cuda) — step 9a contract.
+/// Sole-source check (CPU-only, no GPU). Post-fuel-cuda-kernels-cleanup
+/// (2026-05-25): baracuda is the single source of truth for CUDA Cast;
+/// the legacy PTX path no longer registers duplicate alternatives.
 #[test]
-fn dual_register_appends_cast_alternative() {
+fn baracuda_is_sole_cast_source() {
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
     let before = table
@@ -224,11 +225,8 @@ fn dual_register_appends_cast_alternative() {
     let after = table
         .lookup_alternatives(OpKind::Cast, &[DType::F32, DType::F64], BackendId::Cuda)
         .len();
-    assert_eq!(before, 1, "PTX-only registers one F32→F64 cast");
-    assert_eq!(
-        after, 2,
-        "baracuda registers a second F32→F64 cast alternative"
-    );
+    assert_eq!(before, 0, "PTX path no longer registers F32→F64 cast");
+    assert_eq!(after, 1, "baracuda is the sole F32→F64 cast source");
 }
 
 // ---- F8E4M3 casts (alpha.29 CastSubBytePlan, OCP/NV FP8 family) ----------
