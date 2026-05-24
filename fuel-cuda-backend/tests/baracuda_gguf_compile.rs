@@ -35,6 +35,8 @@ fn gguf_function_signatures_compile() {
     let _mmvqs: [fn(
         &fuel_cuda_backend::CudaStorageBytes,
         &fuel_cuda_backend::CudaStorageBytes,
+        Option<&fuel_core_types::Layout>,
+        i64,
         usize,
         usize,
     ) -> fuel_core_types::Result<fuel_cuda_backend::CudaStorageBytes>; 11] = [
