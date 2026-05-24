@@ -339,15 +339,71 @@ Once `OpParams` is extended:
   compose with arbitrary input strides; gate at the wrapper).
 - pad (4 + 4 backward) — strided FFI; wrapper needs rank-N walk.
 
+## Category C delivered in baracuda alpha.31 (2026-05-24)
+
+The baracuda team shipped 56 new FFI symbols across all 5 Category C
+families plus a couple of welcome extras. Fuel-side integration:
+
+### Shipped (Fuel-side adoption)
+
+- **Affine** — 7 dtypes (f32/f64/f16/bf16/i32/i64/u8). Wrapper rewritten
+  to pick contig vs strided per-call; 7 registrations flipped to
+  `strided`. Commit `621e4811`.
+- **PowI FW** — 4 dtypes (f32/f64/f16/bf16). Wrapper picks contig vs
+  strided per-call; 4 registrations flipped. Commit `8c00e6d0`.
+- **Triu/Tril** — 6 dtypes per direction (bool deferred until Fuel adds
+  Bool storage). Wrapper picks; 12 registrations flipped. Commit
+  `8c00e6d0`.
+- **RoPE FW** — 4 dtypes. Wrapper enforces head_dim (innermost) stride
+  == 1 on the strided path (the pair-dim constraint baracuda's plan
+  layer would enforce); 4 registrations flipped. Commit `432bd03c`.
+- **GGUF MMVQ** — 11 block formats (Q4_0/Q4_1/Q5_0/Q5_1/Q8_0 +
+  Q2_K..Q8_K). Wrapper extended with `act_layout` + `w_start_byte_offset`
+  (per the three-way decomposition the baracuda team confirmed); picks
+  actstrided FFI when stride_y != 1 or offset != 0. Per-format
+  `w_align_bytes` `debug_assert!` — Q4_K = 16, others = 1 (the
+  carry-forward alignment guard baracuda flagged). Commit `432bd03c`.
+
+### Shelved (FFI wrapped, no Fuel OpKind consumer yet)
+
+These alpha.31 FFI symbols are wired at the FFI level by baracuda but
+have no Fuel OpKind to dispatch against, so the Fuel-side wrappers are
+deferred until Fuel-IR grows the matching OpKinds. The kernels are
+ready when consumers come.
+
+- **PowI BW** (4 dtypes × contig + strided) — needs `PowIElementwiseBackward`
+  OpKind. Wrapper code exists (commit `8c00e6d0` in `baracuda/powi.rs`'s
+  `powi_backward_*` family); just unregistered.
+- **RoPE BW** (4 dtypes × contig + strided) — needs `RopeBackward` OpKind.
+- **SDPA FW + BW** (4 dtypes × contig + strided each) — needs `Sdpa` +
+  `SdpaBackward` OpKinds. SDPA BW + GQA-broadcast (any K/V stride 0 on
+  head axis) is `Error::Unsupported` per the baracuda team; Fuel-side
+  guard lives in the future SDPA BW wrapper.
+- **Flash SDPA BW** (4 dtypes contig) — sm_89 Flash strided sibling is
+  deferred upstream (existing Phase 10 Flash kernel hardcodes offsets);
+  Fuel's Flash path stays contig-only when it eventually wires.
+
+### Baracuda-side carry-forward
+
+Per the alpha.31 release notes:
+
+- Flash SDPA sm_89 strided sibling (deferred upstream).
+- SDPA BW GQA atomicAdd path (would need a design pass).
+- MMVQ alignment guard for k-quant formats requiring alignment > 1 —
+  **Fuel-side `debug_assert!` shipped in commit `432bd03c`** for Q4_K
+  (16-byte); other K-quants currently default to align=1 in the Fuel
+  wrapper. If baracuda confirms additional formats need alignment,
+  bump the per-format `w_align_bytes` constant in
+  `fuel-cuda-backend/src/baracuda/gguf.rs`.
+
 ## Recommended next steps
 
 1. ~~Fuel-side caps flip for Category A~~ — **shipped**.
 2. ~~Wrapper extensions for Category B (norm/softmax/clamp)~~ — **shipped**.
-3. **Send Category C list to baracuda team** — affine, powi, triangular
-   are the highest-value real asks. RoPE / SDPA / GEMM-int + the GGUF
-   activation-stride question (see C.5 clarification) can wait for their
-   own design pass.
+3. ~~Send Category C list to baracuda team~~ — **shipped in alpha.31**.
 4. **Fuel-IR change for axis-index in Flip/Roll/CumSum/Concat OpParams**
    — unblocks the rest of Category B.
-5. **Run the same live-CUDA test sweep we did for Vulkan** after each
+5. **Fuel-IR `*Backward` OpKinds for PowI / RoPE / SDPA** — unblocks the
+   shelved alpha.31 FFI symbols.
+6. **Run the same live-CUDA test sweep we did for Vulkan** after each
    step.
