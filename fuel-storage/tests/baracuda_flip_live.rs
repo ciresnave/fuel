@@ -63,7 +63,7 @@ fn baracuda_flip_f32_1d() {
     );
     let kernel = alts[0].kernel;
 
-    let params = OpParams::Flip { outer_count: 1, dim_size: 5, inner_count: 1 };
+    let params = OpParams::Flip { outer_count: 1, dim_size: 5, inner_count: 1, axis: 0 };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("flip");
 
     let got = download::<f32>(&out_arc.read().unwrap());
@@ -98,7 +98,7 @@ fn baracuda_flip_f32_3d_middle_axis() {
     );
     let kernel = alts[0].kernel;
 
-    let params = OpParams::Flip { outer_count: 2, dim_size: 3, inner_count: 2 };
+    let params = OpParams::Flip { outer_count: 2, dim_size: 3, inner_count: 2, axis: 1 };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("flip");
 
     let got = download::<f32>(&out_arc.read().unwrap());
@@ -135,7 +135,7 @@ fn baracuda_flip_bf16_1d() {
     );
     let kernel = alts[0].kernel;
 
-    let params = OpParams::Flip { outer_count: 1, dim_size: 4, inner_count: 1 };
+    let params = OpParams::Flip { outer_count: 1, dim_size: 4, inner_count: 1, axis: 0 };
     kernel(&[in_arc], &mut [out_arc.clone()], &[], &params).expect("flip");
 
     let got = download::<half::bf16>(&out_arc.read().unwrap());

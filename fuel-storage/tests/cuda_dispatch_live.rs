@@ -2180,6 +2180,7 @@ fn concat_f32_three_inputs_through_binding_table() {
         outer_count: 2,
         input_dim_sizes: vec![1, 2, 1],
         inner_count: 2,
+        axis: 1,
     };
     // Layouts: per-input + output. Per-input shapes are [2, dim_i, 2].
     let a_layout = Layout::contiguous(Shape::from_dims(&[2, 1, 2]));

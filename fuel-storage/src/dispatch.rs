@@ -587,7 +587,7 @@ fn flip_cpu_wrapper(
         .bt());
     }
     let (outer, dim_size, inner) = match params {
-        OpParams::Flip { outer_count, dim_size, inner_count } => {
+        OpParams::Flip { outer_count, dim_size, inner_count, .. } => {
             (*outer_count, *dim_size, *inner_count)
         }
         other => {
@@ -626,7 +626,7 @@ macro_rules! cpu_cumsum_wrapper {
                 .bt());
             }
             let (outer, dim_size, inner) = match params {
-                OpParams::CumSum { outer_count, dim_size, inner_count } => {
+                OpParams::CumSum { outer_count, dim_size, inner_count, .. } => {
                     (*outer_count, *dim_size, *inner_count)
                 }
                 other => {
@@ -1104,7 +1104,7 @@ fn roll_cpu_wrapper(
         .bt());
     }
     let (outer, dim_size, inner, shift) = match params {
-        OpParams::Roll { outer_count, dim_size, inner_count, shift } => {
+        OpParams::Roll { outer_count, dim_size, inner_count, shift, .. } => {
             (*outer_count, *dim_size, *inner_count, *shift)
         }
         other => {
@@ -1735,7 +1735,7 @@ fn concat_cpu_wrapper(
         .bt());
     }
     let (outer_count, input_dim_sizes, inner_count) = match params {
-        OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+        OpParams::Concat { outer_count, input_dim_sizes, inner_count, .. } => {
             (*outer_count, input_dim_sizes, *inner_count)
         }
         other => {
@@ -4738,7 +4738,7 @@ fn concat_f32_cuda_wrapper(
         .bt());
     }
     let (outer_count, input_dim_sizes, inner_count) = match params {
-        OpParams::Concat { outer_count, input_dim_sizes, inner_count } => {
+        OpParams::Concat { outer_count, input_dim_sizes, inner_count, .. } => {
             (*outer_count, input_dim_sizes.clone(), *inner_count)
         }
         other => {

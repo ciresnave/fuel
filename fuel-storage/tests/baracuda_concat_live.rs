@@ -100,6 +100,9 @@ fn run_concat_f32(
         outer_count,
         input_dim_sizes: input_dim_sizes.to_vec(),
         inner_count,
+        // Helper always reshapes inputs to rank-3 [outer, dim, inner];
+        // axis=1 is the concat dim in that reshape.
+        axis: 1,
     };
     let inputs_clone: Vec<_> = in_storages.iter().cloned().collect();
     kernel(&inputs_clone, &mut [out.clone()], &[], &params).expect("kernel call");

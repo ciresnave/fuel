@@ -333,6 +333,11 @@ pub enum OpParams {
     /// the concat dim) plus each input's size along the concat
     /// dim — that's all that distinguishes a concat from a
     /// sequence of slab-copies. Order matches `Node::inputs`.
+    ///
+    /// `axis` is the original concat dim in the output's shape;
+    /// kernels that want to walk strided rank-N inputs need it
+    /// to build the per-axis stride mask (the outer/inner factoring
+    /// alone loses the position info).
     Concat {
         /// Product of output dims before the concat dim.
         outer_count: usize,
@@ -340,6 +345,8 @@ pub enum OpParams {
         input_dim_sizes: Vec<usize>,
         /// Product of output dims after the concat dim.
         inner_count: usize,
+        /// Original concat axis index in the output's rank-N shape.
+        axis: usize,
     },
 
     /// Softmax along the last dim. The kernel walks
@@ -424,11 +431,14 @@ pub enum OpParams {
 
     /// Flip the order of elements along one dim. The flat-3-axis
     /// view (outer × dim × inner) lets the kernel walk a tight loop
-    /// without re-deriving the axis split per call.
+    /// without re-deriving the axis split per call. `axis` is the
+    /// original dim index in the input's rank-N shape — needed by
+    /// stride-aware kernels to build a per-axis flip mask.
     Flip {
         outer_count: usize,
         dim_size: usize,
         inner_count: usize,
+        axis: usize,
     },
 
     /// Cyclic shift along one dim by `shift` positions (positive
@@ -440,6 +450,7 @@ pub enum OpParams {
         dim_size: usize,
         inner_count: usize,
         shift: i64,
+        axis: usize,
     },
 
     /// Running cumulative sum along one dim. Same flat-3-axis view
@@ -449,6 +460,7 @@ pub enum OpParams {
         outer_count: usize,
         dim_size: usize,
         inner_count: usize,
+        axis: usize,
     },
 
     /// Triangular mask parameters (used by both Triu and Tril — the
