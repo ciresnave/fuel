@@ -1173,7 +1173,7 @@ macro_rules! cuda_affine_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -1194,10 +1194,11 @@ macro_rules! cuda_affine_baracuda_wrapper {
             let cast = $scalar_cast;
             let mul = cast(mul_f64);
             let add = cast(add_f64);
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, mul, add)?;
+            let result = $baracuda_fn(src_cuda, layout, mul, add)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1882,13 +1883,15 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
     // Net-new dtype coverage on CUDA: PTX path is f32 only.
-    table.register(Affine, &u(f32),  cuda, affine::affine_f32);
-    table.register(Affine, &u(f64),  cuda, affine::affine_f64);
-    table.register(Affine, &u(f16),  cuda, affine::affine_f16);
-    table.register(Affine, &u(bf16), cuda, affine::affine_bf16);
-    table.register(Affine, &u(DType::I32), cuda, affine::affine_i32);
-    table.register(Affine, &u(DType::I64), cuda, affine::affine_i64);
-    table.register(Affine, &u(DType::U8),  cuda, affine::affine_u8);
+    // Baracuda alpha.31 ships strided siblings for all 7 dtypes; the
+    // wrapper picks contig vs strided per-call.
+    table.register_with_caps(Affine, &u(f32),  cuda, affine::affine_f32,  strided);
+    table.register_with_caps(Affine, &u(f64),  cuda, affine::affine_f64,  strided);
+    table.register_with_caps(Affine, &u(f16),  cuda, affine::affine_f16,  strided);
+    table.register_with_caps(Affine, &u(bf16), cuda, affine::affine_bf16, strided);
+    table.register_with_caps(Affine, &u(DType::I32), cuda, affine::affine_i32, strided);
+    table.register_with_caps(Affine, &u(DType::I64), cuda, affine::affine_i64, strided);
+    table.register_with_caps(Affine, &u(DType::U8),  cuda, affine::affine_u8,  strided);
 
     // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
     // U32 collapses to baracuda i32 at the FFI level (bit-identical for
