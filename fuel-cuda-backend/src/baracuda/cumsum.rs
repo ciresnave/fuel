@@ -12,11 +12,15 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Result};
+use fuel_core_types::{Error, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
 use super::status::check;
+
+fn is_contiguous_zero_offset(layout: &Layout) -> bool {
+    layout.start_offset() == 0 && layout.is_contiguous()
+}
 
 /// FFI signature shared by every CumSum dtype symbol.
 type CumSumRun = unsafe extern "C" fn(
@@ -36,8 +40,11 @@ type CumSumRun = unsafe extern "C" fn(
     stream: *mut std::ffi::c_void,
 ) -> i32;
 
+#[allow(clippy::too_many_arguments)]
 fn cumsum_run(
     input: &CudaStorageBytes,
+    src_layout: Option<&Layout>,
+    axis: usize,
     outer_count: usize,
     dim_size: usize,
     inner_count: usize,
@@ -60,47 +67,96 @@ fn cumsum_run(
             })
         })
     };
-    let shape_i32: [i32; 3] = [
-        i32_or(0, outer_count)?,
-        i32_or(1, dim_size)?,
-        i32_or(2, inner_count)?,
-    ];
-    let stride_x_i64: [i64; 3] = [
-        (dim_size * inner_count) as i64,
-        inner_count as i64,
-        1,
-    ];
-    let stride_y_i64 = stride_x_i64;
-    let scan_axis: i32 = 1;
-    let scan_extent: i32 = shape_i32[1];
-    let scan_stride_x: i64 = stride_x_i64[1];
     let out = device.alloc_zeros::<u8>(out_bytes)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let in_ptr = input.buffer().as_raw().0 as *const std::ffi::c_void;
     let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
-    // SAFETY: pointers valid; stack arrays live for the FFI call.
+
+    let take_strided = src_layout
+        .map(|l| !is_contiguous_zero_offset(l))
+        .unwrap_or(false);
+
+    // SAFETY: pointers valid; arrays live for the FFI call.
     // workspace null+0: scan_cumsum's workspace is 0 for the shapes
     // fuel produces (the kernel's internal block-scan suffices for
     // common axis sizes; very large axes that would need workspace
     // are reduced upstream — Phase 7.6's reduction chassis splits
     // them before they reach this op).
-    let status = unsafe {
-        kernel(
-            numel as i64,
-            3,
-            shape_i32.as_ptr(),
-            stride_x_i64.as_ptr(),
-            stride_y_i64.as_ptr(),
-            scan_axis,
-            scan_extent,
-            scan_stride_x,
-            0,
-            in_ptr,
-            out_ptr,
-            std::ptr::null_mut(),
-            0,
-            stream,
-        )
+    let status = if take_strided {
+        let layout = src_layout.expect("guarded by take_strided");
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        if axis >= rank {
+            return Err(Error::Msg(format!(
+                "{op_label}: axis {axis} out of range for rank {rank}",
+            )).bt());
+        }
+        let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
+        for (i, &d) in dims.iter().enumerate() {
+            shape_i32.push(i32_or(i, d)?);
+        }
+        let stride_x_i64: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let stride_y_i64: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
+        };
+        let scan_axis_i32 = axis as i32;
+        let scan_extent = shape_i32[axis];
+        let scan_stride_x = stride_x_i64[axis];
+        unsafe {
+            kernel(
+                numel as i64,
+                rank as i32,
+                shape_i32.as_ptr(),
+                stride_x_i64.as_ptr(),
+                stride_y_i64.as_ptr(),
+                scan_axis_i32,
+                scan_extent,
+                scan_stride_x,
+                0,
+                in_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        }
+    } else {
+        let shape_i32: [i32; 3] = [
+            i32_or(0, outer_count)?,
+            i32_or(1, dim_size)?,
+            i32_or(2, inner_count)?,
+        ];
+        let stride_x_i64: [i64; 3] = [
+            (dim_size * inner_count) as i64,
+            inner_count as i64,
+            1,
+        ];
+        let stride_y_i64 = stride_x_i64;
+        let scan_axis: i32 = 1;
+        let scan_extent: i32 = shape_i32[1];
+        let scan_stride_x: i64 = stride_x_i64[1];
+        unsafe {
+            kernel(
+                numel as i64,
+                3,
+                shape_i32.as_ptr(),
+                stride_x_i64.as_ptr(),
+                stride_y_i64.as_ptr(),
+                scan_axis,
+                scan_extent,
+                scan_stride_x,
+                0,
+                in_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        }
     };
     check(status, op_label)?;
     device.synchronize()?;
@@ -109,15 +165,18 @@ fn cumsum_run(
 
 macro_rules! cumsum_kernel {
     ($name:ident, $sys_fn:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
-        #[doc = concat!("Baracuda `", $op_label, "` — single-axis cumulative sum.")]
+        #[doc = concat!("Baracuda `", $op_label, "` — single-axis cumulative sum (contig + strided dispatch).")]
         pub fn $name(
             input: &CudaStorageBytes,
+            src_layout: Option<&Layout>,
+            axis: usize,
             outer_count: usize,
             dim_size: usize,
             inner_count: usize,
         ) -> Result<CudaStorageBytes> {
             cumsum_run(
-                input, outer_count, dim_size, inner_count,
+                input, src_layout, axis,
+                outer_count, dim_size, inner_count,
                 sys::$sys_fn,
                 $op_label,
                 $dtype_size,

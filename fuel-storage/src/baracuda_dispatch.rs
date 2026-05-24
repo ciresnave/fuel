@@ -628,7 +628,7 @@ macro_rules! cuda_concat_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.is_empty() {
@@ -642,9 +642,9 @@ macro_rules! cuda_concat_baracuda_wrapper {
                     outputs.len(),
                 )).bt());
             }
-            let (outer_count, input_dim_sizes, inner_count) = match params {
-                OpParams::Concat { outer_count, input_dim_sizes, inner_count, .. } => {
-                    (*outer_count, input_dim_sizes.clone(), *inner_count)
+            let (outer_count, input_dim_sizes, inner_count, axis) = match params {
+                OpParams::Concat { outer_count, input_dim_sizes, inner_count, axis } => {
+                    (*outer_count, input_dim_sizes.clone(), *inner_count, *axis)
                 }
                 other => {
                     return Err(Error::Msg(format!(
@@ -663,6 +663,15 @@ macro_rules! cuda_concat_baracuda_wrapper {
                     inputs.len(),
                 )).bt());
             }
+            // When the executor supplies input layouts, take the
+            // stride-aware path. The executor passes `layouts[0..N]`
+            // as input layouts and `layouts[N]` (if present) as the
+            // output's layout; we slice to the input prefix.
+            let input_layouts = if layouts.len() >= inputs.len() {
+                Some(&layouts[..inputs.len()])
+            } else {
+                None
+            };
             let in_guards: Vec<_> = inputs
                 .iter()
                 .map(read_storage)
@@ -673,7 +682,10 @@ macro_rules! cuda_concat_baracuda_wrapper {
                 in_cudas.push(cuda_input(g)?);
             }
             let mut out_guard = write_storage(&outputs[0])?;
-            let result = $baracuda_fn(&in_cudas, outer_count, &input_dim_sizes, inner_count)?;
+            let result = $baracuda_fn(
+                &in_cudas, input_layouts, axis,
+                outer_count, &input_dim_sizes, inner_count,
+            )?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -839,7 +851,7 @@ macro_rules! cuda_flip_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -848,9 +860,9 @@ macro_rules! cuda_flip_baracuda_wrapper {
                     inputs.len(), outputs.len(),
                 )).bt());
             }
-            let (outer, dim_size, inner) = match params {
-                OpParams::Flip { outer_count, dim_size, inner_count, .. } => {
-                    (*outer_count, *dim_size, *inner_count)
+            let (outer, dim_size, inner, axis) = match params {
+                OpParams::Flip { outer_count, dim_size, inner_count, axis } => {
+                    (*outer_count, *dim_size, *inner_count, *axis)
                 }
                 other => {
                     return Err(Error::Msg(format!(
@@ -859,10 +871,11 @@ macro_rules! cuda_flip_baracuda_wrapper {
                     )).bt());
                 }
             };
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, outer, dim_size, inner)?;
+            let result = $baracuda_fn(src_cuda, layout, axis, outer, dim_size, inner)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -889,7 +902,7 @@ macro_rules! cuda_roll_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -898,9 +911,9 @@ macro_rules! cuda_roll_baracuda_wrapper {
                     inputs.len(), outputs.len(),
                 )).bt());
             }
-            let (outer, dim_size, inner, shift) = match params {
-                OpParams::Roll { outer_count, dim_size, inner_count, shift, .. } => {
-                    (*outer_count, *dim_size, *inner_count, *shift)
+            let (outer, dim_size, inner, shift, axis) = match params {
+                OpParams::Roll { outer_count, dim_size, inner_count, shift, axis } => {
+                    (*outer_count, *dim_size, *inner_count, *shift, *axis)
                 }
                 other => {
                     return Err(Error::Msg(format!(
@@ -909,10 +922,11 @@ macro_rules! cuda_roll_baracuda_wrapper {
                     )).bt());
                 }
             };
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, outer, dim_size, inner, shift)?;
+            let result = $baracuda_fn(src_cuda, layout, axis, outer, dim_size, inner, shift)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -940,7 +954,7 @@ macro_rules! cuda_cumsum_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -949,9 +963,9 @@ macro_rules! cuda_cumsum_baracuda_wrapper {
                     inputs.len(), outputs.len(),
                 )).bt());
             }
-            let (outer, dim_size, inner) = match params {
-                OpParams::CumSum { outer_count, dim_size, inner_count, .. } => {
-                    (*outer_count, *dim_size, *inner_count)
+            let (outer, dim_size, inner, axis) = match params {
+                OpParams::CumSum { outer_count, dim_size, inner_count, axis } => {
+                    (*outer_count, *dim_size, *inner_count, *axis)
                 }
                 other => {
                     return Err(Error::Msg(format!(
@@ -960,10 +974,11 @@ macro_rules! cuda_cumsum_baracuda_wrapper {
                     )).bt());
                 }
             };
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, outer, dim_size, inner)?;
+            let result = $baracuda_fn(src_cuda, layout, axis, outer, dim_size, inner)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1819,10 +1834,13 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     // ----- Concat — N-ary via chained baracuda concat2.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    table.register(Concat, &u(f32),  cuda, concat::concat_f32);
-    table.register(Concat, &u(f64),  cuda, concat::concat_f64);
-    table.register(Concat, &u(f16),  cuda, concat::concat_f16);
-    table.register(Concat, &u(bf16), cuda, concat::concat_bf16);
+    // Wrapper picks per-call: stride-aware path when input layouts are
+    // supplied (the executor's default), synthetic rank-3 reshape
+    // otherwise.
+    table.register_with_caps(Concat, &u(f32),  cuda, concat::concat_f32,  strided);
+    table.register_with_caps(Concat, &u(f64),  cuda, concat::concat_f64,  strided);
+    table.register_with_caps(Concat, &u(f16),  cuda, concat::concat_f16,  strided);
+    table.register_with_caps(Concat, &u(bf16), cuda, concat::concat_bf16, strided);
 
     // ----- WriteSlice — in-place rectangular slab assign (alpha.29).
     // Byte-width-keyed kernel (b1/b2/b4/b8); per-dtype entries just
@@ -1863,24 +1881,26 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // ----- Flip — single-axis reverse. 4 float dtypes; integer dtypes
     // (u8/u32) parked until baracuda extends the symbol set (today's
     // CPU set covers u8/u32 via the dtype-agnostic byte-level kernel).
-    table.register(Flip, &u(f32),  cuda, flip::flip_f32);
-    table.register(Flip, &u(f64),  cuda, flip::flip_f64);
-    table.register(Flip, &u(f16),  cuda, flip::flip_f16);
-    table.register(Flip, &u(bf16), cuda, flip::flip_bf16);
+    // Wrapper picks contig (rank-3 reshape) vs strided (rank-N walk
+    // via the axis from OpParams::Flip).
+    table.register_with_caps(Flip, &u(f32),  cuda, flip::flip_f32,  strided);
+    table.register_with_caps(Flip, &u(f64),  cuda, flip::flip_f64,  strided);
+    table.register_with_caps(Flip, &u(f16),  cuda, flip::flip_f16,  strided);
+    table.register_with_caps(Flip, &u(bf16), cuda, flip::flip_bf16, strided);
 
     // ----- Roll — single-axis cyclic shift. Same 4 float dtypes as Flip.
-    table.register(Roll, &u(f32),  cuda, roll::roll_f32);
-    table.register(Roll, &u(f64),  cuda, roll::roll_f64);
-    table.register(Roll, &u(f16),  cuda, roll::roll_f16);
-    table.register(Roll, &u(bf16), cuda, roll::roll_bf16);
+    table.register_with_caps(Roll, &u(f32),  cuda, roll::roll_f32,  strided);
+    table.register_with_caps(Roll, &u(f64),  cuda, roll::roll_f64,  strided);
+    table.register_with_caps(Roll, &u(f16),  cuda, roll::roll_f16,  strided);
+    table.register_with_caps(Roll, &u(bf16), cuda, roll::roll_bf16, strided);
 
     // ----- CumSum — single-axis inclusive prefix sum. 4 float dtypes.
     // Backward (reverse-cumsum) is expressed upstream as Flip → CumSum →
     // Flip, so the kernel itself never needs the reverse flag.
-    table.register(CumSum, &u(f32),  cuda, cumsum::cumsum_f32);
-    table.register(CumSum, &u(f64),  cuda, cumsum::cumsum_f64);
-    table.register(CumSum, &u(f16),  cuda, cumsum::cumsum_f16);
-    table.register(CumSum, &u(bf16), cuda, cumsum::cumsum_bf16);
+    table.register_with_caps(CumSum, &u(f32),  cuda, cumsum::cumsum_f32,  strided);
+    table.register_with_caps(CumSum, &u(f64),  cuda, cumsum::cumsum_f64,  strided);
+    table.register_with_caps(CumSum, &u(f16),  cuda, cumsum::cumsum_f16,  strided);
+    table.register_with_caps(CumSum, &u(bf16), cuda, cumsum::cumsum_bf16, strided);
 
     // ----- Pad / PadBackward — multi-dim padding.
     // Forward: Constant/Reflect/Replicate per dtype (Circular parked
