@@ -113,7 +113,7 @@ macro_rules! cuda_rope_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -141,10 +141,11 @@ macro_rules! cuda_rope_baracuda_wrapper {
                     .bt());
                 }
             };
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, outer_count, seq, head_dim)?;
+            let result = $baracuda_fn(src_cuda, layout, outer_count, seq, head_dim)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1722,10 +1723,16 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(LayerNormLastDim, &u(f64),  cuda, norm::layer_f64,  strided);
 
     // ----- Attention — RoPE -----
-    table.register(Rope, &u(f32),  cuda, attention::rope_f32);
-    table.register(Rope, &u(f16),  cuda, attention::rope_f16);
-    table.register(Rope, &u(bf16), cuda, attention::rope_bf16);
-    table.register(Rope, &u(f64),  cuda, attention::rope_f64);
+    // Baracuda alpha.31 ships a RoPE strided sibling; the wrapper
+    // picks contig vs strided per-call and enforces head_dim
+    // (innermost) stride == 1 on the strided path (the pair-dim
+    // constraint baracuda's plan layer would enforce). BW kernels
+    // exist in alpha.31 but stay unregistered until Fuel-IR grows
+    // a RopeBackward OpKind.
+    table.register_with_caps(Rope, &u(f32),  cuda, attention::rope_f32,  strided);
+    table.register_with_caps(Rope, &u(f16),  cuda, attention::rope_f16,  strided);
+    table.register_with_caps(Rope, &u(bf16), cuda, attention::rope_bf16, strided);
+    table.register_with_caps(Rope, &u(f64),  cuda, attention::rope_f64,  strided);
 
     // ----- Softmax + LogSoftmax LastDim -----
     // Wrapper now passes the input's true rank-N shape + strides to
