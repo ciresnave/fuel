@@ -382,10 +382,17 @@ have no Fuel OpKind to dispatch against, so the Fuel-side wrappers are
 deferred until Fuel-IR grows the matching OpKinds. The kernels are
 ready when consumers come.
 
-- **PowI BW** (4 dtypes × contig + strided) — needs `PowIElementwiseBackward`
-  OpKind. Wrapper code exists (commit `8c00e6d0` in `baracuda/powi.rs`'s
-  `powi_backward_*` family); just unregistered.
+- ~~PowI BW~~ — **shipped** in commit `e4c5e8cc`. Added
+  `OpKind::PowIElementwiseBackward` + `FusedOps::POWI_BACKWARD` +
+  `FusedOpParams::PowIBackward { exp }` + per-dtype CPU byte kernels
+  + CUDA dispatch wrappers (baracuda::powi::powi_backward_*).
+  Autograd now emits a single fused node instead of the 3-primitive
+  PowI(n-1) → MulScalar → Mul chain.
 - **RoPE BW** (4 dtypes × contig + strided) — needs `RopeBackward` OpKind.
+  Note: today's autograd already emits `Op::Fused(ROPE, Rope { ... })`
+  with negated sin for the backward (compute-identical to a dedicated
+  BW kernel), so this would be a dispatch alias rather than a perf win
+  — lower priority than PowI BW was.
 - **SDPA FW + BW** (4 dtypes × contig + strided each) — needs `Sdpa` +
   `SdpaBackward` OpKinds. SDPA BW + GQA-broadcast (any K/V stride 0 on
   head axis) is `Error::Unsupported` per the baracuda team; Fuel-side
