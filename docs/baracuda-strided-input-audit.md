@@ -397,22 +397,55 @@ ready when consumers come.
   `SdpaBackward` OpKinds. SDPA BW + GQA-broadcast (any K/V stride 0 on
   head axis) is `Error::Unsupported` per the baracuda team; Fuel-side
   guard lives in the future SDPA BW wrapper.
-- **Flash SDPA BW** (4 dtypes contig) — sm_89 Flash strided sibling is
-  deferred upstream (existing Phase 10 Flash kernel hardcodes offsets);
-  Fuel's Flash path stays contig-only when it eventually wires.
+- **Flash SDPA FW** — sm_89 strided FW **shipped in alpha.34** (commit
+  `f2cb1f05` bump). Two new FFI symbols (f16 + bf16). GQA broadcast via
+  stride 0 on head axis works. Constraint: head_dim must stay stride
+  == 1. Fuel's Flash path remains shelved at the FFI level (no
+  `OpKind::FlashAttn` consumer wired yet); when wired, it can stop
+  Contiguizing transposed Q / GQA-broadcast K/V before launch.
+- **Flash SDPA sm_89 BW** (4 dtypes contig) — still routes through
+  sm_80 baseline per alpha.34 release notes; native sm_89 Flash BW
+  cp.async + tensor-cores is future work upstream.
+- ~~SDPA BW + GQA broadcast~~ — **shipped in alpha.34** (commit
+  `f2cb1f05` bump). Template-bool switch routes dK/dV writes through
+  `baracuda::atomic::add<T>` when stride detection finds zero head-axis
+  stride. **Caller contract:** pre-zero dK + dV before launch
+  (atomicAdd accumulates into them; uninitialized memory silently
+  corrupts the result). Fuel-side will honor this when the
+  `OpKind::SdpaBackward` consumer lands.
 
-### Baracuda-side carry-forward
+### Baracuda-side carry-forward (as of alpha.34)
 
-Per the alpha.31 release notes:
+Per the alpha.34 release notes:
 
-- Flash SDPA sm_89 strided sibling (deferred upstream).
-- SDPA BW GQA atomicAdd path (would need a design pass).
+- ~~Flash SDPA sm_89 strided FW~~ — **shipped in alpha.34**.
+- ~~SDPA BW GQA atomicAdd path~~ — **shipped in alpha.34**.
+- Flash SDPA sm_89 BW — still sm_80 baseline; native sm_89 Flash BW
+  is future work.
+- Flash SDPA sm_89 mask support (FW lacks mask param in either contig
+  or strided form) — separate feature.
+- FractionalMaxPool exact PyTorch formula — current is approximation;
+  bit-exact is future work.
+- LpPool3d — current scope is 1d/2d; trivially extendable when
+  needed.
 - MMVQ alignment guard for k-quant formats requiring alignment > 1 —
   **Fuel-side `debug_assert!` shipped in commit `432bd03c`** for Q4_K
   (16-byte); other K-quants currently default to align=1 in the Fuel
   wrapper. If baracuda confirms additional formats need alignment,
   bump the per-format `w_align_bytes` constant in
   `fuel-cuda-backend/src/baracuda/gguf.rs`.
+
+### alpha.33 pool family — Fuel-side adoption status
+
+alpha.33 shipped 48 new pool-family FFI symbols (Adaptive{Avg,Max}Pool
+{1,2,3}d bit-exact, LpPool{1,2}d, FractionalMaxPool{2,3}d). **None
+are wired on Fuel today** — Fuel's existing `OpKind::AvgPool2D` /
+`OpKind::MaxPool2D` use `fuel-cuda-kernels::Pool2D` directly (not
+baracuda), and Fuel has no OpKinds for adaptive / Lp / fractional
+pool variants. The alpha.33 kernels sit on the shelf for whenever
+those OpKinds are added. Breaking changes flagged in the release
+notes (`LpPool{1,2}dDescriptor.ceil_mode: bool`) do not affect Fuel
+because Fuel has zero call sites.
 
 ## Recommended next steps
 
