@@ -512,7 +512,7 @@ macro_rules! cuda_powi_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -530,10 +530,11 @@ macro_rules! cuda_powi_baracuda_wrapper {
                     )).bt());
                 }
             };
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, exp)?;
+            let result = $baracuda_fn(src_cuda, layout, exp)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -773,7 +774,7 @@ macro_rules! cuda_triangular_baracuda_wrapper {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
+            layouts: &[Layout],
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
@@ -793,10 +794,11 @@ macro_rules! cuda_triangular_baracuda_wrapper {
                     )).bt());
                 }
             };
+            let layout = layouts.first();
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, batch, rows, cols, diag)?;
+            let result = $baracuda_fn(src_cuda, layout, batch, rows, cols, diag)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -1790,10 +1792,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
 
     // ----- PowI — integer-exponent power (alpha.28).
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    table.register(PowIElementwise, &u(f32),  cuda, powi::powi_f32);
-    table.register(PowIElementwise, &u(f64),  cuda, powi::powi_f64);
-    table.register(PowIElementwise, &u(f16),  cuda, powi::powi_f16);
-    table.register(PowIElementwise, &u(bf16), cuda, powi::powi_bf16);
+    // Baracuda alpha.31 ships strided FW siblings; the wrapper picks
+    // contig vs strided per-call. BW kernels also exist in alpha.31
+    // (baracuda::powi::powi_backward_*) but stay unregistered until
+    // Fuel-IR grows a PowIElementwiseBackward OpKind.
+    table.register_with_caps(PowIElementwise, &u(f32),  cuda, powi::powi_f32,  strided);
+    table.register_with_caps(PowIElementwise, &u(f64),  cuda, powi::powi_f64,  strided);
+    table.register_with_caps(PowIElementwise, &u(f16),  cuda, powi::powi_f16,  strided);
+    table.register_with_caps(PowIElementwise, &u(bf16), cuda, powi::powi_bf16, strided);
 
     // ----- Clamp — scalar bounds → broadcast-tensor ternary clamp.
     // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
@@ -1830,19 +1836,22 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // float + integer subset that the CPU path already covers.
     // bool is parked until Fuel adds Bool storage (CPU coverage today
     // also skips Bool — the kernel exists if/when needed).
-    table.register(Triu, &u(f32),  cuda, triangular::triu_f32);
-    table.register(Triu, &u(f64),  cuda, triangular::triu_f64);
-    table.register(Triu, &u(f16),  cuda, triangular::triu_f16);
-    table.register(Triu, &u(bf16), cuda, triangular::triu_bf16);
-    table.register(Triu, &u(DType::I32), cuda, triangular::triu_i32);
-    table.register(Triu, &u(DType::I64), cuda, triangular::triu_i64);
+    // Baracuda alpha.31 ships strided siblings for triu/tril. Wrapper
+    // picks contig vs strided per-call; BW reuses FW (mask self-adjoint,
+    // Phase 13.4).
+    table.register_with_caps(Triu, &u(f32),  cuda, triangular::triu_f32,  strided);
+    table.register_with_caps(Triu, &u(f64),  cuda, triangular::triu_f64,  strided);
+    table.register_with_caps(Triu, &u(f16),  cuda, triangular::triu_f16,  strided);
+    table.register_with_caps(Triu, &u(bf16), cuda, triangular::triu_bf16, strided);
+    table.register_with_caps(Triu, &u(DType::I32), cuda, triangular::triu_i32, strided);
+    table.register_with_caps(Triu, &u(DType::I64), cuda, triangular::triu_i64, strided);
 
-    table.register(Tril, &u(f32),  cuda, triangular::tril_f32);
-    table.register(Tril, &u(f64),  cuda, triangular::tril_f64);
-    table.register(Tril, &u(f16),  cuda, triangular::tril_f16);
-    table.register(Tril, &u(bf16), cuda, triangular::tril_bf16);
-    table.register(Tril, &u(DType::I32), cuda, triangular::tril_i32);
-    table.register(Tril, &u(DType::I64), cuda, triangular::tril_i64);
+    table.register_with_caps(Tril, &u(f32),  cuda, triangular::tril_f32,  strided);
+    table.register_with_caps(Tril, &u(f64),  cuda, triangular::tril_f64,  strided);
+    table.register_with_caps(Tril, &u(f16),  cuda, triangular::tril_f16,  strided);
+    table.register_with_caps(Tril, &u(bf16), cuda, triangular::tril_bf16, strided);
+    table.register_with_caps(Tril, &u(DType::I32), cuda, triangular::tril_i32, strided);
+    table.register_with_caps(Tril, &u(DType::I64), cuda, triangular::tril_i64, strided);
 
     // ----- Flip — single-axis reverse. 4 float dtypes; integer dtypes
     // (u8/u32) parked until baracuda extends the symbol set (today's
