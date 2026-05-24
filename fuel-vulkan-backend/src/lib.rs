@@ -3672,35 +3672,61 @@ impl VulkanBackend {
         Ok(())
     }
 
-    /// Flip along one axis. (outer, dim_size, inner) flat view.
+    /// Flip along one axis. Walks the input's true rank-N layout
+    /// (padded to rank 4 with leading 1s); output is contig over the
+    /// same shape. `axis` is the original dim index in `layout`.
     pub fn flip_bytes(
         &self,
         byte_width: usize,
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
-        outer_count: usize,
-        dim_size: usize,
-        inner_count: usize,
+        layout: &Layout,
+        axis: usize,
     ) -> fuel_core_types::Result<()> {
-        let total = outer_count * dim_size * inner_count;
-        let need_bytes = total * byte_width;
-        if input.len_bytes() < need_bytes {
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        if rank == 0 {
+            fuel_core_types::bail!("flip_bytes: rank-0 input not supported");
+        }
+        if rank > 4 {
+            fuel_core_types::bail!("flip_bytes: rank {rank} > 4");
+        }
+        if axis >= rank {
             fuel_core_types::bail!(
-                "flip_bytes: input {} bytes < required {need_bytes}", input.len_bytes(),
+                "flip_bytes: axis {axis} out of range for rank {rank}",
             );
         }
+        let total: usize = layout.shape().elem_count();
+        let need_bytes = total * byte_width;
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "flip_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
             );
         }
+
+        // Pad shape + strides to rank 4 (leading dims = 1 / stride = 0).
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        // axis is indexed in the rank-N layout; remap to the rank-4 slot.
+        let axis_padded = (axis + pad) as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct FParams { outer_count: u32, dim_size: u32, inner_count: u32 }
+        struct FParams {
+            out_size: u32, axis: u32, _pad0: u32, _pad1: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
         let p = FParams {
-            outer_count: outer_count as u32,
-            dim_size: dim_size as u32,
-            inner_count: inner_count as u32,
+            out_size: total as u32, axis: axis_padded, _pad0: 0, _pad1: 0,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
         };
+
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
             "flip_bytes: input is host-evicted; fault back first".into(),
         ))?;
@@ -3708,6 +3734,7 @@ impl VulkanBackend {
             "flip_bytes: output is host-evicted; fault back first".into(),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<FParams>() as u64;
 
         let (pipeline, pipe_layout) = match byte_width {
             2 => (&self.pipelines.flip_b2_pipeline, &self.pipelines.flip_b2_layout),
@@ -3721,7 +3748,7 @@ impl VulkanBackend {
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 12);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -3734,50 +3761,74 @@ impl VulkanBackend {
         Ok(())
     }
 
-    /// Cyclic shift along one axis. `shift` is normalized into
-    /// `(-dim_size, dim_size)` by the caller before dispatch.
+    /// Cyclic shift along one axis. Walks the input's true rank-N
+    /// layout (padded to rank 4 with leading 1s); output is contig
+    /// over the same shape. `axis` is the original dim index in
+    /// `layout`; `shift` is signed and normalized into the unsigned
+    /// `offset = (dim_size - shift_norm) mod dim_size` form here.
     pub fn roll_bytes(
         &self,
         byte_width: usize,
         input: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
-        outer_count: usize,
-        dim_size: usize,
-        inner_count: usize,
+        layout: &Layout,
+        axis: usize,
         shift: i64,
     ) -> fuel_core_types::Result<()> {
-        if dim_size == 0 {
-            fuel_core_types::bail!("roll_bytes: dim_size must be > 0");
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        if rank == 0 {
+            fuel_core_types::bail!("roll_bytes: rank-0 input not supported");
         }
-        let total = outer_count * dim_size * inner_count;
-        let need_bytes = total * byte_width;
-        if input.len_bytes() < need_bytes {
+        if rank > 4 {
+            fuel_core_types::bail!("roll_bytes: rank {rank} > 4");
+        }
+        if axis >= rank {
             fuel_core_types::bail!(
-                "roll_bytes: input {} bytes < required {need_bytes}", input.len_bytes(),
+                "roll_bytes: axis {axis} out of range for rank {rank}",
             );
         }
+        let dim_size = dims[axis];
+        if dim_size == 0 {
+            fuel_core_types::bail!("roll_bytes: dim_size at axis {axis} must be > 0");
+        }
+        let total: usize = layout.shape().elem_count();
+        let need_bytes = total * byte_width;
         if out.len_bytes() < need_bytes {
             fuel_core_types::bail!(
                 "roll_bytes: output {} bytes < required {need_bytes}", out.len_bytes(),
             );
         }
-        // Convert (j - shift) mod dim_size into (j + offset) mod dim_size
-        // so the kernel can stay entirely unsigned (HLSL/Slang's `%` on
-        // negative signed values is C-semantics-fine but the
-        // load-bitcast-sub chain through OpSRem is one more place a
-        // GPU driver can mis-fold; the unsigned formulation is
-        // simpler and matches the CPU reference behavior exactly).
+
+        // (j - shift) mod dim_size  →  (j + offset) mod dim_size to keep
+        // the kernel's `%` unsigned (avoids OpSRem-on-negative driver
+        // folding hazards; matches CPU reference exactly).
         let d = dim_size as i64;
         let shift_norm = ((shift % d) + d) % d;  // ∈ [0, dim_size)
         let offset = ((d - shift_norm) % d) as u32;
+
+        // Pad shape + strides to rank 4.
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let axis_padded = (axis + pad) as u32;
+
         #[repr(C)] #[derive(Clone, Copy)]
-        struct RParams { outer_count: u32, dim_size: u32, inner_count: u32, offset: u32 }
+        struct RParams {
+            out_size: u32, axis: u32, offset: u32, _pad: u32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
         let p = RParams {
-            outer_count: outer_count as u32,
-            dim_size: dim_size as u32,
-            inner_count: inner_count as u32,
-            offset,
+            out_size: total as u32, axis: axis_padded, offset, _pad: 0,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
         };
+
         let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
             "roll_bytes: input is host-evicted; fault back first".into(),
         ))?;
@@ -3785,6 +3836,7 @@ impl VulkanBackend {
             "roll_bytes: output is host-evicted; fault back first".into(),
         ))?;
         let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<RParams>() as u64;
 
         let (pipeline, pipe_layout) = match byte_width {
             2 => (&self.pipelines.roll_b2_pipeline, &self.pipelines.roll_b2_layout),
@@ -3798,7 +3850,7 @@ impl VulkanBackend {
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(

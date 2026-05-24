@@ -984,9 +984,9 @@ pub mod concat {
                 "vulkan_dispatch::concat::concat_f32: 0 inputs".to_string(),
             ).bt());
         }
-        let (outer_count, input_dim_sizes, inner_count) = match params {
-            OpParams::Concat { outer_count, input_dim_sizes, inner_count, .. } => {
-                (*outer_count, input_dim_sizes.clone(), *inner_count)
+        let (outer_count, input_dim_sizes, inner_count, dim) = match params {
+            OpParams::Concat { outer_count, input_dim_sizes, inner_count, axis } => {
+                (*outer_count, input_dim_sizes.clone(), *inner_count, *axis)
             }
             other => {
                 return Err(Error::Msg(format!(
@@ -1007,25 +1007,6 @@ pub mod concat {
                 layouts.len(), inputs.len(),
             )).bt());
         }
-        // Recover the concat dim: outer_count = prod(dims[..dim]).
-        let a_dims = layouts[0].shape().dims();
-        let mut acc = 1usize;
-        let mut dim_opt: Option<usize> = None;
-        for (i, d) in a_dims.iter().enumerate() {
-            if acc == outer_count {
-                dim_opt = Some(i);
-                break;
-            }
-            acc = acc.saturating_mul(*d);
-        }
-        let dim = dim_opt.or_else(|| {
-            if outer_count == 1 { Some(0) } else { None }
-        }).ok_or_else(|| {
-            Error::Msg(format!(
-                "vulkan_dispatch::concat::concat_f32: couldn't recover concat dim from \
-                 outer_count={outer_count} + a_dims={a_dims:?}",
-            )).bt()
-        })?;
 
         let n_inputs = inputs.len();
 
@@ -1091,9 +1072,12 @@ pub mod concat {
         })?.clone();
 
         // Helper: construct the layout for an intermediate whose
-        // concat-dim size is `cum_dim`.
+        // concat-dim size is `cum_dim`. Uses the first input's shape
+        // as the template (all inputs share every dim except the
+        // concat axis).
+        let template_dims: Vec<usize> = layouts[0].shape().dims().to_vec();
         let make_layout = |cum_dim: usize| -> Layout {
-            let mut dims = a_dims.to_vec();
+            let mut dims = template_dims.clone();
             dims[dim] = cum_dim;
             Layout::contiguous(Shape::from_dims(&dims))
         };
@@ -1470,7 +1454,7 @@ pub mod flip {
     pub fn flip(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
+        layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
         if inputs.len() != 1 || outputs.len() != 1 {
@@ -1479,10 +1463,8 @@ pub mod flip {
                 inputs.len(), outputs.len(),
             )).bt());
         }
-        let (outer_count, dim_size, inner_count) = match params {
-            OpParams::Flip { outer_count, dim_size, inner_count, .. } => {
-                (*outer_count, *dim_size, *inner_count)
-            }
+        let axis = match params {
+            OpParams::Flip { axis, .. } => *axis,
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flip::flip: expected OpParams::Flip, got {:?}",
@@ -1490,6 +1472,11 @@ pub mod flip {
                 )).bt());
             }
         };
+        let layout = layouts.first().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::flip::flip: Flip requires an input layout (layouts[0])".to_string(),
+            ).bt()
+        })?;
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
         let byte_width = byte_width_for_dtype("flip", in_guard.dtype)?;
@@ -1500,7 +1487,7 @@ pub mod flip {
             ).bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.flip_bytes(byte_width, a, out, outer_count, dim_size, inner_count)
+        backend.flip_bytes(byte_width, a, out, layout, axis)
     }
 }
 
@@ -1510,7 +1497,7 @@ pub mod roll {
     pub fn roll(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
+        layouts: &[Layout],
         params: &OpParams,
     ) -> Result<()> {
         if inputs.len() != 1 || outputs.len() != 1 {
@@ -1519,10 +1506,8 @@ pub mod roll {
                 inputs.len(), outputs.len(),
             )).bt());
         }
-        let (outer_count, dim_size, inner_count, shift) = match params {
-            OpParams::Roll { outer_count, dim_size, inner_count, shift, .. } => {
-                (*outer_count, *dim_size, *inner_count, *shift)
-            }
+        let (shift, axis) = match params {
+            OpParams::Roll { shift, axis, .. } => (*shift, *axis),
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::roll::roll: expected OpParams::Roll, got {:?}",
@@ -1530,6 +1515,11 @@ pub mod roll {
                 )).bt());
             }
         };
+        let layout = layouts.first().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::roll::roll: Roll requires an input layout (layouts[0])".to_string(),
+            ).bt()
+        })?;
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
         let byte_width = byte_width_for_dtype("roll", in_guard.dtype)?;
@@ -1540,7 +1530,7 @@ pub mod roll {
             ).bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.roll_bytes(byte_width, a, out, outer_count, dim_size, inner_count, shift)
+        backend.roll_bytes(byte_width, a, out, layout, axis, shift)
     }
 }
 
@@ -2071,18 +2061,22 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
 
-    // ----- Triu / Tril / Flip / Roll — pure byte-level (memcpy/mask).
-    // CONTIGUOUS-ONLY by design: flip_b4 / triu_b4 / tril_b4 / roll_b4
-    // view inputs as a flat (outer, dim_size, inner) 3-tuple and index
-    // via own-shape strides. Arbitrary layout strides would require
-    // a different decomposition; auto-Contiguize handles non-contiguous
-    // inputs upstream. -----
+    // ----- Triu / Tril — pure byte-level mask kernel (rank-3 reshape).
+    // CONTIGUOUS-ONLY by design: triu_b4 / tril_b4 view inputs as a
+    // flat (outer, dim_size, inner) 3-tuple. Arbitrary layout strides
+    // would require a different decomposition; auto-Contiguize handles
+    // non-contiguous inputs upstream.
+    //
+    // Flip / Roll — STRIDE-AWARE (alpha.31 sweep follow-up): the
+    // flip_b* / roll_b* kernels now walk rank-N + per-input strides
+    // with the axis from OpParams::{Flip, Roll}.axis. Output is contig
+    // over the input's shape.
     for &dt in &[DType::F32, DType::F16, DType::BF16, DType::F64,
                  DType::I32, DType::U32, DType::I64] {
         table.register_with_precision(OpKind::Triu, &u(dt), vk, triangular::triu, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::Tril, &u(dt), vk, triangular::tril, VULKAN_BYTE_LEVEL_PRECISION);
-        table.register_with_precision(OpKind::Flip, &u(dt), vk, flip::flip,       VULKAN_BYTE_LEVEL_PRECISION);
-        table.register_with_precision(OpKind::Roll, &u(dt), vk, roll::roll,       VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Flip, &u(dt), vk, flip::flip, strided, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Roll, &u(dt), vk, roll::roll, strided, VULKAN_BYTE_LEVEL_PRECISION);
     }
 
     // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32.
