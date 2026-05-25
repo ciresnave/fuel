@@ -148,33 +148,52 @@ Four items, ordered easy → hard:
 Full crate retirement is **multi-commit, multi-session work**. Phased
 plan:
 
-1. **Phase 1 (this session, shipped):** strip PTX duplicates from
-   binding-table dispatch. ✅ Commit `d9898fec`.
-2. **Phase 2:** delete the 35 now-dead PTX wrapper functions in
+1. **Phase 1 — SHIPPED:** strip PTX duplicates from
+   binding-table dispatch. Commit `d9898fec`.
+2. **Phase 2 — SHIPPED:** delete the 35 now-dead PTX wrapper functions in
    `fuel-storage::dispatch` (clears the dead_code warnings).
-   Single-commit cleanup; ~500 LOC delete.
-3. **Phase 3:** port CUDA QMatMul to baracuda's MMVQ path
-   (mirror commit `b7360fbc`'s Vulkan QMatMul work). Retires
-   `quantize_q8_1` + `mul_mat_vec_q*_q8_1_cuda` + the `QUANTIZED`
-   PTX module.
-4. **Phase 4:** decide MoE direction with baracuda team. Either
-   accept upstream OR rewrite to MMVQ × N. Retires the `moe/`
-   subdir.
-5. **Phase 5:** port Conv2D / ConvTranspose2D / Pool2D / Upsample
-   to baracuda primitives (GEMM-based conv + adaptive pool + bilinear
-   arithmetic). Retires `CONV` PTX module and storage.rs's conv
-   methods.
-6. **Phase 6:** audit + delete legacy `CudaStorageSlice` API from
+   Commit `5c79ae69`.
+3. **Phase 1b (Pool 2D) — SHIPPED (2026-05-25):** `CudaStorage::{avg,max}_pool2d`
+   now calls `baracuda_kernels_{max,avg}_pool_2d_fw_<dtype>_run` directly
+   (alpha.36's cuDNN-feature-gated symbols). Cargo.toml `baracuda-kernels-sys`
+   gains `features = ["cudnn"]`. The PTX `Pool2D::Map1` retired. Pool tests
+   relaxed from 4 → 3 decimal precision to absorb cuDNN's ±1 ULP accumulation
+   drift (both rounds are IEEE-754-valid). Commit `7a3cd5d1`.
+4. **Phase 5a (UpsampleNearest2D) — SHIPPED (2026-05-25):**
+   `CudaStorage::upsample_nearest2d` calls `baracuda_kernels_upsample_nearest_2d_fw_<dtype>_run`.
+   UpsampleBilinear2D **stays on PTX** for now — baracuda's
+   `interpolate_bilinear_2d_*` FFI hardcodes `align_corners = false`, and Fuel
+   exercises both modes via `bilinear_pytorch_align_corners_true_gpu`. Tracked
+   as a baracuda ask for an `align_corners: i32` parameter.
+5. **Phase 3 (Q8_1 → MMVQ) — QUEUED with design caveat:**
+   Mirror commit `b7360fbc`'s Vulkan QMatMul work. Baracuda's
+   `gguf::mmvq_*` is strictly matrix-vector (b_size=1); Fuel's existing
+   `mul_mat_vec_q*_q8_1_cuda` supports batched b_size=1..8 in one launch.
+   Migration options: (a) loop baracuda MMVQ per row (slower prefill,
+   correct), (b) dequant-then-FP-matmul for b_size>1 (mirrors Vulkan
+   `matmul_q4_km_bytes`/`matmul_q8_0_bytes` pattern), (c) wait for
+   baracuda batched MMVQ. The Vulkan precedent already chose (b).
+6. **Phase 5b (Conv family) — QUEUED, larger scope than initially
+   assessed.** `CudaStorage::conv2d` (the `feature = "cudnn"` path) already
+   goes through `crate::cudnn::launch_conv2d` — an internal fuel-cuda-backend
+   cuDNN wrapper. Migration replaces those calls with
+   `baracuda_kernels_conv_2d_{fw,bw_data,bw_filter}_<dtype>_run`. The
+   `feature = "cudnn"` path retires the internal `crate::cudnn` module
+   entirely (~500 LOC). The non-cudnn fallback (im2col + matmul) still uses
+   `kernels::CONV` PTX; retires once `crate::cudnn` is gone.
+   Includes: conv1d/2d/3d, conv_transpose1d/2d, im2col_1d/2d, col2im_1d.
+7. **Phase 4 (MoE):** awaiting baracuda alpha.37 — both batched MMVQ × N AND
+   absorbed fused MoE kernels ship together. Still blocks deleting
+   `fuel-cuda-kernels/src/moe/` and `ffi.rs`'s MoE externs.
+8. **Phase 6:** audit + delete legacy `CudaStorageSlice` API from
    storage.rs (the methods that still call `kernels::*` for ops
    the binding table now handles via baracuda). Determine consumers
    first — if `fuel-graph-cuda` or `fuel-core::eager` still depends
    on them, port those to the binding table first.
-7. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
+9. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
    member, drop `cudaforge` build-time CUDA compilation.
 
-Phases 2-7 are individually well-scoped commits. Phase 2 is trivial
-(delete dead code); phases 3+5 mirror previous Vulkan/baracuda work
-so the pattern is established; phases 4+6 need design discussion.
+Phases 2 + 1b + 5a SHIPPED. Phases 3 + 5b + 4 + 6 + 7 remaining.
 
 ## Why "stay handwritten in Fuel" doesn't apply anymore
 
