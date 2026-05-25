@@ -165,14 +165,28 @@ plan:
    `interpolate_bilinear_2d_*` FFI hardcodes `align_corners = false`, and Fuel
    exercises both modes via `bilinear_pytorch_align_corners_true_gpu`. Tracked
    as a baracuda ask for an `align_corners: i32` parameter.
-5. **Phase 3 (Q8_1 → MMVQ) — QUEUED with design caveat:**
-   Mirror commit `b7360fbc`'s Vulkan QMatMul work. Baracuda's
-   `gguf::mmvq_*` is strictly matrix-vector (b_size=1); Fuel's existing
-   `mul_mat_vec_q*_q8_1_cuda` supports batched b_size=1..8 in one launch.
-   Migration options: (a) loop baracuda MMVQ per row (slower prefill,
-   correct), (b) dequant-then-FP-matmul for b_size>1 (mirrors Vulkan
-   `matmul_q4_km_bytes`/`matmul_q8_0_bytes` pattern), (c) wait for
-   baracuda batched MMVQ. The Vulkan precedent already chose (b).
+5. **Phase 3 (Q8_1 → MMVQ) — SHIPPED (2026-05-25):**
+   Baracuda alpha.37 dropped batched MMVQ FFI symbols
+   `baracuda_kernels_mmvq_<fmt>_batched_run` (36 quant variants +
+   pure-FP siblings) that take fp32 activations directly (no Q8_1
+   staging) and degrade cleanly to no-routing batched MMVQ when
+   `n_experts=1 + top_k=1 + identity-permutation sorted_token_ids`.
+   Cargo.toml bumped alpha.36→.37 (cuDNN feature kept). Fuel's
+   `mul_mat_vec_via_q8_1` (b_size=1..8) + `mul_mat_via_q8_1`
+   (matrix-matrix) now collapse to one helper `baracuda_batched_mmvq`.
+   Tests: 4/4 fuel-cuda-backend `quantized::test` + 62/62
+   `fuel-core::quantized_tests --features cuda` green on RTX 4070.
+   Test fixture for `cuda_mm_q8_1_pad` bumped ncols 16→64 to satisfy
+   the type-0/1 batched-MMVQ `ncols ≥ 64` invariant noted by the
+   baracuda team (silent garbage at ncols<64 in batched mode).
+   Bit-stable diff4 across b_size buckets in `qmm_b_cuda` (was
+   `0 < diff4 < 1e-4` historically; now exactly 0 because baracuda
+   uses the same kernel for all m sizes).
+   Still using PTX: `quantize_q8_1` + `indexed_moe_forward_fused_q8_1_input`
+   (slated for Phase 4 MoE migration to baracuda's `moe_*` symbols);
+   `dequantize_f32`/`dequantize_f16`/`dequantize_mul_mat_vec` (the
+   FORCE_DMMV dequant fallback path). The QUANTIZED PTX module
+   doesn't fully retire until MoE Phase 4 lands.
 6. **Phase 5b (Conv family) — QUEUED, larger scope than initially
    assessed.** `CudaStorage::conv2d` (the `feature = "cudnn"` path) already
    goes through `crate::cudnn::launch_conv2d` — an internal fuel-cuda-backend

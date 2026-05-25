@@ -129,12 +129,15 @@ fn quantized_matmul(device: &Device) -> Result<()> {
             ]
         );
     } else if device.is_cuda() {
+        // Baracuda alpha.37 batched MMVQ takes fp32 activations directly
+        // (no Q8_1 staging), so accumulation order now matches Metal more
+        // closely than the prior PTX `mul_mat_q4_0` did.
         assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
-                [84866.0, 214045.0, 344676.0, 473707.0],
-                [213425.0, 604313.0, 1000431.0, 1387960.0],
-                [342030.0, 994630.0, 1656248.0, 2302250.0]
+                [84946.0, 214126.0, 344757.0, 473798.0],
+                [213458.0, 604350.0, 1000469.0, 1387990.0],
+                [341970.0, 994574.0, 1656181.0, 2302182.0]
             ]
         );
     } else {
@@ -194,12 +197,14 @@ fn quantized_matmul_neg(device: &Device) -> Result<()> {
             ]
         );
     } else if device.is_cuda() {
+        // Baracuda alpha.37 batched MMVQ takes fp32 activations directly
+        // (no Q8_1 staging); accumulation order shifts from prior PTX.
         assert_eq!(
             to_vec2_round(&res, 0)?,
             &[
-                [243740.0, -19762.0, -285476.0, -550498.0],
-                [23774.0, 21645.0, 19395.0, 18364.0],
-                [-196045.0, 63030.0, 324120.0, 587079.0]
+                [243666.0, -19714.0, -285433.0, -550453.0],
+                [23782.0, 21654.0, 19400.0, 18369.0],
+                [-196102.0, 63022.0, 324233.0, 587191.0]
             ]
         );
     } else {
@@ -246,13 +251,11 @@ fn qmm_batch(dev: &Device) -> Result<()> {
     let mm4 = rhs.forward(&lhs4)?;
     assert_eq!(mm4.shape().dims(), [12, 6]);
     let diff4 = (mm4.i(..6)? - &mm3)?.abs()?.sum_all()?.to_vec0::<f32>()?;
-    if dev.is_cuda() {
-        // We use a different kernel for sizes from 1 to 8 on cuda which explains
-        // the difference here.
-        assert!(0. < diff4 && diff4 < 1e-4)
-    } else {
-        assert_eq!(diff4, 0.0)
-    };
+    // Baracuda alpha.37 batched MMVQ uses the same kernel for all m sizes,
+    // so CUDA now produces bit-identical results across b_size buckets.
+    // The historical PTX b_size=1..8 vs b_size>8 split (diff ~ 1e-5) is gone.
+    assert_eq!(diff4, 0.0);
+    let _ = dev;
     let diff4 = (mm4.i(6..)? - &mm4.i(..6)?)?
         .abs()?
         .sum_all()?
