@@ -1077,44 +1077,105 @@ fn pool2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     Ok(out)
 }
 
-struct UpsampleNearest2D(usize, usize);
-impl Map1 for UpsampleNearest2D {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        dev: &CudaDevice,
-        inp_l: &Layout,
-    ) -> Result<CudaSlice<T>> {
-        // Input shape: (b_size, c, h, w)
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let ds = if dims.len() == 4 {
-            dims_strides_usize(inp_l)
-        } else {
-            fuel_core_types::bail!("unexpected input shape for upsample {dims:?}")
-        };
-        let (out_w, out_h) = (self.0, self.1);
-        let dst_el = out_w * out_h * dims[0] * dims[1];
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>("upsample_nearest2d"), &kernels::CONV)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let ds = dev.clone_htod(&ds)?;
-        let scale_w = dims[2] as f64 / out_w as f64;
-        let scale_h = dims[3] as f64 / out_h as f64;
-        let mut builder = func.builder();
-        barg!(builder, out_w);
-        barg!(builder, out_h);
-        barg!(builder, scale_w);
-        barg!(builder, scale_h);
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+// UpsampleNearest2D dispatch — baracuda alpha.36
+// `baracuda_kernels_upsample_nearest_2d_fw_<dtype>_run`. Bilinear
+// stays on PTX for now because baracuda's interpolate-bilinear FFI
+// hard-codes `align_corners = false`; Fuel exercises both modes via
+// `bilinear_pytorch_align_corners_true_gpu`. Tracked as a Phase 5
+// follow-up in `docs/fuel-cuda-kernels-retirement-audit.md`.
+
+fn upsample_nearest2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    dev: &CudaDevice,
+    inp_l: &Layout,
+    out_w: usize, // legacy param name; semantically controls output-H (see below)
+    out_h: usize, // legacy param name; semantically controls output-W (see below)
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    let dims = inp_l.shape().dims();
+    if dims.len() != 4 {
+        fuel_core_types::bail!("unexpected input shape for upsample {dims:?}")
     }
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda upsample_nearest_2d: expected contiguous NCHW input")
+    }
+    let (batch, channels, h_in, w_in) = (dims[0], dims[1], dims[2], dims[3]);
+    // Fuel's tensor-level upsample_nearest2d(target_h, target_w) reaches
+    // storage as (out_w, out_h), but the prior PTX kernel
+    // (`upsample_nearest2d` in fuel-cuda-kernels) interpreted the first
+    // parameter as the H-axis target and the second as the W-axis target
+    // (see `scale_w = dims[2] / out_w` in the historical implementation,
+    // where dims[2] is the H axis of an NCHW layout). Baracuda's FFI
+    // uses unambiguous NCHW (OH, OW), so we map the legacy
+    // (out_w → OH, out_h → OW).
+    let (target_h, target_w) = (out_w, out_h);
+    let dst_el = batch * channels * target_h * target_w;
+    // SAFETY: filled by the kernel below.
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let scratch = crate::baracuda::scratch::Workspace::alloc(dev, 0)?;
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (n, c, ih, iw, oh, ow) = (
+        batch as i32, channels as i32, h_in as i32, w_in as i32,
+        target_h as i32, target_w as i32,
+    );
+    let status = match dt {
+        // SAFETY: device-resident pointers + live stream.
+        DType::F32 => unsafe {
+            sys::baracuda_kernels_upsample_nearest_2d_fw_f32_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(), stream,
+            )
+        },
+        DType::F64 => unsafe {
+            sys::baracuda_kernels_upsample_nearest_2d_fw_f64_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(), stream,
+            )
+        },
+        DType::F16 => unsafe {
+            sys::baracuda_kernels_upsample_nearest_2d_fw_f16_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(), stream,
+            )
+        },
+        DType::BF16 => unsafe {
+            sys::baracuda_kernels_upsample_nearest_2d_fw_bf16_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(), stream,
+            )
+        },
+        other => fuel_core_types::bail!("baracuda upsample_nearest_2d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "upsample_nearest_2d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
+}
+
+fn upsample_nearest2d_dispatch(
+    slice: &CudaStorageSlice,
+    dev: &CudaDevice,
+    l: &Layout,
+    out_w: usize,
+    out_h: usize,
+) -> Result<CudaStorageSlice> {
+    Ok(match slice {
+        CudaStorageSlice::F32(s) => {
+            CudaStorageSlice::F32(upsample_nearest2d_baracuda(s, dev, l, out_w, out_h)?)
+        }
+        CudaStorageSlice::F64(s) => {
+            CudaStorageSlice::F64(upsample_nearest2d_baracuda(s, dev, l, out_w, out_h)?)
+        }
+        CudaStorageSlice::F16(s) => {
+            CudaStorageSlice::F16(upsample_nearest2d_baracuda(s, dev, l, out_w, out_h)?)
+        }
+        CudaStorageSlice::BF16(s) => {
+            CudaStorageSlice::BF16(upsample_nearest2d_baracuda(s, dev, l, out_w, out_h)?)
+        }
+        other => fuel_core_types::bail!("upsample_nearest_2d: unsupported storage variant {other:?}"),
+    })
 }
 
 struct UpsampleBilinear2D {
@@ -2681,7 +2742,7 @@ impl CudaStorage {
 
     pub fn upsample_nearest2d(&self, l: &Layout, out_w: usize, out_h: usize) -> Result<Self> {
         let device = self.device().clone();
-        let slice = UpsampleNearest2D(out_w, out_h).map(&self.slice, &device, l)?;
+        let slice = upsample_nearest2d_dispatch(&self.slice, &device, l, out_w, out_h)?;
         Ok(Self { slice, device })
     }
 
