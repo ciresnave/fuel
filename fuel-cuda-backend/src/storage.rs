@@ -959,61 +959,122 @@ impl Map2 for ConvTranspose2D<'_> {
     }
 }
 
+// Pool2D dispatch — baracuda alpha.36 cuDNN-backed Max/Avg pool 2D.
+// The PTX-based Pool2D Map1 impl retired with the Phase 1 cleanup of
+// the fuel-cuda-kernels retirement (audit doc at
+// `docs/fuel-cuda-kernels-retirement-audit.md`). The baracuda symbols
+// live behind the `cudnn` feature on `baracuda-kernels-sys`.
+
+#[derive(Copy, Clone)]
 enum PoolOp {
     Max,
     Avg,
 }
 
-struct Pool2D {
-    w_k: usize,
-    h_k: usize,
-    w_stride: usize,
-    h_stride: usize,
+fn pool2d_dispatch(
+    slice: &CudaStorageSlice,
+    dev: &CudaDevice,
+    l: &Layout,
+    k: (usize, usize),
+    stride: (usize, usize),
     op: PoolOp,
+) -> Result<CudaStorageSlice> {
+    Ok(match slice {
+        CudaStorageSlice::F32(s) => {
+            CudaStorageSlice::F32(pool2d_baracuda(s, dev, l, k, stride, op)?)
+        }
+        CudaStorageSlice::F64(s) => {
+            CudaStorageSlice::F64(pool2d_baracuda(s, dev, l, k, stride, op)?)
+        }
+        CudaStorageSlice::F16(s) => {
+            CudaStorageSlice::F16(pool2d_baracuda(s, dev, l, k, stride, op)?)
+        }
+        CudaStorageSlice::BF16(s) => {
+            CudaStorageSlice::BF16(pool2d_baracuda(s, dev, l, k, stride, op)?)
+        }
+        other => fuel_core_types::bail!("pool_2d: unsupported storage variant {other:?}"),
+    })
 }
 
-impl Map1 for Pool2D {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        dev: &CudaDevice,
-        inp_l: &Layout,
-    ) -> Result<CudaSlice<T>> {
-        // Input shape: (b_size, c, h, w)
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let ds = if dims.len() == 4 {
-            dims_strides_usize(inp_l)
-        } else {
-            fuel_core_types::bail!("unexpected input shape for pool {dims:?}")
-        };
-        let el = shape.elem_count();
-        let out_w = (dims[2] - self.w_k) / self.w_stride + 1;
-        let out_h = (dims[3] - self.h_k) / self.h_stride + 1;
-        let dst_el = out_w * out_h * dims[0] * dims[1];
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let kname = match self.op {
-            PoolOp::Max => "max_pool2d",
-            PoolOp::Avg => "avg_pool2d",
-        };
-        let func = dev.get_or_load_func(&kernel_name::<T>(kname), &kernels::CONV)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let ds = dev.clone_htod(&ds)?;
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, self.w_k);
-        barg!(builder, self.h_k);
-        barg!(builder, self.w_stride);
-        barg!(builder, self.h_stride);
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+fn pool2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    dev: &CudaDevice,
+    inp_l: &Layout,
+    kernel: (usize, usize),
+    stride: (usize, usize),
+    op: PoolOp,
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    let dims = inp_l.shape().dims();
+    if dims.len() != 4 {
+        fuel_core_types::bail!("unexpected input shape for pool {dims:?}")
     }
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda pool_2d: expected contiguous NCHW input")
+    }
+    let (batch, channels, h_in, w_in) = (dims[0], dims[1], dims[2], dims[3]);
+    let (kh, kw) = (kernel.1, kernel.0);
+    let (sh, sw) = (stride.1, stride.0);
+    let h_out = (h_in - kh) / sh + 1;
+    let w_out = (w_in - kw) / sw + 1;
+    let dst_el = batch * channels * h_out * w_out;
+    // SAFETY: output written by the cuDNN kernel below.
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (b, c, hi, wi, ho, wo) = (
+        batch as i32, channels as i32, h_in as i32, w_in as i32, h_out as i32, w_out as i32,
+    );
+    let (kh, kw, sh, sw) = (kh as i32, kw as i32, sh as i32, sw as i32);
+    let status = match (op, dt) {
+        // SAFETY: device-resident input/output buffers + live stream.
+        (PoolOp::Max, DType::F32) => unsafe {
+            sys::baracuda_kernels_max_pool_2d_fw_f32_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Max, DType::F64) => unsafe {
+            sys::baracuda_kernels_max_pool_2d_fw_f64_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Max, DType::F16) => unsafe {
+            sys::baracuda_kernels_max_pool_2d_fw_f16_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Max, DType::BF16) => unsafe {
+            sys::baracuda_kernels_max_pool_2d_fw_bf16_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Avg, DType::F32) => unsafe {
+            sys::baracuda_kernels_avg_pool_2d_fw_f32_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Avg, DType::F64) => unsafe {
+            sys::baracuda_kernels_avg_pool_2d_fw_f64_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Avg, DType::F16) => unsafe {
+            sys::baracuda_kernels_avg_pool_2d_fw_f16_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (PoolOp::Avg, DType::BF16) => unsafe {
+            sys::baracuda_kernels_avg_pool_2d_fw_bf16_run(
+                b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, 0, x_ptr, y_ptr, stream,
+            )
+        },
+        (_, other) => fuel_core_types::bail!("baracuda pool_2d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "pool_2d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
 }
 
 struct UpsampleNearest2D(usize, usize);
@@ -2604,27 +2665,13 @@ impl CudaStorage {
 
     pub fn avg_pool2d(&self, l: &Layout, k: (usize, usize), stride: (usize, usize)) -> Result<Self> {
         let device = self.device().clone();
-        let slice = Pool2D {
-            w_k: k.0,
-            h_k: k.1,
-            w_stride: stride.0,
-            h_stride: stride.1,
-            op: PoolOp::Avg,
-        }
-        .map(&self.slice, &device, l)?;
+        let slice = pool2d_dispatch(&self.slice, &device, l, k, stride, PoolOp::Avg)?;
         Ok(Self { slice, device })
     }
 
     pub fn max_pool2d(&self, l: &Layout, k: (usize, usize), stride: (usize, usize)) -> Result<Self> {
         let device = self.device().clone();
-        let slice = Pool2D {
-            w_k: k.0,
-            h_k: k.1,
-            w_stride: stride.0,
-            h_stride: stride.1,
-            op: PoolOp::Max,
-        }
-        .map(&self.slice, &device, l)?;
+        let slice = pool2d_dispatch(&self.slice, &device, l, k, stride, PoolOp::Max)?;
         Ok(Self { slice, device })
     }
 
