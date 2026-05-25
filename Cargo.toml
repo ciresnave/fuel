@@ -186,7 +186,7 @@ baracuda-cutlass       = { version = "0.0.1-alpha.37" }
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
 baracuda-kernels-types = { version = "0.0.1-alpha.37" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.37", features = ["cudnn"] }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.37", features = ["cudnn", "sm89"] }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 hf-hub = "0.5.0"
