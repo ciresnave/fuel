@@ -46,62 +46,9 @@ fn pad(p: usize, q: usize) -> usize {
     ceil_div(p, q) * q
 }
 
-fn quantize_q8_1(
-    src: &CudaView<f32>,
-    dst: &mut CudaSlice<u8>,
-    k: usize,
-    ky: usize,
-    dev: &CudaDevice,
-) -> Result<()> {
-    let kx_padded = pad(k, MATRIX_ROW_PADDING);
-    let num_blocks = ceil_div(kx_padded, CUDA_QUANTIZE_BLOCK_SIZE);
-
-    let total_rows = ky;
-    // Get Q8_1 metadata.
-    let q8_1_block_size = GgmlDType::Q8_1.block_size();
-    let q8_1_type_size = GgmlDType::Q8_1.type_size();
-
-    // Calculate the size of the output buffer in bytes.
-    let num_blocks_per_row = kx_padded / q8_1_block_size;
-    let dst_row_size_bytes = num_blocks_per_row * q8_1_type_size;
-
-    const CHUNK_SIZE: usize = 65535; // gridDim.y limit
-    let func = dev.get_or_load_func("quantize_q8_1", &fuel_cuda_kernels::QUANTIZED)?;
-
-    let mut rows_processed = 0;
-    while rows_processed < total_rows {
-        // --- calculate the number of rows for this chunk ---
-        let remaining_rows = total_rows - rows_processed;
-        // This is our gridDim.y, now <= 65535
-        let rows_in_chunk = std::cmp::min(CHUNK_SIZE, remaining_rows);
-
-        // --- slice the source (f32) tensor by elements ---
-        let src_start_elem = rows_processed * k;
-        let src_num_elems = rows_in_chunk * k;
-        let src_chunk = src.slice(src_start_elem..(src_start_elem + src_num_elems));
-
-        // --- slice the destination (u8) tensor by bytes ---
-        let dst_start_byte = rows_processed * dst_row_size_bytes;
-        let dst_num_bytes = rows_in_chunk * dst_row_size_bytes;
-        let dst_chunk = dst.slice(dst_start_byte..(dst_start_byte + dst_num_bytes));
-
-        let cfg = crate::LaunchConfig {
-            grid_dim: (num_blocks as u32, rows_in_chunk as u32, 1),
-            block_dim: (CUDA_QUANTIZE_BLOCK_SIZE as u32, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        let mut builder = func.builder();
-        builder.arg(&src_chunk);
-        builder.arg(&dst_chunk);
-        barg!(builder, k as i32, kx_padded as i32);
-        unsafe { builder.launch(cfg) }.w()?;
-
-        rows_processed += rows_in_chunk;
-    }
-
-    Ok(())
-}
+// `quantize_q8_1` PTX wrapper retired in Phase 4 — baracuda alpha.37's
+// batched MMVQ + MoE FFI consume fp32 activations directly, so the
+// staging quantize step is no longer needed anywhere in fuel-cuda-backend.
 
 fn dequantize_f32(
     data: &PaddedCudaSlice,
@@ -430,126 +377,21 @@ fn mul_mat_via_q8_1(
     baracuda_batched_mmvq(data, y, dtype, /* n_cols */ x_cols, /* n_rows */ x_rows, /* m_total */ y_cols, dev)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn indexed_moe_forward_fused_q8_1_input(
-    weight: &CudaView<u8>,
-    w_shape: &crate::Shape, //[num_experts, n, k]
-    w_dtype: GgmlDType,
-    input: &CudaSlice<f32>,
-    in_shape: &crate::Shape, //[batch, topk or 1, k]
-    ids: &CudaView<u32>,
-    idx_shape: &crate::Shape, //[batch, topk]
-    dev: &CudaDevice,
-) -> Result<(CudaStorage, crate::Shape)> {
-    let (_, n, k) = w_shape.dims3()?;
-    let batch = in_shape.dims()[0];
-    let input_dim1 = in_shape.dims()[1];
-
-    let topk = idx_shape.dims()[1];
-    assert!(batch == idx_shape.dims()[0], "batch dim not match!");
-
-    // Quantize input into q8_1.
-    let total_rows = batch * input_dim1;
-    let k_padded = pad(k, MATRIX_ROW_PADDING);
-    // Get Q8_1 metadata.
-    let q8_1_block_size = GgmlDType::Q8_1.block_size();
-    let q8_1_type_size = GgmlDType::Q8_1.type_size();
-
-    // Calculate the size of the output buffer in bytes.
-    let num_blocks_per_row = k_padded / q8_1_block_size;
-    let dst_row_size_bytes = num_blocks_per_row * q8_1_type_size;
-    let y_size_in_bytes = total_rows * dst_row_size_bytes;
-    let mut input_quant = dev.alloc_zeros::<u8>(y_size_in_bytes)?;
-
-    let input_view = input.slice(0..input.len());
-    quantize_q8_1(&input_view, &mut input_quant, k, total_rows, dev)?;
-
-    // output buffer
-    let outsize = batch * topk * n;
-    let out = dev.alloc_zeros::<f32>(outsize)?;
-
-    let kernel_name = match w_dtype {
-        GgmlDType::Q2K => "indexed_moe_forward_q2k_q8_1",
-        GgmlDType::Q3K => "indexed_moe_forward_q3k_q8_1",
-        GgmlDType::Q4K => "indexed_moe_forward_q4k_q8_1",
-        GgmlDType::Q5K => "indexed_moe_forward_q5k_q8_1",
-        GgmlDType::Q6K => "indexed_moe_forward_q6k_q8_1",
-        GgmlDType::Q8_0 => "indexed_moe_forward_q8_0_q8_1",
-        _ => fuel_core_types::bail!("unsupported dtype for indexed_moe_forward {w_dtype:?}"),
-    };
-    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
-    let (nblocks, nwarps) = (n as u32, 4);
-    let cfg = crate::LaunchConfig {
-        grid_dim: (nblocks, batch as u32, topk as u32),
-        block_dim: (WARP_SIZE as u32, nwarps, 1),
-        shared_mem_bytes: 0,
-    };
-
-    let mut builder = func.builder();
-    builder.arg(weight);
-    builder.arg(&input_quant);
-    builder.arg(ids);
-    builder.arg(&out);
-
-    barg!(
-        builder,
-        n as i32,
-        k as i32,
-        batch as i32,
-        topk as i32,
-        k_padded as i32,
-        input_dim1 as i32
-    );
-    unsafe { builder.launch(cfg) }.w()?;
-
-    let mut out_shape = in_shape.dims().to_vec();
-    out_shape.pop();
-    out_shape.push(n);
-    out_shape[1] = topk;
-    Ok((
-        CudaStorage::wrap_cuda_slice(out, dev.clone()),
-        out_shape.into(),
-    ))
-}
+// `indexed_moe_forward_fused_q8_1_input` and `QCudaStorage::indexed_moe_forward`
+// were retired in Phase 4 of the fuel-cuda-kernels retirement (2026-05-25).
+// The PTX kernel that backed them (`indexed_moe_forward_*_q8_1` in
+// `fuel-cuda-kernels/src/quantized.cu`) is gone alongside the `moe/` PTX
+// directory. There are no production callers — the public MoE GEMM
+// surface is `fuel_nn::moe_gemm` / `fuel_nn::moe_gemm_gguf`, which now
+// drive baracuda alpha.37 directly. If a future caller needs the
+// pre-sorted-routing variant, it should call
+// `baracuda_kernels_moe_scalar_gguf_run` with a sorting prelude (same
+// pattern as `baracuda-kernels/tests/moe_ffi_direct_smoke.rs`).
+//
+// The default `DynQuantizedStorage::indexed_moe_forward` trait method
+// returns an unsupported-backend error, which is the new behaviour.
 
 impl QCudaStorage {
-    pub fn indexed_moe_forward(
-        &self,
-        self_shape: &crate::Shape, //[num_experts, n, k]
-        input: &CudaStorage,       //[batch, topk or 1, k]
-        input_l: &crate::Layout,
-        ids: &CudaStorage, //[batch, topk]
-        ids_l: &crate::Layout,
-    ) -> Result<(CudaStorage, crate::Shape)> {
-        if matches!(
-            self.dtype(),
-            GgmlDType::Q8_0
-                | GgmlDType::Q2K
-                | GgmlDType::Q3K
-                | GgmlDType::Q4K
-                | GgmlDType::Q5K
-                | GgmlDType::Q6K
-        ) {
-            let input_storage = input.as_cuda_slice::<f32>()?;
-            let ids_storage = ids.as_cuda_slice::<u32>()?;
-            indexed_moe_forward_fused_q8_1_input(
-                &self.data.inner.slice(0..self.data.inner.len()),
-                self_shape, //[num_experts, n, k]
-                self.dtype(),
-                input_storage,
-                input_l.shape(), //[batch, topk or 1, k]
-                &ids_storage.slice(0..ids_storage.len()),
-                ids_l.shape(), //[batch, topk]
-                &self.device,
-            )
-        } else {
-            fuel_core_types::bail!(
-                "The given quantized dtype {:?} is not supported for indexed_moe_forward!",
-                self.dtype()
-            );
-        }
-    }
-
     pub fn zeros(device: &CudaDevice, el_count: usize, dtype: GgmlDType) -> Result<Self> {
         let size_in_bytes = ceil_div(el_count, dtype.block_size()) * dtype.type_size();
         let padded_size_in_bytes =
@@ -914,30 +756,11 @@ impl DynQuantizedStorage for QCudaStorage {
         let (s, sh) = QCudaStorage::fwd(self, self_shape, cuda, layout)?;
         Ok((Box::new(s), sh))
     }
-    fn indexed_moe_forward(
-        &self,
-        self_shape: &crate::Shape,
-        input: &dyn DynBackendStorage,
-        input_layout: &crate::Layout,
-        ids: &dyn DynBackendStorage,
-        ids_layout: &crate::Layout,
-    ) -> Result<(Box<dyn DynBackendStorage>, crate::Shape)> {
-        let input_cuda = input.as_any().downcast_ref::<CudaStorage>().ok_or_else(|| {
-            crate::Error::Msg("indexed_moe_forward: expected cuda input".into()).bt()
-        })?;
-        let ids_cuda = ids.as_any().downcast_ref::<CudaStorage>().ok_or_else(|| {
-            crate::Error::Msg("indexed_moe_forward: expected cuda ids".into()).bt()
-        })?;
-        let (s, sh) = QCudaStorage::indexed_moe_forward(
-            self,
-            self_shape,
-            input_cuda,
-            input_layout,
-            ids_cuda,
-            ids_layout,
-        )?;
-        Ok((Box::new(s), sh))
-    }
+    // `indexed_moe_forward` trait override removed in Phase 4 retirement;
+    // the default in `DynQuantizedStorage` returns an unsupported-backend
+    // error. Callers should use `fuel_nn::moe_gemm_gguf` (baracuda-backed)
+    // or call `baracuda_kernels_moe_scalar_gguf_run` directly with a
+    // sorting prelude when pre-routed inputs are required.
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -963,19 +786,10 @@ impl QuantizedDeviceKernels for CudaDevice {
 mod test {
     use super::*;
 
-    #[test]
-    fn cuda_quantize_q8_1() -> Result<()> {
-        let dev = CudaDevice::new(0)?;
-        let el = 256;
-        let el_padded = pad(el, MATRIX_ROW_PADDING);
-        let y_size_in_bytes =
-            el_padded * GgmlDType::Q8_1.type_size() / GgmlDType::Q8_1.block_size();
-        let mut y_q8_1 = unsafe { dev.alloc::<u8>(y_size_in_bytes)? };
-        let vs: Vec<f32> = (0..el).map(|v| v as f32).collect();
-        let y = dev.clone_htod(&vs)?;
-        quantize_q8_1(&y.as_slice(), &mut y_q8_1, el, 1, &dev)?;
-        Ok(())
-    }
+    // `cuda_quantize_q8_1` test was retired alongside the
+    // `quantize_q8_1` PTX function in Phase 4 — there are no longer any
+    // callers of the Q8_1 staging path (baracuda's batched MMVQ + MoE
+    // FFI take f32 activations directly).
 
     fn close_rel(actual: f32, reference: f32, rel_tol: f32, label: &str) {
         let err = (actual - reference).abs() / reference.abs();

@@ -196,9 +196,41 @@ plan:
    entirely (~500 LOC). The non-cudnn fallback (im2col + matmul) still uses
    `kernels::CONV` PTX; retires once `crate::cudnn` is gone.
    Includes: conv1d/2d/3d, conv_transpose1d/2d, im2col_1d/2d, col2im_1d.
-7. **Phase 4 (MoE):** awaiting baracuda alpha.37 — both batched MMVQ × N AND
-   absorbed fused MoE kernels ship together. Still blocks deleting
-   `fuel-cuda-kernels/src/moe/` and `ffi.rs`'s MoE externs.
+7. **Phase 4 (MoE) — SHIPPED (2026-05-25):**
+   Baracuda alpha.37 dropped 5 typed MoE FFI symbols matching Fuel's
+   3 catch-all symbols 1:1 (per the Phase 20.2 Fuel-replacement
+   contract): `baracuda_kernels_moe_{wmma_f16,wmma_bf16,scalar_gguf,
+   wmma_gguf_f16,wmma_gguf_bf16}_run`. Activation dtype collapsed into
+   the symbol name (project convention); `(workspace, workspace_bytes)`
+   pair added before `stream`; otherwise 1:1 parameter mapping.
+   Fuel-side changes:
+   - Cargo.toml: `baracuda-kernels-sys` adds `sm89` feature (RTX 4070);
+     MoE symbols are `#[cfg(any(feature = "sm80", "sm89", "sm90a"))]`.
+   - `fuel-nn::moe_gemm` (wmma) and `fuel-nn::moe_gemm_gguf` (scalar +
+     wmma-gguf) rewrote to call baracuda symbols directly. Two
+     pre-existing `storage_and_layout().0` → `storage_and_layout()?.0`
+     fixes (this file had never compiled with `--features cuda` enabled
+     in CI).
+   - Fuel-nn Cargo.toml: `cuda` feature adds `dep:baracuda-kernels-sys`.
+   - `fuel-cuda-backend::quantized::indexed_moe_forward` +
+     `indexed_moe_forward_fused_q8_1_input` retired (no production
+     callers; trait method falls through to default error response).
+   - `quantize_q8_1` PTX wrapper retired (only `indexed_moe_forward`
+     was still using it after Phase 3 closed the Q8_1 staging path).
+   - `cuda_quantize_q8_1` test deleted.
+   - `fuel-cuda-kernels/src/moe/` (5 files, ~2500 LOC of `.cu` +
+     `.cuh`) deleted.
+   - `fuel-cuda-kernels/src/ffi.rs` (3 extern declarations) deleted.
+   - `fuel-cuda-kernels/build.rs` simplified: no more `libmoe.a`
+     compile-and-link step; just the PTX build for the remaining
+     non-MoE kernels.
+   - `fuel-cuda-kernels/src/lib.rs`: dropped `pub mod ffi`.
+
+   Tests: 4/4 fuel-cuda-backend `quantized::test` (with `cuda_quantize_q8_1`
+   removed) + 8/8 fuel-core `pool_tests` + 62/62 fuel-core
+   `quantized_tests --features cuda` (serial; concurrent shared-CUDA
+   state is a pre-existing flakiness unrelated to Phase 4) + 77
+   `fuel-storage` baracuda_*_live tests green on RTX 4070.
 8. **Phase 6:** audit + delete legacy `CudaStorageSlice` API from
    storage.rs (the methods that still call `kernels::*` for ops
    the binding table now handles via baracuda). Determine consumers

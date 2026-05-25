@@ -1,6 +1,12 @@
 ﻿// Adapted from https://github.com/guoqingbao/attention.rs/blob/main/src/moe.rs
-#[cfg(feature = "cuda")]
-use fuel::cuda_backend::kernels::ffi;
+//
+// Phase 4 of fuel-cuda-kernels retirement: MoE GEMM kernels migrated
+// from Fuel's PTX `moe_gemm_{wmma,gguf,gguf_prefill}` to baracuda
+// alpha.37's typed FFI surface
+// (`baracuda_kernels_moe_{wmma_f16, wmma_bf16, scalar_gguf,
+// wmma_gguf_f16, wmma_gguf_bf16}_run`). Per baracuda's Phase 20.2
+// Fuel-replacement contract — the kernel bodies are unchanged from
+// the vendored Fuel sources, only the link target changes.
 #[allow(unused_imports)]
 use fuel::quantized::{self, QTensor};
 use fuel::{Result, Tensor};
@@ -53,13 +59,7 @@ pub fn moe_gemm(
             size_k
         );
         let dev = fuel::cuda_backend::as_device(input.device())?;
-        let data_type = match input.dtype() {
-            DType::F16 => 0,
-            DType::BF16 => 1,
-            _ => {
-                fuel::bail!("moe_gemm_wmma only accepts f16/bf16 inputs")
-            }
-        };
+        let input_dtype = input.dtype();
 
         let (input_arc, _) = input.storage_and_layout()?;
         let input_guard = input_arc.read().unwrap();
@@ -80,7 +80,7 @@ pub fn moe_gemm(
         let _topk_weights_arc;
         let _topk_weights_guard;
         let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            _topk_weights_arc = topk_weights.storage_and_layout().0;
+            _topk_weights_arc = topk_weights.storage_and_layout()?.0;
             _topk_weights_guard = _topk_weights_arc.read().unwrap();
             let topk_weights = _topk_weights_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
             let weights_ptr = topk_weights.as_raw().0 as *const f32;
@@ -93,28 +93,58 @@ pub fn moe_gemm(
         let expert_counts = unsafe { dev.alloc::<u32>(num_experts) }?;
         let expert_offsets = unsafe { dev.alloc::<u32>(num_experts + 1) }?;
 
-        let stream = dev.cuda_stream().as_raw() as i64;
+        let stream = dev.cuda_stream().as_raw() as *mut core::ffi::c_void;
         use core::ffi::c_void;
 
-        unsafe {
-            ffi::moe_gemm_wmma(
-                input.as_raw().0 as *const c_void, // [size_m, size_k]
-                weights.as_raw().0 as *const c_void, // [num_experts, size_n, size_k]
-                sorted_token_ids.as_raw().0 as *const i32,
-                experts_ids.as_raw().0 as *const i32,
-                topk_weights_ptr,
-                output.as_raw().0 as *mut c_void, // [size_m, size_n]
-                expert_counts.as_raw().0 as *mut i32, // pre-allocated buffer [num_experts]
-                expert_offsets.as_raw().0 as *mut i32, // pre-allocated buffer [num_experts + 1]
-                num_experts as i32,
-                topk as i32,
-                size_m as i32,
-                size_n as i32,
-                size_k as i32,
-                data_type as i32, // 0=float16, 1=bf16 (for input/output)
-                is_prefill,
-                stream,
-            );
+        // Baracuda dispatches by dtype-in-symbol-name (project-wide
+        // convention) rather than a runtime `dtype: i32` discriminant.
+        // The previous Fuel ffi.rs used `0=f16, 1=bf16`; here we route
+        // by `input_dtype` captured before shadowing.
+        let status = unsafe {
+            match input_dtype {
+                DType::F16 => baracuda_kernels_sys::baracuda_kernels_moe_wmma_f16_run(
+                    input.as_raw().0 as *const c_void,
+                    weights.as_raw().0 as *const c_void,
+                    sorted_token_ids.as_raw().0 as *const i32,
+                    experts_ids.as_raw().0 as *const i32,
+                    topk_weights_ptr,
+                    output.as_raw().0 as *mut c_void,
+                    expert_counts.as_raw().0 as *mut i32,
+                    expert_offsets.as_raw().0 as *mut i32,
+                    num_experts as i32,
+                    topk as i32,
+                    size_m as i32,
+                    size_n as i32,
+                    size_k as i32,
+                    if is_prefill { 1 } else { 0 },
+                    core::ptr::null_mut(),
+                    0,
+                    stream,
+                ),
+                DType::BF16 => baracuda_kernels_sys::baracuda_kernels_moe_wmma_bf16_run(
+                    input.as_raw().0 as *const c_void,
+                    weights.as_raw().0 as *const c_void,
+                    sorted_token_ids.as_raw().0 as *const i32,
+                    experts_ids.as_raw().0 as *const i32,
+                    topk_weights_ptr,
+                    output.as_raw().0 as *mut c_void,
+                    expert_counts.as_raw().0 as *mut i32,
+                    expert_offsets.as_raw().0 as *mut i32,
+                    num_experts as i32,
+                    topk as i32,
+                    size_m as i32,
+                    size_n as i32,
+                    size_k as i32,
+                    if is_prefill { 1 } else { 0 },
+                    core::ptr::null_mut(),
+                    0,
+                    stream,
+                ),
+                other => fuel::bail!("moe_gemm wmma: unsupported dtype {other:?}"),
+            }
+        };
+        if status != 0 {
+            fuel::bail!("baracuda_kernels_moe_wmma_*_run failed with status {status}");
         }
 
         use fuel::op::BackpropOp;
@@ -250,7 +280,7 @@ pub fn moe_gemm_gguf(
         let _topk_weights_arc;
         let _topk_weights_guard;
         let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            _topk_weights_arc = topk_weights.storage_and_layout().0;
+            _topk_weights_arc = topk_weights.storage_and_layout()?.0;
             _topk_weights_guard = _topk_weights_arc.read().unwrap();
             let topk_weights = _topk_weights_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("topk_weights must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
             let w_ptr = topk_weights.as_raw().0 as *const f32;
@@ -267,63 +297,98 @@ pub fn moe_gemm_gguf(
         let experts_ids = experts_ids_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("experts_ids must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<u32>()?;
 
         let output = unsafe { dev.alloc::<f32>(size_m * size_n) }?;
-        let stream = dev.cuda_stream().as_raw() as i64;
+        let stream = dev.cuda_stream().as_raw() as *mut core::ffi::c_void;
         use fuel::op::BackpropOp;
         use core::ffi::c_void;
 
         assert!(size_k % 8 == 0, "size_k must divisible by 8");
-        unsafe {
+        let status = unsafe {
             if is_prefill {
+                // WMMA + GGUF (prefill) path — caller-side expert_counts +
+                // expert_offsets scratch is required by baracuda's
+                // `moe_wmma_gguf_*_run` (prior Fuel `moe_gemm_gguf_prefill`
+                // allocated them internally; baracuda hoisted them to the
+                // FFI boundary for consistency with `moe_wmma_*_run`).
+                let expert_counts = dev.alloc::<u32>(num_experts)?;
+                let expert_offsets = dev.alloc::<u32>(num_experts + 1)?;
                 let input = input.to_dtype(dtype)?;
                 let (input_arc, _) = input.storage_and_layout()?;
                 let input_guard = input_arc.read().unwrap();
                 let input_cuda = input_guard
                     .downcast_ref::<fuel::CudaStorage>()
                     .ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".into()).bt())?;
-                let (input_ptr, input_dtype) = if dtype == DType::F16 {
+                if dtype == DType::F16 {
                     let c = input_cuda.as_cuda_slice::<f16>()?;
-                    (c.as_raw().0 as *const c_void, 0)
+                    baracuda_kernels_sys::baracuda_kernels_moe_wmma_gguf_f16_run(
+                        c.as_raw().0 as *const c_void,
+                        weight_ptr as *const c_void,
+                        sorted_token_ids.as_raw().0 as *const i32,
+                        experts_ids.as_raw().0 as *const i32,
+                        topk_weights_ptr,
+                        output.as_raw().0 as *mut c_void,
+                        expert_counts.as_raw().0 as *mut i32,
+                        expert_offsets.as_raw().0 as *mut i32,
+                        num_experts as i32,
+                        topk as i32,
+                        size_m as i32,
+                        size_n as i32,
+                        size_k as i32,
+                        gguf_dtype as i32,
+                        core::ptr::null_mut(),
+                        0,
+                        stream,
+                    )
                 } else {
                     let c = input_cuda.as_cuda_slice::<bf16>()?;
-                    (c.as_raw().0 as *const c_void, 1)
-                };
-                ffi::moe_gemm_gguf_prefill(
-                    input_ptr,  // [size_m or size_m/topk, size_k]
-                    weight_ptr, // [num_experts, size_n, size_k]
-                    sorted_token_ids.as_raw().0 as *const i32,
-                    experts_ids.as_raw().0 as *const i32,
-                    topk_weights_ptr,
-                    output.as_raw().0 as *mut c_void, // [size_m, size_n]
-                    num_experts as i32,
-                    topk as i32,
-                    size_m as i32,
-                    size_n as i32,
-                    size_k as i32,
-                    input_dtype,
-                    gguf_dtype as i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5 (for weight)
-                    stream,
-                );
+                    baracuda_kernels_sys::baracuda_kernels_moe_wmma_gguf_bf16_run(
+                        c.as_raw().0 as *const c_void,
+                        weight_ptr as *const c_void,
+                        sorted_token_ids.as_raw().0 as *const i32,
+                        experts_ids.as_raw().0 as *const i32,
+                        topk_weights_ptr,
+                        output.as_raw().0 as *mut c_void,
+                        expert_counts.as_raw().0 as *mut i32,
+                        expert_offsets.as_raw().0 as *mut i32,
+                        num_experts as i32,
+                        topk as i32,
+                        size_m as i32,
+                        size_n as i32,
+                        size_k as i32,
+                        gguf_dtype as i32,
+                        core::ptr::null_mut(),
+                        0,
+                        stream,
+                    )
+                }
             } else {
+                // Scalar GGUF (decode) path — no expert_counts/offsets
+                // required (baracuda's scalar dispatch doesn't need them;
+                // matches prior Fuel `moe_gemm_gguf` shape).
                 let (input_arc, _) = input.storage_and_layout()?;
                 let input_guard = input_arc.read().unwrap();
                 let input = input_guard.downcast_ref::<fuel::CudaStorage>().ok_or_else(|| fuel::Error::Msg("input must be a cuda tensor".to_string()).bt())?.as_cuda_slice::<f32>()?;
 
-                ffi::moe_gemm_gguf(
-                    input.as_raw().0 as *const f32, // [size_m or size_m/topk, size_k]
-                    weight_ptr as *const c_void, // [num_experts, size_n, size_k]
+                baracuda_kernels_sys::baracuda_kernels_moe_scalar_gguf_run(
+                    input.as_raw().0 as *const c_void,
+                    weight_ptr as *const c_void,
                     sorted_token_ids.as_raw().0 as *const i32,
                     experts_ids.as_raw().0 as *const i32,
                     topk_weights_ptr,
-                    output.as_raw().0 as *mut c_void, // [size_m, size_n]
+                    output.as_raw().0 as *mut c_void,
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
                     size_n as i32,
                     size_k as i32,
-                    gguf_dtype as i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5 (for weight)
+                    gguf_dtype as i32,
+                    core::ptr::null_mut(),
+                    0,
                     stream,
-                );
+                )
             }
+        };
+        if status != 0 {
+            fuel::bail!("baracuda_kernels_moe_*_gguf_*_run failed with status {status}");
         }
 
         let output = fuel::CudaStorage::wrap_cuda_slice(output, dev.clone());
