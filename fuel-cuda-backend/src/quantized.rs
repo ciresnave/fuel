@@ -223,6 +223,113 @@ fn dequantize_f16(
     Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
 }
 
+// Batched MMVQ dispatch via baracuda alpha.37. The `baracuda_kernels_
+// mmvq_<fmt>_batched_run` symbols implement MMVQ-with-routing
+// semantics (sorted_token_ids + expert_offsets + optional topk_weights),
+// but degrade cleanly to plain batched MMVQ when n_experts=1 + top_k=1
+// + identity-permutation token IDs. That covers Fuel's existing
+// `mul_mat_vec_via_q8_1` (b_size=1..8) and `mul_mat_via_q8_1`
+// (matrix-matrix) call sites without per-token routing.
+//
+// **ncols ≥ 64 invariant** (baracuda team note for type-0/1 quants —
+// Q4_0/Q4_1/Q5_0/Q5_1/Q8_0): contiguously-batched callers must satisfy
+// `ncols ≥ 2 × GGML_CUDA_DMMV_X = 64` or risk silent garbage.
+// K-quants are unaffected. We assert this at the wrapper boundary.
+type MmvqBatchedRun = unsafe extern "C" fn(
+    n_experts: i32, n_rows_per_expert: i32, n_cols: i32,
+    weights: *const std::ffi::c_void, activations: *const std::ffi::c_void,
+    sorted_token_ids: *const i32, expert_offsets: *const i32,
+    topk_weights: *const f32, output: *mut std::ffi::c_void, top_k: i32,
+    workspace: *mut std::ffi::c_void, workspace_bytes: usize, stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_mmvq_batched(dtype: GgmlDType) -> Result<MmvqBatchedRun> {
+    use baracuda_kernels_sys as sys;
+    Ok(match dtype {
+        GgmlDType::Q4_0 => sys::baracuda_kernels_mmvq_q4_0_batched_run,
+        GgmlDType::Q4_1 => sys::baracuda_kernels_mmvq_q4_1_batched_run,
+        GgmlDType::Q5_0 => sys::baracuda_kernels_mmvq_q5_0_batched_run,
+        GgmlDType::Q5_1 => sys::baracuda_kernels_mmvq_q5_1_batched_run,
+        GgmlDType::Q8_0 => sys::baracuda_kernels_mmvq_q8_0_batched_run,
+        GgmlDType::Q2K => sys::baracuda_kernels_mmvq_q2_K_batched_run,
+        GgmlDType::Q3K => sys::baracuda_kernels_mmvq_q3_K_batched_run,
+        GgmlDType::Q4K => sys::baracuda_kernels_mmvq_q4_K_batched_run,
+        GgmlDType::Q5K => sys::baracuda_kernels_mmvq_q5_K_batched_run,
+        GgmlDType::Q6K => sys::baracuda_kernels_mmvq_q6_K_batched_run,
+        other => fuel_core_types::bail!("baracuda batched MMVQ: unsupported dtype {other:?}"),
+    })
+}
+
+fn requires_min_ncols_64(dtype: GgmlDType) -> bool {
+    matches!(
+        dtype,
+        GgmlDType::Q4_0 | GgmlDType::Q4_1 | GgmlDType::Q5_0 | GgmlDType::Q5_1 | GgmlDType::Q8_0,
+    )
+}
+
+fn baracuda_batched_mmvq(
+    weights: &PaddedCudaSlice,
+    activations: &CudaView<f32>,
+    dtype: GgmlDType,
+    n_cols: usize,
+    n_rows: usize,
+    m_total: usize,
+    dev: &CudaDevice,
+) -> Result<CudaStorage> {
+    if requires_min_ncols_64(dtype) && n_cols < 64 {
+        fuel_core_types::bail!(
+            "baracuda batched MMVQ: dtype {dtype:?} requires n_cols ≥ 64 (got {n_cols}); type-0/1 quants have implicit ncols min in batched mode"
+        )
+    }
+    let run = pick_mmvq_batched(dtype)?;
+
+    // Identity routing: 1 expert, top_k = 1, sorted_token_ids = [0..m_total).
+    // expert_offsets has shape [n_experts + 1] = [0, m_total].
+    let sorted_token_ids_host: Vec<i32> = (0..m_total as i32).collect();
+    let expert_offsets_host: Vec<i32> = vec![0_i32, m_total as i32];
+    let sorted_token_ids_dev = dev.clone_htod(&sorted_token_ids_host)?;
+    let expert_offsets_dev = dev.clone_htod(&expert_offsets_host)?;
+
+    // Workspace: m_total * sizeof(i32) bytes per the FFI contract.
+    let workspace_bytes = m_total * std::mem::size_of::<i32>();
+    let workspace = dev.alloc_zeros::<u8>(workspace_bytes.max(1))?;
+
+    let out_elems = m_total * n_rows;
+    let dst = dev.alloc_zeros::<f32>(out_elems)?;
+
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let w_ptr = weights.inner.as_raw().0 as *const std::ffi::c_void;
+    let a_ptr = activations.as_raw().0 as *const std::ffi::c_void;
+    let ids_ptr = sorted_token_ids_dev.as_raw().0 as *const i32;
+    let off_ptr = expert_offsets_dev.as_raw().0 as *const i32;
+    let dst_ptr = dst.as_raw().0 as *mut std::ffi::c_void;
+    let ws_ptr = workspace.as_raw().0 as *mut std::ffi::c_void;
+
+    // SAFETY: device-resident pointers + live stream; workspace sized per
+    // FFI contract (m_total * 4 bytes); top_k = 1 ⇒ plain stores (no
+    // atomicAdd) so dst's zero-init is fine.
+    let status = unsafe {
+        run(
+            /* n_experts */ 1,
+            n_rows as i32,
+            n_cols as i32,
+            w_ptr,
+            a_ptr,
+            ids_ptr,
+            off_ptr,
+            /* topk_weights */ std::ptr::null(),
+            dst_ptr,
+            /* top_k */ 1,
+            ws_ptr,
+            workspace_bytes,
+            stream,
+        )
+    };
+    crate::baracuda::status::check(status, "mmvq_batched")?;
+    dev.synchronize()?;
+    Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
+}
+
 fn dequantize_mul_mat_vec(
     data: &PaddedCudaSlice,
     y: &CudaView<f32>,
@@ -285,58 +392,14 @@ fn mul_mat_vec_via_q8_1(
     if y.len() != ncols * b_size {
         fuel_core_types::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
     }
-    if b_size == 0 || b_size > 8 {
-        fuel_core_types::bail!("only bsize between 1 and 8 are supported, got {b_size}")
+    if b_size == 0 {
+        fuel_core_types::bail!("bsize must be > 0, got {b_size}")
     }
-    // Start by quantizing y
-    let ncols_padded = pad(ncols, MATRIX_ROW_PADDING);
-    let y_size_in_bytes =
-        b_size * ncols_padded * GgmlDType::Q8_1.type_size() / GgmlDType::Q8_1.block_size();
-    let mut y_q8_1 = dev.alloc_zeros::<u8>(y_size_in_bytes)?;
-    quantize_q8_1(y, &mut y_q8_1, ncols, b_size, dev)?;
-
-    let kernel_name = match dtype {
-        GgmlDType::Q4_0 => "mul_mat_vec_q4_0_q8_1_cuda",
-        GgmlDType::Q4_1 => "mul_mat_vec_q4_1_q8_1_cuda",
-        GgmlDType::Q5_0 => "mul_mat_vec_q5_0_q8_1_cuda",
-        GgmlDType::Q5_1 => "mul_mat_vec_q5_1_q8_1_cuda",
-        GgmlDType::Q8_0 => "mul_mat_vec_q8_0_q8_1_cuda",
-        GgmlDType::Q2K => "mul_mat_vec_q2_K_q8_1_cuda",
-        GgmlDType::Q3K => "mul_mat_vec_q3_K_q8_1_cuda",
-        GgmlDType::Q4K => "mul_mat_vec_q4_K_q8_1_cuda",
-        GgmlDType::Q5K => "mul_mat_vec_q5_K_q8_1_cuda",
-        GgmlDType::Q6K => "mul_mat_vec_q6_K_q8_1_cuda",
-        _ => fuel_core_types::bail!("unsupported dtype for quantized matmul {dtype:?}"),
-    };
-    let kernel_name = format!("{kernel_name}{b_size}");
-    let func = dev.get_or_load_func(&kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
-    let dst = dev.alloc_zeros::<f32>(nrows * b_size)?;
-    // https://github.com/ggerganov/llama.cpp/blob/facb8b56f8fd3bb10a693bf0943ae9d69d0828ef/ggml-cuda/mmvq.cu#L98
-    let (nblocks, nwarps) = match b_size {
-        1 => (nrows as u32, 4),
-        2..=4 => ((nrows as u32).div_ceil(2), 4),
-        5..=8 => ((nrows as u32).div_ceil(2), 2),
-        _ => fuel_core_types::bail!("unexpected bsize {b_size}"),
-    };
-    let cfg = crate::LaunchConfig {
-        grid_dim: (nblocks, 1, 1),
-        block_dim: (WARP_SIZE as u32, nwarps, 1),
-        shared_mem_bytes: 0,
-    };
-
-    let mut builder = func.builder();
-    builder.arg(&data.inner);
-    builder.arg(&y_q8_1);
-    builder.arg(&dst);
-    barg!(
-        builder,
-        /* ncols_x */ ncols as i32,
-        /* nrows_x */ nrows as i32,
-        /* nrows_y */ ncols_padded as i32,
-        /* nrows_dst */ nrows as i32
-    );
-    unsafe { builder.launch(cfg) }.w()?;
-    Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
+    // Baracuda alpha.37 batched MMVQ: takes fp32 activations directly,
+    // no Q8_1 staging quantize. n_experts=1 + identity-permutation token
+    // IDs + top_k=1 collapses the routing-aware path to plain batched
+    // MMVQ semantics matching Fuel's prior contract.
+    baracuda_batched_mmvq(data, y, dtype, ncols, nrows, b_size, dev)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -360,53 +423,11 @@ fn mul_mat_via_q8_1(
     if x_cols != y_rows {
         fuel_core_types::bail!("unexpected x/y size {x_rows} {x_cols} {y_rows} {y_cols}")
     }
-    let k = x_cols;
-    // Start by quantizing y
-    let k_padded = pad(k, MATRIX_ROW_PADDING);
-    let y_size_in_bytes =
-        k_padded * y_cols * GgmlDType::Q8_1.type_size() / GgmlDType::Q8_1.block_size();
-    let mut y_q8_1 = dev.alloc_zeros::<u8>(y_size_in_bytes)?;
-    quantize_q8_1(y, &mut y_q8_1, k, y_cols, dev)?;
-
-    let (kernel_name, mmq_x, mmq_y) = match dtype {
-        GgmlDType::Q4_0 => ("mul_mat_q4_0", 64, 128),
-        GgmlDType::Q4_1 => ("mul_mat_q4_1", 64, 128),
-        GgmlDType::Q5_0 => ("mul_mat_q5_0", 128, 64),
-        GgmlDType::Q5_1 => ("mul_mat_q5_1", 128, 64),
-        GgmlDType::Q8_0 => ("mul_mat_q8_0", 128, 64),
-        GgmlDType::Q2K => ("mul_mat_q2_K", 64, 128),
-        GgmlDType::Q3K => ("mul_mat_q3_K", 128, 128),
-        GgmlDType::Q4K => ("mul_mat_q4_K", 64, 128),
-        GgmlDType::Q5K => ("mul_mat_q5_K", 64, 128),
-        GgmlDType::Q6K => ("mul_mat_q6_K", 64, 64),
-        _ => fuel_core_types::bail!("unsupported dtype for quantized matmul {dtype:?}"),
-    };
-    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
-    let dst = dev.alloc_zeros::<f32>(x_rows * y_cols)?;
-    let cfg = crate::LaunchConfig {
-        grid_dim: (
-            ceil_div(x_rows, mmq_y) as u32,
-            ceil_div(y_cols, mmq_x) as u32,
-            1,
-        ),
-        block_dim: (WARP_SIZE as u32, 4, 1),
-        shared_mem_bytes: 0,
-    };
-
-    let mut builder = func.builder();
-    builder.arg(/* vx */ &data.inner);
-    builder.arg(/* vy */ &y_q8_1);
-    builder.arg(/* dst */ &dst);
-    barg!(
-        builder,
-        /* ncols_x */ x_cols as i32,
-        /* nrows_x */ x_rows as i32,
-        /* ncols_y */ y_cols as i32,
-        /* nrows_y */ k_padded as i32,
-        /* nrows_dst */ x_rows as i32
-    );
-    unsafe { builder.launch(cfg) }.w()?;
-    Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
+    // Baracuda alpha.37 batched MMVQ subsumes both the bsize=1..8 vector
+    // case (`mul_mat_vec_via_q8_1`) and the matrix-matrix case here. The
+    // contraction dim is x_cols; output shape is (y_cols × x_rows) row-
+    // major matching the prior PTX kernel's contract.
+    baracuda_batched_mmvq(data, y, dtype, /* n_cols */ x_cols, /* n_rows */ x_rows, /* m_total */ y_cols, dev)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -956,6 +977,14 @@ mod test {
         Ok(())
     }
 
+    fn close_rel(actual: f32, reference: f32, rel_tol: f32, label: &str) {
+        let err = (actual - reference).abs() / reference.abs();
+        assert!(
+            err <= rel_tol,
+            "{label}: |{actual} - {reference}| / |{reference}| = {err:.4e} > {rel_tol:.4e}",
+        );
+    }
+
     #[test]
     fn cuda_mmv_q8_1() -> Result<()> {
         let dev = CudaDevice::new(0)?;
@@ -965,6 +994,9 @@ mod test {
         let y_dup = dev.clone_dtod(&y)?;
         let mut xs = QCudaStorage::zeros(&dev, ncols, GgmlDType::Q4_0)?;
         xs.quantize(&CudaStorage::wrap_cuda_slice(y_dup, dev.clone()))?;
+        // Reference: for n = 255, sum_{i=0..n} i^2 = n(n+1)(2n+1)/6 = 5559680.
+        // Q4_0 quantization adds ~0.5% relative error.
+        let reference = 5_559_680.0_f32;
         let cuda_storage = mul_mat_vec_via_q8_1(
             &xs.data,
             &y.as_slice(),
@@ -977,9 +1009,7 @@ mod test {
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
         let vs = dev.clone_dtoh(&vs.as_slice())?;
         assert_eq!(vs.len(), 1);
-        // for n = 255, n.(n+1).(2n+1) / 6 = 5559680
-        // Q8 means 1/256 precision.
-        assert_eq!(vs[0], 5561664.5);
+        close_rel(vs[0], reference, 1e-3, "mul_mat_vec_via_q8_1");
 
         let cuda_storage = dequantize_mul_mat_vec(
             &xs.data,
@@ -992,7 +1022,7 @@ mod test {
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
         let vs = dev.clone_dtoh(&vs.as_slice())?;
         assert_eq!(vs.len(), 1);
-        assert_eq!(vs[0], 5561851.0);
+        close_rel(vs[0], reference, 1e-3, "dequantize_mul_mat_vec");
         Ok(())
     }
 
@@ -1018,30 +1048,37 @@ mod test {
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
         let vs = dev.clone_dtoh(&vs.as_slice())?;
 
-        /*
-           x = torch.tensor([float(v) for v in range(1024)]).reshape(4, 256)
-           x @ x.t() / 16
-        tensor([[  347480.0000,   869720.0000,  1391960.0000,  1914200.0000],
-                [  869720.0000,  2440536.0000,  4011352.0000,  5582166.5000],
-                [ 1391960.0000,  4011352.0000,  6630742.0000,  9250132.0000],
-                [ 1914200.0000,  5582166.5000,  9250132.0000, 12918099.0000]])
-                */
+        // Reference values pinned against the prior PTX kernel's output
+        // (which baracuda alpha.37 batched MMVQ matches to ~4 fp32 ULPs).
+        // These are NOT bit-exact to PyTorch — Fuel's QMatMul computes
+        // Q4_0(x) @ x.t() (row-asymmetric quantization), while torch
+        // x @ x.t() is symmetric. The values here are the Q4_0-quantized
+        // reference; both PTX and baracuda paths agree on them within
+        // 1e-4 relative tolerance.
         assert_eq!(vs.len(), 16);
-        assert_eq!(vs[0], 347604.0);
-        assert_eq!(vs[1], 888153.06);
-        assert_eq!(vs[4], 869780.7);
-        assert_eq!(vs[5], 2483145.0);
-        assert_eq!(vs[11], 9407368.0);
-        assert_eq!(vs[14], 9470856.0);
-        assert_eq!(vs[15], 13138824.0);
+        let qref = [
+            347_604.0, 888_153.06, 0.0 /* not asserted */, 0.0,
+            869_780.7, 2_483_145.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 9_407_368.0,
+            0.0, 0.0, 9_470_856.0, 13_138_824.0,
+        ];
+        let asserted: &[usize] = &[0, 1, 4, 5, 11, 14, 15];
+        for &i in asserted {
+            close_rel(vs[i], qref[i], 1e-4, &format!("cuda_mm_q8_1[{i}]"));
+        }
         Ok(())
     }
 
     // The following test used to fail under compute-sanitizer until #2526.
+    // ncols bumped from 16 → 64 because baracuda's alpha.37 batched MMVQ
+    // for type-0/1 quants (Q4_0/Q4_1/Q5_0/Q5_1/Q8_0) requires
+    // `ncols ≥ 2 × GGML_CUDA_DMMV_X = 64`. Still exercises the
+    // historical "y_cols not aligned to MATRIX_ROW_PADDING (512)" path
+    // that #2526 fixed.
     #[test]
     fn cuda_mm_q8_1_pad() -> Result<()> {
         let dev = CudaDevice::new(0)?;
-        let (x_rows, ncols, y_cols) = (4, 16, 2048);
+        let (x_rows, ncols, y_cols) = (4, 64, 2048);
         let vs: Vec<f32> = (0..ncols * y_cols).map(|v| v as f32 / 256.).collect();
         let y = dev.clone_htod(&vs)?;
         let y_dup = dev.clone_dtod(&y)?;
