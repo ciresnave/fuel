@@ -251,11 +251,32 @@ plan:
    `quantized_tests --features cuda` (serial; concurrent shared-CUDA
    state is a pre-existing flakiness unrelated to Phase 4) + 77
    `fuel-storage` baracuda_*_live tests green on RTX 4070.
-8. **Phase 6:** audit + delete legacy `CudaStorageSlice` API from
-   storage.rs (the methods that still call `kernels::*` for ops
-   the binding table now handles via baracuda). Determine consumers
-   first — if `fuel-graph-cuda` or `fuel-core::eager` still depends
-   on them, port those to the binding table first.
+8. **Phase 6a + 6b (QUANTIZED PTX retire) — SHIPPED (2026-05-25):**
+   - `dequantize_mul_mat_vec` PTX (fused dequant+gemv) retired; the
+     FORCE_DMMV debug toggle now routes through
+     `self.dequantize() + storage.matmul()` (mirrors the pre-existing
+     two-step path in `dequantize_matmul`). Same contract, no PTX.
+   - `dequantize_f32` migrated to `baracuda_kernels_dequantize_<fmt>_run`
+     for all 11 GGUF formats (Q4_0/Q4_1/Q5_0/Q5_1/Q8_0 + Q2K/Q3K/Q4K/Q5K/Q6K/Q8K).
+   - `dequantize_f16` reimplemented as dequant→f32-scratch→cast-to-f16
+     (baracuda doesn't ship per-dtype dequant variants; the cast goes
+     through Fuel's existing `to_dtype` path).
+   - `CudaStorage::matmul_q4_0` and `CudaStorage::matmul_q4_km` (M=1
+     decode mat-vec) migrated to a new `matmul_q_gguf_baracuda` helper
+     that drives baracuda's batched MMVQ FFI with `n_experts=1, m_total=1`.
+   - `quantized.cu` (~4500 LOC of Q8_1 staging + per-format gemv kernels)
+     deleted from `fuel-cuda-kernels/src/`.
+   - `Id::Quantized` + the `QUANTIZED` module entry removed from
+     `fuel-cuda-kernels/src/lib.rs`. PTX module count drops 10 → 9.
+   62/62 quantized_tests + 8/8 pool_tests + 16/16 conv_tests + 24/24
+   bilinear_tests green on RTX 4070.
+9. **Phase 6c — QUEUED:** audit + delete legacy `CudaStorageSlice` API
+   from storage.rs (33 remaining `kernels::*` call sites — affine, unary,
+   binary, reduce, cast, indexing, ternary, fill, etc.) + byte_kernels.rs
+   (17 sites) + cutlass.rs/device.rs/dyn_impl.rs (~7 sites). Each retired
+   method either deletes (no callers outside the legacy dyn_impl trait
+   bridge) or routes through baracuda equivalents already exposed via
+   the binding table.
 9. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
    member, drop `cudaforge` build-time CUDA compilation.
 

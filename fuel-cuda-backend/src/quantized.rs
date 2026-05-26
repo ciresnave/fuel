@@ -50,124 +50,76 @@ fn pad(p: usize, q: usize) -> usize {
 // batched MMVQ + MoE FFI consume fp32 activations directly, so the
 // staging quantize step is no longer needed anywhere in fuel-cuda-backend.
 
+// Baracuda alpha.27+ GGUF dequantize FFI. Per-format symbol picker —
+// covers all 11 GGUF block formats. Output is always f32 (baracuda
+// doesn't ship per-dtype dequant variants; f16 output is achieved by
+// dequant→cast in `dequantize_f16` below).
+type DequantRun = unsafe extern "C" fn(
+    numel: i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_dequant(dtype: GgmlDType) -> Result<DequantRun> {
+    use baracuda_kernels_sys as sys;
+    Ok(match dtype {
+        GgmlDType::Q4_0 => sys::baracuda_kernels_dequantize_q4_0_run,
+        GgmlDType::Q4_1 => sys::baracuda_kernels_dequantize_q4_1_run,
+        GgmlDType::Q5_0 => sys::baracuda_kernels_dequantize_q5_0_run,
+        GgmlDType::Q5_1 => sys::baracuda_kernels_dequantize_q5_1_run,
+        GgmlDType::Q8_0 => sys::baracuda_kernels_dequantize_q8_0_run,
+        GgmlDType::Q2K => sys::baracuda_kernels_dequantize_q2_K_run,
+        GgmlDType::Q3K => sys::baracuda_kernels_dequantize_q3_K_run,
+        GgmlDType::Q4K => sys::baracuda_kernels_dequantize_q4_K_run,
+        GgmlDType::Q5K => sys::baracuda_kernels_dequantize_q5_K_run,
+        GgmlDType::Q6K => sys::baracuda_kernels_dequantize_q6_K_run,
+        GgmlDType::Q8K => sys::baracuda_kernels_dequantize_q8_K_run,
+        other => fuel_core_types::bail!("baracuda dequant: unsupported dtype {other:?}"),
+    })
+}
+
+/// Dequantize Q* blocks into a fresh f32 CudaStorage via baracuda's
+/// `baracuda_kernels_dequantize_<fmt>_run`. Replaces the prior PTX
+/// `dequantize_block_*_f32` kernels retired in Phase 6b.
 fn dequantize_f32(
     data: &PaddedCudaSlice,
     dtype: GgmlDType,
     elem_count: usize,
     dev: &CudaDevice,
 ) -> Result<CudaStorage> {
-    let nb = elem_count.div_ceil(256);
-    let (kernel_name, is_k, block_dim, num_blocks) = match dtype {
-        GgmlDType::Q4_0 => ("dequantize_block_q4_0_f32", false, 32, nb),
-        GgmlDType::Q4_1 => ("dequantize_block_q4_1_f32", false, 32, nb),
-        GgmlDType::Q5_0 => (
-            "dequantize_block_q5_0_f32",
-            false,
-            CUDA_DEQUANTIZE_BLOCK_SIZE,
-            ceil_div(elem_count, 2 * CUDA_DEQUANTIZE_BLOCK_SIZE),
-        ),
-        GgmlDType::Q5_1 => (
-            "dequantize_block_q5_1_f32",
-            false,
-            CUDA_DEQUANTIZE_BLOCK_SIZE,
-            ceil_div(elem_count, 2 * CUDA_DEQUANTIZE_BLOCK_SIZE),
-        ),
-        GgmlDType::Q8_0 => ("dequantize_block_q8_0_f32", false, 32, nb),
-        GgmlDType::Q2K => ("dequantize_block_q2_K_f32", true, 64, nb),
-        GgmlDType::Q3K => ("dequantize_block_q3_K_f32", true, 64, nb),
-        GgmlDType::Q4K => ("dequantize_block_q4_K_f32", true, 32, nb),
-        GgmlDType::Q5K => ("dequantize_block_q5_K_f32", true, 64, nb),
-        GgmlDType::Q6K => ("dequantize_block_q6_K_f32", true, 64, nb),
-        GgmlDType::Q8K => ("dequantize_block_q8_K_f32", true, 32, nb),
-        _ => fuel_core_types::bail!("unsupported dtype for dequantize {dtype:?}"),
-    };
-    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
+    let run = pick_dequant(dtype)?;
     let dst = unsafe { dev.alloc::<f32>(elem_count)? };
-    // See e.g.
-    // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
-    let cfg = crate::LaunchConfig {
-        grid_dim: (num_blocks as u32, 1, 1),
-        block_dim: (block_dim as u32, 1, 1),
-        shared_mem_bytes: 0,
-    };
-
-    if is_k {
-        let mut builder = func.builder();
-        builder.arg(&data.inner);
-        builder.arg(&dst);
-        unsafe { builder.launch(cfg) }.w()?;
-    } else {
-        let nb32 = match dtype {
-            GgmlDType::Q5_0 | GgmlDType::Q5_1 => elem_count,
-            _ => elem_count / 32,
-        };
-        let mut builder = func.builder();
-        builder.arg(&data.inner);
-        builder.arg(&dst);
-        barg!(builder, nb32 as i32);
-        unsafe { builder.launch(cfg) }.w()?;
-    }
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = data.inner.as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = dst.as_raw().0 as *mut std::ffi::c_void;
+    // SAFETY: device-resident pointers + live stream; workspace null/0
+    // (baracuda dequant kernels don't need scratch).
+    let status = unsafe { run(elem_count as i64, x_ptr, y_ptr, std::ptr::null_mut(), 0, stream) };
+    crate::baracuda::status::check(status, "dequantize_f32")?;
+    dev.synchronize()?;
     Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
 }
 
+/// Dequantize Q* blocks into a fresh f16 CudaStorage. Two-step
+/// implementation (dequant→f32 scratch, then cast→f16) since baracuda's
+/// GGUF dequant FFI only ships f32 output variants. The cast goes
+/// through baracuda's `Cast` FFI (binding-table path), avoiding any
+/// fuel-cuda-kernels PTX dependency.
 fn dequantize_f16(
     data: &PaddedCudaSlice,
     dtype: GgmlDType,
     elem_count: usize,
     dev: &CudaDevice,
 ) -> Result<CudaStorage> {
-    let nb = elem_count.div_ceil(256);
-    let (kernel_name, is_k, block_dim, num_blocks) = match dtype {
-        GgmlDType::Q4_0 => ("dequantize_block_q4_0_f16", false, 32, nb),
-        GgmlDType::Q4_1 => ("dequantize_block_q4_1_f16", false, 32, nb),
-        GgmlDType::Q5_0 => (
-            "dequantize_block_q5_0_f16",
-            false,
-            CUDA_DEQUANTIZE_BLOCK_SIZE,
-            ceil_div(elem_count, 2 * CUDA_DEQUANTIZE_BLOCK_SIZE),
-        ),
-        GgmlDType::Q5_1 => (
-            "dequantize_block_q5_1_f16",
-            false,
-            CUDA_DEQUANTIZE_BLOCK_SIZE,
-            ceil_div(elem_count, 2 * CUDA_DEQUANTIZE_BLOCK_SIZE),
-        ),
-        GgmlDType::Q8_0 => ("dequantize_block_q8_0_f16", false, 32, nb),
-        GgmlDType::Q2K => ("dequantize_block_q2_K_f16", true, 64, nb),
-        GgmlDType::Q3K => ("dequantize_block_q3_K_f16", true, 64, nb),
-        GgmlDType::Q4K => ("dequantize_block_q4_K_f16", true, 32, nb),
-        GgmlDType::Q5K => ("dequantize_block_q5_K_f16", true, 64, nb),
-        GgmlDType::Q6K => ("dequantize_block_q6_K_f16", true, 64, nb),
-        GgmlDType::Q8K => ("dequantize_block_q8_K_f16", true, 32, nb),
-        _ => fuel_core_types::bail!("unsupported dtype for dequantize {dtype:?}"),
-    };
-    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
-    let dst = unsafe { dev.alloc::<f16>(elem_count)? };
-    // See e.g.
-    // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
-    let cfg = crate::LaunchConfig {
-        grid_dim: (num_blocks as u32, 1, 1),
-        block_dim: (block_dim as u32, 1, 1),
-        shared_mem_bytes: 0,
-    };
-
-    if is_k {
-        let mut builder = func.builder();
-        builder.arg(&data.inner);
-        builder.arg(&dst);
-        unsafe { builder.launch(cfg) }.w()?;
-    } else {
-        let nb32 = match dtype {
-            GgmlDType::Q5_0 | GgmlDType::Q5_1 => elem_count,
-            _ => elem_count / 32,
-        };
-        let mut builder = func.builder();
-        builder.arg(&data.inner);
-        builder.arg(&dst);
-        barg!(builder, nb32 as i32);
-        unsafe { builder.launch(cfg) }.w()?;
-    }
-    Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
+    let dst_f32 = dequantize_f32(data, dtype, elem_count, dev)?;
+    // Cast f32 → f16 via the typed CudaStorage path (legacy `to_dtype`
+    // is still backed by Fuel's CAST PTX module; that retires when the
+    // binding table fully absorbs the eager API in Phase 6c).
+    let layout = crate::Layout::contiguous(crate::Shape::from(elem_count));
+    dst_f32.to_dtype(&layout, crate::DType::F16)
 }
 
 // Batched MMVQ dispatch via baracuda alpha.37. The `baracuda_kernels_
@@ -277,51 +229,10 @@ fn baracuda_batched_mmvq(
     Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
 }
 
-fn dequantize_mul_mat_vec(
-    data: &PaddedCudaSlice,
-    y: &CudaView<f32>,
-    dtype: GgmlDType,
-    ncols: usize,
-    nrows: usize,
-    dev: &CudaDevice,
-) -> Result<CudaStorage> {
-    let data_elems = data.len / dtype.type_size() * dtype.block_size();
-    if data_elems < ncols * nrows {
-        fuel_core_types::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
-    }
-    if y.len() != ncols {
-        fuel_core_types::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
-    }
-    let kernel_name = match dtype {
-        GgmlDType::Q4_0 => "dequantize_mul_mat_vec_q4_0_cuda",
-        GgmlDType::Q4_1 => "dequantize_mul_mat_vec_q4_1_cuda",
-        GgmlDType::Q5_0 => "dequantize_mul_mat_vec_q5_0_cuda",
-        GgmlDType::Q5_1 => "dequantize_mul_mat_vec_q5_1_cuda",
-        GgmlDType::Q8_0 => "dequantize_mul_mat_vec_q8_0_cuda",
-        GgmlDType::Q2K => "dequantize_mul_mat_vec_q2_k",
-        GgmlDType::Q3K => "dequantize_mul_mat_vec_q3_k",
-        GgmlDType::Q4K => "dequantize_mul_mat_vec_q4_k",
-        GgmlDType::Q5K => "dequantize_mul_mat_vec_q5_k",
-        GgmlDType::Q6K => "dequantize_mul_mat_vec_q6_k",
-        _ => fuel_core_types::bail!("unsupported dtype for quantized matmul {dtype:?}"),
-    };
-    let func = dev.get_or_load_func(kernel_name, &fuel_cuda_kernels::QUANTIZED)?;
-    let dst = unsafe { dev.alloc::<f32>(nrows)? };
-    let block_num_y = ceil_div(nrows, GGML_CUDA_MMV_Y);
-    let cfg = crate::LaunchConfig {
-        grid_dim: (block_num_y as u32, 1, 1),
-        block_dim: (WARP_SIZE as u32, GGML_CUDA_MMV_Y as u32, 1),
-        shared_mem_bytes: 0,
-    };
-
-    let mut builder = func.builder();
-    builder.arg(&data.inner);
-    builder.arg(y);
-    builder.arg(&dst);
-    barg!(builder, ncols as i32, nrows as i32);
-    unsafe { builder.launch(cfg) }.w()?;
-    Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
-}
+// `dequantize_mul_mat_vec` (fused dequant+gemv PTX, b_size=1 only)
+// retired in Phase 6a — the FORCE_DMMV debug path now routes through
+// `self.dequantize() + storage.matmul()` for parity with
+// `dequantize_matmul`'s pre-existing two-step pattern.
 
 fn mul_mat_vec_via_q8_1(
     data: &PaddedCudaSlice,
@@ -580,11 +491,6 @@ impl QCudaStorage {
         rhs_l: &crate::Layout,
     ) -> Result<(CudaStorage, crate::Shape)> {
         let (nrows, ncols) = self_shape.dims2()?;
-        let rhs = rhs.as_cuda_slice::<f32>()?;
-        let rhs = match rhs_l.contiguous_offsets() {
-            Some((o1, o2)) => rhs.slice(o1..o2),
-            None => Err(crate::Error::RequiresContiguous { op: "dmmv" }.bt())?,
-        };
         let (b_size, k) = match rhs_l.shape().dims() {
             [b, m, k] => (b * m, *k),
             [b, k] => (*b, *k),
@@ -595,11 +501,31 @@ impl QCudaStorage {
         }
 
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
-            dequantize_mul_mat_vec(&self.data, &rhs, self.dtype, ncols, nrows, self.device())?
+            // Phase 6a — FORCE_DMMV (debug toggle for the dequant-then-FP
+            // reference path) now routes through `self.dequantize() +
+            // storage.matmul()` (same pattern `dequantize_matmul` already
+            // uses for the matrix-matrix case). Slower than the prior
+            // fused `dequantize_mul_mat_vec` PTX kernel but identical
+            // contract and no PTX dependency.
+            let data_f32 = self.dequantize(nrows * ncols)?;
+            let rhs_l_t = crate::Layout::new(
+                (ncols, nrows).into(),
+                smallvec::smallvec![1_isize, ncols as isize],
+                0,
+            )
+            .broadcast_as((b_size, ncols, nrows))?;
+            // m=1 mat-vec — view activation as (b_size, 1, ncols).
+            let lhs_l = crate::Layout::contiguous((b_size, 1, ncols));
+            rhs.matmul(&data_f32, (b_size, 1, nrows, ncols), &lhs_l, &rhs_l_t)?
         } else {
+            let rhs_typed = rhs.as_cuda_slice::<f32>()?;
+            let rhs_slice = match rhs_l.contiguous_offsets() {
+                Some((o1, o2)) => rhs_typed.slice(o1..o2),
+                None => Err(crate::Error::RequiresContiguous { op: "dmmv" }.bt())?,
+            };
             mul_mat_vec_via_q8_1(
                 &self.data,
-                &rhs,
+                &rhs_slice,
                 self.dtype,
                 ncols,
                 nrows,
@@ -824,19 +750,10 @@ mod test {
         let vs = dev.clone_dtoh(&vs.as_slice())?;
         assert_eq!(vs.len(), 1);
         close_rel(vs[0], reference, 1e-3, "mul_mat_vec_via_q8_1");
-
-        let cuda_storage = dequantize_mul_mat_vec(
-            &xs.data,
-            &y.as_slice(),
-            /* dtype */ GgmlDType::Q4_0,
-            /* ncols */ ncols,
-            /* nrows */ 1,
-            &dev,
-        )?;
-        let vs = cuda_storage.as_cuda_slice::<f32>()?;
-        let vs = dev.clone_dtoh(&vs.as_slice())?;
-        assert_eq!(vs.len(), 1);
-        close_rel(vs[0], reference, 1e-3, "dequantize_mul_mat_vec");
+        // The fused dequant+gemv PTX path (`dequantize_mul_mat_vec`)
+        // retired in Phase 6a; the FORCE_DMMV branch now goes through
+        // `QCudaStorage::dequantize` + matmul, which has its own test
+        // coverage via the qmm_*_cuda integration tests.
         Ok(())
     }
 

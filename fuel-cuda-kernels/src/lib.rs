@@ -10,20 +10,18 @@ pub enum Id {
     Cast,
     Fill,
     Indexing,
-    Quantized,
     Reduce,
     Sort,
     Ternary,
     Unary,
 }
 
-pub const ALL_IDS: [Id; 10] = [
+pub const ALL_IDS: [Id; 9] = [
     Id::Affine,
     Id::Binary,
     Id::Cast,
     Id::Fill,
     Id::Indexing,
-    Id::Quantized,
     Id::Reduce,
     Id::Sort,
     Id::Ternary,
@@ -70,7 +68,6 @@ mdl!(BINARY, Binary);
 mdl!(CAST, Cast);
 mdl!(FILL, Fill);
 mdl!(INDEXING, Indexing);
-mdl!(QUANTIZED, Quantized);
 mdl!(REDUCE, Reduce);
 mdl!(SORT, Sort);
 mdl!(TERNARY, Ternary);
