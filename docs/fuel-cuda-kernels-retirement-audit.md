@@ -159,12 +159,17 @@ plan:
    gains `features = ["cudnn"]`. The PTX `Pool2D::Map1` retired. Pool tests
    relaxed from 4 → 3 decimal precision to absorb cuDNN's ±1 ULP accumulation
    drift (both rounds are IEEE-754-valid). Commit `7a3cd5d1`.
-4. **Phase 5a (UpsampleNearest2D) — SHIPPED (2026-05-25):**
+4. **Phase 5a (UpsampleNearest2D + UpsampleBilinear2D) — SHIPPED (2026-05-25):**
    `CudaStorage::upsample_nearest2d` calls `baracuda_kernels_upsample_nearest_2d_fw_<dtype>_run`.
-   UpsampleBilinear2D **stays on PTX** for now — baracuda's
-   `interpolate_bilinear_2d_*` FFI hardcodes `align_corners = false`, and Fuel
-   exercises both modes via `bilinear_pytorch_align_corners_true_gpu`. Tracked
-   as a baracuda ask for an `align_corners: i32` parameter.
+   Baracuda alpha.38 added `align_corners: i32` + `scale_h_factor`/`scale_w_factor: f64`
+   parameters to `baracuda_kernels_interpolate_bilinear_2d_<dtype>_run`
+   (plus f16/bf16 fanout), closing the parity gap with PyTorch's
+   `nn.functional.interpolate(mode='bilinear', align_corners=...)`.
+   `CudaStorage::upsample_bilinear2d` migrated to call the alpha.38 FFI
+   directly; `Option<f64>` scale factors map to `0.0 = derive` per baracuda's
+   convention. 24/24 fuel-core `bilinear_tests --features cuda` green
+   on RTX 4070, including `bilinear_pytorch_align_corners_true_gpu`,
+   `bilinear_align_corners_difference_gpu`, and `bilinear_pytorch_scale_factor_gpu`.
 5. **Phase 3 (Q8_1 → MMVQ) — SHIPPED (2026-05-25):**
    Baracuda alpha.37 dropped batched MMVQ FFI symbols
    `baracuda_kernels_mmvq_<fmt>_batched_run` (36 quant variants +
