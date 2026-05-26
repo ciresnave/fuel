@@ -34,8 +34,13 @@
 // --- fuel-cuda primitives (formerly a separate crate) -----------------------
 pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
 
-#[cfg(feature = "cudnn")]
-pub mod cudnn;
+// `crate::cudnn` retired in Phase 5b of the fuel-cuda-kernels retirement
+// (2026-05-25). Fuel's internal cuDNN wrapper for conv2d/conv1d (252 LOC)
+// is no longer needed — conv dispatch goes through
+// `baracuda-kernels-sys::baracuda_kernels_conv_*_run` instead. The
+// `cudnn` Cargo feature is now a near-no-op (only used to gate the
+// transitive `baracuda-cudnn{,-sys}` deps that don't have other users
+// in Fuel).
 #[cfg(feature = "flash-attn")]
 pub mod flash_attn;
 #[cfg(feature = "flash-attn-v3")]

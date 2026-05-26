@@ -8,7 +8,6 @@ pub enum Id {
     Affine,
     Binary,
     Cast,
-    Conv,
     Fill,
     Indexing,
     Quantized,
@@ -18,11 +17,10 @@ pub enum Id {
     Unary,
 }
 
-pub const ALL_IDS: [Id; 11] = [
+pub const ALL_IDS: [Id; 10] = [
     Id::Affine,
     Id::Binary,
     Id::Cast,
-    Id::Conv,
     Id::Fill,
     Id::Indexing,
     Id::Quantized,
@@ -70,7 +68,6 @@ macro_rules! mdl {
 mdl!(AFFINE, Affine);
 mdl!(BINARY, Binary);
 mdl!(CAST, Cast);
-mdl!(CONV, Conv);
 mdl!(FILL, Fill);
 mdl!(INDEXING, Indexing);
 mdl!(QUANTIZED, Quantized);

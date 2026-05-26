@@ -82,18 +82,8 @@ pub(crate) fn dims_strides_strides_usize(dims: &[usize], a: &Layout, b: &Layout)
     v
 }
 
-/// Conv-style param pack: `[dims, inp.stride(), k.dims(), k.stride()]`.
-pub(crate) fn conv_dims_strides_usize(dims: &[usize], inp_l: &Layout, k_l: &Layout) -> Vec<usize> {
-    let inp_s = inp_l.stride_unsigned();
-    let k_s = k_l.stride_unsigned();
-    let k_d = k_l.dims();
-    let mut v = Vec::with_capacity(dims.len() + inp_s.len() + k_d.len() + k_s.len());
-    v.extend_from_slice(dims);
-    v.extend_from_slice(&inp_s);
-    v.extend_from_slice(k_d);
-    v.extend_from_slice(&k_s);
-    v
-}
+// `conv_dims_strides_usize` retired in Phase 5b alongside the PTX
+// Conv*/ConvTranspose* structs that consumed its packed-strides arg.
 
 fn push_scalar_arg<'a>(scalar: &'a fuel_core_types::scalar::Scalar, builder: &mut crate::device::LaunchArgs<'a>) {
     use fuel_core_types::scalar::Scalar;
@@ -221,106 +211,9 @@ impl Map1 for Elu {
     }
 }
 
-#[allow(unused)]
-struct Im2Col1D {
-    l_k: usize,
-    stride: usize,
-    dilation: usize,
-    padding: usize,
-}
-
-impl Im2Col1D {
-    #[allow(unused)]
-    fn l_out(&self, l: usize) -> usize {
-        (l + 2 * self.padding - self.dilation * (self.l_k - 1) - 1) / self.stride + 1
-    }
-}
-
-impl Map1 for Im2Col1D {
-    fn f<T: DeviceRepr + WithDType>(
-        &self,
-        src: &CudaSlice<T>,
-        dev: &CudaDevice,
-        layout: &Layout,
-    ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let l_out = self.l_out(dims[2]);
-        let threads = dims[0] * l_out * dims[1];
-        let cfg = LaunchConfig::for_num_elems(threads as u32);
-        let ds = dev.clone_htod(&dims_strides_usize(layout))?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>("im2col1d"), &kernels::CONV)?;
-        // SAFETY: Set later by running the kernel.
-        let dst = unsafe { dev.alloc::<T>(threads * self.l_k)? };
-        let mut builder = func.builder();
-        barg!(builder, threads);
-        barg!(builder, l_out);
-        barg!(builder, self.l_k);
-        barg!(builder, self.stride);
-        barg!(builder, self.padding);
-        barg!(builder, self.dilation);
-        builder.arg(&ds);
-        builder.arg(src);
-        builder.arg(&dst);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(dst)
-    }
-}
-
-#[allow(unused)]
-struct Im2Col {
-    h_k: usize,
-    w_k: usize,
-    stride: usize,
-    dilation: usize,
-    padding: usize,
-}
-
-impl Im2Col {
-    #[allow(unused)]
-    fn hw_out(&self, h: usize, w: usize) -> (usize, usize) {
-        let h_out = (h + 2 * self.padding - self.dilation * (self.h_k - 1) - 1) / self.stride + 1;
-        let w_out = (w + 2 * self.padding - self.dilation * (self.w_k - 1) - 1) / self.stride + 1;
-        (h_out, w_out)
-    }
-}
-
-impl Map1 for Im2Col {
-    fn f<T: DeviceRepr + WithDType>(
-        &self,
-        src: &CudaSlice<T>,
-        dev: &CudaDevice,
-        layout: &Layout,
-    ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let (h_out, w_out) = self.hw_out(dims[2], dims[3]);
-        let dst_el = dims[0] * h_out * w_out * dims[1] * self.h_k * self.w_k;
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let ds = dev.clone_htod(&dims_strides_usize(layout))?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>("im2col"), &kernels::CONV)?;
-        // SAFETY: Set later by running the kernel.
-        let dst = unsafe { dev.alloc::<T>(dst_el)? };
-        let mut builder = func.builder();
-        barg!(builder, dst_el);
-        barg!(builder, h_out);
-        barg!(builder, w_out);
-        barg!(builder, self.h_k);
-        barg!(builder, self.w_k);
-        barg!(builder, self.stride);
-        barg!(builder, self.padding);
-        barg!(builder, self.dilation);
-        builder.arg(&ds);
-        builder.arg(src);
-        builder.arg(&dst);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(dst)
-    }
-}
+// Im2Col1D + Im2Col PTX structs retired in Phase 5b — the im2col +
+// matmul conv fallback they backed is gone now that baracuda's
+// `conv_{1,2}d_*_run` FFI handles conv directly via cuDNN.
 
 struct Powf(f64);
 impl Map1 for Powf {
@@ -741,223 +634,443 @@ impl Map2InPlace for ScatterAdd<'_> {
     }
 }
 
-struct Conv1D<'a>(&'a fuel_core_types::conv::ParamsConv1D);
-impl Map2 for Conv1D<'_> {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        inp_l: &Layout,
-        k: &CudaSlice<T>,
-        k_l: &Layout,
-        dev: &CudaDevice,
-    ) -> Result<CudaSlice<T>> {
-        // Kernel shape: (c_out, c_in_k, k_size)
-        // Input shape: (b_size, c_in, l_in) or (c_in, l_in)
-        let p = &self.0;
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let k = &k.slice(k_l.start_offset()..k.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-        let l_out = p.l_out();
-        let dst_el = p.c_out * l_out * p.b_size;
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>("conv1d"), &kernels::CONV)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let ds = if dims.len() == 3 {
-            conv_dims_strides_usize(dims, inp_l, k_l)
-        } else if dims.len() == 2 {
-            let mut v = vec![1usize];
-            v.extend_from_slice(dims);
-            v.push(1);
-            v.extend_from_slice(&inp_l.stride_unsigned());
-            v.extend_from_slice(k_l.dims());
-            v.extend_from_slice(&k_l.stride_unsigned());
-            v
-        } else {
-            fuel_core_types::bail!("unexpected input shape for conv1d {dims:?}")
-        };
-        let ds = dev.clone_htod(&ds)?;
-        let mut builder = func.builder();
-        barg!(builder, el, l_out, p.stride, p.padding, p.dilation);
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(k);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+// Conv1D / Conv2D dispatch — baracuda alpha.38 cuDNN-backed conv FFI.
+// PTX `Conv1D`/`Conv2D` Map2 impls + Fuel's internal `crate::cudnn::
+// launch_conv*` wrappers retired in Phase 5b of the fuel-cuda-kernels
+// retirement. `crate::baracuda::scratch::Workspace` (alloc-per-call) is
+// used for the per-launch cuDNN workspace — sized to `0` lets baracuda
+// auto-pick the workspace (it heap-allocates the needed bytes internally
+// per the cuDNN contract).
+
+fn baracuda_conv2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    inp_l: &Layout,
+    k: &CudaSlice<T>,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConv2D,
+    dev: &CudaDevice,
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_2d: expected contiguous NCHW input (start_offset=0)");
     }
-}
-
-struct Conv2D<'a>(&'a fuel_core_types::conv::ParamsConv2D);
-impl Map2 for Conv2D<'_> {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        inp_l: &Layout,
-        k: &CudaSlice<T>,
-        k_l: &Layout,
-        dev: &CudaDevice,
-    ) -> Result<CudaSlice<T>> {
-        // Kernel shape: (c_out, c_in_k, h_k, w_k)
-        // Input shape: (b_size, c_in, h_in, w_in)
-        let p = &self.0;
-        let (out_w, out_h) = (p.out_w(), p.out_h());
-        let dst_el = p.c_out * out_w * out_h * p.b_size;
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let k = &k.slice(k_l.start_offset()..k.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>("conv2d"), &kernels::CONV)?;
-        let ds = if dims.len() == 4 {
-            conv_dims_strides_usize(dims, inp_l, k_l)
-        } else {
-            fuel_core_types::bail!("unexpected input shape for conv2d {dims:?}")
-        };
-        let ds = dev.clone_htod(&ds)?;
-        let mut builder = func.builder();
-        barg!(builder, el, out_w, out_h, p.stride, p.padding, p.dilation);
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(k);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+    if !k_l.is_contiguous() || k_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_2d: expected contiguous filter (start_offset=0)");
     }
+    let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
+    let (out_h, out_w) = (params.out_h(), params.out_w());
+    let dst_el = params.c_out * out_h * out_w * params.b_size;
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (
+        batch, c_in, c_out, h_in, w_in, kh, kw,
+        stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
+    ) = (
+        params.b_size as i32,
+        params.c_in as i32,
+        params.c_out as i32,
+        params.i_h as i32,
+        params.i_w as i32,
+        params.k_h as i32,
+        params.k_w as i32,
+        params.stride as i32, params.stride as i32,
+        params.padding as i32, params.padding as i32,
+        params.dilation as i32, params.dilation as i32,
+        params.groups.max(1) as i32,
+    );
+    let (h_out, w_out) = (out_h as i32, out_w as i32);
+    let status = match dt {
+        // SAFETY: device-resident pointers + valid stream. Workspace is
+        // null/0 — baracuda's wrapper internally heap-allocates the
+        // cuDNN-reported workspace bytes.
+        DType::F32 => unsafe {
+            sys::baracuda_kernels_conv_2d_fw_f32_run(
+                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F64 => unsafe {
+            sys::baracuda_kernels_conv_2d_fw_f64_run(
+                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F16 => unsafe {
+            sys::baracuda_kernels_conv_2d_fw_f16_run(
+                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::BF16 => unsafe {
+            sys::baracuda_kernels_conv_2d_fw_bf16_run(
+                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        other => fuel_core_types::bail!("baracuda conv_2d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "conv_2d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
 }
 
-struct Col2Im1D {
-    stride: usize,
-}
-
-impl Map1 for Col2Im1D {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        col: &CudaSlice<T>,
-        dev: &CudaDevice,
-        l: &Layout,
-    ) -> Result<CudaSlice<T>> {
-        let (b_size, l_in, c_out, k_size) = l.shape().dims4()?;
-        let stride = self.stride;
-        let l_out = (l_in - 1) * stride + k_size;
-        let dst_el = b_size * c_out * l_out;
-        let mut im = unsafe { dev.alloc::<T>(dst_el)? };
-
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>("col2im1d"), &kernels::CONV)?;
-        let mut builder = func.builder();
-        barg!(builder, dst_el, l_out, l_in, c_out, k_size, stride);
-        builder.arg(col);
-        builder.arg(&mut im);
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(im)
+fn baracuda_conv1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    inp_l: &Layout,
+    k: &CudaSlice<T>,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConv1D,
+    dev: &CudaDevice,
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_1d: expected contiguous NCL input (start_offset=0)");
     }
-}
-
-struct ConvTranspose1D<'a>(&'a fuel_core_types::conv::ParamsConvTranspose1D);
-impl Map2 for ConvTranspose1D<'_> {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        inp_l: &Layout,
-        k: &CudaSlice<T>,
-        k_l: &Layout,
-        dev: &CudaDevice,
-    ) -> Result<CudaSlice<T>> {
-        // Kernel shape: (c_in_k, c_out, l_k)
-        // Input shape: (b_size, c_in, l_in)
-        let p = &self.0;
-        let l_out = p.l_out();
-        let dst_el = p.c_out * l_out * p.b_size;
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let k = &k.slice(k_l.start_offset()..k.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>("conv_transpose1d"), &kernels::CONV)?;
-        let ds = if dims.len() == 3 {
-            conv_dims_strides_usize(dims, inp_l, k_l)
-        } else {
-            fuel_core_types::bail!("unexpected input shape for conv_transpose1d {dims:?}")
-        };
-        let ds = dev.clone_htod(&ds)?;
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, l_out);
-        barg!(builder, p.stride);
-        barg!(builder, p.padding);
-        barg!(builder, p.output_padding);
-        barg!(builder, p.dilation);
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(k);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+    if !k_l.is_contiguous() || k_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_1d: expected contiguous filter (start_offset=0)");
     }
+    let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
+    let l_out = params.l_out();
+    let dst_el = params.c_out * l_out * params.b_size;
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (batch, c_in, c_out, l_in, l_filt, stride_l, pad_l, dilation_l, groups) = (
+        params.b_size as i32,
+        params.c_in as i32,
+        params.c_out as i32,
+        params.l_in as i32,
+        params.k_size as i32,
+        params.stride as i32,
+        params.padding as i32,
+        params.dilation as i32,
+        1_i32,
+    );
+    let l_out_i = l_out as i32;
+    let status = match dt {
+        DType::F32 => unsafe {
+            sys::baracuda_kernels_conv_1d_fw_f32_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F64 => unsafe {
+            sys::baracuda_kernels_conv_1d_fw_f64_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F16 => unsafe {
+            sys::baracuda_kernels_conv_1d_fw_f16_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::BF16 => unsafe {
+            sys::baracuda_kernels_conv_1d_fw_bf16_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        other => fuel_core_types::bail!("baracuda conv_1d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "conv_1d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
 }
 
-struct ConvTranspose2D<'a>(&'a fuel_core_types::conv::ParamsConvTranspose2D);
-impl Map2 for ConvTranspose2D<'_> {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        inp_l: &Layout,
-        k: &CudaSlice<T>,
-        k_l: &Layout,
-        dev: &CudaDevice,
-    ) -> Result<CudaSlice<T>> {
-        // Kernel shape: (c_in_k, c_out, h_k, w_k)
-        // Input shape: (b_size, c_in, h_in, w_in)
-        let p = &self.0;
-        let (out_w, out_h) = (p.out_w(), p.out_h());
-        let dst_el = p.c_out * out_w * out_h * p.b_size;
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let k = &k.slice(k_l.start_offset()..k.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
+fn conv2d_dispatch(
+    slice: &CudaStorageSlice,
+    inp_l: &Layout,
+    kernel: &CudaStorageSlice,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConv2D,
+    dev: &CudaDevice,
+) -> Result<CudaStorageSlice> {
+    Ok(match (slice, kernel) {
+        (CudaStorageSlice::F32(i), CudaStorageSlice::F32(k)) => {
+            CudaStorageSlice::F32(baracuda_conv2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F64(i), CudaStorageSlice::F64(k)) => {
+            CudaStorageSlice::F64(baracuda_conv2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F16(i), CudaStorageSlice::F16(k)) => {
+            CudaStorageSlice::F16(baracuda_conv2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
+            CudaStorageSlice::BF16(baracuda_conv2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::U8(_), CudaStorageSlice::U8(_)) => {
+            Err(CudaError::InternalError("conv2d does not support u8 (cuDNN INT8 is signed)"))?
+        }
+        _ => Err(CudaError::InternalError("conv2d: dtype mismatch / unsupported"))?,
+    })
+}
 
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>("conv_transpose2d"), &kernels::CONV)?;
-        let ds = if dims.len() == 4 {
-            conv_dims_strides_usize(dims, inp_l, k_l)
-        } else {
-            fuel_core_types::bail!("unexpected input shape for conv_transpose2d {dims:?}")
-        };
-        let ds = dev.clone_htod(&ds)?;
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, out_w);
-        barg!(builder, out_h);
-        barg!(builder, p.stride);
-        barg!(builder, p.padding);
-        barg!(builder, p.output_padding);
-        barg!(builder, p.dilation);
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(k);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+fn baracuda_conv_transpose2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    inp_l: &Layout,
+    k: &CudaSlice<T>,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConvTranspose2D,
+    dev: &CudaDevice,
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_transpose_2d: expected contiguous NCHW input");
     }
+    if !k_l.is_contiguous() || k_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_transpose_2d: expected contiguous filter");
+    }
+    let (out_h, out_w) = (params.out_h(), params.out_w());
+    let dst_el = params.c_out * out_h * out_w * params.b_size;
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
+    let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (
+        batch, c_in, c_out, h_in, w_in, kh, kw,
+        stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
+        opad_h, opad_w, groups,
+    ) = (
+        params.b_size as i32,
+        params.c_in as i32,
+        params.c_out as i32,
+        params.i_h as i32,
+        params.i_w as i32,
+        params.k_h as i32,
+        params.k_w as i32,
+        params.stride as i32, params.stride as i32,
+        params.padding as i32, params.padding as i32,
+        params.dilation as i32, params.dilation as i32,
+        params.output_padding as i32, params.output_padding as i32,
+        1_i32,
+    );
+    let (h_out_i, w_out_i) = (out_h as i32, out_w as i32);
+    let status = match dt {
+        DType::F32 => unsafe {
+            sys::baracuda_kernels_conv_transpose_2d_fw_f32_run(
+                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
+                opad_h, opad_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F64 => unsafe {
+            sys::baracuda_kernels_conv_transpose_2d_fw_f64_run(
+                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
+                opad_h, opad_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F16 => unsafe {
+            sys::baracuda_kernels_conv_transpose_2d_fw_f16_run(
+                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
+                opad_h, opad_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::BF16 => unsafe {
+            sys::baracuda_kernels_conv_transpose_2d_fw_bf16_run(
+                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
+                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
+                opad_h, opad_w, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        other => fuel_core_types::bail!("baracuda conv_transpose_2d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "conv_transpose_2d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
 }
+
+fn baracuda_conv_transpose1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    inp_l: &Layout,
+    k: &CudaSlice<T>,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConvTranspose1D,
+    dev: &CudaDevice,
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_transpose_1d: expected contiguous NCL input");
+    }
+    if !k_l.is_contiguous() || k_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda conv_transpose_1d: expected contiguous filter");
+    }
+    let l_out = params.l_out();
+    let dst_el = params.c_out * l_out * params.b_size;
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
+    let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (
+        batch, c_in, c_out, l_in, l_filt,
+        stride_l, pad_l, dilation_l, output_pad_l, groups,
+    ) = (
+        params.b_size as i32,
+        params.c_in as i32,
+        params.c_out as i32,
+        params.l_in as i32,
+        params.k_size as i32,
+        params.stride as i32,
+        params.padding as i32,
+        params.dilation as i32,
+        params.output_padding as i32,
+        1_i32,
+    );
+    let l_out_i = l_out as i32;
+    let status = match dt {
+        DType::F32 => unsafe {
+            sys::baracuda_kernels_conv_transpose_1d_fw_f32_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, output_pad_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F64 => unsafe {
+            sys::baracuda_kernels_conv_transpose_1d_fw_f64_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, output_pad_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::F16 => unsafe {
+            sys::baracuda_kernels_conv_transpose_1d_fw_f16_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, output_pad_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        DType::BF16 => unsafe {
+            sys::baracuda_kernels_conv_transpose_1d_fw_bf16_run(
+                batch, c_in, c_out, l_in, l_out_i, l_filt,
+                stride_l, pad_l, dilation_l, output_pad_l, groups,
+                inp_ptr, k_ptr, out_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        },
+        other => fuel_core_types::bail!("baracuda conv_transpose_1d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "conv_transpose_1d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
+}
+
+fn conv_transpose2d_dispatch(
+    slice: &CudaStorageSlice,
+    inp_l: &Layout,
+    kernel: &CudaStorageSlice,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConvTranspose2D,
+    dev: &CudaDevice,
+) -> Result<CudaStorageSlice> {
+    Ok(match (slice, kernel) {
+        (CudaStorageSlice::F32(i), CudaStorageSlice::F32(k)) => {
+            CudaStorageSlice::F32(baracuda_conv_transpose2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F64(i), CudaStorageSlice::F64(k)) => {
+            CudaStorageSlice::F64(baracuda_conv_transpose2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F16(i), CudaStorageSlice::F16(k)) => {
+            CudaStorageSlice::F16(baracuda_conv_transpose2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
+            CudaStorageSlice::BF16(baracuda_conv_transpose2d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        _ => Err(CudaError::InternalError("conv_transpose2d: dtype mismatch / unsupported"))?,
+    })
+}
+
+fn conv_transpose1d_dispatch(
+    slice: &CudaStorageSlice,
+    inp_l: &Layout,
+    kernel: &CudaStorageSlice,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConvTranspose1D,
+    dev: &CudaDevice,
+) -> Result<CudaStorageSlice> {
+    Ok(match (slice, kernel) {
+        (CudaStorageSlice::F32(i), CudaStorageSlice::F32(k)) => {
+            CudaStorageSlice::F32(baracuda_conv_transpose1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F64(i), CudaStorageSlice::F64(k)) => {
+            CudaStorageSlice::F64(baracuda_conv_transpose1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F16(i), CudaStorageSlice::F16(k)) => {
+            CudaStorageSlice::F16(baracuda_conv_transpose1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
+            CudaStorageSlice::BF16(baracuda_conv_transpose1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        _ => Err(CudaError::InternalError("conv_transpose1d: dtype mismatch / unsupported"))?,
+    })
+}
+
+fn conv1d_dispatch(
+    slice: &CudaStorageSlice,
+    inp_l: &Layout,
+    kernel: &CudaStorageSlice,
+    k_l: &Layout,
+    params: &fuel_core_types::conv::ParamsConv1D,
+    dev: &CudaDevice,
+) -> Result<CudaStorageSlice> {
+    Ok(match (slice, kernel) {
+        (CudaStorageSlice::F32(i), CudaStorageSlice::F32(k)) => {
+            CudaStorageSlice::F32(baracuda_conv1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F64(i), CudaStorageSlice::F64(k)) => {
+            CudaStorageSlice::F64(baracuda_conv1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::F16(i), CudaStorageSlice::F16(k)) => {
+            CudaStorageSlice::F16(baracuda_conv1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
+            CudaStorageSlice::BF16(baracuda_conv1d_fw(i, inp_l, k, k_l, params, dev)?)
+        }
+        _ => Err(CudaError::InternalError("conv1d: dtype mismatch / unsupported"))?,
+    })
+}
+
+// Col2Im1D + ConvTranspose1D + ConvTranspose2D PTX structs retired in
+// Phase 5b — baracuda's `conv_transpose_{1,2}d_*_run` FFI subsumes both
+// the Col2Im1D fast path and the general PTX transpose paths.
 
 // Pool2D dispatch — baracuda alpha.36 cuDNN-backed Max/Avg pool 2D.
 // The PTX-based Pool2D Map1 impl retired with the Phase 1 cleanup of
@@ -2457,58 +2570,7 @@ impl CudaStorage {
         Ok(Self { slice, device })
     }
 
-    #[cfg(not(feature = "cudnn"))]
-    pub fn conv1d(
-        &self,
-        l: &Layout,
-        kernel: &Self,
-        kernel_l: &Layout,
-        params: &fuel_core_types::conv::ParamsConv1D,
-    ) -> Result<Self> {
-        const USE_IM2COL_CONV1D: bool = true;
-
-        let device = self.device().clone();
-        if !USE_IM2COL_CONV1D {
-            let slice = Conv1D(params).map(&self.slice, l, &kernel.slice, kernel_l, &device)?;
-            return Ok(Self { slice, device });
-        }
-
-        let col = Im2Col1D {
-            l_k: params.k_size,
-            stride: params.stride,
-            dilation: params.dilation,
-            padding: params.padding,
-        }
-        .map(&self.slice, &device, l)?;
-        let col = Self { slice: col, device };
-        let l_out = params.l_out();
-        let b = params.b_size;
-        let n = params.c_out;
-        let k = params.k_size * params.c_in;
-        let m = l_out;
-        let col_l = Layout::contiguous((b * m, k));
-        let res = if kernel_l.is_contiguous() {
-            let kernel_l =
-                Layout::contiguous_with_offset((n, k), kernel_l.start_offset()).transpose(0, 1)?;
-            col.matmul(kernel, (1, b * m, n, k), &col_l, &kernel_l)?
-        } else {
-            // Make the kernel contiguous if not already the case.
-            let mut kernel_c = unsafe {
-                self.device()
-                    .alloc_uninit(kernel_l.shape(), kernel.dtype())?
-            };
-            kernel.copy_strided_src(&mut kernel_c, 0, kernel_l)?;
-            let kernel_l =
-                Layout::contiguous_with_offset((n, k), kernel_l.start_offset()).transpose(0, 1)?;
-            col.matmul(kernel, (1, b * m, n, k), &col_l, &kernel_l)?
-        };
-        let res_l = Layout::contiguous((b, l_out, n)).transpose(1, 2)?;
-        let mut res_t = unsafe { self.device().alloc_uninit(res_l.shape(), res.dtype())? };
-        res.copy_strided_src(&mut res_t, 0, &res_l)?;
-        Ok(res_t)
-    }
-
-    #[cfg(feature = "cudnn")]
+    /// Conv1D forward — baracuda alpha.38 cuDNN-backed FFI.
     pub fn conv1d(
         &self,
         inp_l: &Layout,
@@ -2517,188 +2579,96 @@ impl CudaStorage {
         params: &fuel_core_types::conv::ParamsConv1D,
     ) -> Result<Self> {
         let device = self.device().clone();
-        if !kernel_l.is_contiguous() {
-            let slice = Conv1D(params).map(&self.slice, inp_l, &kernel.slice, kernel_l, &device)?;
-            return Ok(Self { slice, device });
+        // Contiguize inputs if needed (baracuda's conv FFI takes plain
+        // NCL contig pointers, unlike the prior `crate::cudnn` path which
+        // supported strided descriptors).
+        let (inp_storage, inp_l_owned, _inp_keep);
+        let (inp_ref, inp_l_ref): (&Self, &Layout);
+        if inp_l.is_contiguous() && inp_l.start_offset() == 0 {
+            inp_ref = self;
+            inp_l_ref = inp_l;
+        } else {
+            let mut t = unsafe { device.alloc_uninit(inp_l.shape(), self.dtype())? };
+            self.copy_strided_src(&mut t, 0, inp_l)?;
+            inp_l_owned = Layout::contiguous(inp_l.shape().clone());
+            _inp_keep = ();
+            inp_storage = t;
+            inp_ref = &inp_storage;
+            inp_l_ref = &inp_l_owned;
         }
-        let l_out = params.l_out();
-        let dst_el = params.c_out * l_out * params.b_size;
-        let slice = match (&self.slice, &kernel.slice) {
-            // cuDNN's INT8 path is signed (i8); Fuel's u8 storage variant
-            // has no signed counterpart, so we surface an error instead of
-            // a silent reinterpret cast.
-            (S::U8(_), S::U8(_)) => Err(CudaError::InternalError(
-                "conv1d does not support u8 (cuDNN INT8 is signed)"
-            ))?,
-            (S::BF16(inp), S::BF16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<bf16>(dst_el)? };
-                // Only PSEUDO_BFLOAT16_CONFIG is supported in cudnn, there is no "true bfloat16"
-                // version.
-                // https://docs.nvidia.com/deeplearning/cudnn/latest/api/cudnn-cnn-library.html#id88
-                crate::cudnn::launch_conv1d::<bf16, f32>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::BF16(out)
-            }
-            (S::F16(inp), S::F16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<f16>(dst_el)? };
-                crate::cudnn::launch_conv1d::<f16, f16>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::F16(out)
-            }
-            (S::F32(inp), S::F32(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<f32>(dst_el)? };
-                crate::cudnn::launch_conv1d::<f32, f32>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::F32(out)
-            }
-            (S::F64(inp), S::F64(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<f64>(dst_el)? };
-                crate::cudnn::launch_conv1d::<f64, f64>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::F64(out)
-            }
-            (S::U32(_), S::U32(_)) => Err(CudaError::InternalError("conv1d does not support u32"))?,
-            (S::I16(_), S::I16(_)) => Err(CudaError::InternalError("conv1d does not support i16"))?,
-            (S::I32(_), S::I32(_)) => Err(CudaError::InternalError("conv1d does not support i32"))?,
-            (S::I64(_), S::I64(_)) => Err(CudaError::InternalError("conv1d does not support i64"))?,
-            (S::F8E4M3(_), S::F8E4M3(_)) => {
-                Err(CudaError::InternalError("conv1d does not support f8e4m3"))?
-            }
-            _ => Err(CudaError::InternalError("dtype mismatch in conv1d"))?,
-        };
+        let (k_storage, k_l_owned);
+        let (k_ref, k_l_ref): (&Self, &Layout);
+        if kernel_l.is_contiguous() && kernel_l.start_offset() == 0 {
+            k_ref = kernel;
+            k_l_ref = kernel_l;
+        } else {
+            let mut t = unsafe { device.alloc_uninit(kernel_l.shape(), kernel.dtype())? };
+            kernel.copy_strided_src(&mut t, 0, kernel_l)?;
+            k_l_owned = Layout::contiguous(kernel_l.shape().clone());
+            k_storage = t;
+            k_ref = &k_storage;
+            k_l_ref = &k_l_owned;
+        }
+        let slice = conv1d_dispatch(&inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device)?;
         Ok(Self { slice, device })
     }
 
+    /// ConvTranspose1D forward — baracuda alpha.38 cuDNN-backed FFI.
+    /// The prior PTX `ConvTranspose1D` Map2 + the Col2Im1D fast path
+    /// retired in Phase 5b — baracuda handles both regular and
+    /// output_padding cases natively.
     pub fn conv_transpose1d(
         &self,
-        l: &Layout,
+        inp_l: &Layout,
         kernel: &Self,
         kernel_l: &Layout,
         params: &fuel_core_types::conv::ParamsConvTranspose1D,
     ) -> Result<Self> {
-        const USE_COL2IM_CONV1D_TR: bool = true;
-
         let device = self.device().clone();
-        let can_use_col2im = kernel_l.is_contiguous()
-            && params.dilation == 1
-            && params.padding == 0
-            && params.output_padding == 0;
-        let slice = if USE_COL2IM_CONV1D_TR && can_use_col2im {
-            let (b_size, c_in, l_in) = l.shape().dims3()?;
-            let (c_in2, c_out, k_size) = kernel_l.shape().dims3()?;
-            if !kernel_l.is_contiguous() {
-                fuel_core_types::bail!(
-                    "convtr1d: the second argument (kernel) has to be contiguous {kernel_l:?}"
-                )
-            }
-            if c_in != c_in2 {
-                fuel_core_types::bail!(
-                    "convtr1d: shape mismatch on c_in {:?} {:?}",
-                    l.shape(),
-                    kernel_l.shape()
-                )
-            }
-            let col = {
-                // This merges the last two dimensions of the kernel together.
-                let kernel_l_mm = Layout::new(
-                    (b_size, c_in, k_size * c_out).into(),
-                    smallvec::smallvec![0_isize, (k_size * c_out) as isize, 1_isize],
-                    kernel_l.start_offset(),
-                );
-                self.matmul(
-                    kernel,
-                    (
-                        b_size,
-                        /* m */ l_in,
-                        /* n */ c_out * k_size,
-                        /* k */ c_in,
-                    ),
-                    &l.transpose(1, 2)?,
-                    &kernel_l_mm,
-                )?
-            };
-            let col_l = Layout::contiguous((b_size, l_in, c_out, k_size));
-            Col2Im1D {
-                stride: params.stride,
-            }
-            .map(&col.slice, &device, &col_l)?
+        let inp_storage;
+        let inp_l_owned;
+        let (inp_ref, inp_l_ref): (&Self, &Layout);
+        if inp_l.is_contiguous() && inp_l.start_offset() == 0 {
+            inp_ref = self;
+            inp_l_ref = inp_l;
         } else {
-            ConvTranspose1D(params).map(&self.slice, l, &kernel.slice, kernel_l, &device)?
-        };
+            inp_storage = unsafe {
+                let mut t = device.alloc_uninit(inp_l.shape(), self.dtype())?;
+                self.copy_strided_src(&mut t, 0, inp_l)?;
+                t
+            };
+            inp_l_owned = Layout::contiguous(inp_l.shape().clone());
+            inp_ref = &inp_storage;
+            inp_l_ref = &inp_l_owned;
+        }
+        let k_storage;
+        let k_l_owned;
+        let (k_ref, k_l_ref): (&Self, &Layout);
+        if kernel_l.is_contiguous() && kernel_l.start_offset() == 0 {
+            k_ref = kernel;
+            k_l_ref = kernel_l;
+        } else {
+            k_storage = unsafe {
+                let mut t = device.alloc_uninit(kernel_l.shape(), kernel.dtype())?;
+                kernel.copy_strided_src(&mut t, 0, kernel_l)?;
+                t
+            };
+            k_l_owned = Layout::contiguous(kernel_l.shape().clone());
+            k_ref = &k_storage;
+            k_l_ref = &k_l_owned;
+        }
+        let slice = conv_transpose1d_dispatch(
+            &inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device,
+        )?;
         Ok(Self { slice, device })
     }
 
-    #[cfg(not(feature = "cudnn"))]
-    pub fn conv2d(
-        &self,
-        l: &Layout,
-        kernel: &Self,
-        kernel_l: &Layout,
-        params: &fuel_core_types::conv::ParamsConv2D,
-    ) -> Result<Self> {
-        const USE_IM2COL_CONV2D: bool = true;
-
-        if params.groups != 1 {
-            fuel_core_types::bail!(
-                "CUDA im2col conv2d fallback does not support groups>1 (got groups={}); enable the `cudnn` feature for grouped/depthwise conv",
-                params.groups,
-            );
-        }
-
-        let device = self.device().clone();
-        if !USE_IM2COL_CONV2D {
-            let slice = Conv2D(params).map(&self.slice, l, &kernel.slice, kernel_l, &device)?;
-            return Ok(Self { slice, device });
-        }
-
-        let col = Im2Col {
-            h_k: params.k_h,
-            w_k: params.k_w,
-            stride: params.stride,
-            dilation: params.dilation,
-            padding: params.padding,
-        }
-        .map(&self.slice, &device, l)?;
-        let col = Self { slice: col, device };
-        let h_out = params.out_h();
-        let w_out = params.out_w();
-        let b = params.b_size;
-        let n = params.c_out;
-        let k = params.k_h * params.k_w * params.c_in;
-        let m = h_out * w_out;
-        let col_l = Layout::contiguous((b * m, k));
-        let res = if kernel_l.is_contiguous() {
-            let kernel_l =
-                Layout::contiguous_with_offset((n, k), kernel_l.start_offset()).transpose(0, 1)?;
-            col.matmul(kernel, (1, b * m, n, k), &col_l, &kernel_l)?
-        } else {
-            // Make the kernel contiguous if not already the case.
-            let mut kernel_c = unsafe {
-                self.device()
-                    .alloc_uninit(kernel_l.shape(), kernel.dtype())?
-            };
-            kernel.copy_strided_src(&mut kernel_c, 0, kernel_l)?;
-            let kernel_l =
-                Layout::contiguous_with_offset((n, k), kernel_l.start_offset()).transpose(0, 1)?;
-            col.matmul(kernel, (1, b * m, n, k), &col_l, &kernel_l)?
-        };
-        let res_l = Layout::contiguous((b, h_out, w_out, n))
-            .transpose(1, 2)?
-            .transpose(1, 3)?;
-        let mut res_t = unsafe { self.device().alloc_uninit(res_l.shape(), res.dtype())? };
-        res.copy_strided_src(&mut res_t, 0, &res_l)?;
-        Ok(res_t)
-    }
-
-    #[cfg(feature = "cudnn")]
+    /// Conv2D forward — baracuda alpha.38 cuDNN-backed FFI. The prior
+    /// cfg-gated dual implementation (im2col + matmul fallback for no-cudnn
+    /// builds, `crate::cudnn::launch_conv2d` for cudnn builds) collapsed
+    /// into one path now that baracuda always ships the conv FFI under
+    /// the `cudnn` feature on `baracuda-kernels-sys` (always enabled in
+    /// Fuel's Cargo.toml).
     pub fn conv2d(
         &self,
         inp_l: &Layout,
@@ -2707,76 +2677,88 @@ impl CudaStorage {
         params: &fuel_core_types::conv::ParamsConv2D,
     ) -> Result<Self> {
         let device = self.device().clone();
-        if !kernel_l.is_contiguous() {
-            let slice = Conv2D(params).map(&self.slice, inp_l, &kernel.slice, kernel_l, &device)?;
-            return Ok(Self { slice, device });
+        // Contiguize inputs if needed (baracuda's conv FFI takes plain
+        // contig NCHW pointers, no stride descriptors).
+        let inp_storage;
+        let inp_l_owned;
+        let (inp_ref, inp_l_ref): (&Self, &Layout);
+        if inp_l.is_contiguous() && inp_l.start_offset() == 0 {
+            inp_ref = self;
+            inp_l_ref = inp_l;
+        } else {
+            inp_storage = unsafe {
+                let mut t = device.alloc_uninit(inp_l.shape(), self.dtype())?;
+                self.copy_strided_src(&mut t, 0, inp_l)?;
+                t
+            };
+            inp_l_owned = Layout::contiguous(inp_l.shape().clone());
+            inp_ref = &inp_storage;
+            inp_l_ref = &inp_l_owned;
         }
-        let (out_w, out_h) = (params.out_w(), params.out_h());
-        let dst_el = params.c_out * out_w * out_h * params.b_size;
-        let slice = match (&self.slice, &kernel.slice) {
-            // cuDNN's INT8 path is signed (i8); Fuel's u8 storage variant
-            // has no signed counterpart, so we surface an error instead of
-            // a silent reinterpret cast.
-            (S::U8(_), S::U8(_)) => Err(CudaError::InternalError(
-                "conv2d does not support u8 (cuDNN INT8 is signed)"
-            ))?,
-            (S::BF16(inp), S::BF16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<bf16>(dst_el)? };
-                // Only PSEUDO_BFLOAT16_CONFIG is supported in cudnn, there is no "true bfloat16"
-                // version.
-                // https://docs.nvidia.com/deeplearning/cudnn/latest/api/cudnn-cnn-library.html#id88
-                crate::cudnn::launch_conv2d::<bf16, f32>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::BF16(out)
-            }
-            (S::F16(inp), S::F16(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<f16>(dst_el)? };
-                crate::cudnn::launch_conv2d::<f16, f16>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::F16(out)
-            }
-            (S::F32(inp), S::F32(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<f32>(dst_el)? };
-                crate::cudnn::launch_conv2d::<f32, f32>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::F32(out)
-            }
-            (S::F64(inp), S::F64(k)) => {
-                let inp = &inp.slice(inp_l.start_offset()..inp.len());
-                let k = &k.slice(kernel_l.start_offset()..k.len());
-                let mut out = unsafe { device.alloc::<f64>(dst_el)? };
-                crate::cudnn::launch_conv2d::<f64, f64>(inp, inp_l, k, &mut out, params, &device)
-                    .map_err(crate::Error::wrap)?;
-                S::F64(out)
-            }
-            (S::U32(_), S::U32(_)) => Err(CudaError::InternalError("conv2d does not support u32"))?,
-            (S::I16(_), S::I16(_)) => Err(CudaError::InternalError("conv2d does not support i16"))?,
-            (S::I32(_), S::I32(_)) => Err(CudaError::InternalError("conv2d does not support i32"))?,
-            (S::I64(_), S::I64(_)) => Err(CudaError::InternalError("conv2d does not support i64"))?,
-            (S::F8E4M3(_), S::F8E4M3(_)) => {
-                Err(CudaError::InternalError("conv2d does not support f8e4m3"))?
-            }
-            _ => Err(CudaError::InternalError("dtype mismatch in conv2d"))?,
-        };
+        let k_storage;
+        let k_l_owned;
+        let (k_ref, k_l_ref): (&Self, &Layout);
+        if kernel_l.is_contiguous() && kernel_l.start_offset() == 0 {
+            k_ref = kernel;
+            k_l_ref = kernel_l;
+        } else {
+            k_storage = unsafe {
+                let mut t = device.alloc_uninit(kernel_l.shape(), kernel.dtype())?;
+                kernel.copy_strided_src(&mut t, 0, kernel_l)?;
+                t
+            };
+            k_l_owned = Layout::contiguous(kernel_l.shape().clone());
+            k_ref = &k_storage;
+            k_l_ref = &k_l_owned;
+        }
+        let slice = conv2d_dispatch(&inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device)?;
         Ok(Self { slice, device })
     }
 
+    /// ConvTranspose2D forward — baracuda alpha.38 cuDNN-backed FFI.
     pub fn conv_transpose2d(
         &self,
-        l: &Layout,
+        inp_l: &Layout,
         kernel: &Self,
         kernel_l: &Layout,
         params: &fuel_core_types::conv::ParamsConvTranspose2D,
     ) -> Result<Self> {
         let device = self.device().clone();
-        let slice =
-            ConvTranspose2D(params).map(&self.slice, l, &kernel.slice, kernel_l, &device)?;
+        let inp_storage;
+        let inp_l_owned;
+        let (inp_ref, inp_l_ref): (&Self, &Layout);
+        if inp_l.is_contiguous() && inp_l.start_offset() == 0 {
+            inp_ref = self;
+            inp_l_ref = inp_l;
+        } else {
+            inp_storage = unsafe {
+                let mut t = device.alloc_uninit(inp_l.shape(), self.dtype())?;
+                self.copy_strided_src(&mut t, 0, inp_l)?;
+                t
+            };
+            inp_l_owned = Layout::contiguous(inp_l.shape().clone());
+            inp_ref = &inp_storage;
+            inp_l_ref = &inp_l_owned;
+        }
+        let k_storage;
+        let k_l_owned;
+        let (k_ref, k_l_ref): (&Self, &Layout);
+        if kernel_l.is_contiguous() && kernel_l.start_offset() == 0 {
+            k_ref = kernel;
+            k_l_ref = kernel_l;
+        } else {
+            k_storage = unsafe {
+                let mut t = device.alloc_uninit(kernel_l.shape(), kernel.dtype())?;
+                kernel.copy_strided_src(&mut t, 0, kernel_l)?;
+                t
+            };
+            k_l_owned = Layout::contiguous(kernel_l.shape().clone());
+            k_ref = &k_storage;
+            k_l_ref = &k_l_owned;
+        }
+        let slice = conv_transpose2d_dispatch(
+            &inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device,
+        )?;
         Ok(Self { slice, device })
     }
 

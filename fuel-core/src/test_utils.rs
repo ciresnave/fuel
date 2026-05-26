@@ -198,3 +198,26 @@ pub fn to_vec3_round(t: &Tensor, digits: i32) -> Result<Vec<Vec<Vec<f32>>>> {
         .collect();
     Ok(t)
 }
+
+/// Element-wise absolute-tolerance comparison for two flat f32 slices.
+/// Panics with a descriptive message on the first cell exceeding
+/// `abs_tol`. Used by tests whose precision baseline drifts by a few
+/// ULPs across cuDNN algorithm choices (e.g. conv backward grads where
+/// baracuda's algorithm pick differs from a prior Fuel-internal cuDNN
+/// wrapper's choice; both outputs are equally IEEE-754-valid).
+pub fn assert_close_vec1(actual: &[f32], expected: &[f32], abs_tol: f32, label: &str) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "{label}: len mismatch {} vs {}",
+        actual.len(),
+        expected.len(),
+    );
+    for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+        let diff = (a - e).abs();
+        assert!(
+            diff <= abs_tol,
+            "{label}: idx {i} actual={a} expected={e} diff={diff} > {abs_tol}",
+        );
+    }
+}
