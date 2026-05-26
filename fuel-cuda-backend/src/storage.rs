@@ -1178,56 +1178,112 @@ fn upsample_nearest2d_dispatch(
     })
 }
 
-struct UpsampleBilinear2D {
+// UpsampleBilinear2D dispatch — baracuda alpha.38 (Phase 19.2 +
+// align_corners follow-up). The PTX `upsample_bilinear2d` Map1
+// retired in Phase 5a-bilinear. Baracuda's
+// `baracuda_kernels_interpolate_bilinear_2d_<dtype>_run` now takes
+// align_corners + per-axis scale factor overrides (0.0 = derive),
+// closing the parity gap with PyTorch's
+// `nn.functional.interpolate(mode='bilinear', align_corners=...)`.
+
+#[allow(clippy::too_many_arguments)]
+fn upsample_bilinear2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    inp: &CudaSlice<T>,
+    dev: &CudaDevice,
+    inp_l: &Layout,
     out_w: usize,
     out_h: usize,
     align_corners: bool,
     scale_h_factor: Option<f64>,
     scale_w_factor: Option<f64>,
+) -> Result<CudaSlice<T>> {
+    use baracuda_kernels_sys as sys;
+    let dt = T::DTYPE;
+    let dims = inp_l.shape().dims();
+    if dims.len() != 4 {
+        fuel_core_types::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
+    }
+    if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
+        fuel_core_types::bail!("baracuda upsample_bilinear_2d: expected contiguous NCHW input")
+    }
+    let (batch, channels, h_in, w_in) = (dims[0], dims[1], dims[2], dims[3]);
+    let dst_el = batch * channels * out_w * out_h;
+    // SAFETY: filled by the kernel below.
+    let out = unsafe { dev.alloc::<T>(dst_el)? };
+    let scratch = crate::baracuda::scratch::Workspace::alloc(dev, 0)?;
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = inp.as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let (n, c, ih, iw, oh, ow) = (
+        batch as i32, channels as i32, h_in as i32, w_in as i32, out_h as i32, out_w as i32,
+    );
+    let align = if align_corners { 1 } else { 0 };
+    // Baracuda's override convention: 0.0 = derive from (in, out); nonzero
+    // = explicit per-coord step. Fuel's `Option<f64>` maps cleanly.
+    let sh = scale_h_factor.unwrap_or(0.0);
+    let sw = scale_w_factor.unwrap_or(0.0);
+    let status = match dt {
+        // SAFETY: device-resident pointers + live stream.
+        DType::F32 => unsafe {
+            sys::baracuda_kernels_interpolate_bilinear_2d_f32_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(),
+                align, sh, sw, stream,
+            )
+        },
+        DType::F64 => unsafe {
+            sys::baracuda_kernels_interpolate_bilinear_2d_f64_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(),
+                align, sh, sw, stream,
+            )
+        },
+        DType::F16 => unsafe {
+            sys::baracuda_kernels_interpolate_bilinear_2d_f16_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(),
+                align, sh, sw, stream,
+            )
+        },
+        DType::BF16 => unsafe {
+            sys::baracuda_kernels_interpolate_bilinear_2d_bf16_run(
+                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
+                scratch.as_raw(), scratch.bytes(),
+                align, sh, sw, stream,
+            )
+        },
+        other => fuel_core_types::bail!("baracuda upsample_bilinear_2d: unsupported dtype {other:?}"),
+    };
+    crate::baracuda::status::check(status, "upsample_bilinear_2d_fw")?;
+    dev.synchronize()?;
+    Ok(out)
 }
 
-impl Map1 for UpsampleBilinear2D {
-    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-        &self,
-        inp: &CudaSlice<T>,
-        dev: &CudaDevice,
-        inp_l: &Layout,
-    ) -> Result<CudaSlice<T>> {
-        let inp = &inp.slice(inp_l.start_offset()..inp.len());
-        let shape = inp_l.shape();
-        let dims = shape.dims();
-        let ds = if dims.len() == 4 {
-            dims_strides_usize(inp_l)
-        } else {
-            fuel_core_types::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
-        };
-
-        let (out_w, out_h) = (self.out_w, self.out_h);
-        let dst_el = out_w * out_h * dims[0] * dims[1];
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func =
-            dev.get_or_load_func(&kernel_name::<T>("upsample_bilinear2d"), &kernels::CONV)?;
-
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let ds = dev.clone_htod(&ds)?;
-
-        let mut builder = func.builder();
-        barg!(builder, out_w);
-        barg!(builder, out_h);
-        barg!(builder, self.align_corners);
-        barg!(builder, self.scale_h_factor.is_some());
-        barg!(builder, self.scale_h_factor.unwrap_or(0.0));
-        barg!(builder, self.scale_w_factor.is_some());
-        barg!(builder, self.scale_w_factor.unwrap_or(0.0));
-        builder.arg(&ds);
-        builder.arg(inp);
-        builder.arg(&out);
-
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
-    }
+fn upsample_bilinear2d_dispatch(
+    slice: &CudaStorageSlice,
+    dev: &CudaDevice,
+    l: &Layout,
+    out_w: usize,
+    out_h: usize,
+    align_corners: bool,
+    scale_h: Option<f64>,
+    scale_w: Option<f64>,
+) -> Result<CudaStorageSlice> {
+    Ok(match slice {
+        CudaStorageSlice::F32(s) => CudaStorageSlice::F32(upsample_bilinear2d_baracuda(
+            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+        )?),
+        CudaStorageSlice::F64(s) => CudaStorageSlice::F64(upsample_bilinear2d_baracuda(
+            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+        )?),
+        CudaStorageSlice::F16(s) => CudaStorageSlice::F16(upsample_bilinear2d_baracuda(
+            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+        )?),
+        CudaStorageSlice::BF16(s) => CudaStorageSlice::BF16(upsample_bilinear2d_baracuda(
+            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+        )?),
+        other => fuel_core_types::bail!("upsample_bilinear_2d: unsupported storage variant {other:?}"),
+    })
 }
 
 struct WhereCond<'a>(&'a CudaStorage, &'a Layout);
@@ -2756,14 +2812,9 @@ impl CudaStorage {
         scale_w: Option<f64>,
     ) -> Result<Self> {
         let device = self.device().clone();
-        let slice = UpsampleBilinear2D {
-            out_w,
-            out_h,
-            align_corners,
-            scale_h_factor: scale_h,
-            scale_w_factor: scale_w,
-        }
-        .map(&self.slice, &device, l)?;
+        let slice = upsample_bilinear2d_dispatch(
+            &self.slice, &device, l, out_w, out_h, align_corners, scale_h, scale_w,
+        )?;
         Ok(Self { slice, device })
     }
 
