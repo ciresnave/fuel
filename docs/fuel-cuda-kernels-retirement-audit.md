@@ -270,13 +270,36 @@ plan:
      `fuel-cuda-kernels/src/lib.rs`. PTX module count drops 10 → 9.
    62/62 quantized_tests + 8/8 pool_tests + 16/16 conv_tests + 24/24
    bilinear_tests green on RTX 4070.
-9. **Phase 6c — QUEUED:** audit + delete legacy `CudaStorageSlice` API
-   from storage.rs (33 remaining `kernels::*` call sites — affine, unary,
-   binary, reduce, cast, indexing, ternary, fill, etc.) + byte_kernels.rs
-   (17 sites) + cutlass.rs/device.rs/dyn_impl.rs (~7 sites). Each retired
-   method either deletes (no callers outside the legacy dyn_impl trait
-   bridge) or routes through baracuda equivalents already exposed via
-   the binding table.
+9. **Phase 6c.1 (byte_kernels prune) — SHIPPED (2026-05-26):**
+   Audit (`grep -r fuel_cuda_backend::byte_kernels::`) found only 5 live
+   callers via the binding-table registration: `matmul_f32`/`matmul_bf16`/
+   `matmul_f16` (cuBLAS/CUTLASS — no PTX) + `reduce_sum_to_f32`/
+   `reduce_max_to_f32` (still PTX REDUCE — autograd broadcast-reverse
+   reductions; baracuda alpha.38 doesn't ship these yet).
+   Deleted 34 of 39 public functions (~980 LOC):
+   16 element-wise unary + 6 binary + 4 reduce (sum/max/min/mean) +
+   5 indexing (index_select, argmax_dim, argmin_dim, concat, gather)
+   + 4 scalar (affine, clamp, powi, cast) + 2 internal helpers.
+   byte_kernels.rs: 1499 → 511 LOC. PTX call sites in this file:
+   17 → 1 (the surviving `reduce_f32` helper). Tests: 8 pool + 16 conv
+   + 24 bilinear + 23 baracuda_*_live test binaries green on RTX 4070.
+10. **Phase 6c.2 — QUEUED:** migrate the storage.rs legacy `CudaStorage`
+    eager API (33 remaining `kernels::*` call sites — affine, elu, powf,
+    unary, binary, cmp, reduce, softmax, rmsnorm, rope, where, index_select,
+    gather, scatter_add, index_add, cast, fill, ucopy) + the 2 dyn_impl.rs
+    unary/binary internals to baracuda's typed FFI. Each method bridges
+    via the byte-storage seam OR calls baracuda raw FFI from the typed
+    Map1/Map2 impls (same pattern as Phases 1b/5a/5b). Multi-commit per
+    family; the `dyn_impl.rs` bridge stays in place — `DynBackendStorage`
+    is heavily used by fuel-core-types::Storage so the trait surface
+    can't retire, only the per-method implementations swap from PTX to
+    baracuda.
+11. **Phase 6c.3 — QUEUED:** drop the now-orphaned PTX modules from
+    `fuel-cuda-kernels/src/lib.rs` (whichever `Id::*` variants no longer
+    have any `dev.get_or_load_func(..., &kernels::*)` call sites left
+    after Phase 6c.2). Likely retires Affine, Binary, Cast, Fill,
+    Indexing, Sort, Ternary, Unary at minimum — REDUCE stays until
+    baracuda ships reduce_sum_to/reduce_max_to.
 9. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
    member, drop `cudaforge` build-time CUDA compilation.
 
