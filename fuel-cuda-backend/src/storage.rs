@@ -3,6 +3,7 @@
 
 use fuel_core_types::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use fuel_core_types::dtype::WithDType;
+use fuel_core_types::quantized::GgmlDType;
 use fuel_core_types::{HostBuffer, DType, Layout, Result};
 use crate::builder_arg as barg;
 use fuel_cuda_kernels as kernels;
@@ -1622,6 +1623,83 @@ cuda_dtype!(f32, F32);
 cuda_dtype!(f64, F64);
 cuda_dtype!(float8::F8E4M3, F8E4M3);
 
+/// Q* mat-vec via baracuda alpha.37 batched MMVQ (M=1 case). The caller
+/// is responsible for the per-format constraints (e.g. ncols >= 64 for
+/// type-0/1 quants). Output is a fresh `CudaStorage::F32` of length
+/// `nrows`. Used by `CudaStorage::matmul_q4_0` / `matmul_q4_km` after
+/// Phase 6b retired the prior `dequantize_mul_mat_vec_*` PTX kernels.
+fn matmul_q_gguf_baracuda(
+    a: &CudaStorage,
+    w_q_bytes: &CudaStorage,
+    a_layout: &Layout,
+    ncols: usize,
+    nrows: usize,
+    dtype: GgmlDType,
+    dev: &CudaDevice,
+) -> Result<CudaStorage> {
+    use baracuda_kernels_sys as sys;
+    // Activation pointer: A is F32 + contiguous + offset-aware.
+    let a_ptr = match &a.slice {
+        CudaStorageSlice::F32(s) => {
+            s.slice(a_layout.start_offset()..s.len()).as_raw().0 as *const std::ffi::c_void
+        }
+        _ => fuel_core_types::bail!("matmul_q_gguf: A must be F32"),
+    };
+    // Weight pointer: blob is stored as U32 (256-byte super-block packed)
+    // OR as U8 (raw byte buffer for PaddedCudaSlice-style storage).
+    let w_ptr = match &w_q_bytes.slice {
+        CudaStorageSlice::U32(s) => s.slice(0..s.len()).as_raw().0 as *const std::ffi::c_void,
+        CudaStorageSlice::U8(s) => s.slice(0..s.len()).as_raw().0 as *const std::ffi::c_void,
+        _ => fuel_core_types::bail!("matmul_q_gguf: weight blob must be U8 or U32 storage"),
+    };
+    // M=1 routing prelude: single identity entry.
+    let sorted_token_ids_dev = dev.clone_htod(&[0_i32])?;
+    let expert_offsets_dev = dev.clone_htod(&[0_i32, 1_i32])?;
+    let workspace_bytes = std::mem::size_of::<i32>();
+    let workspace = dev.alloc_zeros::<u8>(workspace_bytes)?;
+    let out = dev.alloc_zeros::<f32>(nrows)?;
+
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let ids_ptr = sorted_token_ids_dev.as_raw().0 as *const i32;
+    let off_ptr = expert_offsets_dev.as_raw().0 as *const i32;
+    let dst_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let ws_ptr = workspace.as_raw().0 as *mut std::ffi::c_void;
+    let run: unsafe extern "C" fn(
+        i32, i32, i32,
+        *const std::ffi::c_void, *const std::ffi::c_void,
+        *const i32, *const i32,
+        *const f32, *mut std::ffi::c_void, i32,
+        *mut std::ffi::c_void, usize, *mut std::ffi::c_void,
+    ) -> i32 = match dtype {
+        GgmlDType::Q4_0 => sys::baracuda_kernels_mmvq_q4_0_batched_run,
+        GgmlDType::Q4_1 => sys::baracuda_kernels_mmvq_q4_1_batched_run,
+        GgmlDType::Q5_0 => sys::baracuda_kernels_mmvq_q5_0_batched_run,
+        GgmlDType::Q5_1 => sys::baracuda_kernels_mmvq_q5_1_batched_run,
+        GgmlDType::Q8_0 => sys::baracuda_kernels_mmvq_q8_0_batched_run,
+        GgmlDType::Q2K => sys::baracuda_kernels_mmvq_q2_K_batched_run,
+        GgmlDType::Q3K => sys::baracuda_kernels_mmvq_q3_K_batched_run,
+        GgmlDType::Q4K => sys::baracuda_kernels_mmvq_q4_K_batched_run,
+        GgmlDType::Q5K => sys::baracuda_kernels_mmvq_q5_K_batched_run,
+        GgmlDType::Q6K => sys::baracuda_kernels_mmvq_q6_K_batched_run,
+        other => fuel_core_types::bail!("matmul_q_gguf: unsupported dtype {other:?}"),
+    };
+    // SAFETY: all pointers validated above; workspace sized per FFI
+    // contract (m_total=1 → 4 bytes); top_k=1 ⇒ plain stores.
+    let status = unsafe {
+        run(
+            /* n_experts */ 1, nrows as i32, ncols as i32,
+            w_ptr, a_ptr,
+            ids_ptr, off_ptr,
+            /* topk_weights */ std::ptr::null(),
+            dst_ptr, /* top_k */ 1,
+            ws_ptr, workspace_bytes, stream,
+        )
+    };
+    crate::baracuda::status::check(status, "matmul_q_gguf_baracuda")?;
+    dev.synchronize()?;
+    Ok(CudaStorage::wrap_cuda_slice(out, dev.clone()))
+}
+
 impl CudaStorage {
     pub fn wrap_cuda_slice<T: CudaDType>(slice: CudaSlice<T>, device: CudaDevice) -> CudaStorage {
         T::wrap_cuda_slice(slice, device)
@@ -2211,6 +2289,10 @@ impl CudaStorage {
     /// M>1 kernel). Lifting this is mechanical — either loop the gemv
     /// kernel N rows or port the tiled dequant+matmul path — but
     /// blocked on time for this sprint.
+    /// Q4_0 mat-vec: `out = a @ dequant_q4_0(w_q_bytes)`.
+    /// Routes through baracuda alpha.37's batched MMVQ FFI (Phase 6b
+    /// migration — the prior `dequantize_mul_mat_vec_q4_0_cuda` PTX
+    /// kernel retired). Same M=1 contract as before.
     pub fn matmul_q4_0(
         &self,
         w_q_bytes: &Self,
@@ -2218,7 +2300,6 @@ impl CudaStorage {
         n: usize,
         a_layout: &Layout,
     ) -> Result<Self> {
-        use crate::device::LaunchConfig;
         if self.dtype() != DType::F32 {
             return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_0: A must be F32, got {:?}", self.dtype());
@@ -2241,45 +2322,12 @@ impl CudaStorage {
                 "CudaStorage::matmul_q4_0: only M=1 supported on CUDA today; \
                  got total_rows={total_rows}. Route prefill to Vulkan.");
         }
-        if k % 32 != 0 {
+        if k < 64 {
             return fuel_core_types::bail!(
-                "CudaStorage::matmul_q4_0: k must be multiple of 32 (Q4_0 block size), got {k}");
+                "CudaStorage::matmul_q4_0: baracuda batched MMVQ requires k >= 64 for type-0/1 quants, got {k}");
         }
         let device = self.device().clone();
-
-        let a_src = match &self.slice {
-            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..s.len()),
-            _ => return fuel_core_types::bail!(
-                "CudaStorage::matmul_q4_0: A must be F32"),
-        };
-        let w_src = match &w_q_bytes.slice {
-            CudaStorageSlice::U32(s) => s.slice(0..s.len()),
-            _ => return fuel_core_types::bail!(
-                "CudaStorage::matmul_q4_0: weight blob must be U32 storage"),
-        };
-        let mut out = unsafe { device.alloc::<f32>(n)? };
-
-        // ggml-style launch: WARP_SIZE=32 threads per row for the warp
-        // reduce; MMV_Y rows per block (pick 2 as the ggml default).
-        const WARP_SIZE: u32 = 32;
-        const MMV_Y: u32 = 2;
-        let grid_x = ((n as u32) + MMV_Y - 1) / MMV_Y;
-        let cfg = LaunchConfig {
-            grid_dim: (grid_x, 1, 1),
-            block_dim: (WARP_SIZE, MMV_Y, 1),
-            shared_mem_bytes: 0,
-        };
-        let func = device.get_or_load_func(
-            "dequantize_mul_mat_vec_q4_0_cuda", &kernels::QUANTIZED)?;
-        let mut builder = func.builder();
-        builder.arg(&w_src);      // vx = weight blob
-        builder.arg(&a_src);      // y = activation vector
-        builder.arg(&mut out);    // dst = output
-        crate::builder_arg!(builder, k as i32);
-        crate::builder_arg!(builder, n as i32);
-        unsafe { builder.launch(cfg) }.w()?;
-
-        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+        matmul_q_gguf_baracuda(self, w_q_bytes, a_layout, k, n, GgmlDType::Q4_0, &device)
     }
 
     /// Q4_K_M matmul: `out = a @ dequant_q4_km(w_q_bytes)`.
@@ -2290,6 +2338,10 @@ impl CudaStorage {
     ///
     /// First-cut limitation: M=1 only (decode). `k` must be a
     /// multiple of 256 (Q4_K super-block size).
+    /// Q4_K_M mat-vec: `out = a @ dequant_q4_km(w_q_bytes)`.
+    /// Routes through baracuda alpha.37's batched MMVQ FFI (Phase 6b
+    /// migration — the prior `dequantize_mul_mat_vec_q4_k` PTX kernel
+    /// retired). Same M=1 contract as before.
     pub fn matmul_q4_km(
         &self,
         w_q_bytes: &Self,
@@ -2297,7 +2349,6 @@ impl CudaStorage {
         n: usize,
         a_layout: &Layout,
     ) -> Result<Self> {
-        use crate::device::LaunchConfig;
         if self.dtype() != DType::F32 {
             return fuel_core_types::bail!(
                 "CudaStorage::matmul_q4_km: A must be F32, got {:?}", self.dtype());
@@ -2320,42 +2371,8 @@ impl CudaStorage {
                 "CudaStorage::matmul_q4_km: only M=1 supported on CUDA today; \
                  got total_rows={total_rows}. Route prefill to Vulkan.");
         }
-        if k % 256 != 0 {
-            return fuel_core_types::bail!(
-                "CudaStorage::matmul_q4_km: k must be multiple of 256 (Q4_K super-block), got {k}");
-        }
         let device = self.device().clone();
-
-        let a_src = match &self.slice {
-            CudaStorageSlice::F32(s) => s.slice(a_layout.start_offset()..s.len()),
-            _ => return fuel_core_types::bail!(
-                "CudaStorage::matmul_q4_km: A must be F32"),
-        };
-        let w_src = match &w_q_bytes.slice {
-            CudaStorageSlice::U32(s) => s.slice(0..s.len()),
-            _ => return fuel_core_types::bail!(
-                "CudaStorage::matmul_q4_km: weight blob must be U32 storage"),
-        };
-        let mut out = unsafe { device.alloc::<f32>(n)? };
-
-        // ggml launch for Q4_K: 1 warp (32 threads) per row, 1 row per
-        // block. With K_QUANTS_PER_ITERATION=2, ny = 2/2 = 1.
-        let cfg = LaunchConfig {
-            grid_dim: (n as u32, 1, 1),
-            block_dim: (32, 1, 1),
-            shared_mem_bytes: 0,
-        };
-        let func = device.get_or_load_func(
-            "dequantize_mul_mat_vec_q4_k", &kernels::QUANTIZED)?;
-        let mut builder = func.builder();
-        builder.arg(&w_src);      // vx
-        builder.arg(&a_src);      // yy
-        builder.arg(&mut out);    // dst
-        crate::builder_arg!(builder, k as i32);
-        crate::builder_arg!(builder, n as i32);
-        unsafe { builder.launch(cfg) }.w()?;
-
-        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+        matmul_q_gguf_baracuda(self, w_q_bytes, a_layout, k, n, GgmlDType::Q4K, &device)
     }
 
     /// Fused RMS normalization along the last dim:
