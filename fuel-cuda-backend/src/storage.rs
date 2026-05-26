@@ -153,31 +153,123 @@ pub fn kernel_name<T: WithDType>(root: &str) -> String {
 
 pub(crate) struct Affine(pub(crate) f64, pub(crate) f64);
 impl Map1 for Affine {
+    /// Affine `y = mul * x + add` — baracuda alpha.27+
+    /// `baracuda_kernels_affine_<dtype>_run` (contig) /
+    /// `_strided_run` (strided). Migration from the PTX AFFINE module
+    /// in Phase 6c.2.
     fn f<T: DeviceRepr + WithDType>(
         &self,
         src: &CudaSlice<T>,
         dev: &CudaDevice,
         layout: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el as u32);
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>("affine"), &kernels::AFFINE)?;
-        // SAFETY: Set later by running the kernel.
+        use baracuda_kernels_sys as sys;
+        let dt = T::DTYPE;
+        let el = layout.shape().elem_count();
+        let src_slice = src.slice(layout.start_offset()..src.len());
         let out = unsafe { dev.alloc::<T>(el)? };
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, dims.len());
-        ds.builder_arg(&mut builder);
-        builder.arg(src);
-        builder.arg(&out);
-        barg!(builder, T::from_f64(self.0));
-        barg!(builder, T::from_f64(self.1));
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg).w() }?;
+        if el == 0 {
+            return Ok(out);
+        }
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+        let x_ptr = src_slice.as_raw().0 as *const std::ffi::c_void;
+        let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+        let contig = layout.is_contiguous();
+
+        // Per-dtype strided arg packs for the *_strided_run variants.
+        // Baracuda's strided contract: (numel, rank, shape:*const i32,
+        // stride_x:*const i64, stride_y:*const i64, x, y, a, b, ws, ws_b, stream).
+        let owned_strided = if contig {
+            None
+        } else {
+            let dims = layout.shape().dims();
+            let rank = dims.len();
+            let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+            let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+            let stride_y: Vec<i64> = {
+                let mut s = vec![1_i64; rank];
+                for d in (0..rank.saturating_sub(1)).rev() {
+                    s[d] = s[d + 1] * dims[d + 1] as i64;
+                }
+                s
+            };
+            let shape_dev = dev.clone_htod(&shape_i32)?;
+            let stride_x_dev = dev.clone_htod(&stride_x)?;
+            let stride_y_dev = dev.clone_htod(&stride_y)?;
+            Some((rank as i32, shape_dev, stride_x_dev, stride_y_dev))
+        };
+
+        let a64 = self.0;
+        let b64 = self.1;
+        let status = match (dt, contig, &owned_strided) {
+            (DType::F32, true, _) => unsafe {
+                sys::baracuda_kernels_affine_f32_run(
+                    el as i64, x_ptr, y_ptr, a64 as f32, b64 as f32,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::F32, false, Some((rank, sd, sx, sy))) => unsafe {
+                sys::baracuda_kernels_affine_f32_strided_run(
+                    el as i64, *rank,
+                    sd.as_raw().0 as *const i32,
+                    sx.as_raw().0 as *const i64,
+                    sy.as_raw().0 as *const i64,
+                    x_ptr, y_ptr, a64 as f32, b64 as f32,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::F64, true, _) => unsafe {
+                sys::baracuda_kernels_affine_f64_run(
+                    el as i64, x_ptr, y_ptr, a64, b64,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::F64, false, Some((rank, sd, sx, sy))) => unsafe {
+                sys::baracuda_kernels_affine_f64_strided_run(
+                    el as i64, *rank,
+                    sd.as_raw().0 as *const i32,
+                    sx.as_raw().0 as *const i64,
+                    sy.as_raw().0 as *const i64,
+                    x_ptr, y_ptr, a64, b64,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::F16, true, _) => unsafe {
+                sys::baracuda_kernels_affine_f16_run(
+                    el as i64, x_ptr, y_ptr, a64 as f32, b64 as f32,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::F16, false, Some((rank, sd, sx, sy))) => unsafe {
+                sys::baracuda_kernels_affine_f16_strided_run(
+                    el as i64, *rank,
+                    sd.as_raw().0 as *const i32,
+                    sx.as_raw().0 as *const i64,
+                    sy.as_raw().0 as *const i64,
+                    x_ptr, y_ptr, a64 as f32, b64 as f32,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::BF16, true, _) => unsafe {
+                sys::baracuda_kernels_affine_bf16_run(
+                    el as i64, x_ptr, y_ptr, a64 as f32, b64 as f32,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (DType::BF16, false, Some((rank, sd, sx, sy))) => unsafe {
+                sys::baracuda_kernels_affine_bf16_strided_run(
+                    el as i64, *rank,
+                    sd.as_raw().0 as *const i32,
+                    sx.as_raw().0 as *const i64,
+                    sy.as_raw().0 as *const i64,
+                    x_ptr, y_ptr, a64 as f32, b64 as f32,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            },
+            (other, _, _) => fuel_core_types::bail!("baracuda affine: unsupported dtype {other:?}"),
+        };
+        crate::baracuda::status::check(status, "affine")?;
+        dev.synchronize()?;
         Ok(out)
     }
 }
