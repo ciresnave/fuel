@@ -291,37 +291,53 @@ plan:
     `a: f32, b: f32` scalar args per baracuda's FFI convention. PTX
     AFFINE call site count in storage.rs: 1 → 0. The AFFINE PTX module
     is now orphaned; retires in Phase 6c.4 alongside other dead modules.
-11. **Phase 6c.2 remaining — QUEUED with baracuda gaps surfaced:**
-    The remaining ~32 `kernels::*` call sites in storage.rs split into
-    three buckets:
-    - **Clean migrations (baracuda has full coverage):** generic Unary
-      (the subset baracuda ships: neg/abs/sign/sqr/sqrt/rsqrt/recip/
-      exp/log/sin/cos/tanh/relu/gelu/silu/sigmoid/erf/ceil/floor/round),
-      Cast (~50 dtype pairs against `baracuda_kernels_cast_*_run`),
-      generic Binary + Cmp, Fill, Ucopy (~10 dtypes).
-    - **Composed migrations (multiple baracuda kernels):** Reduce/
-      Softmax/LogSoftmax/RmsNorm/Rope (baracuda has each of these but
-      Fuel's storage.rs implementations have op-specific param packing
-      that needs careful re-wiring).
-    - **Baracuda upstream asks needed before migration:**
-        - `unary_elu_<dtype>_run` hardcodes α = 1.0; Fuel's `Elu(f64)`
-          takes an arbitrary α (rare in practice but the API allows it).
-        - No `unary_powf_<dtype>_run` (float-exponent power) — baracuda
-          ships `unary_powi_*` only. Fuel's `Powf(f64)` needs float-pow.
-        - No `unary_step_*` or `unary_gelu_erf_*` — Fuel exposes these
-          via UnaryOpT.
-12. **Phase 6c.3 — QUEUED:** drop the now-orphaned PTX modules from
-    `fuel-cuda-kernels/src/lib.rs` (whichever `Id::*` variants no longer
-    have any `dev.get_or_load_func(..., &kernels::*)` call sites left
-    after Phase 6c.2). Likely retires Affine, Binary, Cast, Fill,
-    Indexing, Sort, Ternary, Unary at minimum — REDUCE stays until
-    baracuda ships reduce_sum_to/reduce_max_to.
-11. **Phase 6c.3 — QUEUED:** drop the now-orphaned PTX modules from
-    `fuel-cuda-kernels/src/lib.rs` (whichever `Id::*` variants no longer
-    have any `dev.get_or_load_func(..., &kernels::*)` call sites left
-    after Phase 6c.2). Likely retires Affine, Binary, Cast, Fill,
-    Indexing, Sort, Ternary, Unary at minimum — REDUCE stays until
-    baracuda ships reduce_sum_to/reduce_max_to.
+11. **Phase 6c.2 (alpha.50 unlock + six op families) — SHIPPED (2026-05-26):**
+    All 5 baracuda asks from the Phase 6c.2 doc closed in alpha.50;
+    Cargo.toml bumped alpha.38→.50 (commit `8d63b793`). Migrations
+    shipped in this stretch:
+    - **`byte_kernels::reduce_*_to_f32`** (broadcast-reverse autograd
+      primitives) → `baracuda_kernels_reduce_*_to_*_run`.
+    - **Generic Unary** (`impl<U: UnaryOpT> Map1 for U` — 19
+      implementors covering gelu/erf/silu/abs/ceil/floor/round/gelu_erf/
+      relu/sign/neg/sqr/sqrt/recip/exp/log/sin/cos/tanh) →
+      `unary_<op>_<dtype>_run` / `_strided_run`. Single `unary_baracuda`
+      helper with op-name→symbol table.
+    - **`Elu(f64)` + `Powf(f64)`** (scalar-parameterized unary) →
+      `unary_elu_<dt>_run` / `unary_powf_<dt>_run` (alpha.50's α/exp
+      params).
+    - **`copy_strided_src`** (10 per-dtype `ucopy_*` PTX → 1
+      `copy_strided_baracuda` using `contiguize_b{1,2,4,8}_run`).
+    - **Generic Binary** (`impl<U: BinaryOpT> Map2 for U` — add/sub/mul/
+      div/maximum/minimum) → `binary_<op>_<dtype>_run` / `_strided_run`.
+    - **`Cmp(CmpOp)::Map2Any`** (eq/ne/lt/le/gt/ge → u8) →
+      `binary_cmp_<op>_<dtype>_run`.
+    - **`dyn_impl::UnaryKernel`** + **`BinaryKernel`** (runtime-name
+      dispatchers) — collapsed to one-line forwards into
+      `unary_baracuda` / `binary_baracuda`.
+    - **`CudaStorage::to_dtype`** (Cast, full 11-input × 8-output dtype
+      coverage with 76 active pairs; 12 F8E4M3 pairs unsupported —
+      matches the pre-existing PTX absence) →
+      `baracuda_kernels_cast_<src>_<dst>_run`.
+    - **`fuel-nn::ops::Sigmoid`** (only out-of-crate UNARY caller) →
+      shared `unary_baracuda`.
+12. **Phase 6c.3 (PTX module drops) — SHIPPED (2026-05-26):**
+    `Id::Affine`, `Id::Binary`, `Id::Cast`, `Id::Unary` removed from
+    `fuel-cuda-kernels/src/lib.rs`. `affine.cu` / `binary.cu` / `cast.cu`
+    / `unary.cu` deleted. PTX module count: 9 → 5 (Fill, Indexing,
+    Reduce, Sort, Ternary remain).
+13. **Phase 6c.4 — QUEUED:** finish the storage.rs eager-API
+    migration:
+    - **Reduce/Softmax/RmsNorm/Rope** (6 sites in REDUCE) — composed
+      ops; rewire to baracuda's `softmax_*`/`log_softmax_*`/`rms_norm_*`/
+      `rope_*` symbol families.
+    - **Indexing** (5 sites: where, index_select, gather, scatter_add,
+      index_add) — rewire to baracuda's indexing FFI.
+    - **Ternary `where_cond`** (1 site) — baracuda has `where_*` ops.
+    - **Fill `const_set` + `copy2d`** (2 sites) — baracuda has fill/
+      copy2d wrappers (or compose via existing primitives).
+    - **`fuel-core::sort`** (1 cross-crate caller: `asort_asc`/
+      `asort_desc`) — needs baracuda sort coverage (alpha.50 surface
+      audit TBD; possible new ask).
 9. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
    member, drop `cudaforge` build-time CUDA compilation.
 
