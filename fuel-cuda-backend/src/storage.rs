@@ -274,67 +274,149 @@ impl Map1 for Affine {
     }
 }
 
+// Generic unary FFI types for ops with one extra f32 scalar
+// (Elu α, Powf exponent). Same shape as `UnaryContigRun` plus a
+// trailing `scalar: f32`.
+type UnaryScalarContigRun = unsafe extern "C" fn(
+    numel: i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    scalar: f32,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+type UnaryScalarStridedRun = unsafe extern "C" fn(
+    numel: i64,
+    rank: i32,
+    shape: *const i32,
+    stride_x: *const i64,
+    stride_y: *const i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    scalar: f32,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn unary_scalar_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    src: &CudaSlice<T>,
+    dev: &CudaDevice,
+    layout: &Layout,
+    scalar: f32,
+    contig_fn: UnaryScalarContigRun,
+    strided_fn: UnaryScalarStridedRun,
+    op_label: &'static str,
+) -> Result<CudaSlice<T>> {
+    let el = layout.shape().elem_count();
+    let src_slice = src.slice(layout.start_offset()..src.len());
+    let out = unsafe { dev.alloc::<T>(el)? };
+    if el == 0 {
+        return Ok(out);
+    }
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = src_slice.as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let status = if layout.is_contiguous() {
+        // SAFETY: pointers + stream validated; workspace null/0.
+        unsafe { contig_fn(el as i64, x_ptr, y_ptr, scalar, std::ptr::null_mut(), 0, stream) }
+    } else {
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
+        };
+        // SAFETY: shape/stride buffers owned through the call (host ptrs
+        // per baracuda's ABI).
+        unsafe {
+            strided_fn(
+                el as i64, rank as i32,
+                shape_i32.as_ptr(), stride_x.as_ptr(), stride_y.as_ptr(),
+                x_ptr, y_ptr, scalar,
+                std::ptr::null_mut(), 0, stream,
+            )
+        }
+    };
+    crate::baracuda::status::check(status, op_label)?;
+    dev.synchronize()?;
+    Ok(out)
+}
+
 struct Elu(f64);
 impl Map1 for Elu {
-    fn f<T: DeviceRepr + WithDType>(
+    /// Element-wise ELU `y = x if x ≥ 0 else α (e^x − 1)` via baracuda
+    /// alpha.50's `unary_elu_<dtype>_run` (FW with α parameter).
+    /// Phase 6c.2 migration from the PTX `uelu` UNARY kernel.
+    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
         src: &CudaSlice<T>,
         dev: &CudaDevice,
         layout: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el as u32);
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>("uelu"), &kernels::UNARY)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(el)? };
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, dims.len());
-        ds.builder_arg(&mut builder);
-        barg!(builder, T::from_f64(self.0));
-        builder.arg(src);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+        use baracuda_kernels_sys as sys;
+        let (contig, strided) = match T::DTYPE {
+            DType::F32 => (
+                sys::baracuda_kernels_unary_elu_f32_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_elu_f32_strided_run as UnaryScalarStridedRun,
+            ),
+            DType::F64 => (
+                sys::baracuda_kernels_unary_elu_f64_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_elu_f64_strided_run as UnaryScalarStridedRun,
+            ),
+            DType::F16 => (
+                sys::baracuda_kernels_unary_elu_f16_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_elu_f16_strided_run as UnaryScalarStridedRun,
+            ),
+            DType::BF16 => (
+                sys::baracuda_kernels_unary_elu_bf16_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_elu_bf16_strided_run as UnaryScalarStridedRun,
+            ),
+            other => fuel_core_types::bail!("baracuda elu: unsupported dtype {other:?}"),
+        };
+        unary_scalar_baracuda(src, dev, layout, self.0 as f32, contig, strided, "unary_elu")
     }
 }
 
-// Im2Col1D + Im2Col PTX structs retired in Phase 5b — the im2col +
-// matmul conv fallback they backed is gone now that baracuda's
-// `conv_{1,2}d_*_run` FFI handles conv directly via cuDNN.
-
 struct Powf(f64);
 impl Map1 for Powf {
-    fn f<T: DeviceRepr + WithDType>(
+    /// Element-wise float-exponent power `y = x^e` via baracuda
+    /// alpha.50's `unary_powf_<dtype>_run`. Phase 6c.2 migration from
+    /// the PTX `upowf` UNARY kernel.
+    fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
         src: &CudaSlice<T>,
         dev: &CudaDevice,
         layout: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el as u32);
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>("upowf"), &kernels::UNARY)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(el)? };
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, dims.len());
-        ds.builder_arg(&mut builder);
-        barg!(builder, T::from_f64(self.0));
-        builder.arg(src);
-        builder.arg(&out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+        use baracuda_kernels_sys as sys;
+        let (contig, strided) = match T::DTYPE {
+            DType::F32 => (
+                sys::baracuda_kernels_unary_powf_f32_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_powf_f32_strided_run as UnaryScalarStridedRun,
+            ),
+            DType::F64 => (
+                sys::baracuda_kernels_unary_powf_f64_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_powf_f64_strided_run as UnaryScalarStridedRun,
+            ),
+            DType::F16 => (
+                sys::baracuda_kernels_unary_powf_f16_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_powf_f16_strided_run as UnaryScalarStridedRun,
+            ),
+            DType::BF16 => (
+                sys::baracuda_kernels_unary_powf_bf16_run as UnaryScalarContigRun,
+                sys::baracuda_kernels_unary_powf_bf16_strided_run as UnaryScalarStridedRun,
+            ),
+            other => fuel_core_types::bail!("baracuda powf: unsupported dtype {other:?}"),
+        };
+        unary_scalar_baracuda(src, dev, layout, self.0 as f32, contig, strided, "unary_powf")
     }
 }
 
@@ -420,6 +502,143 @@ impl Map1Any for FastReduce<'_> {
     }
 }
 
+// Generic unary FFI types — every baracuda `unary_<op>_<dtype>_run` /
+// `_strided_run` matches one of these shapes.
+type UnaryContigRun = unsafe extern "C" fn(
+    numel: i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+type UnaryStridedRun = unsafe extern "C" fn(
+    numel: i64,
+    rank: i32,
+    shape: *const i32,
+    stride_x: *const i64,
+    stride_y: *const i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// Pick the (contig, strided) FFI pair for an `UnaryOpT::KERNEL` name
+/// and dtype. Returns `None` for unsupported (op, dtype) tuples — the
+/// generic Map1 impl propagates this as an error.
+fn pick_unary_ffi(kernel: &'static str, dt: DType) -> Option<(UnaryContigRun, UnaryStridedRun)> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! pair {
+        ($stem:ident) => {
+            ::paste::paste! {
+                match dt {
+                    DType::F32 => Some((
+                        sys::[<baracuda_kernels_ $stem _f32_run>] as UnaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _f32_strided_run>] as UnaryStridedRun,
+                    )),
+                    DType::F64 => Some((
+                        sys::[<baracuda_kernels_ $stem _f64_run>] as UnaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _f64_strided_run>] as UnaryStridedRun,
+                    )),
+                    DType::F16 => Some((
+                        sys::[<baracuda_kernels_ $stem _f16_run>] as UnaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _f16_strided_run>] as UnaryStridedRun,
+                    )),
+                    DType::BF16 => Some((
+                        sys::[<baracuda_kernels_ $stem _bf16_run>] as UnaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _bf16_strided_run>] as UnaryStridedRun,
+                    )),
+                    _ => None,
+                }
+            }
+        };
+    }
+    match kernel {
+        "uneg" => pair!(unary_neg),
+        "uabs" => pair!(unary_abs),
+        "usign" => pair!(unary_sign),
+        "usqr" => pair!(unary_square),
+        "usqrt" => pair!(unary_sqrt),
+        "urecip" => pair!(unary_reciprocal),
+        "uexp" => pair!(unary_exp),
+        "ulog" => pair!(unary_log),
+        "usin" => pair!(unary_sin),
+        "ucos" => pair!(unary_cos),
+        "utanh" => pair!(unary_tanh),
+        "urelu" => pair!(unary_relu),
+        "ugelu" => pair!(unary_gelu),
+        "usilu" => pair!(unary_silu),
+        "ugelu_erf" => pair!(unary_gelu_erf),
+        "uerf" => pair!(unary_erf),
+        "uceil" => pair!(unary_ceil),
+        "ufloor" => pair!(unary_floor),
+        "uround" => pair!(unary_round),
+        _ => None,
+    }
+}
+
+/// Run a generic unary kernel via baracuda's `unary_<op>_<dtype>_run`
+/// FFI. Picks contig vs strided per-call; baracuda's `_strided_run`
+/// variant takes a `(rank, shape:i32, stride_x:i64, stride_y:i64)`
+/// descriptor (host pointers per baracuda's documented ABI).
+fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    src: &CudaSlice<T>,
+    dev: &CudaDevice,
+    layout: &Layout,
+    kernel: &'static str,
+) -> Result<CudaSlice<T>> {
+    let dt = T::DTYPE;
+    let (contig_fn, strided_fn) = pick_unary_ffi(kernel, dt).ok_or_else(|| {
+        fuel_core_types::Error::Msg(format!("baracuda unary: unsupported (op={kernel}, dtype={dt:?})"))
+            .bt()
+    })?;
+    let el = layout.shape().elem_count();
+    let src_slice = src.slice(layout.start_offset()..src.len());
+    let out = unsafe { dev.alloc::<T>(el)? };
+    if el == 0 {
+        return Ok(out);
+    }
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = src_slice.as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
+    let status = if layout.is_contiguous() {
+        // SAFETY: pointers + stream validated above; workspace null/0.
+        unsafe {
+            contig_fn(el as i64, x_ptr, y_ptr, std::ptr::null_mut(), 0, stream)
+        }
+    } else {
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
+        };
+        // SAFETY: shape / stride buffers owned through the FFI call;
+        // baracuda reads them on the host side before the kernel launch.
+        unsafe {
+            strided_fn(
+                el as i64, rank as i32,
+                shape_i32.as_ptr(),
+                stride_x.as_ptr(),
+                stride_y.as_ptr(),
+                x_ptr, y_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        }
+    };
+    crate::baracuda::status::check(status, kernel)?;
+    dev.synchronize()?;
+    Ok(out)
+}
+
 impl<U: UnaryOpT> Map1 for U {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
@@ -427,24 +646,7 @@ impl<U: UnaryOpT> Map1 for U {
         dev: &CudaDevice,
         layout: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el_count = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el_count as u32);
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>(U::KERNEL), &kernels::UNARY)?;
-        // SAFETY: Set later by running the kernel.
-        let mut out = unsafe { dev.alloc::<T>(el_count)? };
-        let mut builder = func.builder();
-        barg!(builder, el_count);
-        barg!(builder, dims.len());
-        ds.builder_arg(&mut builder);
-        builder.arg(src);
-        builder.arg(&mut out);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+        unary_baracuda::<T>(src, dev, layout, U::KERNEL)
     }
 }
 
