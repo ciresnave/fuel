@@ -57,9 +57,32 @@ mod cuda {
     use super::*;
     use baracuda_driver::DeviceBuffer as CudaSlice;
     use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-    use crate::cuda_backend::{kernel_name, kernels, CudaStorageSlice as S, LaunchConfig, WrapErr};
+    use fuel_cuda_backend::baracuda_kernels_sys as sys;
+    use crate::cuda_backend::CudaStorageSlice as S;
     use crate::CudaDevice;
-    use fuel_core_types::dtype::WithDType;
+    use fuel_core_types::dtype::{DType, WithDType};
+
+    /// Baracuda `argsort_<dtype>_run` FFI shape.
+    type ArgsortRun = unsafe extern "C" fn(
+        batch: i32,
+        row_len: i32,
+        descending: i32,
+        x: *const std::ffi::c_void,
+        y_idx: *mut std::ffi::c_void,
+        workspace: *mut std::ffi::c_void,
+        workspace_bytes: usize,
+        stream: *mut std::ffi::c_void,
+    ) -> i32;
+
+    fn pick_argsort(dt: DType) -> Option<ArgsortRun> {
+        match dt {
+            DType::F32 => Some(sys::baracuda_kernels_argsort_f32_run),
+            DType::F64 => Some(sys::baracuda_kernels_argsort_f64_run),
+            DType::I32 => Some(sys::baracuda_kernels_argsort_i32_run),
+            DType::I64 => Some(sys::baracuda_kernels_argsort_i64_run),
+            _ => None,
+        }
+    }
 
     impl crate::cuda_backend::Map1Any for ArgSort {
         fn f<T: DeviceRepr + WithDType + ValidAsZeroBits, W: Fn(CudaSlice<T>) -> S>(
@@ -74,30 +97,38 @@ mod cuda {
                 Some((o1, o2)) => src.slice(o1..o2),
             };
             let elem_count = layout.shape().elem_count();
-            let dst = unsafe { dev.alloc::<u32>(elem_count)? };
-            let func = if self.asc {
-                dev.get_or_load_func(&kernel_name::<T>("asort_asc"), &kernels::SORT)?
-            } else {
-                dev.get_or_load_func(&kernel_name::<T>("asort_desc"), &kernels::SORT)?
-            };
             let ncols = self.last_dim;
             let nrows = elem_count / ncols;
-            let ncols_pad = next_power_of_2(ncols);
-            // Limit block dim to 1024 threads, which is the maximum on modern CUDA gpus.
-            let block_dim = ncols_pad.min(1024);
-            let cfg = LaunchConfig {
-                grid_dim: (nrows as u32, 1, 1),
-                block_dim: (block_dim as u32, 1, 1),
-                shared_mem_bytes: (ncols_pad * std::mem::size_of::<u32>()) as u32,
+            if ncols > 1024 {
+                crate::bail!(
+                    "argsort: baracuda block-bitonic cap is row_len ≤ 1024, got {ncols}",
+                );
+            }
+            let run = pick_argsort(T::DTYPE).ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "argsort: baracuda alpha.50 only supports F32/F64/I32/I64, got {:?}",
+                    T::DTYPE
+                ))
+            })?;
+            // Baracuda writes i32 indices into y_idx; we expose u32 to
+            // Fuel callers (same byte width, same bit pattern for
+            // values in [0, ncols)). Buffer is allocated as u32.
+            let dst = unsafe { dev.alloc::<u32>(elem_count)? };
+            let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+            let status = unsafe {
+                run(
+                    nrows as i32,
+                    ncols as i32,
+                    if self.asc { 0 } else { 1 },
+                    slice.as_raw().0 as *const std::ffi::c_void,
+                    dst.as_raw().0 as *mut std::ffi::c_void,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
+                )
             };
-            let mut builder = func.builder();
-            let ncols = ncols as i32;
-            let ncols_pad = ncols_pad as i32;
-            builder.arg(&slice);
-            builder.arg(&dst);
-            builder.arg(&ncols);
-            builder.arg(&ncols_pad);
-            unsafe { builder.launch(cfg) }.w()?;
+            fuel_cuda_backend::baracuda::status::check(status, "argsort")?;
+            dev.synchronize()?;
             Ok(S::U32(dst))
         }
     }
