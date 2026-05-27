@@ -29,45 +29,6 @@ use crate::error::WrapErr;
 use crate::storage::SlicePtrOrNull;
 
 
-/// Compute the list of input axes that need reducing to align with a
-/// broadcast-compatible target shape. Mirrors the CPU
-/// `align_reduce_to` validation: target left-pads with 1s to match
-/// input rank; an axis is reduced when the padded target dim is 1
-/// and the input dim is greater than 1.
-fn reduce_dims_from_shapes(
-    input_shape: &[usize],
-    output_shape: &[usize],
-) -> Result<Vec<usize>> {
-    if output_shape.len() > input_shape.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
-            "reduce_to: output rank {} exceeds input rank {}",
-            output_shape.len(), input_shape.len(),
-        )).bt());
-    }
-    let pad = input_shape.len() - output_shape.len();
-    let mut padded = vec![1_usize; pad];
-    padded.extend_from_slice(output_shape);
-    let mut reduce_dims: Vec<usize> = Vec::new();
-    for (axis, (&s, &t)) in input_shape.iter().zip(padded.iter()).enumerate() {
-        if t == s {
-            // Pass-through axis.
-        } else if t == 1 {
-            // Axis being reduced. Only push when input dim > 1; if
-            // input dim is also 1 the reduction is a no-op and the
-            // existing reduce_f32 kernel handles it correctly via the
-            // empty-stride single-element path either way.
-            if s > 1 {
-                reduce_dims.push(axis);
-            }
-        } else {
-            return Err(fuel_core_types::Error::Msg(format!(
-                "reduce_to: axis {axis} target {t} must be 1 or input {s}",
-            )).bt());
-        }
-    }
-    Ok(reduce_dims)
-}
-
 /// Sum-reduce a CUDA F32 tensor to a smaller broadcast-compatible
 /// shape. Maps the broadcast-aligned target shape to a list of
 /// reduce dims and dispatches through the existing `fast_sum_f32`
@@ -86,13 +47,13 @@ pub fn reduce_sum_to_f32(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<CudaStorageBytes> {
-    let reduce_dims = reduce_dims_from_shapes(input_shape, output_shape)?;
-    // Empty reduce_dims is an "identity reduce_to" — input_shape ==
-    // padded(output_shape) on every axis. The reduce kernel handles
-    // it correctly (each output element sums over one input element)
-    // with the cost of one extra kernel launch; not a hot path so
-    // not worth a special-case.
-    reduce_f32(src, input_layout, &reduce_dims, "fast_sum_f32")
+    // Phase 6c.2 — baracuda alpha.50's
+    // `baracuda_kernels_reduce_sum_to_f32_run` (broadcast-reverse Σ).
+    reduce_to_f32(
+        src, input_layout, input_shape, output_shape,
+        baracuda_kernels_sys::baracuda_kernels_reduce_sum_to_f32_run,
+        "reduce_sum_to_f32",
+    )
 }
 
 /// Max-reduce a CUDA F32 tensor to a smaller broadcast-compatible
@@ -103,8 +64,87 @@ pub fn reduce_max_to_f32(
     input_shape: &[usize],
     output_shape: &[usize],
 ) -> Result<CudaStorageBytes> {
-    let reduce_dims = reduce_dims_from_shapes(input_shape, output_shape)?;
-    reduce_f32(src, input_layout, &reduce_dims, "fast_max_f32")
+    reduce_to_f32(
+        src, input_layout, input_shape, output_shape,
+        baracuda_kernels_sys::baracuda_kernels_reduce_max_to_f32_run,
+        "reduce_max_to_f32",
+    )
+}
+
+/// Common launcher for `reduce_{sum,max}_to_f32`. Calls baracuda's
+/// broadcast-reverse reduce FFI with `(input_shape, input_stride,
+/// rank_in, output_shape)` — output_shape is left-padded with 1s to
+/// rank_in per baracuda's contract.
+type ReduceToF32Run = unsafe extern "C" fn(
+    src: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    input_shape: *const i32,
+    input_stride: *const i64,
+    rank_in: i32,
+    output_shape: *const i32,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn reduce_to_f32(
+    src: &CudaStorageBytes,
+    input_layout: &Layout,
+    input_shape: &[usize],
+    output_shape: &[usize],
+    run: ReduceToF32Run,
+    label: &'static str,
+) -> Result<CudaStorageBytes> {
+    let elem = std::mem::size_of::<f32>();
+    if src.len_bytes() % elem != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{label}: src.len_bytes={} not a multiple of f32 size",
+            src.len_bytes(),
+        ))
+        .bt());
+    }
+    if output_shape.len() > input_shape.len() {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{label}: output rank {} exceeds input rank {}",
+            output_shape.len(), input_shape.len(),
+        )).bt());
+    }
+    let rank_in = input_shape.len();
+    let in_shape_i32: Vec<i32> = input_shape.iter().map(|&d| d as i32).collect();
+    let in_stride_i64: Vec<i64> = input_layout.stride().iter().map(|&s| s as i64).collect();
+    // Left-pad output_shape with 1s to match rank_in (baracuda's contract).
+    let mut out_shape_padded: Vec<i32> = vec![1_i32; rank_in - output_shape.len()];
+    out_shape_padded.extend(output_shape.iter().map(|&d| d as i32));
+
+    let dst_el: usize = output_shape.iter().product();
+    let dst_bytes = dst_el * elem;
+    let device = src.device().clone();
+    if dst_el == 0 {
+        return CudaStorageBytes::alloc(&device, dst_bytes);
+    }
+
+    let out_buf = device.alloc_zeros::<u8>(dst_bytes)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+    // SAFETY: `input_shape`, `input_stride`, `output_shape` are HOST
+    // pointers per baracuda's documented ABI (the launcher reads them
+    // before issuing the kernel). The Vecs live through the call, so
+    // their `.as_ptr()` is valid for the duration. `src`/`out_buf` are
+    // device-resident, `stream` is valid; workspace null/0.
+    let status = unsafe {
+        run(
+            src.buffer().as_raw().0 as *const std::ffi::c_void,
+            out_buf.as_raw().0 as *mut std::ffi::c_void,
+            in_shape_i32.as_ptr(),
+            in_stride_i64.as_ptr(),
+            rank_in as i32,
+            out_shape_padded.as_ptr(),
+            std::ptr::null_mut(), 0, stream,
+        )
+    };
+    crate::baracuda::status::check(status, label)?;
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(std::sync::Arc::new(out_buf), device, dst_bytes))
 }
 
 pub fn matmul_f32(
@@ -418,94 +458,4 @@ pub fn matmul_f16(
         .bt());
     }
     crate::cutlass::cutlass_matmul_f16(lhs, rhs, batch_count, m, n, k)
-}
-/// Shared launch path for F32 reductions (Sum/Max/Min). Mirrors the
-/// legacy `Map1Any` for `FastReduce` (storage.rs:317): reorders dims
-/// so reduced axes come last, builds a `[dims | strides]` device
-/// buffer, and launches with `grid_dim = dst_el` and `block_dim =
-/// next_power_of_two(min(1024, el_to_sum_per_block))`. The kernel
-/// signature is `(src_numel, el_to_sum_per_block, num_dims, info,
-/// src, dst)`.
-///
-/// Auto-Contiguize guarantees the input is contiguous before this
-/// runs, so `input_layout.stride()` is the row-major stride. The
-/// strides side-band is still passed because the kernel uses
-/// `get_strided_index` unconditionally.
-fn reduce_f32(
-    src: &CudaStorageBytes,
-    input_layout: &Layout,
-    reduce_dims: &[usize],
-    kernel_name: &'static str,
-) -> Result<CudaStorageBytes> {
-    let elem = std::mem::size_of::<f32>();
-    if src.len_bytes() % elem != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
-            "{kernel_name}: src.len_bytes={} not a multiple of f32 size",
-            src.len_bytes(),
-        ))
-        .bt());
-    }
-    let src_dims = input_layout.shape().dims();
-    let src_stride = input_layout.stride_unsigned();
-    let src_el: usize = src_dims.iter().product();
-    if src_el * elem != src.len_bytes() {
-        return Err(fuel_core_types::Error::Msg(format!(
-            "{kernel_name}: src element count {} (from layout shape {:?}) \
-             disagrees with byte length {} / sizeof(f32)",
-            src_el,
-            src_dims,
-            src.len_bytes(),
-        ))
-        .bt());
-    }
-
-    // Reorder dims/strides so the reduced axes are at the end —
-    // matches the legacy `FastReduce::f` precondition that the
-    // kernel iterates over the last `el_to_sum_per_block` elements
-    // per block.
-    let mut dims: Vec<usize> = Vec::with_capacity(src_dims.len());
-    let mut stride: Vec<usize> = Vec::with_capacity(src_dims.len());
-    let mut dst_el: usize = 1;
-    for (dim_idx, &d) in src_dims.iter().enumerate() {
-        if !reduce_dims.contains(&dim_idx) {
-            dst_el *= d;
-            dims.push(d);
-            stride.push(src_stride[dim_idx]);
-        }
-    }
-    for &dim_idx in reduce_dims.iter() {
-        dims.push(src_dims[dim_idx]);
-        stride.push(src_stride[dim_idx]);
-    }
-
-    let dst_bytes = dst_el * elem;
-    let device = src.device().clone();
-    if src_el == 0 || dst_el == 0 {
-        return CudaStorageBytes::alloc(&device, dst_bytes);
-    }
-    let el_to_sum_per_block = src_el / dst_el;
-    // Pow-of-two block size so the in-block parallel reduction's
-    // halving loop is well-defined (matches legacy).
-    let block_dim = usize::min(1024, el_to_sum_per_block).next_power_of_two();
-    let cfg = LaunchConfig {
-        grid_dim: (dst_el as u32, 1, 1),
-        block_dim: (block_dim as u32, 1, 1),
-        shared_mem_bytes: 0,
-    };
-
-    let mut out = device.alloc_zeros::<u8>(dst_bytes)?;
-    let ds = device.clone_htod(&[dims.as_slice(), stride.as_slice()].concat())?;
-    let func = device.get_or_load_func(kernel_name, &kernels::REDUCE)?;
-    let mut builder = func.builder();
-    barg!(builder, src_el);
-    barg!(builder, el_to_sum_per_block);
-    barg!(builder, src_dims.len());
-    builder.arg(&ds);
-    builder.arg(src.buffer());
-    builder.arg(&mut out);
-    // SAFETY: kernel signature matches the args above — same shape as
-    // the legacy `FastReduce::f`, just on byte buffers.
-    unsafe { builder.launch(cfg) }.w()?;
-    device.synchronize()?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, dst_bytes))
 }
