@@ -2876,11 +2876,12 @@ impl CudaStorage {
 
     /// Fused RMS normalization along the last dim:
     /// `out[r, c] = x[r, c] / sqrt(mean(x[r, :]^2) + eps)`.
-    /// Mirrors VulkanBackend::rms_norm_last_dim semantics (no gain
-    /// vector — the caller multiplies by gain in a separate op).
-    /// F32 only today.
+    /// RMSNorm along the last dimension via baracuda alpha.50's
+    /// `baracuda_kernels_rms_norm_f32_run` (Phase 6c.4 migration from
+    /// the PTX `rmsnorm_f32_noalpha` REDUCE kernel). No gain vector —
+    /// the caller multiplies by gain in a separate op. F32 only today.
     pub fn rms_norm_last_dim(&self, layout: &Layout, eps: f64) -> Result<Self> {
-        use crate::device::LaunchConfig;
+        use baracuda_kernels_sys as sys;
         if self.dtype() != DType::F32 {
             return fuel_core_types::bail!(
                 "CudaStorage: rms_norm_last_dim requires f32 input, got {:?}",
@@ -2888,8 +2889,13 @@ impl CudaStorage {
             );
         }
         let dims = layout.shape().dims();
-        let n_cols = *dims.last().expect("rms_norm: empty shape");
-        let n_rows = layout.shape().elem_count() / n_cols;
+        let rank = dims.len();
+        if rank == 0 {
+            return fuel_core_types::bail!("rms_norm_last_dim: empty shape");
+        }
+        let last_dim = dims[rank - 1];
+        let numel = layout.shape().elem_count();
+        let outer_count = numel / last_dim.max(1);
         let device = self.device().clone();
 
         let src = match &self.slice {
@@ -2897,25 +2903,58 @@ impl CudaStorage {
             _ => return fuel_core_types::bail!(
                 "CudaStorage::rms_norm_last_dim: expected F32"),
         };
-        let mut out = unsafe { device.alloc::<f32>(n_rows * n_cols)? };
+        let out = unsafe { device.alloc::<f32>(numel)? };
+        // Aux rms scratch buffer the kernel writes per outer row.
+        let rms_scratch = unsafe { device.alloc::<f32>(outer_count.max(1))? };
 
-        // Block size: match the kernel's expectation (one block per row,
-        // block_size threads cooperate on the reduction). Keep small
-        // enough that the warp-reduce path is exercised.
-        let block_size = 256i32;
-        let func = device.get_or_load_func("rmsnorm_f32_noalpha", &kernels::REDUCE)?;
-        let cfg = LaunchConfig {
-            grid_dim: (n_rows as u32, 1, 1),
-            block_dim: (block_size as u32, 1, 1),
-            shared_mem_bytes: 0,
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        // Output contig over the input's shape.
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
         };
-        let mut builder = func.builder();
-        builder.arg(&src);
-        builder.arg(&mut out);
-        crate::builder_arg!(builder, n_cols as i32);
-        crate::builder_arg!(builder, block_size);
-        crate::builder_arg!(builder, eps as f32);
-        unsafe { builder.launch(cfg) }.w()?;
+        // rms_out is shape `[outer_count]` viewed at rank N: contig over
+        // leading dims, stride 0 along the normalized (last) axis.
+        let stride_rms: Vec<i64> = {
+            let mut s = vec![0_i64; rank];
+            if rank >= 2 {
+                s[rank - 2] = 1;
+                for d in (0..rank.saturating_sub(2)).rev() {
+                    s[d] = s[d + 1] * dims[d + 1] as i64;
+                }
+            }
+            s
+        };
+        let axes_mask: i32 = 1 << (rank as i32 - 1);
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+        let status = unsafe {
+            sys::baracuda_kernels_rms_norm_f32_run(
+                eps as f32,
+                numel as i64,
+                rank as i32,
+                shape_i32.as_ptr(),
+                stride_x.as_ptr(),
+                stride_y.as_ptr(),
+                stride_rms.as_ptr(),
+                axes_mask,
+                last_dim as i32,
+                src.as_raw().0 as *const std::ffi::c_void,
+                std::ptr::null(), // no affine gamma
+                out.as_raw().0 as *mut std::ffi::c_void,
+                rms_scratch.as_raw().0 as *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        };
+        crate::baracuda::status::check(status, "rms_norm_f32")?;
+        device.synchronize()?;
+        drop(rms_scratch);
 
         Ok(Self { slice: CudaStorageSlice::F32(out), device })
     }
