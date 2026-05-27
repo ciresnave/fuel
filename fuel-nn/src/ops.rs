@@ -153,12 +153,13 @@ impl Sigmoid {
     ) -> Result<(fuel::CudaStorage, Shape)> {
         use baracuda_driver::DeviceBuffer as CudaSlice;
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-        use fuel::cuda_backend::LaunchConfig;
-        
-                use fuel::cuda_backend::SlicePtrOrNull;
-        use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
-        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
+        use fuel::cuda_backend::Map1;
+        use fuel::CudaDevice;
+        use fuel_core_types::dtype::WithDType;
 
+        // Phase 6c.2 — `usigmoid` PTX dispatch retired; this Map1 now
+        // forwards to the shared `unary_baracuda` helper that backs all
+        // unary ops through baracuda alpha.50.
         struct S;
         impl Map1 for S {
             fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
@@ -167,24 +168,7 @@ impl Sigmoid {
                 dev: &CudaDevice,
                 layout: &Layout,
             ) -> Result<CudaSlice<T>> {
-                let shape = layout.shape();
-                let dims = shape.dims();
-                let el_count = shape.elem_count();
-                let cfg = LaunchConfig::for_num_elems(el_count as u32);
-                let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-                let src = &src.slice(layout.start_offset()..src.len());
-                let func = dev.get_or_load_func(&kernel_name::<T>("usigmoid"), &kernels::UNARY)?;
-                // SAFETY: Set later by running the kernel.
-                let out = unsafe { dev.alloc::<T>(el_count)? };
-
-                let mut builder = func.builder();
-                fuel::builder_arg!(builder, el_count, dims.len());
-                ds.builder_arg(&mut builder);
-                builder.arg(src);
-                builder.arg(&out);
-                // SAFETY: ffi.
-                unsafe { builder.launch(cfg) }.w()?;
-                Ok(out)
+                fuel::cuda_backend::storage::unary_baracuda::<T>(src, dev, layout, "usigmoid")
             }
         }
 

@@ -584,7 +584,7 @@ fn pick_unary_ffi(kernel: &'static str, dt: DType) -> Option<(UnaryContigRun, Un
 /// FFI. Picks contig vs strided per-call; baracuda's `_strided_run`
 /// variant takes a `(rank, shape:i32, stride_x:i64, stride_y:i64)`
 /// descriptor (host pointers per baracuda's documented ABI).
-pub(crate) fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+pub fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     src: &CudaSlice<T>,
     dev: &CudaDevice,
     layout: &Layout,
