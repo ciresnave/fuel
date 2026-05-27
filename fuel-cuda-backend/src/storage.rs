@@ -1759,6 +1759,167 @@ impl Map2 for WhereCond<'_> {
     }
 }
 
+// Generic binary FFI types — every baracuda `binary_<op>_<dtype>_run` /
+// `_strided_run` matches one of these shapes.
+type BinaryContigRun = unsafe extern "C" fn(
+    numel: i64,
+    a: *const std::ffi::c_void,
+    b: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+type BinaryStridedRun = unsafe extern "C" fn(
+    numel: i64,
+    rank: i32,
+    shape: *const i32,
+    stride_a: *const i64,
+    stride_b: *const i64,
+    stride_y: *const i64,
+    a: *const std::ffi::c_void,
+    b: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_binary_ffi(kernel: &'static str, dt: DType) -> Option<(BinaryContigRun, BinaryStridedRun)> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! pair {
+        ($stem:ident) => {
+            ::paste::paste! {
+                match dt {
+                    DType::F32 => Some((
+                        sys::[<baracuda_kernels_ $stem _f32_run>] as BinaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _f32_strided_run>] as BinaryStridedRun,
+                    )),
+                    DType::F64 => Some((
+                        sys::[<baracuda_kernels_ $stem _f64_run>] as BinaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _f64_strided_run>] as BinaryStridedRun,
+                    )),
+                    DType::F16 => Some((
+                        sys::[<baracuda_kernels_ $stem _f16_run>] as BinaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _f16_strided_run>] as BinaryStridedRun,
+                    )),
+                    DType::BF16 => Some((
+                        sys::[<baracuda_kernels_ $stem _bf16_run>] as BinaryContigRun,
+                        sys::[<baracuda_kernels_ $stem _bf16_strided_run>] as BinaryStridedRun,
+                    )),
+                    _ => None,
+                }
+            }
+        };
+    }
+    match kernel {
+        "badd" => pair!(binary_add),
+        "bsub" => pair!(binary_sub),
+        "bmul" => pair!(binary_mul),
+        "bdiv" => pair!(binary_div),
+        "bmaximum" => pair!(binary_maximum),
+        "bminimum" => pair!(binary_minimum),
+        // Comparison ops — same FFI signature but output is u8.
+        "eq" => pair!(binary_cmp_eq),
+        "ne" => pair!(binary_cmp_ne),
+        "lt" => pair!(binary_cmp_lt),
+        "le" => pair!(binary_cmp_le),
+        "gt" => pair!(binary_cmp_gt),
+        "ge" => pair!(binary_cmp_ge),
+        _ => None,
+    }
+}
+
+/// Run a generic binary kernel (output dtype = lhs/rhs input dtype, OR
+/// u8 for cmp ops) via baracuda's `binary_<op>_<dtype>_run` /
+/// `_strided_run` FFI. The caller chooses the output buffer dtype.
+/// `output_ptr` must point to `numel` elements of the appropriate type.
+fn binary_baracuda_raw(
+    lhs_ptr: *const std::ffi::c_void,
+    rhs_ptr: *const std::ffi::c_void,
+    output_ptr: *mut std::ffi::c_void,
+    lhs_l: &Layout,
+    rhs_l: &Layout,
+    contig_fn: BinaryContigRun,
+    strided_fn: BinaryStridedRun,
+    op_label: &'static str,
+    dev: &CudaDevice,
+) -> Result<()> {
+    let el = lhs_l.shape().elem_count();
+    if el == 0 {
+        return Ok(());
+    }
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let both_contig = lhs_l.is_contiguous() && rhs_l.is_contiguous();
+    let status = if both_contig {
+        // SAFETY: device-resident a/b/y pointers; ws null/0.
+        unsafe { contig_fn(el as i64, lhs_ptr, rhs_ptr, output_ptr, std::ptr::null_mut(), 0, stream) }
+    } else {
+        // Strided path: pack (rank, shape, stride_a, stride_b, stride_y).
+        // baracuda reads these on the host before launching, so plain Vec
+        // pointers suffice (host pointers per ABI).
+        let dims = lhs_l.shape().dims();
+        let rank = dims.len();
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_a: Vec<i64> = lhs_l.stride().iter().map(|&s| s as i64).collect();
+        let stride_b: Vec<i64> = rhs_l.stride().iter().map(|&s| s as i64).collect();
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
+        };
+        // SAFETY: shape/stride buffers owned through the call.
+        unsafe {
+            strided_fn(
+                el as i64, rank as i32,
+                shape_i32.as_ptr(),
+                stride_a.as_ptr(),
+                stride_b.as_ptr(),
+                stride_y.as_ptr(),
+                lhs_ptr, rhs_ptr, output_ptr,
+                std::ptr::null_mut(), 0, stream,
+            )
+        }
+    };
+    crate::baracuda::status::check(status, op_label)?;
+    dev.synchronize()?;
+    Ok(())
+}
+
+/// Typed wrapper over `binary_baracuda_raw` — allocates an output
+/// `CudaSlice<T>` and dispatches by `kernel` + `T::DTYPE`. Used by the
+/// generic `BinaryOpT` Map2 impl (output dtype == input dtype).
+pub(crate) fn binary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    lhs: &CudaSlice<T>,
+    lhs_l: &Layout,
+    rhs: &CudaSlice<T>,
+    rhs_l: &Layout,
+    dev: &CudaDevice,
+    kernel: &'static str,
+) -> Result<CudaSlice<T>> {
+    let dt = T::DTYPE;
+    let (contig, strided) = pick_binary_ffi(kernel, dt).ok_or_else(|| {
+        fuel_core_types::Error::Msg(format!(
+            "baracuda binary: unsupported (op={kernel}, dtype={dt:?})"
+        ))
+        .bt()
+    })?;
+    let el = lhs_l.shape().elem_count();
+    let out = unsafe { dev.alloc::<T>(el)? };
+    let lhs_slice = lhs.slice(lhs_l.start_offset()..lhs.len());
+    let rhs_slice = rhs.slice(rhs_l.start_offset()..rhs.len());
+    binary_baracuda_raw(
+        lhs_slice.as_raw().0 as *const std::ffi::c_void,
+        rhs_slice.as_raw().0 as *const std::ffi::c_void,
+        out.as_raw().0 as *mut std::ffi::c_void,
+        lhs_l, rhs_l, contig, strided, kernel, dev,
+    )?;
+    Ok(out)
+}
+
 impl<U: fuel_core_types::op::BinaryOpT> Map2 for U {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
@@ -1768,35 +1929,16 @@ impl<U: fuel_core_types::op::BinaryOpT> Map2 for U {
         rhs_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<CudaSlice<T>> {
-        let shape = lhs_l.shape();
-        let dims = shape.dims();
-        let elem_count = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
-        let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
-            SlicePtrOrNull::Null
-        } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&dims_strides_strides_usize(dims, lhs_l, rhs_l))?)
-        };
-        let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
-        let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>(U::KERNEL), &kernels::BINARY)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(elem_count)? };
-        let mut builder = func.builder();
-        barg!(builder, elem_count);
-        barg!(builder, dims.len());
-        dims_and_strides.builder_arg(&mut builder);
-        builder.arg(lhs);
-        builder.arg(rhs);
-        builder.arg(&out);
-        // SAFETY: ffi
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+        binary_baracuda(lhs, lhs_l, rhs, rhs_l, dev, U::KERNEL)
     }
 }
 
 struct Cmp(CmpOp);
 impl Map2Any for Cmp {
+    /// Element-wise comparison via baracuda alpha.50's
+    /// `binary_cmp_<op>_<dtype>_run`. Output is `u8` (0/1 per cell).
+    /// Phase 6c.2 migration from the PTX `eq`/`ne`/`lt`/`le`/`gt`/`ge`
+    /// kernels in the BINARY module.
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
         lhs: &CudaSlice<T>,
@@ -1805,18 +1947,7 @@ impl Map2Any for Cmp {
         rhs_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<S> {
-        let shape = lhs_l.shape();
-        let dims = shape.dims();
-        let elem_count = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
-        let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
-            SlicePtrOrNull::Null
-        } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&dims_strides_strides_usize(dims, lhs_l, rhs_l))?)
-        };
-        let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
-        let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
-        let name = match self.0 {
+        let kernel: &'static str = match self.0 {
             CmpOp::Eq => "eq",
             CmpOp::Ne => "ne",
             CmpOp::Lt => "lt",
@@ -1824,18 +1955,24 @@ impl Map2Any for Cmp {
             CmpOp::Gt => "gt",
             CmpOp::Ge => "ge",
         };
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::BINARY)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<u8>(elem_count)? };
-        let mut builder = func.builder();
-        barg!(builder, elem_count);
-        barg!(builder, dims.len());
-        dims_and_strides.builder_arg(&mut builder);
-        builder.arg(lhs);
-        builder.arg(rhs);
-        builder.arg(&out);
-        // SAFETY: ffi
-        unsafe { builder.launch(cfg) }.w()?;
+        let dt = T::DTYPE;
+        let (contig, strided) = pick_binary_ffi(kernel, dt).ok_or_else(|| {
+            fuel_core_types::Error::Msg(format!(
+                "baracuda cmp: unsupported (op={kernel}, dtype={dt:?})"
+            ))
+            .bt()
+        })?;
+        let el = lhs_l.shape().elem_count();
+        // u8 output for boolean comparison results.
+        let out = unsafe { dev.alloc::<u8>(el)? };
+        let lhs_slice = lhs.slice(lhs_l.start_offset()..lhs.len());
+        let rhs_slice = rhs.slice(rhs_l.start_offset()..rhs.len());
+        binary_baracuda_raw(
+            lhs_slice.as_raw().0 as *const std::ffi::c_void,
+            rhs_slice.as_raw().0 as *const std::ffi::c_void,
+            out.as_raw().0 as *mut std::ffi::c_void,
+            lhs_l, rhs_l, contig, strided, kernel, dev,
+        )?;
         Ok(S::U8(out))
     }
 }
