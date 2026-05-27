@@ -325,23 +325,34 @@ plan:
     `fuel-cuda-kernels/src/lib.rs`. `affine.cu` / `binary.cu` / `cast.cu`
     / `unary.cu` deleted. PTX module count: 9 → 5 (Fill, Indexing,
     Reduce, Sort, Ternary remain).
-13. **Phase 6c.4 — QUEUED:** finish the storage.rs eager-API
-    migration:
-    - **Reduce/Softmax/RmsNorm/Rope** (6 sites in REDUCE) — composed
-      ops; rewire to baracuda's `softmax_*`/`log_softmax_*`/`rms_norm_*`/
-      `rope_*` symbol families.
-    - **Indexing** (5 sites: where, index_select, gather, scatter_add,
-      index_add) — rewire to baracuda's indexing FFI.
-    - **Ternary `where_cond`** (1 site) — baracuda has `where_*` ops.
-    - **Fill `const_set` + `copy2d`** (2 sites) — baracuda has fill/
-      copy2d wrappers (or compose via existing primitives).
-    - **`fuel-core::sort`** (1 cross-crate caller: `asort_asc`/
-      `asort_desc`) — needs baracuda sort coverage (alpha.50 surface
-      audit TBD; possible new ask).
-9. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
-   member, drop `cudaforge` build-time CUDA compilation.
+13. **Phase 6c.4 — IN PROGRESS (2026-05-27):**
+    - **Softmax / log_softmax / rms_norm / layer_norm — SHIPPED**.
+      Storage helpers in `fuel-cuda-backend/src/storage.rs` now
+      call `baracuda_kernels_<op>_<dtype>_run` directly for f32/
+      f64/f16/bf16. `fuel-nn::ops::{SoftmaxLastDim, RmsNorm,
+      LayerNorm}::cuda_inner` migrated from in-place PTX dispatch
+      to one-line delegation through the new storage helpers
+      (`rms_norm_last_dim_with_gain`, `layer_norm_last_dim`).
+    - **ArgSort — SHIPPED (f32/f64/i32/i64).** `fuel-core::sort`
+      Map1Any switched to `baracuda_kernels_argsort_<dt>_run`;
+      `baracuda_kernels_sys` re-exported from fuel-cuda-backend
+      so cross-crate calls don't need a direct dep. Other dtypes
+      bail with a clear "needs baracuda" message; baracuda's
+      `row_len ≤ 1024` cap is enforced explicitly.
+    - **Remaining blockers** documented in
+      `docs/session-prompts/baracuda-phase-6c4-gaps.md`:
+        - **FastReduce** (Min multi-axis + integer-dtype reduce).
+        - **rope** (precomputed cos/sin signature mismatch).
+        - **where_cond** (U32/I64 cond + integer values).
+        - **const_set** (U32/I16/F8E4M3 fill + strided fill).
+        - **Indexing** (scatter without `_add`, `index_add`,
+          integer values, U8 + I64 idx).
+14. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
+    member, drop `cudaforge` build-time CUDA compilation.
 
-Phases 2 + 1b + 5a SHIPPED. Phases 3 + 5b + 4 + 6 + 7 remaining.
+Phases 2 + 1b + 5a + 6c.1 + 6c.2 + 6c.3 SHIPPED. Phase 6c.4 partial;
+the 6 above blocker categories are filed as baracuda asks. Phases
+3 + 5b + 4 + 6 + 7 remaining.
 
 ## Why "stay handwritten in Fuel" doesn't apply anymore
 
