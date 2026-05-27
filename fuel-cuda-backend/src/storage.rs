@@ -2705,10 +2705,10 @@ impl CudaStorage {
 
     /// Softmax along the last dimension via baracuda alpha.50's
     /// `baracuda_kernels_softmax_<dtype>_run` (Phase 6c.4 migration
-    /// from the PTX `softmax_f32` / `softmax_f64` REDUCE kernels).
+    /// from the PTX `softmax_f{32,64}` REDUCE kernels). F32/F64/F16/BF16.
     ///
     /// `layout` must be contiguous; the input is treated as a row-major
-    /// `(n_rows, n_cols)` view with softmax over `n_cols`.
+    /// `(outer, last_dim)` view with softmax over the last axis.
     pub fn softmax_last_dim(&self, layout: &Layout) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         let dims = layout.shape().dims();
@@ -2719,8 +2719,6 @@ impl CudaStorage {
         let rank = dims.len();
         let n_cols = dims[rank - 1];
         let numel = layout.shape().elem_count();
-        // Row-major contig strides for both x and y (Fuel's softmax_last_dim
-        // is documented as requiring contiguous input).
         let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
         let stride_row_major: Vec<i64> = {
             let mut s = vec![1_i64; rank];
@@ -2730,50 +2728,33 @@ impl CudaStorage {
             s
         };
         let stream = device.stream().as_raw() as *mut std::ffi::c_void;
-        let slice = match &self.slice {
-            CudaStorageSlice::F32(s) => {
-                let src = s.slice(layout.start_offset()..s.len());
-                let out = unsafe { device.alloc::<f32>(numel)? };
-                // SAFETY: contig device pointers; shape/stride host arrays
-                // owned through the call; workspace null/0.
-                let status = unsafe {
-                    sys::baracuda_kernels_softmax_f32_run(
-                        numel as i64, rank as i32,
-                        shape_i32.as_ptr(),
-                        stride_row_major.as_ptr(), stride_row_major.as_ptr(),
-                        (rank - 1) as i32, n_cols as i32, 1_i64, 1_i64,
-                        src.as_raw().0 as *const std::ffi::c_void,
-                        out.as_raw().0 as *mut std::ffi::c_void,
-                        std::ptr::null_mut(), 0, stream,
-                    )
-                };
-                crate::baracuda::status::check(status, "softmax_f32")?;
-                device.synchronize()?;
-                CudaStorageSlice::F32(out)
-            }
-            CudaStorageSlice::F64(s) => {
-                let src = s.slice(layout.start_offset()..s.len());
-                let out = unsafe { device.alloc::<f64>(numel)? };
-                let status = unsafe {
-                    sys::baracuda_kernels_softmax_f64_run(
-                        numel as i64, rank as i32,
-                        shape_i32.as_ptr(),
-                        stride_row_major.as_ptr(), stride_row_major.as_ptr(),
-                        (rank - 1) as i32, n_cols as i32, 1_i64, 1_i64,
-                        src.as_raw().0 as *const std::ffi::c_void,
-                        out.as_raw().0 as *mut std::ffi::c_void,
-                        std::ptr::null_mut(), 0, stream,
-                    )
-                };
-                crate::baracuda::status::check(status, "softmax_f64")?;
-                device.synchronize()?;
-                CudaStorageSlice::F64(out)
-            }
-            _ => {
-                return fuel_core_types::bail!("softmax_last_dim: unsupported dtype {:?}", self.dtype());
-            }
-        };
-        Ok(Self { slice, device })
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let CudaStorageSlice::$variant(s) = &self.slice {
+                    let src = s.slice(layout.start_offset()..s.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let status = unsafe {
+                        sys::$run(
+                            numel as i64, rank as i32,
+                            shape_i32.as_ptr(),
+                            stride_row_major.as_ptr(), stride_row_major.as_ptr(),
+                            (rank - 1) as i32, n_cols as i32, 1_i64, 1_i64,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_softmax_f32_run, "softmax_f32");
+        launch!(F64, f64, baracuda_kernels_softmax_f64_run, "softmax_f64");
+        launch!(F16, half::f16, baracuda_kernels_softmax_f16_run, "softmax_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_softmax_bf16_run, "softmax_bf16");
+        fuel_core_types::bail!("softmax_last_dim: unsupported dtype {:?}", self.dtype())
     }
 
     /// Q4_0 matmul: `out = a @ dequant_q4_0(w_q_bytes)`.
@@ -2877,17 +2858,12 @@ impl CudaStorage {
     /// Fused RMS normalization along the last dim:
     /// `out[r, c] = x[r, c] / sqrt(mean(x[r, :]^2) + eps)`.
     /// RMSNorm along the last dimension via baracuda alpha.50's
-    /// `baracuda_kernels_rms_norm_f32_run` (Phase 6c.4 migration from
-    /// the PTX `rmsnorm_f32_noalpha` REDUCE kernel). No gain vector —
-    /// the caller multiplies by gain in a separate op. F32 only today.
+    /// `baracuda_kernels_rms_norm_<dtype>_run` (Phase 6c.4 migration
+    /// from the PTX `rmsnorm_f32_noalpha` REDUCE kernel). No gain vector
+    /// — the caller multiplies by gain in a separate op.
+    /// F32/F64/F16/BF16 supported.
     pub fn rms_norm_last_dim(&self, layout: &Layout, eps: f64) -> Result<Self> {
         use baracuda_kernels_sys as sys;
-        if self.dtype() != DType::F32 {
-            return fuel_core_types::bail!(
-                "CudaStorage: rms_norm_last_dim requires f32 input, got {:?}",
-                self.dtype()
-            );
-        }
         let dims = layout.shape().dims();
         let rank = dims.len();
         if rank == 0 {
@@ -2897,19 +2873,8 @@ impl CudaStorage {
         let numel = layout.shape().elem_count();
         let outer_count = numel / last_dim.max(1);
         let device = self.device().clone();
-
-        let src = match &self.slice {
-            CudaStorageSlice::F32(s) => s.slice(layout.start_offset()..s.len()),
-            _ => return fuel_core_types::bail!(
-                "CudaStorage::rms_norm_last_dim: expected F32"),
-        };
-        let out = unsafe { device.alloc::<f32>(numel)? };
-        // Aux rms scratch buffer the kernel writes per outer row.
-        let rms_scratch = unsafe { device.alloc::<f32>(outer_count.max(1))? };
-
         let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
         let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
-        // Output contig over the input's shape.
         let stride_y: Vec<i64> = {
             let mut s = vec![1_i64; rank];
             for d in (0..rank.saturating_sub(1)).rev() {
@@ -2917,8 +2882,6 @@ impl CudaStorage {
             }
             s
         };
-        // rms_out is shape `[outer_count]` viewed at rank N: contig over
-        // leading dims, stride 0 along the normalized (last) axis.
         let stride_rms: Vec<i64> = {
             let mut s = vec![0_i64; rank];
             if rank >= 2 {
@@ -2931,32 +2894,219 @@ impl CudaStorage {
         };
         let axes_mask: i32 = 1 << (rank as i32 - 1);
         let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let CudaStorageSlice::$variant(s) = &self.slice {
+                    let src = s.slice(layout.start_offset()..s.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let rms_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
+                    let status = unsafe {
+                        sys::$run(
+                            eps as f32, numel as i64, rank as i32,
+                            shape_i32.as_ptr(),
+                            stride_x.as_ptr(), stride_y.as_ptr(), stride_rms.as_ptr(),
+                            axes_mask, last_dim as i32,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            std::ptr::null(),
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            rms_scratch.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    drop(rms_scratch);
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_rms_norm_f32_run, "rms_norm_f32");
+        launch!(F64, f64, baracuda_kernels_rms_norm_f64_run, "rms_norm_f64");
+        launch!(F16, half::f16, baracuda_kernels_rms_norm_f16_run, "rms_norm_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_rms_norm_bf16_run, "rms_norm_bf16");
+        fuel_core_types::bail!(
+            "CudaStorage::rms_norm_last_dim: unsupported dtype {:?}", self.dtype()
+        )
+    }
 
-        let status = unsafe {
-            sys::baracuda_kernels_rms_norm_f32_run(
-                eps as f32,
-                numel as i64,
-                rank as i32,
-                shape_i32.as_ptr(),
-                stride_x.as_ptr(),
-                stride_y.as_ptr(),
-                stride_rms.as_ptr(),
-                axes_mask,
-                last_dim as i32,
-                src.as_raw().0 as *const std::ffi::c_void,
-                std::ptr::null(), // no affine gamma
-                out.as_raw().0 as *mut std::ffi::c_void,
-                rms_scratch.as_raw().0 as *mut std::ffi::c_void,
-                std::ptr::null_mut(),
-                0,
-                stream,
-            )
+    /// RMSNorm-with-gain: `y = x / sqrt(mean(x², over last_dim) + eps) * gain`.
+    /// Same baracuda `rms_norm_<dtype>_run` family, gamma=gain (non-null).
+    /// Caller must ensure `gain` has size `last_dim`, contiguous.
+    pub fn rms_norm_last_dim_with_gain(
+        &self,
+        gain: &Self,
+        layout: &Layout,
+        _gain_layout: &Layout,
+        eps: f64,
+    ) -> Result<Self> {
+        use baracuda_kernels_sys as sys;
+        if self.dtype() != gain.dtype() {
+            return fuel_core_types::bail!(
+                "rms_norm_with_gain: dtype mismatch x={:?} gain={:?}",
+                self.dtype(), gain.dtype()
+            );
+        }
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        if rank == 0 {
+            return fuel_core_types::bail!("rms_norm_with_gain: empty shape");
+        }
+        let last_dim = dims[rank - 1];
+        let numel = layout.shape().elem_count();
+        let outer_count = numel / last_dim.max(1);
+        let device = self.device().clone();
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
         };
-        crate::baracuda::status::check(status, "rms_norm_f32")?;
-        device.synchronize()?;
-        drop(rms_scratch);
+        let stride_rms: Vec<i64> = {
+            let mut s = vec![0_i64; rank];
+            if rank >= 2 {
+                s[rank - 2] = 1;
+                for d in (0..rank.saturating_sub(2)).rev() {
+                    s[d] = s[d + 1] * dims[d + 1] as i64;
+                }
+            }
+            s
+        };
+        let axes_mask: i32 = 1 << (rank as i32 - 1);
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let (CudaStorageSlice::$variant(s), CudaStorageSlice::$variant(g)) =
+                    (&self.slice, &gain.slice)
+                {
+                    let src = s.slice(layout.start_offset()..s.len());
+                    let g_slice = g.slice(0..g.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let rms_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
+                    let status = unsafe {
+                        sys::$run(
+                            eps as f32, numel as i64, rank as i32,
+                            shape_i32.as_ptr(),
+                            stride_x.as_ptr(), stride_y.as_ptr(), stride_rms.as_ptr(),
+                            axes_mask, last_dim as i32,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            g_slice.as_raw().0 as *const std::ffi::c_void,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            rms_scratch.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    drop(rms_scratch);
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_rms_norm_f32_run, "rms_norm_gain_f32");
+        launch!(F64, f64, baracuda_kernels_rms_norm_f64_run, "rms_norm_gain_f64");
+        launch!(F16, half::f16, baracuda_kernels_rms_norm_f16_run, "rms_norm_gain_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_rms_norm_bf16_run, "rms_norm_gain_bf16");
+        fuel_core_types::bail!(
+            "rms_norm_with_gain: unsupported dtype {:?}", self.dtype()
+        )
+    }
 
-        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+    /// LayerNorm along the last dimension via baracuda alpha.50's
+    /// `baracuda_kernels_layer_norm_<dtype>_run`. F32/F64/F16/BF16.
+    /// `y = (x - mean) / sqrt(var + eps) * gain + bias`.
+    /// Caller must ensure `gain`/`bias` have size `last_dim`, contiguous.
+    pub fn layer_norm_last_dim(
+        &self,
+        gain: &Self,
+        bias: &Self,
+        layout: &Layout,
+        _gain_layout: &Layout,
+        _bias_layout: &Layout,
+        eps: f64,
+    ) -> Result<Self> {
+        use baracuda_kernels_sys as sys;
+        if self.dtype() != gain.dtype() || self.dtype() != bias.dtype() {
+            return fuel_core_types::bail!(
+                "layer_norm: dtype mismatch x={:?} gain={:?} bias={:?}",
+                self.dtype(), gain.dtype(), bias.dtype(),
+            );
+        }
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        if rank == 0 {
+            return fuel_core_types::bail!("layer_norm: empty shape");
+        }
+        let last_dim = dims[rank - 1];
+        let numel = layout.shape().elem_count();
+        let outer_count = numel / last_dim.max(1);
+        let device = self.device().clone();
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_x: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
+        };
+        let stride_save: Vec<i64> = {
+            let mut s = vec![0_i64; rank];
+            if rank >= 2 {
+                s[rank - 2] = 1;
+                for d in (0..rank.saturating_sub(2)).rev() {
+                    s[d] = s[d + 1] * dims[d + 1] as i64;
+                }
+            }
+            s
+        };
+        let axes_mask: i32 = 1 << (rank as i32 - 1);
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let (
+                    CudaStorageSlice::$variant(s),
+                    CudaStorageSlice::$variant(g),
+                    CudaStorageSlice::$variant(b),
+                ) = (&self.slice, &gain.slice, &bias.slice) {
+                    let src = s.slice(layout.start_offset()..s.len());
+                    let g_slice = g.slice(0..g.len());
+                    let b_slice = b.slice(0..b.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let mean_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
+                    let inv_std_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
+                    let status = unsafe {
+                        sys::$run(
+                            eps as f32, numel as i64, rank as i32,
+                            shape_i32.as_ptr(),
+                            stride_x.as_ptr(), stride_y.as_ptr(), stride_save.as_ptr(),
+                            axes_mask, last_dim as i32,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            g_slice.as_raw().0 as *const std::ffi::c_void,
+                            b_slice.as_raw().0 as *const std::ffi::c_void,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            mean_scratch.as_raw().0 as *mut std::ffi::c_void,
+                            inv_std_scratch.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    drop(mean_scratch);
+                    drop(inv_std_scratch);
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_layer_norm_f32_run, "layer_norm_f32");
+        launch!(F64, f64, baracuda_kernels_layer_norm_f64_run, "layer_norm_f64");
+        launch!(F16, half::f16, baracuda_kernels_layer_norm_f16_run, "layer_norm_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_layer_norm_bf16_run, "layer_norm_bf16");
+        fuel_core_types::bail!(
+            "layer_norm: unsupported dtype {:?}", self.dtype()
+        )
     }
 
     /// Apply RoPE rotation to the input, using the fused CUDA kernel
