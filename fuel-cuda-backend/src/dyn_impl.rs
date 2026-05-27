@@ -124,28 +124,16 @@ fn binary_kernel_name(op: BinaryOp) -> &'static str {
 pub(crate) struct UnaryKernel(pub(crate) &'static str);
 
 impl Map1 for UnaryKernel {
+    /// Runtime-name unary dispatch — Phase 6c.2 migration to
+    /// baracuda alpha.50 via the same `unary_baracuda` helper used
+    /// by the generic `impl<U: UnaryOpT> Map1 for U`.
     fn f<T: DeviceRepr + fuel_core_types::WithDType + ValidAsZeroBits>(
         &self,
         src: &CudaSlice<T>,
         dev: &CudaDevice,
         layout: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el_count = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el_count as u32);
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>(self.0), &kernels::UNARY)?;
-        let mut out = unsafe { dev.alloc::<T>(el_count)? };
-        let mut builder = func.builder();
-        crate::builder_arg!(builder, el_count);
-        crate::builder_arg!(builder, dims.len());
-        ds.builder_arg(&mut builder);
-        builder.arg(src);
-        builder.arg(&mut out);
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+        crate::storage::unary_baracuda::<T>(src, dev, layout, self.0)
     }
 }
 

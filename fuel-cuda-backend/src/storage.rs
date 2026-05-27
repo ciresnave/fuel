@@ -584,7 +584,7 @@ fn pick_unary_ffi(kernel: &'static str, dt: DType) -> Option<(UnaryContigRun, Un
 /// FFI. Picks contig vs strided per-call; baracuda's `_strided_run`
 /// variant takes a `(rank, shape:i32, stride_x:i64, stride_y:i64)`
 /// descriptor (host pointers per baracuda's documented ABI).
-fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+pub(crate) fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     src: &CudaSlice<T>,
     dev: &CudaDevice,
     layout: &Layout,
@@ -3261,183 +3261,93 @@ impl CudaStorage {
         Ok(())
     }
 
+    /// Copy a strided source slice into `dst` at `dst_offset`. The
+    /// contiguous-src fast path uses `cuMemcpyDtoD` directly via
+    /// `dev.memcpy_dtod`; the strided path delegates to baracuda's
+    /// byte-width contiguize FFI (`contiguize_b{1,2,4,8}_run`) —
+    /// Phase 6c.2 migration from the ten `ucopy_<dtype>` PTX kernels.
     pub fn copy_strided_src(&self, dst: &mut Self, dst_offset: usize, src_l: &Layout) -> Result<()> {
-        let src_shape = src_l.shape();
-        let dims = src_shape.dims();
-        let el_count = src_shape.elem_count();
+        let el_count = src_l.shape().elem_count();
         if el_count == 0 {
             return Ok(());
         }
-        let cfg = LaunchConfig::for_num_elems(el_count as u32);
         let dev = &self.device;
-        let ds = SlicePtrOrNull::params_from_layout(dev, src_l)?;
+        macro_rules! do_copy {
+            ($s:expr, $d:expr, $bw:expr) => {{
+                let (src_view, mut dst_view) = slice_src_and_dst($s, src_l, $d, dst_offset);
+                if src_l.is_contiguous() {
+                    dev.memcpy_dtod(&src_view, &mut dst_view)?;
+                } else {
+                    let src_ptr = src_view.as_raw().0 as *const std::ffi::c_void;
+                    let dst_ptr = dst_view.as_raw().0 as *mut std::ffi::c_void;
+                    copy_strided_baracuda(src_ptr, dst_ptr, src_l, $bw, dev)?;
+                }
+            }};
+        }
         match (&self.slice, &mut dst.slice) {
-            (CudaStorageSlice::BF16(src), CudaStorageSlice::BF16(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_bf16", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::F16(src), CudaStorageSlice::F16(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_f16", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::F32(src), CudaStorageSlice::F32(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_f32", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::U8(src), CudaStorageSlice::U8(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_u8", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::U32(src), CudaStorageSlice::U32(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_u32", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::I16(src), CudaStorageSlice::I16(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_i16", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::I32(src), CudaStorageSlice::I32(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_i32", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::I64(src), CudaStorageSlice::I64(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_i64", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::F64(src), CudaStorageSlice::F64(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_f64", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            (CudaStorageSlice::F8E4M3(src), CudaStorageSlice::F8E4M3(dst)) => {
-                let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
-                if src_l.is_contiguous() {
-                    dev.memcpy_dtod(&src, &mut dst)?
-                } else {
-                    let func = dev.get_or_load_func("ucopy_f8e4m3", &kernels::UNARY)?;
-                    let mut builder = func.builder();
-                    barg!(builder, el_count);
-                    barg!(builder, dims.len());
-                    ds.builder_arg(&mut builder);
-                    builder.arg(&src);
-                    builder.arg(&mut dst);
-                    // SAFETY: ffi.
-                    unsafe { builder.launch(cfg) }.w()?;
-                }
-            }
-            _ => Err(CudaError::InternalError(
-                "dtype mismatch in copy_strided op",
-            ))?,
+            (CudaStorageSlice::BF16(s), CudaStorageSlice::BF16(d)) => do_copy!(s, d, 2),
+            (CudaStorageSlice::F16(s), CudaStorageSlice::F16(d)) => do_copy!(s, d, 2),
+            (CudaStorageSlice::F32(s), CudaStorageSlice::F32(d)) => do_copy!(s, d, 4),
+            (CudaStorageSlice::U8(s), CudaStorageSlice::U8(d)) => do_copy!(s, d, 1),
+            (CudaStorageSlice::U32(s), CudaStorageSlice::U32(d)) => do_copy!(s, d, 4),
+            (CudaStorageSlice::I16(s), CudaStorageSlice::I16(d)) => do_copy!(s, d, 2),
+            (CudaStorageSlice::I32(s), CudaStorageSlice::I32(d)) => do_copy!(s, d, 4),
+            (CudaStorageSlice::I64(s), CudaStorageSlice::I64(d)) => do_copy!(s, d, 8),
+            (CudaStorageSlice::F64(s), CudaStorageSlice::F64(d)) => do_copy!(s, d, 8),
+            (CudaStorageSlice::F8E4M3(s), CudaStorageSlice::F8E4M3(d)) => do_copy!(s, d, 1),
+            _ => return Err(CudaError::InternalError("dtype mismatch in copy_strided op").into()),
         }
         Ok(())
     }
+}
+
+/// Strided device→device contiguize via baracuda's byte-width FFI.
+/// `src_ptr` and `dst_ptr` are already at their respective offsets
+/// (post `slice_src_and_dst`); `source_offset` passed as 0.
+fn copy_strided_baracuda(
+    src_ptr: *const std::ffi::c_void,
+    dst_ptr: *mut std::ffi::c_void,
+    src_l: &Layout,
+    byte_width: usize,
+    dev: &CudaDevice,
+) -> Result<()> {
+    let dims = src_l.shape().dims();
+    let rank = dims.len();
+    let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+    let strides_i64: Vec<i64> = src_l.stride().iter().map(|&s| s as i64).collect();
+    let kernel: unsafe extern "C" fn(
+        *mut std::ffi::c_void,
+        *const std::ffi::c_void,
+        *const i32,
+        *const i64,
+        i64,
+        i32,
+        *mut std::ffi::c_void,
+    ) -> i32 = match byte_width {
+        1 => baracuda_kernels_sys::baracuda_kernels_contiguize_b1_run,
+        2 => baracuda_kernels_sys::baracuda_kernels_contiguize_b2_run,
+        4 => baracuda_kernels_sys::baracuda_kernels_contiguize_b4_run,
+        8 => baracuda_kernels_sys::baracuda_kernels_contiguize_b8_run,
+        other => fuel_core_types::bail!("copy_strided_src: unsupported byte width {other}"),
+    };
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    // SAFETY: device-resident src/dst pointers; shape/stride arrays are
+    // host pointers per baracuda's contiguize ABI; offset=0 because
+    // slice_src_and_dst already shifted src to start_offset.
+    let status = unsafe {
+        kernel(
+            dst_ptr,
+            src_ptr,
+            shape_i32.as_ptr(),
+            strides_i64.as_ptr(),
+            0,
+            rank as i32,
+            stream,
+        )
+    };
+    crate::baracuda::status::check(status, "copy_strided_src")?;
+    dev.synchronize()?;
+    Ok(())
 }
 
 // Default for the reduced precision setting is false, similar to pytorch.
