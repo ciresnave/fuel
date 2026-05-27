@@ -2059,6 +2059,130 @@ cuda_dtype!(float8::F8E4M3, F8E4M3);
 /// type-0/1 quants). Output is a fresh `CudaStorage::F32` of length
 /// `nrows`. Used by `CudaStorage::matmul_q4_0` / `matmul_q4_km` after
 /// Phase 6b retired the prior `dequantize_mul_mat_vec_*` PTX kernels.
+type CastRun = unsafe extern "C" fn(
+    numel: i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    ws: *mut std::ffi::c_void,
+    ws_b: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_cast_ffi(src: DType, dst: DType) -> Option<CastRun> {
+    use baracuda_kernels_sys as sys;
+    // 88 pairs (11 src × 8 dst). F8E4M3 ↔ fp8e4m3 is the only naming
+    // rename; the other 10 dtypes match 1:1.
+    match (src, dst) {
+        (DType::U8, DType::U8) => Some(sys::baracuda_kernels_cast_u8_u8_run as CastRun),
+        (DType::U8, DType::U32) => Some(sys::baracuda_kernels_cast_u8_u32_run as CastRun),
+        (DType::U8, DType::I64) => Some(sys::baracuda_kernels_cast_u8_i64_run as CastRun),
+        (DType::U8, DType::BF16) => Some(sys::baracuda_kernels_cast_u8_bf16_run as CastRun),
+        (DType::U8, DType::F16) => Some(sys::baracuda_kernels_cast_u8_f16_run as CastRun),
+        (DType::U8, DType::F32) => Some(sys::baracuda_kernels_cast_u8_f32_run as CastRun),
+        (DType::U8, DType::F64) => Some(sys::baracuda_kernels_cast_u8_f64_run as CastRun),
+        // U8 → F8E4M3: not in baracuda alpha.50 (f8e4m3 casts limited to bf16/f16/f32 ↔ fp8e4m3).
+        (DType::I8, DType::U8) => Some(sys::baracuda_kernels_cast_i8_u8_run as CastRun),
+        (DType::I8, DType::U32) => Some(sys::baracuda_kernels_cast_i8_u32_run as CastRun),
+        (DType::I8, DType::I64) => Some(sys::baracuda_kernels_cast_i8_i64_run as CastRun),
+        (DType::I8, DType::BF16) => Some(sys::baracuda_kernels_cast_i8_bf16_run as CastRun),
+        (DType::I8, DType::F16) => Some(sys::baracuda_kernels_cast_i8_f16_run as CastRun),
+        (DType::I8, DType::F32) => Some(sys::baracuda_kernels_cast_i8_f32_run as CastRun),
+        (DType::I8, DType::F64) => Some(sys::baracuda_kernels_cast_i8_f64_run as CastRun),
+        // I8 → F8E4M3: not in baracuda alpha.50.
+        (DType::U32, DType::U8) => Some(sys::baracuda_kernels_cast_u32_u8_run as CastRun),
+        (DType::U32, DType::U32) => Some(sys::baracuda_kernels_cast_u32_u32_run as CastRun),
+        (DType::U32, DType::I64) => Some(sys::baracuda_kernels_cast_u32_i64_run as CastRun),
+        (DType::U32, DType::BF16) => Some(sys::baracuda_kernels_cast_u32_bf16_run as CastRun),
+        (DType::U32, DType::F16) => Some(sys::baracuda_kernels_cast_u32_f16_run as CastRun),
+        (DType::U32, DType::F32) => Some(sys::baracuda_kernels_cast_u32_f32_run as CastRun),
+        (DType::U32, DType::F64) => Some(sys::baracuda_kernels_cast_u32_f64_run as CastRun),
+        // U32 → F8E4M3: not in baracuda alpha.50.
+        (DType::I16, DType::U8) => Some(sys::baracuda_kernels_cast_i16_u8_run as CastRun),
+        (DType::I16, DType::U32) => Some(sys::baracuda_kernels_cast_i16_u32_run as CastRun),
+        (DType::I16, DType::I64) => Some(sys::baracuda_kernels_cast_i16_i64_run as CastRun),
+        (DType::I16, DType::BF16) => Some(sys::baracuda_kernels_cast_i16_bf16_run as CastRun),
+        (DType::I16, DType::F16) => Some(sys::baracuda_kernels_cast_i16_f16_run as CastRun),
+        (DType::I16, DType::F32) => Some(sys::baracuda_kernels_cast_i16_f32_run as CastRun),
+        (DType::I16, DType::F64) => Some(sys::baracuda_kernels_cast_i16_f64_run as CastRun),
+        // I16 → F8E4M3: not in baracuda alpha.50.
+        (DType::I32, DType::U8) => Some(sys::baracuda_kernels_cast_i32_u8_run as CastRun),
+        (DType::I32, DType::U32) => Some(sys::baracuda_kernels_cast_i32_u32_run as CastRun),
+        (DType::I32, DType::I64) => Some(sys::baracuda_kernels_cast_i32_i64_run as CastRun),
+        (DType::I32, DType::BF16) => Some(sys::baracuda_kernels_cast_i32_bf16_run as CastRun),
+        (DType::I32, DType::F16) => Some(sys::baracuda_kernels_cast_i32_f16_run as CastRun),
+        (DType::I32, DType::F32) => Some(sys::baracuda_kernels_cast_i32_f32_run as CastRun),
+        (DType::I32, DType::F64) => Some(sys::baracuda_kernels_cast_i32_f64_run as CastRun),
+        // I32 → F8E4M3: not in baracuda alpha.50.
+        (DType::I64, DType::U8) => Some(sys::baracuda_kernels_cast_i64_u8_run as CastRun),
+        (DType::I64, DType::U32) => Some(sys::baracuda_kernels_cast_i64_u32_run as CastRun),
+        (DType::I64, DType::I64) => Some(sys::baracuda_kernels_cast_i64_i64_run as CastRun),
+        (DType::I64, DType::BF16) => Some(sys::baracuda_kernels_cast_i64_bf16_run as CastRun),
+        (DType::I64, DType::F16) => Some(sys::baracuda_kernels_cast_i64_f16_run as CastRun),
+        (DType::I64, DType::F32) => Some(sys::baracuda_kernels_cast_i64_f32_run as CastRun),
+        (DType::I64, DType::F64) => Some(sys::baracuda_kernels_cast_i64_f64_run as CastRun),
+        // I64 → F8E4M3: not in baracuda alpha.50.
+        (DType::BF16, DType::U8) => Some(sys::baracuda_kernels_cast_bf16_u8_run as CastRun),
+        (DType::BF16, DType::U32) => Some(sys::baracuda_kernels_cast_bf16_u32_run as CastRun),
+        (DType::BF16, DType::I64) => Some(sys::baracuda_kernels_cast_bf16_i64_run as CastRun),
+        (DType::BF16, DType::BF16) => Some(sys::baracuda_kernels_cast_bf16_bf16_run as CastRun),
+        (DType::BF16, DType::F16) => Some(sys::baracuda_kernels_cast_bf16_f16_run as CastRun),
+        (DType::BF16, DType::F32) => Some(sys::baracuda_kernels_cast_bf16_f32_run as CastRun),
+        (DType::BF16, DType::F64) => Some(sys::baracuda_kernels_cast_bf16_f64_run as CastRun),
+        (DType::BF16, DType::F8E4M3) => Some(sys::baracuda_kernels_cast_bf16_fp8e4m3_run as CastRun),
+        (DType::F16, DType::U8) => Some(sys::baracuda_kernels_cast_f16_u8_run as CastRun),
+        (DType::F16, DType::U32) => Some(sys::baracuda_kernels_cast_f16_u32_run as CastRun),
+        (DType::F16, DType::I64) => Some(sys::baracuda_kernels_cast_f16_i64_run as CastRun),
+        (DType::F16, DType::BF16) => Some(sys::baracuda_kernels_cast_f16_bf16_run as CastRun),
+        (DType::F16, DType::F16) => Some(sys::baracuda_kernels_cast_f16_f16_run as CastRun),
+        (DType::F16, DType::F32) => Some(sys::baracuda_kernels_cast_f16_f32_run as CastRun),
+        (DType::F16, DType::F64) => Some(sys::baracuda_kernels_cast_f16_f64_run as CastRun),
+        (DType::F16, DType::F8E4M3) => Some(sys::baracuda_kernels_cast_f16_fp8e4m3_run as CastRun),
+        (DType::F32, DType::U8) => Some(sys::baracuda_kernels_cast_f32_u8_run as CastRun),
+        (DType::F32, DType::U32) => Some(sys::baracuda_kernels_cast_f32_u32_run as CastRun),
+        (DType::F32, DType::I64) => Some(sys::baracuda_kernels_cast_f32_i64_run as CastRun),
+        (DType::F32, DType::BF16) => Some(sys::baracuda_kernels_cast_f32_bf16_run as CastRun),
+        (DType::F32, DType::F16) => Some(sys::baracuda_kernels_cast_f32_f16_run as CastRun),
+        (DType::F32, DType::F32) => Some(sys::baracuda_kernels_cast_f32_f32_run as CastRun),
+        (DType::F32, DType::F64) => Some(sys::baracuda_kernels_cast_f32_f64_run as CastRun),
+        (DType::F32, DType::F8E4M3) => Some(sys::baracuda_kernels_cast_f32_fp8e4m3_run as CastRun),
+        (DType::F64, DType::U8) => Some(sys::baracuda_kernels_cast_f64_u8_run as CastRun),
+        (DType::F64, DType::U32) => Some(sys::baracuda_kernels_cast_f64_u32_run as CastRun),
+        (DType::F64, DType::I64) => Some(sys::baracuda_kernels_cast_f64_i64_run as CastRun),
+        (DType::F64, DType::BF16) => Some(sys::baracuda_kernels_cast_f64_bf16_run as CastRun),
+        (DType::F64, DType::F16) => Some(sys::baracuda_kernels_cast_f64_f16_run as CastRun),
+        (DType::F64, DType::F32) => Some(sys::baracuda_kernels_cast_f64_f32_run as CastRun),
+        (DType::F64, DType::F64) => Some(sys::baracuda_kernels_cast_f64_f64_run as CastRun),
+        // F64 → F8E4M3: not in baracuda alpha.50.
+        // F8E4M3 → U8/U32/I64/F64/F8E4M3: not in baracuda alpha.50.
+        (DType::F8E4M3, DType::BF16) => Some(sys::baracuda_kernels_cast_fp8e4m3_bf16_run as CastRun),
+        (DType::F8E4M3, DType::F16) => Some(sys::baracuda_kernels_cast_fp8e4m3_f16_run as CastRun),
+        (DType::F8E4M3, DType::F32) => Some(sys::baracuda_kernels_cast_fp8e4m3_f32_run as CastRun),
+        _ => None,
+    }
+}
+
+fn cast_baracuda(
+    src_ptr: *const std::ffi::c_void,
+    out_ptr: *mut std::ffi::c_void,
+    src: DType,
+    dst: DType,
+    numel: usize,
+    dev: &CudaDevice,
+) -> Result<()> {
+    let run = pick_cast_ffi(src, dst).ok_or_else(|| {
+        fuel_core_types::Error::Msg(format!(
+            "baracuda cast: unsupported pair ({src:?} -> {dst:?})"
+        ))
+        .bt()
+    })?;
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    // SAFETY: device-resident pointers; workspace null/0.
+    let status = unsafe { run(numel as i64, src_ptr, out_ptr, std::ptr::null_mut(), 0, stream) };
+    crate::baracuda::status::check(status, "cast")?;
+    dev.synchronize()?;
+    Ok(())
+}
+
 fn matmul_q_gguf_baracuda(
     a: &CudaStorage,
     w_q_bytes: &CudaStorage,
@@ -2419,144 +2543,89 @@ impl CudaStorage {
         Ok(())
     }
 
+    /// Element-wise dtype cast. Phase 6c.2 migration to baracuda
+    /// alpha.50's `baracuda_kernels_cast_<src>_<dst>_run` FFI (full
+    /// 11×11 dtype coverage). The legacy PTX `cast_<src>_<dst>`
+    /// kernels in the CAST module are retired.
+    ///
+    /// Naming map: Fuel's `f8e4m3` → baracuda's `fp8e4m3`. All other
+    /// dtype names match (u8/i8/u32/i16/i32/i64/bf16/f16/f32/f64).
     pub fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el as u32);
+        let el = layout.shape().elem_count();
         let dev = self.device();
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
+        let src_dtype = self.dtype();
         let start_o = layout.start_offset();
-        // This returns an i64 rather than a &i64, this is useful to get around some temporary
-        // lifetime issue and is safe as long as self.slice does not go out of scope before inp
-        // is used.
-        let (inp, _guard) = match &self.slice {
-            CudaStorageSlice::U8(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I8(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::U32(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I16(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I32(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I64(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::BF16(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F16(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F32(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F64(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F8E4M3(inp) => slice_ptr(inp, start_o),
+        let src_ptr: *const std::ffi::c_void = match &self.slice {
+            CudaStorageSlice::U8(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::I8(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::U32(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::I16(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::I32(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::I64(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::BF16(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::F16(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::F32(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::F64(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
+            CudaStorageSlice::F8E4M3(s) => slice_ptr(s, start_o).0 as *const std::ffi::c_void,
             CudaStorageSlice::F4(_)
             | CudaStorageSlice::F6E2M3(_)
             | CudaStorageSlice::F6E3M2(_)
             | CudaStorageSlice::F8E8M0(_) => {
                 return Err(CudaError::UnsupportedDtype {
-                    dtype: self.dtype(),
+                    dtype: src_dtype,
                     op: "to_dtype",
                 }
                 .into());
             }
         };
-        let inp = &inp;
-
-        let kernel_name = format!("cast_{}_{}", self.dtype().as_str(), dtype.as_str());
-        let func = dev.get_or_load_func(&kernel_name, &kernels::CAST)?;
-        let slice = match dtype {
+        // Allocate output + extract raw ptr. The `_owned_*` bindings keep
+        // the buffer alive across the FFI call; the returned slice steals
+        // them at the end.
+        let (out_ptr, output_slice) = match dtype {
             DType::U8 => {
-                let out = unsafe { dev.alloc::<u8>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::U8(out)
+                let buf = unsafe { dev.alloc::<u8>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::U8(buf))
             }
             DType::U32 => {
-                let out = unsafe { dev.alloc::<u32>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::U32(out)
+                let buf = unsafe { dev.alloc::<u32>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::U32(buf))
             }
             DType::I64 => {
-                let out = unsafe { dev.alloc::<i64>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::I64(out)
+                let buf = unsafe { dev.alloc::<i64>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::I64(buf))
             }
             DType::BF16 => {
-                let out = unsafe { dev.alloc::<bf16>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::BF16(out)
+                let buf = unsafe { dev.alloc::<bf16>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::BF16(buf))
             }
             DType::F16 => {
-                let out = unsafe { dev.alloc::<f16>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F16(out)
+                let buf = unsafe { dev.alloc::<f16>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F16(buf))
             }
             DType::F32 => {
-                let out = unsafe { dev.alloc::<f32>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F32(out)
+                let buf = unsafe { dev.alloc::<f32>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F32(buf))
             }
             DType::F64 => {
-                let out = unsafe { dev.alloc::<f64>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F64(out)
+                let buf = unsafe { dev.alloc::<f64>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F64(buf))
             }
             DType::F8E4M3 => {
-                let out = unsafe { dev.alloc::<float8::F8E4M3>(el)? };
-                let mut builder = func.builder();
-                barg!(builder, el);
-                barg!(builder, dims.len());
-                ds.builder_arg(&mut builder);
-                barg!(builder, *inp);
-                builder.arg(&out);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F8E4M3(out)
+                let buf = unsafe { dev.alloc::<float8::F8E4M3>(el)? };
+                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F8E4M3(buf))
             }
             DType::I8 | DType::I16 | DType::I32 => {
-                return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported").into())
+                return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
             }
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
-                return Err(
-                    CudaError::InternalError("Dummy types not supported in CUDA backend").into(),
-                )
+                return Err(CudaError::InternalError("Dummy types not supported in CUDA backend").into());
             }
         };
+        if el > 0 {
+            cast_baracuda(src_ptr, out_ptr, src_dtype, dtype, el, dev)?;
+        }
         Ok(Self {
-            slice,
+            slice: output_slice,
             device: dev.clone(),
         })
     }
