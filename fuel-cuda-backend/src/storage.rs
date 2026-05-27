@@ -2703,71 +2703,70 @@ impl CudaStorage {
         Ok(Self { slice, device })
     }
 
-    /// Softmax along the last dimension. Uses the fused CUDA kernel
-    /// from `reduce.cu` (one thread-block per row).
+    /// Softmax along the last dimension via baracuda alpha.50's
+    /// `baracuda_kernels_softmax_<dtype>_run` (Phase 6c.4 migration
+    /// from the PTX `softmax_f32` / `softmax_f64` REDUCE kernels).
     ///
-    /// `layout` must be contiguous. `n_rows` × `n_cols` must equal
-    /// the total element count described by the layout's shape.
+    /// `layout` must be contiguous; the input is treated as a row-major
+    /// `(n_rows, n_cols)` view with softmax over `n_cols`.
     pub fn softmax_last_dim(&self, layout: &Layout) -> Result<Self> {
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let n_cols = *dims.last().expect("softmax: empty shape");
-        let n_rows = shape.elem_count() / n_cols;
-        let device = self.device().clone();
-
-        macro_rules! launch_softmax {
-            ($slice:expr, $kname:expr, $ty:ty) => {{
-                use crate::device::LaunchConfig;
-                let src = &$slice.slice(layout.start_offset()..slice.len());
-                let func = device.get_or_load_func($kname, &kernels::REDUCE)?;
-                let mut out = unsafe { device.alloc::<$ty>(n_rows * n_cols)? };
-                let cfg = LaunchConfig {
-                    grid_dim: (n_rows as u32, 1, 1),
-                    block_dim: (1, 1, 1),
-                    shared_mem_bytes: 0,
-                };
-                let mut builder = func.builder();
-                builder.arg(src);
-                builder.arg(&mut out);
-                crate::builder_arg!(builder, n_cols as i32);
-                unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::$variant(out)
-            }};
+        use baracuda_kernels_sys as sys;
+        let dims = layout.shape().dims();
+        if dims.is_empty() {
+            return fuel_core_types::bail!("softmax_last_dim: empty shape");
         }
-
+        let device = self.device().clone();
+        let rank = dims.len();
+        let n_cols = dims[rank - 1];
+        let numel = layout.shape().elem_count();
+        // Row-major contig strides for both x and y (Fuel's softmax_last_dim
+        // is documented as requiring contiguous input).
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_row_major: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
+        };
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
         let slice = match &self.slice {
             CudaStorageSlice::F32(s) => {
-                use crate::device::LaunchConfig;
-                let src = &s.slice(layout.start_offset()..s.len());
-                let func = device.get_or_load_func("softmax_f32", &kernels::REDUCE)?;
-                let mut out = unsafe { device.alloc::<f32>(n_rows * n_cols)? };
-                let cfg = LaunchConfig {
-                    grid_dim: (n_rows as u32, 1, 1),
-                    block_dim: (1, 1, 1),
-                    shared_mem_bytes: 0,
+                let src = s.slice(layout.start_offset()..s.len());
+                let out = unsafe { device.alloc::<f32>(numel)? };
+                // SAFETY: contig device pointers; shape/stride host arrays
+                // owned through the call; workspace null/0.
+                let status = unsafe {
+                    sys::baracuda_kernels_softmax_f32_run(
+                        numel as i64, rank as i32,
+                        shape_i32.as_ptr(),
+                        stride_row_major.as_ptr(), stride_row_major.as_ptr(),
+                        (rank - 1) as i32, n_cols as i32, 1_i64, 1_i64,
+                        src.as_raw().0 as *const std::ffi::c_void,
+                        out.as_raw().0 as *mut std::ffi::c_void,
+                        std::ptr::null_mut(), 0, stream,
+                    )
                 };
-                let mut builder = func.builder();
-                builder.arg(src);
-                builder.arg(&mut out);
-                crate::builder_arg!(builder, n_cols as i32);
-                unsafe { builder.launch(cfg) }.w()?;
+                crate::baracuda::status::check(status, "softmax_f32")?;
+                device.synchronize()?;
                 CudaStorageSlice::F32(out)
             }
             CudaStorageSlice::F64(s) => {
-                use crate::device::LaunchConfig;
-                let src = &s.slice(layout.start_offset()..s.len());
-                let func = device.get_or_load_func("softmax_f64", &kernels::REDUCE)?;
-                let mut out = unsafe { device.alloc::<f64>(n_rows * n_cols)? };
-                let cfg = LaunchConfig {
-                    grid_dim: (n_rows as u32, 1, 1),
-                    block_dim: (1, 1, 1),
-                    shared_mem_bytes: 0,
+                let src = s.slice(layout.start_offset()..s.len());
+                let out = unsafe { device.alloc::<f64>(numel)? };
+                let status = unsafe {
+                    sys::baracuda_kernels_softmax_f64_run(
+                        numel as i64, rank as i32,
+                        shape_i32.as_ptr(),
+                        stride_row_major.as_ptr(), stride_row_major.as_ptr(),
+                        (rank - 1) as i32, n_cols as i32, 1_i64, 1_i64,
+                        src.as_raw().0 as *const std::ffi::c_void,
+                        out.as_raw().0 as *mut std::ffi::c_void,
+                        std::ptr::null_mut(), 0, stream,
+                    )
                 };
-                let mut builder = func.builder();
-                builder.arg(src);
-                builder.arg(&mut out);
-                crate::builder_arg!(builder, n_cols as i32);
-                unsafe { builder.launch(cfg) }.w()?;
+                crate::baracuda::status::check(status, "softmax_f64")?;
+                device.synchronize()?;
                 CudaStorageSlice::F64(out)
             }
             _ => {
