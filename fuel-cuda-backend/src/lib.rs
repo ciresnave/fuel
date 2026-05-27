@@ -46,6 +46,10 @@ pub mod flash_attn;
 #[cfg(feature = "flash-attn-v3")]
 pub mod flash_attn_v3;
 pub mod baracuda;
+/// Re-export of `baracuda_kernels_sys` so downstream crates (like
+/// `fuel-core`) can call baracuda FFI symbols without pulling
+/// `baracuda-kernels-sys` in as a direct dep.
+pub use baracuda_kernels_sys;
 pub mod byte_kernels;
 pub mod byte_storage;
 pub mod cutlass;
