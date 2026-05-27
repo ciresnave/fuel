@@ -143,6 +143,9 @@ impl Map1 for UnaryKernel {
 pub(crate) struct BinaryKernel(pub(crate) &'static str);
 
 impl Map2 for BinaryKernel {
+    /// Runtime-name binary dispatch — Phase 6c.2 migration to
+    /// baracuda alpha.50 via the same `binary_baracuda` helper used
+    /// by the generic `impl<U: BinaryOpT> Map2 for U`.
     fn f<T: DeviceRepr + fuel_core_types::WithDType + ValidAsZeroBits>(
         &self,
         lhs: &CudaSlice<T>,
@@ -151,28 +154,7 @@ impl Map2 for BinaryKernel {
         rhs_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<CudaSlice<T>> {
-        let shape = lhs_l.shape();
-        let dims = shape.dims();
-        let elem_count = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
-        let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
-            SlicePtrOrNull::Null
-        } else {
-            SlicePtrOrNull::Ptr(dev.clone_htod(&crate::storage::dims_strides_strides_usize(dims, lhs_l, rhs_l))?)
-        };
-        let lhs = &lhs.slice(lhs_l.start_offset()..lhs.len());
-        let rhs = &rhs.slice(rhs_l.start_offset()..rhs.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>(self.0), &kernels::BINARY)?;
-        let out = unsafe { dev.alloc::<T>(elem_count)? };
-        let mut builder = func.builder();
-        crate::builder_arg!(builder, elem_count);
-        crate::builder_arg!(builder, dims.len());
-        dims_and_strides.builder_arg(&mut builder);
-        builder.arg(lhs);
-        builder.arg(rhs);
-        builder.arg(&out);
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(out)
+        crate::storage::binary_baracuda::<T>(lhs, lhs_l, rhs, rhs_l, dev, self.0)
     }
 }
 
