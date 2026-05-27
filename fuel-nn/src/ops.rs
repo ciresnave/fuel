@@ -478,54 +478,10 @@ impl SoftmaxLastDim {
         storage: &fuel::CudaStorage,
         layout: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use baracuda_driver::DeviceBuffer as CudaSlice;
-        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-        use fuel::cuda_backend::LaunchConfig;
-        
-                use fuel::cuda_backend::{kernel_name, kernels, Map1, WrapErr};
-        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
-
-        struct S;
-        impl Map1 for S {
-            fn f<T: DeviceRepr + WithDType>(
-                &self,
-                src: &CudaSlice<T>,
-                dev: &CudaDevice,
-                layout: &Layout,
-            ) -> Result<CudaSlice<T>> {
-                let src = match layout.contiguous_offsets() {
-                    None => fuel::bail!("input has to be contiguous"),
-                    Some((o1, o2)) => src.slice(o1..o2),
-                };
-                let el = layout.shape().elem_count();
-                let dims = layout.shape().dims();
-                let dim_m1 = dims[dims.len() - 1];
-                let (n_rows, n_cols) = (el / dim_m1, dim_m1);
-
-                let cfg = LaunchConfig {
-                    grid_dim: (n_rows as u32, 1, 1),
-                    block_dim: (1, 32, 1),
-                    shared_mem_bytes: 0,
-                };
-                let func = dev.get_or_load_func(&kernel_name::<T>("softmax"), &kernels::REDUCE)?;
-                // SAFETY: Set later by running the kernel.
-                let dst = unsafe { dev.alloc::<T>(el)? };
-                let mut builder = func.builder();
-                builder.arg(&src);
-                builder.arg(&dst);
-                fuel::builder_arg!(builder, n_cols as i32);
-                // SAFETY: ffi.
-                unsafe { builder.launch(cfg) }.w()?;
-                Ok(dst)
-            }
+        if layout.contiguous_offsets().is_none() {
+            fuel::bail!("input has to be contiguous");
         }
-
-        let dev = storage.device();
-        let slice = S.map(&storage.slice, dev, layout)?;
-        let dst = fuel::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
-        };
+        let dst = storage.softmax_last_dim(layout)?;
         Ok((dst, layout.shape().clone()))
     }
 
@@ -685,64 +641,13 @@ impl RmsNorm {
         s2: &fuel::CudaStorage,
         l2: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use baracuda_driver::DeviceBuffer as CudaSlice;
-        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-        use fuel::cuda_backend::LaunchConfig;
-        
-                use fuel::cuda_backend::{kernel_name, kernels, Map2, WrapErr};
-        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
-
-        struct S {
-            eps: f32,
+        if l1.contiguous_offsets().is_none() {
+            fuel::bail!("input has to be contiguous");
         }
-        impl Map2 for S {
-            fn f<T: DeviceRepr + WithDType>(
-                &self,
-                src: &CudaSlice<T>,
-                layout: &Layout,
-                alpha: &CudaSlice<T>,
-                alpha_layout: &Layout,
-                dev: &CudaDevice,
-            ) -> Result<CudaSlice<T>> {
-                let src = match layout.contiguous_offsets() {
-                    None => fuel::bail!("input has to be contiguous"),
-                    Some((o1, o2)) => src.slice(o1..o2),
-                };
-                let alpha = match alpha_layout.contiguous_offsets() {
-                    None => fuel::bail!("alpha has to be contiguous"),
-                    Some((o1, o2)) => alpha.slice(o1..o2),
-                };
-                let el = layout.shape().elem_count();
-                let dims = layout.shape().dims();
-                let dim_m1 = dims[dims.len() - 1];
-                let (n_rows, n_cols) = (el / dim_m1, dim_m1);
-
-                let block_size = if n_cols < 1024 { 32 } else { 1024 };
-                let cfg = LaunchConfig {
-                    grid_dim: (n_rows as u32, 1, 1),
-                    block_dim: (block_size, 1, 1),
-                    shared_mem_bytes: 0,
-                };
-                let func = dev.get_or_load_func(&kernel_name::<T>("rmsnorm"), &kernels::REDUCE)?;
-                // SAFETY: Set later by running the kernel.
-                let dst = unsafe { dev.alloc::<T>(el)? };
-                let mut builder = func.builder();
-                builder.arg(&src);
-                builder.arg(&dst);
-                builder.arg(&alpha);
-                fuel::builder_arg!(builder, n_cols as i32, block_size as i32, self.eps);
-                // SAFETY: ffi.
-                unsafe { builder.launch(cfg) }.w()?;
-                Ok(dst)
-            }
+        if l2.contiguous_offsets().is_none() {
+            fuel::bail!("alpha has to be contiguous");
         }
-
-        let dev = s1.device();
-        let slice = S { eps: self.eps }.map(&s1.slice, l1, &s2.slice, l2, dev)?;
-        let dst = fuel::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
-        };
+        let dst = s1.rms_norm_last_dim_with_gain(s2, l1, l2, self.eps as f64)?;
         Ok((dst, l1.shape().clone()))
     }
 
@@ -960,72 +865,16 @@ impl LayerNorm {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use baracuda_driver::DeviceBuffer as CudaSlice;
-        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-        use fuel::cuda_backend::LaunchConfig;
-        
-                use fuel::cuda_backend::{kernel_name, kernels, Map3, WrapErr};
-        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
-
-        struct S {
-            eps: f32,
+        if l1.contiguous_offsets().is_none() {
+            fuel::bail!("input has to be contiguous");
         }
-        impl Map3 for S {
-            fn f<T: DeviceRepr + WithDType>(
-                &self,
-                src: &CudaSlice<T>,
-                layout: &Layout,
-                alpha: &CudaSlice<T>,
-                alpha_layout: &Layout,
-                beta: &CudaSlice<T>,
-                beta_layout: &Layout,
-                dev: &CudaDevice,
-            ) -> Result<CudaSlice<T>> {
-                let src = match layout.contiguous_offsets() {
-                    None => fuel::bail!("input has to be contiguous"),
-                    Some((o1, o2)) => src.slice(o1..o2),
-                };
-                let alpha = match alpha_layout.contiguous_offsets() {
-                    None => fuel::bail!("alpha has to be contiguous"),
-                    Some((o1, o2)) => alpha.slice(o1..o2),
-                };
-                let beta = match beta_layout.contiguous_offsets() {
-                    None => fuel::bail!("beta has to be contiguous"),
-                    Some((o1, o2)) => beta.slice(o1..o2),
-                };
-                let el = layout.shape().elem_count();
-                let dims = layout.shape().dims();
-                let dim_m1 = dims[dims.len() - 1];
-                let (n_rows, n_cols) = (el / dim_m1, dim_m1);
-
-                let block_size = if n_cols < 1024 { 32 } else { 1024 };
-                let cfg = LaunchConfig {
-                    grid_dim: (n_rows as u32, 1, 1),
-                    block_dim: (block_size, 1, 1),
-                    shared_mem_bytes: 0,
-                };
-                let func =
-                    dev.get_or_load_func(&kernel_name::<T>("layernorm"), &kernels::REDUCE)?;
-                // SAFETY: Set later by running the kernel.
-                let dst = unsafe { dev.alloc::<T>(el)? };
-                let mut builder = func.builder();
-                builder.arg(&src);
-                builder.arg(&dst);
-                builder.arg(&alpha);
-                builder.arg(&beta);
-                fuel::builder_arg!(builder, n_cols as i32, block_size as i32, self.eps);
-                // SAFETY: ffi.
-                unsafe { builder.launch(cfg) }.w()?;
-                Ok(dst)
-            }
+        if l2.contiguous_offsets().is_none() {
+            fuel::bail!("alpha has to be contiguous");
         }
-
-        let dev = s1.device();
-        let slice = S { eps: self.eps }.map(&s1.slice, l1, &s2.slice, l2, &s3.slice, l3, dev)?;
-        let dst = fuel::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
-        };
+        if l3.contiguous_offsets().is_none() {
+            fuel::bail!("beta has to be contiguous");
+        }
+        let dst = s1.layer_norm_last_dim(s2, s3, l1, l2, l3, self.eps as f64)?;
         Ok((dst, l1.shape().clone()))
     }
 
