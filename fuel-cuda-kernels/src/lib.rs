@@ -5,27 +5,19 @@ mod ptx {
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Id {
-    Affine,
-    Binary,
-    Cast,
     Fill,
     Indexing,
     Reduce,
     Sort,
     Ternary,
-    Unary,
 }
 
-pub const ALL_IDS: [Id; 9] = [
-    Id::Affine,
-    Id::Binary,
-    Id::Cast,
+pub const ALL_IDS: [Id; 5] = [
     Id::Fill,
     Id::Indexing,
     Id::Reduce,
     Id::Sort,
     Id::Ternary,
-    Id::Unary,
 ];
 
 pub struct Module {
@@ -63,12 +55,8 @@ macro_rules! mdl {
     };
 }
 
-mdl!(AFFINE, Affine);
-mdl!(BINARY, Binary);
-mdl!(CAST, Cast);
 mdl!(FILL, Fill);
 mdl!(INDEXING, Indexing);
 mdl!(REDUCE, Reduce);
 mdl!(SORT, Sort);
 mdl!(TERNARY, Ternary);
-mdl!(UNARY, Unary);
