@@ -119,73 +119,39 @@ impl RotaryEmbI {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use baracuda_driver::DeviceBuffer as CudaSlice;
-        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-        use fuel::cuda_backend::LaunchConfig;
-        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
-        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
-
-        fn inner<T: DeviceRepr + WithDType + ValidAsZeroBits>(
-            src: &CudaSlice<T>,
-            l_src: &Layout,
-            cos: &CudaSlice<T>,
-            l_cos: &Layout,
-            sin: &CudaSlice<T>,
-            l_sin: &Layout,
-            dev: &CudaDevice,
-        ) -> Result<CudaSlice<T>> {
-            let src = match l_src.contiguous_offsets() {
-                None => fuel::bail!("src input has to be contiguous"),
-                Some((o1, o2)) => src.slice(o1..o2),
-            };
-            let cos = match l_cos.contiguous_offsets() {
-                None => fuel::bail!("cos input has to be contiguous"),
-                Some((o1, o2)) => cos.slice(o1..o2),
-            };
-            let sin = match l_sin.contiguous_offsets() {
-                None => fuel::bail!("sin input has to be contiguous"),
-                Some((o1, o2)) => sin.slice(o1..o2),
-            };
-            let (b, h, t, d) = l_src.shape().dims4()?;
-            let stride_b = if l_cos.dims().len() == 3 && l_sin.dims().len() == 3 {
-                (h * t * d) as u32
-            } else {
-                0u32
-            };
-            let el = b * h * t * d;
-            let cfg = LaunchConfig::for_num_elems((el / 2) as u32);
-            let func = dev.get_or_load_func(&kernel_name::<T>("rope_i"), &kernels::REDUCE)?;
-            // SAFETY: Set later by running the kernel.
-            let dst = unsafe { dev.alloc::<T>(el)? };
-            let mut builder = func.builder();
-            builder.arg(&src);
-            builder.arg(&cos);
-            builder.arg(&sin);
-            builder.arg(&dst);
-            fuel::builder_arg!(builder, (b * h) as u32, (t * d) as u32, stride_b);
-            // SAFETY: ffi.
-            unsafe { builder.launch(cfg) }.w()?;
-            Ok(dst)
+        if l1.contiguous_offsets().is_none() {
+            fuel::bail!("src input has to be contiguous");
         }
-
-        use fuel::cuda_backend::CudaStorageSlice::{BF16, F16, F32, F64};
-        let dev = s1.device();
-        let slice = match (&s1.slice, &s2.slice, &s3.slice) {
-            (BF16(s1), BF16(s2), BF16(s3)) => BF16(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            (F16(s1), F16(s2), F16(s3)) => F16(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            (F32(s1), F32(s2), F32(s3)) => F32(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            (F64(s1), F64(s2), F64(s3)) => F64(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            _ => fuel::bail!(
-                "unsupported dtype for rope {:?} {:?} {:?}",
-                s1.dtype(),
-                s2.dtype(),
-                s3.dtype()
-            ),
+        if l2.contiguous_offsets().is_none() {
+            fuel::bail!("cos input has to be contiguous");
+        }
+        if l3.contiguous_offsets().is_none() {
+            fuel::bail!("sin input has to be contiguous");
+        }
+        let (b, h, t, d) = l1.shape().dims4()?;
+        let stride_b: i32 = if l2.dims().len() == 3 && l3.dims().len() == 3 {
+            ((t * d) / 2) as i32
+        } else {
+            0
         };
-        let dst = fuel::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        // Baracuda's `rope_apply_interleaved_<dt>_run` requires F32
+        // cos/sin tables regardless of operand dtype; cast on demand.
+        let cos_f32 = if s2.dtype() == fuel_core_types::DType::F32 {
+            None
+        } else {
+            Some(s2.to_dtype(l2, fuel_core_types::DType::F32)?)
         };
+        let sin_f32 = if s3.dtype() == fuel_core_types::DType::F32 {
+            None
+        } else {
+            Some(s3.to_dtype(l3, fuel_core_types::DType::F32)?)
+        };
+        let cos_ref = cos_f32.as_ref().unwrap_or(s2);
+        let sin_ref = sin_f32.as_ref().unwrap_or(s3);
+        let dst = s1.rope_interleaved(
+            cos_ref, sin_ref,
+            (b * h) as i32, (t * d) as i32, d as i32, stride_b,
+        )?;
         Ok((dst, l1.shape().clone()))
     }
 
@@ -747,73 +713,39 @@ impl RotaryEmbThd {
         s3: &fuel::CudaStorage,
         l3: &Layout,
     ) -> Result<(fuel::CudaStorage, Shape)> {
-        use baracuda_driver::DeviceBuffer as CudaSlice;
-        use baracuda_types::{DeviceRepr, ValidAsZeroBits};
-        use fuel::cuda_backend::LaunchConfig;
-        use fuel::cuda_backend::{kernel_name, kernels, WrapErr};
-        use fuel::CudaDevice; use fuel_core_types::dtype::WithDType;
-
-        fn inner<T: DeviceRepr + WithDType>(
-            src: &CudaSlice<T>,
-            l_src: &Layout,
-            cos: &CudaSlice<T>,
-            l_cos: &Layout,
-            sin: &CudaSlice<T>,
-            l_sin: &Layout,
-            dev: &CudaDevice,
-        ) -> Result<CudaSlice<T>> {
-            let src = match l_src.contiguous_offsets() {
-                None => fuel::bail!("src input has to be contiguous"),
-                Some((o1, o2)) => src.slice(o1..o2),
-            };
-            let cos = match l_cos.contiguous_offsets() {
-                None => fuel::bail!("cos input has to be contiguous"),
-                Some((o1, o2)) => cos.slice(o1..o2),
-            };
-            let sin = match l_sin.contiguous_offsets() {
-                None => fuel::bail!("sin input has to be contiguous"),
-                Some((o1, o2)) => sin.slice(o1..o2),
-            };
-            let (b, t, h, d) = l_src.shape().dims4()?;
-            let stride_b = if l_cos.dims().len() == 3 && l_sin.dims().len() == 3 {
-                (h * t * d) as u32
-            } else {
-                0u32
-            };
-            let el = b * h * t * d;
-            let cfg = LaunchConfig::for_num_elems((el / 2) as u32);
-            let func = dev.get_or_load_func(&kernel_name::<T>("rope_thd"), &kernels::REDUCE)?;
-            // SAFETY: Set later by running the kernel.
-            let dst = unsafe { dev.alloc::<T>(el)? };
-            let mut builder = func.builder();
-            builder.arg(&src);
-            builder.arg(&cos);
-            builder.arg(&sin);
-            builder.arg(&dst);
-            fuel::builder_arg!(builder, b as u32, t as u32, h as u32, d as u32, stride_b);
-            // SAFETY: ffi.
-            unsafe { builder.launch(cfg) }.w()?;
-            Ok(dst)
+        if l1.contiguous_offsets().is_none() {
+            fuel::bail!("src input has to be contiguous");
         }
-
-        use fuel::cuda_backend::CudaStorageSlice::{BF16, F16, F32, F64};
-        let dev = s1.device();
-        let slice = match (&s1.slice, &s2.slice, &s3.slice) {
-            (BF16(s1), BF16(s2), BF16(s3)) => BF16(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            (F16(s1), F16(s2), F16(s3)) => F16(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            (F32(s1), F32(s2), F32(s3)) => F32(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            (F64(s1), F64(s2), F64(s3)) => F64(inner(s1, l1, s2, l2, s3, l3, dev)?),
-            _ => fuel::bail!(
-                "unsupported dtype for rope {:?} {:?} {:?}",
-                s1.dtype(),
-                s2.dtype(),
-                s3.dtype()
-            ),
+        if l2.contiguous_offsets().is_none() {
+            fuel::bail!("cos input has to be contiguous");
+        }
+        if l3.contiguous_offsets().is_none() {
+            fuel::bail!("sin input has to be contiguous");
+        }
+        // Fuel's [B, T, H, D] flattens to baracuda's [T, H, D] with
+        // t_outer = B * T (row-major contig over the leading two dims).
+        let (b, t, h, d) = l1.shape().dims4()?;
+        let stride_b: i32 = if l2.dims().len() == 3 && l3.dims().len() == 3 {
+            (d / 2) as i32
+        } else {
+            0
         };
-        let dst = fuel::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let cos_f32 = if s2.dtype() == fuel_core_types::DType::F32 {
+            None
+        } else {
+            Some(s2.to_dtype(l2, fuel_core_types::DType::F32)?)
         };
+        let sin_f32 = if s3.dtype() == fuel_core_types::DType::F32 {
+            None
+        } else {
+            Some(s3.to_dtype(l3, fuel_core_types::DType::F32)?)
+        };
+        let cos_ref = cos_f32.as_ref().unwrap_or(s2);
+        let sin_ref = sin_f32.as_ref().unwrap_or(s3);
+        let dst = s1.rope_thd(
+            cos_ref, sin_ref,
+            (b * t) as i32, h as i32, d as i32, stride_b,
+        )?;
         Ok((dst, l1.shape().clone()))
     }
 

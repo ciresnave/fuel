@@ -6,7 +6,6 @@ use fuel_core_types::dtype::WithDType;
 use fuel_core_types::quantized::GgmlDType;
 use fuel_core_types::{HostBuffer, DType, Layout, Result};
 use crate::builder_arg as barg;
-use fuel_cuda_kernels as kernels;
 
 use baracuda_driver::{DeviceBuffer as CudaSlice, DevicePtr};
 use baracuda_types::{DeviceRepr, KernelArg as PushKernelArg, ValidAsZeroBits};
@@ -3957,6 +3956,134 @@ impl CudaStorage {
         launch!(BF16, half::bf16, baracuda_kernels_rope_apply_bf16_run, "rope_apply_bf16");
         fuel_core_types::bail!(
             "CudaStorage::rope: unsupported operand dtype {:?}", self.dtype()
+        )
+    }
+
+    /// Interleaved RoPE: pair `(2k, 2k+1)` within head_dim instead of
+    /// `(k, k + d/2)`. Layout: `[B, H, T, D]` flattened to `[bh, td]`
+    /// with bh = B*H, td = T*D. Cos/sin tables must be F32 (baracuda
+    /// ABI); `stride_b == 0` for shared table, `stride_b == td/2` for
+    /// per-batch. Phase 6c.5 migration to baracuda alpha.55's
+    /// `rope_apply_interleaved_<dt>_run`.
+    pub fn rope_interleaved(
+        &self,
+        cos: &Self,
+        sin: &Self,
+        bh: i32,
+        td: i32,
+        d: i32,
+        stride_b: i32,
+    ) -> Result<Self> {
+        use baracuda_kernels_sys as sys;
+        if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
+            return fuel_core_types::bail!(
+                "rope_interleaved: cos/sin must be F32 (baracuda ABI), got cos={:?} sin={:?}",
+                cos.dtype(), sin.dtype(),
+            );
+        }
+        let device = self.device().clone();
+        let numel = (bh as usize) * (td as usize);
+        let cos_src = match &cos.slice {
+            CudaStorageSlice::F32(s) => s.slice(0..s.len()),
+            _ => unreachable!("validated above"),
+        };
+        let sin_src = match &sin.slice {
+            CudaStorageSlice::F32(s) => s.slice(0..s.len()),
+            _ => unreachable!("validated above"),
+        };
+        let cos_ptr = cos_src.as_raw().0 as *const std::ffi::c_void;
+        let sin_ptr = sin_src.as_raw().0 as *const std::ffi::c_void;
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let CudaStorageSlice::$variant(s) = &self.slice {
+                    let src = s.slice(0..s.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let status = unsafe {
+                        sys::$run(
+                            bh, td, d, stride_b,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            cos_ptr, sin_ptr,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_rope_apply_interleaved_f32_run, "rope_apply_interleaved_f32");
+        launch!(F64, f64, baracuda_kernels_rope_apply_interleaved_f64_run, "rope_apply_interleaved_f64");
+        launch!(F16, half::f16, baracuda_kernels_rope_apply_interleaved_f16_run, "rope_apply_interleaved_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_rope_apply_interleaved_bf16_run, "rope_apply_interleaved_bf16");
+        fuel_core_types::bail!(
+            "rope_interleaved: unsupported operand dtype {:?}", self.dtype()
+        )
+    }
+
+    /// THD-layout RoPE: input `[T, H, D]` flat layout (Fuel's
+    /// `[B, T, H, D]` flattens to t_outer = B * T, h_heads = H).
+    /// Cos/sin must be F32 (baracuda ABI); `stride_b == 0` for
+    /// shared, `stride_b == D/2` for per-t tables. Pair convention
+    /// `(2k, 2k+1)`. Phase 6c.5 migration to baracuda alpha.55's
+    /// `rope_apply_thd_<dt>_run`.
+    pub fn rope_thd(
+        &self,
+        cos: &Self,
+        sin: &Self,
+        t_outer: i32,
+        h_heads: i32,
+        d: i32,
+        stride_b: i32,
+    ) -> Result<Self> {
+        use baracuda_kernels_sys as sys;
+        if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
+            return fuel_core_types::bail!(
+                "rope_thd: cos/sin must be F32 (baracuda ABI), got cos={:?} sin={:?}",
+                cos.dtype(), sin.dtype(),
+            );
+        }
+        let device = self.device().clone();
+        let numel = (t_outer as usize) * (h_heads as usize) * (d as usize);
+        let cos_src = match &cos.slice {
+            CudaStorageSlice::F32(s) => s.slice(0..s.len()),
+            _ => unreachable!("validated above"),
+        };
+        let sin_src = match &sin.slice {
+            CudaStorageSlice::F32(s) => s.slice(0..s.len()),
+            _ => unreachable!("validated above"),
+        };
+        let cos_ptr = cos_src.as_raw().0 as *const std::ffi::c_void;
+        let sin_ptr = sin_src.as_raw().0 as *const std::ffi::c_void;
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let CudaStorageSlice::$variant(s) = &self.slice {
+                    let src = s.slice(0..s.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let status = unsafe {
+                        sys::$run(
+                            t_outer, h_heads, d, stride_b,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            cos_ptr, sin_ptr,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_rope_apply_thd_f32_run, "rope_apply_thd_f32");
+        launch!(F64, f64, baracuda_kernels_rope_apply_thd_f64_run, "rope_apply_thd_f64");
+        launch!(F16, half::f16, baracuda_kernels_rope_apply_thd_f16_run, "rope_apply_thd_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_rope_apply_thd_bf16_run, "rope_apply_thd_bf16");
+        fuel_core_types::bail!(
+            "rope_thd: unsupported operand dtype {:?}", self.dtype()
         )
     }
 
