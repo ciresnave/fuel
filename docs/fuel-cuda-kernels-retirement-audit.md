@@ -325,28 +325,49 @@ plan:
     `fuel-cuda-kernels/src/lib.rs`. `affine.cu` / `binary.cu` / `cast.cu`
     / `unary.cu` deleted. PTX module count: 9 → 5 (Fill, Indexing,
     Reduce, Sort, Ternary remain).
-13. **Phase 6c.4 — IN PROGRESS (2026-05-27):**
-    - **Softmax / log_softmax / rms_norm / layer_norm — SHIPPED**.
-      Storage helpers in `fuel-cuda-backend/src/storage.rs` now
-      call `baracuda_kernels_<op>_<dtype>_run` directly for f32/
-      f64/f16/bf16. `fuel-nn::ops::{SoftmaxLastDim, RmsNorm,
-      LayerNorm}::cuda_inner` migrated from in-place PTX dispatch
-      to one-line delegation through the new storage helpers
-      (`rms_norm_last_dim_with_gain`, `layer_norm_last_dim`).
-    - **ArgSort — SHIPPED (f32/f64/i32/i64).** `fuel-core::sort`
-      Map1Any switched to `baracuda_kernels_argsort_<dt>_run`;
-      `baracuda_kernels_sys` re-exported from fuel-cuda-backend
-      so cross-crate calls don't need a direct dep. Other dtypes
-      bail with a clear "needs baracuda" message; baracuda's
-      `row_len ≤ 1024` cap is enforced explicitly.
-    - **Remaining blockers** documented in
-      `docs/session-prompts/baracuda-phase-6c4-gaps.md`:
-        - **FastReduce** (Min multi-axis + integer-dtype reduce).
-        - **rope** (precomputed cos/sin signature mismatch).
-        - **where_cond** (U32/I64 cond + integer values).
-        - **const_set** (U32/I16/F8E4M3 fill + strided fill).
-        - **Indexing** (scatter without `_add`, `index_add`,
-          integer values, U8 + I64 idx).
+13. **Phase 6c.4 — MOSTLY SHIPPED (2026-05-27):**
+    - **alpha.49 → alpha.54** bump in one chore commit;
+      baracuda landed all six original asks from
+      `docs/session-prompts/baracuda-phase-6c4-gaps.md`.
+    - **Softmax / log_softmax / rms_norm / layer_norm — SHIPPED**
+      (storage helpers + fuel-nn delegation).
+    - **Rope (non-interleaved) — SHIPPED.** Both
+      `CudaStorage::rope` and `fuel-nn::RotaryEmb::cuda_inner`
+      now route through `baracuda_kernels_rope_apply_<dt>_run`.
+      Cos/sin tables are F32 over baracuda's ABI; fuel-nn casts
+      on demand for f16/bf16/f64 operands.
+    - **FastReduce — SHIPPED.** Multi-axis Sum/Min/Max for FP
+      dtypes via `reduce_<op>_to_<dt>_run`. Integer dtypes
+      fan out per-axis (no `_to` variant for ints).
+      ArgMin/ArgMax single-axis via
+      `arg_reduce_argm{in,ax}_<dt>_u32_run` (fp) or `_i32_run`
+      (int, bit-reinterpret to u32 for the Fuel API).
+    - **where_cond / TERNARY — SHIPPED.** Full 3 × 11 matrix
+      (u8/u32/i64 cond × all 11 value dtypes) via baracuda's
+      `where_<cond>cond_<val>_strided_run` family.
+    - **FILL (const_set + copy2d) — SHIPPED.** const_set →
+      `fill_<dt>_strided_run` (all 11 dtypes; f16/bf16/fp8e4m3
+      pass the scalar as bit-pattern u16/u8). copy2d →
+      `cuMemcpy2DAsync` via baracuda-cuda-sys directly.
+    - **INDEXING — SHIPPED.** All 5 ops (index_select / gather /
+      scatter / scatter_add / index_add) on baracuda alpha.54.
+      U8 idx is up-cast to I32 in a tiny prep step via
+      `cast_u8_i32_run`; U32 idx pointer-reinterprets to I32;
+      I64 idx flows through the `_i64idx_` variants.
+    - **Sort — SHIPPED (all 11 dtypes + multi-block radix).**
+      `argsort_<dt>_run` for row_len ≤ 1024 across all 11
+      dtypes; `argsort_<dt>_big_run` with workspace for
+      row_len > 1024 (F32/F64/I32).
+    - **PTX modules dropped:** `Id::Fill` + `Id::Indexing` +
+      `Id::Sort` + `Id::Ternary` + their `.cu` sources retired
+      (4 modules deleted; PTX module count 5 → 1).
+    - **Remaining PTX caller** = `Id::Reduce`, kept alive by
+      fuel-nn::`RotaryEmbI` (interleaved `rope_i`) and
+      `RotaryEmbThd` (`rope_thd`). Those baracuda variants
+      aren't shipped yet; the two remaining asks are filed at
+      `docs/session-prompts/baracuda-phase-6c4-gaps.md` as
+      **#7 (rope_apply_interleaved)** and
+      **#8 (rope_apply_thd)**.
 14. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
     member, drop `cudaforge` build-time CUDA compilation.
 
