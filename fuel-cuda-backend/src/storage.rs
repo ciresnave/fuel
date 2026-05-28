@@ -949,6 +949,93 @@ fn slice_ptr<T: DeviceRepr>(v: &CudaSlice<T>, lo: usize) -> (u64, SliceGuard<'_>
     (base + offset_bytes, SliceGuard(std::marker::PhantomData))
 }
 
+/// Normalize an index storage to a (pointer, owned-or-borrowed-tag,
+/// `use_i64`) triple. For U32 idx the pointer is bit-reinterpreted as
+/// i32 (same width; indices always fit since they're bounded by
+/// src_dim_size which is i32). For U8 idx we cast through baracuda's
+/// `cast_u8_i32_run` into a fresh device buffer the caller owns.
+/// I64 idx flows through unchanged with `use_i64 = true`.
+fn idx_ptr_for_baracuda(
+    ids_storage: &CudaStorage,
+    ids_l: &Layout,
+    dev: &CudaDevice,
+) -> Result<(*const std::ffi::c_void, Option<CudaSlice<i32>>, bool)> {
+    use baracuda_kernels_sys as sys;
+    match &ids_storage.slice {
+        CudaStorageSlice::U32(s) => {
+            let view = s.slice(ids_l.start_offset()..s.len());
+            Ok((view.as_raw().0 as *const std::ffi::c_void, None, false))
+        }
+        CudaStorageSlice::I64(s) => {
+            let view = s.slice(ids_l.start_offset()..s.len());
+            Ok((view.as_raw().0 as *const std::ffi::c_void, None, true))
+        }
+        CudaStorageSlice::U8(s) => {
+            let view = s.slice(ids_l.start_offset()..s.len());
+            let el = ids_l.shape().elem_count();
+            let i32_buf = unsafe { dev.alloc::<i32>(el)? };
+            let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+            let status = unsafe {
+                sys::baracuda_kernels_cast_u8_i32_run(
+                    el as i64,
+                    view.as_raw().0 as *const std::ffi::c_void,
+                    i32_buf.as_raw().0 as *mut std::ffi::c_void,
+                    std::ptr::null_mut(), 0, stream,
+                )
+            };
+            crate::baracuda::status::check(status, "cast_u8_i32 (idx)")?;
+            dev.synchronize()?;
+            let ptr = i32_buf.as_raw().0 as *const std::ffi::c_void;
+            Ok((ptr, Some(i32_buf), false))
+        }
+        _ => Err(crate::error::CudaError::UnexpectedDType {
+            msg: "idx should be u8/u32/i64",
+            expected: DType::U32,
+            got: ids_storage.dtype(),
+        }.into()),
+    }
+}
+
+// baracuda alpha.54 `index_select_<val>_run` FFI shape.
+type IndexSelectRun = unsafe extern "C" fn(
+    out_numel: i64,
+    rank: i32,
+    select_dim: i32,
+    src_dim_size: i32,
+    out_shape: *const i32,
+    stride_src: *const i64,
+    stride_out: *const i64,
+    src: *const std::ffi::c_void,
+    idx: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_index_select_ffi(val_dt: DType, use_i64: bool) -> Option<IndexSelectRun> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! pick {
+        ($variant:ident, $sym32:ident, $sym64:ident) => {
+            match (val_dt, use_i64) {
+                (DType::$variant, false) => Some(sys::$sym32 as IndexSelectRun),
+                (DType::$variant, true)  => Some(sys::$sym64 as IndexSelectRun),
+                _ => None,
+            }
+        };
+    }
+    // Try each value dtype until one matches.
+    if val_dt == DType::F32 { return pick!(F32, baracuda_kernels_index_select_f32_run, baracuda_kernels_index_select_i64idx_f32_run); }
+    if val_dt == DType::F64 { return pick!(F64, baracuda_kernels_index_select_f64_run, baracuda_kernels_index_select_i64idx_f64_run); }
+    if val_dt == DType::I32 { return pick!(I32, baracuda_kernels_index_select_i32_run, baracuda_kernels_index_select_i64idx_i32_run); }
+    if val_dt == DType::U8  { return pick!(U8,  baracuda_kernels_index_select_u8_run,  baracuda_kernels_index_select_i64idx_u8_run); }
+    if val_dt == DType::I8  { return pick!(I8,  baracuda_kernels_index_select_i8_run,  baracuda_kernels_index_select_i64idx_i8_run); }
+    if val_dt == DType::U32 { return pick!(U32, baracuda_kernels_index_select_u32_run, baracuda_kernels_index_select_i64idx_u32_run); }
+    if val_dt == DType::I16 { return pick!(I16, baracuda_kernels_index_select_i16_run, baracuda_kernels_index_select_i64idx_i16_run); }
+    if val_dt == DType::I64 { return pick!(I64, baracuda_kernels_index_select_i64_run, baracuda_kernels_index_select_i64idx_i64_run); }
+    None
+}
+
 struct IndexSelect<'a>(&'a CudaStorage, &'a Layout, usize);
 impl Map1 for IndexSelect<'_> {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
@@ -957,48 +1044,111 @@ impl Map1 for IndexSelect<'_> {
         dev: &CudaDevice,
         src_l: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let ids_l = &self.1;
-        let (name, (ids, _guard)) = match &self.0.slice {
-            CudaStorageSlice::U32(slice) => ("is_u32", slice_ptr(slice, ids_l.start_offset())),
-            CudaStorageSlice::U8(slice) => ("is_u8", slice_ptr(slice, ids_l.start_offset())),
-            CudaStorageSlice::I64(slice) => ("is_i64", slice_ptr(slice, ids_l.start_offset())),
-            _ => Err(CudaError::UnexpectedDType {
-                msg: "index_select ids should be u8, u32, or i64",
-                expected: DType::U32,
-                got: self.0.dtype(),
-            })
-            .w()?,
-        };
-        let ids_shape = ids_l.shape();
-        let ids_dims = ids_shape.dims();
-        let ds = dev.clone_htod(&dims_strides_usize(ids_l))?;
+        let ids_storage = self.0;
+        let ids_l = self.1;
+        let select_dim = self.2;
         let src = match src_l.contiguous_offsets() {
             Some((o1, o2)) => src.slice(o1..o2),
             None => Err(crate::Error::RequiresContiguous { op: "index-select" }.bt())?,
         };
-        let left_size: usize = src_l.dims()[..self.2].iter().product();
-        let right_size: usize = src_l.dims()[self.2 + 1..].iter().product();
-        let src_dim_size = src_l.dims()[self.2];
-        let ids_dim_size = ids_shape.elem_count();
-        let dst_el = ids_shape.elem_count() * left_size * right_size;
-        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::INDEXING)?;
-        // SAFETY: Set later by running the kernel.
+        // Fuel passes (potentially multi-D) ids; baracuda expects 1-D
+        // idx. ids_l.shape().elem_count() is the effective length.
+        let (idx_ptr, _idx_owned, use_i64) = idx_ptr_for_baracuda(ids_storage, ids_l, dev)?;
+        let src_dims = src_l.dims();
+        let src_dim_size = src_dims[select_dim] as i32;
+        let ids_dim_size = ids_l.shape().elem_count();
+        // Output shape: src shape with select_dim → ids_dim_size.
+        let mut out_dims: Vec<usize> = src_dims.to_vec();
+        out_dims[select_dim] = ids_dim_size;
+        let dst_el: usize = out_dims.iter().product();
         let out = unsafe { dev.alloc::<T>(dst_el)? };
-        let mut builder = func.builder();
-        barg!(builder, dst_el);
-        barg!(builder, ids_dims.len());
-        builder.arg(&ds);
-        barg!(builder, ids);
-        builder.arg(&src);
-        builder.arg(&out);
-        barg!(builder, left_size);
-        barg!(builder, src_dim_size);
-        barg!(builder, ids_dim_size);
-        barg!(builder, right_size);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
+        if dst_el == 0 {
+            return Ok(out);
+        }
+        let rank = out_dims.len();
+        let out_shape_i32: Vec<i32> = out_dims.iter().map(|&d| d as i32).collect();
+        // src is contig (we checked above), so its strides are
+        // row-major over src_dims.
+        let stride_src: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * src_dims[d + 1] as i64;
+            }
+            s
+        };
+        let stride_out: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * out_dims[d + 1] as i64;
+            }
+            s
+        };
+        let run = pick_index_select_ffi(T::DTYPE, use_i64).ok_or_else(|| {
+            crate::Error::Msg(format!(
+                "index_select: no baracuda kernel for value dtype {:?}",
+                T::DTYPE
+            )).bt()
+        })?;
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+        let status = unsafe {
+            run(
+                dst_el as i64,
+                rank as i32,
+                select_dim as i32,
+                src_dim_size,
+                out_shape_i32.as_ptr(),
+                stride_src.as_ptr(),
+                stride_out.as_ptr(),
+                src.as_raw().0 as *const std::ffi::c_void,
+                idx_ptr,
+                out.as_raw().0 as *mut std::ffi::c_void,
+                std::ptr::null_mut(), 0, stream,
+            )
+        };
+        crate::baracuda::status::check(status, "index_select")?;
+        dev.synchronize()?;
         Ok(out)
+    }
+}
+
+// baracuda alpha.54 `gather_<val>_run` FFI shape.
+type GatherRun = unsafe extern "C" fn(
+    out_numel: i64,
+    rank: i32,
+    gather_dim: i32,
+    src_dim_size: i32,
+    out_shape: *const i32,
+    stride_src: *const i64,
+    stride_index: *const i64,
+    stride_out: *const i64,
+    src: *const std::ffi::c_void,
+    index: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_gather_ffi(val_dt: DType, use_i64: bool) -> Option<GatherRun> {
+    use baracuda_kernels_sys as sys;
+    match (val_dt, use_i64) {
+        (DType::F32, false) => Some(sys::baracuda_kernels_gather_f32_run as GatherRun),
+        (DType::F64, false) => Some(sys::baracuda_kernels_gather_f64_run as GatherRun),
+        (DType::I32, false) => Some(sys::baracuda_kernels_gather_i32_run as GatherRun),
+        (DType::U8,  false) => Some(sys::baracuda_kernels_gather_u8_run  as GatherRun),
+        (DType::I8,  false) => Some(sys::baracuda_kernels_gather_i8_run  as GatherRun),
+        (DType::U32, false) => Some(sys::baracuda_kernels_gather_u32_run as GatherRun),
+        (DType::I16, false) => Some(sys::baracuda_kernels_gather_i16_run as GatherRun),
+        (DType::I64, false) => Some(sys::baracuda_kernels_gather_i64_run as GatherRun),
+        (DType::F32, true) => Some(sys::baracuda_kernels_gather_i64idx_f32_run as GatherRun),
+        (DType::F64, true) => Some(sys::baracuda_kernels_gather_i64idx_f64_run as GatherRun),
+        (DType::I32, true) => Some(sys::baracuda_kernels_gather_i64idx_i32_run as GatherRun),
+        (DType::U8,  true) => Some(sys::baracuda_kernels_gather_i64idx_u8_run  as GatherRun),
+        (DType::I8,  true) => Some(sys::baracuda_kernels_gather_i64idx_i8_run  as GatherRun),
+        (DType::U32, true) => Some(sys::baracuda_kernels_gather_i64idx_u32_run as GatherRun),
+        (DType::I16, true) => Some(sys::baracuda_kernels_gather_i64idx_i16_run as GatherRun),
+        (DType::I64, true) => Some(sys::baracuda_kernels_gather_i64idx_i64_run as GatherRun),
+        _ => None,
     }
 }
 
@@ -1010,48 +1160,107 @@ impl Map1 for Gather<'_> {
         dev: &CudaDevice,
         src_l: &Layout,
     ) -> Result<CudaSlice<T>> {
-        let ids = &self.0;
-        let ids_l = &self.1;
-        let dim = self.2;
-        let (ids_o1, _) = match ids_l.contiguous_offsets() {
-            Some(o12) => o12,
-            None => Err(crate::Error::RequiresContiguous { op: "gather" }.bt())?,
-        };
-        let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("gather_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("gather_u8", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("gather_i64", slice_ptr(slice, ids_o1)),
-            _ => Err(CudaError::UnexpectedDType {
-                msg: "gather ids should be u8/u32/i64",
-                expected: DType::U32,
-                got: ids.dtype(),
-            })?,
-        };
-        let el = ids_l.shape().elem_count();
-        let cfg = LaunchConfig::for_num_elems(el as u32);
+        let ids_storage = self.0;
+        let ids_l = self.1;
+        let gather_dim = self.2;
+        if ids_l.contiguous_offsets().is_none() {
+            return Err(crate::Error::RequiresContiguous { op: "gather" }.bt());
+        }
         let src = match src_l.contiguous_offsets() {
             Some((o1, o2)) => src.slice(o1..o2),
             None => Err(crate::Error::RequiresContiguous { op: "gather" }.bt())?,
         };
-        let left_sz: usize = src_l.dims()[..dim].iter().product();
-        let right_sz: usize = src_l.dims()[dim + 1..].iter().product();
-        let src_dim_sz = src_l.dims()[dim];
-        let ids_dim_sz = ids_l.dims()[dim];
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::INDEXING)?;
-        // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(el)? };
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, ids);
-        builder.arg(&src);
-        builder.arg(&out);
-        barg!(builder, left_sz);
-        barg!(builder, src_dim_sz);
-        barg!(builder, ids_dim_sz);
-        barg!(builder, right_sz);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
+        let (idx_ptr, _idx_owned, use_i64) = idx_ptr_for_baracuda(ids_storage, ids_l, dev)?;
+        let src_dims = src_l.dims();
+        let src_dim_size = src_dims[gather_dim] as i32;
+        // out_shape == ids_l shape (gather's contract).
+        let out_dims: Vec<usize> = ids_l.dims().to_vec();
+        let rank = out_dims.len();
+        let dst_el: usize = out_dims.iter().product();
+        let out = unsafe { dev.alloc::<T>(dst_el)? };
+        if dst_el == 0 {
+            return Ok(out);
+        }
+        let out_shape_i32: Vec<i32> = out_dims.iter().map(|&d| d as i32).collect();
+        let stride_src: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * src_dims[d + 1] as i64;
+            }
+            s
+        };
+        let stride_index: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * out_dims[d + 1] as i64;
+            }
+            s
+        };
+        let stride_out = stride_index.clone();
+        let run = pick_gather_ffi(T::DTYPE, use_i64).ok_or_else(|| {
+            crate::Error::Msg(format!(
+                "gather: no baracuda kernel for value dtype {:?}",
+                T::DTYPE
+            )).bt()
+        })?;
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+        let status = unsafe {
+            run(
+                dst_el as i64,
+                rank as i32,
+                gather_dim as i32,
+                src_dim_size,
+                out_shape_i32.as_ptr(),
+                stride_src.as_ptr(),
+                stride_index.as_ptr(),
+                stride_out.as_ptr(),
+                src.as_raw().0 as *const std::ffi::c_void,
+                idx_ptr,
+                out.as_raw().0 as *mut std::ffi::c_void,
+                std::ptr::null_mut(), 0, stream,
+            )
+        };
+        crate::baracuda::status::check(status, "gather")?;
+        dev.synchronize()?;
         Ok(out)
+    }
+}
+
+// baracuda alpha.54 `index_add_<val>_run` FFI shape.
+type IndexAddRun = unsafe extern "C" fn(
+    src_numel: i64,
+    rank: i32,
+    add_dim: i32,
+    dst_dim_size: i32,
+    src_shape: *const i32,
+    stride_src: *const i64,
+    stride_dst: *const i64,
+    src: *const std::ffi::c_void,
+    idx: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_index_add_ffi(val_dt: DType, use_i64: bool) -> Option<IndexAddRun> {
+    use baracuda_kernels_sys as sys;
+    match (val_dt, use_i64) {
+        (DType::F32, false)  => Some(sys::baracuda_kernels_index_add_f32_run  as IndexAddRun),
+        (DType::F64, false)  => Some(sys::baracuda_kernels_index_add_f64_run  as IndexAddRun),
+        (DType::F16, false)  => Some(sys::baracuda_kernels_index_add_f16_run  as IndexAddRun),
+        (DType::BF16, false) => Some(sys::baracuda_kernels_index_add_bf16_run as IndexAddRun),
+        (DType::I32, false)  => Some(sys::baracuda_kernels_index_add_i32_run  as IndexAddRun),
+        (DType::U32, false)  => Some(sys::baracuda_kernels_index_add_u32_run  as IndexAddRun),
+        (DType::I64, false)  => Some(sys::baracuda_kernels_index_add_i64_run  as IndexAddRun),
+        (DType::F32, true)   => Some(sys::baracuda_kernels_index_add_i64idx_f32_run  as IndexAddRun),
+        (DType::F64, true)   => Some(sys::baracuda_kernels_index_add_i64idx_f64_run  as IndexAddRun),
+        (DType::F16, true)   => Some(sys::baracuda_kernels_index_add_i64idx_f16_run  as IndexAddRun),
+        (DType::BF16, true)  => Some(sys::baracuda_kernels_index_add_i64idx_bf16_run as IndexAddRun),
+        (DType::I32, true)   => Some(sys::baracuda_kernels_index_add_i64idx_i32_run  as IndexAddRun),
+        (DType::U32, true)   => Some(sys::baracuda_kernels_index_add_i64idx_u32_run  as IndexAddRun),
+        (DType::I64, true)   => Some(sys::baracuda_kernels_index_add_i64idx_i64_run  as IndexAddRun),
+        _ => None,
     }
 }
 
@@ -1065,23 +1274,12 @@ impl Map2InPlace for IndexAdd<'_> {
         src_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<()> {
-        let ids = &self.0;
-        let ids_l = &self.1;
-        let dim = self.2;
-        let (ids_o1, _) = match ids_l.contiguous_offsets() {
-            Some(o12) => o12,
-            None => Err(crate::Error::RequiresContiguous { op: "index-add" }.bt())?,
-        };
-        let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("ia_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("ia_i64", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("ia_u8", slice_ptr(slice, ids_o1)),
-            _ => Err(CudaError::UnexpectedDType {
-                msg: "index-add ids should be u8/u32/i64",
-                expected: DType::U32,
-                got: ids.dtype(),
-            })?,
-        };
+        let ids_storage = self.0;
+        let ids_l = self.1;
+        let add_dim = self.2;
+        if ids_l.contiguous_offsets().is_none() {
+            return Err(crate::Error::RequiresContiguous { op: "index-add" }.bt());
+        }
         let dst = match dst_l.contiguous_offsets() {
             Some((o1, o2)) => dst.slice(o1..o2),
             None => Err(crate::Error::RequiresContiguous { op: "index-add" }.bt())?,
@@ -1090,23 +1288,193 @@ impl Map2InPlace for IndexAdd<'_> {
             Some((o1, o2)) => src.slice(o1..o2),
             None => Err(crate::Error::RequiresContiguous { op: "index-add" }.bt())?,
         };
-        let left_sz: usize = src_l.dims()[..dim].iter().product();
-        let right_sz: usize = src_l.dims()[dim + 1..].iter().product();
-        let src_dim_sz = src_l.dims()[dim];
-        let dst_dim_sz = dst_l.dims()[dim];
-        let ids_dim_sz = ids_l.dims()[0];
-        let cfg = LaunchConfig::for_num_elems((left_sz * right_sz) as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::INDEXING)?;
-        let mut builder = func.builder();
-        barg!(builder, ids);
-        barg!(builder, ids_dim_sz);
-        builder.arg(&src);
-        builder.arg(&dst);
-        barg!(builder, left_sz, src_dim_sz, dst_dim_sz, right_sz);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
+        let (idx_ptr, _idx_owned, use_i64) = idx_ptr_for_baracuda(ids_storage, ids_l, dev)?;
+        let src_dims = src_l.dims();
+        let dst_dims = dst_l.dims();
+        let dst_dim_size = dst_dims[add_dim] as i32;
+        let rank = src_dims.len();
+        let src_numel: usize = src_dims.iter().product();
+        if src_numel == 0 {
+            return Ok(());
+        }
+        let src_shape_i32: Vec<i32> = src_dims.iter().map(|&d| d as i32).collect();
+        let stride_src: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * src_dims[d + 1] as i64;
+            }
+            s
+        };
+        let stride_dst: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dst_dims[d + 1] as i64;
+            }
+            s
+        };
+        let run = pick_index_add_ffi(T::DTYPE, use_i64).ok_or_else(|| {
+            crate::Error::Msg(format!(
+                "index_add: no baracuda kernel for value dtype {:?}",
+                T::DTYPE
+            )).bt()
+        })?;
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+        let status = unsafe {
+            run(
+                src_numel as i64,
+                rank as i32,
+                add_dim as i32,
+                dst_dim_size,
+                src_shape_i32.as_ptr(),
+                stride_src.as_ptr(),
+                stride_dst.as_ptr(),
+                src.as_raw().0 as *const std::ffi::c_void,
+                idx_ptr,
+                dst.as_raw().0 as *mut std::ffi::c_void,
+                std::ptr::null_mut(), 0, stream,
+            )
+        };
+        crate::baracuda::status::check(status, "index_add")?;
+        dev.synchronize()?;
         Ok(())
     }
+}
+
+// baracuda alpha.54 `scatter_<val>_run` / `scatter_add_<val>_run`
+// share this FFI shape.
+type ScatterRun = unsafe extern "C" fn(
+    upd_numel: i64,
+    rank: i32,
+    scatter_dim: i32,
+    out_dim_size: i32,
+    upd_shape: *const i32,
+    stride_upd: *const i64,
+    stride_index: *const i64,
+    stride_out: *const i64,
+    updates: *const std::ffi::c_void,
+    index: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_scatter_ffi(val_dt: DType, use_i64: bool) -> Option<ScatterRun> {
+    use baracuda_kernels_sys as sys;
+    match (val_dt, use_i64) {
+        // FP value dtypes — full coverage (i32idx + i64idx).
+        (DType::F32, false)  => Some(sys::baracuda_kernels_scatter_f32_run  as ScatterRun),
+        (DType::F64, false)  => Some(sys::baracuda_kernels_scatter_f64_run  as ScatterRun),
+        (DType::F16, false)  => Some(sys::baracuda_kernels_scatter_f16_run  as ScatterRun),
+        (DType::BF16, false) => Some(sys::baracuda_kernels_scatter_bf16_run as ScatterRun),
+        (DType::F32, true)   => Some(sys::baracuda_kernels_scatter_i64idx_f32_run  as ScatterRun),
+        (DType::F64, true)   => Some(sys::baracuda_kernels_scatter_i64idx_f64_run  as ScatterRun),
+        (DType::F16, true)   => Some(sys::baracuda_kernels_scatter_i64idx_f16_run  as ScatterRun),
+        (DType::BF16, true)  => Some(sys::baracuda_kernels_scatter_i64idx_bf16_run as ScatterRun),
+        // Integer value dtypes — full coverage.
+        (DType::U8,  false)  => Some(sys::baracuda_kernels_scatter_u8_run  as ScatterRun),
+        (DType::I8,  false)  => Some(sys::baracuda_kernels_scatter_i8_run  as ScatterRun),
+        (DType::U32, false)  => Some(sys::baracuda_kernels_scatter_u32_run as ScatterRun),
+        (DType::I16, false)  => Some(sys::baracuda_kernels_scatter_i16_run as ScatterRun),
+        (DType::I32, false)  => Some(sys::baracuda_kernels_scatter_i32_run as ScatterRun),
+        (DType::I64, false)  => Some(sys::baracuda_kernels_scatter_i64_run as ScatterRun),
+        (DType::U8,  true)   => Some(sys::baracuda_kernels_scatter_i64idx_u8_run  as ScatterRun),
+        (DType::I8,  true)   => Some(sys::baracuda_kernels_scatter_i64idx_i8_run  as ScatterRun),
+        (DType::U32, true)   => Some(sys::baracuda_kernels_scatter_i64idx_u32_run as ScatterRun),
+        (DType::I16, true)   => Some(sys::baracuda_kernels_scatter_i64idx_i16_run as ScatterRun),
+        (DType::I32, true)   => Some(sys::baracuda_kernels_scatter_i64idx_i32_run as ScatterRun),
+        (DType::I64, true)   => Some(sys::baracuda_kernels_scatter_i64idx_i64_run as ScatterRun),
+        _ => None,
+    }
+}
+
+fn pick_scatter_add_ffi(val_dt: DType, use_i64: bool) -> Option<ScatterRun> {
+    use baracuda_kernels_sys as sys;
+    match (val_dt, use_i64) {
+        (DType::F32, false) => Some(sys::baracuda_kernels_scatter_add_f32_run as ScatterRun),
+        (DType::F64, false) => Some(sys::baracuda_kernels_scatter_add_f64_run as ScatterRun),
+        (DType::F32, true)  => Some(sys::baracuda_kernels_scatter_add_i64idx_f32_run as ScatterRun),
+        (DType::F64, true)  => Some(sys::baracuda_kernels_scatter_add_i64idx_f64_run as ScatterRun),
+        _ => None,
+    }
+}
+
+/// Common runner for scatter / scatter_add — same FFI shape.
+fn run_scatter_like<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    ids_storage: &CudaStorage,
+    ids_l: &Layout,
+    dim: usize,
+    dst: &mut CudaSlice<T>,
+    dst_l: &Layout,
+    src: &CudaSlice<T>,
+    src_l: &Layout,
+    dev: &CudaDevice,
+    pick: fn(DType, bool) -> Option<ScatterRun>,
+    op_label: &'static str,
+) -> Result<()> {
+    if ids_l.contiguous_offsets().is_none() {
+        return Err(crate::Error::RequiresContiguous { op: op_label }.bt());
+    }
+    let dst = match dst_l.contiguous_offsets() {
+        Some((o1, o2)) => dst.slice(o1..o2),
+        None => Err(crate::Error::RequiresContiguous { op: op_label }.bt())?,
+    };
+    let src = match src_l.contiguous_offsets() {
+        Some((o1, o2)) => src.slice(o1..o2),
+        None => Err(crate::Error::RequiresContiguous { op: op_label }.bt())?,
+    };
+    let (idx_ptr, _idx_owned, use_i64) = idx_ptr_for_baracuda(ids_storage, ids_l, dev)?;
+    let src_dims = src_l.dims();
+    let dst_dims = dst_l.dims();
+    let out_dim_size = dst_dims[dim] as i32;
+    let rank = src_dims.len();
+    let upd_numel: usize = src_dims.iter().product();
+    if upd_numel == 0 {
+        return Ok(());
+    }
+    let upd_shape_i32: Vec<i32> = src_dims.iter().map(|&d| d as i32).collect();
+    let stride_upd: Vec<i64> = {
+        let mut s = vec![1_i64; rank];
+        for d in (0..rank.saturating_sub(1)).rev() {
+            s[d] = s[d + 1] * src_dims[d + 1] as i64;
+        }
+        s
+    };
+    // Index shape matches updates shape (scatter / scatter_add contract).
+    let stride_index = stride_upd.clone();
+    let stride_out: Vec<i64> = {
+        let mut s = vec![1_i64; rank];
+        for d in (0..rank.saturating_sub(1)).rev() {
+            s[d] = s[d + 1] * dst_dims[d + 1] as i64;
+        }
+        s
+    };
+    let run = pick(T::DTYPE, use_i64).ok_or_else(|| {
+        crate::Error::Msg(format!(
+            "{op_label}: no baracuda kernel for value dtype {:?}",
+            T::DTYPE
+        )).bt()
+    })?;
+    let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+    let status = unsafe {
+        run(
+            upd_numel as i64,
+            rank as i32,
+            dim as i32,
+            out_dim_size,
+            upd_shape_i32.as_ptr(),
+            stride_upd.as_ptr(),
+            stride_index.as_ptr(),
+            stride_out.as_ptr(),
+            src.as_raw().0 as *const std::ffi::c_void,
+            idx_ptr,
+            dst.as_raw().0 as *mut std::ffi::c_void,
+            std::ptr::null_mut(), 0, stream,
+        )
+    };
+    crate::baracuda::status::check(status, op_label)?;
+    dev.synchronize()?;
+    Ok(())
 }
 
 struct Scatter<'a>(&'a CudaStorage, &'a Layout, usize);
@@ -1119,45 +1487,11 @@ impl Map2InPlace for Scatter<'_> {
         src_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<()> {
-        let ids = &self.0;
-        let ids_l = &self.1;
-        let dim = self.2;
-        let (ids_o1, _) = match ids_l.contiguous_offsets() {
-            Some(o12) => o12,
-            None => Err(crate::Error::RequiresContiguous { op: "scatter" }.bt())?,
-        };
-        let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("s_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("s_i64", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("s_u8", slice_ptr(slice, ids_o1)),
-            _ => Err(CudaError::UnexpectedDType {
-                msg: "scatter ids should be u8/u32/i64",
-                expected: DType::U32,
-                got: ids.dtype(),
-            })?,
-        };
-        let dst = match dst_l.contiguous_offsets() {
-            Some((o1, o2)) => dst.slice(o1..o2),
-            None => Err(crate::Error::RequiresContiguous { op: "scatter" }.bt())?,
-        };
-        let src = match src_l.contiguous_offsets() {
-            Some((o1, o2)) => src.slice(o1..o2),
-            None => Err(crate::Error::RequiresContiguous { op: "scatter" }.bt())?,
-        };
-        let left_sz: usize = src_l.dims()[..dim].iter().product();
-        let right_sz: usize = src_l.dims()[dim + 1..].iter().product();
-        let src_dim_sz = src_l.dims()[dim];
-        let dst_dim_sz = dst_l.dims()[dim];
-        let cfg = LaunchConfig::for_num_elems((left_sz * right_sz) as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::INDEXING)?;
-        let mut builder = func.builder();
-        barg!(builder, ids);
-        builder.arg(&src);
-        builder.arg(&dst);
-        barg!(builder, left_sz, src_dim_sz, dst_dim_sz, right_sz);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(())
+        run_scatter_like::<T>(
+            self.0, self.1, self.2,
+            dst, dst_l, src, src_l, dev,
+            pick_scatter_ffi, "scatter",
+        )
     }
 }
 
@@ -1171,47 +1505,14 @@ impl Map2InPlace for ScatterAdd<'_> {
         src_l: &Layout,
         dev: &CudaDevice,
     ) -> Result<()> {
-        let ids = &self.0;
-        let ids_l = &self.1;
-        let dim = self.2;
-        let (ids_o1, _) = match ids_l.contiguous_offsets() {
-            Some(o12) => o12,
-            None => Err(crate::Error::RequiresContiguous { op: "scatter-add" }.bt())?,
-        };
-        let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("sa_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("sa_i64", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("sa_u8", slice_ptr(slice, ids_o1)),
-            _ => Err(CudaError::UnexpectedDType {
-                msg: "scatter-add ids should be u8/u32/i64",
-                expected: DType::U32,
-                got: ids.dtype(),
-            })?,
-        };
-        let dst = match dst_l.contiguous_offsets() {
-            Some((o1, o2)) => dst.slice(o1..o2),
-            None => Err(crate::Error::RequiresContiguous { op: "scatter-add" }.bt())?,
-        };
-        let src = match src_l.contiguous_offsets() {
-            Some((o1, o2)) => src.slice(o1..o2),
-            None => Err(crate::Error::RequiresContiguous { op: "scatter-add" }.bt())?,
-        };
-        let left_sz: usize = src_l.dims()[..dim].iter().product();
-        let right_sz: usize = src_l.dims()[dim + 1..].iter().product();
-        let src_dim_sz = src_l.dims()[dim];
-        let dst_dim_sz = dst_l.dims()[dim];
-        let cfg = LaunchConfig::for_num_elems((left_sz * right_sz) as u32);
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::INDEXING)?;
-        let mut builder = func.builder();
-        barg!(builder, ids);
-        builder.arg(&src);
-        builder.arg(&dst);
-        barg!(builder, left_sz, src_dim_sz, dst_dim_sz, right_sz);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(())
+        run_scatter_like::<T>(
+            self.0, self.1, self.2,
+            dst, dst_l, src, src_l, dev,
+            pick_scatter_add_ffi, "scatter-add",
+        )
     }
 }
+
 
 // Conv1D / Conv2D dispatch — baracuda alpha.38 cuDNN-backed conv FFI.
 // PTX `Conv1D`/`Conv2D` Map2 impls + Fuel's internal `crate::cudnn::
