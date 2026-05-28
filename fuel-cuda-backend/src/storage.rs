@@ -1979,6 +1979,79 @@ fn upsample_bilinear2d_dispatch(
 }
 
 struct WhereCond<'a>(&'a CudaStorage, &'a Layout);
+
+// baracuda alpha.54 `where_<cond>cond_<val>_strided_run` FFI shape.
+type WhereStridedRun = unsafe extern "C" fn(
+    numel: i64,
+    rank: i32,
+    shape: *const i32,
+    stride_cond: *const i64,
+    stride_a: *const i64,
+    stride_b: *const i64,
+    stride_y: *const i64,
+    cond: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    b: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// Pick the baracuda strided `where_<cond>cond_<val>_strided_run` for
+/// a (cond dtype, value dtype) pair. The bare `where_<fp>_strided_run`
+/// family (no cond-prefix) is the U8-cond + fp values variant.
+fn pick_where_strided(cond_dt: DType, val_dt: DType) -> Option<WhereStridedRun> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! sym {
+        ($name:ident) => {
+            ::paste::paste! {
+                Some(sys::[<baracuda_kernels_ $name>] as WhereStridedRun)
+            }
+        };
+    }
+    match (cond_dt, val_dt) {
+        // U8 cond + fp values: bare `where_<fp>_strided_run`.
+        (DType::U8, DType::F32)  => sym!(where_f32_strided_run),
+        (DType::U8, DType::F64)  => sym!(where_f64_strided_run),
+        (DType::U8, DType::F16)  => sym!(where_f16_strided_run),
+        (DType::U8, DType::BF16) => sym!(where_bf16_strided_run),
+        // U8 cond + integer + F8E4M3 values.
+        (DType::U8, DType::U8)     => sym!(where_u8cond_u8_strided_run),
+        (DType::U8, DType::I8)     => sym!(where_u8cond_i8_strided_run),
+        (DType::U8, DType::U32)    => sym!(where_u8cond_u32_strided_run),
+        (DType::U8, DType::I16)    => sym!(where_u8cond_i16_strided_run),
+        (DType::U8, DType::I32)    => sym!(where_u8cond_i32_strided_run),
+        (DType::U8, DType::I64)    => sym!(where_u8cond_i64_strided_run),
+        (DType::U8, DType::F8E4M3) => sym!(where_u8cond_fp8e4m3_strided_run),
+        // U32 cond + all values.
+        (DType::U32, DType::F32)    => sym!(where_u32cond_f32_strided_run),
+        (DType::U32, DType::F64)    => sym!(where_u32cond_f64_strided_run),
+        (DType::U32, DType::F16)    => sym!(where_u32cond_f16_strided_run),
+        (DType::U32, DType::BF16)   => sym!(where_u32cond_bf16_strided_run),
+        (DType::U32, DType::U8)     => sym!(where_u32cond_u8_strided_run),
+        (DType::U32, DType::I8)     => sym!(where_u32cond_i8_strided_run),
+        (DType::U32, DType::U32)    => sym!(where_u32cond_u32_strided_run),
+        (DType::U32, DType::I16)    => sym!(where_u32cond_i16_strided_run),
+        (DType::U32, DType::I32)    => sym!(where_u32cond_i32_strided_run),
+        (DType::U32, DType::I64)    => sym!(where_u32cond_i64_strided_run),
+        (DType::U32, DType::F8E4M3) => sym!(where_u32cond_fp8e4m3_strided_run),
+        // I64 cond + all values.
+        (DType::I64, DType::F32)    => sym!(where_i64cond_f32_strided_run),
+        (DType::I64, DType::F64)    => sym!(where_i64cond_f64_strided_run),
+        (DType::I64, DType::F16)    => sym!(where_i64cond_f16_strided_run),
+        (DType::I64, DType::BF16)   => sym!(where_i64cond_bf16_strided_run),
+        (DType::I64, DType::U8)     => sym!(where_i64cond_u8_strided_run),
+        (DType::I64, DType::I8)     => sym!(where_i64cond_i8_strided_run),
+        (DType::I64, DType::U32)    => sym!(where_i64cond_u32_strided_run),
+        (DType::I64, DType::I16)    => sym!(where_i64cond_i16_strided_run),
+        (DType::I64, DType::I32)    => sym!(where_i64cond_i32_strided_run),
+        (DType::I64, DType::I64)    => sym!(where_i64cond_i64_strided_run),
+        (DType::I64, DType::F8E4M3) => sym!(where_i64cond_fp8e4m3_strided_run),
+        _ => None,
+    }
+}
+
 impl Map2 for WhereCond<'_> {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
@@ -1988,57 +2061,71 @@ impl Map2 for WhereCond<'_> {
         layout_f: &Layout,
         dev: &CudaDevice,
     ) -> Result<CudaSlice<T>> {
-        let ids_l = &self.1;
-        let ((ids, _guard), name) = match &self.0.slice {
-            CudaStorageSlice::U8(slice) => {
-                let ptr = slice_ptr(slice, ids_l.start_offset());
-                (ptr, "where_u8")
-            }
-            CudaStorageSlice::U32(slice) => {
-                let ptr = slice_ptr(slice, ids_l.start_offset());
-                (ptr, "where_u32")
-            }
-            CudaStorageSlice::I64(slice) => {
-                let ptr = slice_ptr(slice, ids_l.start_offset());
-                (ptr, "where_i64")
-            }
-            _ => Err(CudaError::UnexpectedDType {
+        let cond_storage = self.0;
+        let cond_layout = self.1;
+        let cond_dt = cond_storage.dtype();
+        let val_dt = T::DTYPE;
+        let run = pick_where_strided(cond_dt, val_dt).ok_or_else(|| {
+            crate::Error::cuda(CudaError::UnexpectedDType {
                 msg: "where conditions should be u8/u32/i64",
                 expected: DType::U32,
-                got: self.0.dtype(),
+                got: cond_dt,
             })
-            .w()?,
-        };
-        let shape = ids_l.shape();
+        })?;
+        let shape = cond_layout.shape();
         let dims = shape.dims();
         let el = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el as u32);
-        let ds = {
-            let s_ids = ids_l.stride_unsigned();
-            let s_t = layout_t.stride_unsigned();
-            let s_f = layout_f.stride_unsigned();
-            let mut v = Vec::with_capacity(dims.len() + s_ids.len() + s_t.len() + s_f.len());
-            v.extend_from_slice(dims);
-            v.extend_from_slice(&s_ids);
-            v.extend_from_slice(&s_t);
-            v.extend_from_slice(&s_f);
-            dev.clone_htod(&v)?
+        let rank = dims.len();
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_cond: Vec<i64> = cond_layout.stride().iter().map(|&s| s as i64).collect();
+        let stride_a: Vec<i64> = layout_t.stride().iter().map(|&s| s as i64).collect();
+        let stride_b: Vec<i64> = layout_f.stride().iter().map(|&s| s as i64).collect();
+        let stride_y: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * dims[d + 1] as i64;
+            }
+            s
         };
-        let t = &t.slice(layout_t.start_offset()..t.len());
-        let f = &f.slice(layout_f.start_offset()..f.len());
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::TERNARY)?;
-        // SAFETY: Set later by running the kernel.
+        let cond_ptr: *const std::ffi::c_void = match &cond_storage.slice {
+            CudaStorageSlice::U8(s)  => {
+                let sl = s.slice(cond_layout.start_offset()..s.len());
+                sl.as_raw().0 as *const std::ffi::c_void
+            }
+            CudaStorageSlice::U32(s) => {
+                let sl = s.slice(cond_layout.start_offset()..s.len());
+                sl.as_raw().0 as *const std::ffi::c_void
+            }
+            CudaStorageSlice::I64(s) => {
+                let sl = s.slice(cond_layout.start_offset()..s.len());
+                sl.as_raw().0 as *const std::ffi::c_void
+            }
+            _ => unreachable!("validated above"),
+        };
+        let t_slice = t.slice(layout_t.start_offset()..t.len());
+        let f_slice = f.slice(layout_f.start_offset()..f.len());
         let out = unsafe { dev.alloc::<T>(el)? };
-        let mut builder = func.builder();
-        barg!(builder, el);
-        barg!(builder, dims.len());
-        builder.arg(&ds);
-        barg!(builder, ids);
-        builder.arg(t);
-        builder.arg(f);
-        builder.arg(&out);
-        // SAFETY: ffi
-        unsafe { builder.launch(cfg) }.w()?;
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+        let status = unsafe {
+            run(
+                el as i64,
+                rank as i32,
+                shape_i32.as_ptr(),
+                stride_cond.as_ptr(),
+                stride_a.as_ptr(),
+                stride_b.as_ptr(),
+                stride_y.as_ptr(),
+                cond_ptr,
+                t_slice.as_raw().0 as *const std::ffi::c_void,
+                f_slice.as_raw().0 as *const std::ffi::c_void,
+                out.as_raw().0 as *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        };
+        crate::baracuda::status::check(status, "where")?;
+        dev.synchronize()?;
         Ok(out)
     }
 }
