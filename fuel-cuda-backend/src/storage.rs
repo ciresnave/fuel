@@ -2873,45 +2873,134 @@ impl CudaStorage {
         &self.device
     }
 
+    /// Set every element of `self` to `s`, respecting `layout` (which
+    /// may be strided). Phase 6c.4 migration to baracuda alpha.54's
+    /// `fill_<dt>_strided_run` family (replaces the PTX
+    /// `const_set_<dt>` kernels from kernels::FILL).
     pub fn const_set(&mut self, s: fuel_core_types::scalar::Scalar, layout: &Layout) -> Result<()> {
+        use baracuda_kernels_sys as sys;
+        use fuel_core_types::scalar::Scalar;
         let dev = &self.device;
-        let shape = layout.shape();
-        let dims = shape.dims();
-        let el_count = shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(el_count as u32);
-        let ds = SlicePtrOrNull::params_from_layout(dev, layout)?;
+        let dims = layout.shape().dims();
+        let rank = dims.len();
+        let el_count = layout.shape().elem_count();
+        if el_count == 0 {
+            return Ok(());
+        }
+        let shape_i32: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+        let stride_y: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
         let src_o = layout.start_offset();
-        let ((src, _guard_src), kernel_name) = match &mut self.slice {
-            S::U8(s) => (slice_ptr(s, src_o), "const_set_u8"),
-            S::I8(s) => (slice_ptr(s, src_o), "const_set_i8"),
-            S::U32(s) => (slice_ptr(s, src_o), "const_set_u32"),
-            S::I16(s) => (slice_ptr(s, src_o), "const_set_i16"),
-            S::I32(s) => (slice_ptr(s, src_o), "const_set_i32"),
-            S::I64(s) => (slice_ptr(s, src_o), "const_set_i64"),
-            S::BF16(s) => (slice_ptr(s, src_o), "const_set_bf16"),
-            S::F16(s) => (slice_ptr(s, src_o), "const_set_f16"),
-            S::F32(s) => (slice_ptr(s, src_o), "const_set_f32"),
-            S::F64(s) => (slice_ptr(s, src_o), "const_set_f64"),
-            S::F8E4M3(s) => (slice_ptr(s, src_o), "const_set_f8_e4m3"),
-            S::F4(_) | S::F6E2M3(_) | S::F6E3M2(_) | S::F8E8M0(_) => {
-                return Err(CudaError::UnsupportedDtype {
+
+        macro_rules! launch {
+            ($variant:ident, $scalar:ident, $value_ty:ty, $run:ident, $label:expr) => {{
+                let dst_slice = match &mut self.slice {
+                    S::$variant(s) => s,
+                    _ => unreachable!(),
+                };
+                let dst_view = dst_slice.slice(src_o..dst_slice.len());
+                let value = match s {
+                    Scalar::$scalar(v) => v as $value_ty,
+                    _ => return Err(CudaError::UnsupportedDtype {
+                        dtype: self.dtype(),
+                        op: "const_set: scalar/storage dtype mismatch",
+                    }.into()),
+                };
+                let status = unsafe {
+                    sys::$run(
+                        el_count as i64,
+                        rank as i32,
+                        shape_i32.as_ptr(),
+                        stride_y.as_ptr(),
+                        value,
+                        dst_view.as_raw().0 as *mut std::ffi::c_void,
+                        std::ptr::null_mut(), 0, stream,
+                    )
+                };
+                crate::baracuda::status::check(status, $label)?;
+                dev.synchronize()?;
+                return Ok(());
+            }};
+        }
+        // f16/bf16/fp8e4m3 transport `value` as raw bit-pattern integers.
+        macro_rules! launch_bits {
+            ($variant:ident, $scalar:ident, $half_ty:ty, $bits_ty:ty, $run:ident, $label:expr) => {{
+                let dst_slice = match &mut self.slice {
+                    S::$variant(s) => s,
+                    _ => unreachable!(),
+                };
+                let dst_view = dst_slice.slice(src_o..dst_slice.len());
+                let value: $half_ty = match s {
+                    Scalar::$scalar(v) => v,
+                    _ => return Err(CudaError::UnsupportedDtype {
+                        dtype: self.dtype(),
+                        op: "const_set: scalar/storage dtype mismatch",
+                    }.into()),
+                };
+                let bits: $bits_ty = value.to_bits();
+                let status = unsafe {
+                    sys::$run(
+                        el_count as i64,
+                        rank as i32,
+                        shape_i32.as_ptr(),
+                        stride_y.as_ptr(),
+                        bits,
+                        dst_view.as_raw().0 as *mut std::ffi::c_void,
+                        std::ptr::null_mut(), 0, stream,
+                    )
+                };
+                crate::baracuda::status::check(status, $label)?;
+                dev.synchronize()?;
+                return Ok(());
+            }};
+        }
+        match self.dtype() {
+            DType::U8  => launch!(U8,  U8,  u8,  baracuda_kernels_fill_u8_strided_run,  "fill_u8_strided"),
+            DType::I8  => launch!(I8,  I8,  i8,  baracuda_kernels_fill_i8_strided_run,  "fill_i8_strided"),
+            DType::U32 => launch!(U32, U32, u32, baracuda_kernels_fill_u32_strided_run, "fill_u32_strided"),
+            DType::I16 => launch!(I16, I16, i16, baracuda_kernels_fill_i16_strided_run, "fill_i16_strided"),
+            DType::I32 => launch!(I32, I32, i32, baracuda_kernels_fill_i32_strided_run, "fill_i32_strided"),
+            DType::I64 => launch!(I64, I64, i64, baracuda_kernels_fill_i64_strided_run, "fill_i64_strided"),
+            DType::F32 => launch!(F32, F32, f32, baracuda_kernels_fill_f32_strided_run, "fill_f32_strided"),
+            DType::F64 => launch!(F64, F64, f64, baracuda_kernels_fill_f64_strided_run, "fill_f64_strided"),
+            DType::F16  => launch_bits!(F16,  F16,  half::f16,  u16, baracuda_kernels_fill_f16_strided_run,  "fill_f16_strided"),
+            DType::BF16 => launch_bits!(BF16, BF16, half::bf16, u16, baracuda_kernels_fill_bf16_strided_run, "fill_bf16_strided"),
+            DType::F8E4M3 => {
+                let dst_slice = match &mut self.slice {
+                    S::F8E4M3(s) => s,
+                    _ => unreachable!(),
+                };
+                let dst_view = dst_slice.slice(src_o..dst_slice.len());
+                let value = match s {
+                    Scalar::F8E4M3(v) => v,
+                    _ => return Err(CudaError::UnsupportedDtype {
+                        dtype: self.dtype(),
+                        op: "const_set: scalar/storage dtype mismatch",
+                    }.into()),
+                };
+                let bits: u8 = value.to_bits();
+                let status = unsafe {
+                    sys::baracuda_kernels_fill_fp8e4m3_strided_run(
+                        el_count as i64,
+                        rank as i32,
+                        shape_i32.as_ptr(),
+                        stride_y.as_ptr(),
+                        bits,
+                        dst_view.as_raw().0 as *mut std::ffi::c_void,
+                        std::ptr::null_mut(), 0, stream,
+                    )
+                };
+                crate::baracuda::status::check(status, "fill_fp8e4m3_strided")?;
+                dev.synchronize()?;
+                Ok(())
+            }
+            DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 => {
+                Err(CudaError::UnsupportedDtype {
                     dtype: self.dtype(),
                     op: "const_set",
-                }
-                .into());
+                }.into())
             }
-        };
-
-        let func = dev.get_or_load_func(kernel_name, &kernels::FILL)?;
-        let mut builder = func.builder();
-        barg!(builder, el_count);
-        barg!(builder, dims.len());
-        ds.builder_arg(&mut builder);
-        push_scalar_arg(&s, &mut builder);
-        barg!(builder, src);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
-        Ok(())
+        }
     }
 
     /// Element-wise dtype cast. Phase 6c.2 migration to baracuda
@@ -3973,6 +4062,10 @@ impl CudaStorage {
         Ok(Self { slice, device })
     }
 
+    /// 2-D rectangle copy from `self` to `dst` with per-side row
+    /// pitches. Phase 6c.4 migration to the CUDA driver's
+    /// `cuMemcpy2DAsync` (replaces the PTX `copy2d_<dt>` kernels
+    /// from kernels::FILL).
     pub fn copy2d(
         &self,
         dst: &mut Self,
@@ -3983,41 +4076,77 @@ impl CudaStorage {
         src_o: usize,
         dst_o: usize,
     ) -> Result<()> {
+        use baracuda_cuda_sys::driver;
+        use baracuda_cuda_sys::types::{CUmemorytype, CUDA_MEMCPY2D};
+        use baracuda_cuda_sys::CUdeviceptr;
         let dev = &self.device;
-        let d1 = d1 as u32;
-        let d2 = d2 as u32;
-        // Nothing to copy so we exit early to avoid launching a kernel and some potential invalid
-        // argument with a null pointer.
         if d1 == 0 || d2 == 0 {
             return Ok(());
         }
-        let dst_s = dst_s as u32;
-        let src_s = src_s as u32;
-        let ((src, _guard_src), (dst, _guard_dst), kname) = match (&self.slice, &mut dst.slice) {
-            (S::U8(s), S::U8(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_u8"),
-            (S::U32(s), S::U32(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_u32"),
-            (S::I16(s), S::I16(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_i16"),
-            (S::I32(s), S::I32(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_i32"),
-            (S::I64(s), S::I64(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_i64"),
-            (S::BF16(s), S::BF16(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_bf16"),
-            (S::F16(s), S::F16(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_f16"),
-            (S::F32(s), S::F32(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_f32"),
-            (S::F64(s), S::F64(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_f64"),
-            (S::F8E4M3(s), S::F8E4M3(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_u8"),
-            (S::F8E8M0(s), S::F8E8M0(d)) => (slice_ptr(s, src_o), slice_ptr(d, dst_o), "copy2d_u8"),
-            _ => Err(CudaError::InternalError("dtype mismatch in copy2d"))?,
+        // Get device pointers + element width per (src, dst) dtype pair.
+        let (src_dev, dst_dev, elem_bytes): (CUdeviceptr, CUdeviceptr, usize) =
+            match (&self.slice, &mut dst.slice) {
+                (S::U8(s), S::U8(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
+                }
+                (S::I8(s), S::I8(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
+                }
+                (S::U32(s), S::U32(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 4)
+                }
+                (S::I16(s), S::I16(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 2)
+                }
+                (S::I32(s), S::I32(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 4)
+                }
+                (S::I64(s), S::I64(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 8)
+                }
+                (S::BF16(s), S::BF16(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 2)
+                }
+                (S::F16(s), S::F16(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 2)
+                }
+                (S::F32(s), S::F32(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 4)
+                }
+                (S::F64(s), S::F64(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 8)
+                }
+                (S::F8E4M3(s), S::F8E4M3(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
+                }
+                (S::F8E8M0(s), S::F8E8M0(d)) => {
+                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
+                }
+                _ => Err(CudaError::InternalError("dtype mismatch in copy2d"))?,
+            };
+        let p = CUDA_MEMCPY2D {
+            src_memory_type: CUmemorytype::DEVICE,
+            src_device: src_dev,
+            src_pitch: src_s * elem_bytes,
+            dst_memory_type: CUmemorytype::DEVICE,
+            dst_device: dst_dev,
+            dst_pitch: dst_s * elem_bytes,
+            width_in_bytes: d2 * elem_bytes,
+            height: d1,
+            ..Default::default()
         };
-        let func = dev.get_or_load_func(kname, &kernels::FILL)?;
-        let cfg = LaunchConfig::for_num_elems(d1 * d2);
-        let mut builder = func.builder();
-        barg!(builder, src);
-        barg!(builder, dst);
-        barg!(builder, d1);
-        barg!(builder, d2);
-        builder.arg(&src_s);
-        builder.arg(&dst_s);
-        // SAFETY: ffi.
-        unsafe { builder.launch(cfg) }.w()?;
+        let d = driver().map_err(|e| crate::Error::Msg(format!("driver(): {e:?}")).bt())?;
+        let cu = d
+            .cu_memcpy_2d_async()
+            .map_err(|e| crate::Error::Msg(format!("cu_memcpy_2d_async: {e:?}")).bt())?;
+        let stream = dev.stream().as_raw();
+        let status = unsafe { cu(&p, stream) };
+        if status.0 != 0 {
+            return Err(crate::Error::Msg(format!(
+                "cuMemcpy2DAsync failed: status={:?}", status
+            )).bt());
+        }
+        dev.synchronize()?;
         Ok(())
     }
 
