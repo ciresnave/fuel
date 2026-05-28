@@ -62,7 +62,10 @@ mod cuda {
     use crate::CudaDevice;
     use fuel_core_types::dtype::{DType, WithDType};
 
-    /// Baracuda `argsort_<dtype>_run` FFI shape.
+    /// Baracuda `argsort_<dtype>_run` (block-bitonic, row_len ≤ 1024)
+    /// and `argsort_<dtype>_big_run` (multi-block radix, row_len > 1024)
+    /// share this FFI shape; `big_run` additionally requires a workspace
+    /// buffer sized via `argsort_<dtype>_big_workspace_size`.
     type ArgsortRun = unsafe extern "C" fn(
         batch: i32,
         row_len: i32,
@@ -74,14 +77,41 @@ mod cuda {
         stream: *mut std::ffi::c_void,
     ) -> i32;
 
-    fn pick_argsort(dt: DType) -> Option<ArgsortRun> {
-        match dt {
-            DType::F32 => Some(sys::baracuda_kernels_argsort_f32_run),
-            DType::F64 => Some(sys::baracuda_kernels_argsort_f64_run),
-            DType::I32 => Some(sys::baracuda_kernels_argsort_i32_run),
-            DType::I64 => Some(sys::baracuda_kernels_argsort_i64_run),
-            _ => None,
-        }
+    type ArgsortBigWorkspaceSize = unsafe extern "C" fn(batch: i32, row_len: i32) -> usize;
+
+    fn pick_argsort_small(dt: DType) -> Option<ArgsortRun> {
+        Some(match dt {
+            DType::F32 => sys::baracuda_kernels_argsort_f32_run,
+            DType::F64 => sys::baracuda_kernels_argsort_f64_run,
+            DType::I32 => sys::baracuda_kernels_argsort_i32_run,
+            DType::I64 => sys::baracuda_kernels_argsort_i64_run,
+            DType::U8  => sys::baracuda_kernels_argsort_u8_run,
+            DType::I8  => sys::baracuda_kernels_argsort_i8_run,
+            DType::U32 => sys::baracuda_kernels_argsort_u32_run,
+            DType::I16 => sys::baracuda_kernels_argsort_i16_run,
+            DType::BF16 => sys::baracuda_kernels_argsort_bf16_run,
+            DType::F16  => sys::baracuda_kernels_argsort_f16_run,
+            DType::F8E4M3 => sys::baracuda_kernels_argsort_fp8e4m3_run,
+            _ => return None,
+        })
+    }
+
+    fn pick_argsort_big(dt: DType) -> Option<(ArgsortRun, ArgsortBigWorkspaceSize)> {
+        Some(match dt {
+            DType::F32 => (
+                sys::baracuda_kernels_argsort_f32_big_run,
+                sys::baracuda_kernels_argsort_f32_big_workspace_size,
+            ),
+            DType::F64 => (
+                sys::baracuda_kernels_argsort_f64_big_run,
+                sys::baracuda_kernels_argsort_f64_big_workspace_size,
+            ),
+            DType::I32 => (
+                sys::baracuda_kernels_argsort_i32_big_run,
+                sys::baracuda_kernels_argsort_i32_big_workspace_size,
+            ),
+            _ => return None,
+        })
     }
 
     impl crate::cuda_backend::Map1Any for ArgSort {
@@ -99,35 +129,53 @@ mod cuda {
             let elem_count = layout.shape().elem_count();
             let ncols = self.last_dim;
             let nrows = elem_count / ncols;
-            if ncols > 1024 {
-                crate::bail!(
-                    "argsort: baracuda block-bitonic cap is row_len ≤ 1024, got {ncols}",
-                );
-            }
-            let run = pick_argsort(T::DTYPE).ok_or_else(|| {
-                crate::Error::Msg(format!(
-                    "argsort: baracuda alpha.50 only supports F32/F64/I32/I64, got {:?}",
-                    T::DTYPE
-                ))
-            })?;
+            let descending = if self.asc { 0 } else { 1 };
             // Baracuda writes i32 indices into y_idx; we expose u32 to
             // Fuel callers (same byte width, same bit pattern for
-            // values in [0, ncols)). Buffer is allocated as u32.
+            // values in [0, ncols) since ncols always fits i32).
             let dst = unsafe { dev.alloc::<u32>(elem_count)? };
             let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
-            let status = unsafe {
-                run(
-                    nrows as i32,
-                    ncols as i32,
-                    if self.asc { 0 } else { 1 },
-                    slice.as_raw().0 as *const std::ffi::c_void,
-                    dst.as_raw().0 as *mut std::ffi::c_void,
-                    std::ptr::null_mut(),
-                    0,
-                    stream,
-                )
-            };
-            fuel_cuda_backend::baracuda::status::check(status, "argsort")?;
+            let x_ptr = slice.as_raw().0 as *const std::ffi::c_void;
+            let y_ptr = dst.as_raw().0 as *mut std::ffi::c_void;
+
+            if ncols <= 1024 {
+                let run = pick_argsort_small(T::DTYPE).ok_or_else(|| {
+                    crate::Error::Msg(format!(
+                        "argsort: unsupported dtype {:?}", T::DTYPE
+                    ))
+                })?;
+                let status = unsafe {
+                    run(nrows as i32, ncols as i32, descending,
+                        x_ptr, y_ptr,
+                        std::ptr::null_mut(), 0, stream)
+                };
+                fuel_cuda_backend::baracuda::status::check(status, "argsort_small")?;
+            } else {
+                // Multi-block radix path for row_len > 1024.
+                let (run, ws_size) = pick_argsort_big(T::DTYPE).ok_or_else(|| {
+                    crate::Error::Msg(format!(
+                        "argsort: row_len {ncols} > 1024 needs `_big` variant; \
+                         baracuda alpha.54 ships F32/F64/I32 for `_big`, got {:?}",
+                        T::DTYPE
+                    ))
+                })?;
+                let ws_bytes = unsafe { ws_size(nrows as i32, ncols as i32) };
+                let ws_buf = if ws_bytes > 0 {
+                    Some(unsafe { dev.alloc::<u8>(ws_bytes)? })
+                } else {
+                    None
+                };
+                let ws_ptr = ws_buf
+                    .as_ref()
+                    .map(|b| b.as_raw().0 as *mut std::ffi::c_void)
+                    .unwrap_or(std::ptr::null_mut());
+                let status = unsafe {
+                    run(nrows as i32, ncols as i32, descending,
+                        x_ptr, y_ptr,
+                        ws_ptr, ws_bytes, stream)
+                };
+                fuel_cuda_backend::baracuda::status::check(status, "argsort_big")?;
+            }
             dev.synchronize()?;
             Ok(S::U32(dst))
         }
