@@ -368,12 +368,25 @@ plan:
       `docs/session-prompts/baracuda-phase-6c4-gaps.md` as
       **#7 (rope_apply_interleaved)** and
       **#8 (rope_apply_thd)**.
-14. **Phase 7:** retire `fuel-cuda-kernels` crate. Drop workspace
-    member, drop `cudaforge` build-time CUDA compilation.
+14. **Phase 6c.5 (2026-05-28) — SHIPPED.** Baracuda alpha.55
+    landed `rope_apply_interleaved_<dt>_run` and
+    `rope_apply_thd_<dt>_run` (asks #7 + #8 from
+    `docs/session-prompts/baracuda-phase-6c4-gaps.md`).
+    `fuel-nn::RotaryEmbI` + `RotaryEmbThd` now delegate through
+    new `CudaStorage::rope_interleaved` / `::rope_thd` helpers.
+    Last PTX caller eliminated.
+15. **Phase 7 (2026-05-28) — SHIPPED, commit `59d3a1dd`.**
+    `fuel-cuda-kernels/` workspace member deleted entirely.
+    `Id::Reduce` + `reduce.cu` + the 3 utility `.cuh` headers
+    removed. `fuel-cuda-backend::CudaDevice::get_or_load_func`
+    + `ModuleStore` cache dropped (zero callers). Workspace
+    Cargo.toml + fuel-core Cargo.toml + fuel-cuda-backend
+    Cargo.toml all updated. `use fuel_cuda_kernels as kernels;`
+    imports stripped from every fuel-cuda-backend source.
+    cudaforge stays as a build-time dep for
+    fuel-flash-attn-cuda-sys + fuel-flash-attn-v3-cuda-sys.
 
-Phases 2 + 1b + 5a + 6c.1 + 6c.2 + 6c.3 SHIPPED. Phase 6c.4 partial;
-the 6 above blocker categories are filed as baracuda asks. Phases
-3 + 5b + 4 + 6 + 7 remaining.
+All phases SHIPPED. Fuel's CUDA path is 100% baracuda-backed.
 
 ## Why "stay handwritten in Fuel" doesn't apply anymore
 
