@@ -40,10 +40,6 @@
     # feature. The -sys crate has no fuel deps so this dep is one-way
     # (no cycle with the eager-wrapper crate).
     fuel-flash-attn-cuda-sys = { workspace = true, optional = true }
-    # FlashAttention v3 sm90 (Hopper) kernels — same shape, behind the
-    # `flash-attn-v3` feature. Co-exists with the v2 -sys at link time
-    # (the v3 C symbol is `run_mha_v3`).
-    fuel-flash-attn-v3-cuda-sys = { workspace = true, optional = true }
     # Numeric + tracing
     float8     = { workspace = true }
     half       = { workspace = true }
@@ -59,7 +55,6 @@
     nccl    = ["dep:baracuda-nccl"]
     ug      = ["dep:fuel-ug"]
     flash-attn = ["dep:fuel-flash-attn-cuda-sys"]
-    flash-attn-v3 = ["dep:fuel-flash-attn-v3-cuda-sys"]
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
     fuel-ug = { workspace = true, optional = true }
