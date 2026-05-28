@@ -1,7 +1,6 @@
 ﻿use fuel_core_types::HostBufferRef;
 use fuel_core_types::dtype::WithDType;
 use fuel_core_types::{HostBuffer, DType, Layout, Result, Shape};
-use fuel_cuda_kernels as kernels;
 use baracuda_curand::RngKind;
 use baracuda_driver::{DeviceBuffer, Dim3, Function, LaunchBuilder};
 use float8::F8E4M3;
@@ -117,10 +116,6 @@ impl DeviceId {
 struct CudaRng(baracuda_curand::Generator);
 unsafe impl Send for CudaRng {}
 
-pub struct ModuleStore {
-    mdls: [Option<Arc<baracuda_driver::Module>>; kernels::ALL_IDS.len()],
-}
-
 /// cuBLAS handle wrapper that is `Sync` via an unsafe promise that the caller
 /// serialises concurrent use (per NVIDIA's per-thread handle contract).
 /// Fuel's graph executor serialises GPU work onto a single dispatch thread,
@@ -147,7 +142,6 @@ pub struct CudaDevice {
     seed_value: Arc<RwLock<u64>>,
     curand: Arc<Mutex<CudaRng>>,
     pub(crate) blas: Arc<CublasHandle>,
-    modules: Arc<std::sync::RwLock<ModuleStore>>,
     custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<baracuda_driver::Module>>>>,
     stream: Arc<baracuda_driver::Stream>,
     context: Arc<baracuda_driver::Context>,
@@ -411,26 +405,6 @@ impl CudaDevice {
         })
     }
 
-    pub fn get_or_load_func(&self, fn_name: &str, mdl: &kernels::Module) -> Result<CudaFunc> {
-        let ms = self.modules.read().unwrap();
-        if let Some(mdl) = ms.mdls[mdl.index()].as_ref() {
-            let func = mdl.get_function(fn_name).w()?;
-            return Ok(CudaFunc {
-                func,
-                stream: self.stream.clone(),
-            });
-        }
-        drop(ms);
-        let mut ms = self.modules.write().unwrap();
-        let cuda_module = Arc::new(baracuda_driver::Module::load_ptx(&self.context, mdl.ptx()).w()?);
-        ms.mdls[mdl.index()] = Some(cuda_module.clone());
-        let func = cuda_module.get_function(fn_name).w()?;
-        Ok(CudaFunc {
-            func,
-            stream: self.stream.clone(),
-        })
-    }
-
     pub fn cublas_handle(&self) -> Arc<CublasHandle> {
         self.blas.clone()
     }
@@ -477,16 +451,12 @@ impl CudaDevice {
         blas.set_stream(&stream).w()?;
         let mut curand = baracuda_curand::Generator::new(RngKind::Default).w()?;
         curand.seed(299792458).w()?;
-        let module_store = ModuleStore {
-            mdls: [const { None }; kernels::ALL_IDS.len()],
-        };
         Ok(Self {
             id: DeviceId::new(),
             context: Arc::new(context),
             stream: Arc::new(stream),
             blas: Arc::new(CublasHandle(blas)),
             curand: Arc::new(Mutex::new(CudaRng(curand))),
-            modules: Arc::new(std::sync::RwLock::new(module_store)),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
             seed_value: Arc::new(RwLock::new(299792458)),
         })

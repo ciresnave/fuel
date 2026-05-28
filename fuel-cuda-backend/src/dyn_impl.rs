@@ -25,7 +25,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use crate::utils::{Map1, Map2};
-use crate::{CudaDevice, CudaStorage, SlicePtrOrNull, WrapErr, kernel_name, kernels};
+use crate::{CudaDevice, CudaStorage, SlicePtrOrNull, WrapErr, kernel_name};
 
 // ---------------------------------------------------------------------------
 // Backward-compat type aliases — downstream code can keep using these names.
