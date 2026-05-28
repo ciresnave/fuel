@@ -5,20 +5,10 @@ mod ptx {
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Id {
-    Fill,
-    Indexing,
     Reduce,
-    Sort,
-    Ternary,
 }
 
-pub const ALL_IDS: [Id; 5] = [
-    Id::Fill,
-    Id::Indexing,
-    Id::Reduce,
-    Id::Sort,
-    Id::Ternary,
-];
+pub const ALL_IDS: [Id; 1] = [Id::Reduce];
 
 pub struct Module {
     index: usize,
@@ -55,8 +45,4 @@ macro_rules! mdl {
     };
 }
 
-mdl!(FILL, Fill);
-mdl!(INDEXING, Indexing);
 mdl!(REDUCE, Reduce);
-mdl!(SORT, Sort);
-mdl!(TERNARY, Ternary);
