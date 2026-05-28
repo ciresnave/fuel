@@ -3109,99 +3109,94 @@ impl CudaStorage {
         )
     }
 
-    /// Apply RoPE rotation to the input, using the fused CUDA kernel
-    /// from `reduce.cu`. Mirrors VulkanBackend::rope's semantics:
-    /// pairs `(i, i + head_dim/2)` within the last dim, rotates via
-    /// the precomputed `cos`/`sin` tables.
+    /// Apply RoPE rotation via baracuda alpha.54's
+    /// `baracuda_kernels_rope_apply_<dt>_run` (Phase 6c.4 migration
+    /// from the PTX `rope_f32` REDUCE kernel). Mirrors Vulkan rope's
+    /// semantics: pairs `(i, i + head_dim/2)` within the last dim,
+    /// rotated by caller-supplied `cos`/`sin` tables.
     ///
     /// Layout: input of rank ≥ 2 with last two dims `[seq, head_dim]`;
-    /// `cos` and `sin` shape `[seq, head_dim/2]`. The input must be
-    /// contiguous (first-cut limitation; stride-aware path can come
-    /// later — the underlying kernel supports a single `stride_b`
-    /// for per-batch strided inputs).
-    ///
-    /// F32 only today (mirrors Vulkan's constraint).
+    /// `cos` and `sin` shape `[seq, head_dim/2]` always **F32**
+    /// (baracuda's ABI; f16/bf16 operands detour through f32 trig
+    /// internally). The input must be contiguous. F32/F64/F16/BF16
+    /// operand dtypes; cos+sin always F32.
     pub fn rope(
         &self,
         cos: &Self,
         sin: &Self,
         x_layout: &Layout,
     ) -> Result<Self> {
-        use crate::device::LaunchConfig;
-        if self.dtype() != DType::F32 || cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
-            return fuel_core_types::bail!("CudaStorage: rope requires f32 inputs");
+        use baracuda_kernels_sys as sys;
+        if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
+            return fuel_core_types::bail!(
+                "CudaStorage::rope: cos/sin tables must be F32 (baracuda ABI), got cos={:?} sin={:?}",
+                cos.dtype(), sin.dtype(),
+            );
         }
         let dims = x_layout.shape().dims();
         let rank = dims.len();
         if rank < 2 {
-            return fuel_core_types::bail!("CudaStorage: rope requires rank >= 2, got {dims:?}");
+            return fuel_core_types::bail!("CudaStorage::rope requires rank >= 2, got {dims:?}");
         }
         if !x_layout.is_contiguous() {
             return fuel_core_types::bail!(
-                "CudaStorage: rope first-cut requires contiguous x_layout"
+                "CudaStorage::rope first-cut requires contiguous x_layout"
             );
         }
         let seq = dims[rank - 2];
         let head_dim = dims[rank - 1];
         if head_dim % 2 != 0 {
             return fuel_core_types::bail!(
-                "CudaStorage: rope head_dim must be even, got {head_dim}"
+                "CudaStorage::rope head_dim must be even, got {head_dim}"
             );
         }
         let outer: usize = dims[..rank - 2].iter().product::<usize>().max(1);
-
-        // Map to the kernel's (bh, td, d) terms:
-        //   bh = outer (batch * heads)
-        //   td = seq * head_dim (contiguous per-batch element count)
-        //   d  = head_dim (pair (i, i+d/2) within each head_dim block)
-        // Total threads = bh * td / 2 = outer * seq * head_dim / 2.
-        let bh = outer as u32;
-        let td = (seq * head_dim) as u32;
-        let d = head_dim as u32;
-        let stride_b: u32 = 0; // contiguous → single shared cos/sin table
-
-        let total_threads = (bh as u64) * (td as u64) / 2;
+        let bh = outer as i32;
+        let td = (seq * head_dim) as i32;
+        let d = head_dim as i32;
+        let stride_b: i32 = 0; // contig → single shared cos/sin table
+        let numel = outer * seq * head_dim;
         let device = self.device().clone();
 
-        let (x_src, out) = match &self.slice {
-            CudaStorageSlice::F32(s) => {
-                let src = s.slice(x_layout.start_offset()..s.len());
-                let out = unsafe { device.alloc::<f32>(outer * seq * head_dim)? };
-                (src, out)
-            }
-            _ => return fuel_core_types::bail!(
-                "CudaStorage::rope: expected F32, got {:?}", self.dtype()),
-        };
         let cos_src = match &cos.slice {
             CudaStorageSlice::F32(s) => s.slice(0..s.len()),
-            _ => return fuel_core_types::bail!("CudaStorage::rope: cos must be F32"),
+            _ => unreachable!("validated above"),
         };
         let sin_src = match &sin.slice {
             CudaStorageSlice::F32(s) => s.slice(0..s.len()),
-            _ => return fuel_core_types::bail!("CudaStorage::rope: sin must be F32"),
+            _ => unreachable!("validated above"),
         };
-        let mut out = out;
+        let cos_ptr = cos_src.as_raw().0 as *const std::ffi::c_void;
+        let sin_ptr = sin_src.as_raw().0 as *const std::ffi::c_void;
+        let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
-        let func = device.get_or_load_func("rope_f32", &kernels::REDUCE)?;
-        let block_size = 256u32;
-        let grid = ((total_threads + block_size as u64 - 1) / block_size as u64) as u32;
-        let cfg = LaunchConfig {
-            grid_dim: (grid.max(1), 1, 1),
-            block_dim: (block_size, 1, 1),
-            shared_mem_bytes: 0,
-        };
-        let mut builder = func.builder();
-        builder.arg(&x_src);
-        builder.arg(&cos_src);
-        builder.arg(&sin_src);
-        builder.arg(&mut out);
-        crate::builder_arg!(builder, bh);
-        crate::builder_arg!(builder, td);
-        crate::builder_arg!(builder, d);
-        crate::builder_arg!(builder, stride_b);
-        unsafe { builder.launch(cfg) }.w()?;
-
-        Ok(Self { slice: CudaStorageSlice::F32(out), device })
+        macro_rules! launch {
+            ($variant:ident, $ty:ty, $run:ident, $label:expr) => {{
+                if let CudaStorageSlice::$variant(s) = &self.slice {
+                    let src = s.slice(x_layout.start_offset()..s.len());
+                    let out = unsafe { device.alloc::<$ty>(numel)? };
+                    let status = unsafe {
+                        sys::$run(
+                            bh, td, d, stride_b,
+                            src.as_raw().0 as *const std::ffi::c_void,
+                            cos_ptr, sin_ptr,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(), 0, stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                    device.synchronize()?;
+                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                }
+            }};
+        }
+        launch!(F32, f32, baracuda_kernels_rope_apply_f32_run, "rope_apply_f32");
+        launch!(F64, f64, baracuda_kernels_rope_apply_f64_run, "rope_apply_f64");
+        launch!(F16, half::f16, baracuda_kernels_rope_apply_f16_run, "rope_apply_f16");
+        launch!(BF16, half::bf16, baracuda_kernels_rope_apply_bf16_run, "rope_apply_bf16");
+        fuel_core_types::bail!(
+            "CudaStorage::rope: unsupported operand dtype {:?}", self.dtype()
+        )
     }
 
     pub fn to_cpu_storage(&self) -> Result<HostBuffer> {
