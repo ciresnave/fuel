@@ -215,7 +215,7 @@ impl GraphBackend for CudaBackend {
         a.matmul_q4_km(w_q_bytes, k, n, a_layout)
     }
 
-    #[cfg(any(feature = "flash-attn", feature = "flash-attn-v3"))]
+    #[cfg(feature = "flash-attn")]
     #[allow(clippy::too_many_arguments)]
     fn flash_attn(
         &self,
@@ -233,45 +233,10 @@ impl GraphBackend for CudaBackend {
         window_size_right: Option<usize>,
         softcap: Option<f32>,
     ) -> fuel_core_types::Result<Self::Storage> {
-        // Dispatch policy when both features are enabled:
-        // try v3 (Hopper) first; if it errors (wrong head_dim,
-        // softcap requested, dtype mismatch), fall back to v2 (sm80).
-        // If both fail, return Err so the executor falls back to
-        // the reference attention_naive on CPU.
-        //
-        // A binary that wants explicit control should enable only
-        // the feature matching its target architecture.
-        #[cfg(feature = "flash-attn-v3")]
-        {
-            let r = crate::flash_attn_v3::launch(
-                q, k, v, alibi_slopes,
-                q_layout, k_layout, v_layout,
-                softmax_scale, causal, window_size_left, window_size_right, softcap,
-            );
-            #[cfg(not(feature = "flash-attn"))]
-            { return r; }
-            #[cfg(feature = "flash-attn")]
-            {
-                if r.is_ok() { return r; }
-                // fall through to v2
-            }
-        }
-        #[cfg(feature = "flash-attn")]
-        {
-            return crate::flash_attn::launch(
-                q, k, v, alibi_slopes,
-                q_layout, k_layout, v_layout,
-                softmax_scale, causal, window_size_left, window_size_right, softcap,
-            );
-        }
-        #[cfg(not(any(feature = "flash-attn", feature = "flash-attn-v3")))]
-        {
-            // Unreachable — the outer cfg-gate guarantees at least one
-            // feature is on, but the type system can't see that.
-            let _ = (q, k, v, alibi_slopes, q_layout, k_layout, v_layout,
-                     softmax_scale, causal, window_size_left,
-                     window_size_right, softcap);
-            fuel_core_types::bail!("flash_attn dispatch reached unreachable arm");
-        }
+        crate::flash_attn::launch(
+            q, k, v, alibi_slopes,
+            q_layout, k_layout, v_layout,
+            softmax_scale, causal, window_size_left, window_size_right, softcap,
+        )
     }
 }
