@@ -421,6 +421,138 @@ impl Map1 for Powf {
 }
 
 struct FastReduce<'a>(&'a [usize], ReduceOp);
+
+// baracuda alpha.54 `reduce_<op>_to_<dt>_run` FFI shape — broadcast-reverse
+// reduction (multi-axis natural; output_shape has reduced dims set to 1).
+type ReduceToRun = unsafe extern "C" fn(
+    src: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    input_shape: *const i32,
+    input_stride: *const i64,
+    rank_in: i32,
+    output_shape: *const i32,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+// baracuda alpha.54 single-axis reduce FFI shape.
+type ReduceAxisRun = unsafe extern "C" fn(
+    output_numel: i64,
+    rank: i32,
+    output_shape: *const i32,
+    stride_x: *const i64,
+    stride_y: *const i64,
+    reduce_axis: i32,
+    reduce_extent: i32,
+    reduce_stride_x: i64,
+    x: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+fn pick_reduce_to(dt: DType, op: ReduceOp) -> Option<ReduceToRun> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! arm {
+        ($stem:ident) => {
+            ::paste::paste! {
+                match dt {
+                    DType::F32  => Some(sys::[<baracuda_kernels_reduce_ $stem _to_f32_run>]  as ReduceToRun),
+                    DType::F64  => Some(sys::[<baracuda_kernels_reduce_ $stem _to_f64_run>]  as ReduceToRun),
+                    DType::F16  => Some(sys::[<baracuda_kernels_reduce_ $stem _to_f16_run>]  as ReduceToRun),
+                    DType::BF16 => Some(sys::[<baracuda_kernels_reduce_ $stem _to_bf16_run>] as ReduceToRun),
+                    _ => None,
+                }
+            }
+        };
+    }
+    match op {
+        ReduceOp::Sum => arm!(sum),
+        ReduceOp::Max => arm!(max),
+        ReduceOp::Min => arm!(min),
+        _ => None, // ArgMin/ArgMax single-axis only; no Prod in FastReduce
+    }
+}
+
+fn pick_reduce_axis(dt: DType, op: ReduceOp) -> Option<ReduceAxisRun> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! arm {
+        ($stem:ident) => {
+            ::paste::paste! {
+                match dt {
+                    DType::F32  => Some(sys::[<baracuda_kernels_reduce_ $stem _f32_run>]  as ReduceAxisRun),
+                    DType::F64  => Some(sys::[<baracuda_kernels_reduce_ $stem _f64_run>]  as ReduceAxisRun),
+                    DType::F16  => Some(sys::[<baracuda_kernels_reduce_ $stem _f16_run>]  as ReduceAxisRun),
+                    DType::BF16 => Some(sys::[<baracuda_kernels_reduce_ $stem _bf16_run>] as ReduceAxisRun),
+                    DType::U8   => Some(sys::[<baracuda_kernels_reduce_ $stem _u8_run>]   as ReduceAxisRun),
+                    DType::I8   => Some(sys::[<baracuda_kernels_reduce_ $stem _i8_run>]   as ReduceAxisRun),
+                    DType::U32  => Some(sys::[<baracuda_kernels_reduce_ $stem _u32_run>]  as ReduceAxisRun),
+                    DType::I16  => Some(sys::[<baracuda_kernels_reduce_ $stem _i16_run>]  as ReduceAxisRun),
+                    DType::I32  => Some(sys::[<baracuda_kernels_reduce_ $stem _i32_run>]  as ReduceAxisRun),
+                    DType::I64  => Some(sys::[<baracuda_kernels_reduce_ $stem _i64_run>]  as ReduceAxisRun),
+                    _ => None,
+                }
+            }
+        };
+    }
+    match op {
+        ReduceOp::Sum => arm!(sum),
+        ReduceOp::Max => arm!(max),
+        ReduceOp::Min => arm!(min),
+        _ => None,
+    }
+}
+
+// ArgMin/ArgMax — u32 output for fp inputs; i32 output for integer
+// inputs (baracuda doesn't ship u32-out integer variants).
+fn pick_arg_reduce_u32(dt: DType, op: ReduceOp) -> Option<ReduceAxisRun> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! arm {
+        ($stem:ident) => {
+            ::paste::paste! {
+                match dt {
+                    DType::F32  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _f32_u32_run>]  as ReduceAxisRun),
+                    DType::F64  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _f64_u32_run>]  as ReduceAxisRun),
+                    DType::F16  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _f16_u32_run>]  as ReduceAxisRun),
+                    DType::BF16 => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _bf16_u32_run>] as ReduceAxisRun),
+                    _ => None,
+                }
+            }
+        };
+    }
+    match op {
+        ReduceOp::ArgMin => arm!(argmin),
+        ReduceOp::ArgMax => arm!(argmax),
+        _ => None,
+    }
+}
+
+fn pick_arg_reduce_i32(dt: DType, op: ReduceOp) -> Option<ReduceAxisRun> {
+    use baracuda_kernels_sys as sys;
+    macro_rules! arm {
+        ($stem:ident) => {
+            ::paste::paste! {
+                match dt {
+                    DType::U8   => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _u8_i32_run>]  as ReduceAxisRun),
+                    DType::I8   => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _i8_i32_run>]  as ReduceAxisRun),
+                    DType::U32  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _u32_i32_run>] as ReduceAxisRun),
+                    DType::I16  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _i16_i32_run>] as ReduceAxisRun),
+                    DType::I32  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _i32_i32_run>] as ReduceAxisRun),
+                    DType::I64  => Some(sys::[<baracuda_kernels_arg_reduce_ $stem _i64_i32_run>] as ReduceAxisRun),
+                    _ => None,
+                }
+            }
+        };
+    }
+    match op {
+        ReduceOp::ArgMin => arm!(argmin),
+        ReduceOp::ArgMax => arm!(argmax),
+        _ => None,
+    }
+}
+
 impl Map1Any for FastReduce<'_> {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits, W: Fn(CudaSlice<T>) -> S>(
         &self,
@@ -429,77 +561,229 @@ impl Map1Any for FastReduce<'_> {
         layout: &Layout,
         wrap: W,
     ) -> Result<S> {
-        let src_stride = layout.stride_unsigned();
-        let src_dims = layout.shape().dims();
-        let src_el: usize = src_dims.iter().product();
-        // Source dims and strides with the sum dims at the end.
-        let mut dims: Vec<usize> = vec![];
-        let mut stride: Vec<usize> = vec![];
-        let mut dst_el: usize = 1;
-        for (dim_idx, &d) in src_dims.iter().enumerate() {
-            if !self.0.contains(&dim_idx) {
-                dst_el *= d;
-                dims.push(d);
-                stride.push(src_stride[dim_idx]);
+        let dt = T::DTYPE;
+        let in_dims = layout.shape().dims();
+        let rank = in_dims.len();
+        // Output dims: input dims with reduced axes set to 1.
+        let mut out_dims = in_dims.to_vec();
+        for &d in self.0 {
+            out_dims[d] = 1;
+        }
+        let dst_el: usize = out_dims.iter().product();
+        let check_empty = matches!(
+            self.1,
+            ReduceOp::Min | ReduceOp::Max | ReduceOp::ArgMin | ReduceOp::ArgMax
+        );
+        if check_empty && layout.shape().elem_count() == 0 {
+            Err(crate::Error::EmptyTensor { op: "reduce" }.bt())?;
+        }
+        let in_shape_i32: Vec<i32> = in_dims.iter().map(|&d| d as i32).collect();
+        let in_stride_i64: Vec<i64> = layout.stride().iter().map(|&s| s as i64).collect();
+        let out_shape_i32: Vec<i32> = out_dims.iter().map(|&d| d as i32).collect();
+        let src_slice = src.slice(layout.start_offset()..src.len());
+        let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
+
+        match self.1 {
+            ReduceOp::Sum | ReduceOp::Min | ReduceOp::Max => {
+                // FP path: single multi-axis call via `reduce_<op>_to`.
+                if let Some(run) = pick_reduce_to(dt, self.1) {
+                    let out = unsafe { dev.alloc::<T>(dst_el)? };
+                    let status = unsafe {
+                        run(
+                            src_slice.as_raw().0 as *const std::ffi::c_void,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            in_shape_i32.as_ptr(),
+                            in_stride_i64.as_ptr(),
+                            rank as i32,
+                            out_shape_i32.as_ptr(),
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, "reduce_to")?;
+                    dev.synchronize()?;
+                    return Ok(wrap(out));
+                }
+                // Integer path: per-axis fan-out via single-axis
+                // `reduce_<op>_<int_dt>_run` (baracuda has no `_to`
+                // variant for int dtypes). One intermediate buffer
+                // per reduction step.
+                let run = pick_reduce_axis(dt, self.1).ok_or_else(|| {
+                    crate::Error::Msg(format!(
+                        "FastReduce: no baracuda reduce_{:?}_<{:?}>_run",
+                        self.1, dt
+                    ))
+                    .bt()
+                })?;
+                fan_out_reduce::<T>(
+                    src_slice.as_raw().0 as *const std::ffi::c_void,
+                    layout,
+                    self.0,
+                    in_dims,
+                    run,
+                    dev,
+                    stream,
+                )
+                .map(wrap)
+            }
+            ReduceOp::ArgMin | ReduceOp::ArgMax => {
+                // Single-axis only.
+                if self.0.len() != 1 {
+                    return Err(crate::Error::Msg(format!(
+                        "FastReduce: ArgMin/ArgMax requires single-axis, got {:?}",
+                        self.0
+                    ))
+                    .bt());
+                }
+                let axis = self.0[0];
+                let extent = in_dims[axis] as i32;
+                let reduce_stride_x = in_stride_i64[axis];
+                // stride_y: contig over out_dims.
+                let stride_y: Vec<i64> = {
+                    let mut s = vec![1_i64; rank];
+                    for d in (0..rank.saturating_sub(1)).rev() {
+                        s[d] = s[d + 1] * out_dims[d + 1] as i64;
+                    }
+                    s
+                };
+                if let Some(run) = pick_arg_reduce_u32(dt, self.1) {
+                    let out = unsafe { dev.alloc::<u32>(dst_el)? };
+                    let status = unsafe {
+                        run(
+                            dst_el as i64,
+                            rank as i32,
+                            out_shape_i32.as_ptr(),
+                            in_stride_i64.as_ptr(),
+                            stride_y.as_ptr(),
+                            axis as i32,
+                            extent,
+                            reduce_stride_x,
+                            src_slice.as_raw().0 as *const std::ffi::c_void,
+                            out.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, "arg_reduce")?;
+                    dev.synchronize()?;
+                    return Ok(S::U32(out));
+                }
+                // Integer input: u32-output not available; use i32-output
+                // and re-interpret bit-pattern (indices in [0, extent) are
+                // always non-negative + fit u32 since extent fits i32).
+                if let Some(run) = pick_arg_reduce_i32(dt, self.1) {
+                    let out_u32 = unsafe { dev.alloc::<u32>(dst_el)? };
+                    let status = unsafe {
+                        run(
+                            dst_el as i64,
+                            rank as i32,
+                            out_shape_i32.as_ptr(),
+                            in_stride_i64.as_ptr(),
+                            stride_y.as_ptr(),
+                            axis as i32,
+                            extent,
+                            reduce_stride_x,
+                            src_slice.as_raw().0 as *const std::ffi::c_void,
+                            out_u32.as_raw().0 as *mut std::ffi::c_void,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, "arg_reduce_i32")?;
+                    dev.synchronize()?;
+                    return Ok(S::U32(out_u32));
+                }
+                Err(crate::Error::Msg(format!(
+                    "FastReduce: ArgMin/ArgMax not implemented for dtype {:?}",
+                    dt
+                ))
+                .bt())
             }
         }
-        for &dim_idx in self.0.iter() {
-            dims.push(src_dims[dim_idx]);
-            stride.push(src_stride[dim_idx]);
-        }
-        let el_to_sum_per_block = src_el / dst_el;
-        // The reduction loop requires the shared array to be properly initialized and for
-        // this we want the number of threads to be a power of two.
-        let block_dim = usize::min(1024, el_to_sum_per_block).next_power_of_two();
-        let cfg = LaunchConfig {
-            // TODO: Maybe use grid_y if the output is too large?
-            // TODO: Specialized implementation when reducing on no or all dimensions or when
-            // reducing only aggregate a small number of elements together.
-            grid_dim: (dst_el as u32, 1, 1),
-            block_dim: (block_dim as u32, 1, 1),
-            shared_mem_bytes: 0,
-        };
-        let ds = dev.clone_htod(&[dims.as_slice(), stride.as_slice()].concat())?;
-        let src = &src.slice(layout.start_offset()..src.len());
-        let (name, check_empty, return_index) = match self.1 {
-            ReduceOp::Sum => ("fast_sum", false, false),
-            ReduceOp::Min => ("fast_min", true, false),
-            ReduceOp::Max => ("fast_max", true, false),
-            ReduceOp::ArgMin => ("fast_argmin", true, true),
-            ReduceOp::ArgMax => ("fast_argmax", true, true),
-        };
-        if check_empty && layout.shape().elem_count() == 0 {
-            Err(crate::Error::EmptyTensor { op: "reduce" }.bt())?
-        }
-        let func = dev.get_or_load_func(&kernel_name::<T>(name), &kernels::REDUCE)?;
-        if return_index {
-            // SAFETY: filled in by the follow up kernel.
-            let out = unsafe { dev.alloc::<u32>(dst_el)? };
-            let mut builder = func.builder();
-            barg!(builder, src_el);
-            barg!(builder, el_to_sum_per_block);
-            barg!(builder, src_dims.len());
-            builder.arg(&ds);
-            builder.arg(src);
-            builder.arg(&out);
-            // SAFETY: ffi.
-            unsafe { builder.launch(cfg) }.w()?;
-            Ok(S::U32(out))
-        } else {
-            // SAFETY: filled in by the follow up kernel.
-            let out = unsafe { dev.alloc::<T>(dst_el)? };
-            let mut builder = func.builder();
-            barg!(builder, src_el);
-            barg!(builder, el_to_sum_per_block);
-            barg!(builder, src_dims.len());
-            builder.arg(&ds);
-            builder.arg(src);
-            builder.arg(&out);
-            // SAFETY: ffi.
-            unsafe { builder.launch(cfg) }.w()?;
-            Ok(wrap(out))
-        }
     }
+}
+
+/// Per-axis fan-out for integer-dtype Sum/Min/Max reductions
+/// (baracuda has no `reduce_<op>_to` for integers). Reduces axes
+/// one at a time, smallest-axis-index first; intermediate buffer
+/// reused after the first pass.
+fn fan_out_reduce<T: DeviceRepr + WithDType + ValidAsZeroBits>(
+    src_ptr: *const std::ffi::c_void,
+    initial_layout: &Layout,
+    reduce_dims: &[usize],
+    in_dims: &[usize],
+    run: ReduceAxisRun,
+    dev: &CudaDevice,
+    stream: *mut std::ffi::c_void,
+) -> Result<CudaSlice<T>> {
+    // Work in normalized contig shape — strides go to row-major as
+    // each pass produces a fresh contig output.
+    let rank = in_dims.len();
+    let mut cur_dims: Vec<usize> = in_dims.to_vec();
+    let mut cur_stride: Vec<i64> = initial_layout.stride().iter().map(|&s| s as i64).collect();
+    // Sort reduce_dims ascending so axis indices stay valid as we
+    // collapse dims to size 1 in-place (we keep rank == in_dims.len()
+    // and use `output_shape` with reduce-axis = 1 each pass).
+    let mut axes: Vec<usize> = reduce_dims.to_vec();
+    axes.sort_unstable();
+
+    // First pass reads from src_contig_view (using initial_layout stride).
+    // Subsequent passes read from a fresh contig buffer (stride = row-major).
+    let mut cur_buf: Option<CudaSlice<T>> = None;
+
+    for (i, &axis) in axes.iter().enumerate() {
+        let extent = cur_dims[axis] as i32;
+        let reduce_stride_x = cur_stride[axis];
+        // Output shape for this pass: reduce-axis collapsed to 1.
+        let mut next_dims = cur_dims.clone();
+        next_dims[axis] = 1;
+        let next_shape_i32: Vec<i32> = next_dims.iter().map(|&d| d as i32).collect();
+        // Output stride: contig over next_dims.
+        let next_stride: Vec<i64> = {
+            let mut s = vec![1_i64; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                s[d] = s[d + 1] * next_dims[d + 1] as i64;
+            }
+            s
+        };
+        let dst_el: usize = next_dims.iter().product();
+        let stride_x_this_pass: Vec<i64> = cur_stride.clone();
+        let out = unsafe { dev.alloc::<T>(dst_el)? };
+        let x_ptr: *const std::ffi::c_void = if i == 0 {
+            src_ptr
+        } else {
+            cur_buf.as_ref().unwrap().as_raw().0 as *const std::ffi::c_void
+        };
+        let status = unsafe {
+            run(
+                dst_el as i64,
+                rank as i32,
+                next_shape_i32.as_ptr(),
+                stride_x_this_pass.as_ptr(),
+                next_stride.as_ptr(),
+                axis as i32,
+                extent,
+                reduce_stride_x,
+                x_ptr,
+                out.as_raw().0 as *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        };
+        crate::baracuda::status::check(status, "reduce_axis_int")?;
+        dev.synchronize()?;
+        cur_dims = next_dims;
+        cur_stride = next_stride;
+        cur_buf = Some(out);
+    }
+
+    cur_buf.ok_or_else(|| {
+        crate::Error::Msg("FastReduce: empty reduce-dim list".to_string()).bt()
+    })
 }
 
 // Generic unary FFI types — every baracuda `unary_<op>_<dtype>_run` /
