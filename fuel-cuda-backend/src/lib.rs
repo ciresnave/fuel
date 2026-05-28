@@ -74,7 +74,6 @@ pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 
 // Re-export the kernel PTX bundle so downstream code (e.g. fuel-nn's
 // launch-site helpers) can reach it via this crate.
-pub use fuel_cuda_kernels as kernels;
 
 // --- graph executor integration --------------------------------------------
 mod backend;

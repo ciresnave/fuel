@@ -28,7 +28,6 @@ fuel-reference-backend = { workspace = true }
 hf-hub = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-fuel-cuda-kernels = { workspace = true, optional = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-vulkan-backend = { workspace = true, optional = true }
 fuel-metal-backend = { workspace = true, optional = true }
@@ -80,7 +79,6 @@ default = []
 # runtime; cargo build does not require the CUDA toolkit installed.
 # Use: cargo build --features cuda
 cuda = [
-    "dep:fuel-cuda-kernels",
     "dep:fuel-cuda-backend",
     "dep:baracuda-types",
     "dep:baracuda-core",

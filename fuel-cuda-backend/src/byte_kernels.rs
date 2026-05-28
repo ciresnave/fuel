@@ -20,7 +20,6 @@
 use std::sync::Arc;
 
 use fuel_core_types::{DType, Layout, Result};
-use fuel_cuda_kernels as kernels;
 
 use crate::builder_arg as barg;
 use crate::byte_storage::CudaStorageBytes;
