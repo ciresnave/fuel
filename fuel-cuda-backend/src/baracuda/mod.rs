@@ -79,3 +79,9 @@ pub mod quant_w4a16;
 /// path requires; designed to be wired into
 /// `fuel-transformers::generation::Sampling` as the GPU fast path.
 pub mod sampling;
+/// Fused Linear Cross-Entropy primitives (Liger-Kernel algorithm
+/// port). Five families: per_row (in-place softmax → grad + per-row
+/// loss), per_row_cast (None reduction), scalar_finalize (Mean/Sum
+/// reduction), inplace_scale (gradient renormalization),
+/// count_non_ignore (Mean denominator).
+pub mod loss_flce;
