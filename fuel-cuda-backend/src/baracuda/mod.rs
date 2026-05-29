@@ -85,3 +85,8 @@ pub mod sampling;
 /// reduction), inplace_scale (gradient renormalization),
 /// count_non_ignore (Mean denominator).
 pub mod loss_flce;
+/// Mamba / Mamba-2 SSM primitives (causal_conv1d FW+BW,
+/// ssd_chunk_scan FW, selective_scan FW). Backward wrappers for
+/// the two scan families ship alongside the Op-surface integration
+/// session — they share signatures closely with the autograd nodes.
+pub mod mamba;
