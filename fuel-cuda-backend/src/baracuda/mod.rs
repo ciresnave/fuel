@@ -67,3 +67,10 @@ pub mod softmax;
 pub mod status;
 pub mod triangular;
 pub mod write_slice;
+/// 4-bit weight-only quant GEMMs: Marlin (symmetric, GPTQ-derived),
+/// AWQ (asymmetric, HF *-AWQ checkpoints), NF4 (bitsandbytes
+/// NormalFloat-4). The underlying baracuda symbols are gated behind
+/// their respective baracuda cargo features (`marlin`, `awq`,
+/// `bnb_nf4`); Fuel enables all three in workspace Cargo.toml so
+/// the symbols are always linkable here.
+pub mod quant_w4a16;

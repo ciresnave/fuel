@@ -180,7 +180,34 @@ baracuda-cutlass       = { version = "0.0.1-alpha.58" }
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
 baracuda-kernels-types = { version = "0.0.1-alpha.58" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.58", features = ["cudnn", "sm89"] }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.58", features = [
+    "cudnn",
+    "sm89",
+    # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
+    "awq",
+    "marlin",
+    # Phase 53 bitsandbytes NF4 (NormalFloat 4-bit) dequant + GEMV.
+    "bnb_nf4",
+    # Phase 51 additive-mask SDPA + Phase 54 block-sparse + 2:4 sparsity
+    # + Phase 56 ring attention all share the elementwise / attention
+    # families that Fuel routes through baracuda — opt them in so the
+    # primitives are linkable even if Op-surface wiring lands later.
+    "xformers_blocksparse",
+    "xformers_sparse24",
+    "ring_attention",
+    # Phase 47 fused linear cross-entropy (loss_flce_*) is NOT cargo-
+    # gated; the symbols are always built. Same for sdpa_arbmask.
+    # Phase 50 Mamba SSM (causal_conv1d + selective_scan + ssd_chunk_scan).
+    "mamba",
+    # Phase 46 FlashInfer (paged KV append/decode + sampling +
+    # cascade LSE merge) — Fuel's inference path uses this.
+    "flashinfer",
+    # Phase 43 HyperConnection (mhc_layer_static) is exotic; left off
+    # by default. Add "mhc" when a Fuel layer needs it.
+    # Phase 42 FA2 deferred until baracuda Tier 2+3 lands (GQA + non-128
+    # head_dim + ALiBi + sliding-window + softcap support). Leave "fa2"
+    # off until then.
+] }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 hf-hub = "0.5.0"
