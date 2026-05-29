@@ -83,6 +83,30 @@ type FlashSdpaRun = unsafe extern "C" fn(
     stream: *mut std::ffi::c_void,
 ) -> i32;
 
+/// SDPA with arbitrary additive mask (Phase 51). Same online-softmax
+/// algorithm as `flash_sdpa` with an additional `mask: f32[B, H, Q, K]`
+/// applied to `S = Q·K^T·scale` before row max/softmax. Mask is **always
+/// f32** regardless of operand dtype (`mask: -INFINITY` cells suppress).
+type SdpaArbmaskRun = unsafe extern "C" fn(
+    batch: i32,
+    heads: i32,
+    q_len: i32,
+    k_len: i32,
+    d_k: i32,
+    d_v: i32,
+    scale: f32,
+    is_causal: i32,
+    q: *const std::ffi::c_void,
+    k: *const std::ffi::c_void,
+    v: *const std::ffi::c_void,
+    mask: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    lse: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
 /// RoPE driver mapping Fuel's `(outer_count, seq, head_dim)` to
 /// baracuda's `(batch, heads, seq, head_dim)`. `outer_count`
 /// = `batch * heads`; we collapse all outer dims into `heads` and
@@ -359,3 +383,114 @@ flash_sdpa_kernel!(flash_sdpa_f32, f32, 4, "flash_sdpa_f32");
 flash_sdpa_kernel!(flash_sdpa_f16, f16, 2, "flash_sdpa_f16");
 flash_sdpa_kernel!(flash_sdpa_bf16, bf16, 2, "flash_sdpa_bf16");
 flash_sdpa_kernel!(flash_sdpa_f64, f64, 8, "flash_sdpa_f64");
+
+/// Driver for `sdpa_<dt>_arbmask_run` (Phase 51 additive-mask SDPA).
+/// Same shape as `flash_sdpa_run` plus a `mask` byte view shaped
+/// `[B, H, q_len, k_len]` in F32 regardless of operand dtype.
+#[allow(clippy::too_many_arguments)]
+fn sdpa_arbmask_run(
+    q: &CudaStorageBytes,
+    k: &CudaStorageBytes,
+    v: &CudaStorageBytes,
+    mask: &CudaStorageBytes,
+    batch: usize,
+    heads: usize,
+    q_len: usize,
+    k_len: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f32,
+    is_causal: bool,
+    kernel: SdpaArbmaskRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    let device = q.device().clone();
+    let numel = batch * heads * q_len * d_v;
+    let out_bytes = numel * dtype_size_bytes;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let lse_bytes = batch * heads * q_len * std::mem::size_of::<f32>();
+    let lse_buf = device.alloc_zeros::<u8>(lse_bytes)?;
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+    let q_ptr = q.buffer().as_raw().0 as *const std::ffi::c_void;
+    let k_ptr = k.buffer().as_raw().0 as *const std::ffi::c_void;
+    let v_ptr = v.buffer().as_raw().0 as *const std::ffi::c_void;
+    let mask_ptr = mask.buffer().as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+    let lse_ptr = lse_buf.as_raw().0 as *mut std::ffi::c_void;
+
+    let i32_or = |dim_index: usize, dim_value: usize| -> Result<i32> {
+        i32::try_from(dim_value).map_err(|_| {
+            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                op: op_label,
+                dim_index,
+                dim_value,
+            })
+        })
+    };
+
+    let status = unsafe {
+        kernel(
+            i32_or(0, batch)?,
+            i32_or(1, heads)?,
+            i32_or(2, q_len)?,
+            i32_or(3, k_len)?,
+            i32_or(4, d_k)?,
+            i32_or(5, d_v)?,
+            scale,
+            if is_causal { 1 } else { 0 },
+            q_ptr, k_ptr, v_ptr, mask_ptr, y_ptr, lse_ptr,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    drop(lse_buf);
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
+}
+
+macro_rules! sdpa_arbmask_kernel {
+    ($name:ident, $dtype_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda `sdpa_", stringify!($dtype_stem), "_arbmask` kernel.")]
+            #[allow(clippy::too_many_arguments)]
+            pub fn $name(
+                q: &CudaStorageBytes,
+                k: &CudaStorageBytes,
+                v: &CudaStorageBytes,
+                mask: &CudaStorageBytes,
+                batch: usize,
+                heads: usize,
+                q_len: usize,
+                k_len: usize,
+                d_k: usize,
+                d_v: usize,
+                scale: f32,
+                is_causal: bool,
+            ) -> Result<CudaStorageBytes> {
+                sdpa_arbmask_run(
+                    q, k, v, mask, batch, heads, q_len, k_len, d_k, d_v, scale, is_causal,
+                    sys::[<baracuda_kernels_sdpa_ $dtype_stem _arbmask_run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+sdpa_arbmask_kernel!(sdpa_arbmask_f32, f32, 4, "sdpa_arbmask_f32");
+sdpa_arbmask_kernel!(sdpa_arbmask_f16, f16, 2, "sdpa_arbmask_f16");
+sdpa_arbmask_kernel!(sdpa_arbmask_bf16, bf16, 2, "sdpa_arbmask_bf16");
+sdpa_arbmask_kernel!(sdpa_arbmask_f64, f64, 8, "sdpa_arbmask_f64");
