@@ -74,3 +74,8 @@ pub mod write_slice;
 /// `bnb_nf4`); Fuel enables all three in workspace Cargo.toml so
 /// the symbols are always linkable here.
 pub mod quant_w4a16;
+/// Sort-free on-device sampling kernels (FlashInfer cherry-pick).
+/// Avoids the D2H per token that the CPU-side `LogitsProcessor`
+/// path requires; designed to be wired into
+/// `fuel-transformers::generation::Sampling` as the GPU fast path.
+pub mod sampling;
