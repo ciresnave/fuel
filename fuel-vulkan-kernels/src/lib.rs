@@ -88,6 +88,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("dequant_q4_km",             include_bytes!("../spv/dequant_q4_km.spv")),
     ("dequant_q8_0",              include_bytes!("../spv/dequant_q8_0.spv")),
     ("index_select",              include_bytes!("../spv/index_select.spv")),
+    ("index_select_f16",          include_bytes!("../spv/index_select_f16.spv")),
+    ("index_select_bf16",         include_bytes!("../spv/index_select_bf16.spv")),
+    ("index_select_f64",          include_bytes!("../spv/index_select_f64.spv")),
     ("matmul_q4_0_tiled",         include_bytes!("../spv/matmul_q4_0_tiled.spv")),
     ("qmatvec_q4_0",              include_bytes!("../spv/qmatvec_q4_0.spv")),
     ("quantize_q8_0",             include_bytes!("../spv/quantize_q8_0.spv")),
@@ -296,8 +299,16 @@ pub const RMS_NORM_LAST_DIM_F64: &str = "rms_norm_last_dim_f64";
 pub const RMS_NORM_LAST_DIM_BACKWARD: &str = "rms_norm_last_dim_backward";
 /// Strided copy (permute / broadcast / concat / slice).
 pub const STRIDED_COPY: &str = "strided_copy";
-/// Row-wise gather along a specified dim (embedding lookup).
+/// Row-wise gather along a specified dim (embedding lookup, f32).
 pub const INDEX_SELECT: &str = "index_select";
+/// Index-select f16, pure data movement.
+pub const INDEX_SELECT_F16: &str = "index_select_f16";
+/// Index-select bf16, packed-u32 storage with pair-thread layout
+/// (each thread copies a full u32 = 2 bf16 lanes). Requires
+/// `inner % 2 == 0` — embedding-style workloads always satisfy this.
+pub const INDEX_SELECT_BF16: &str = "index_select_bf16";
+/// Index-select f64, pure data movement.
+pub const INDEX_SELECT_F64: &str = "index_select_f64";
 /// In-place scaled accumulate (`dst += src * scale`).
 pub const ADD_ASSIGN_SCALED: &str = "add_assign_scaled";
 /// Fused rotary position embedding.
