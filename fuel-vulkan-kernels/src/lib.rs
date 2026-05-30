@@ -142,6 +142,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("arg_reduce_any_dim_f64",    include_bytes!("../spv/arg_reduce_any_dim_f64.spv")),
     ("arg_reduce_any_dim_bf16",   include_bytes!("../spv/arg_reduce_any_dim_bf16.spv")),
     ("arg_reduce_any_dim_f16",    include_bytes!("../spv/arg_reduce_any_dim_f16.spv")),
+    ("index_add_f32",             include_bytes!("../spv/index_add_f32.spv")),
+    ("index_add_f64",             include_bytes!("../spv/index_add_f64.spv")),
+    ("index_add_bf16",            include_bytes!("../spv/index_add_bf16.spv")),
+    ("index_add_f16",             include_bytes!("../spv/index_add_f16.spv")),
     ("arg_reduce_last_dim_f16",   include_bytes!("../spv/arg_reduce_last_dim_f16.spv")),
     ("arg_reduce_last_dim_bf16",  include_bytes!("../spv/arg_reduce_last_dim_bf16.spv")),
     ("arg_reduce_last_dim_f64",   include_bytes!("../spv/arg_reduce_last_dim_f64.spv")),
@@ -425,6 +429,16 @@ pub const ARG_REDUCE_ANY_DIM_BF16: &str = "arg_reduce_any_dim_bf16";
 /// Argmax/Argmin along an arbitrary dim (f16). Same as bf16 path
 /// with `f16tof32` half-word conversion.
 pub const ARG_REDUCE_ANY_DIM_F16: &str = "arg_reduce_any_dim_f16";
+/// IndexAdd f32 via uint CAS atomic-add. Same CAS primitive as
+/// ScatterAdd; differs only in dst_off (rank-1 indices instead of
+/// rank-N).
+pub const INDEX_ADD_F32: &str = "index_add_f32";
+/// IndexAdd f64 via u64 CAS atomic double-add.
+pub const INDEX_ADD_F64: &str = "index_add_f64";
+/// IndexAdd bf16 via sub-word CAS atomic add.
+pub const INDEX_ADD_BF16: &str = "index_add_bf16";
+/// IndexAdd f16 via sub-word CAS atomic add (`f16tof32`/`f32tof16`).
+pub const INDEX_ADD_F16: &str = "index_add_f16";
 pub const ARG_REDUCE_LAST_DIM_F16: &str = "arg_reduce_last_dim_f16";
 pub const ARG_REDUCE_LAST_DIM_BF16: &str = "arg_reduce_last_dim_bf16";
 pub const ARG_REDUCE_LAST_DIM_F64: &str = "arg_reduce_last_dim_f64";
