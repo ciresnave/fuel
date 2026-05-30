@@ -77,6 +77,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("strided_copy_signed_b2",    include_bytes!("../spv/strided_copy_signed_b2.spv")),
     ("strided_copy_signed_b4",    include_bytes!("../spv/strided_copy_signed_b4.spv")),
     ("strided_copy_signed_b8",    include_bytes!("../spv/strided_copy_signed_b8.spv")),
+    ("pad_const_b1",              include_bytes!("../spv/pad_const_b1.spv")),
+    ("pad_const_b2",              include_bytes!("../spv/pad_const_b2.spv")),
+    ("pad_const_b4",              include_bytes!("../spv/pad_const_b4.spv")),
+    ("pad_const_b8",              include_bytes!("../spv/pad_const_b8.spv")),
     ("write_slice_b1",            include_bytes!("../spv/write_slice_b1.spv")),
     ("write_slice_b2",            include_bytes!("../spv/write_slice_b2.spv")),
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
@@ -196,6 +200,14 @@ pub const CAST_F8E4M3_TO_F16: &str = "cast_f8e4m3_to_f16";
 pub const CAST_BF16_TO_F8E4M3: &str = "cast_bf16_to_f8e4m3";
 /// Cast F8E4M3 → bf16 (via f32).
 pub const CAST_F8E4M3_TO_BF16: &str = "cast_f8e4m3_to_bf16";
+/// Pad with constant fill, byte-width-keyed (b1 = u8/i8, b2 = f16/bf16/i16/u16,
+/// b4 = f32/i32/u32, b8 = f64/i64). One workgroup processes 256 output
+/// elements (b4/b8) or 256 pairs/quads (b2/b1). Caller passes the fill
+/// value as a bit pattern in the Params struct.
+pub const PAD_CONST_B1: &str = "pad_const_b1";
+pub const PAD_CONST_B2: &str = "pad_const_b2";
+pub const PAD_CONST_B4: &str = "pad_const_b4";
+pub const PAD_CONST_B8: &str = "pad_const_b8";
 /// In-place rectangular slab write for 1-byte elements (u8/i8).
 /// `range_start[last]` and `src_shape[last]` must both be multiples
 /// of 4 — wrapper falls back to CPU otherwise.

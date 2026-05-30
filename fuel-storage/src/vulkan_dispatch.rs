@@ -1342,6 +1342,56 @@ pub mod matmul {
 // + the first input's layout (outer_count = product of dims before
 // the concat axis).
 
+pub mod pad {
+    use super::*;
+
+    /// Pad — 1 input + 1 output. Reads geometry from OpParams::Pad.
+    /// `mode_tag == 0` (constant) is the only mode this dispatch
+    /// shim handles; other modes fall through to CPU.
+    /// Byte width is taken from the OUTPUT dtype's size.
+    pub fn pad_const(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::pad::pad_const: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (in_shape, out_shape, padding, mode_tag, fill_bytes) = match params {
+            OpParams::Pad { in_shape, out_shape, padding, mode_tag, fill_bytes } => {
+                (in_shape, out_shape, padding, *mode_tag, fill_bytes)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::pad::pad_const: expected OpParams::Pad, got {other:?}",
+                )).bt());
+            }
+        };
+        if mode_tag != 0 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::pad::pad_const: mode_tag {mode_tag} not yet native \
+                 (only constant=0 is on Vulkan; reflect/replicate fall back to CPU)",
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let elem_bytes = out_guard.dtype.size_in_bytes();
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::pad::pad_const: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
+        backend.pad_const_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes, fill_bytes)
+    }
+}
+
 pub mod concat {
     use super::*;
     use crate::BackendStorage;
@@ -2770,6 +2820,23 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // operand stride support so either input may be a lazy view
     // (permute, broadcast). N==2 only; N>2 falls back to next alt. -----
     table.register_with_caps_and_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, strided, VULKAN_BYTE_LEVEL_PRECISION);
+
+    // ----- Pad with constant fill (V.3.G.pad, 2026-05-30).
+    // Byte-level kernels (b1/b2/b4/b8) dispatched by the OUTPUT dtype's
+    // size at the shim. Reflect/replicate modes fall through to CPU.
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64_d = DType::F64;
+        let u8_d = DType::U8;
+        let u32_d = DType::U32;
+        table.register_with_precision(OpKind::Pad, &u(f32),   vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Pad, &u(f16),   vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Pad, &u(bf16),  vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Pad, &u(f64_d), vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Pad, &u(u8_d),  vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Pad, &u(u32_d), vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+    }
     // V.3.G.concat (2026-05-30): f16/f64 concat (pure data movement).
     // bf16 deferred — adjacent-thread writes race on the same u32
     // when concat_dim is the last dim or when a_dim is odd; the
