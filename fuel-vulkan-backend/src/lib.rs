@@ -3413,6 +3413,138 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Gather along `dim`, byte-width-keyed (1/2/4/8). Source and
+    /// output shapes agree on every dim except `dim`. The `indices`
+    /// tensor (U32) has output_shape and supplies the source coord
+    /// at `dim` for each output position.
+    pub fn gather_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        output: &mut VulkanStorageBytes,
+        source_shape: &[usize],
+        output_shape: &[usize],
+        dim: usize,
+        elem_bytes: usize,
+    ) -> fuel_core_types::Result<()> {
+        let rank = source_shape.len();
+        if output_shape.len() != rank {
+            fuel_core_types::bail!(
+                "gather_bytes: rank mismatch (src={}, out={})",
+                source_shape.len(), output_shape.len(),
+            );
+        }
+        if rank > 8 {
+            fuel_core_types::bail!("gather_bytes: rank > 8 not supported");
+        }
+        if dim >= rank {
+            fuel_core_types::bail!("gather_bytes: dim {dim} >= rank {rank}");
+        }
+        let n_src: usize = source_shape.iter().product();
+        let n_out: usize = output_shape.iter().product();
+        let need_src = n_src * elem_bytes;
+        let need_out = n_out * elem_bytes;
+        let need_idx = n_out * 4;   // U32 indices
+        if src.len_bytes() < need_src {
+            fuel_core_types::bail!(
+                "gather_bytes: src {} bytes < required {need_src}",
+                src.len_bytes(),
+            );
+        }
+        if output.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "gather_bytes: output {} bytes < required {need_out}",
+                output.len_bytes(),
+            );
+        }
+        if indices.len_bytes() < need_idx {
+            fuel_core_types::bail!(
+                "gather_bytes: indices {} bytes < required {need_idx}",
+                indices.len_bytes(),
+            );
+        }
+        if elem_bytes == 2 && n_out % 2 != 0 {
+            fuel_core_types::bail!(
+                "gather_bytes b2: n_out ({n_out}) must be even (pair-thread)",
+            );
+        }
+        if elem_bytes == 1 && n_out % 4 != 0 {
+            fuel_core_types::bail!(
+                "gather_bytes b1: n_out ({n_out}) must be a multiple of 4",
+            );
+        }
+
+        // Pack shape_buf: source_shape + output_shape.
+        let mut sd: Vec<u32> = Vec::with_capacity(2 * rank);
+        for &d in source_shape { sd.push(d as u32); }
+        for &d in output_shape { sd.push(d as u32); }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+        let sd_byte_size = (sd.len() * 4) as u64;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct GParams { n_out: u32, rank: u32, dim: u32, _pad: u32 }
+        let p = GParams { n_out: n_out as u32, rank: rank as u32, dim: dim as u32, _pad: 0 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "gather_bytes: src is host-evicted; fault back first".into(),
+        ))?;
+        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "gather_bytes: indices is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = output.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "gather_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+
+        let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
+            1 => (
+                &self.pipelines.gather_b1_pipeline,
+                &self.pipelines.gather_b1_layout,
+                "gather_b1", n_out / 4,
+            ),
+            2 => (
+                &self.pipelines.gather_b2_pipeline,
+                &self.pipelines.gather_b2_layout,
+                "gather_b2", n_out / 2,
+            ),
+            4 => (
+                &self.pipelines.gather_b4_pipeline,
+                &self.pipelines.gather_b4_layout,
+                "gather_b4", n_out,
+            ),
+            8 => (
+                &self.pipelines.gather_b8_pipeline,
+                &self.pipelines.gather_b8_layout,
+                "gather_b8", n_out,
+            ),
+            other => fuel_core_types::bail!(
+                "gather_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, output.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_dispatch);
+        let rb = [src_buf.raw() as u64, idx_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// MaskedFill, byte-width-keyed (1/2/4/8). `input` and `output`
     /// have the same dtype + element count; `mask` is u8 (one byte per
     /// element). For each element: if mask byte is non-zero, write

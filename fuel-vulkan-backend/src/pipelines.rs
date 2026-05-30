@@ -108,6 +108,15 @@ pub struct Pipelines {
     pub masked_fill_b4_layout: PipelineLayout,
     pub masked_fill_b8_pipeline: ComputePipeline,
     pub masked_fill_b8_layout: PipelineLayout,
+
+    pub gather_b1_pipeline: ComputePipeline,
+    pub gather_b1_layout: PipelineLayout,
+    pub gather_b2_pipeline: ComputePipeline,
+    pub gather_b2_layout: PipelineLayout,
+    pub gather_b4_pipeline: ComputePipeline,
+    pub gather_b4_layout: PipelineLayout,
+    pub gather_b8_pipeline: ComputePipeline,
+    pub gather_b8_layout: PipelineLayout,
     pub write_slice_b8_pipeline: ComputePipeline,
     pub write_slice_b8_layout: PipelineLayout,
     pub strided_copy_signed_b2_pipeline: ComputePipeline,
@@ -483,6 +492,10 @@ impl Pipelines {
         let masked_fill_b2_mod = registry.load_module(device, shaders::MASKED_FILL_B2)?;
         let masked_fill_b4_mod = registry.load_module(device, shaders::MASKED_FILL_B4)?;
         let masked_fill_b8_mod = registry.load_module(device, shaders::MASKED_FILL_B8)?;
+        let gather_b1_mod = registry.load_module(device, shaders::GATHER_B1)?;
+        let gather_b2_mod = registry.load_module(device, shaders::GATHER_B2)?;
+        let gather_b4_mod = registry.load_module(device, shaders::GATHER_B4)?;
+        let gather_b8_mod = registry.load_module(device, shaders::GATHER_B8)?;
         let write_slice_b8_mod   = registry.load_module(device, shaders::WRITE_SLICE_B8)?;
         let strided_copy_signed_b2_mod = registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B2)?;
         let strided_copy_signed_b4_mod = registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B4)?;
@@ -593,6 +606,10 @@ impl Pipelines {
         let masked_fill_b2_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let masked_fill_b4_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let masked_fill_b8_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let gather_b1_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
+        let gather_b2_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
+        let gather_b4_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
+        let gather_b8_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let write_slice_b8_layout   = PipelineLayout::new(device, &[&layout_3s1u])?;
         // strided_copy_signed uses 3 storage (input, output, shape_strides) + 1 uniform.
         let strided_copy_signed_b2_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -705,6 +722,10 @@ impl Pipelines {
         let masked_fill_b2_pipeline = ComputePipeline::new(device, &masked_fill_b2_layout, &masked_fill_b2_mod, "main")?;
         let masked_fill_b4_pipeline = ComputePipeline::new(device, &masked_fill_b4_layout, &masked_fill_b4_mod, "main")?;
         let masked_fill_b8_pipeline = ComputePipeline::new(device, &masked_fill_b8_layout, &masked_fill_b8_mod, "main")?;
+        let gather_b1_pipeline = ComputePipeline::new(device, &gather_b1_layout, &gather_b1_mod, "main")?;
+        let gather_b2_pipeline = ComputePipeline::new(device, &gather_b2_layout, &gather_b2_mod, "main")?;
+        let gather_b4_pipeline = ComputePipeline::new(device, &gather_b4_layout, &gather_b4_mod, "main")?;
+        let gather_b8_pipeline = ComputePipeline::new(device, &gather_b8_layout, &gather_b8_mod, "main")?;
         let write_slice_b8_pipeline   = ComputePipeline::new(device, &write_slice_b8_layout,   &write_slice_b8_mod,   "main")?;
         let strided_copy_signed_b2_pipeline = ComputePipeline::new(device, &strided_copy_signed_b2_layout, &strided_copy_signed_b2_mod, "main")?;
         let strided_copy_signed_b4_pipeline = ComputePipeline::new(device, &strided_copy_signed_b4_layout, &strided_copy_signed_b4_mod, "main")?;
@@ -814,6 +835,10 @@ impl Pipelines {
             masked_fill_b2_pipeline, masked_fill_b2_layout,
             masked_fill_b4_pipeline, masked_fill_b4_layout,
             masked_fill_b8_pipeline, masked_fill_b8_layout,
+            gather_b1_pipeline, gather_b1_layout,
+            gather_b2_pipeline, gather_b2_layout,
+            gather_b4_pipeline, gather_b4_layout,
+            gather_b8_pipeline, gather_b8_layout,
             write_slice_b8_pipeline, write_slice_b8_layout,
             strided_copy_signed_b2_pipeline, strided_copy_signed_b2_layout,
             strided_copy_signed_b4_pipeline, strided_copy_signed_b4_layout,
