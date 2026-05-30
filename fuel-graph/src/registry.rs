@@ -707,23 +707,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(paged_attn::entry())
             .with_entry(qmatmul::entry())
             .with_entry(powi_backward::entry())
-            // NOTE: `inplace_affine::entry()` is intentionally NOT
-            // registered in Phase 1 of the in-place ops infrastructure
-            // (commit landing 2026-05-30). The
-            // `precision_guarantee_lint_bit_stable_cpu_coverage` test
-            // in fuel-storage enforces that every registered fused op
-            // has a bit-stable CPU BackendImpl, and Phase 1 deliberately
-            // ships only the Op IR + destructive_input + match-arm
-            // structure (Q3=A in the session prompt). The registration
-            // moves here when Phase 3 wires the CPU + CUDA
-            // `affine_inplace_*` dispatch.
-            //
-            // The `FusedOps::INPLACE_AFFINE` constant + the
-            // `FusedOpParams::InplaceAffine { mul, add }` variant +
-            // the `registry/inplace_affine.rs` metadata module are all
-            // shipped in Phase 1 so downstream code can refer to them;
-            // the only deferred piece is the registry entry that the
-            // CPU-coverage lint counts.
+            .with_entry(inplace_affine::entry())
     })
 }
 

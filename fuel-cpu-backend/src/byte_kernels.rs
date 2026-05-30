@@ -2807,6 +2807,52 @@ pub fn affine_f32(
     Ok(())
 }
 
+/// In-place affine: mutates `out[i] = mul * out[i] + add`. The
+/// caller passes `out` as both the input + output through the
+/// PipelinedExecutor's `WorkItemKind::InplaceKernel` arm. Mirrors
+/// `affine_f32`'s formula; no separate input buffer. Used by the
+/// `Op::Fused(INPLACE_AFFINE, _)` dispatch path.
+pub fn affine_inplace_f32(out: &mut CpuStorageBytes, mul: f32, add: f32) -> Result<()> {
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = mul * *slot + add;
+    }
+    Ok(())
+}
+
+/// In-place affine for f64 — same shape as [`affine_inplace_f32`].
+pub fn affine_inplace_f64(out: &mut CpuStorageBytes, mul: f64, add: f64) -> Result<()> {
+    let out_view: &mut [f64] = out.as_slice_mut()?;
+    for slot in out_view.iter_mut() {
+        *slot = mul * *slot + add;
+    }
+    Ok(())
+}
+
+/// In-place affine for bf16 — accumulator pivots through f32 (matches
+/// the non-inplace `affine_*` family's precision convention).
+pub fn affine_inplace_bf16(out: &mut CpuStorageBytes, mul: f64, add: f64) -> Result<()> {
+    let out_view: &mut [half::bf16] = out.as_slice_mut()?;
+    let mul_f32 = mul as f32;
+    let add_f32 = add as f32;
+    for slot in out_view.iter_mut() {
+        *slot = half::bf16::from_f32(mul_f32 * slot.to_f32() + add_f32);
+    }
+    Ok(())
+}
+
+/// In-place affine for f16 — accumulator pivots through f32 (matches
+/// the non-inplace `affine_*` family's precision convention).
+pub fn affine_inplace_f16(out: &mut CpuStorageBytes, mul: f64, add: f64) -> Result<()> {
+    let out_view: &mut [half::f16] = out.as_slice_mut()?;
+    let mul_f32 = mul as f32;
+    let add_f32 = add as f32;
+    for slot in out_view.iter_mut() {
+        *slot = half::f16::from_f32(mul_f32 * slot.to_f32() + add_f32);
+    }
+    Ok(())
+}
+
 /// Element-wise clamp: `out[i] = clamp(input[i], min, max)`.
 pub fn clamp_f32(
     input: &CpuStorageBytes,

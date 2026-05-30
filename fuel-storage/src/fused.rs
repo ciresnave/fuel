@@ -872,6 +872,47 @@ pub const REDUCE_MAX_TO_BACKWARD_CPU_PRECISION: PrecisionGuarantee = PrecisionGu
             hardware re-run.",
 };
 
+/// Precision guarantee for `(INPLACE_AFFINE, Cpu)`. Single-pass
+/// `x = mul · x + add` per element with no parallel accumulation;
+/// deterministic iteration order; bit-identical same-hardware re-run.
+/// The half-precision dtypes (bf16/f16) pivot through f32 for the
+/// arithmetic, identical to the non-inplace Affine family.
+pub const INPLACE_AFFINE_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend in-place affine: single-pass `mul · x + \
+            add` per element; deterministic iteration order; F32 pivot \
+            for half-precision dtypes; bit-identical same-hardware re-run.",
+};
+
+/// Cost model for `(INPLACE_AFFINE, Cpu)`. Single pass: 1 FMA per
+/// element. Bandwidth is one read + one write per element (in place,
+/// so the buffer is touched once for read + once for write through
+/// the same cache line).
+pub fn cost_inplace_affine_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(shapes.len(), 1, "InplaceAffine cost: expected 1 input shape");
+    let n: u64 = shapes[0].dims().iter().map(|&d| d as u64).product();
+    // mul + add per element = 1 FMA. Treat as 1 FLOP for simplicity
+    // (matches Affine's accounting; the fused mul-add is one tier-2
+    // float op).
+    let flops = n;
+    // In-place: the buffer is read once + written once. Use
+    // dtype-agnostic 4 bytes/elem default — the cost model's caller
+    // scales by the actual dtype size if it cares.
+    let bytes_moved = n * 4 * 2;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 /// Precision guarantee for `(POWI_BACKWARD, Cpu)`. Per-element
 /// `grad_x = exp · x^(exp-1) · upstream` with the same floating-point
 /// determinism guarantees as the forward PowI primitive: deterministic
@@ -1445,13 +1486,14 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 15 registered fused ops covered.
-        // (14 from the original Phase 7.6 lineup + PowIBackward added
-        // when autograd switched from emitting the primitive
-        // decomposition to emitting Op::Fused(POWI_BACKWARD, _).)
+        // Sanity: we should see all 16 registered fused ops covered.
+        // 14 from the original Phase 7.6 lineup + PowIBackward
+        // (autograd switched from emitting the primitive decomposition
+        // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
+        // (Phase 3 of the in-place ops infrastructure).
         assert_eq!(
-            covered, 15,
-            "expected 15 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 16,
+            "expected 16 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 

@@ -351,6 +351,37 @@ pub enum OpKind {
     /// the `Op::Copy { target }` location field via a dedicated
     /// `WorkItemKind::Copy` arm.
     Copy,
+    // ---- In-place ops (Phase 3 of the in-place ops infrastructure;
+    // ---- see docs/session-prompts/in-place-ops-infrastructure.md) ----
+    //
+    // Each in-place OpKind mirrors a non-inplace functional cousin.
+    // The dispatch difference is structural rather than computational:
+    // the executor adopts the target's Storage Arc as the output slot
+    // instead of allocating fresh bytes. The kernel reads + writes the
+    // same buffer through a single write lock. Binding-table key
+    // shape `[T]` (the in-place op's single input dtype = output
+    // dtype). `KernelCaps::strided_input` semantics apply identically
+    // to the non-inplace cousin (same-pointer dispatch handles strided
+    // inputs as long as the stride pattern doesn't produce overlapping
+    // writes; the unary kernels write index `i` after reading index `i`
+    // so no aliasing issues).
+    /// In-place [`OpKind::ReluElementwise`] — `x = max(0, x)`.
+    ReluInplace,
+    /// In-place [`OpKind::SiluElementwise`] — `x = x · sigmoid(x)`.
+    SiluInplace,
+    /// In-place [`OpKind::GeluElementwise`] (tanh approximation) —
+    /// `x = 0.5 · x · (1 + tanh(√(2/π) · (x + 0.044715·x³)))`.
+    GeluInplace,
+    /// In-place [`OpKind::TanhElementwise`] — `x = tanh(x)`.
+    TanhInplace,
+    /// In-place [`OpKind::SigmoidElementwise`] — `x = 1 / (1 + exp(-x))`.
+    SigmoidInplace,
+    /// In-place [`OpKind::Affine`] — `x = mul · x + add`. The
+    /// `(mul, add)` coefficients flow through
+    /// [`OpParams::Affine`]; the kernel reads + writes the same
+    /// buffer. Single-input, single-output. Backs
+    /// [`FusedOps::INPLACE_AFFINE`](fuel_graph::registry::FusedOps::INPLACE_AFFINE).
+    InplaceAffine,
 }
 
 impl OpKind {
@@ -439,6 +470,12 @@ impl OpKind {
             OpKind::QMatMul           => "qmatmul",
             OpKind::WriteSlice        => "write_slice",
             OpKind::Copy              => "copy",
+            OpKind::ReluInplace       => "relu_inplace",
+            OpKind::SiluInplace       => "silu_inplace",
+            OpKind::GeluInplace       => "gelu_inplace",
+            OpKind::TanhInplace       => "tanh_inplace",
+            OpKind::SigmoidInplace    => "sigmoid_inplace",
+            OpKind::InplaceAffine     => "inplace_affine",
         }
     }
 }
