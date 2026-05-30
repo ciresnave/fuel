@@ -2144,6 +2144,85 @@ macro_rules! vk_reduce_f32_wrapper {
 // through the f32 unified entry point. For dim combos other than the
 // single-last-dim case, the backend method bails and the executor
 // falls back to CPU.
+// ----- ArgMax / ArgMin along last-dim (V.3.G.arg_reduce, 2026-05-30).
+// Output is U32 indices (one per row). Reuses OpParams::Reduce with
+// a single-dim constraint matching CUDA. Only last-dim is native;
+// other dim combos fall back to CPU.
+macro_rules! vk_arg_reduce_wrapper {
+    ($name:ident, $op_id:expr, $label:expr, $dtype:expr $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::arg_reduce::{}: expected 1 input + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let dim = match params {
+                OpParams::Reduce { dims, keepdim: _ } => {
+                    if dims.len() != 1 {
+                        return Err(Error::Msg(format!(
+                            "vulkan_dispatch::arg_reduce::{}: expected single reduce dim, got {dims:?}",
+                            $label,
+                        )).bt());
+                    }
+                    dims[0]
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::arg_reduce::{}: expected OpParams::Reduce, got {other:?}",
+                        $label,
+                    )).bt());
+                }
+            };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::arg_reduce::{}: layouts empty", $label,
+                )).bt()
+            })?;
+            let shape = layout.shape();
+            let rank = shape.dims().len();
+            if dim != rank - 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::arg_reduce::{}: only last-dim is native (got dim={dim}, rank={rank})",
+                    $label,
+                )).bt());
+            }
+            let dims_slice = shape.dims();
+            let last_dim = dims_slice[rank - 1];
+            let outer_count: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::arg_reduce::{}: input has no VulkanBackend handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.arg_reduce_last_dim_bytes($dtype, $op_id, $label, a, out, outer_count, last_dim)
+        }
+    };
+}
+
+pub mod arg_reduce {
+    use super::*;
+
+    vk_arg_reduce_wrapper!(argmax_f32,  0, "argmax_f32",  DType::F32);
+    vk_arg_reduce_wrapper!(argmin_f32,  1, "argmin_f32",  DType::F32);
+    vk_arg_reduce_wrapper!(argmax_f16,  0, "argmax_f16",  DType::F16);
+    vk_arg_reduce_wrapper!(argmin_f16,  1, "argmin_f16",  DType::F16);
+    vk_arg_reduce_wrapper!(argmax_bf16, 0, "argmax_bf16", DType::BF16);
+    vk_arg_reduce_wrapper!(argmin_bf16, 1, "argmin_bf16", DType::BF16);
+    vk_arg_reduce_wrapper!(argmax_f64,  0, "argmax_f64",  DType::F64);
+    vk_arg_reduce_wrapper!(argmin_f64,  1, "argmin_f64",  DType::F64);
+}
+
 macro_rules! vk_reduce_last_dim_wrapper {
     ($name:ident, $op_id:expr, $label:expr, $method:ident $(,)?) => {
         pub fn $name(
@@ -3135,6 +3214,26 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  PrecisionGuarantee::none(MAX_REASON));
     table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::none(MIN_REASON));
     table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::none(MEAN_REASON));
+
+    // ----- ArgMaxDim / ArgMinDim along last dim (V.3.G.arg_reduce,
+    // 2026-05-30). Output is U32 indices; binding key matches CUDA
+    // baracuda registration: [input_dtype, U32]. -----
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64_d = DType::F64;
+        let u32_d = DType::U32;
+        const ARG_MAX_REASON: &str = "fuel-vulkan-backend ArgMaxDim: tree reduction over (val, idx) pairs; lower index wins on ties — deterministic given input values.";
+        const ARG_MIN_REASON: &str = "fuel-vulkan-backend ArgMinDim: same as ArgMaxDim with min comparator.";
+        table.register_with_precision(OpKind::ArgMaxDim, &[f32,   u32_d], vk, arg_reduce::argmax_f32,  PrecisionGuarantee::none(ARG_MAX_REASON));
+        table.register_with_precision(OpKind::ArgMaxDim, &[f16,   u32_d], vk, arg_reduce::argmax_f16,  PrecisionGuarantee::none(ARG_MAX_REASON));
+        table.register_with_precision(OpKind::ArgMaxDim, &[bf16,  u32_d], vk, arg_reduce::argmax_bf16, PrecisionGuarantee::none(ARG_MAX_REASON));
+        table.register_with_precision(OpKind::ArgMaxDim, &[f64_d, u32_d], vk, arg_reduce::argmax_f64,  PrecisionGuarantee::none(ARG_MAX_REASON));
+        table.register_with_precision(OpKind::ArgMinDim, &[f32,   u32_d], vk, arg_reduce::argmin_f32,  PrecisionGuarantee::none(ARG_MIN_REASON));
+        table.register_with_precision(OpKind::ArgMinDim, &[f16,   u32_d], vk, arg_reduce::argmin_f16,  PrecisionGuarantee::none(ARG_MIN_REASON));
+        table.register_with_precision(OpKind::ArgMinDim, &[bf16,  u32_d], vk, arg_reduce::argmin_bf16, PrecisionGuarantee::none(ARG_MIN_REASON));
+        table.register_with_precision(OpKind::ArgMinDim, &[f64_d, u32_d], vk, arg_reduce::argmin_f64,  PrecisionGuarantee::none(ARG_MIN_REASON));
+    }
 
     // ----- Reduce last-dim, f16/bf16/f64 (V.3.G, 2026-05-30). Only
     // the single-last-dim fast path is native on these dtypes; other

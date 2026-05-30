@@ -131,6 +131,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("reduce_f16",                include_bytes!("../spv/reduce_f16.spv")),
     ("reduce_bf16",               include_bytes!("../spv/reduce_bf16.spv")),
     ("reduce_f64",                include_bytes!("../spv/reduce_f64.spv")),
+    ("arg_reduce_last_dim_f32",   include_bytes!("../spv/arg_reduce_last_dim_f32.spv")),
+    ("arg_reduce_last_dim_f16",   include_bytes!("../spv/arg_reduce_last_dim_f16.spv")),
+    ("arg_reduce_last_dim_bf16",  include_bytes!("../spv/arg_reduce_last_dim_bf16.spv")),
+    ("arg_reduce_last_dim_f64",   include_bytes!("../spv/arg_reduce_last_dim_f64.spv")),
     ("reduce_last_dim",           include_bytes!("../spv/reduce_last_dim.spv")),
     ("reduce_last_dim_f16",       include_bytes!("../spv/reduce_last_dim_f16.spv")),
     ("reduce_last_dim_bf16",      include_bytes!("../spv/reduce_last_dim_bf16.spv")),
@@ -374,6 +378,13 @@ pub const REDUCE_F16: &str = "reduce_f16";
 pub const REDUCE_BF16: &str = "reduce_bf16";
 /// Full-tensor reduction, native f64.
 pub const REDUCE_F64: &str = "reduce_f64";
+/// Argmax / argmin along the last dimension. Per-row workgroup with
+/// tree-reduction tracking (val, idx) pairs in shared memory.
+/// op_id: 0 = argmax, 1 = argmin. Output is U32 indices.
+pub const ARG_REDUCE_LAST_DIM_F32: &str = "arg_reduce_last_dim_f32";
+pub const ARG_REDUCE_LAST_DIM_F16: &str = "arg_reduce_last_dim_f16";
+pub const ARG_REDUCE_LAST_DIM_BF16: &str = "arg_reduce_last_dim_bf16";
+pub const ARG_REDUCE_LAST_DIM_F64: &str = "arg_reduce_last_dim_f64";
 /// Per-row reduction along the last dimension (f32).
 pub const REDUCE_LAST_DIM: &str = "reduce_last_dim";
 /// Per-row reduction along last dim, f16 storage with f32 accumulator.

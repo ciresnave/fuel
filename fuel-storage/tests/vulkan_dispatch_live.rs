@@ -3401,6 +3401,131 @@ fn vulkan_dispatch_masked_fill_f64() {
     }
 }
 
+// ---- ArgMaxDim / ArgMinDim along last dim (V.3.G.arg_reduce, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_argmax_last_dim_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let input = [1.0_f32, 3.0, 2.0, 0.5,    9.0, 4.0, 9.0, 7.0];
+    // row 0: max is 3.0 at idx 1
+    // row 1: max is 9.0 at idx 0 (lower of ties)
+    let expected: [u32; 2] = [1, 0];
+
+    let in_storage = upload_f32(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(outer * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::U32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::ArgMaxDim, &[DType::F32, DType::U32], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![1], keepdim: false },
+    ).expect("argmax f32 dispatch");
+
+    let bytes = match &out_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    let got: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&bytes).to_vec();
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "argmax f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_argmin_last_dim_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;     // even for bf16 lane-pair
+    let input_f32 = [5.0_f32, -1.0, 3.0, 0.0,    2.0, 4.0, -3.0, 1.0];
+    let input: Vec<half::bf16> = input_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let expected: [u32; 2] = [1, 2];
+
+    let in_storage = upload_bf16(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(outer * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::U32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::ArgMinDim, &[DType::BF16, DType::U32], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![1], keepdim: false },
+    ).expect("argmin bf16 dispatch");
+
+    let bytes = match &out_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    let got: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&bytes).to_vec();
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "argmin bf16[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_argmax_last_dim_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 1usize;
+    let last = 5usize;
+    let input = [1.0_f64, 10.0, 5.0, 10.0, 7.0];   // ties at idx 1 and 3; expect 1
+    let expected: [u32; 1] = [1];
+
+    let in_storage = upload_f64(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(outer * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::U32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::ArgMaxDim, &[DType::F64, DType::U32], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![1], keepdim: false },
+    ).expect("argmax f64 dispatch");
+
+    let bytes = match &out_arc.read().unwrap().inner {
+        BackendStorage::Vulkan(v) => backend.download_bytes(v).expect("d2h"),
+        _ => panic!("not on Vulkan"),
+    };
+    let got: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&bytes).to_vec();
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "argmax f64[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- PadBackward (constant mode) (V.3.G.pad_backward.const, 2026-05-30) ----
 
 #[test]
