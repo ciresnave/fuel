@@ -104,6 +104,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("rms_norm_last_dim_backward", include_bytes!("../spv/rms_norm_last_dim_backward.spv")),
     ("rope",                      include_bytes!("../spv/rope.spv")),
     ("softmax",                   include_bytes!("../spv/softmax.spv")),
+    ("softmax_f16",               include_bytes!("../spv/softmax_f16.spv")),
+    ("softmax_bf16",              include_bytes!("../spv/softmax_bf16.spv")),
+    ("softmax_f64",               include_bytes!("../spv/softmax_f64.spv")),
     ("softmax_last_dim_backward", include_bytes!("../spv/softmax_last_dim_backward.spv")),
     ("layer_norm_last_dim_backward", include_bytes!("../spv/layer_norm_last_dim_backward.spv")),
     ("strided_copy",              include_bytes!("../spv/strided_copy.spv")),
@@ -226,8 +229,17 @@ pub const MATVEC_GLSL: &str = "matvec";
 /// (A) and f32 output (C). Decode-phase path for bf16-quantized LLM
 /// weights on GPU.
 pub const MATVEC_BF16_B_GLSL: &str = "matvec_bf16_b";
-/// Fused softmax along the last dimension.
+/// Fused softmax along the last dimension (f32).
 pub const SOFTMAX: &str = "softmax";
+/// Softmax last-dim, f16 storage with f32 intermediate (mixed precision).
+pub const SOFTMAX_F16: &str = "softmax_f16";
+/// Softmax last-dim, bf16 storage (packed u32) with f32 intermediate.
+/// Lane-pair scheme: each lane processes one u32 = two bf16 lanes;
+/// `n_cols` must be even.
+pub const SOFTMAX_BF16: &str = "softmax_bf16";
+/// Softmax last-dim, native f64 end-to-end. Needs shaderFloat64 +
+/// GroupNonUniformArithmetic; uses GLSL.std.450 Exp (NOT OpenCL.std).
+pub const SOFTMAX_F64: &str = "softmax_f64";
 /// Fused softmax backward: dx = y * (g - dot(y, g)).
 pub const SOFTMAX_LAST_DIM_BACKWARD: &str = "softmax_last_dim_backward";
 /// Fused layer-norm backward (4 reductions: sum_x, sum_x², sum_g, sum_gx).

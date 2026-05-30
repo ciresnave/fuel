@@ -412,6 +412,17 @@ pub mod unary_f64 {
 pub mod softmax {
     use super::*;
 
+    // Internal helper: extract (outer_count, last_dim) from
+    // OpParams::SoftmaxLastDim, with a tagged error on mismatch.
+    fn softmax_params(fn_name: &str, params: &OpParams) -> Result<(usize, usize)> {
+        match params {
+            OpParams::SoftmaxLastDim { outer_count, last_dim } => Ok((*outer_count, *last_dim)),
+            other => Err(Error::Msg(format!(
+                "vulkan_dispatch::softmax::{fn_name}: expected OpParams::SoftmaxLastDim, got {other:?}",
+            )).bt()),
+        }
+    }
+
     pub fn softmax_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -424,17 +435,7 @@ pub mod softmax {
                 inputs.len(), outputs.len(),
             )).bt());
         }
-        let (outer_count, last_dim) = match params {
-            OpParams::SoftmaxLastDim { outer_count, last_dim } => {
-                (*outer_count, *last_dim)
-            }
-            other => {
-                return Err(Error::Msg(format!(
-                    "vulkan_dispatch::softmax::softmax_f32: expected OpParams::SoftmaxLastDim, got {:?}",
-                    other,
-                )).bt());
-            }
-        };
+        let (outer_count, last_dim) = softmax_params("softmax_f32", params)?;
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
         let a = vulkan_input(&in_guard)?;
@@ -448,6 +449,81 @@ pub mod softmax {
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.softmax_last_dim_f32_bytes(a, out, outer_count, last_dim)
+    }
+
+    pub fn softmax_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::softmax::softmax_f16: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim) = softmax_params("softmax_f16", params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::softmax::softmax_f16: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.softmax_last_dim_f16_bytes(a, out, outer_count, last_dim)
+    }
+
+    pub fn softmax_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::softmax::softmax_bf16: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim) = softmax_params("softmax_bf16", params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::softmax::softmax_bf16: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.softmax_last_dim_bf16_bytes(a, out, outer_count, last_dim)
+    }
+
+    pub fn softmax_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::softmax::softmax_f64: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim) = softmax_params("softmax_f64", params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::softmax::softmax_f64: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.softmax_last_dim_f64_bytes(a, out, outer_count, last_dim)
     }
 }
 
@@ -2002,6 +2078,21 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     const RMS_NORM_REASON: &str = "fuel-vulkan-backend RmsNormLastDim: per-row x² + sum (subgroup-tree reduction) + sqrt + divide; no static bound — FADD order is scheduler-determined per dispatch.";
     table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::none(SOFTMAX_REASON));
     table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::none(RMS_NORM_REASON));
+
+    // ----- Softmax last-dim, f16/bf16/f64 (V.3.G, 2026-05-30).
+    // Same mixed-precision pattern as the RmsNorm variants below:
+    // f16/bf16 storage with f32 accumulation/exp/sum; f64 native end-
+    // to-end. bf16 uses lane-pair (one u32 per lane covers two bf16
+    // values); intermediate exp values are stored to the output as
+    // bf16, then re-read and rescaled in Phase 3.
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
+        table.register_with_precision(OpKind::SoftmaxLastDim, &u(f16),  vk, softmax::softmax_f16,  PrecisionGuarantee::none(SOFTMAX_REASON));
+        table.register_with_precision(OpKind::SoftmaxLastDim, &u(bf16), vk, softmax::softmax_bf16, PrecisionGuarantee::none(SOFTMAX_REASON));
+        table.register_with_precision(OpKind::SoftmaxLastDim, &u(f64),  vk, softmax::softmax_f64,  PrecisionGuarantee::none(SOFTMAX_REASON));
+    }
 
     // ----- RmsNorm last-dim, f16/bf16/f64 (V.3.G, 2026-05-30).
     // f16/bf16 mirror baracuda's mixed-precision pattern: storage in

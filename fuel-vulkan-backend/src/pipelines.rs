@@ -162,6 +162,15 @@ pub struct Pipelines {
     pub matmul_coop_layout: Option<PipelineLayout>,
     pub softmax_pipeline: ComputePipeline,
     pub softmax_layout: PipelineLayout,
+
+    pub softmax_f16_pipeline: ComputePipeline,
+    pub softmax_f16_layout: PipelineLayout,
+
+    pub softmax_bf16_pipeline: ComputePipeline,
+    pub softmax_bf16_layout: PipelineLayout,
+
+    pub softmax_f64_pipeline: ComputePipeline,
+    pub softmax_f64_layout: PipelineLayout,
     pub reduce_pipeline: ComputePipeline,
     pub reduce_layout: PipelineLayout,
 
@@ -422,6 +431,9 @@ impl Pipelines {
             None
         };
         let softmax_mod = registry.load_module(device, shaders::SOFTMAX)?;
+        let softmax_f16_mod = registry.load_module(device, shaders::SOFTMAX_F16)?;
+        let softmax_bf16_mod = registry.load_module(device, shaders::SOFTMAX_BF16)?;
+        let softmax_f64_mod = registry.load_module(device, shaders::SOFTMAX_F64)?;
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
         let rms_norm_last_dim_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM)?;
@@ -503,6 +515,9 @@ impl Pipelines {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else { None };
         let softmax_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let softmax_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let softmax_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let softmax_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let rms_norm_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -583,6 +598,9 @@ impl Pipelines {
             _ => None,
         };
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
+        let softmax_f16_pipeline = ComputePipeline::new(device, &softmax_f16_layout, &softmax_f16_mod, "main")?;
+        let softmax_bf16_pipeline = ComputePipeline::new(device, &softmax_bf16_layout, &softmax_bf16_mod, "main")?;
+        let softmax_f64_pipeline = ComputePipeline::new(device, &softmax_f64_layout, &softmax_f64_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
         let rms_norm_last_dim_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_layout, &rms_norm_last_dim_mod, "main")?;
@@ -660,6 +678,9 @@ impl Pipelines {
             matmul_coop_pipeline,
             matmul_coop_layout,
             softmax_pipeline, softmax_layout,
+            softmax_f16_pipeline, softmax_f16_layout,
+            softmax_bf16_pipeline, softmax_bf16_layout,
+            softmax_f64_pipeline, softmax_f64_layout,
             reduce_pipeline, reduce_layout,
             reduce_last_dim_pipeline, reduce_last_dim_layout,
             rms_norm_last_dim_pipeline, rms_norm_last_dim_layout,
