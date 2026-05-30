@@ -95,6 +95,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("write_slice_b8",            include_bytes!("../spv/write_slice_b8.spv")),
     ("concat_along_dim",          include_bytes!("../spv/concat_along_dim.spv")),
     ("concat_along_dim_f16",      include_bytes!("../spv/concat_along_dim_f16.spv")),
+    ("concat_along_dim_bf16",     include_bytes!("../spv/concat_along_dim_bf16.spv")),
     ("concat_along_dim_f64",      include_bytes!("../spv/concat_along_dim_f64.spv")),
     ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
     ("flash_attention",           include_bytes!("../spv/flash_attention.spv")),
@@ -383,6 +384,11 @@ pub const ROPE_F64: &str = "rope_f64";
 pub const CONCAT_ALONG_DIM: &str = "concat_along_dim";
 /// Concat f16, native float16_t storage.
 pub const CONCAT_ALONG_DIM_F16: &str = "concat_along_dim_f16";
+/// Concat bf16, packed-u32 storage. Single-thread-per-bf16 layout
+/// with InterlockedOr half-word output writes — handles the case
+/// where adjacent output positions come from different sources at
+/// the (a, b) boundary. Wrapper zero-fills output first.
+pub const CONCAT_ALONG_DIM_BF16: &str = "concat_along_dim_bf16";
 /// Concat f64, native double storage.
 pub const CONCAT_ALONG_DIM_F64: &str = "concat_along_dim_f64";
 /// Conv2D im2col patches rearrangement. Output of this kernel feeds

@@ -1739,6 +1739,19 @@ pub mod concat {
         )
     }
 
+    pub fn concat_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        concat_typed(
+            "concat_bf16", 2, DType::BF16,
+            inputs, outputs, layouts, params,
+            |b, a, bb, o, dim, la, lb| b.concat_along_dim_bf16_bytes(a, bb, o, dim, la, lb),
+        )
+    }
+
     pub fn concat_f64(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -3047,15 +3060,17 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::Gather, &[u8_d,  DType::U32, u8_d],  vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::Gather, &[u32_d, DType::U32, u32_d], vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
     }
-    // V.3.G.concat (2026-05-30): f16/f64 concat (pure data movement).
-    // bf16 deferred — adjacent-thread writes race on the same u32
-    // when concat_dim is the last dim or when a_dim is odd; the
-    // pair-thread/InterlockedOr fix needs a separate session.
+    // V.3.G.concat (2026-05-30): f16/bf16/f64 concat (pure data movement).
+    // bf16 uses single-thread-per-bf16 with InterlockedOr half-word
+    // writes + zero-fill so adjacent threads writing the same u32 at
+    // an odd (a, b) boundary don't race.
     {
         let f16 = DType::F16;
+        let bf16 = DType::BF16;
         let f64_d = DType::F64;
-        table.register_with_caps_and_precision(OpKind::Concat, &u(f16),   vk, concat::concat_f16, strided, VULKAN_BYTE_LEVEL_PRECISION);
-        table.register_with_caps_and_precision(OpKind::Concat, &u(f64_d), vk, concat::concat_f64, strided, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Concat, &u(f16),   vk, concat::concat_f16,  strided, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Concat, &u(bf16),  vk, concat::concat_bf16, strided, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Concat, &u(f64_d), vk, concat::concat_f64,  strided, VULKAN_BYTE_LEVEL_PRECISION);
     }
 
     // ----- MatMul f32 (V.2.D) — deterministic per-output-element FMA

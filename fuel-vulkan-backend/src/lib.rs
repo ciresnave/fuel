@@ -4128,6 +4128,33 @@ impl VulkanBackend {
         )
     }
 
+    /// bf16 concat along arbitrary dim. Single-thread-per-bf16 with
+    /// InterlockedOr half-word output writes; the wrapper zero-fills
+    /// the output buffer first and binds the output descriptor with
+    /// u32-rounded size (so writes to the last partial u32 land
+    /// in-bounds). Handles arbitrary `a_dim` parity at the (a, b)
+    /// boundary.
+    pub fn concat_along_dim_bf16_bytes(
+        &self,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        dim: usize,
+        a_layout: &Layout,
+        b_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        // Zero-fill output (InterlockedOr needs the other half to be 0).
+        self.fill_bytes_zero(out)?;
+        self.concat_along_dim_typed_bytes_with_bind(
+            "concat_along_dim_bf16_bytes",
+            2,
+            /* round_out_bind */ true,
+            a, b, out, dim, a_layout, b_layout,
+            &self.pipelines.concat_along_dim_bf16_pipeline,
+            &self.pipelines.concat_along_dim_bf16_layout,
+        )
+    }
+
     /// f64 concat along arbitrary dim. Per-element 8 bytes.
     pub fn concat_along_dim_f64_bytes(
         &self,
@@ -4154,6 +4181,26 @@ impl VulkanBackend {
         &self,
         op_name: &'static str,
         elem_bytes: usize,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        dim: usize,
+        a_layout: &Layout,
+        b_layout: &Layout,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        self.concat_along_dim_typed_bytes_with_bind(
+            op_name, elem_bytes, /* round_out_bind */ false,
+            a, b, out, dim, a_layout, b_layout, pipeline, pipe_layout,
+        )
+    }
+
+    fn concat_along_dim_typed_bytes_with_bind(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        round_out_bind: bool,
         a: &VulkanStorageBytes,
         b: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
@@ -4234,9 +4281,14 @@ impl VulkanBackend {
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        let out_bind_len = if round_out_bind {
+            ((out.len_bytes() + 3) & !3) as u64
+        } else {
+            out.len_bytes() as u64
+        };
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
-        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<CParams>() as u64);
 
         let groups = ((out_elems as u32 + 63) / 64).max(1);
