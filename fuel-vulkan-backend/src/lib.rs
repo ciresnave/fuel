@@ -2439,6 +2439,121 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// MatMul bf16 × bf16 → f32 via cooperative-matrix tensor cores.
+    /// COOP-ONLY: requires VK_KHR_cooperative_matrix and the canonical
+    /// M=N=K=16 fp16/fp32 tile (coop[3]). Bails when the tile shape
+    /// doesn't divide cleanly (m >= 16, n >= 16, k >= 16, m % 16 == 0,
+    /// n % 16 == 0). Smaller-shape callers should fall back through
+    /// the route picker (e.g., to the f32 × bf16 path after a Cast).
+    pub fn matmul_bf16_bf16_f32_bytes(
+        &self,
+        lhs: &VulkanStorageBytes,       // bf16 (2 B/elem)
+        rhs: &VulkanStorageBytes,       // bf16 (2 B/elem)
+        out: &mut VulkanStorageBytes,   // f32  (4 B/elem)
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> fuel_core_types::Result<()> {
+        if lhs_batch_dims.len() != rhs_batch_dims.len() {
+            fuel_core_types::bail!(
+                "matmul_bf16_bf16_f32_bytes: batch ranks must match (lhs={}, rhs={})",
+                lhs_batch_dims.len(), rhs_batch_dims.len(),
+            );
+        }
+        let lhs_batch: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+        let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+        let (batch, n_rep) = if lhs_batch == rhs_batch {
+            (lhs_batch, 1usize)
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+            (lhs_batch, lhs_batch / rhs_batch)
+        } else {
+            fuel_core_types::bail!(
+                "matmul_bf16_bf16_f32_bytes: unsupported batch combo (lhs={lhs_batch}, rhs={rhs_batch})",
+            );
+        };
+
+        // Coop-matrix shape constraint.
+        if m < 16 || n < 16 || k < 16 || m % 16 != 0 || n % 16 != 0 {
+            fuel_core_types::bail!(
+                "matmul_bf16_bf16_f32_bytes: coop tile requires m>=16 && n>=16 && k>=16 && \
+                 m%16==0 && n%16==0; got m={m}, n={n}, k={k}",
+            );
+        }
+        if self.pipelines.matmul_coop_bf16_bf16_pipeline.is_none() {
+            fuel_core_types::bail!(
+                "matmul_bf16_bf16_f32_bytes: VK_KHR_cooperative_matrix not available on this device",
+            );
+        }
+
+        let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(2);
+        let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(2);
+        let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(4);
+        if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "matmul_bf16_bf16_f32_bytes: buffer too small (lhs need {need_lhs} have {}; \
+                 rhs need {need_rhs} have {}; out need {need_out} have {})",
+                lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct MatmulParams {
+            m: u32, n: u32, k: u32,
+            sa_batch: u32, sa_row: u32, sa_col: u32,
+            sb_batch: u32, sb_row: u32, sb_col: u32,
+            sc_batch: u32,
+            n_rep: u32,
+            _pad: u32,
+        }
+        let params = MatmulParams {
+            m: m as u32, n: n as u32, k: k as u32,
+            sa_batch: (m * k) as u32, sa_row: k as u32, sa_col: 1,
+            sb_batch: (k * n) as u32, sb_row: n as u32, sb_col: 1,
+            sc_batch: (m * n) as u32,
+            n_rep: n_rep as u32, _pad: 0,
+        };
+        let params_size = std::mem::size_of::<MatmulParams>() as u64;
+
+        let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_bf16_bf16_f32_bytes: lhs is host-evicted".into(),
+        ))?;
+        let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_bf16_bf16_f32_bytes: rhs is host-evicted".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "matmul_bf16_bf16_f32_bytes: out is host-evicted".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&params)?;
+
+        // Round bf16 buffer ranges to u32 for robust-access safety.
+        let lhs_bind_len = ((lhs.len_bytes() + 3) & !3) as u64;
+        let rhs_bind_len = ((rhs.len_bytes() + 3) & !3) as u64;
+
+        let pipeline = self.pipelines.matmul_coop_bf16_bf16_pipeline.as_ref().unwrap();
+        let pipe_layout = self.pipelines.matmul_coop_bf16_bf16_layout.as_ref().unwrap();
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs_bind_len);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs_bind_len);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+
+        let gx = ((n + 63) / 64) as u32;
+        let gy = ((m + 15) / 16) as u32;
+        self.record_dispatch_batched(
+            "matmul_coop_bf16_bf16",
+            pipeline,
+            pipe_layout,
+            desc, (gx, gy, batch as u32), vec![(pbuf, pmem)], &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 element-wise integer power `y = x^exp` with `exp: i32`.
     /// Special-cased for exp in {0, 1, 2, 3}; generic `pow(x, e)`
     /// otherwise. Element-count derived from input byte size.
