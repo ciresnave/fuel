@@ -237,6 +237,9 @@ pub struct Pipelines {
     pub rope_f16_pipeline: ComputePipeline,
     pub rope_f16_layout: PipelineLayout,
 
+    pub rope_bf16_pipeline: ComputePipeline,
+    pub rope_bf16_layout: PipelineLayout,
+
     pub rope_f64_pipeline: ComputePipeline,
     pub rope_f64_layout: PipelineLayout,
 
@@ -486,6 +489,7 @@ impl Pipelines {
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
         let rope_f16_mod = registry.load_module(device, shaders::ROPE_F16)?;
+        let rope_bf16_mod = registry.load_module(device, shaders::ROPE_BF16)?;
         let rope_f64_mod = registry.load_module(device, shaders::ROPE_F64)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
         let conv2d_im2col_mod = registry.load_module(device, shaders::CONV2D_IM2COL)?;
@@ -581,6 +585,7 @@ impl Pipelines {
         let add_assign_scaled_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let rope_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let rope_f16_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
+        let rope_bf16_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let rope_f64_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let concat_along_dim_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         // conv2d_im2col uses 1 storage in (x) + 1 storage out (patches) + 1 uniform.
@@ -673,6 +678,7 @@ impl Pipelines {
         let add_assign_scaled_pipeline = ComputePipeline::new(device, &add_assign_scaled_layout, &add_assign_scaled_mod, "main")?;
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
         let rope_f16_pipeline = ComputePipeline::new(device, &rope_f16_layout, &rope_f16_mod, "main")?;
+        let rope_bf16_pipeline = ComputePipeline::new(device, &rope_bf16_layout, &rope_bf16_mod, "main")?;
         let rope_f64_pipeline = ComputePipeline::new(device, &rope_f64_layout, &rope_f64_mod, "main")?;
         let concat_along_dim_pipeline = ComputePipeline::new(device, &concat_along_dim_layout, &concat_along_dim_mod, "main")?;
         let conv2d_im2col_pipeline = ComputePipeline::new(device, &conv2d_im2col_layout, &conv2d_im2col_mod, "main")?;
@@ -763,6 +769,7 @@ impl Pipelines {
             add_assign_scaled_pipeline, add_assign_scaled_layout,
             rope_pipeline, rope_layout,
             rope_f16_pipeline, rope_f16_layout,
+            rope_bf16_pipeline, rope_bf16_layout,
             rope_f64_pipeline, rope_f64_layout,
             concat_along_dim_pipeline, concat_along_dim_layout,
             conv2d_im2col_pipeline, conv2d_im2col_layout,

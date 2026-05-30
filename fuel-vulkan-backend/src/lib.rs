@@ -4059,6 +4059,129 @@ impl VulkanBackend {
         )
     }
 
+    /// bf16 RoPE. Packed-u32 storage, pair-thread layout: each thread
+    /// processes 4 bf16 positions (the (i, i+1) pair and the (i+h,
+    /// i+h+1) pair) and writes 2 u32 words. Requires
+    /// `head_dim % 4 == 0` (so `h = head_dim / 2` is even and the
+    /// pairs align to u32 boundaries).
+    pub fn rope_bf16_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        cos: &VulkanStorageBytes,
+        sin: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        x_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let dims = x_layout.shape().dims();
+        let rank = dims.len();
+        if rank < 2 {
+            fuel_core_types::bail!(
+                "VulkanBackend::rope_bf16_bytes: rank >= 2 required, got {dims:?}",
+            );
+        }
+        let seq = dims[rank - 2] as u32;
+        let head_dim = dims[rank - 1] as u32;
+        if head_dim % 4 != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend::rope_bf16_bytes: head_dim must be a multiple of 4 \
+                 (pair-thread packing); got {head_dim}",
+            );
+        }
+        let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
+        let pairs_total = outer * seq * (head_dim / 4);
+
+        let need_bytes = (outer as usize) * (seq as usize) * (head_dim as usize) * 2;
+        if x.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::rope_bf16_bytes: buffer too small \
+                 (need {need_bytes}; x={}, out={})",
+                x.len_bytes(), out.len_bytes(),
+            );
+        }
+
+        let x_strides = x_layout.stride();
+        let contiguous = x_layout.is_contiguous();
+        let (x_s0, x_s1, x_s_seq, x_s_hd, x_outer1) = if contiguous {
+            (0u32, 0u32, 0u32, 0u32, 1u32)
+        } else {
+            match rank {
+                2 => (
+                    (x_strides[0] as usize * dims[0]) as u32,
+                    (x_strides[0] as usize * dims[0]) as u32,
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    1u32,
+                ),
+                3 => (
+                    x_strides[0] as u32,
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    1u32,
+                ),
+                4 => (
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    x_strides[3] as u32,
+                    dims[1] as u32,
+                ),
+                _ => fuel_core_types::bail!(
+                    "VulkanBackend::rope_bf16_bytes: stride-aware path supports rank 2-4, got {rank}",
+                ),
+            }
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RopeBf16Params {
+            outer: u32, seq: u32, head_dim: u32, pairs_total: u32,
+            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
+            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+        }
+        let p = RopeBf16Params {
+            outer, seq, head_dim, pairs_total,
+            x_s0, x_s1, x_s_seq, x_s_hd,
+            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+        };
+
+        let x_buf = x.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_bf16_bytes: x is host-evicted; fault back first".into(),
+        ))?;
+        let cos_buf = cos.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_bf16_bytes: cos is host-evicted; fault back first".into(),
+        ))?;
+        let sin_buf = sin.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_bf16_bytes: sin is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rope_bf16_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<RopeBf16Params>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos_buf, 0, cos.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin_buf, 0, sin.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+
+        let groups = ((pairs_total + 63) / 64).max(1);
+        let rb = [x_buf.raw() as u64, cos_buf.raw() as u64, sin_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "rope_bf16_bytes",
+            &self.pipelines.rope_bf16_pipeline,
+            &self.pipelines.rope_bf16_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f64 RoPE. Mirrors `rope_f32_bytes` exactly; per-element size 8.
     pub fn rope_f64_bytes(
         &self,
