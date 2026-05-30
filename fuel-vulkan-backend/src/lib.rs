@@ -2447,8 +2447,60 @@ impl VulkanBackend {
     /// the route picker (e.g., to the f32 × bf16 path after a Cast).
     pub fn matmul_bf16_bf16_f32_bytes(
         &self,
-        lhs: &VulkanStorageBytes,       // bf16 (2 B/elem)
-        rhs: &VulkanStorageBytes,       // bf16 (2 B/elem)
+        lhs: &VulkanStorageBytes,
+        rhs: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.matmul_half_half_f32_coop_bytes(
+            "matmul_bf16_bf16_f32_bytes",
+            self.pipelines.matmul_coop_bf16_bf16_pipeline.as_ref(),
+            self.pipelines.matmul_coop_bf16_bf16_layout.as_ref(),
+            "matmul_coop_bf16_bf16",
+            lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+        )
+    }
+
+    /// MatMul f16 × f16 → f32 via cooperative-matrix tensor cores.
+    /// Same shape constraints as the bf16 sibling; native float16_t
+    /// inputs (no downcast).
+    pub fn matmul_f16_f16_f32_bytes(
+        &self,
+        lhs: &VulkanStorageBytes,
+        rhs: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.matmul_half_half_f32_coop_bytes(
+            "matmul_f16_f16_f32_bytes",
+            self.pipelines.matmul_coop_f16_f16_pipeline.as_ref(),
+            self.pipelines.matmul_coop_f16_f16_layout.as_ref(),
+            "matmul_coop_f16_f16",
+            lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+        )
+    }
+
+    /// Shared body for `matmul_bf16_bf16_f32_bytes` and
+    /// `matmul_f16_f16_f32_bytes`. Element type only changes the
+    /// pipeline selection; everything else (descriptor bind sizes,
+    /// dispatch shape, batch handling) is identical.
+    #[allow(clippy::too_many_arguments)]
+    fn matmul_half_half_f32_coop_bytes(
+        &self,
+        debug_name: &'static str,
+        pipeline_opt: Option<&vulkane::safe::ComputePipeline>,
+        pipe_layout_opt: Option<&vulkane::safe::PipelineLayout>,
+        op_name: &'static str,
+        lhs: &VulkanStorageBytes,       // half (2 B/elem)
+        rhs: &VulkanStorageBytes,       // half (2 B/elem)
         out: &mut VulkanStorageBytes,   // f32  (4 B/elem)
         lhs_batch_dims: &[usize],
         rhs_batch_dims: &[usize],
@@ -2458,7 +2510,7 @@ impl VulkanBackend {
     ) -> fuel_core_types::Result<()> {
         if lhs_batch_dims.len() != rhs_batch_dims.len() {
             fuel_core_types::bail!(
-                "matmul_bf16_bf16_f32_bytes: batch ranks must match (lhs={}, rhs={})",
+                "{debug_name}: batch ranks must match (lhs={}, rhs={})",
                 lhs_batch_dims.len(), rhs_batch_dims.len(),
             );
         }
@@ -2470,29 +2522,29 @@ impl VulkanBackend {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_core_types::bail!(
-                "matmul_bf16_bf16_f32_bytes: unsupported batch combo (lhs={lhs_batch}, rhs={rhs_batch})",
+                "{debug_name}: unsupported batch combo (lhs={lhs_batch}, rhs={rhs_batch})",
             );
         };
 
-        // Coop-matrix shape constraint.
         if m < 16 || n < 16 || k < 16 || m % 16 != 0 || n % 16 != 0 {
             fuel_core_types::bail!(
-                "matmul_bf16_bf16_f32_bytes: coop tile requires m>=16 && n>=16 && k>=16 && \
+                "{debug_name}: coop tile requires m>=16 && n>=16 && k>=16 && \
                  m%16==0 && n%16==0; got m={m}, n={n}, k={k}",
             );
         }
-        if self.pipelines.matmul_coop_bf16_bf16_pipeline.is_none() {
-            fuel_core_types::bail!(
-                "matmul_bf16_bf16_f32_bytes: VK_KHR_cooperative_matrix not available on this device",
-            );
-        }
+        let (pipeline, pipe_layout) = match (pipeline_opt, pipe_layout_opt) {
+            (Some(p), Some(l)) => (p, l),
+            _ => fuel_core_types::bail!(
+                "{debug_name}: VK_KHR_cooperative_matrix not available on this device",
+            ),
+        };
 
         let need_lhs = lhs_batch.saturating_mul(m).saturating_mul(k).saturating_mul(2);
         let need_rhs = rhs_batch.saturating_mul(k).saturating_mul(n).saturating_mul(2);
         let need_out = lhs_batch.saturating_mul(m).saturating_mul(n).saturating_mul(4);
         if lhs.len_bytes() < need_lhs || rhs.len_bytes() < need_rhs || out.len_bytes() < need_out {
             fuel_core_types::bail!(
-                "matmul_bf16_bf16_f32_bytes: buffer too small (lhs need {need_lhs} have {}; \
+                "{debug_name}: buffer too small (lhs need {need_lhs} have {}; \
                  rhs need {need_rhs} have {}; out need {need_out} have {})",
                 lhs.len_bytes(), rhs.len_bytes(), out.len_bytes(),
             );
@@ -2517,22 +2569,18 @@ impl VulkanBackend {
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
         let lhs_buf = lhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "matmul_bf16_bf16_f32_bytes: lhs is host-evicted".into(),
+            format!("{debug_name}: lhs is host-evicted"),
         ))?;
         let rhs_buf = rhs.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "matmul_bf16_bf16_f32_bytes: rhs is host-evicted".into(),
+            format!("{debug_name}: rhs is host-evicted"),
         ))?;
         let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "matmul_bf16_bf16_f32_bytes: out is host-evicted".into(),
+            format!("{debug_name}: out is host-evicted"),
         ))?;
         let (pbuf, pmem) = self.upload_params(&params)?;
 
-        // Round bf16 buffer ranges to u32 for robust-access safety.
         let lhs_bind_len = ((lhs.len_bytes() + 3) & !3) as u64;
         let rhs_bind_len = ((rhs.len_bytes() + 3) & !3) as u64;
-
-        let pipeline = self.pipelines.matmul_coop_bf16_bf16_pipeline.as_ref().unwrap();
-        let pipe_layout = self.pipelines.matmul_coop_bf16_bf16_layout.as_ref().unwrap();
 
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, lhs_buf, 0, lhs_bind_len);
@@ -2545,7 +2593,7 @@ impl VulkanBackend {
         let gx = ((n + 63) / 64) as u32;
         let gy = ((m + 15) / 16) as u32;
         self.record_dispatch_batched(
-            "matmul_coop_bf16_bf16",
+            op_name,
             pipeline,
             pipe_layout,
             desc, (gx, gy, batch as u32), vec![(pbuf, pmem)], &rb, &wb,
