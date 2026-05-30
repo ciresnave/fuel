@@ -2831,6 +2831,86 @@ fn vulkan_dispatch_rope_f64() {
     }
 }
 
+#[test]
+#[ignore]
+fn vulkan_dispatch_rope_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // head_dim must be a multiple of 4 for the pair-thread scheme.
+    let outer = 1usize;
+    let seq = 2usize;
+    let hd = 8usize;            // = 4k, h = 4, i in {0,1,2,3} → 2 pair-threads per row
+    let n_x = outer * seq * hd;
+    let n_table = seq * hd;
+
+    // Real 45° rotation (cos=sin=sqrt(0.5)) — same shape as the f64
+    // test but at bf16 precision.
+    let host_x_f32: Vec<f32> = vec![
+        // s=0
+        1.0, 2.0, 3.0, 4.0,    5.0, 6.0, 7.0, 8.0,
+        // s=1
+        2.0, 4.0, 6.0, 8.0,    1.0, 3.0, 5.0, 7.0,
+    ];
+    let q = std::f32::consts::FRAC_1_SQRT_2;
+    let host_cos_f32: Vec<f32> = vec![q; n_table];
+    let host_sin_f32: Vec<f32> = vec![q; n_table];
+    let host_x: Vec<half::bf16> = host_x_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let host_cos: Vec<half::bf16> = host_cos_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let host_sin: Vec<half::bf16> = host_sin_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    let x_storage = upload_bf16(&backend, &host_x);
+    let cos_storage = upload_bf16(&backend, &host_cos);
+    let sin_storage = upload_bf16(&backend, &host_sin);
+    let out_bytes = backend.alloc_bytes_handle(n_x * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let x_arc = Arc::new(RwLock::new(x_storage));
+    let cos_arc = Arc::new(RwLock::new(cos_storage));
+    let sin_arc = Arc::new(RwLock::new(sin_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Rope,
+            &[DType::BF16, DType::BF16, DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let x_layout = Layout::contiguous(Shape::from_dims(&[outer, seq, hd]));
+    let table_layout = Layout::contiguous(Shape::from_dims(&[seq, hd]));
+    let out_layout = x_layout.clone();
+    kernel(
+        &[Arc::clone(&x_arc), Arc::clone(&cos_arc), Arc::clone(&sin_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[x_layout, table_layout.clone(), table_layout, out_layout],
+        &OpParams::Rope { outer_count: outer, seq, head_dim: hd },
+    ).expect("rope bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    // Reference computed in f32 (matches kernel's f32 internal math).
+    let h = hd / 2;
+    for s in 0..seq {
+        let row = s * hd;
+        for i in 0..h {
+            let x0 = host_x_f32[row + i];
+            let x1 = host_x_f32[row + i + h];
+            let expected_lo = x0 * q - x1 * q;
+            let expected_hi = x1 * q + x0 * q;
+            let got_lo = got[row + i].to_f32();
+            let got_hi = got[row + i + h].to_f32();
+            // bf16 ~7-bit mantissa → ~1% relative.
+            let tol_lo = expected_lo.abs() * 0.01 + 5e-2;
+            let tol_hi = expected_hi.abs() * 0.01 + 5e-2;
+            assert!((got_lo - expected_lo).abs() < tol_lo,
+                "rope-bf16 s={s} i={i}: got {got_lo}, expected {expected_lo}");
+            assert!((got_hi - expected_hi).abs() < tol_hi,
+                "rope-bf16 s={s} i+h={}: got {got_hi}, expected {expected_hi}",
+                i + h);
+        }
+    }
+}
+
 // ---- Cast f32 ↔ f64 (V.3.G.cast, 2026-05-30) ----
 
 #[test]

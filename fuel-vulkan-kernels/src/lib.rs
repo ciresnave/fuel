@@ -112,6 +112,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("rms_norm_last_dim_backward", include_bytes!("../spv/rms_norm_last_dim_backward.spv")),
     ("rope",                      include_bytes!("../spv/rope.spv")),
     ("rope_f16",                  include_bytes!("../spv/rope_f16.spv")),
+    ("rope_bf16",                 include_bytes!("../spv/rope_bf16.spv")),
     ("rope_f64",                  include_bytes!("../spv/rope_f64.spv")),
     ("softmax",                   include_bytes!("../spv/softmax.spv")),
     ("softmax_f16",               include_bytes!("../spv/softmax_f16.spv")),
@@ -303,6 +304,10 @@ pub const ADD_ASSIGN_SCALED: &str = "add_assign_scaled";
 pub const ROPE: &str = "rope";
 /// Fused RoPE, f16 storage with f32 rotation arithmetic.
 pub const ROPE_F16: &str = "rope_f16";
+/// Fused RoPE, bf16 packed-u32 storage with f32 rotation. Pair-thread
+/// layout (each thread writes 2 full u32 words covering 4 bf16
+/// positions); requires `head_dim % 4 == 0`.
+pub const ROPE_BF16: &str = "rope_bf16";
 /// Fused RoPE, native f64 end-to-end.
 pub const ROPE_F64: &str = "rope_f64";
 /// Single-dispatch concat along an arbitrary dim.

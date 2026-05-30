@@ -734,6 +734,17 @@ pub mod attention {
         })
     }
 
+    pub fn rope_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        rope_typed("rope_bf16", inputs, outputs, layouts, params, |b, x, c, s, o, l| {
+            b.rope_bf16_bytes(x, c, s, o, l)
+        })
+    }
+
     pub fn rope_f64(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -2328,6 +2339,8 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         let f64_d = DType::F64;
         table.register_with_caps_and_precision(OpKind::Rope, &[f16,   f16,   f16,   f16],   vk, attention::rope_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
         table.register_with_caps_and_precision(OpKind::Rope, &[f64_d, f64_d, f64_d, f64_d], vk, attention::rope_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+        let bf16 = DType::BF16;
+        table.register_with_caps_and_precision(OpKind::Rope, &[bf16, bf16, bf16, bf16], vk, attention::rope_bf16, strided, VULKAN_HALF_POINTWISE_PRECISION);
     }
 
     // ----- IndexSelect (V.2.D, f32 src + u32 ids) — pure gather (byte-level).
