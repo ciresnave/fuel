@@ -40,6 +40,77 @@ extends it.
 
 ### Phase 1: Op IR variants + destructive_input marking
 
+**2026-05-30 architectural correction** — investigation post-FA2
+launcher migration surfaced two assumptions in the original draft
+below that don't hold against the actual fuel-graph::Op surface:
+
+1. **There is no `UnaryOp` enum on `fuel-graph::Op`.** Every unary
+   op is its own unit variant (`Op::Relu`, `Op::Silu`, `Op::Gelu`,
+   …). The `UnaryOp` enum is on the older `fuel-core::Op`
+   (autograd-backward record), not on the lazy IR. So
+   `Op::InplaceUnary(UnaryOp)` as written would either pull
+   `fuel-core::UnaryOp` upward into `fuel-graph` (layer violation)
+   or invent a new graph-side `UnaryOpInplace` enum. The PowI
+   backward template (commit e4c5e8cc) shows Fuel's actual
+   convention for parameterized variants: per-op variant + per-op
+   FusedOpId. Pick one — see decision questions below.
+2. **There is no `Op::Affine` on `fuel-graph::Op`.** Affine lives
+   on `fuel-core::Op` (used during autograd recording) and is
+   represented in the graph IR as composed `MulScalar + AddScalar`
+   primitives. So `Op::InplaceAffine { mul, add }` can't be added
+   "alongside" an existing graph variant — it'd be a new fused op
+   (probably `FusedOps::INPLACE_AFFINE` matching the PowI BW
+   pattern) or two primitive variants `Op::InplaceMulScalar(f64)` +
+   `Op::InplaceAddScalar(f64)`.
+
+The fuel-core::Op vs fuel-graph::Op duality also means **Phase 4
+(mutation-safety pass) touches both enums** — fuel-graph for the
+mutation site itself, fuel-core for the BackpropOp record that
+notes "this tensor was saved for backward." Phase 4's scope grows
+slightly; not a blocker, but worth surfacing now.
+
+### Decision questions for the next session
+
+Before opening Phase 1 code, the user (or a session that has the
+user available to confirm) needs to pick:
+
+**Q1: per-op variant or wrapper-enum?**
+
+- **A**: `Op::ReluInplace`, `Op::SiluInplace`, `Op::GeluInplace`, … —
+  one variant per existing unary op. Matches the existing fuel-graph
+  convention. Adds ~12 variants but each is a unit and trivial to
+  match against. Match arms grow by 12 lines each across the ~20
+  exhaustive-match touchpoints.
+- **B**: `Op::InplaceUnary(InplaceUnaryKind)` where
+  `InplaceUnaryKind` is a new fuel-graph-side enum listing
+  `{Relu, Silu, Gelu, Tanh, Sigmoid, Neg, …}`. Adds 1 variant +
+  1 enum. Match arms grow by 1 line each but executors need a
+  secondary match on the inner kind.
+
+**Q2: affine as primitive variants or fused op?**
+
+- **A**: Two primitive variants `Op::InplaceMulScalar(f64)` +
+  `Op::InplaceAddScalar(f64)`. Composes naturally; matches how
+  non-inplace affine is already represented.
+- **B**: `FusedOps::INPLACE_AFFINE` +
+  `FusedOpParams::InplaceAffine { mul, add }`. Single launch into
+  baracuda's `affine_inplace_*` symbol (which exists per
+  alpha.31 audit). PowI BW template pattern.
+
+**Q3: backward integration in Phase 1 or deferred?**
+
+- **A**: Phase 1 ships only the Op variants + `destructive_input` +
+  the ~20 match arms (no-op or unimplemented arms in autograd /
+  CPU / CUDA). Phase 4 adds the mutation-safety pass later.
+- **B**: Phase 1 + minimum-viable autograd: every new variant gets
+  a backward recipe (or NoGradient guard) up front so the graph
+  can't be built into an unrecoverable state.
+
+The original draft below describes Phase 1 with assumptions Q1=B,
+Q2=B, Q3=A. Both A's for Q1+Q2 are equally valid; the trade-off
+is "verbosity in the Op enum" vs "secondary match in every
+executor." PowI-BW (commit e4c5e8cc) is closest to Q2=B + Q3=A.
+
 Add to `fuel-graph/src/lib.rs::Op`:
 
 ```rust
