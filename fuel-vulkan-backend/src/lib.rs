@@ -3413,6 +3413,150 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// LayerNorm backward, last-dim, byte-width family. Mirrors the
+    /// SoftmaxBackward byte-storage shape: 2 inputs (x, g) → 1 output
+    /// (dx). Same 4-reduction pattern as the f32 backward kernel; the
+    /// non-f32 dtypes accumulate in f32 (or natively for f64).
+    pub fn layer_norm_last_dim_backward_f32_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        self.layer_norm_backward_typed_bytes(
+            "layer_norm_last_dim_backward_f32_bytes", 4, false,
+            x, g, dx, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_backward_pipeline,
+            &self.pipelines.layer_norm_last_dim_backward_layout,
+        )
+    }
+
+    pub fn layer_norm_last_dim_backward_f16_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        self.layer_norm_backward_typed_bytes(
+            "layer_norm_last_dim_backward_f16_bytes", 2, false,
+            x, g, dx, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_backward_f16_pipeline,
+            &self.pipelines.layer_norm_last_dim_backward_f16_layout,
+        )
+    }
+
+    pub fn layer_norm_last_dim_backward_bf16_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        if last_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "layer_norm_last_dim_backward_bf16_bytes: last_dim must be even (lane-pair); got {last_dim}",
+            );
+        }
+        self.layer_norm_backward_typed_bytes(
+            "layer_norm_last_dim_backward_bf16_bytes", 2, false,
+            x, g, dx, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_backward_bf16_pipeline,
+            &self.pipelines.layer_norm_last_dim_backward_bf16_layout,
+        )
+    }
+
+    pub fn layer_norm_last_dim_backward_f64_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        self.layer_norm_backward_typed_bytes(
+            "layer_norm_last_dim_backward_f64_bytes", 8, true,
+            x, g, dx, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_backward_f64_pipeline,
+            &self.pipelines.layer_norm_last_dim_backward_f64_layout,
+        )
+    }
+
+    fn layer_norm_backward_typed_bytes(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        eps_is_f64: bool,
+        x: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * elem_bytes;
+        if x.len_bytes() < need_bytes || g.len_bytes() < need_bytes || dx.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: buffer too small (need {need_bytes}; x={}, g={}, dx={})",
+                x.len_bytes(), g.len_bytes(), dx.len_bytes(),
+            );
+        }
+        let x_buf = x.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: x is host-evicted; fault back first"),
+        ))?;
+        let g_buf = g.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: g is host-evicted; fault back first"),
+        ))?;
+        let dx_buf = dx.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: dx is host-evicted; fault back first"),
+        ))?;
+
+        let (pbuf, pmem) = if eps_is_f64 {
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct LnBwdParamsF64 { n_rows: u32, n_cols: u32, eps: f64 }
+            let p = LnBwdParamsF64 { n_rows: outer_count as u32, n_cols: last_dim as u32, eps };
+            self.upload_params(&p)?
+        } else {
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct LnBwdParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+            let p = LnBwdParams {
+                n_rows: outer_count as u32, n_cols: last_dim as u32,
+                eps: eps as f32, _pad: 0,
+            };
+            self.upload_params(&p)?
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, g_buf, 0, g.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, dx_buf, 0, dx.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [x_buf.raw() as u64, g_buf.raw() as u64];
+        let wb = [dx_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// LayerNorm forward, last-dim, byte-width family (f32/f16/bf16/f64).
     /// `out[i] = (x[i] - mean) / sqrt(var + eps)` per row.
     pub fn layer_norm_last_dim_f32_bytes(
