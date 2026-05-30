@@ -3401,6 +3401,128 @@ fn vulkan_dispatch_masked_fill_f64() {
     }
 }
 
+// ---- ScatterAdd f32 (V.3.G.scatter_add, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_scatter_add_f32_dim0() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // base shape [3, 2] = zeros; indices [2, 2]:
+    //   [[0, 1], [2, 0]]
+    // src [2, 2] = [[1, 2], [3, 4]]
+    // dim=0:
+    //   src[0,0]=1 → out[0,0]+=1
+    //   src[0,1]=2 → out[1,1]+=2
+    //   src[1,0]=3 → out[2,0]+=3
+    //   src[1,1]=4 → out[0,1]+=4
+    // expected: [[1, 4], [0, 2], [3, 0]]
+    let base = [0.0_f32, 0., 0., 0., 0., 0.];
+    let indices: Vec<u32> = vec![0, 1, 2, 0];
+    let src = [1.0_f32, 2., 3., 4.];
+    let expected = [1.0_f32, 4., 0., 2., 3., 0.];
+
+    let base_storage = upload_f32(&backend, &base);
+    let idx_bytes: &[u8] = bytemuck::cast_slice(&indices);
+    let idx_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(idx_bytes).expect("idx upload")),
+        DType::U32,
+    );
+    let src_storage = upload_f32(&backend, &src);
+    let out_bytes = backend.alloc_bytes_handle(6 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let base_arc = Arc::new(RwLock::new(base_storage));
+    let idx_arc = Arc::new(RwLock::new(idx_storage));
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::ScatterAdd,
+            &[DType::F32, DType::U32, DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let base_layout = Layout::contiguous(Shape::from_dims(&[3, 2]));
+    let idx_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let src_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[3, 2]));
+    kernel(
+        &[Arc::clone(&base_arc), Arc::clone(&idx_arc), Arc::clone(&src_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[base_layout, idx_layout, src_layout, out_layout],
+        &OpParams::ScatterAdd {
+            base_shape: vec![3, 2], src_shape: vec![2, 2], dim: 0,
+        },
+    ).expect("scatter_add f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "scatter_add f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_scatter_add_f32_starts_from_base() {
+    // Verify that the wrapper actually copies base → out before the
+    // accumulation (i.e. out is NOT zero-initialized, it starts as
+    // a copy of base).
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let base = [10.0_f32, 20., 30., 40.];     // shape [2, 2]
+    let indices: Vec<u32> = vec![0, 1];       // shape [1, 2]: row 0 → into row {0,1}
+    let src = [100.0_f32, 200.];              // shape [1, 2]
+    // out[0,0] = base[0,0] + src[0,0] = 110
+    // out[1,1] = base[1,1] + src[0,1] = 240
+    // out[0,1] = base[0,1] = 20
+    // out[1,0] = base[1,0] = 30
+    let expected = [110.0_f32, 20., 30., 240.];
+
+    let base_storage = upload_f32(&backend, &base);
+    let idx_bytes: &[u8] = bytemuck::cast_slice(&indices);
+    let idx_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(idx_bytes).expect("idx upload")),
+        DType::U32,
+    );
+    let src_storage = upload_f32(&backend, &src);
+    let out_bytes = backend.alloc_bytes_handle(4 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let base_arc = Arc::new(RwLock::new(base_storage));
+    let idx_arc = Arc::new(RwLock::new(idx_storage));
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::ScatterAdd,
+            &[DType::F32, DType::U32, DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let base_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let idx_layout = Layout::contiguous(Shape::from_dims(&[1, 2]));
+    let src_layout = Layout::contiguous(Shape::from_dims(&[1, 2]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    kernel(
+        &[Arc::clone(&base_arc), Arc::clone(&idx_arc), Arc::clone(&src_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[base_layout, idx_layout, src_layout, out_layout],
+        &OpParams::ScatterAdd {
+            base_shape: vec![2, 2], src_shape: vec![1, 2], dim: 0,
+        },
+    ).expect("scatter_add f32 dispatch (base-init test)");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "scatter_add f32 base-init[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- ArgMaxDim / ArgMinDim along last dim (V.3.G.arg_reduce, 2026-05-30) ----
 
 #[test]

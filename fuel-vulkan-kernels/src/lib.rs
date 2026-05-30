@@ -132,6 +132,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("reduce_bf16",               include_bytes!("../spv/reduce_bf16.spv")),
     ("reduce_f64",                include_bytes!("../spv/reduce_f64.spv")),
     ("arg_reduce_last_dim_f32",   include_bytes!("../spv/arg_reduce_last_dim_f32.spv")),
+    ("scatter_add_f32",           include_bytes!("../spv/scatter_add_f32.spv")),
     ("arg_reduce_last_dim_f16",   include_bytes!("../spv/arg_reduce_last_dim_f16.spv")),
     ("arg_reduce_last_dim_bf16",  include_bytes!("../spv/arg_reduce_last_dim_bf16.spv")),
     ("arg_reduce_last_dim_f64",   include_bytes!("../spv/arg_reduce_last_dim_f64.spv")),
@@ -382,6 +383,11 @@ pub const REDUCE_F64: &str = "reduce_f64";
 /// tree-reduction tracking (val, idx) pairs in shared memory.
 /// op_id: 0 = argmax, 1 = argmin. Output is U32 indices.
 pub const ARG_REDUCE_LAST_DIM_F32: &str = "arg_reduce_last_dim_f32";
+/// ScatterAdd along `dim` — f32. Output starts initialized to base
+/// (copied by the wrapper); kernel atomically accumulates src into
+/// out at the indexed positions via uint CAS (stock Vulkan, no
+/// VK_EXT_shader_atomic_float required).
+pub const SCATTER_ADD_F32: &str = "scatter_add_f32";
 pub const ARG_REDUCE_LAST_DIM_F16: &str = "arg_reduce_last_dim_f16";
 pub const ARG_REDUCE_LAST_DIM_BF16: &str = "arg_reduce_last_dim_bf16";
 pub const ARG_REDUCE_LAST_DIM_F64: &str = "arg_reduce_last_dim_f64";
