@@ -2195,15 +2195,13 @@ macro_rules! vk_arg_reduce_wrapper {
             })?;
             let shape = layout.shape();
             let rank = shape.dims().len();
-            if dim != rank - 1 {
+            if dim >= rank {
                 return Err(Error::Msg(format!(
-                    "vulkan_dispatch::arg_reduce::{}: only last-dim is native (got dim={dim}, rank={rank})",
+                    "vulkan_dispatch::arg_reduce::{}: dim {dim} >= rank {rank}",
                     $label,
                 )).bt());
             }
             let dims_slice = shape.dims();
-            let last_dim = dims_slice[rank - 1];
-            let outer_count: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let a = vulkan_input(&in_guard)?;
@@ -2214,7 +2212,16 @@ macro_rules! vk_arg_reduce_wrapper {
                 )).bt()
             })?;
             let out = vulkan_output(&mut out_guard)?;
-            backend.arg_reduce_last_dim_bytes($dtype, $op_id, $label, a, out, outer_count, last_dim)
+            if dim == rank - 1 {
+                let last_dim = dims_slice[rank - 1];
+                let outer_count: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+                backend.arg_reduce_last_dim_bytes($dtype, $op_id, $label, a, out, outer_count, last_dim)
+            } else {
+                let n_outer: usize = dims_slice[..dim].iter().product::<usize>().max(1);
+                let d_dim = dims_slice[dim];
+                let n_inner: usize = dims_slice[dim + 1..].iter().product::<usize>().max(1);
+                backend.arg_reduce_any_dim_bytes($dtype, $op_id, $label, a, out, n_outer, d_dim, n_inner)
+            }
         }
     };
 }

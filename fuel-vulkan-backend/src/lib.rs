@@ -4323,6 +4323,95 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// ArgMaxDim / ArgMinDim along an ARBITRARY dim. Slow path
+    /// counterpart to `arg_reduce_last_dim_bytes`: one thread per
+    /// output element, serial scan over `d_dim`. Suitable when the
+    /// reduction axis is interior (stride > 1).
+    pub fn arg_reduce_any_dim_bytes(
+        &self,
+        input_dtype: DType,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        n_outer: usize,
+        d_dim: usize,
+        n_inner: usize,
+    ) -> fuel_core_types::Result<()> {
+        let elem_bytes = match input_dtype {
+            DType::F32 => 4, DType::F16 => 2, DType::BF16 => 2, DType::F64 => 8,
+            other => fuel_core_types::bail!("{op_name}: unsupported input dtype {other:?}"),
+        };
+        let total_out = n_outer * n_inner;
+        let total_in = n_outer * d_dim * n_inner;
+        let need_in = total_in * elem_bytes;
+        let need_out = total_out * 4;
+        if input.len_bytes() < need_in {
+            fuel_core_types::bail!(
+                "{op_name}: input {} bytes < required {need_in}",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "{op_name}: out {} bytes < required {need_out}",
+                out.len_bytes(),
+            );
+        }
+        let (pipeline, pipe_layout) = match input_dtype {
+            DType::F32  => (&self.pipelines.arg_reduce_any_dim_f32_pipeline,
+                            &self.pipelines.arg_reduce_any_dim_f32_layout),
+            DType::F16  => (&self.pipelines.arg_reduce_any_dim_f16_pipeline,
+                            &self.pipelines.arg_reduce_any_dim_f16_layout),
+            DType::BF16 => (&self.pipelines.arg_reduce_any_dim_bf16_pipeline,
+                            &self.pipelines.arg_reduce_any_dim_bf16_layout),
+            DType::F64  => (&self.pipelines.arg_reduce_any_dim_f64_pipeline,
+                            &self.pipelines.arg_reduce_any_dim_f64_layout),
+            _ => unreachable!(),
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct ARParams { n_outer: u32, n_inner: u32, d_dim: u32, op_id: u32 }
+        let p = ARParams {
+            n_outer: n_outer as u32,
+            n_inner: n_inner as u32,
+            d_dim:   d_dim as u32,
+            op_id,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out host-evicted; fault back first"),
+        ))?;
+
+        // Round descriptor ranges to u32 multiples — bf16/f16 inputs
+        // may total an odd byte count for odd shapes; robust-access
+        // would otherwise discard the final half-word read.
+        let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        let groups = Self::workgroups(total_out);
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// PadBackward reflect / replicate mode — f32 only. Each output
     /// position atomically accumulates its grad into the per-axis
     /// mapped input position. Wrapper zero-fills grad_in before
