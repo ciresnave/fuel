@@ -2870,6 +2870,58 @@ fn causal_conv1d_f32_cpu_wrapper(
     )
 }
 
+/// Dispatch wrapper for `(SelectiveScan, [F32; 6], Cpu)`. Five inputs
+/// (u, delta, a, b, c) → one output (y). Geometry +
+/// `delta_softplus` flow through `OpParams::SelectiveScan`.
+fn selective_scan_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 5 {
+        return Err(Error::Msg(format!(
+            "selective_scan wrapper expects 5 inputs (u, delta, a, b, c), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "selective_scan wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (batch, seqlen, dim, dstate, delta_softplus) = match params {
+        OpParams::SelectiveScan { batch, seqlen, dim, dstate, delta_softplus } => {
+            (*batch, *seqlen, *dim, *dstate, *delta_softplus)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "selective_scan wrapper expects OpParams::SelectiveScan, got {other:?}",
+            ))
+            .bt());
+        }
+    };
+    let u_guard = read_storage(&inputs[0])?;
+    let delta_guard = read_storage(&inputs[1])?;
+    let a_guard = read_storage(&inputs[2])?;
+    let b_guard = read_storage(&inputs[3])?;
+    let c_guard = read_storage(&inputs[4])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let u_cpu = cpu_input(&u_guard)?;
+    let delta_cpu = cpu_input(&delta_guard)?;
+    let a_cpu = cpu_input(&a_guard)?;
+    let b_cpu = cpu_input(&b_guard)?;
+    let c_cpu = cpu_input(&c_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::selective_scan_f32(
+        u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
+        batch, seqlen, dim, dstate, delta_softplus,
+    )
+}
+
 /// Dispatch wrapper for `(FlashAttn, *, Cpu)`. Three or four inputs
 /// (q, k, v, optional alibi_slopes). Geometry + math params flow
 /// through `OpParams::FlashAttn`.
@@ -3553,6 +3605,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         &[DType::F32, DType::F32, DType::F32, DType::F32],
         cpu,
         causal_conv1d_f32_cpu_wrapper,
+    );
+
+    // SelectiveScan: 5 inputs (u, delta, a, b, c) + 1 output, all F32.
+    table.register(
+        SelectiveScan,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        cpu,
+        selective_scan_f32_cpu_wrapper,
     );
 
     // In-place unary activations — Phase 3e of in-place ops. Same
@@ -4644,6 +4704,7 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost_inplace_affine_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
+        cost_selective_scan_cpu,
         ATTN_CPU_PRECISION, CAUSAL_CONV1D_CPU_PRECISION,
         CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
@@ -4651,7 +4712,7 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         INPLACE_AFFINE_CPU_PRECISION, NORM_FAMILY_CPU_PRECISION,
         POWI_BACKWARD_CPU_PRECISION,
         QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
-        ROPE_CPU_PRECISION,
+        ROPE_CPU_PRECISION, SELECTIVE_SCAN_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
@@ -5084,6 +5145,18 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         causal_conv1d_f32_cpu_wrapper,
         cost = cost_causal_conv1d_cpu,
         precision = CAUSAL_CONV1D_CPU_PRECISION);
+
+    // SELECTIVE_SCAN — six-tuple (u, delta, a, b, c, out), all F32.
+    // v1 covers Mamba-1's forward scan with 5 required inputs;
+    // optional d_skip / z / delta_bias and the last_state second
+    // output are mechanical follow-ups when a consumer needs them.
+    const SS_F32: &[DType] = &[
+        DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32,
+    ];
+    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F32,
+        selective_scan_f32_cpu_wrapper,
+        cost = cost_selective_scan_cpu,
+        precision = SELECTIVE_SCAN_CPU_PRECISION);
 }
 
 #[cfg(test)]
@@ -5181,6 +5254,7 @@ mod tests {
             OpKind::Copy,
             OpKind::FusedSoftmaxCrossEntropy,
             OpKind::CausalConv1d,
+            OpKind::SelectiveScan,
         ];
 
         // Populate the binding table the same way the production
@@ -5342,6 +5416,7 @@ mod tests {
             OpKind::Copy,
             OpKind::FusedSoftmaxCrossEntropy,
             OpKind::CausalConv1d,
+            OpKind::SelectiveScan,
         ];
 
         let mut table = KernelBindingTable::new();

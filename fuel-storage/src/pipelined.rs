@@ -1211,6 +1211,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::CausalConv1d)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::SELECTIVE_SCAN =>
+        {
+            Some(OpKind::SelectiveScan)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -1585,6 +1590,53 @@ fn op_to_op_params(
                 seq_out,
                 kernel,
                 use_silu: *use_silu,
+            }
+        }
+        // SelectiveScan: derive (batch, seqlen, dim, dstate) from the
+        // input layouts. u: [batch, seqlen, dim]; a: [dim, dstate].
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::SelectiveScan { delta_softplus },
+        ) => {
+            if node.inputs.len() != 5 {
+                return Err(Error::Msg(format!(
+                    "SelectiveScan expects 5 inputs (u, delta, a, b, c), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let u_layout = input_layout(node.inputs[0]);
+            let a_layout = input_layout(node.inputs[2]);
+            let u_dims = u_layout.shape().dims();
+            let a_dims = a_layout.shape().dims();
+            if u_dims.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "SelectiveScan: u must be rank 3 [batch, seqlen, dim], got {u_dims:?}",
+                ))
+                .bt());
+            }
+            if a_dims.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "SelectiveScan: a must be rank 2 [dim, dstate], got {a_dims:?}",
+                ))
+                .bt());
+            }
+            let batch = u_dims[0];
+            let seqlen = u_dims[1];
+            let dim = u_dims[2];
+            let dstate = a_dims[1];
+            if a_dims[0] != dim {
+                return Err(Error::Msg(format!(
+                    "SelectiveScan: a's first dim {} must equal dim {dim}", a_dims[0],
+                ))
+                .bt());
+            }
+            OpParams::SelectiveScan {
+                batch,
+                seqlen,
+                dim,
+                dstate,
+                delta_softplus: *delta_softplus,
             }
         }
         // Phase 7.6 step 3: SoftmaxLastDim flows through
@@ -7597,5 +7649,143 @@ mod tests {
         };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(out, &[0.0, 0.0, 10.0, 20.0, 0.0, 0.0]);
+    }
+
+    /// Regression for the PipelinedExecutor ordering-integration session.
+    ///
+    /// Graph: `x = Const`, `step_x = Step(x)`, `y = SigmoidInplace(x)`.
+    /// `Step` and `SigmoidInplace` are both readers of `x`; `Step` is
+    /// non-destructive, `SigmoidInplace` mutates `x`'s storage. The
+    /// correct semantic is for `Step` to read PRE-mutation bytes.
+    ///
+    /// Pre-this-session (raw `topo_order_multi`): the two are siblings
+    /// in topo order and the tie-break is unspecified — `SigmoidInplace`
+    /// could run first, making `step_x` see post-sigmoid bytes
+    /// (`[1, 1, 1, 1]` because every sigmoid output is positive).
+    ///
+    /// Post-this-session: `execution_plan` consults `derive_ordering`,
+    /// which pins `SigmoidInplace` AFTER every other reader of `x`.
+    /// `step_x` deterministically sees `x` and is `[1, 0, 1, 0]`.
+    #[test]
+    fn pipelined_inplace_with_multiple_readers_orders_correctly() {
+        use fuel_core_types::Shape;
+        let data = [1.0_f32, -2.0, 3.0, -4.0];
+        let src_storage = crate::from_slice_cpu(&data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, step_id, sig_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let step = g.push(Node {
+                op: Op::Step, inputs: vec![x],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let sig = g.push(Node {
+                op: Op::SigmoidInplace, inputs: vec![x],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(step, BackendId::Cpu);
+            g.set_target_backend(sig, BackendId::Cpu);
+            (x, step, sig)
+        };
+
+        let mut cache = StorageCache::new();
+        cache.insert(x_id, Arc::new(RwLock::new(src_storage)));
+
+        let results = PipelinedExecutor::realize_many(
+            graph, &[step_id, sig_id], cache,
+        ).expect("realize_many");
+
+        // step_x must reflect pre-mutation x: sign of [1, -2, 3, -4] →
+        // [1, 0, 1, 0]. If the executor ran SigmoidInplace first, step
+        // would see all-positive sigmoid outputs and produce [1, 1, 1, 1].
+        let step_guard = results[0].0.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &step_guard.inner else {
+            panic!("expected Cpu storage for step output");
+        };
+        let step_out: &[f32] = c.as_slice().expect("f32 cast");
+        assert_eq!(
+            step_out, &[1.0_f32, 0.0, 1.0, 0.0],
+            "Step must run before SigmoidInplace; got post-mutation bytes"
+        );
+        drop(step_guard);
+
+        // SigmoidInplace's output Arc IS the mutated cache entry — bytes
+        // approximate sigmoid([1, -2, 3, -4]).
+        let sig_guard = results[1].0.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &sig_guard.inner else {
+            panic!("expected Cpu storage for sigmoid output");
+        };
+        let sig_out: &[f32] = c.as_slice().expect("f32 cast");
+        let sig_ref = [
+            1.0_f32 / (1.0 + (-1.0_f32).exp()),
+            1.0_f32 / (1.0 + (2.0_f32).exp()),
+            1.0_f32 / (1.0 + (-3.0_f32).exp()),
+            1.0_f32 / (1.0 + (4.0_f32).exp()),
+        ];
+        for (got, want) in sig_out.iter().zip(sig_ref.iter()) {
+            assert!((got - want).abs() < 1e-6, "sigmoid: got {got}, want {want}");
+        }
+    }
+
+    /// Regression for the PipelinedExecutor ordering-integration session.
+    ///
+    /// Canonical residual-connection pattern:
+    ///   `x = Const`, `y = ReluInplace(x)`, `z = Add(y, x)`.
+    ///
+    /// Pre-this-session: `derive_ordering` was never run, so the cycle
+    /// (Add must precede ReluInplace per ordering edge; Add must follow
+    /// ReluInplace per data-flow edge through y) was undetected. The
+    /// executor produced `z = relu(x) + relu(x) = [2, 0, 6, 0]` —
+    /// silently wrong.
+    ///
+    /// Post-this-session: `insert_safety_copies` runs before
+    /// `execution_plan`, inserts `Op::Copy(x) → x_safe`, rewires Add's
+    /// `x` input to `x_safe`. Result: `z = relu(x) + x = [2, -2, 6, -4]`.
+    #[test]
+    fn pipelined_residual_connection_inserts_safety_copy() {
+        use fuel_core_types::Shape;
+        let data = [1.0_f32, -2.0, 3.0, -4.0];
+        let src_storage = crate::from_slice_cpu(&data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x_id, _y_id, z_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let y = g.push(Node {
+                op: Op::ReluInplace, inputs: vec![x],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let z = g.push(Node {
+                op: Op::Add, inputs: vec![y, x],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(y, BackendId::Cpu);
+            g.set_target_backend(z, BackendId::Cpu);
+            (x, y, z)
+        };
+
+        let mut cache = StorageCache::new();
+        cache.insert(x_id, Arc::new(RwLock::new(src_storage)));
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, z_id, cache)
+                .expect("realize z — insert_safety_copies must break the cycle");
+
+        let guard = result_arc.read().unwrap();
+        let crate::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let got: &[f32] = c.as_slice().expect("f32 cast");
+        assert_eq!(
+            got, &[2.0_f32, -2.0, 6.0, -4.0],
+            "Add must read pre-mutation x via the inserted safety copy"
+        );
     }
 }

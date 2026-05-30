@@ -542,6 +542,33 @@ pub fn cost_softmax_last_dim_primitive_cpu(
     }
 }
 
+/// Cost for `SelectiveScan` (binding-table form). FLOPs scale with
+/// `batch × seqlen × dim × dstate`. Conservative ~16 FLOPs per inner
+/// iteration (exp ≈ 10, plus the FMAs for h update and y accumulate).
+pub fn cost_selective_scan_primitive_cpu(
+    _shapes: &[Shape],
+    _dtypes: &[DType],
+    params: &OpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    let (batch, seqlen, dim, dstate) = match params {
+        OpParams::SelectiveScan { batch, seqlen, dim, dstate, .. } => {
+            (*batch as u64, *seqlen as u64, *dim as u64, *dstate as u64)
+        }
+        _ => return CostEstimate::default(),
+    };
+    let flops = batch * seqlen * dim * dstate * 16;
+    let bytes_moved = 2 * batch * seqlen * dim * 4
+        + 2 * batch * seqlen * dstate * 4
+        + dim * dstate * 4
+        + batch * seqlen * dim * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 /// Cost for `CausalConv1d` (binding-table form). Reads
 /// `batch × channels × seq_out × kernel` FLOPs (2 per FMA) plus an
 /// optional ~10-FLOP SiLU per output. Bandwidth approximation: x +
@@ -779,6 +806,7 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
             => cost_softmax_last_dim_primitive_cpu,
         FusedSoftmaxCrossEntropy => cost_fused_softmax_cross_entropy_primitive_cpu,
         CausalConv1d => cost_causal_conv1d_primitive_cpu,
+        SelectiveScan => cost_selective_scan_primitive_cpu,
         RmsNormLastDim | RmsNormLastDimBackward
         | LayerNormLastDim | LayerNormLastDimBackward
             => cost_norm_last_dim_primitive_cpu,

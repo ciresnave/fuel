@@ -568,6 +568,22 @@ pub enum OpParams {
         kernel:   usize,
         use_silu: bool,
     },
+
+    /// SelectiveScan execution parameters. 5 required inputs:
+    /// `u [batch, seqlen, dim]`, `delta [batch, seqlen, dim]`,
+    /// `a [dim, dstate]`, `b [batch, seqlen, dstate]`,
+    /// `c [batch, seqlen, dstate]`. Output `y [batch, seqlen, dim]`.
+    /// All tensors share dtype.
+    ///
+    /// `delta_softplus` toggles applying softplus(delta) before use
+    /// (matches baracuda's `selective_scan_*_run` flag).
+    SelectiveScan {
+        batch:          usize,
+        seqlen:         usize,
+        dim:            usize,
+        dstate:         usize,
+        delta_softplus: bool,
+    },
 }
 
 // =============================================================================

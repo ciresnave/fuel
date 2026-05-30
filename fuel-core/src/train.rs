@@ -803,6 +803,65 @@ mod tests {
         assert_eq!(out_shape.dims(), &[2, 4, 6]);
     }
 
+    /// SelectiveScan end-to-end: minimal seqlen=1 case via the
+    /// dispatcher; verifies the full plumbing from builder → Op::Fused
+    /// → op_to_op_kind/op_to_op_params → wrapper → kernel.
+    #[test]
+    fn selective_scan_basic_end_to_end() {
+        let device = crate::Device::cpu();
+        // batch=1, seqlen=1, dim=1, dstate=1. Same numbers as the
+        // byte-kernel single-step test: expected y = 3.0.
+        let u = LazyTensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
+        let delta = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
+        let a = u.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1, 1]));
+        let b = u.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1]));
+        let c = u.const_f32_like(vec![0.5_f32], Shape::from_dims(&[1, 1, 1]));
+        let y = u.selective_scan(&delta, &a, &b, &c, false).realize_f32();
+        assert_eq!(y.len(), 1);
+        assert!((y[0] - 3.0).abs() < 1e-5, "got {}", y[0]);
+    }
+
+    /// SelectiveScan with delta_softplus through the dispatcher.
+    #[test]
+    fn selective_scan_with_softplus_end_to_end() {
+        let device = crate::Device::cpu();
+        let u = LazyTensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
+        let delta = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1, 1]));
+        let a = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1]));
+        let b = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
+        let c = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
+        let y = u.selective_scan(&delta, &a, &b, &c, true).realize_f32();
+        let expected = 2.0_f32.ln();
+        assert!((y[0] - expected).abs() < 1e-5, "got {} expected {expected}", y[0]);
+    }
+
+    /// Registry: the SelectiveScan entry is wired into the default
+    /// registry and reachable by id + name.
+    #[test]
+    fn selective_scan_registry_entry_registered() {
+        let r = fuel_graph::registry::default_registry();
+        let e = r
+            .entry(fuel_graph::registry::FusedOps::SELECTIVE_SCAN)
+            .expect("SELECTIVE_SCAN registered");
+        assert_eq!(e.name, "SelectiveScan");
+        assert_eq!(
+            r.id_for_name("SelectiveScan"),
+            Some(fuel_graph::registry::FusedOps::SELECTIVE_SCAN),
+        );
+        // Shape rule: y matches u's shape.
+        let out_shape = (e.shape_rule)(
+            &[
+                Shape::from_dims(&[2, 8, 64]),   // u: [batch, seqlen, dim]
+                Shape::from_dims(&[2, 8, 64]),   // delta: same
+                Shape::from_dims(&[64, 16]),     // a: [dim, dstate]
+                Shape::from_dims(&[2, 8, 16]),   // b: [batch, seqlen, dstate]
+                Shape::from_dims(&[2, 8, 16]),   // c: [batch, seqlen, dstate]
+            ],
+            &fuel_graph::registry::FusedOpParams::SelectiveScan { delta_softplus: false },
+        );
+        assert_eq!(out_shape.dims(), &[2, 8, 64]);
+    }
+
     /// Registry: the FusedSoftmaxCrossEntropy entry is wired into the
     /// default registry and reachable by id + name.
     #[test]

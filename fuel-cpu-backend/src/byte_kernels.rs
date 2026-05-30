@@ -5152,6 +5152,112 @@ pub fn causal_conv1d_f32(
 }
 
 // =============================================================================
+// SelectiveScan — Mamba-1's selective state-space scan (forward)
+// =============================================================================
+//
+// Per-timestep recurrence (per (batch b, dim i)):
+//
+//   d = softplus(delta[b,t,i]) if delta_softplus else delta[b,t,i]
+//   for j in 0..dstate:
+//     h[b,i,j] = exp(d * a[i,j]) * h[b,i,j] + d * b[b,t,j] * u[b,t,i]
+//   y[b,t,i] = sum_j(h[b,i,j] * c[b,t,j])
+//
+// h is the recurrent hidden state, [batch, dim, dstate], allocated
+// internally and zero-initialized at the start of the scan.
+//
+// Algorithmic complexity: O(batch · seqlen · dim · dstate) FMAs.
+
+/// SelectiveScan CPU kernel (F32). Output buffer size is
+/// `batch * seqlen * dim * 4` bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn selective_scan_f32(
+    u: &CpuStorageBytes,
+    delta: &CpuStorageBytes,
+    a: &CpuStorageBytes,
+    b: &CpuStorageBytes,
+    c: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch: usize,
+    seqlen: usize,
+    dim: usize,
+    dstate: usize,
+    delta_softplus: bool,
+) -> Result<()> {
+    let elem = std::mem::size_of::<f32>();
+    let u_need = batch.saturating_mul(seqlen).saturating_mul(dim).saturating_mul(elem);
+    let delta_need = u_need;
+    let a_need = dim.saturating_mul(dstate).saturating_mul(elem);
+    let b_need = batch.saturating_mul(seqlen).saturating_mul(dstate).saturating_mul(elem);
+    let c_need = b_need;
+    let out_need = u_need;
+    let check = |name: &str, got: usize, need: usize| -> Result<()> {
+        if got != need {
+            Err(Error::Msg(format!(
+                "selective_scan_f32: {name} bytes={got}, expected {need}",
+            ))
+            .bt())
+        } else {
+            Ok(())
+        }
+    };
+    check("u",     u.len_bytes(),     u_need)?;
+    check("delta", delta.len_bytes(), delta_need)?;
+    check("a",     a.len_bytes(),     a_need)?;
+    check("b",     b.len_bytes(),     b_need)?;
+    check("c",     c.len_bytes(),     c_need)?;
+    check("out",   out.len_bytes(),   out_need)?;
+    if batch == 0 || seqlen == 0 || dim == 0 || dstate == 0 {
+        let out_view: &mut [f32] = out.as_slice_mut()?;
+        out_view.fill(0.0);
+        return Ok(());
+    }
+    let u_view: &[f32] = u.as_slice()?;
+    let delta_view: &[f32] = delta.as_slice()?;
+    let a_view: &[f32] = a.as_slice()?;
+    let b_view: &[f32] = b.as_slice()?;
+    let c_view: &[f32] = c.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+
+    // Recurrent hidden state — allocated once, threaded across timesteps.
+    // Layout: [batch][dim][dstate], flat with strides (dim*dstate, dstate, 1).
+    let mut h = vec![0.0_f64; batch * dim * dstate];
+
+    for bi in 0..batch {
+        for t in 0..seqlen {
+            let u_row_off = (bi * seqlen + t) * dim;
+            let delta_row_off = u_row_off;
+            let b_row_off = (bi * seqlen + t) * dstate;
+            let c_row_off = b_row_off;
+            let out_row_off = u_row_off;
+            for i in 0..dim {
+                let raw_d = delta_view[delta_row_off + i] as f64;
+                let d = if delta_softplus {
+                    // softplus(x) = ln(1 + exp(x)). Numerically stable
+                    // form: max(x, 0) + ln(1 + exp(-|x|)).
+                    let abs_x = raw_d.abs();
+                    raw_d.max(0.0) + (1.0 + (-abs_x).exp()).ln()
+                } else {
+                    raw_d
+                };
+                let u_val = u_view[u_row_off + i] as f64;
+                let h_off = (bi * dim + i) * dstate;
+                let a_row_off = i * dstate;
+                let mut y_acc: f64 = 0.0;
+                for j in 0..dstate {
+                    let a_val = a_view[a_row_off + j] as f64;
+                    let b_val = b_view[b_row_off + j] as f64;
+                    let h_new = (d * a_val).exp() * h[h_off + j] + d * b_val * u_val;
+                    h[h_off + j] = h_new;
+                    y_acc += h_new * (c_view[c_row_off + j] as f64);
+                }
+                out_view[out_row_off + i] = y_acc as f32;
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // FlashAttn — naive multi-head SDPA (math definition)
 // =============================================================================
 //
@@ -9179,6 +9285,86 @@ mod tests {
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
         // seq_in (4) != seq_out (3) + kernel - 1 (2) → 4 != 5 → error
         let r = causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 3, 3, false);
+        assert!(r.is_err());
+    }
+
+    /// SelectiveScan: minimal seqlen=1 case verifies the single-step
+    /// recurrence. With h initialized to zero, after one step:
+    ///   d  = delta[0,0,0] = 1.0
+    ///   for j in 0..1:
+    ///     h[0,0,0] = exp(1.0 * a[0,0]) * 0 + 1.0 * b[0,0,0] * u[0,0,0]
+    ///              = 1.0 * 2.0 * 3.0 = 6.0
+    ///   y[0,0,0] = h[0,0,0] * c[0,0,0] = 6.0 * 0.5 = 3.0
+    /// (a, b, c, u all picked so the math is hand-verifiable)
+    #[test]
+    fn selective_scan_f32_single_step_seqlen_1() {
+        let u = CpuStorageBytes::from_slice(&[3.0_f32]);     // [1, 1, 1]
+        let delta = CpuStorageBytes::from_slice(&[1.0_f32]); // [1, 1, 1]
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);    // [1, 1] — note: exp(-1) used below
+        let b = CpuStorageBytes::from_slice(&[2.0_f32]);     // [1, 1, 1]
+        let c = CpuStorageBytes::from_slice(&[0.5_f32]);     // [1, 1, 1]
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
+            .expect("selective_scan");
+        let result: &[f32] = out.as_slice().unwrap();
+        // h[0,0,0] = exp(1.0 * -1.0) * 0 + 1.0 * 2.0 * 3.0 = 6.0
+        // y[0,0,0] = 6.0 * 0.5 = 3.0
+        assert!((result[0] - 3.0).abs() < 1e-5, "got {}", result[0]);
+    }
+
+    /// SelectiveScan: two timesteps verify the state is threaded
+    /// across steps. Same a/b/c/u as the single-step test repeated;
+    /// the second step picks up h=6.0 from the first.
+    #[test]
+    fn selective_scan_f32_two_steps_state_threading() {
+        let u = CpuStorageBytes::from_slice(&[3.0_f32, 3.0]);     // [1, 2, 1]
+        let delta = CpuStorageBytes::from_slice(&[1.0_f32, 1.0]); // [1, 2, 1]
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);          // [1, 1]
+        let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);     // [1, 2, 1]
+        let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);     // [1, 2, 1]
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 2, 1, 1, false)
+            .expect("selective_scan");
+        let result: &[f32] = out.as_slice().unwrap();
+        // step 0: h = exp(-1) * 0 + 1*2*3 = 6, y = 6 * 0.5 = 3.0
+        // step 1: h = exp(-1) * 6 + 1*2*3 = 6/e + 6, y = (6/e + 6) * 0.5
+        let h_step1 = (-1.0_f32).exp() * 6.0 + 6.0;
+        let y_step1 = h_step1 * 0.5;
+        assert!((result[0] - 3.0).abs() < 1e-5, "step 0: {}", result[0]);
+        assert!((result[1] - y_step1).abs() < 1e-5, "step 1: {} expected {y_step1}", result[1]);
+    }
+
+    /// SelectiveScan: delta_softplus toggle applies softplus(delta).
+    /// softplus(0) = ln(1+1) = ln 2 ≈ 0.693.
+    #[test]
+    fn selective_scan_f32_delta_softplus() {
+        let u = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let delta = CpuStorageBytes::from_slice(&[0.0_f32]);  // softplus(0) ≈ 0.693
+        let a = CpuStorageBytes::from_slice(&[0.0_f32]);       // exp(0.693 * 0) = 1
+        let b = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let c = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, true)
+            .expect("selective_scan");
+        // d = softplus(0) = ln 2
+        // h = exp(ln2 * 0) * 0 + ln2 * 1 * 1 = ln 2
+        // y = ln 2 * 1 = ln 2
+        let result: &[f32] = out.as_slice().unwrap();
+        let expected = 2.0_f32.ln();
+        assert!((result[0] - expected).abs() < 1e-5, "got {} expected {expected}", result[0]);
+    }
+
+    /// SelectiveScan: bad shapes error rather than panicking.
+    #[test]
+    fn selective_scan_f32_bad_shapes_error() {
+        let u = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let delta = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let a = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let c = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        // batch=2 but only 1-element inputs → error
+        let r = selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 2, 1, 1, 1, false);
         assert!(r.is_err());
     }
 }
