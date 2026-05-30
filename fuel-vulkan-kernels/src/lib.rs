@@ -136,6 +136,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("arg_reduce_last_dim_f32",   include_bytes!("../spv/arg_reduce_last_dim_f32.spv")),
     ("scatter_add_f32",           include_bytes!("../spv/scatter_add_f32.spv")),
     ("scatter_add_f64",           include_bytes!("../spv/scatter_add_f64.spv")),
+    ("scatter_add_bf16",          include_bytes!("../spv/scatter_add_bf16.spv")),
+    ("scatter_add_f16",           include_bytes!("../spv/scatter_add_f16.spv")),
     ("arg_reduce_last_dim_f16",   include_bytes!("../spv/arg_reduce_last_dim_f16.spv")),
     ("arg_reduce_last_dim_bf16",  include_bytes!("../spv/arg_reduce_last_dim_bf16.spv")),
     ("arg_reduce_last_dim_f64",   include_bytes!("../spv/arg_reduce_last_dim_f64.spv")),
@@ -400,6 +402,12 @@ pub const SCATTER_ADD_F32: &str = "scatter_add_f32";
 /// atomics + shaderFloat64 (Vulkan 1.2 core; available on every
 /// device that supports f64).
 pub const SCATTER_ADD_F64: &str = "scatter_add_f64";
+/// ScatterAdd bf16 via sub-word CAS. Each u32 holds two bf16 lanes;
+/// the kernel CAS-replaces only the target half. Math is at f32.
+pub const SCATTER_ADD_BF16: &str = "scatter_add_bf16";
+/// ScatterAdd f16 via sub-word CAS. Same pattern as bf16 but uses
+/// Slang's `f16tof32`/`f32tof16` half-word builtins.
+pub const SCATTER_ADD_F16: &str = "scatter_add_f16";
 pub const ARG_REDUCE_LAST_DIM_F16: &str = "arg_reduce_last_dim_f16";
 pub const ARG_REDUCE_LAST_DIM_BF16: &str = "arg_reduce_last_dim_bf16";
 pub const ARG_REDUCE_LAST_DIM_F64: &str = "arg_reduce_last_dim_f64";
