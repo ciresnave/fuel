@@ -359,3 +359,176 @@ impl<T: crate::Module> StreamingModule for Map<T> {
         xs.apply(&self.0)
     }
 }
+
+/// Per-batch active-element mask for streaming pipelines that process
+/// multiple sequences simultaneously.
+///
+/// When batching N sequences through a streaming module, individual
+/// sequences finish at different times. The mask tracks which batch
+/// elements are still active: `true` means "this row is still
+/// streaming, update its state from the new input"; `false` means
+/// "this row has finished, preserve its existing state unchanged".
+///
+/// The empty mask (no `Vec`) means "all elements active" — useful as
+/// a default when you don't need per-row tracking.
+///
+/// Adapted from xn (Laurent Mazare's inference-focused successor to
+/// Candle), MIT-compatible. See [`apply_state_mask`] for the
+/// arithmetic-mask state-update operator.
+///
+/// # Example
+///
+/// ```rust
+/// use fuel_core::streaming::StreamMask;
+/// let mask = StreamMask::new(vec![true, false, true]);
+/// assert!(mask.is_active(0));
+/// assert!(!mask.is_active(1));
+/// assert!(mask.is_active(2));
+///
+/// let all = StreamMask::all_active(4);
+/// for i in 0..4 { assert!(all.is_active(i)); }
+///
+/// let empty = StreamMask::empty();
+/// assert!(empty.is_empty());
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct StreamMask(Option<Vec<bool>>);
+
+impl StreamMask {
+    /// Create an empty mask. Semantically equivalent to "all batch
+    /// elements active" — use this when you don't need per-row
+    /// tracking. [`is_active`] returns `true` for all indices.
+    ///
+    /// [`is_active`]: StreamMask::is_active
+    pub fn empty() -> Self {
+        Self(None)
+    }
+
+    /// Create a mask from an explicit per-batch-element boolean
+    /// vector. Length defines the batch size.
+    pub fn new(mask: Vec<bool>) -> Self {
+        Self(Some(mask))
+    }
+
+    /// Create a fully-active mask for `batch_size` elements.
+    /// Functionally equivalent to [`empty`] for [`is_active`]
+    /// queries, but materializes the underlying vector — useful when
+    /// downstream code needs to read the full mask buffer.
+    ///
+    /// [`empty`]: StreamMask::empty
+    /// [`is_active`]: StreamMask::is_active
+    pub fn all_active(batch_size: usize) -> Self {
+        Self(Some(vec![true; batch_size]))
+    }
+
+    /// Return `true` if no per-row mask is set (all rows are
+    /// treated as active by default).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Whether batch row `batch_idx` is still streaming. Empty masks
+    /// return `true` for every index. Out-of-bounds queries on a
+    /// non-empty mask panic, matching the underlying `Vec::[]`.
+    pub fn is_active(&self, batch_idx: usize) -> bool {
+        self.0.as_ref().is_none_or(|v| v[batch_idx])
+    }
+
+    /// Borrow the underlying per-row vector, if set.
+    pub fn as_slice(&self) -> Option<&[bool]> {
+        self.0.as_deref()
+    }
+
+    /// Batch size implied by the mask, or `None` for an empty mask.
+    pub fn batch_size(&self) -> Option<usize> {
+        self.0.as_ref().map(|v| v.len())
+    }
+}
+
+/// Per-batch state-update operator for streaming decode.
+///
+/// `apply_state_mask(new_state, old_state, mask)` returns the state
+/// after one streaming step:
+///
+/// - Rows where `mask[i]` is `true` use `new_state[i]` (still active).
+/// - Rows where `mask[i]` is `false` use `old_state[i]` (finished —
+///   preserve unchanged).
+///
+/// Implemented arithmetically as `old + (new - old) * mask_f` so it
+/// composes cleanly with autograd-tracked tensors when the streaming
+/// pipeline is run as a forward pass. The mask is uploaded as a
+/// rank-`new_state.rank()` tensor with shape `[batch, 1, 1, ...]` so
+/// it broadcasts across the trailing dims.
+///
+/// Empty masks shortcut to `new_state` (all active, no-op blend).
+/// `(None, None)` returns `None`. `(None, Some(_))` returns Err — the
+/// caller violated the "streaming module should only be used with
+/// constant steps" invariant (you can't go from "had state" to
+/// "no state" mid-stream).
+///
+/// Adapted from xn (Laurent Mazare's inference-focused successor to
+/// Candle), MIT-compatible.
+///
+/// # Example
+///
+/// ```rust
+/// use fuel_core::streaming::{StreamMask, apply_state_mask};
+/// use fuel_core::{Tensor, Device, DType};
+/// // Two batch rows, scalar state per row.
+/// let new_s = Tensor::new(&[[1.0f32], [2.0]], &Device::cpu())?;
+/// let old_s = Tensor::new(&[[10.0f32], [20.0]], &Device::cpu())?;
+/// let mask = StreamMask::new(vec![true, false]);
+/// let out = apply_state_mask(&Some(new_s), &Some(old_s), &mask)?.unwrap();
+/// // Row 0 active → new; row 1 finished → old.
+/// assert_eq!(out.to_vec2::<f32>()?, [[1.0], [20.0]]);
+/// # Ok::<(), fuel_core::Error>(())
+/// ```
+pub fn apply_state_mask(
+    new_state: &Option<Tensor>,
+    old_state: &Option<Tensor>,
+    mask: &StreamMask,
+) -> Result<Option<Tensor>> {
+    // Empty mask → all-active → just take new_state (or None if it
+    // doesn't exist).
+    let bools = match mask.as_slice() {
+        None => return Ok(new_state.clone()),
+        Some(b) => b,
+    };
+    match (new_state, old_state) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => {
+            crate::bail!(
+                "apply_state_mask: streaming module should only be used with \
+                 constant steps (new_state went from Some to None mid-stream)"
+            )
+        }
+        (Some(new_t), old_opt) => {
+            // Build a `[batch, 1, 1, ..]` mask tensor by replicating
+            // 1.0 / 0.0 over the batch dim and broadcasting trailing
+            // dims at apply time.
+            let dtype = new_t.dtype();
+            let device = new_t.device();
+            let batch = bools.len();
+            let mut shape = vec![1usize; new_t.rank()];
+            shape[0] = batch;
+            // Convert via f32 then cast — works for f32/f16/bf16/f64
+            // without needing per-dtype `Tensor::from_vec`s.
+            let mask_f32: Vec<f32> =
+                bools.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
+            let mask_t = Tensor::from_vec(mask_f32, shape, device)?.to_dtype(dtype)?;
+            let result = match old_opt {
+                None => {
+                    // No prior state to preserve — masked-zero
+                    // inactive rows.
+                    new_t.broadcast_mul(&mask_t)?
+                }
+                Some(old_t) => {
+                    let diff = new_t.sub(old_t)?;
+                    let masked_diff = diff.broadcast_mul(&mask_t)?;
+                    old_t.add(&masked_diff)?
+                }
+            };
+            Ok(Some(result))
+        }
+    }
+}
