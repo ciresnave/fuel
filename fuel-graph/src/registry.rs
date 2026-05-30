@@ -34,6 +34,7 @@ pub mod conv2d;
 pub mod conv_transpose_2d;
 pub mod flash_attn;
 pub mod fused_linear;
+pub mod inplace_affine;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
 pub mod paged_attn;
@@ -202,6 +203,11 @@ pub enum FusedOpParams {
         k:          usize,
         n:          usize,
     },
+    /// InplaceAffine — `x = mul·x + add`, mutating input 0. Single
+    /// input. Destructive on index 0 (marked via
+    /// `Op::destructive_input`). Phase 1 of the in-place ops
+    /// infrastructure.
+    InplaceAffine { mul: f64, add: f64 },
 }
 
 /// Hashable key for [`FusedOpParams`]. Used by `op_key`/CSE so that two
@@ -348,6 +354,11 @@ impl FusedOpParams {
                 tag: 15,
                 bits: Vec::new(),
                 ints: vec![*exp as i64],
+            },
+            FusedOpParams::InplaceAffine { mul, add } => FusedOpParamsKey {
+                tag: 16,
+                bits: vec![mul.to_bits(), add.to_bits()],
+                ints: Vec::new(),
             },
         }
     }
@@ -656,6 +667,17 @@ impl FusedOps {
     /// reaches it directly from `Op::PowI`'s arm rather than via a
     /// `BackwardKind::Fused` edge.
     pub const POWI_BACKWARD: FusedOpId = FusedOpId(15);
+
+    /// In-place affine: `x = mul·x + add`. Single input (the mutated
+    /// tensor), single launch into baracuda's `affine_inplace_*`
+    /// symbol on CUDA. Carries `mul: f64, add: f64` in
+    /// [`FusedOpParams::InplaceAffine`]. Marked destructive on input
+    /// 0 via `Op::destructive_input`, so `opt::derive_ordering` pins
+    /// it to run after every non-destructive reader. Phase 1 of the
+    /// in-place ops infrastructure
+    /// (`docs/session-prompts/in-place-ops-infrastructure.md`);
+    /// dispatch + autograd integration deferred to Phases 3 + 4.
+    pub const INPLACE_AFFINE: FusedOpId = FusedOpId(16);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -685,6 +707,23 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(paged_attn::entry())
             .with_entry(qmatmul::entry())
             .with_entry(powi_backward::entry())
+            // NOTE: `inplace_affine::entry()` is intentionally NOT
+            // registered in Phase 1 of the in-place ops infrastructure
+            // (commit landing 2026-05-30). The
+            // `precision_guarantee_lint_bit_stable_cpu_coverage` test
+            // in fuel-storage enforces that every registered fused op
+            // has a bit-stable CPU BackendImpl, and Phase 1 deliberately
+            // ships only the Op IR + destructive_input + match-arm
+            // structure (Q3=A in the session prompt). The registration
+            // moves here when Phase 3 wires the CPU + CUDA
+            // `affine_inplace_*` dispatch.
+            //
+            // The `FusedOps::INPLACE_AFFINE` constant + the
+            // `FusedOpParams::InplaceAffine { mul, add }` variant +
+            // the `registry/inplace_affine.rs` metadata module are all
+            // shipped in Phase 1 so downstream code can refer to them;
+            // the only deferred piece is the registry entry that the
+            // CPU-coverage lint counts.
     })
 }
 

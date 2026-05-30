@@ -255,6 +255,31 @@ pub enum Op {
     /// Element-wise absolute value (`|x|`).
     Abs,
 
+    // --- in-place elementwise unary (Phase 1 of the in-place ops
+    // infrastructure landed 2026-05-30; see
+    // `docs/session-prompts/in-place-ops-infrastructure.md`) ---
+    //
+    // Each variant mutates input 0 in place; output aliases input 0.
+    // Pinned to run after every non-destructive reader of input 0 by
+    // `opt::derive_ordering` via the `destructive_input() -> Some(0)`
+    // contract. Backward integration deferred to Phase 4 (the
+    // mutation-safety pass auto-clones tape-tracked inputs).
+    /// In-place Relu: `x = max(0, x)`. Same semantics as `Op::Relu`,
+    /// mutates input 0. Not yet wired through autograd.
+    ReluInplace,
+    /// In-place Silu: `x = x * sigmoid(x)`. Same semantics as
+    /// `Op::Silu`, mutates input 0. Not yet wired through autograd.
+    SiluInplace,
+    /// In-place Gelu (tanh approximation): mutates input 0 with the
+    /// same formula as `Op::Gelu`. Not yet wired through autograd.
+    GeluInplace,
+    /// In-place Tanh: mutates input 0. Same semantics as `Op::Tanh`.
+    /// Not yet wired through autograd.
+    TanhInplace,
+    /// In-place Sigmoid: mutates input 0. Same semantics as
+    /// `Op::Sigmoid`. Not yet wired through autograd.
+    SigmoidInplace,
+
     // --- element-wise comparison (output is U8 mask) ---
     /// Element-wise equality (`a == b`) producing a `U8` mask: `1`
     /// where the inputs are equal, `0` otherwise. Both operands must
@@ -770,6 +795,13 @@ impl Op {
     pub fn destructive_input(&self) -> Option<usize> {
         match self {
             Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::ZeroFill => Some(0),
+            // In-place unary ops mutate input 0.
+            Op::ReluInplace
+            | Op::SiluInplace
+            | Op::GeluInplace
+            | Op::TanhInplace
+            | Op::SigmoidInplace => Some(0),
+            Op::Fused(id, _) if *id == crate::registry::FusedOps::INPLACE_AFFINE => Some(0),
             _ => None,
         }
     }
@@ -866,6 +898,11 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Step                 => "Step",
         Op::Recip                => "Recip",
         Op::Abs                  => "Abs",
+        Op::ReluInplace          => "ReluInplace",
+        Op::SiluInplace          => "SiluInplace",
+        Op::GeluInplace          => "GeluInplace",
+        Op::TanhInplace          => "TanhInplace",
+        Op::SigmoidInplace       => "SigmoidInplace",
         Op::Equal                => "Equal",
         Op::Ne                   => "Ne",
         Op::Lt                   => "Lt",
@@ -6305,6 +6342,32 @@ impl Tensor {
                     // meaningless. Like Op::Const / Op::Alloc, no
                     // gradient propagates back.
                 }
+                Op::ReluInplace
+                | Op::SiluInplace
+                | Op::GeluInplace
+                | Op::TanhInplace
+                | Op::SigmoidInplace => {
+                    // Phase 1 of the in-place ops infrastructure
+                    // (`docs/session-prompts/in-place-ops-infrastructure.md`).
+                    // Backward integration is the Phase 4 mutation-safety
+                    // pass: when an in-place op would clobber a tape-
+                    // tracked tensor, the pass inserts an `Op::Clone`
+                    // before the mutation and rewires the saved-for-
+                    // backward edge to the clone. Until Phase 4 lands,
+                    // an in-place node reaching this arm means model
+                    // code mutated a tape-tracked tensor without the
+                    // safety pass — fail loudly rather than silently
+                    // produce wrong gradients.
+                    panic!(
+                        "Op::{:?} reached autograd backward without the \
+                         mutation-safety pass running first. Phase 4 of the \
+                         in-place ops infrastructure is not yet shipped; \
+                         until then, in-place ops are only safe on tensors \
+                         outside the autograd tape (call `.detach()` first \
+                         or use the functional equivalent).",
+                        op,
+                    );
+                }
             }
         }
 
@@ -8022,5 +8085,87 @@ mod tests {
         let deps = ord.deps_of(w.id());
         assert_eq!(deps.len(), 1, "write_slice should have one ordering dep (the relu)");
         assert_eq!(deps[0], ro.id(), "write_slice must run after the non-destructive reader");
+    }
+
+    // ---- In-place ops Phase 1 -----------------------------------------------
+    //
+    // Smoke tests for the 5 new in-place unary variants
+    // (`Op::ReluInplace`, `Op::SiluInplace`, `Op::GeluInplace`,
+    // `Op::TanhInplace`, `Op::SigmoidInplace`) and `FusedOps::INPLACE_AFFINE`.
+    // Phase 1 only ships the structural plumbing (Op IR + destructive_input +
+    // short_name + scheduler integration); dispatch + autograd land in Phases
+    // 3 + 4. See `docs/session-prompts/in-place-ops-infrastructure.md`.
+
+    #[test]
+    fn inplace_unary_destructive_input_is_zero() {
+        for op in [
+            Op::ReluInplace,
+            Op::SiluInplace,
+            Op::GeluInplace,
+            Op::TanhInplace,
+            Op::SigmoidInplace,
+        ] {
+            assert_eq!(
+                op.destructive_input(), Some(0),
+                "in-place unary {op:?} must declare input 0 destructive",
+            );
+        }
+    }
+
+    #[test]
+    fn inplace_unary_short_names_round_trip() {
+        assert_eq!(Op::ReluInplace.short_name(), "ReluInplace");
+        assert_eq!(Op::SiluInplace.short_name(), "SiluInplace");
+        assert_eq!(Op::GeluInplace.short_name(), "GeluInplace");
+        assert_eq!(Op::TanhInplace.short_name(), "TanhInplace");
+        assert_eq!(Op::SigmoidInplace.short_name(), "SigmoidInplace");
+    }
+
+    #[test]
+    fn inplace_affine_fused_op_destructive_input_is_zero() {
+        let op = Op::Fused(
+            crate::registry::FusedOps::INPLACE_AFFINE,
+            crate::registry::FusedOpParams::InplaceAffine { mul: 2.0, add: 1.0 },
+        );
+        assert_eq!(op.destructive_input(), Some(0));
+    }
+
+    #[test]
+    fn inplace_affine_params_key_dedupe_on_same_mul_add() {
+        // Two `InplaceAffine` params with identical (mul, add) hash to the
+        // same key; differing values produce distinct keys. Lets CSE / the
+        // existing op_key infrastructure collapse identical in-place affines
+        // (when callers wire them through the equivalent graph machinery).
+        let a = crate::registry::FusedOpParams::InplaceAffine { mul: 2.0, add: 1.0 };
+        let b = crate::registry::FusedOpParams::InplaceAffine { mul: 2.0, add: 1.0 };
+        let c = crate::registry::FusedOpParams::InplaceAffine { mul: 2.0, add: 0.5 };
+        assert_eq!(a.key(), b.key(), "identical mul/add must dedupe");
+        assert_ne!(a.key(), c.key(), "different add must produce distinct key");
+    }
+
+    #[test]
+    fn inplace_unary_derives_ordering_after_non_destructive_readers() {
+        // Graph:
+        //   x   = const f32 [4]
+        //   y_a = x.relu()                  (non-destructive reader of x)
+        //   y_b = manually-pushed Op::ReluInplace on x  (destructive)
+        // Expected: y_b must run after y_a.
+        let x = Tensor::from_f32(
+            vec![1.0_f32, -1.0, 2.0, -2.0], Shape::from_dims(&[4]), cpu_dev(),
+        );
+        let y_a = x.relu();
+        let y_b_id = x.graph().write().unwrap().push(Node {
+            op: Op::ReluInplace,
+            inputs: vec![x.id()],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let ord = crate::opt::derive_ordering(
+            &x.graph().read().unwrap(),
+            &[y_a.id(), y_b_id],
+        );
+        let deps = ord.deps_of(y_b_id);
+        assert_eq!(deps.len(), 1, "in-place unary should have one ordering dep");
+        assert_eq!(deps[0], y_a.id(), "in-place unary must run after the non-destructive reader");
     }
 }
