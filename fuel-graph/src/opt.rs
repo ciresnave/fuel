@@ -1462,6 +1462,123 @@ fn collect_alias_set(
     alias
 }
 
+/// Insert defensive `Op::Copy` snapshots ahead of destructive ops
+/// that would otherwise produce a data-flow ↔ ordering-edge cycle.
+///
+/// Phase 5 of the in-place ops infrastructure
+/// (`docs/session-prompts/in-place-ops-infrastructure.md`). The
+/// view-aware [`derive_ordering`] (Phase 4a) handles the common case
+/// where a destructive op's target is read only by upstream consumers
+/// — pinning the destructive op after those reads is enough. The
+/// case Phase 5 addresses is when a single op reads BOTH the
+/// in-place target X AND a downstream consumer of the in-place op
+/// (e.g., residual connections: `y = x.relu_inplace(); z = y + x`).
+///
+/// In that case, the data-flow says the reader (`z`) must run after
+/// the destructive op (because it depends on `y`), and the ordering
+/// edge says the destructive op must run after the reader (because
+/// the reader reads `x`). Without intervention, [`execution_plan`]
+/// detects the cycle and panics.
+///
+/// This pass detects such conflicts and rewrites the graph by:
+/// 1. Inserting an `Op::Copy { target: same_device }(X) → X_safe` —
+///    a same-device byte snapshot independent of `X`'s storage.
+/// 2. Rewiring the conflicting reader's input from `X` to `X_safe`.
+///
+/// After the rewrite, the reader reads the snapshot (pre-mutation
+/// bytes) while the destructive op proceeds on `X`. No cycle.
+///
+/// Scope: detects DIRECT conflicts (reader's input IS the
+/// destructive op's target). View-mediated conflicts (reader reads
+/// `view(X)`) fall through and produce the cycle panic from
+/// `execution_plan` — a clear-but-not-friendly error pointing the
+/// user at the pattern. View-mediated auto-resolution is a follow-up
+/// (would need to insert `Copy(X)` then re-derive the view from the
+/// snapshot for each conflicting reader).
+///
+/// Idempotent: calling this twice on the same graph inserts copies
+/// at most once per conflict (the rewrite removes the conflict by
+/// redirecting the reader's input edge to the copy).
+///
+/// Returns the number of safety copies inserted (for telemetry /
+/// testing).
+pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize {
+    let order = topo_order_multi(graph, roots);
+    let pos: HashMap<NodeId, usize> = order.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+
+    // Snapshot conflicts before mutating the graph: collect
+    // (destructive_op_id, target, conflicting_readers) tuples.
+    struct Conflict {
+        destructive_nid: NodeId,
+        target: NodeId,
+        target_shape: crate::Shape,
+        target_dtype: DType,
+        conflicting_readers: Vec<NodeId>,
+    }
+    let mut conflicts: Vec<Conflict> = Vec::new();
+
+    for &nid in &order {
+        let node = graph.node(nid);
+        let Some(d_idx) = node.op.destructive_input() else { continue };
+        if d_idx >= node.inputs.len() { continue }
+        let target = node.inputs[d_idx];
+        let nid_pos = pos[&nid];
+
+        // A reader R of `target` causes a cycle iff R comes AFTER the
+        // destructive op in topo order — that means R has a data-flow
+        // dependency on the destructive op, while the ordering edge
+        // wants R to run BEFORE it. The two edges form a cycle.
+        let mut readers: Vec<NodeId> = Vec::new();
+        for &maybe_reader in &order[nid_pos + 1..] {
+            if maybe_reader == nid { continue }
+            if graph.node(maybe_reader).inputs.contains(&target) {
+                readers.push(maybe_reader);
+            }
+        }
+        if readers.is_empty() { continue }
+
+        let target_node = graph.node(target);
+        conflicts.push(Conflict {
+            destructive_nid: nid,
+            target,
+            target_shape: target_node.shape.clone(),
+            target_dtype: target_node.dtype,
+            conflicting_readers: readers,
+        });
+    }
+
+    let inserted = conflicts.len();
+    for Conflict { destructive_nid, target, target_shape, target_dtype, conflicting_readers } in conflicts {
+        // Pick the copy's target_location. Prefer the target's own
+        // placement (if any) — that's the device the data lives on.
+        // Fall back to the destructive op's placement, then to Cpu.
+        // The same-device Op::Copy semantic produces a fresh storage
+        // on `target_location` (executor's WorkItemKind::Copy arm
+        // allocates + the wrapper memcpys bytes).
+        let target_location = graph.placement(target)
+            .or_else(|| graph.placement(destructive_nid))
+            .unwrap_or(DeviceLocation::Cpu);
+        let copy_id = graph.push(crate::Node {
+            op: crate::Op::Copy { target: target_location },
+            inputs: vec![target],
+            shape: target_shape,
+            dtype: target_dtype,
+        });
+        // Propagate target_backend so the executor can look up the
+        // copy's wrapper. Inherit from the target (the source of the
+        // copy), falling back to the destructive op's target_backend.
+        if let Some(backend) = graph.target_backend(target)
+            .or_else(|| graph.target_backend(destructive_nid))
+        {
+            graph.set_target_backend(copy_id, backend);
+        }
+        for reader_id in conflicting_readers {
+            graph.rewrite_input(reader_id, target, copy_id);
+        }
+    }
+    inserted
+}
+
 /// Build an execution plan that respects both data-flow edges (via
 /// [`topo_order_multi`]) and ordering edges (via [`derive_ordering`]).
 /// Returns a `Vec<NodeId>` in an order the executor can walk linearly,
@@ -2000,6 +2117,115 @@ mod tests {
             deps.contains(&z.id()),
             "ReluInplace(x) must be pinned after Relu(Transpose(x)) via view-aware alias set; got deps = {deps:?}",
         );
+    }
+
+    // ---- Phase 5: insert_safety_copies ----
+
+    #[test]
+    fn insert_safety_copies_residual_connection_breaks_cycle() {
+        // Canonical residual pattern: `y = x.relu_inplace(); z = y + x`.
+        // Before Phase 5: derive_ordering pins ReluInplace after Add
+        // (Add reads x), but data flow pins Add after ReluInplace (Add
+        // reads y, y depends on ReluInplace) → cycle. After Phase 5:
+        // a Copy(x) → x_safe is inserted and Add's x input rewires to
+        // x_safe.
+        let x = Tensor::from_f32(
+            vec![1.0_f32, -2.0, 3.0, -4.0], Shape::from_dims(&[4]), cpu_dev(),
+        );
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+
+        // Manually build: y = ReluInplace(x); z = Add(y, x).
+        let (y_id, z_id) = {
+            let mut g = x.graph().write().unwrap();
+            let y_id = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![x_id],
+                shape: x_shape.clone(),
+                dtype: x_dtype,
+            });
+            let z_id = g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![y_id, x_id],
+                shape: x_shape,
+                dtype: x_dtype,
+            });
+            (y_id, z_id)
+        };
+
+        // Before the pass: cycle would exist. Run insert_safety_copies.
+        let inserted = insert_safety_copies(
+            &mut x.graph().write().unwrap(),
+            &[z_id],
+        );
+        assert_eq!(inserted, 1, "should insert exactly one safety copy");
+
+        // Verify Add's inputs were rewired: still [y_id, <something>],
+        // but the second input is NOT x_id anymore — it's the new
+        // Op::Copy node.
+        let copy_id = {
+            let g = x.graph().read().unwrap();
+            let z_node = g.node(z_id);
+            assert_eq!(z_node.inputs.len(), 2, "Add still has 2 inputs");
+            assert_eq!(z_node.inputs[0], y_id, "Add's y input unchanged");
+            assert_ne!(z_node.inputs[1], x_id, "Add's x input was rewired");
+            let copy_node_id = z_node.inputs[1];
+            let copy_node = g.node(copy_node_id);
+            assert!(matches!(copy_node.op, crate::Op::Copy { .. }),
+                "rewired input is Op::Copy; got {:?}", copy_node.op);
+            assert_eq!(copy_node.inputs, vec![x_id], "Op::Copy reads x");
+            copy_node_id
+        };
+
+        // Verify execution_plan succeeds (no cycle).
+        let plan = execution_plan(&x.graph().read().unwrap(), &[z_id]);
+        // Plan must contain x, the copy, ReluInplace, and Add.
+        // The copy must come before ReluInplace (it's a reader of x).
+        let pos: HashMap<NodeId, usize> = plan.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+        let copy_pos = pos[&copy_id];
+        let inplace_pos = pos[&y_id];
+        assert!(copy_pos < inplace_pos,
+            "Copy must run before ReluInplace; copy={copy_pos} inplace={inplace_pos}");
+    }
+
+    #[test]
+    fn insert_safety_copies_noop_when_no_destructive_conflicts() {
+        // Pure functional graph — no in-place ops. The pass should
+        // insert zero copies.
+        let x = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let y = x.relu();
+        let z = y.sum_all();
+        let inserted = insert_safety_copies(
+            &mut x.graph().write().unwrap(),
+            &[z.id()],
+        );
+        assert_eq!(inserted, 0);
+    }
+
+    #[test]
+    fn insert_safety_copies_noop_when_inplace_target_only_consumed_via_alias_path() {
+        // `y = x.relu_inplace(); loss = y.sum_all()` — the only
+        // downstream consumer of x reads it through y (the in-place
+        // node), not x directly. derive_ordering pins ReluInplace
+        // after... only ReluInplace itself (no other readers of x).
+        // No conflict, no copy needed.
+        let x = Tensor::from_f32(vec![1.0_f32, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+        let y_id = x.graph().write().unwrap().push(crate::Node {
+            op: crate::Op::ReluInplace,
+            inputs: vec![x_id],
+            shape: x_shape,
+            dtype: x_dtype,
+        });
+        // Build a chain that only reads y (not x).
+        let inserted = insert_safety_copies(
+            &mut x.graph().write().unwrap(),
+            &[y_id],
+        );
+        assert_eq!(inserted, 0);
     }
 
     #[test]
