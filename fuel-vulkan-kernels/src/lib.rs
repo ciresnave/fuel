@@ -39,6 +39,9 @@
 pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("add_assign_scaled",         include_bytes!("../spv/add_assign_scaled.spv")),
     ("affine",                    include_bytes!("../spv/affine.spv")),
+    ("affine_f64",                include_bytes!("../spv/affine_f64.spv")),
+    ("affine_f16",                include_bytes!("../spv/affine_f16.spv")),
+    ("affine_bf16",               include_bytes!("../spv/affine_bf16.spv")),
     ("unary_bf16",                include_bytes!("../spv/unary_bf16.spv")),
     ("binary",                    include_bytes!("../spv/binary.spv")),
     ("binary_bf16",               include_bytes!("../spv/binary_bf16.spv")),
@@ -224,6 +227,12 @@ pub const BINARY_F64: &str = "binary_f64";
 pub const BINARY_BF16: &str = "binary_bf16";
 /// Affine transform: y = x * mul + add.
 pub const AFFINE: &str = "affine";
+/// Affine f64 (native double; stride-aware).
+pub const AFFINE_F64: &str = "affine_f64";
+/// Affine f16 (float16_t native; stride-aware; f32 math).
+pub const AFFINE_F16: &str = "affine_f16";
+/// Affine bf16 (packed-u32 pair-thread; contiguous-only; f32 math).
+pub const AFFINE_BF16: &str = "affine_bf16";
 /// Element-wise clamp: y = clamp(x, lo, hi).
 pub const CLAMP: &str = "clamp";
 /// Element-wise integer power: y = x ^ exp.

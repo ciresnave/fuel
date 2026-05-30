@@ -60,6 +60,12 @@ pub struct Pipelines {
     pub binary_bf16_layout: PipelineLayout,
     pub affine_pipeline: ComputePipeline,
     pub affine_layout: PipelineLayout,
+    pub affine_f64_pipeline: ComputePipeline,
+    pub affine_f64_layout: PipelineLayout,
+    pub affine_f16_pipeline: ComputePipeline,
+    pub affine_f16_layout: PipelineLayout,
+    pub affine_bf16_pipeline: ComputePipeline,
+    pub affine_bf16_layout: PipelineLayout,
     pub clamp_pipeline: ComputePipeline,
     pub clamp_layout: PipelineLayout,
     pub powi_pipeline: ComputePipeline,
@@ -566,6 +572,9 @@ impl Pipelines {
         let binary_f64_mod = registry.load_module(device, shaders::BINARY_F64)?;
         let binary_bf16_mod = registry.load_module(device, shaders::BINARY_BF16)?;
         let affine_mod = registry.load_module(device, shaders::AFFINE)?;
+        let affine_f64_mod  = registry.load_module(device, shaders::AFFINE_F64)?;
+        let affine_f16_mod  = registry.load_module(device, shaders::AFFINE_F16)?;
+        let affine_bf16_mod = registry.load_module(device, shaders::AFFINE_BF16)?;
         let clamp_mod = registry.load_module(device, shaders::CLAMP)?;
         let powi_mod = registry.load_module(device, shaders::POWI)?;
         let cast_f32_to_f16_mod  = registry.load_module(device, shaders::CAST_F32_TO_F16)?;
@@ -723,6 +732,9 @@ impl Pipelines {
         let binary_f64_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let binary_bf16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let affine_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let affine_f64_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let affine_f16_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let affine_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let clamp_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let powi_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let cast_f32_to_f16_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -884,6 +896,9 @@ impl Pipelines {
         let binary_f64_pipeline = ComputePipeline::new(device, &binary_f64_layout, &binary_f64_mod, "main")?;
         let binary_bf16_pipeline = ComputePipeline::new(device, &binary_bf16_layout, &binary_bf16_mod, "main")?;
         let affine_pipeline = ComputePipeline::new(device, &affine_layout, &affine_mod, "main")?;
+        let affine_f64_pipeline  = ComputePipeline::new(device, &affine_f64_layout,  &affine_f64_mod,  "main")?;
+        let affine_f16_pipeline  = ComputePipeline::new(device, &affine_f16_layout,  &affine_f16_mod,  "main")?;
+        let affine_bf16_pipeline = ComputePipeline::new(device, &affine_bf16_layout, &affine_bf16_mod, "main")?;
         let clamp_pipeline = ComputePipeline::new(device, &clamp_layout, &clamp_mod, "main")?;
         let powi_pipeline = ComputePipeline::new(device, &powi_layout, &powi_mod, "main")?;
         let cast_f32_to_f16_pipeline  = ComputePipeline::new(device, &cast_f32_to_f16_layout,  &cast_f32_to_f16_mod,  "main")?;
@@ -1041,6 +1056,9 @@ impl Pipelines {
             binary_f64_pipeline, binary_f64_layout,
             binary_bf16_pipeline, binary_bf16_layout,
             affine_pipeline, affine_layout,
+            affine_f64_pipeline,  affine_f64_layout,
+            affine_f16_pipeline,  affine_f16_layout,
+            affine_bf16_pipeline, affine_bf16_layout,
             clamp_pipeline, clamp_layout,
             powi_pipeline, powi_layout,
             cast_f32_to_f16_pipeline, cast_f32_to_f16_layout,
