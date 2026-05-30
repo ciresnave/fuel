@@ -187,3 +187,50 @@ pub fn top_k_top_p_sampling_f32(
     device.synchronize()?;
     Ok(SamplingOutput { tokens, valid })
 }
+
+// ─────────────────────────── can_implement ───────────────────────────
+//
+// Host-side validators that return `Ok(())` iff the kernel will accept
+// the given problem shape. Pre-launch checks let dispatch code reject
+// invalid shapes without paying the kernel-launch round trip on
+// failure. Pattern matches what baracuda alpha.59 exposes for its
+// FlashInfer sampling family.
+
+/// Pre-launch validation for [`top_k_sampling_f32`].
+pub fn top_k_sampling_can_implement(batch: i32, vocab: i32, top_k_val: i32) -> Result<()> {
+    let status = unsafe {
+        sys::baracuda_kernels_flashinfer_top_k_sampling_f32_can_implement(batch, vocab, top_k_val)
+    };
+    check(status, "flashinfer_top_k_sampling_f32_can_implement")
+}
+
+/// Pre-launch validation for [`top_p_sampling_f32`].
+pub fn top_p_sampling_can_implement(batch: i32, vocab: i32, top_p_val: f32) -> Result<()> {
+    let status = unsafe {
+        sys::baracuda_kernels_flashinfer_top_p_sampling_f32_can_implement(batch, vocab, top_p_val)
+    };
+    check(status, "flashinfer_top_p_sampling_f32_can_implement")
+}
+
+/// Pre-launch validation for [`min_p_sampling_f32`].
+pub fn min_p_sampling_can_implement(batch: i32, vocab: i32, min_p_val: f32) -> Result<()> {
+    let status = unsafe {
+        sys::baracuda_kernels_flashinfer_min_p_sampling_f32_can_implement(batch, vocab, min_p_val)
+    };
+    check(status, "flashinfer_min_p_sampling_f32_can_implement")
+}
+
+/// Pre-launch validation for [`top_k_top_p_sampling_f32`].
+pub fn top_k_top_p_sampling_can_implement(
+    batch: i32,
+    vocab: i32,
+    top_k_val: i32,
+    top_p_val: f32,
+) -> Result<()> {
+    let status = unsafe {
+        sys::baracuda_kernels_flashinfer_top_k_top_p_sampling_f32_can_implement(
+            batch, vocab, top_k_val, top_p_val,
+        )
+    };
+    check(status, "flashinfer_top_k_top_p_sampling_f32_can_implement")
+}

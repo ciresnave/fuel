@@ -547,3 +547,31 @@ fn selective_scan_inner(
 // will land the BW wrappers alongside the autograd nodes — keeps
 // signature design close to the Op-level integration. baracuda's BW
 // `_run` symbols are already linkable; nothing in baracuda changes.
+
+// ──────────────────────── can_implement ────────────────────────
+//
+// Pre-launch host-side validators. Call before allocating output
+// buffers / sizing workspaces; return Ok(()) iff baracuda accepts
+// the shape combination.
+
+macro_rules! mamba_can_impl {
+    ($name:ident, $sys:ident, ($($pname:ident: $pty:ty),*) $(,)?) => {
+        pub fn $name($($pname: $pty),*) -> Result<()> {
+            let status = unsafe { sys::$sys($($pname),*) };
+            check(status, stringify!($name))
+        }
+    };
+}
+
+mamba_can_impl!(causal_conv1d_f32_can_implement,  baracuda_kernels_causal_conv1d_f32_can_implement,  (batch: i32, channels: i32, seqlen: i32, width: i32));
+mamba_can_impl!(causal_conv1d_f64_can_implement,  baracuda_kernels_causal_conv1d_f64_can_implement,  (batch: i32, channels: i32, seqlen: i32, width: i32));
+mamba_can_impl!(causal_conv1d_f16_can_implement,  baracuda_kernels_causal_conv1d_f16_can_implement,  (batch: i32, channels: i32, seqlen: i32, width: i32));
+mamba_can_impl!(causal_conv1d_bf16_can_implement, baracuda_kernels_causal_conv1d_bf16_can_implement, (batch: i32, channels: i32, seqlen: i32, width: i32));
+
+mamba_can_impl!(ssd_chunk_scan_f32_can_implement,  baracuda_kernels_ssd_chunk_scan_f32_can_implement,  (batch: i32, seqlen: i32, heads: i32, head_dim: i32, state_dim: i32, chunk_size: i32));
+mamba_can_impl!(ssd_chunk_scan_f16_can_implement,  baracuda_kernels_ssd_chunk_scan_f16_can_implement,  (batch: i32, seqlen: i32, heads: i32, head_dim: i32, state_dim: i32, chunk_size: i32));
+mamba_can_impl!(ssd_chunk_scan_bf16_can_implement, baracuda_kernels_ssd_chunk_scan_bf16_can_implement, (batch: i32, seqlen: i32, heads: i32, head_dim: i32, state_dim: i32, chunk_size: i32));
+
+mamba_can_impl!(selective_scan_f32_can_implement,  baracuda_kernels_selective_scan_f32_can_implement,  (batch: i32, seqlen: i32, dim: i32, dstate: i32));
+mamba_can_impl!(selective_scan_f16_can_implement,  baracuda_kernels_selective_scan_f16_can_implement,  (batch: i32, seqlen: i32, dim: i32, dstate: i32));
+mamba_can_impl!(selective_scan_bf16_can_implement, baracuda_kernels_selective_scan_bf16_can_implement, (batch: i32, seqlen: i32, dim: i32, dstate: i32));
