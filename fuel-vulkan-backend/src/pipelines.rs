@@ -256,6 +256,8 @@ pub struct Pipelines {
 
     pub scatter_add_f32_pipeline: ComputePipeline,
     pub scatter_add_f32_layout: PipelineLayout,
+    pub scatter_add_f64_pipeline: ComputePipeline,
+    pub scatter_add_f64_layout: PipelineLayout,
     pub arg_reduce_last_dim_f16_pipeline: ComputePipeline,
     pub arg_reduce_last_dim_f16_layout: PipelineLayout,
     pub arg_reduce_last_dim_bf16_pipeline: ComputePipeline,
@@ -616,6 +618,7 @@ impl Pipelines {
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
         let arg_reduce_last_dim_f32_mod  = registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_F32)?;
         let scatter_add_f32_mod = registry.load_module(device, shaders::SCATTER_ADD_F32)?;
+        let scatter_add_f64_mod = registry.load_module(device, shaders::SCATTER_ADD_F64)?;
         let arg_reduce_last_dim_f16_mod  = registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_F16)?;
         let arg_reduce_last_dim_bf16_mod = registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_BF16)?;
         let arg_reduce_last_dim_f64_mod  = registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_F64)?;
@@ -758,6 +761,7 @@ impl Pipelines {
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let arg_reduce_last_dim_f32_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
         let scatter_add_f32_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
+        let scatter_add_f64_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let arg_reduce_last_dim_f16_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
         let arg_reduce_last_dim_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let arg_reduce_last_dim_f64_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -899,6 +903,7 @@ impl Pipelines {
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
         let arg_reduce_last_dim_f32_pipeline  = ComputePipeline::new(device, &arg_reduce_last_dim_f32_layout,  &arg_reduce_last_dim_f32_mod,  "main")?;
         let scatter_add_f32_pipeline = ComputePipeline::new(device, &scatter_add_f32_layout, &scatter_add_f32_mod, "main")?;
+        let scatter_add_f64_pipeline = ComputePipeline::new(device, &scatter_add_f64_layout, &scatter_add_f64_mod, "main")?;
         let arg_reduce_last_dim_f16_pipeline  = ComputePipeline::new(device, &arg_reduce_last_dim_f16_layout,  &arg_reduce_last_dim_f16_mod,  "main")?;
         let arg_reduce_last_dim_bf16_pipeline = ComputePipeline::new(device, &arg_reduce_last_dim_bf16_layout, &arg_reduce_last_dim_bf16_mod, "main")?;
         let arg_reduce_last_dim_f64_pipeline  = ComputePipeline::new(device, &arg_reduce_last_dim_f64_layout,  &arg_reduce_last_dim_f64_mod,  "main")?;
@@ -1037,6 +1042,7 @@ impl Pipelines {
             reduce_last_dim_pipeline, reduce_last_dim_layout,
             arg_reduce_last_dim_f32_pipeline,  arg_reduce_last_dim_f32_layout,
             scatter_add_f32_pipeline, scatter_add_f32_layout,
+            scatter_add_f64_pipeline, scatter_add_f64_layout,
             arg_reduce_last_dim_f16_pipeline,  arg_reduce_last_dim_f16_layout,
             arg_reduce_last_dim_bf16_pipeline, arg_reduce_last_dim_bf16_layout,
             arg_reduce_last_dim_f64_pipeline,  arg_reduce_last_dim_f64_layout,

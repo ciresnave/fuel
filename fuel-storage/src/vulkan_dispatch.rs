@@ -2269,6 +2269,53 @@ pub mod scatter_add {
         let out = vulkan_output(&mut out_guard)?;
         backend.scatter_add_f32_bytes(base, indices, src, out, &base_shape, &src_shape, dim)
     }
+
+    /// ScatterAdd along `dim` — f64. Same shape as scatter_add_f32 but
+    /// uses u64 CAS for atomic double add. Requires shaderFloat64 +
+    /// shaderInt64.
+    pub fn scatter_add_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::scatter_add::scatter_add_f64: expected 3 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (base_shape, src_shape, dim) = match params {
+            OpParams::ScatterAdd { base_shape, src_shape, dim } => {
+                (base_shape.clone(), src_shape.clone(), *dim)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::scatter_add::scatter_add_f64: expected OpParams::ScatterAdd, got {other:?}",
+                )).bt());
+            }
+        };
+        let base_guard = read_storage(&inputs[0])?;
+        let idx_guard = read_storage(&inputs[1])?;
+        if idx_guard.dtype != DType::U32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::scatter_add::scatter_add_f64: indices must be U32, got {:?}",
+                idx_guard.dtype,
+            )).bt());
+        }
+        let src_guard = read_storage(&inputs[2])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let base = vulkan_input(&base_guard)?;
+        let indices = vulkan_input(&idx_guard)?;
+        let src = vulkan_input(&src_guard)?;
+        let backend = base.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::scatter_add::scatter_add_f64: base has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.scatter_add_f64_bytes(base, indices, src, out, &base_shape, &src_shape, dim)
+    }
 }
 
 pub mod arg_reduce {
@@ -3278,14 +3325,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- ScatterAdd along arbitrary dim (V.3.G.scatter_add,
     // 2026-05-30). Output starts initialized to base; the kernel
-    // atomically accumulates src via uint CAS — works on stock
-    // Vulkan, no VK_EXT_shader_atomic_float required. f32 only;
-    // f16/bf16/f64 would need separate CAS paths and are deferred. -----
+    // atomically accumulates src via uint CAS (f32) or u64 CAS (f64) —
+    // works on stock Vulkan, no VK_EXT_shader_atomic_float required.
+    // f16/bf16 would need sub-word CAS and are deferred. -----
     {
-        const SCATTER_ADD_REASON: &str = "fuel-vulkan-backend ScatterAdd: atomic float add via uint CAS loop; FADD order is scheduler-determined per dispatch.";
+        const SCATTER_ADD_REASON: &str = "fuel-vulkan-backend ScatterAdd: atomic float add via uint/u64 CAS loop; FADD order is scheduler-determined per dispatch.";
         let u32_d = DType::U32;
+        let f64_d = DType::F64;
         // 4-dtype binding key: [base, indices, src, out]
-        table.register_with_precision(OpKind::ScatterAdd, &[f32, u32_d, f32, f32], vk, scatter_add::scatter_add_f32, PrecisionGuarantee::none(SCATTER_ADD_REASON));
+        table.register_with_precision(OpKind::ScatterAdd, &[f32,   u32_d, f32,   f32  ], vk, scatter_add::scatter_add_f32, PrecisionGuarantee::none(SCATTER_ADD_REASON));
+        table.register_with_precision(OpKind::ScatterAdd, &[f64_d, u32_d, f64_d, f64_d], vk, scatter_add::scatter_add_f64, PrecisionGuarantee::none(SCATTER_ADD_REASON));
     }
 
     // ----- ArgMaxDim / ArgMinDim along last dim (V.3.G.arg_reduce,
