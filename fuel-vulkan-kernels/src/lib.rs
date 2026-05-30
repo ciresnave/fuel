@@ -77,6 +77,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("strided_copy_signed_b2",    include_bytes!("../spv/strided_copy_signed_b2.spv")),
     ("strided_copy_signed_b4",    include_bytes!("../spv/strided_copy_signed_b4.spv")),
     ("strided_copy_signed_b8",    include_bytes!("../spv/strided_copy_signed_b8.spv")),
+    ("masked_fill_b1",            include_bytes!("../spv/masked_fill_b1.spv")),
+    ("masked_fill_b2",            include_bytes!("../spv/masked_fill_b2.spv")),
+    ("masked_fill_b4",            include_bytes!("../spv/masked_fill_b4.spv")),
+    ("masked_fill_b8",            include_bytes!("../spv/masked_fill_b8.spv")),
     ("pad_const_b1",              include_bytes!("../spv/pad_const_b1.spv")),
     ("pad_const_b2",              include_bytes!("../spv/pad_const_b2.spv")),
     ("pad_const_b4",              include_bytes!("../spv/pad_const_b4.spv")),
@@ -208,6 +212,12 @@ pub const PAD_CONST_B1: &str = "pad_const_b1";
 pub const PAD_CONST_B2: &str = "pad_const_b2";
 pub const PAD_CONST_B4: &str = "pad_const_b4";
 pub const PAD_CONST_B8: &str = "pad_const_b8";
+/// MaskedFill: for each element, if mask byte != 0 → fill_value, else
+/// copy input. Mask is always U8. Byte-width-keyed by element size.
+pub const MASKED_FILL_B1: &str = "masked_fill_b1";
+pub const MASKED_FILL_B2: &str = "masked_fill_b2";
+pub const MASKED_FILL_B4: &str = "masked_fill_b4";
+pub const MASKED_FILL_B8: &str = "masked_fill_b8";
 /// In-place rectangular slab write for 1-byte elements (u8/i8).
 /// `range_start[last]` and `src_shape[last]` must both be multiples
 /// of 4 — wrapper falls back to CPU otherwise.
