@@ -488,6 +488,66 @@ pub const FUSED_LINEAR_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
             bit-identical.",
 };
 
+/// Static cost model for `(FUSED_SOFTMAX_CROSS_ENTROPY, Cpu)` — row-by-row
+/// stable log-softmax + gather. FLOPs scale with `n_rows × vocab`
+/// (two passes per row: one for max+sum_exp, one for the loss
+/// accumulator); memory is `n_rows × vocab` reads plus the targets and
+/// the scalar/vector output.
+///
+/// Shapes: `[logits, targets]` where `logits = [..., V]` (F32) and
+/// `targets = [...]` (I64); the per-row reduction count comes from
+/// the logits shape's leading dims.
+pub fn cost_fused_softmax_cross_entropy_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(
+        shapes.len(), 2,
+        "FusedSoftmaxCrossEntropy cost: expected 2 input shapes (logits, targets)",
+    );
+    let logits_dims = shapes[0].dims();
+    if logits_dims.is_empty() {
+        return CostEstimate::default();
+    }
+    let vocab = *logits_dims.last().unwrap() as u64;
+    let n_rows: u64 = logits_dims[..logits_dims.len() - 1]
+        .iter()
+        .map(|d| *d as u64)
+        .product::<u64>()
+        .max(1);
+    // Two passes over vocab per row: pass 1 finds max (V compares),
+    // pass 2 sums exp(x - max) (V FMAs ≈ 2V FLOPs). Plus one log
+    // call. The transcendental `exp` counts as ~10 FLOPs by convention.
+    let per_row_flops = vocab + 2 * vocab + 10 * vocab + 10;
+    let total_flops = n_rows * per_row_flops;
+    // Bandwidth: logits (n_rows × vocab × 4) + targets (n_rows × 8) +
+    // output (4 bytes for Mean/Sum, ~n_rows × 4 for None — average to
+    // the worst case here for the conservative layer-1 estimate).
+    let bytes_moved = n_rows * vocab * 4 + n_rows * 8 + n_rows * 4;
+    CostEstimate {
+        flops: total_flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(FUSED_SOFTMAX_CROSS_ENTROPY, Cpu, *)` —
+/// stable log-sum-exp accumulated in F64, gather + NLL in F64,
+/// narrow to F32 at end. Bit-identical re-run on same hardware. The
+/// kernel's iteration order is fixed, so the only sources of
+/// non-determinism (reduction-order changes, denormal flushing) are
+/// excluded by construction.
+pub const FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend FusedSoftmaxCrossEntropy: stable log-sum-exp \
+            in F64 accumulator; gather + NLL in F64; narrow to F32 at end; \
+            same-hardware re-run bit-identical.",
+};
+
 /// Static cost model for `(CONV2D, Cpu)` kernels — FLOP + bandwidth
 /// per architecture v1.0 §"Layer-1 cost model."
 ///
@@ -1486,14 +1546,16 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 16 registered fused ops covered.
+        // Sanity: we should see all 17 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
         // (autograd switched from emitting the primitive decomposition
         // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
-        // (Phase 3 of the in-place ops infrastructure).
+        // (Phase 3 of the in-place ops infrastructure) +
+        // FUSED_SOFTMAX_CROSS_ENTROPY (the CPU OpKind coverage plan's
+        // first fused-op addition).
         assert_eq!(
-            covered, 16,
-            "expected 16 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 17,
+            "expected 17 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 

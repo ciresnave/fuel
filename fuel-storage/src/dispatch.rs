@@ -2768,6 +2768,60 @@ cpu_fused_linear_wrapper!(fused_linear_f64_cpu_wrapper,  fuel_cpu_backend::byte_
 cpu_fused_linear_wrapper!(fused_linear_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::fused_linear_bf16);
 cpu_fused_linear_wrapper!(fused_linear_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f16);
 
+/// Dispatch wrapper for `(FusedSoftmaxCrossEntropy, [F32, I64, F32], Cpu)`.
+/// Two inputs (logits, targets), one F32 output. Translates the
+/// `Reduction` enum from the FusedOpParams payload (which lives on the
+/// graph node) to the kernel's `u8` tag — the kernel intentionally
+/// stays free of fuel-graph dependencies.
+fn fused_softmax_cross_entropy_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "fused_softmax_cross_entropy wrapper expects 2 inputs (logits, targets), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "fused_softmax_cross_entropy wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (n_rows, vocab, reduction, ignore_index) = match params {
+        OpParams::FusedSoftmaxCrossEntropy {
+            n_rows, vocab, reduction, ignore_index,
+        } => (*n_rows, *vocab, *reduction, *ignore_index),
+        other => {
+            return Err(Error::Msg(format!(
+                "fused_softmax_cross_entropy wrapper expects \
+                 OpParams::FusedSoftmaxCrossEntropy, got {other:?}",
+            ))
+            .bt());
+        }
+    };
+    let reduction_tag = match reduction {
+        fuel_graph::registry::Reduction::Mean => fuel_cpu_backend::byte_kernels::REDUCTION_MEAN,
+        fuel_graph::registry::Reduction::Sum  => fuel_cpu_backend::byte_kernels::REDUCTION_SUM,
+        fuel_graph::registry::Reduction::None => fuel_cpu_backend::byte_kernels::REDUCTION_NONE,
+    };
+    let logits_guard = read_storage(&inputs[0])?;
+    let targets_guard = read_storage(&inputs[1])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let logits_cpu = cpu_input(&logits_guard)?;
+    let targets_cpu = cpu_input(&targets_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::fused_softmax_cross_entropy_f32(
+        logits_cpu, targets_cpu, out_cpu,
+        n_rows, vocab, reduction_tag, ignore_index,
+    )
+}
+
 /// Dispatch wrapper for `(FlashAttn, *, Cpu)`. Three or four inputs
 /// (q, k, v, optional alibi_slopes). Geometry + math params flow
 /// through `OpParams::FlashAttn`.
@@ -3434,6 +3488,16 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(InplaceAffine, &unary(f64_dt),  cpu, inplace_affine_f64_cpu_wrapper);
     table.register(InplaceAffine, &unary(bf16_dt), cpu, inplace_affine_bf16_cpu_wrapper);
     table.register(InplaceAffine, &unary(f16_dt),  cpu, inplace_affine_f16_cpu_wrapper);
+
+    // FusedSoftmaxCrossEntropy: 2 inputs (logits F32, targets I64) →
+    // 1 output (F32). The lookup key `[F32, I64, F32]` matches what
+    // `build_lookup_dtypes` produces for this node shape.
+    table.register(
+        FusedSoftmaxCrossEntropy,
+        &[DType::F32, DType::I64, DType::F32],
+        cpu,
+        fused_softmax_cross_entropy_f32_cpu_wrapper,
+    );
 
     // In-place unary activations — Phase 3e of in-place ops. Same
     // `[T, T]` key shape as the non-inplace cousins (the natural
@@ -4519,11 +4583,13 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
     use crate::fused::{
         cost_attn_cpu, cost_conv2d_cpu, cost_conv_transpose2d_cpu,
-        cost_fused_linear_cpu, cost_inplace_affine_cpu,
+        cost_fused_linear_cpu, cost_fused_softmax_cross_entropy_cpu,
+        cost_inplace_affine_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
         ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
+        FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION,
         INPLACE_AFFINE_CPU_PRECISION, NORM_FAMILY_CPU_PRECISION,
         POWI_BACKWARD_CPU_PRECISION,
         QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
@@ -4943,6 +5009,15 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         inplace_affine_f16_cpu_wrapper,
         cost = cost_inplace_affine_cpu,
         precision = INPLACE_AFFINE_CPU_PRECISION);
+
+    // FUSED_SOFTMAX_CROSS_ENTROPY — three inputs (logits F32, targets
+    // I64, out F32). v1 ships F32-logits only; F16 / BF16 / F64
+    // siblings can follow the same pattern when called for.
+    const FSCE_F32: &[DType] = &[DType::F32, DType::I64, DType::F32];
+    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F32,
+        fused_softmax_cross_entropy_f32_cpu_wrapper,
+        cost = cost_fused_softmax_cross_entropy_cpu,
+        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
 }
 
 #[cfg(test)]
@@ -5038,6 +5113,7 @@ mod tests {
             OpKind::ArgMaxDim, OpKind::ArgMinDim,
             OpKind::QMatMul,
             OpKind::Copy,
+            OpKind::FusedSoftmaxCrossEntropy,
         ];
 
         // Populate the binding table the same way the production
@@ -5197,6 +5273,7 @@ mod tests {
             OpKind::ArgMaxDim, OpKind::ArgMinDim,
             OpKind::QMatMul,
             OpKind::Copy,
+            OpKind::FusedSoftmaxCrossEntropy,
         ];
 
         let mut table = KernelBindingTable::new();

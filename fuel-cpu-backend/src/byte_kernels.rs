@@ -4872,6 +4872,170 @@ fused_linear_half_kernel!(fused_linear_bf16, half::bf16);
 fused_linear_half_kernel!(fused_linear_f16, half::f16);
 
 // =============================================================================
+// FusedSoftmaxCrossEntropy — fused softmax + NLL + reduction
+// =============================================================================
+//
+// The textbook stable form computed row-by-row:
+//
+//   row_max = max(logits_row)
+//   sum_exp = sum(exp(logits_row[v] - row_max) for v in 0..V)
+//   nll_row = -(logits_row[target] - row_max - log(sum_exp))
+//
+// `ignore_index` rows contribute 0 to the loss sum and 0 to the
+// denominator. For `Reduction::Mean` the denominator is the count of
+// non-ignored rows (so an all-ignored input yields 0.0 — matches
+// PyTorch with `reduction='mean'` plus `ignore_index`).
+//
+// Targets are I64 (PyTorch / baracuda convention). The kernel
+// validates each index is in `0..vocab` unless it equals the
+// `ignore_index` sentinel.
+//
+// Memory: a per-row accumulator is the only allocation beyond the
+// inputs/output. The `[N, V]` softmax + log-softmax that the
+// primitive composition path materializes is never built.
+
+/// Reduction-mode discriminant for [`fused_softmax_cross_entropy_f32`].
+/// Mirrors `fuel_graph::registry::Reduction`; the wrapper in
+/// fuel-storage translates between them. Kept primitive so this leaf
+/// crate doesn't pull in fuel-graph just for one enum.
+///
+/// Encoding:
+/// - `0` → Mean
+/// - `1` → Sum
+/// - `2` → None
+pub const REDUCTION_MEAN: u8 = 0;
+pub const REDUCTION_SUM: u8 = 1;
+pub const REDUCTION_NONE: u8 = 2;
+
+/// FusedSoftmaxCrossEntropy CPU kernel (F32 logits, I64 targets,
+/// F32 loss output). Output buffer size depends on the reduction tag:
+///   - `REDUCTION_MEAN` / `REDUCTION_SUM`: 4 bytes (one f32 scalar).
+///   - `REDUCTION_NONE`: `n_rows * 4` bytes.
+///
+/// Rows whose target equals `ignore_index` contribute 0 to the loss
+/// sum and 0 to the Mean denominator. For Mean with zero valid rows
+/// the output is 0.0 (no division by zero — matches PyTorch's
+/// `nll_loss` behavior under `reduction='mean'` with all rows masked).
+#[allow(clippy::too_many_arguments)]
+pub fn fused_softmax_cross_entropy_f32(
+    logits: &CpuStorageBytes,
+    targets: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    n_rows: usize,
+    vocab: usize,
+    reduction_tag: u8,
+    ignore_index: i64,
+) -> Result<()> {
+    let logits_need = n_rows
+        .saturating_mul(vocab)
+        .saturating_mul(std::mem::size_of::<f32>());
+    if logits.len_bytes() != logits_need {
+        return Err(Error::Msg(format!(
+            "fused_softmax_cross_entropy_f32: logits bytes={} doesn't match \
+             n_rows={n_rows} × vocab={vocab} × {} = {logits_need}",
+            logits.len_bytes(), std::mem::size_of::<f32>(),
+        ))
+        .bt());
+    }
+    let targets_need = n_rows.saturating_mul(std::mem::size_of::<i64>());
+    if targets.len_bytes() != targets_need {
+        return Err(Error::Msg(format!(
+            "fused_softmax_cross_entropy_f32: targets bytes={} doesn't match \
+             n_rows={n_rows} × {} = {targets_need}",
+            targets.len_bytes(), std::mem::size_of::<i64>(),
+        ))
+        .bt());
+    }
+    let out_need = match reduction_tag {
+        REDUCTION_MEAN | REDUCTION_SUM => std::mem::size_of::<f32>(),
+        REDUCTION_NONE => n_rows.saturating_mul(std::mem::size_of::<f32>()),
+        other => {
+            return Err(Error::Msg(format!(
+                "fused_softmax_cross_entropy_f32: unknown reduction tag {other}",
+            ))
+            .bt());
+        }
+    };
+    if out.len_bytes() != out_need {
+        return Err(Error::Msg(format!(
+            "fused_softmax_cross_entropy_f32: out bytes={} doesn't match \
+             expected {out_need} for reduction_tag={reduction_tag}",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    if vocab == 0 {
+        // Pathological: no classes. Define loss as 0.0 — there's
+        // nothing to learn and producing NaN here would mask real
+        // bugs upstream.
+        out_view.fill(0.0);
+        return Ok(());
+    }
+    let logits_view: &[f32] = logits.as_slice()?;
+    let targets_view: &[i64] = targets.as_slice()?;
+
+    if reduction_tag == REDUCTION_NONE {
+        out_view.fill(0.0);
+    }
+    let mut loss_sum: f64 = 0.0;
+    let mut n_valid: usize = 0;
+    for row_idx in 0..n_rows {
+        let target = targets_view[row_idx];
+        if target == ignore_index {
+            // Per-row output stays 0.0 (None) / no contribution to sum.
+            continue;
+        }
+        if target < 0 || (target as i128) >= vocab as i128 {
+            return Err(Error::Msg(format!(
+                "fused_softmax_cross_entropy_f32: target {target} at row {row_idx} \
+                 is out of range [0, {vocab}) (ignore_index={ignore_index})",
+            ))
+            .bt());
+        }
+        let target_idx = target as usize;
+        let row_off = row_idx * vocab;
+        let row_slice = &logits_view[row_off..row_off + vocab];
+        let mut row_max = row_slice[0];
+        for &v in &row_slice[1..] {
+            if v > row_max {
+                row_max = v;
+            }
+        }
+        let mut sum_exp: f64 = 0.0;
+        for &v in row_slice.iter() {
+            sum_exp += ((v - row_max) as f64).exp();
+        }
+        let log_sum_exp = sum_exp.ln();
+        let nll = -((row_slice[target_idx] - row_max) as f64 - log_sum_exp);
+        match reduction_tag {
+            REDUCTION_NONE => {
+                out_view[row_idx] = nll as f32;
+            }
+            _ => {
+                loss_sum += nll;
+                n_valid += 1;
+            }
+        }
+    }
+    match reduction_tag {
+        REDUCTION_MEAN => {
+            out_view[0] = if n_valid == 0 {
+                0.0
+            } else {
+                (loss_sum / n_valid as f64) as f32
+            };
+        }
+        REDUCTION_SUM => {
+            out_view[0] = loss_sum as f32;
+        }
+        REDUCTION_NONE => {}
+        _ => unreachable!("reduction_tag validated above"),
+    }
+    Ok(())
+}
+
+// =============================================================================
 // FlashAttn — naive multi-head SDPA (math definition)
 // =============================================================================
 //
@@ -8683,5 +8847,126 @@ mod tests {
         let b = CpuStorageBytes::from_slice(&[1_i8, 2, 3, 4]);  // 4×1 — K mismatch
         let mut out = CpuStorageBytes::from_zero_bytes(1);
         assert!(matmul_i8(&a, &b, &mut out, &[], &[], 1, 1, 3).is_err());
+    }
+
+    /// FusedSoftmaxCrossEntropy: hand-computed loss for [2, 4] logits.
+    /// row 0: logits=[1, 2, 3, 4], target=1
+    ///   row_max=4, sum_exp=e(-3)+e(-2)+e(-1)+e(0)=0.04979+0.13534+0.36788+1=1.55301
+    ///   log_sum_exp=0.44019; nll=-(2-4-0.44019)=2.44019
+    /// row 1: logits=[0, 0, 0, 0], target=3
+    ///   row_max=0, sum_exp=4, log_sum_exp=ln(4)=1.38629
+    ///   nll=-(0-0-1.38629)=1.38629
+    /// mean = (2.44019 + 1.38629) / 2 ≈ 1.91324
+    #[test]
+    fn fused_softmax_cross_entropy_f32_mean() {
+        let logits = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0, 4.0,
+            0.0,     0.0, 0.0, 0.0,
+        ]);
+        let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        fused_softmax_cross_entropy_f32(
+            &logits, &targets, &mut out,
+            2, 4, REDUCTION_MEAN, -100,
+        )
+        .expect("fsce");
+        let loss = out.as_slice::<f32>().unwrap()[0];
+        let expected = ((2.44018972f32) + (1.38629436f32)) / 2.0;
+        assert!(
+            (loss - expected).abs() < 1e-5,
+            "got {loss}, expected {expected}",
+        );
+    }
+
+    /// Sum reduction: scalar = 2.44019 + 1.38629 ≈ 3.82648.
+    #[test]
+    fn fused_softmax_cross_entropy_f32_sum() {
+        let logits = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0, 4.0,
+            0.0,     0.0, 0.0, 0.0,
+        ]);
+        let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        fused_softmax_cross_entropy_f32(
+            &logits, &targets, &mut out,
+            2, 4, REDUCTION_SUM, -100,
+        )
+        .expect("fsce");
+        let loss = out.as_slice::<f32>().unwrap()[0];
+        let expected = 2.44018972f32 + 1.38629436f32;
+        assert!(
+            (loss - expected).abs() < 1e-5,
+            "got {loss}, expected {expected}",
+        );
+    }
+
+    /// None reduction: per-row losses [2.44019, 1.38629].
+    #[test]
+    fn fused_softmax_cross_entropy_f32_none() {
+        let logits = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0, 4.0,
+            0.0,     0.0, 0.0, 0.0,
+        ]);
+        let targets = CpuStorageBytes::from_slice(&[1_i64, 3]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        fused_softmax_cross_entropy_f32(
+            &logits, &targets, &mut out,
+            2, 4, REDUCTION_NONE, -100,
+        )
+        .expect("fsce");
+        let per_row = out.as_slice::<f32>().unwrap();
+        assert!((per_row[0] - 2.44018972).abs() < 1e-5, "row 0: got {}", per_row[0]);
+        assert!((per_row[1] - 1.38629436).abs() < 1e-5, "row 1: got {}", per_row[1]);
+    }
+
+    /// ignore_index drops a row from both numerator and denominator.
+    /// Same logits as above but with target row 1 set to ignore_index.
+    /// Mean over 1 valid row = 2.44019.
+    #[test]
+    fn fused_softmax_cross_entropy_f32_ignore_index_mean() {
+        let logits = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0, 3.0, 4.0,
+            0.0,     0.0, 0.0, 0.0,
+        ]);
+        let targets = CpuStorageBytes::from_slice(&[1_i64, -100]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        fused_softmax_cross_entropy_f32(
+            &logits, &targets, &mut out,
+            2, 4, REDUCTION_MEAN, -100,
+        )
+        .expect("fsce");
+        let loss = out.as_slice::<f32>().unwrap()[0];
+        let expected = 2.44018972f32;
+        assert!(
+            (loss - expected).abs() < 1e-5,
+            "got {loss}, expected {expected}",
+        );
+    }
+
+    /// All rows ignored — Mean returns 0.0 (no division by zero).
+    #[test]
+    fn fused_softmax_cross_entropy_f32_all_ignored_mean_is_zero() {
+        let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let targets = CpuStorageBytes::from_slice(&[-100_i64]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        fused_softmax_cross_entropy_f32(
+            &logits, &targets, &mut out,
+            1, 4, REDUCTION_MEAN, -100,
+        )
+        .expect("fsce");
+        assert_eq!(out.as_slice::<f32>().unwrap()[0], 0.0);
+    }
+
+    /// Out-of-range target (not equal to ignore_index) errors.
+    #[test]
+    fn fused_softmax_cross_entropy_f32_target_out_of_range_errors() {
+        let logits = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let targets = CpuStorageBytes::from_slice(&[7_i64]);  // 7 ≥ vocab=4
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let r = fused_softmax_cross_entropy_f32(
+            &logits, &targets, &mut out,
+            1, 4, REDUCTION_MEAN, -100,
+        );
+        assert!(r.is_err());
     }
 }

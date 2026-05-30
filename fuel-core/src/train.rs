@@ -583,12 +583,177 @@ pub mod loss {
         let total = neg_per_sample.sum_all();
         total.mul_scalar(1.0 / n_outer as f64)
     }
+
+    /// Fused softmax + negative log-likelihood with integer (class-
+    /// index) targets — the standard PyTorch / Liger-Kernel training
+    /// loss. The fused CPU forward kernel skips the `[..., V]`
+    /// softmax / log-softmax intermediates that
+    /// [`cross_entropy_with_logits`] materializes; on Llama-7B this
+    /// saves ~12 GiB of transient allocation per forward call.
+    ///
+    /// Arguments:
+    /// - `logits`: `[..., V]` F32.
+    /// - `targets`: `[...]` I64 class indices (matches PyTorch's
+    ///   `CrossEntropyLoss(target: int64)` convention).
+    /// - `reduction`: `Mean` / `Sum` produce a scalar; `None` produces
+    ///   per-row losses of `targets.shape`.
+    /// - `ignore_index`: rows whose target equals this sentinel
+    ///   contribute 0 to the loss and 0 to the Mean denominator. The
+    ///   conventional value is `-100`.
+    ///
+    /// Backward via the registry's `Decompose` lowering — runs the same
+    /// primitive log-softmax + gather chain that
+    /// [`cross_entropy_with_logits`] uses, so peak memory during
+    /// `loss.backward()` matches the primitive composition path (only
+    /// the forward saves memory). Datasets that need `ignore_index`-
+    /// aware backward should stay on [`cross_entropy_with_logits`]
+    /// until the in-place Liger fused backward lands; this one's
+    /// lowered backward computes the gradient as if no rows are
+    /// masked.
+    pub fn fused_softmax_cross_entropy(
+        logits: &LazyTensor,
+        targets: &LazyTensor,
+        reduction: fuel_graph::registry::Reduction,
+        ignore_index: i64,
+    ) -> LazyTensor {
+        logits.fused_softmax_cross_entropy(targets, reduction, ignore_index)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lazy::LazyTensor;
+    use fuel_core_types::DType;
+    use fuel_graph::registry::Reduction;
     use fuel_graph_cpu::CpuBackend;
+
+    /// Helper: build an I64 LazyTensor on the same graph as `host`,
+    /// using the fuel-graph `const_i64_like` builder. LazyTensor has
+    /// no native `from_i64` constructor today; the index-only ops
+    /// (Gather, etc.) typically wire indices in via `const_u32_like`,
+    /// so we go through `from_graph_tensor` here.
+    fn lt_const_i64_like(host: &LazyTensor, data: Vec<i64>, shape: Shape) -> LazyTensor {
+        LazyTensor::from_graph_tensor(host.graph_tensor().const_i64_like(data, shape))
+    }
+
+    /// FusedSoftmaxCrossEntropy matches the primitive
+    /// cross_entropy_with_logits chain (one-hot form) for a small
+    /// fully-defined batch. Verifies both that the registry+dispatch
+    /// path produces the right scalar and that the fused kernel is
+    /// numerically consistent with the textbook composition.
+    #[test]
+    fn fused_softmax_cross_entropy_matches_primitive_composition() {
+        let device = crate::Device::cpu();
+        // 3 rows, vocab 4. Targets chosen so each row exercises a
+        // different argmax position.
+        let logits_data: Vec<f32> = vec![
+            1.0, 2.0, 3.0, 4.0,
+            0.5, 0.0, -0.5, 1.0,
+            -1.0, -2.0, -3.0, 4.0,
+        ];
+        let targets_i64: Vec<i64> = vec![3, 0, 3];
+        let mut targets_onehot = vec![0.0f32; 3 * 4];
+        for (row, &t) in targets_i64.iter().enumerate() {
+            targets_onehot[row * 4 + t as usize] = 1.0;
+        }
+
+        // Path 1: fused op.
+        let logits_fused = LazyTensor::from_f32(
+            logits_data.clone(), Shape::from_dims(&[3, 4]), &device,
+        );
+        let targets_fused = lt_const_i64_like(
+            &logits_fused, targets_i64.clone(), Shape::from_dims(&[3]),
+        );
+        let fused_loss = loss::fused_softmax_cross_entropy(
+            &logits_fused, &targets_fused, Reduction::Mean, -100,
+        )
+        .realize_f32()[0];
+
+        // Path 2: primitive composition. The one-hot targets must
+        // live on the same graph as logits — use `const_f32_like`
+        // off `logits_prim` so the second leaf joins that graph.
+        let logits_prim = LazyTensor::from_f32(
+            logits_data, Shape::from_dims(&[3, 4]), &device,
+        );
+        let targets_prim = logits_prim.const_f32_like(
+            targets_onehot, Shape::from_dims(&[3, 4]),
+        );
+        let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim)
+            .realize_f32()[0];
+
+        assert!(
+            (fused_loss - prim_loss).abs() < 1e-5,
+            "fused {fused_loss} vs primitive {prim_loss}",
+        );
+    }
+
+    /// Reduction::None returns per-row losses with shape == targets.shape.
+    #[test]
+    fn fused_softmax_cross_entropy_none_returns_per_row() {
+        let device = crate::Device::cpu();
+        let logits_data: Vec<f32> = vec![
+            1.0, 2.0, 3.0, 4.0,
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        let logits = LazyTensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
+        let targets = lt_const_i64_like(&logits, vec![1_i64, 3], Shape::from_dims(&[2]));
+        let per_row = loss::fused_softmax_cross_entropy(
+            &logits, &targets, Reduction::None, -100,
+        )
+        .realize_f32();
+        assert_eq!(per_row.len(), 2);
+        // Hand-computed (see byte_kernels.rs unit test).
+        assert!((per_row[0] - 2.44018972).abs() < 1e-5, "row 0: {}", per_row[0]);
+        assert!((per_row[1] - 1.38629436).abs() < 1e-5, "row 1: {}", per_row[1]);
+    }
+
+    /// ignore_index drops a row from both the loss sum and the mean
+    /// denominator. With one of two rows masked, Mean equals the
+    /// remaining row's loss exactly.
+    #[test]
+    fn fused_softmax_cross_entropy_ignore_index_masks_row() {
+        let device = crate::Device::cpu();
+        let logits_data: Vec<f32> = vec![
+            1.0, 2.0, 3.0, 4.0,
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        let logits = LazyTensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
+        let targets = lt_const_i64_like(&logits, vec![1_i64, -100], Shape::from_dims(&[2]));
+        let loss_val = loss::fused_softmax_cross_entropy(
+            &logits, &targets, Reduction::Mean, -100,
+        )
+        .realize_f32()[0];
+        // Only row 0 contributes; mean of one value is itself.
+        assert!(
+            (loss_val - 2.44018972).abs() < 1e-5,
+            "got {loss_val}, expected ~2.44019",
+        );
+    }
+
+    /// Registry: the FusedSoftmaxCrossEntropy entry is wired into the
+    /// default registry and reachable by id + name.
+    #[test]
+    fn fused_softmax_cross_entropy_registry_entry_registered() {
+        let r = fuel_graph::registry::default_registry();
+        let e = r
+            .entry(fuel_graph::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY)
+            .expect("FUSED_SOFTMAX_CROSS_ENTROPY registered");
+        assert_eq!(e.name, "FusedSoftmaxCrossEntropy");
+        assert_eq!(
+            r.id_for_name("FusedSoftmaxCrossEntropy"),
+            Some(fuel_graph::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY),
+        );
+        // Output dtype is always F32 regardless of input dtypes.
+        let out_dtype = (e.dtype_rule)(
+            &[DType::F32, DType::I64],
+            &fuel_graph::registry::FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction:    Reduction::Mean,
+                ignore_index: -100,
+            },
+        );
+        assert_eq!(out_dtype, DType::F32);
+    }
 
     /// Linear regression: fit y = 2x + 3 given noisy samples.
     /// Trains a single-layer `y_hat = w·x + b` with SGD and checks

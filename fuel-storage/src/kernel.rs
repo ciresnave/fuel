@@ -530,6 +530,25 @@ pub enum OpParams {
         dest_shape: Vec<usize>,
         ranges: Vec<(usize, usize)>,
     },
+
+    /// FusedSoftmaxCrossEntropy execution parameters. Inputs:
+    /// `logits [n_rows, vocab]` (F32, flattened from the original
+    /// `[..., V]` shape) and `targets [n_rows]` (I64). The kernel
+    /// walks row-by-row, computing stable log-softmax + NLL +
+    /// `ignore_index` masking + the requested reduction in a single
+    /// pass, allocating only an `[n_rows]` per-row accumulator (and
+    /// a scalar for Mean/Sum). Output is F32 scalar `[]` for
+    /// Mean/Sum, F32 `[n_rows]` for None.
+    ///
+    /// `n_rows` and `vocab` are derived at translate time from the
+    /// logits layout; the kernel uses them to iterate without
+    /// re-parsing shapes.
+    FusedSoftmaxCrossEntropy {
+        n_rows:       usize,
+        vocab:        usize,
+        reduction:    fuel_graph::registry::Reduction,
+        ignore_index: i64,
+    },
 }
 
 // =============================================================================

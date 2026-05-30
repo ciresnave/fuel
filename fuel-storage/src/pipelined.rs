@@ -1179,6 +1179,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::INPLACE_AFFINE => {
             Some(OpKind::InplaceAffine)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY =>
+        {
+            Some(OpKind::FusedSoftmaxCrossEntropy)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -1452,6 +1457,54 @@ fn op_to_op_params(
                 m,
                 n,
                 k: k_lhs,
+            }
+        }
+        // FusedSoftmaxCrossEntropy: flatten logits `[..., V]` to
+        // `[n_rows, V]` for the kernel. n_rows is the product of all
+        // leading dims (≥1 even for rank-1 logits, where targets are
+        // a scalar). The kernel walks rows internally.
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::FusedSoftmaxCrossEntropy {
+                reduction,
+                ignore_index,
+            },
+        ) => {
+            if node.inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "FusedSoftmaxCrossEntropy expects 2 inputs (logits, targets), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let logits_layout = input_layout(node.inputs[0]);
+            let logits_dims = logits_layout.shape().dims();
+            if logits_dims.is_empty() {
+                return Err(Error::Msg(
+                    "FusedSoftmaxCrossEntropy: logits must have rank ≥ 1".to_string(),
+                )
+                .bt());
+            }
+            let vocab = *logits_dims.last().unwrap();
+            let n_rows: usize = logits_dims[..logits_dims.len() - 1]
+                .iter()
+                .product::<usize>()
+                .max(1);
+            let targets_layout = input_layout(node.inputs[1]);
+            let target_count: usize = targets_layout.shape().dims().iter().product::<usize>().max(1);
+            if target_count != n_rows {
+                return Err(Error::Msg(format!(
+                    "FusedSoftmaxCrossEntropy: targets element count {target_count} must \
+                     equal logits row count {n_rows} (logits {logits_dims:?}, targets {:?})",
+                    targets_layout.shape().dims(),
+                ))
+                .bt());
+            }
+            OpParams::FusedSoftmaxCrossEntropy {
+                n_rows,
+                vocab,
+                reduction: *reduction,
+                ignore_index: *ignore_index,
             }
         }
         // Phase 7.6 step 3: SoftmaxLastDim flows through

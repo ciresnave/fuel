@@ -382,6 +382,15 @@ pub enum OpKind {
     /// buffer. Single-input, single-output. Backs
     /// [`FusedOps::INPLACE_AFFINE`](fuel_graph::registry::FusedOps::INPLACE_AFFINE).
     InplaceAffine,
+    /// Fused softmax + negative log-likelihood with integer class
+    /// targets — the standard PyTorch / Liger-Kernel training loss.
+    /// Inputs `[logits, targets]` where `logits: [n_rows, vocab]`
+    /// (F32, flattened from rank-N) and `targets: [n_rows]` (I64).
+    /// Output F32 — scalar for Mean/Sum reductions, `[n_rows]` for
+    /// None. Geometry + reduction + `ignore_index` flow through
+    /// `OpParams::FusedSoftmaxCrossEntropy`. Backs
+    /// [`FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY`](fuel_graph::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY).
+    FusedSoftmaxCrossEntropy,
 }
 
 impl OpKind {
@@ -476,6 +485,7 @@ impl OpKind {
             OpKind::TanhInplace       => "tanh_inplace",
             OpKind::SigmoidInplace    => "sigmoid_inplace",
             OpKind::InplaceAffine     => "inplace_affine",
+            OpKind::FusedSoftmaxCrossEntropy => "fused_softmax_cross_entropy",
         }
     }
 }
