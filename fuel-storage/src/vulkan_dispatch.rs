@@ -2226,6 +2226,113 @@ macro_rules! vk_arg_reduce_wrapper {
     };
 }
 
+pub mod index_add {
+    use super::*;
+
+    pub fn index_add_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_add_dispatch(inputs, outputs, params, "index_add_f32",
+            |b, base, idx, src, out, oc, bds, ni, ic| {
+                b.index_add_f32_bytes(base, idx, src, out, oc, bds, ni, ic)
+            })
+    }
+
+    pub fn index_add_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_add_dispatch(inputs, outputs, params, "index_add_f64",
+            |b, base, idx, src, out, oc, bds, ni, ic| {
+                b.index_add_f64_bytes(base, idx, src, out, oc, bds, ni, ic)
+            })
+    }
+
+    pub fn index_add_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_add_dispatch(inputs, outputs, params, "index_add_bf16",
+            |b, base, idx, src, out, oc, bds, ni, ic| {
+                b.index_add_bf16_bytes(base, idx, src, out, oc, bds, ni, ic)
+            })
+    }
+
+    pub fn index_add_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_add_dispatch(inputs, outputs, params, "index_add_f16",
+            |b, base, idx, src, out, oc, bds, ni, ic| {
+                b.index_add_f16_bytes(base, idx, src, out, oc, bds, ni, ic)
+            })
+    }
+
+    fn index_add_dispatch<F>(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        params: &OpParams,
+        debug_name: &'static str,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize, usize, usize, usize,
+        ) -> Result<()>,
+    {
+        if inputs.len() != 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::index_add::{debug_name}: expected 3 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, base_dim_size, n_indices, inner_count) = match params {
+            OpParams::IndexAdd { outer_count, base_dim_size, n_indices, inner_count } => {
+                (*outer_count, *base_dim_size, *n_indices, *inner_count)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::index_add::{debug_name}: expected OpParams::IndexAdd, got {other:?}",
+                )).bt());
+            }
+        };
+        let base_guard = read_storage(&inputs[0])?;
+        let idx_guard = read_storage(&inputs[1])?;
+        if idx_guard.dtype != DType::U32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::index_add::{debug_name}: indices must be U32, got {:?}",
+                idx_guard.dtype,
+            )).bt());
+        }
+        let src_guard = read_storage(&inputs[2])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let base = vulkan_input(&base_guard)?;
+        let indices = vulkan_input(&idx_guard)?;
+        let src = vulkan_input(&src_guard)?;
+        let backend = base.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::index_add::{debug_name}: base has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        f(backend, base, indices, src, out, outer_count, base_dim_size, n_indices, inner_count)
+    }
+}
+
 pub mod scatter_add {
     use super::*;
 
@@ -3415,6 +3522,23 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  PrecisionGuarantee::none(MAX_REASON));
     table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::none(MIN_REASON));
     table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::none(MEAN_REASON));
+
+    // ----- IndexAdd via uint/u64/sub-word CAS (V.3.G.index_add,
+    // 2026-05-30). Same wrapper shape as ScatterAdd; output starts
+    // initialized to base; the kernel atomically accumulates src
+    // at the rank-1 index positions. -----
+    {
+        const INDEX_ADD_REASON: &str = "fuel-vulkan-backend IndexAdd: atomic float add via uint/u64/sub-word CAS loop; FADD order is scheduler-determined per dispatch.";
+        let u32_d  = DType::U32;
+        let f64_d  = DType::F64;
+        let f16_d  = DType::F16;
+        let bf16_d = DType::BF16;
+        // 4-dtype binding key: [base, indices, src, out]
+        table.register_with_precision(OpKind::IndexAdd, &[f32,    u32_d, f32,    f32   ], vk, index_add::index_add_f32,  PrecisionGuarantee::none(INDEX_ADD_REASON));
+        table.register_with_precision(OpKind::IndexAdd, &[f64_d,  u32_d, f64_d,  f64_d ], vk, index_add::index_add_f64,  PrecisionGuarantee::none(INDEX_ADD_REASON));
+        table.register_with_precision(OpKind::IndexAdd, &[bf16_d, u32_d, bf16_d, bf16_d], vk, index_add::index_add_bf16, PrecisionGuarantee::none(INDEX_ADD_REASON));
+        table.register_with_precision(OpKind::IndexAdd, &[f16_d,  u32_d, f16_d,  f16_d ], vk, index_add::index_add_f16,  PrecisionGuarantee::none(INDEX_ADD_REASON));
+    }
 
     // ----- ScatterAdd along arbitrary dim (V.3.G.scatter_add,
     // 2026-05-30). Output starts initialized to base; the kernel

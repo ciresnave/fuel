@@ -4323,6 +4323,202 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// IndexAdd — f32 via uint CAS atomic-add. Wrapper copies
+    /// base → out, then the kernel atomically accumulates `src` into
+    /// out at index positions given by `indices` along the indexed
+    /// axis.
+    pub fn index_add_f32_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        base_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.index_add_bytes_impl(
+            DType::F32, base, indices, src, out,
+            outer_count, base_dim_size, n_indices, inner_count,
+            "index_add_f32_bytes",
+            &self.pipelines.index_add_f32_pipeline,
+            &self.pipelines.index_add_f32_layout,
+            false,
+        )
+    }
+
+    /// IndexAdd — f64 via u64 CAS atomic double-add.
+    pub fn index_add_f64_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        base_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.index_add_bytes_impl(
+            DType::F64, base, indices, src, out,
+            outer_count, base_dim_size, n_indices, inner_count,
+            "index_add_f64_bytes",
+            &self.pipelines.index_add_f64_pipeline,
+            &self.pipelines.index_add_f64_layout,
+            false,
+        )
+    }
+
+    /// IndexAdd — bf16 via sub-word CAS atomic add.
+    pub fn index_add_bf16_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        base_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.index_add_bytes_impl(
+            DType::BF16, base, indices, src, out,
+            outer_count, base_dim_size, n_indices, inner_count,
+            "index_add_bf16_bytes",
+            &self.pipelines.index_add_bf16_pipeline,
+            &self.pipelines.index_add_bf16_layout,
+            true,
+        )
+    }
+
+    /// IndexAdd — f16 via sub-word CAS atomic add.
+    pub fn index_add_f16_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        base_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.index_add_bytes_impl(
+            DType::F16, base, indices, src, out,
+            outer_count, base_dim_size, n_indices, inner_count,
+            "index_add_f16_bytes",
+            &self.pipelines.index_add_f16_pipeline,
+            &self.pipelines.index_add_f16_layout,
+            true,
+        )
+    }
+
+    fn index_add_bytes_impl(
+        &self,
+        dtype: DType,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        base_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+        debug_name: &'static str,
+        pipeline: &vulkane::safe::ComputePipeline,
+        pipe_layout: &vulkane::safe::PipelineLayout,
+        round_buffers: bool,
+    ) -> fuel_core_types::Result<()> {
+        let elem_bytes = match dtype {
+            DType::F32  => 4,
+            DType::F64  => 8,
+            DType::F16 | DType::BF16 => 2,
+            other => fuel_core_types::bail!("{debug_name}: unsupported dtype {other:?}"),
+        };
+        let n_base = outer_count * base_dim_size * inner_count;
+        let n_src = outer_count * n_indices * inner_count;
+        let need_base = n_base * elem_bytes;
+        let need_src = n_src * elem_bytes;
+        let need_idx = n_indices * 4;
+        if base.len_bytes() < need_base {
+            fuel_core_types::bail!("{debug_name}: base {} bytes < required {need_base}", base.len_bytes());
+        }
+        if out.len_bytes() < need_base {
+            fuel_core_types::bail!("{debug_name}: out {} bytes < required {need_base}", out.len_bytes());
+        }
+        if src.len_bytes() < need_src {
+            fuel_core_types::bail!("{debug_name}: src {} bytes < required {need_src}", src.len_bytes());
+        }
+        if indices.len_bytes() < need_idx {
+            fuel_core_types::bail!("{debug_name}: indices {} bytes < required {need_idx}", indices.len_bytes());
+        }
+
+        // Copy base → out.
+        let base_buf = base.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: base host-evicted").into(),
+        ))?;
+        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: out host-evicted").into(),
+        ))?;
+        self.flush_pending()?;
+        let copy_size = need_base as u64;
+        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
+            cmd.copy_buffer(base_buf, out_buf_for_copy, &[BufferCopy {
+                src_offset: 0, dst_offset: 0, size: copy_size,
+            }]);
+            Ok(())
+        }).map_err(vk_err)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct IAParams { outer_count: u32, base_dim_size: u32, n_indices: u32, inner_count: u32 }
+        let p = IAParams {
+            outer_count:   outer_count as u32,
+            base_dim_size: base_dim_size as u32,
+            n_indices:     n_indices as u32,
+            inner_count:   inner_count as u32,
+        };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: indices host-evicted").into(),
+        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: src host-evicted").into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: out host-evicted after copy?").into(),
+        ))?;
+
+        let (src_bind_len, out_bind_len) = if round_buffers {
+            (((src.len_bytes() + 3) & !3) as u64, ((out.len_bytes() + 3) & !3) as u64)
+        } else {
+            (src.len_bytes() as u64, out.len_bytes() as u64)
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src_buf, 0, src_bind_len);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let total = n_src;
+        let groups = Self::workgroups(total);
+        let rb = [idx_buf.raw() as u64, src_buf.raw() as u64, out_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            debug_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// ArgMaxDim / ArgMinDim along an ARBITRARY dim. Slow path
     /// counterpart to `arg_reduce_last_dim_bytes`: one thread per
     /// output element, serial scan over `d_dim`. Suitable when the
