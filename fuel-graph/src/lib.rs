@@ -3575,6 +3575,102 @@ impl Tensor {
         }
     }
 
+    /// Append a `SelectiveScan` node — Mamba-1's selective
+    /// state-space scan (forward). Five inputs:
+    /// - `self` (u): `[batch, seqlen, dim]` F32
+    /// - `delta`:    `[batch, seqlen, dim]` F32
+    /// - `a`:        `[dim, dstate]` F32
+    /// - `b`:        `[batch, seqlen, dstate]` F32
+    /// - `c`:        `[batch, seqlen, dstate]` F32
+    ///
+    /// Output: `y: [batch, seqlen, dim]` F32.
+    ///
+    /// `delta_softplus` toggles the softplus(delta) activation before
+    /// use (matches baracuda's `selective_scan_*_run` flag). The v1
+    /// op surface skips the optional `d_skip`, `z`, `delta_bias`
+    /// inputs and the `last_state` second output — see
+    /// `fuel-graph/src/registry/selective_scan.rs` for the rationale.
+    ///
+    /// Emits `Op::Fused(FusedOps::SELECTIVE_SCAN,
+    /// FusedOpParams::SelectiveScan { delta_softplus })`. No
+    /// primitive decomposition exists (the scan is a sequential
+    /// recurrence); backends without a native kernel fall through to
+    /// the executor's cpu_fallback path.
+    pub fn selective_scan(
+        &self,
+        delta: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        c: &Tensor,
+        delta_softplus: bool,
+    ) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &delta.graph)
+                && Arc::ptr_eq(&self.graph, &a.graph)
+                && Arc::ptr_eq(&self.graph, &b.graph)
+                && Arc::ptr_eq(&self.graph, &c.graph),
+            "selective_scan: all tensors must live on the same graph",
+        );
+        for (name, t) in [("u", self), ("delta", delta), ("a", a), ("b", b), ("c", c)] {
+            assert_eq!(
+                t.dtype(),
+                DType::F32,
+                "selective_scan v1: {name} must be F32, got {:?}", t.dtype(),
+            );
+        }
+        let u_dims = self.shape();
+        let u_dims = u_dims.dims();
+        let delta_dims = delta.shape();
+        let delta_dims = delta_dims.dims();
+        let a_dims = a.shape();
+        let a_dims = a_dims.dims();
+        let b_dims = b.shape();
+        let b_dims = b_dims.dims();
+        let c_dims = c.shape();
+        let c_dims = c_dims.dims();
+        assert_eq!(
+            u_dims.len(), 3,
+            "selective_scan: u must be rank 3 [batch, seqlen, dim], got {u_dims:?}",
+        );
+        assert_eq!(
+            delta_dims, u_dims,
+            "selective_scan: delta {delta_dims:?} must match u {u_dims:?}",
+        );
+        assert_eq!(
+            a_dims.len(), 2,
+            "selective_scan: a must be rank 2 [dim, dstate], got {a_dims:?}",
+        );
+        let batch = u_dims[0];
+        let seqlen = u_dims[1];
+        let dim = u_dims[2];
+        let dstate = a_dims[1];
+        assert_eq!(
+            a_dims[0], dim,
+            "selective_scan: a's first dim {} must equal dim {dim}", a_dims[0],
+        );
+        assert_eq!(
+            b_dims, &[batch, seqlen, dstate][..],
+            "selective_scan: b {b_dims:?} must be [batch={batch}, seqlen={seqlen}, dstate={dstate}]",
+        );
+        assert_eq!(
+            c_dims, &[batch, seqlen, dstate][..],
+            "selective_scan: c {c_dims:?} must be [batch={batch}, seqlen={seqlen}, dstate={dstate}]",
+        );
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Fused(
+                crate::registry::FusedOps::SELECTIVE_SCAN,
+                crate::registry::FusedOpParams::SelectiveScan { delta_softplus },
+            ),
+            inputs: vec![self.id, delta.id, a.id, b.id, c.id],
+            shape:  Shape::from_dims(&[batch, seqlen, dim]),
+            dtype:  DType::F32,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `FusedSoftmaxCrossEntropy` node. Two inputs:
     /// - `self` (logits): `[..., V]` F32
     /// - `targets`: `[...]` I64 (class indices; matches PyTorch /

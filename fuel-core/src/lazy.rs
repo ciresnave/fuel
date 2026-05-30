@@ -727,6 +727,25 @@ impl LazyTensor {
         }
     }
 
+    /// Mamba-1's selective state-space scan (forward). See
+    /// [`fuel_graph::Tensor::selective_scan`] for the full shape
+    /// contract. v1 covers 5 required inputs; optional inputs and
+    /// `last_state` output are mechanical follow-ups.
+    pub fn selective_scan(
+        &self,
+        delta: &Self,
+        a: &Self,
+        b: &Self,
+        c: &Self,
+        delta_softplus: bool,
+    ) -> Self {
+        Self {
+            inner: self.inner.selective_scan(
+                &delta.inner, &a.inner, &b.inner, &c.inner, delta_softplus,
+            ),
+        }
+    }
+
     /// Depthwise 1-D causal convolution + bias + optional fused SiLU
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion. See
     /// [`fuel_graph::Tensor::causal_conv1d`] for the full shape

@@ -36,6 +36,7 @@ pub mod conv_transpose_2d;
 pub mod flash_attn;
 pub mod fused_linear;
 pub mod fused_softmax_cross_entropy;
+pub mod selective_scan;
 pub mod inplace_affine;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
@@ -210,6 +211,23 @@ pub enum FusedOpParams {
     /// `Op::destructive_input`). Phase 1 of the in-place ops
     /// infrastructure.
     InplaceAffine { mul: f64, add: f64 },
+    /// SelectiveScan — Mamba-1's selective state-space scan
+    /// (forward only). Five inputs:
+    /// - `u`:     `[batch, seqlen, dim]` — input sequence.
+    /// - `delta`: `[batch, seqlen, dim]` — per-step state-update rate.
+    /// - `a`:     `[dim, dstate]` — recurrence matrix log.
+    /// - `b`:     `[batch, seqlen, dstate]` — selective input matrix.
+    /// - `c`:     `[batch, seqlen, dstate]` — selective output matrix.
+    ///
+    /// Output: `y: [batch, seqlen, dim]` — the scanned sequence.
+    ///
+    /// `delta_softplus` toggles the standard softplus(delta)
+    /// activation before use (matches baracuda's `selective_scan_*_run`
+    /// flag). `last_state` and the optional inputs (d_skip, z,
+    /// delta_bias) from the full Mamba algorithm are NOT exposed in
+    /// v1 — they're mechanical extensions when a consumer needs
+    /// them. See the registry module docs for the rationale.
+    SelectiveScan { delta_softplus: bool },
     /// CausalConv1d — depthwise 1-D convolution with causal masking
     /// (left-pad-only) + optional fused SiLU. Three inputs:
     /// - `x`: `[batch, channels, seq + (kernel - 1)]` — caller pre-pads
@@ -433,6 +451,11 @@ impl FusedOpParams {
                 tag: 18,
                 bits: Vec::new(),
                 ints: vec![*use_silu as i64],
+            },
+            FusedOpParams::SelectiveScan { delta_softplus } => FusedOpParamsKey {
+                tag: 19,
+                bits: Vec::new(),
+                ints: vec![*delta_softplus as i64],
             },
         }
     }
@@ -773,6 +796,15 @@ impl FusedOps {
     /// `BackwardKind::NotDifferentiable` for v1 (Mamba inference path
     /// today is inference-only).
     pub const CAUSAL_CONV1D: FusedOpId = FusedOpId(18);
+
+    /// SelectiveScan — Mamba-1's selective state-space scan
+    /// (forward only). Five inputs `[u, delta, a, b, c]`; one output
+    /// `y: [batch, seqlen, dim]`. Carries `delta_softplus: bool` in
+    /// [`FusedOpParams::SelectiveScan`]. v1 drops the optional
+    /// inputs (d_skip, z, delta_bias) and the `last_state` second
+    /// output — both are mechanical follow-ups when a consumer needs
+    /// them. `BackwardKind::NotDifferentiable` for v1.
+    pub const SELECTIVE_SCAN: FusedOpId = FusedOpId(19);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -805,6 +837,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(inplace_affine::entry())
             .with_entry(fused_softmax_cross_entropy::entry())
             .with_entry(causal_conv1d::entry())
+            .with_entry(selective_scan::entry())
     })
 }
 

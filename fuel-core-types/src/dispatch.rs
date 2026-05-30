@@ -400,6 +400,13 @@ pub enum OpKind {
     /// [`FusedOps::CAUSAL_CONV1D`](fuel_graph::registry::FusedOps::CAUSAL_CONV1D)
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion.
     CausalConv1d,
+    /// Mamba-1's selective state-space scan (forward). Five inputs
+    /// `[u, delta, a, b, c]` — see
+    /// [`FusedOps::SELECTIVE_SCAN`](fuel_graph::registry::FusedOps::SELECTIVE_SCAN)
+    /// for the full shape contract. Output `y: [batch, seqlen, dim]`.
+    /// Geometry + `delta_softplus` flow through
+    /// `OpParams::SelectiveScan`.
+    SelectiveScan,
 }
 
 impl OpKind {
@@ -496,6 +503,7 @@ impl OpKind {
             OpKind::InplaceAffine     => "inplace_affine",
             OpKind::FusedSoftmaxCrossEntropy => "fused_softmax_cross_entropy",
             OpKind::CausalConv1d        => "causal_conv1d",
+            OpKind::SelectiveScan       => "selective_scan",
         }
     }
 }

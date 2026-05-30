@@ -611,6 +611,63 @@ pub const CAUSAL_CONV1D_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
             same-hardware re-run bit-identical.",
 };
 
+/// Static cost model for `(SELECTIVE_SCAN, Cpu)` — Mamba's selective
+/// state-space scan. FLOPs scale with `batch · seqlen · dim · dstate`
+/// (the inner triple-nested loop). Bandwidth is dominated by reading
+/// u/delta/b/c per timestep + writing y.
+///
+/// Shapes: `[u, delta, a, b, c]`. Per-step cost: ~4·dstate FMAs (exp +
+/// mul + add for h update; mul + accumulate for y).
+pub fn cost_selective_scan_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(
+        shapes.len(), 5,
+        "SelectiveScan cost: expected 5 input shapes (u, delta, a, b, c)",
+    );
+    let u_dims = shapes[0].dims();
+    let a_dims = shapes[2].dims();
+    if u_dims.len() != 3 || a_dims.len() != 2 {
+        return CostEstimate::default();
+    }
+    let batch = u_dims[0] as u64;
+    let seqlen = u_dims[1] as u64;
+    let dim = u_dims[2] as u64;
+    let dstate = a_dims[1] as u64;
+    // ~8 FLOPs per (b, t, i, j) iteration: exp (10), mul (1), mul (1),
+    // add (1), mul (1), add (1). Conservative average ~16/iter once
+    // exp is amortized.
+    let per_iter_flops = 16;
+    let flops = batch * seqlen * dim * dstate * per_iter_flops;
+    // u + delta + b + c (read per step) + a (read once) + out (written once).
+    let bytes_moved = 2 * batch * seqlen * dim * 4
+        + 2 * batch * seqlen * dstate * 4
+        + dim * dstate * 4
+        + batch * seqlen * dim * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(SELECTIVE_SCAN, Cpu, *)` — recurrence
+/// accumulated in F64 (h is `Vec<f64>` internally), final y narrowed
+/// to F32. Iteration order fixed; bit-identical re-run on same
+/// hardware. The F64 accumulator buys ~7 extra decimal digits of
+/// headroom vs naive F32 over the per-step state update.
+pub const SELECTIVE_SCAN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend SelectiveScan: state recurrence in F64 \
+            accumulator; narrow to F32 on y store; deterministic \
+            iteration order; same-hardware re-run bit-identical.",
+};
+
 /// Static cost model for `(CONV2D, Cpu)` kernels — FLOP + bandwidth
 /// per architecture v1.0 §"Layer-1 cost model."
 ///
@@ -1609,16 +1666,16 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 18 registered fused ops covered.
+        // Sanity: we should see all 19 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
         // (autograd switched from emitting the primitive decomposition
         // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
         // (Phase 3 of the in-place ops infrastructure) +
-        // FUSED_SOFTMAX_CROSS_ENTROPY + CAUSAL_CONV1D (the CPU OpKind
-        // coverage plan's first two fused-op additions).
+        // FUSED_SOFTMAX_CROSS_ENTROPY + CAUSAL_CONV1D + SELECTIVE_SCAN
+        // (the CPU OpKind coverage plan's first three fused-op additions).
         assert_eq!(
-            covered, 18,
-            "expected 18 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 19,
+            "expected 19 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 
