@@ -2701,6 +2701,166 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
 
 #[test]
 #[ignore]
+fn vulkan_dispatch_softmax_last_dim_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host_f32: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        0.5, 1.5, 2.5, 3.5,
+    ];
+    let host: Vec<half::f16> = host_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let in_storage = upload_f16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDim,
+            &[DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    for row in 0..outer {
+        let xs = &host_f32[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let max = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = xs.iter().map(|x| (x - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        for (i, (e, y)) in exps.iter().zip(ys.iter()).enumerate() {
+            let expected = e / sum;
+            let got_f32 = y.to_f32();
+            assert!((got_f32 - expected).abs() < 5e-3,
+                "softmax-f16 row {row} col {i}: got {got_f32}, expected {expected}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;            // MUST be even.
+    let n = outer * last;
+    let host_f32: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        0.5, 1.5, 2.5, 3.5,
+    ];
+    let host: Vec<half::bf16> = host_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    let in_storage = upload_bf16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDim,
+            &[DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    for row in 0..outer {
+        let xs = &host_f32[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let max = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = xs.iter().map(|x| (x - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        for (i, (e, y)) in exps.iter().zip(ys.iter()).enumerate() {
+            let expected = e / sum;
+            let got_f32 = y.to_f32();
+            assert!((got_f32 - expected).abs() < 5e-2,
+                "softmax-bf16 row {row} col {i}: got {got_f32}, expected {expected}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host: Vec<f64> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        0.5, 1.5, 2.5, 3.5,
+    ];
+
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDim,
+            &[DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    for row in 0..outer {
+        let xs = &host[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let exps: Vec<f64> = xs.iter().map(|x| (x - max).exp()).collect();
+        let sum: f64 = exps.iter().sum();
+        for (i, (e, y)) in exps.iter().zip(ys.iter()).enumerate() {
+            let expected = e / sum;
+            assert!((y - expected).abs() < 1e-12,
+                "softmax-f64 row {row} col {i}: got {y}, expected {expected}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn vulkan_dispatch_rms_norm_last_dim_f16() {
     let Some(backend) = backend_or_skip() else { return };
 

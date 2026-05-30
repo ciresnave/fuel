@@ -1547,6 +1547,167 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f16 softmax along the last dim. Storage is `float16_t`; per-row
+    /// max, exp, and sum reduction are all in f32 (f16 mantissa loses
+    /// precision under long-row reductions). Phase 2 stores `exp(x -
+    /// max)` to the output as f16, Phase 3 reads it back and scales by
+    /// `1/sum` in f32 — bounded ~2 ULP double-rounding on outputs in
+    /// [0, 1].
+    pub fn softmax_last_dim_f16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * 2;
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::softmax_last_dim_f16_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SoftParams { n_rows: u32, n_cols: u32 }
+        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_f16_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_f16_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "softmax_last_dim_f16_bytes",
+            &self.pipelines.softmax_f16_pipeline,
+            &self.pipelines.softmax_f16_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// bf16 softmax along the last dim. Storage is bf16 packed
+    /// two-per-u32 (lane 0 = low 16). All math in f32; lane-pair
+    /// scheme carries through all 3 phases. `last_dim` MUST be even.
+    pub fn softmax_last_dim_bf16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        if last_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend::softmax_last_dim_bf16_bytes: last_dim must be even \
+                 (lane-pair packing); got {last_dim}",
+            );
+        }
+        let n = outer_count * last_dim;
+        let need_bytes = n * 2;
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::softmax_last_dim_bf16_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SoftParams { n_rows: u32, n_cols: u32 }
+        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_bf16_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_bf16_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "softmax_last_dim_bf16_bytes",
+            &self.pipelines.softmax_bf16_pipeline,
+            &self.pipelines.softmax_bf16_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// f64 softmax along the last dim. Native f64 end-to-end. Requires
+    /// shaderFloat64 + GroupNonUniformArithmetic.
+    pub fn softmax_last_dim_f64_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * std::mem::size_of::<f64>();
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::softmax_last_dim_f64_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SoftParams { n_rows: u32, n_cols: u32 }
+        let p = SoftParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_f64_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "softmax_last_dim_f64_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "softmax_last_dim_f64_bytes",
+            &self.pipelines.softmax_f64_pipeline,
+            &self.pipelines.softmax_f64_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 RMS-norm along the last dim. Same row × col layout as
     /// softmax; `eps` is the standard `1 / sqrt(mean(x²) + eps)`
     /// stabilizer. No affine gain (that's a separate broadcast_mul
