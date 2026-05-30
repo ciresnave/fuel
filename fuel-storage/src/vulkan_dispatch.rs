@@ -722,6 +722,81 @@ pub mod attention {
         let out = vulkan_output(&mut out_guard)?;
         backend.rope_f32_bytes(x, cos, sin, out, &layouts[0])
     }
+
+    pub fn rope_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        rope_typed("rope_f16", inputs, outputs, layouts, params, |b, x, c, s, o, l| {
+            b.rope_f16_bytes(x, c, s, o, l)
+        })
+    }
+
+    pub fn rope_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        rope_typed("rope_f64", inputs, outputs, layouts, params, |b, x, c, s, o, l| {
+            b.rope_f64_bytes(x, c, s, o, l)
+        })
+    }
+
+    fn rope_typed<F>(
+        label: &'static str,
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+        call: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            &Layout,
+        ) -> fuel_core_types::Result<()>,
+    {
+        if inputs.len() != 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::attention::{label}: expected 3 inputs (x,cos,sin) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        match params {
+            OpParams::Rope { .. } => {}
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::attention::{label}: expected OpParams::Rope, got {other:?}",
+                )).bt());
+            }
+        }
+        if layouts.is_empty() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::attention::{label}: layouts.len() = 0, need x-layout",
+            )).bt());
+        }
+        let x_guard = read_storage(&inputs[0])?;
+        let cos_guard = read_storage(&inputs[1])?;
+        let sin_guard = read_storage(&inputs[2])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let x = vulkan_input(&x_guard)?;
+        let cos = vulkan_input(&cos_guard)?;
+        let sin = vulkan_input(&sin_guard)?;
+        let backend = x.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::attention::{label}: x has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        call(backend, x, cos, sin, out, &layouts[0])
+    }
 }
 
 // ===========================================================================
@@ -2246,6 +2321,14 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // contiguous" — for Rope specifically, only x; the wrapper handles
     // forcing cos/sin contiguous through its own path. -----
     table.register_with_caps_and_precision(OpKind::Rope, &[f32, f32, f32, f32], vk, attention::rope_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // V.3.G.rope (2026-05-30): f16/f64 RoPE. bf16 deferred (output-
+    // packing requires either InterlockedOr or a pair-thread layout).
+    {
+        let f16 = DType::F16;
+        let f64_d = DType::F64;
+        table.register_with_caps_and_precision(OpKind::Rope, &[f16,   f16,   f16,   f16],   vk, attention::rope_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Rope, &[f64_d, f64_d, f64_d, f64_d], vk, attention::rope_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    }
 
     // ----- IndexSelect (V.2.D, f32 src + u32 ids) — pure gather (byte-level).
     // strided-input candidate: index_select.slang flattens input to

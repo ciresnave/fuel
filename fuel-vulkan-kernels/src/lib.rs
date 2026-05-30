@@ -111,6 +111,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("rms_norm_last_dim_f64",     include_bytes!("../spv/rms_norm_last_dim_f64.spv")),
     ("rms_norm_last_dim_backward", include_bytes!("../spv/rms_norm_last_dim_backward.spv")),
     ("rope",                      include_bytes!("../spv/rope.spv")),
+    ("rope_f16",                  include_bytes!("../spv/rope_f16.spv")),
+    ("rope_f64",                  include_bytes!("../spv/rope_f64.spv")),
     ("softmax",                   include_bytes!("../spv/softmax.spv")),
     ("softmax_f16",               include_bytes!("../spv/softmax_f16.spv")),
     ("softmax_bf16",              include_bytes!("../spv/softmax_bf16.spv")),
@@ -299,6 +301,10 @@ pub const INDEX_SELECT: &str = "index_select";
 pub const ADD_ASSIGN_SCALED: &str = "add_assign_scaled";
 /// Fused rotary position embedding.
 pub const ROPE: &str = "rope";
+/// Fused RoPE, f16 storage with f32 rotation arithmetic.
+pub const ROPE_F16: &str = "rope_f16";
+/// Fused RoPE, native f64 end-to-end.
+pub const ROPE_F64: &str = "rope_f64";
 /// Single-dispatch concat along an arbitrary dim.
 pub const CONCAT_ALONG_DIM: &str = "concat_along_dim";
 /// Conv2D im2col patches rearrangement. Output of this kernel feeds

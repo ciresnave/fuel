@@ -4039,6 +4039,166 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f16 RoPE. Mirrors `rope_f32_bytes` exactly; only the per-element
+    /// byte size and pipeline reference change. Math is f32 internal,
+    /// storage is `float16_t`.
+    pub fn rope_f16_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        cos: &VulkanStorageBytes,
+        sin: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        x_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.rope_typed_bytes(
+            "rope_f16_bytes",
+            2,
+            x, cos, sin, out, x_layout,
+            &self.pipelines.rope_f16_pipeline,
+            &self.pipelines.rope_f16_layout,
+        )
+    }
+
+    /// f64 RoPE. Mirrors `rope_f32_bytes` exactly; per-element size 8.
+    pub fn rope_f64_bytes(
+        &self,
+        x: &VulkanStorageBytes,
+        cos: &VulkanStorageBytes,
+        sin: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        x_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.rope_typed_bytes(
+            "rope_f64_bytes",
+            8,
+            x, cos, sin, out, x_layout,
+            &self.pipelines.rope_f64_pipeline,
+            &self.pipelines.rope_f64_layout,
+        )
+    }
+
+    /// Per-dtype RoPE core. Identical layout / params / dispatch
+    /// arithmetic to `rope_f32_bytes` — the f32 method predates the
+    /// extraction; future cleanup may rewrite it to call this. The
+    /// only per-dtype thing is `elem_bytes` (size in bytes of one
+    /// stored element) and the (pipeline, layout) refs.
+    fn rope_typed_bytes(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        x: &VulkanStorageBytes,
+        cos: &VulkanStorageBytes,
+        sin: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        x_layout: &Layout,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let dims = x_layout.shape().dims();
+        let rank = dims.len();
+        if rank < 2 {
+            fuel_core_types::bail!("{op_name}: rank >= 2 required, got {dims:?}");
+        }
+        let seq = dims[rank - 2] as u32;
+        let head_dim = dims[rank - 1] as u32;
+        if head_dim % 2 != 0 {
+            fuel_core_types::bail!("{op_name}: head_dim must be even, got {head_dim}");
+        }
+        let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
+        let half = head_dim / 2;
+        let total = outer * seq * half;
+
+        let need_bytes = (outer as usize) * (seq as usize) * (head_dim as usize) * elem_bytes;
+        if x.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: buffer too small (need {need_bytes}; x={}, out={})",
+                x.len_bytes(), out.len_bytes(),
+            );
+        }
+
+        let x_strides = x_layout.stride();
+        let contiguous = x_layout.is_contiguous();
+        let (x_s0, x_s1, x_s_seq, x_s_hd, x_outer1) = if contiguous {
+            (0u32, 0u32, 0u32, 0u32, 1u32)
+        } else {
+            match rank {
+                2 => (
+                    (x_strides[0] as usize * dims[0]) as u32,
+                    (x_strides[0] as usize * dims[0]) as u32,
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    1u32,
+                ),
+                3 => (
+                    x_strides[0] as u32,
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    1u32,
+                ),
+                4 => (
+                    x_strides[0] as u32,
+                    x_strides[1] as u32,
+                    x_strides[2] as u32,
+                    x_strides[3] as u32,
+                    dims[1] as u32,
+                ),
+                _ => fuel_core_types::bail!(
+                    "{op_name}: stride-aware path supports rank 2-4, got {rank}",
+                ),
+            }
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RopeParams {
+            outer: u32, seq: u32, head_dim: u32, total: u32,
+            x_s0: u32, x_s1: u32, x_s_seq: u32, x_s_hd: u32,
+            x_outer1: u32, x_contiguous: u32, _pad0: u32, _pad1: u32,
+        }
+        let p = RopeParams {
+            outer, seq, head_dim, total,
+            x_s0, x_s1, x_s_seq, x_s_hd,
+            x_outer1, x_contiguous: contiguous as u32, _pad0: 0, _pad1: 0,
+        };
+
+        let x_buf = x.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: x is host-evicted; fault back first"),
+        ))?;
+        let cos_buf = cos.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: cos is host-evicted; fault back first"),
+        ))?;
+        let sin_buf = sin.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: sin is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<RopeParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, x_buf, 0, x.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, cos_buf, 0, cos.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, sin_buf, 0, sin.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+
+        let groups = ((total + 63) / 64).max(1);
+        let rb = [x_buf.raw() as u64, cos_buf.raw() as u64, sin_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Element-wise f16 unary op via native `float16_t`
     /// (`shaderFloat16` + 16-bit-storage). Same 13-op surface as
     /// [`Self::unary_f32_bytes`]; computation stays in f16

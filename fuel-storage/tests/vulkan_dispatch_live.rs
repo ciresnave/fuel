@@ -2699,6 +2699,138 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- RoPE f16/f64 (V.3.G.rope, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_rope_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Shape: [1, 2, 4]  (outer=1, seq=2, head_dim=4, h=2)
+    let outer = 1usize;
+    let seq = 2usize;
+    let hd = 4usize;
+    let n_x = outer * seq * hd;
+    let n_table = seq * hd;
+
+    // Identity rotation test: cos=1, sin=0 everywhere → output == x.
+    let host_x_f32: Vec<f32> = (0..n_x).map(|i| i as f32 + 1.0).collect();
+    let host_cos_f32: Vec<f32> = vec![1.0; n_table];
+    let host_sin_f32: Vec<f32> = vec![0.0; n_table];
+    let host_x: Vec<half::f16> = host_x_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let host_cos: Vec<half::f16> = host_cos_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let host_sin: Vec<half::f16> = host_sin_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let x_storage = upload_f16(&backend, &host_x);
+    let cos_storage = upload_f16(&backend, &host_cos);
+    let sin_storage = upload_f16(&backend, &host_sin);
+    let out_bytes = backend.alloc_bytes_handle(n_x * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let x_arc = Arc::new(RwLock::new(x_storage));
+    let cos_arc = Arc::new(RwLock::new(cos_storage));
+    let sin_arc = Arc::new(RwLock::new(sin_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Rope,
+            &[DType::F16, DType::F16, DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let x_layout = Layout::contiguous(Shape::from_dims(&[outer, seq, hd]));
+    let table_layout = Layout::contiguous(Shape::from_dims(&[seq, hd]));
+    let out_layout = x_layout.clone();
+    kernel(
+        &[Arc::clone(&x_arc), Arc::clone(&cos_arc), Arc::clone(&sin_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[x_layout, table_layout.clone(), table_layout, out_layout],
+        &OpParams::Rope { outer_count: outer, seq, head_dim: hd },
+    ).expect("rope f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    for (i, (g, h)) in got.iter().zip(host_x_f32.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert!((got_f32 - h).abs() < 5e-3,
+            "rope-f16[{i}] (identity): got {got_f32}, expected {h}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_rope_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 1usize;
+    let seq = 2usize;
+    let hd = 4usize;
+    let n_x = outer * seq * hd;
+    let n_table = seq * hd;
+
+    // Real rotation: cos/sin = ±sqrt(0.5) → 45° rotation. h=2; rotates
+    // (x[i], x[i+h]) by 45° giving out[i] = (x[i]-x[i+h])*sqrt(0.5),
+    // out[i+h] = (x[i]+x[i+h])*sqrt(0.5) (using c0=c1=s1=sqrt(0.5),
+    // s0=sqrt(0.5)). Tests that the kernel is actually computing both
+    // outputs, not just passing through.
+    let host_x: Vec<f64> = vec![
+        1.0, 2.0, 3.0, 4.0,   // s=0: pairs (1,3) and (2,4)
+        5.0, 6.0, 7.0, 8.0,   // s=1: pairs (5,7) and (6,8)
+    ];
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let host_cos: Vec<f64> = vec![q; n_table];
+    let host_sin: Vec<f64> = vec![q; n_table];
+
+    let x_storage = upload_f64(&backend, &host_x);
+    let cos_storage = upload_f64(&backend, &host_cos);
+    let sin_storage = upload_f64(&backend, &host_sin);
+    let out_bytes = backend.alloc_bytes_handle(n_x * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let x_arc = Arc::new(RwLock::new(x_storage));
+    let cos_arc = Arc::new(RwLock::new(cos_storage));
+    let sin_arc = Arc::new(RwLock::new(sin_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Rope,
+            &[DType::F64, DType::F64, DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let x_layout = Layout::contiguous(Shape::from_dims(&[outer, seq, hd]));
+    let table_layout = Layout::contiguous(Shape::from_dims(&[seq, hd]));
+    let out_layout = x_layout.clone();
+    kernel(
+        &[Arc::clone(&x_arc), Arc::clone(&cos_arc), Arc::clone(&sin_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[x_layout, table_layout.clone(), table_layout, out_layout],
+        &OpParams::Rope { outer_count: outer, seq, head_dim: hd },
+    ).expect("rope f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    // Reference: for each (s, i in 0..h): out[i] = x[i]*c0 - x[i+h]*s0;
+    //                                    out[i+h] = x[i+h]*c1 + x[i]*s1.
+    let h = hd / 2;
+    for s in 0..seq {
+        let row = s * hd;
+        for i in 0..h {
+            let x0 = host_x[row + i];
+            let x1 = host_x[row + i + h];
+            let expected_lo = x0 * q - x1 * q;
+            let expected_hi = x1 * q + x0 * q;
+            assert!((got[row + i] - expected_lo).abs() < 1e-12,
+                "rope-f64 s={s} i={i}: got {}, expected {expected_lo}", got[row + i]);
+            assert!((got[row + i + h] - expected_hi).abs() < 1e-12,
+                "rope-f64 s={s} i+h={}: got {}, expected {expected_hi}",
+                i + h, got[row + i + h]);
+        }
+    }
+}
+
 // ---- Cast f32 ↔ f64 (V.3.G.cast, 2026-05-30) ----
 
 #[test]
