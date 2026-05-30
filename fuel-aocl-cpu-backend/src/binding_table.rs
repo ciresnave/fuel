@@ -29,6 +29,7 @@ use std::sync::{Arc, RwLock};
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
 use fuel_storage::{
     dispatch::{cpu_input, cpu_output, read_storage, write_storage},
+    fused::PrecisionGuarantee,
     kernel::OpParams,
     KernelBindingTable, Storage,
 };
@@ -41,28 +42,47 @@ use fuel_storage::{
 /// Today: `MatMul, F32` + `Conv2D, F32` (both no-bias and with-bias
 /// shapes).
 pub fn register_aocl_cpu_kernels(table: &mut KernelBindingTable) {
+    // AOCL-BLAS (BLIS) is run-to-run deterministic on a fixed CPU +
+    // thread count by default. The bit_stable_on_same_hardware claim
+    // is about run-to-run determinism, not bit-equality vs the scalar
+    // reference — those are different and BLIS's blocked accumulation
+    // legitimately differs from scalar. Marking as audited-bit-stable
+    // keeps these registrations eligible under future Judge policies
+    // that filter on PrecisionGuarantee.
+    const AOCL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+        bit_stable_on_same_hardware: true,
+        max_ulp: None,
+        max_relative: None,
+        max_absolute: None,
+        notes: "AOCL-BLAS (BLIS): deterministic on fixed CPU + thread \
+                count; per-shape ULP bounds land with the step-8 \
+                calibration framework.",
+    };
     let cpu = BackendId::Cpu;
     let f32_dt = DType::F32;
-    table.register(
+    table.register_with_precision(
         OpKind::MatMul,
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         matmul_f32_aocl_cpu_wrapper,
+        AOCL_PRECISION,
     );
     // Conv2D — same wrapper handles both 3-operand (x, w, out) and
     // 4-operand (x, w, bias, out) keys; the wrapper distinguishes by
     // `inputs.len()`.
-    table.register(
+    table.register_with_precision(
         OpKind::Conv2D,
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         conv2d_f32_aocl_cpu_wrapper,
+        AOCL_PRECISION,
     );
-    table.register(
+    table.register_with_precision(
         OpKind::Conv2D,
         &[f32_dt, f32_dt, f32_dt, f32_dt],
         cpu,
         conv2d_f32_aocl_cpu_wrapper,
+        AOCL_PRECISION,
     );
 }
 

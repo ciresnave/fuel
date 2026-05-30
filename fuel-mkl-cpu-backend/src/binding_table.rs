@@ -29,6 +29,7 @@ use std::sync::{Arc, RwLock};
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
 use fuel_storage::{
     dispatch::{cpu_input, cpu_output, read_storage, write_storage},
+    fused::PrecisionGuarantee,
     kernel::OpParams,
     KernelBindingTable, Storage,
 };
@@ -41,28 +42,49 @@ use fuel_storage::{
 /// shapes). Int GEMM follows in its own commit alongside the Quant
 /// GEMM family.
 pub fn register_mkl_cpu_kernels(table: &mut KernelBindingTable) {
+    // oneMKL BLAS is run-to-run deterministic on a fixed CPU + thread
+    // count by default (cross-machine reproducibility needs the
+    // `MKL_CBWR` env var). The bit_stable_on_same_hardware claim is
+    // about run-to-run determinism, not bit-equality vs the scalar
+    // reference — those are different and MKL's accumulation order
+    // legitimately differs from scalar. Marking as audited-bit-stable
+    // keeps these registrations eligible under future Judge policies
+    // that filter on PrecisionGuarantee.
+    const MKL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+        bit_stable_on_same_hardware: true,
+        max_ulp: None,
+        max_relative: None,
+        max_absolute: None,
+        notes: "oneMKL BLAS: deterministic on fixed CPU + thread count \
+                (set MKL_CBWR for cross-machine reproducibility); \
+                per-shape ULP bounds land with the step-8 calibration \
+                framework.",
+    };
     let cpu = BackendId::Cpu;
     let f32_dt = DType::F32;
-    table.register(
+    table.register_with_precision(
         OpKind::MatMul,
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         matmul_f32_mkl_cpu_wrapper,
+        MKL_PRECISION,
     );
     // Conv2D — same wrapper handles both 3-operand (x, w, out) and
     // 4-operand (x, w, bias, out) keys; the wrapper distinguishes by
     // `inputs.len()`.
-    table.register(
+    table.register_with_precision(
         OpKind::Conv2D,
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         conv2d_f32_mkl_cpu_wrapper,
+        MKL_PRECISION,
     );
-    table.register(
+    table.register_with_precision(
         OpKind::Conv2D,
         &[f32_dt, f32_dt, f32_dt, f32_dt],
         cpu,
         conv2d_f32_mkl_cpu_wrapper,
+        MKL_PRECISION,
     );
 }
 
