@@ -3413,6 +3413,161 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Pad with constant fill, byte-width-keyed (1/2/4/8). One thread
+    /// per output element (b4/b8) or per pair / quad (b2/b1). The
+    /// caller passes `fill_bytes` (length must equal `elem_bytes`)
+    /// which the wrapper packs into a u32 / u64 bit-pattern that
+    /// the kernel splats into out-of-bounds positions.
+    ///
+    /// Constraints:
+    /// - b2: `out_shape` last dim must be even (pair-thread layout).
+    /// - b1: `out_shape` last dim must be a multiple of 4 (quad-thread).
+    pub fn pad_const_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        dst: &mut VulkanStorageBytes,
+        in_shape: &[usize],
+        out_shape: &[usize],
+        left_pad: &[usize],
+        elem_bytes: usize,
+        fill_bytes: &[u8],
+    ) -> fuel_core_types::Result<()> {
+        let rank = in_shape.len();
+        if out_shape.len() != rank || left_pad.len() != rank {
+            fuel_core_types::bail!(
+                "pad_const_bytes: rank mismatch (in={}, out={}, left_pad={})",
+                in_shape.len(), out_shape.len(), left_pad.len(),
+            );
+        }
+        if rank > 8 {
+            fuel_core_types::bail!("pad_const_bytes: rank > 8 not supported");
+        }
+        if fill_bytes.len() != elem_bytes {
+            fuel_core_types::bail!(
+                "pad_const_bytes: fill_bytes.len() ({}) != elem_bytes ({})",
+                fill_bytes.len(), elem_bytes,
+            );
+        }
+        let n_in: usize = in_shape.iter().product();
+        let n_out: usize = out_shape.iter().product();
+        let need_src = n_in * elem_bytes;
+        let need_dst = n_out * elem_bytes;
+        if src.len_bytes() < need_src {
+            fuel_core_types::bail!(
+                "pad_const_bytes: src {} bytes < required {need_src}",
+                src.len_bytes(),
+            );
+        }
+        if dst.len_bytes() < need_dst {
+            fuel_core_types::bail!(
+                "pad_const_bytes: dst {} bytes < required {need_dst}",
+                dst.len_bytes(),
+            );
+        }
+
+        if elem_bytes == 2 && n_out % 2 != 0 {
+            fuel_core_types::bail!(
+                "pad_const_bytes b2: n_out ({n_out}) must be even (pair-thread)",
+            );
+        }
+        if elem_bytes == 1 && n_out % 4 != 0 {
+            fuel_core_types::bail!(
+                "pad_const_bytes b1: n_out ({n_out}) must be a multiple of 4 (quad-thread)",
+            );
+        }
+
+        // Pack shape_buf: in_shape + out_shape + left_pad.
+        let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
+        for &d in in_shape { sd.push(d as u32); }
+        for &d in out_shape { sd.push(d as u32); }
+        for &p in left_pad { sd.push(p as u32); }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+        let sd_byte_size = (sd.len() * 4) as u64;
+
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_const_bytes: src is host-evicted; fault back first".into(),
+        ))?;
+        let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_const_bytes: dst is host-evicted; fault back first".into(),
+        ))?;
+
+        // Build Params and pick pipeline.
+        // For b1/b2/b4: { u32 n_out, u32 rank, u32 fill_value, u32 _pad } = 16 bytes
+        // For b8:       { u32 n_out, u32 rank, u64 fill_value }            = 16 bytes
+        let (pbuf, pmem, pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
+            1 => {
+                let fill_u32 = fill_bytes[0] as u32;
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct PParams { n_out: u32, rank: u32, fill_value: u32, _pad: u32 }
+                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u32, _pad: 0 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.pad_const_b1_pipeline,
+                 &self.pipelines.pad_const_b1_layout,
+                 "pad_const_b1", n_out / 4)
+            }
+            2 => {
+                let fill_u32 = u16::from_le_bytes([fill_bytes[0], fill_bytes[1]]) as u32;
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct PParams { n_out: u32, rank: u32, fill_value: u32, _pad: u32 }
+                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u32, _pad: 0 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.pad_const_b2_pipeline,
+                 &self.pipelines.pad_const_b2_layout,
+                 "pad_const_b2", n_out / 2)
+            }
+            4 => {
+                let mut a = [0u8; 4]; a.copy_from_slice(&fill_bytes[..4]);
+                let fill_u32 = u32::from_le_bytes(a);
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct PParams { n_out: u32, rank: u32, fill_value: u32, _pad: u32 }
+                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u32, _pad: 0 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.pad_const_b4_pipeline,
+                 &self.pipelines.pad_const_b4_layout,
+                 "pad_const_b4", n_out)
+            }
+            8 => {
+                let mut a = [0u8; 8]; a.copy_from_slice(&fill_bytes[..8]);
+                let fill_u64 = u64::from_le_bytes(a);
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct PParams { n_out: u32, rank: u32, fill_value: u64 }
+                let p = PParams { n_out: n_out as u32, rank: rank as u32, fill_value: fill_u64 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.pad_const_b8_pipeline,
+                 &self.pipelines.pad_const_b8_layout,
+                 "pad_const_b8", n_out)
+            }
+            other => fuel_core_types::bail!(
+                "pad_const_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst_buf, 0, dst.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_dispatch);
+        let rb = [src_buf.raw() as u64];
+        let wb = [dst_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 SoftmaxLastDimBackward via the byte-storage dispatch path
     /// (parallel to the existing `softmax_last_dim_backward` trait
     /// method which uses `Self::Storage`). Takes pre-allocated output.

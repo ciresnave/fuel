@@ -2699,6 +2699,146 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- Pad (constant mode) f32/f16/bf16/f64/u8 (V.3.G.pad, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_const_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // in=[2,3], padding=[(1,1), (0,2)] → out=[4,5]
+    // Layout (out, row × col):
+    //   row 0: [fill,fill,fill,fill,fill]
+    //   row 1: [1,2,3,fill,fill]
+    //   row 2: [4,5,6,fill,fill]
+    //   row 3: [fill,fill,fill,fill,fill]
+    let input = [1.0_f32, 2.0, 3.0,  4.0, 5.0, 6.0];
+    let fill: f32 = -7.5;
+
+    let in_storage = upload_f32(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(4 * 5 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[4, 5]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![2, 3],
+            out_shape: vec![4, 5],
+            padding: vec![(1, 1), (0, 2)],
+            mode_tag: 0,
+            fill_bytes: fill.to_le_bytes().to_vec(),
+        },
+    ).expect("pad f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let expected = [
+        fill, fill, fill, fill, fill,
+        1.0,  2.0,  3.0,  fill, fill,
+        4.0,  5.0,  6.0,  fill, fill,
+        fill, fill, fill, fill, fill,
+    ];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "pad f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_const_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // in=[1,4], padding=[(0,0), (1,1)] → out=[1,6] (last-dim even)
+    let input_f32 = [1.0_f32, 2.0, 3.0, 4.0];
+    let input: Vec<half::f16> = input_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let fill = half::f16::from_f32(0.0);
+
+    let in_storage = upload_f16(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(1 * 6 * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[1, 4]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[1, 6]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![1, 4],
+            out_shape: vec![1, 6],
+            padding: vec![(0, 0), (1, 1)],
+            mode_tag: 0,
+            fill_bytes: fill.to_le_bytes().to_vec(),
+        },
+    ).expect("pad f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let expected = [0.0_f32, 1.0, 2.0, 3.0, 4.0, 0.0];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert_eq!(got_f32, *e, "pad f16[{i}]: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_const_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // 1D pad: in=[3], padding=[(2,3)] → out=[8]
+    let input = [1.0_f64, 2.0, 3.0];
+    let fill = -1.0_f64;
+
+    let in_storage = upload_f64(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(8 * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F64, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[8]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![3],
+            out_shape: vec![8],
+            padding: vec![(2, 3)],
+            mode_tag: 0,
+            fill_bytes: fill.to_le_bytes().to_vec(),
+        },
+    ).expect("pad f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    let expected = [-1.0_f64, -1.0, 1.0, 2.0, 3.0, -1.0, -1.0, -1.0];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "pad f64[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- SoftmaxLastDimBackward f32/f16/bf16/f64 (V.3.G.softmax-bwd, 2026-05-30) ----
 //
 // Reference: dx_j = y_j * (g_j - sum_i(y_i * g_i))
