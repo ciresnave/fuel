@@ -38,7 +38,8 @@ use fuel_storage::{
 /// (the `probe_aocl_loadable` call); this function only wires
 /// registrations.
 ///
-/// Today: `MatMul, F32`. Conv2D follows in its own commit.
+/// Today: `MatMul, F32` + `Conv2D, F32` (both no-bias and with-bias
+/// shapes).
 pub fn register_aocl_cpu_kernels(table: &mut KernelBindingTable) {
     let cpu = BackendId::Cpu;
     let f32_dt = DType::F32;
@@ -47,6 +48,21 @@ pub fn register_aocl_cpu_kernels(table: &mut KernelBindingTable) {
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         matmul_f32_aocl_cpu_wrapper,
+    );
+    // Conv2D — same wrapper handles both 3-operand (x, w, out) and
+    // 4-operand (x, w, bias, out) keys; the wrapper distinguishes by
+    // `inputs.len()`.
+    table.register(
+        OpKind::Conv2D,
+        &[f32_dt, f32_dt, f32_dt],
+        cpu,
+        conv2d_f32_aocl_cpu_wrapper,
+    );
+    table.register(
+        OpKind::Conv2D,
+        &[f32_dt, f32_dt, f32_dt, f32_dt],
+        cpu,
+        conv2d_f32_aocl_cpu_wrapper,
     );
 }
 
@@ -231,6 +247,121 @@ fn matmul_f32_aocl_bytes(
     Ok(())
 }
 
+/// `(Conv2D, F32, Cpu)` sibling alternative routed through AOCL-BLAS's
+/// sgemm via `fuel_conv::conv2d_via_gemm`. Handles both 2-input
+/// (x, weight) and 3-input (x, weight, bias) shapes; the binding-table
+/// key carries the operand count.
+///
+/// `fuel_conv::ConvShape` doesn't carry a dilation field, so any
+/// `dilation != (1, 1)` falls back to the scalar `conv2d_f32` kernel.
+/// Same for `ConvShape::validate` failures. Inputs are guaranteed
+/// contiguous f32 by the executor's auto-Contiguize pass.
+fn conv2d_f32_aocl_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 && inputs.len() != 3 {
+        return Err(Error::Msg(format!(
+            "conv2d_f32_aocl wrapper expects 2 or 3 inputs (x, w, [bias]), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "conv2d_f32_aocl wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) = match params {
+        OpParams::Conv2D {
+            x_shape,
+            w_shape,
+            out_shape,
+            stride,
+            padding,
+            dilation,
+            groups,
+        } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
+        other => {
+            return Err(Error::Msg(format!(
+                "conv2d_f32_aocl wrapper expects OpParams::Conv2D, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+
+    let x_guard = read_storage(&inputs[0])?;
+    let w_guard = read_storage(&inputs[1])?;
+    let bias_guard = match inputs.get(2) {
+        Some(arc) => Some(read_storage(arc)?),
+        None => None,
+    };
+    let mut out_guard = write_storage(&outputs[0])?;
+    let x_cpu = cpu_input(&x_guard)?;
+    let w_cpu = cpu_input(&w_guard)?;
+    let bias_cpu = match &bias_guard {
+        Some(g) => Some(cpu_input(g)?),
+        None => None,
+    };
+    let out_cpu = cpu_output(&mut out_guard)?;
+
+    // Fall back to scalar conv2d_f32 for any shape AOCL's im2col+gemm
+    // path doesn't handle: non-(1,1) dilation, or any ConvShape that
+    // fails validation. The scalar kernel already handles all of these.
+    if dilation != (1, 1) {
+        return fuel_cpu_backend::byte_kernels::conv2d_f32(
+            x_cpu, w_cpu, bias_cpu, out_cpu,
+            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+        );
+    }
+    let s = fuel_conv::ConvShape {
+        batch: x_shape[0],
+        c_in: x_shape[1],
+        h: x_shape[2],
+        w: x_shape[3],
+        c_out: w_shape[0],
+        k_h: w_shape[2],
+        k_w: w_shape[3],
+        stride,
+        padding,
+        groups,
+    };
+    if s.validate().is_err() {
+        return fuel_cpu_backend::byte_kernels::conv2d_f32(
+            x_cpu, w_cpu, bias_cpu, out_cpu,
+            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+        );
+    }
+
+    let x_view: &[f32] = x_cpu.as_slice()?;
+    let w_view: &[f32] = w_cpu.as_slice()?;
+    let bias_view: Option<&[f32]> = match bias_cpu {
+        Some(b) => Some(b.as_slice()?),
+        None => None,
+    };
+    let out_view: &mut [f32] = out_cpu.as_slice_mut()?;
+    let mut patches = vec![0.0_f32; s.im2col_len()];
+
+    fuel_conv::conv2d_via_gemm(
+        x_view, w_view, bias_view, &s, out_view, &mut patches,
+        |m, n, k, a, b, c| {
+            use aocl_types::Trans;
+            aocl_blas::gemm(
+                Trans::No, Trans::No,
+                m, n, k,
+                1.0_f32, a, b,
+                0.0_f32, c,
+            )
+            .expect("aocl_blas::gemm in conv2d_via_gemm");
+        },
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +386,30 @@ mod tests {
             before + 1,
             "register_aocl_cpu_kernels must add exactly one alternative to (MatMul, F32, Cpu)",
         );
+    }
+
+    /// Registration smoke for Conv2D: both no-bias and with-bias
+    /// keys gain one alternative each.
+    #[test]
+    fn aocl_conv2d_registers_as_sibling_alternative() {
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+        let f32_dt = DType::F32;
+        let no_bias_before = table
+            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .len();
+        let with_bias_before = table
+            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .len();
+        register_aocl_cpu_kernels(&mut table);
+        let no_bias_after = table
+            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .len();
+        let with_bias_after = table
+            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .len();
+        assert_eq!(no_bias_after, no_bias_before + 1, "no-bias Conv2D");
+        assert_eq!(with_bias_after, with_bias_before + 1, "with-bias Conv2D");
     }
 
     /// Parity: the AOCL wrapper must produce bit-close output to the
@@ -331,6 +486,100 @@ mod tests {
                 let denom = a.abs().max(r.abs()).max(f32::MIN_POSITIVE);
                 let rel = (a - r).abs() / denom;
                 assert!(rel < 1e-4, "alt {i}, idx {j}: aocl-ish={a}, scalar-ish={r} (rel {rel})");
+            }
+        }
+    }
+
+    /// Parity: the AOCL Conv2D wrapper must produce bit-close output
+    /// to the scalar CPU wrapper for a small NCHW conv. Exercises the
+    /// no-bias path with stride=1, pad=0, dilation=(1,1), groups=1 —
+    /// the canonical "happy" shape AOCL's im2col+gemm handles.
+    #[test]
+    fn aocl_conv2d_matches_scalar_when_available() {
+        use fuel_storage::{BackendStorage, Storage};
+
+        if crate::probe_aocl_loadable().is_err() {
+            eprintln!("AOCL not available, skipping");
+            return;
+        }
+
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+        register_aocl_cpu_kernels(&mut table);
+
+        // Conv shape: N=1, Cin=2, H=4, W=4; Cout=3, kH=3, kW=3.
+        let (n, cin, h, w) = (1usize, 2, 4, 4);
+        let (cout, kh, kw) = (3usize, 3, 3);
+        let (h_out, w_out) = (h - kh + 1, w - kw + 1); // stride=1, pad=0
+
+        let x_vals: Vec<f32> = (0..(n * cin * h * w))
+            .map(|i| ((i as f32) * 1.3e-2).sin())
+            .collect();
+        let w_vals: Vec<f32> = (0..(cout * cin * kh * kw))
+            .map(|i| ((i as f32) * 1.7e-2).cos())
+            .collect();
+
+        let x_storage = || {
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(&x_vals)),
+                DType::F32,
+            )))
+        };
+        let w_storage = || {
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(&w_vals)),
+                DType::F32,
+            )))
+        };
+        let alloc_out = || {
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(
+                    n * cout * h_out * w_out * std::mem::size_of::<f32>(),
+                )),
+                DType::F32,
+            )))
+        };
+
+        let params = OpParams::Conv2D {
+            x_shape: [n, cin, h, w],
+            w_shape: [cout, cin, kh, kw],
+            out_shape: [n, cout, h_out, w_out],
+            stride: (1, 1),
+            padding: (0, 0),
+            dilation: (1, 1),
+            groups: 1,
+        };
+
+        let f32_dt = DType::F32;
+        let alternatives = table.lookup_alternatives(
+            OpKind::Conv2D,
+            &[f32_dt, f32_dt, f32_dt],
+            BackendId::Cpu,
+        );
+        assert!(alternatives.len() >= 2, "need both CPU + AOCL conv2d alternatives");
+
+        let mut outputs: Vec<Vec<f32>> = Vec::with_capacity(alternatives.len());
+        for alt in alternatives {
+            let out = alloc_out();
+            let inputs = [x_storage(), w_storage()];
+            let mut outs = [out.clone()];
+            (alt.kernel)(&inputs, &mut outs, &[], &params).expect("alt kernel ok");
+            let g = out.read().unwrap();
+            #[allow(unreachable_patterns)]
+            let bytes = match &g.inner {
+                BackendStorage::Cpu(c) => c.as_slice::<f32>().unwrap().to_vec(),
+                _ => panic!("not cpu"),
+            };
+            outputs.push(bytes);
+        }
+
+        let ref_out = &outputs[0];
+        for (i, alt_out) in outputs.iter().enumerate().skip(1) {
+            assert_eq!(alt_out.len(), ref_out.len(), "alt {i} length");
+            for (j, (&a, &r)) in alt_out.iter().zip(ref_out.iter()).enumerate() {
+                let denom = a.abs().max(r.abs()).max(f32::MIN_POSITIVE);
+                let rel = (a - r).abs() / denom;
+                assert!(rel < 1e-4, "alt {i}, idx {j}: aocl={a}, scalar={r} (rel {rel})");
             }
         }
     }
