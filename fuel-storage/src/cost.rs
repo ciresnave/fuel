@@ -542,6 +542,40 @@ pub fn cost_softmax_last_dim_primitive_cpu(
     }
 }
 
+/// Cost for `FusedSoftmaxCrossEntropy` (binding-table form). Reads
+/// `n_rows × vocab` from `OpParams::FusedSoftmaxCrossEntropy`. Two
+/// passes per row (max + sum_exp), plus one transcendental log per
+/// row; bandwidth is logits + targets + scalar output. The static
+/// estimate intentionally underestimates the kernel-launch /
+/// per-row overhead — the empirical layer compensates.
+pub fn cost_fused_softmax_cross_entropy_primitive_cpu(
+    _shapes: &[Shape],
+    _dtypes: &[DType],
+    params: &OpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    let (n_rows, vocab) = match params {
+        OpParams::FusedSoftmaxCrossEntropy { n_rows, vocab, .. } => {
+            (*n_rows as u64, *vocab as u64)
+        }
+        _ => return CostEstimate::default(),
+    };
+    // 1 max-compare + 2-FLOP exp+sum per row element + ~10 FLOP log
+    // (the transcendental). Comparable shape to the fused-side
+    // estimate in fuel-storage::fused::cost_fused_softmax_cross_entropy_cpu;
+    // duplicated here because the dispatcher needs a CostFn over
+    // OpParams, not FusedOpParams.
+    let per_row_flops = 3 * vocab + 10;
+    let flops = n_rows * per_row_flops;
+    // logits (f32) + targets (i64) + output (4 bytes scalar; conservative).
+    let bytes_moved = n_rows * vocab * 4 + n_rows * 8 + 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 /// Cost for `NormLastDim` family — `LayerNormLastDim`,
 /// `RmsNormLastDim`, and their backwards. Same outer × last_dim
 /// shape as softmax.
@@ -710,6 +744,7 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         SoftmaxLastDim | SoftmaxLastDimBackward
         | LogSoftmaxLastDim | LogSoftmaxLastDimBackward
             => cost_softmax_last_dim_primitive_cpu,
+        FusedSoftmaxCrossEntropy => cost_fused_softmax_cross_entropy_primitive_cpu,
         RmsNormLastDim | RmsNormLastDimBackward
         | LayerNormLastDim | LayerNormLastDimBackward
             => cost_norm_last_dim_primitive_cpu,

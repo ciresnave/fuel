@@ -727,6 +727,23 @@ impl LazyTensor {
         }
     }
 
+    /// Fused softmax + cross-entropy with integer (class-index)
+    /// targets — the standard PyTorch CE loss. See
+    /// [`fuel_graph::Tensor::fused_softmax_cross_entropy`] for the full
+    /// shape contract.
+    pub fn fused_softmax_cross_entropy(
+        &self,
+        targets: &Self,
+        reduction: fuel_graph::registry::Reduction,
+        ignore_index: i64,
+    ) -> Self {
+        Self {
+            inner: self.inner.fused_softmax_cross_entropy(
+                &targets.inner, reduction, ignore_index,
+            ),
+        }
+    }
+
     /// LayerNorm along the last dim with the given epsilon.
     pub fn layer_norm_last_dim(&self, eps: f64) -> Self {
         Self {

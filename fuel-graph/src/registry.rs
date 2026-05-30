@@ -34,6 +34,7 @@ pub mod conv2d;
 pub mod conv_transpose_2d;
 pub mod flash_attn;
 pub mod fused_linear;
+pub mod fused_softmax_cross_entropy;
 pub mod inplace_affine;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
@@ -208,6 +209,52 @@ pub enum FusedOpParams {
     /// `Op::destructive_input`). Phase 1 of the in-place ops
     /// infrastructure.
     InplaceAffine { mul: f64, add: f64 },
+    /// FusedSoftmaxCrossEntropy — fused softmax + negative log-likelihood
+    /// over class-indexed targets, the standard PyTorch / Liger-Kernel
+    /// training-time loss. Two inputs:
+    /// - `logits: [..., V]` (F32) — pre-computed unnormalized class scores
+    /// - `targets: [...]` (I64) — class indices, matching the rest of
+    ///   PyTorch / baracuda CE convention (see
+    ///   [[match-external-convention-for-well-known-ops]])
+    ///
+    /// Output is F32 regardless of input dtype (loss values are
+    /// accumulated in F32 for stability):
+    /// - `Reduction::Mean` / `Reduction::Sum` → scalar `[]`
+    /// - `Reduction::None` → same shape as `targets` (`[...]`)
+    ///
+    /// `ignore_index` rows are dropped from the loss accumulator and
+    /// from the Mean denominator. The conventional sentinel is `-100`.
+    FusedSoftmaxCrossEntropy {
+        reduction:    Reduction,
+        ignore_index: i64,
+    },
+}
+
+/// Reduction mode for losses with per-sample outputs. Matches PyTorch's
+/// `reduction` parameter shape (`'mean' | 'sum' | 'none'`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Reduction {
+    /// Sum the per-sample losses and divide by the count of contributing
+    /// samples (rows not masked by `ignore_index`). Standard training-time
+    /// scalar.
+    Mean,
+    /// Sum the per-sample losses without dividing.
+    Sum,
+    /// No reduction — return the per-sample losses with `targets.shape`.
+    None,
+}
+
+impl Reduction {
+    /// Stable per-variant key for hashable encodings (`FusedOpParams::key`
+    /// and the kernel-side `OpParams` payload). The variant tag space is
+    /// local to whichever enum carries this discriminant.
+    pub(crate) fn key(self) -> i64 {
+        match self {
+            Reduction::Mean => 0,
+            Reduction::Sum => 1,
+            Reduction::None => 2,
+        }
+    }
 }
 
 /// Hashable key for [`FusedOpParams`]. Used by `op_key`/CSE so that two
@@ -359,6 +406,11 @@ impl FusedOpParams {
                 tag: 16,
                 bits: vec![mul.to_bits(), add.to_bits()],
                 ints: Vec::new(),
+            },
+            FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index } => FusedOpParamsKey {
+                tag: 17,
+                bits: Vec::new(),
+                ints: vec![reduction.key(), *ignore_index],
             },
         }
     }
@@ -678,6 +730,17 @@ impl FusedOps {
     /// (`docs/session-prompts/in-place-ops-infrastructure.md`);
     /// dispatch + autograd integration deferred to Phases 3 + 4.
     pub const INPLACE_AFFINE: FusedOpId = FusedOpId(16);
+
+    /// FusedSoftmaxCrossEntropy — fused softmax + NLL over class-indexed
+    /// targets. Two inputs `[logits, targets]`; carries
+    /// `{ reduction, ignore_index }` in
+    /// [`FusedOpParams::FusedSoftmaxCrossEntropy`]. The forward kernel
+    /// avoids materializing the `[..., V]` softmax/log-softmax
+    /// intermediates that the primitive composition does (`fuel-core::
+    /// train::cross_entropy_with_logits`). Backward via Decompose runs
+    /// the primitive chain; the in-place Liger-style fused backward is a
+    /// later session (needs in-place mutation infrastructure).
+    pub const FUSED_SOFTMAX_CROSS_ENTROPY: FusedOpId = FusedOpId(17);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -708,6 +771,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(qmatmul::entry())
             .with_entry(powi_backward::entry())
             .with_entry(inplace_affine::entry())
+            .with_entry(fused_softmax_cross_entropy::entry())
     })
 }
 
