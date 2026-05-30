@@ -494,3 +494,35 @@ sdpa_arbmask_kernel!(sdpa_arbmask_f32, f32, 4, "sdpa_arbmask_f32");
 sdpa_arbmask_kernel!(sdpa_arbmask_f16, f16, 2, "sdpa_arbmask_f16");
 sdpa_arbmask_kernel!(sdpa_arbmask_bf16, bf16, 2, "sdpa_arbmask_bf16");
 sdpa_arbmask_kernel!(sdpa_arbmask_f64, f64, 8, "sdpa_arbmask_f64");
+
+// ─────────────────────── can_implement ───────────────────────
+//
+// Host-side validators for the sdpa_arbmask kernel set. Mirror the
+// Phase 51 contract: 0 = ok, non-zero = caller's shape/causal/dtype
+// combo is rejected. Fuel dispatch code should call these before
+// allocating output buffers and launching.
+
+macro_rules! sdpa_arbmask_can_impl {
+    ($name:ident, $sys:ident, $label:expr $(,)?) => {
+        #[doc = concat!("Pre-launch validation for `", $label, "_run`.")]
+        pub fn $name(
+            batch: i32, heads: i32,
+            q_len: i32, k_len: i32,
+            d_k: i32, d_v: i32,
+            is_causal: bool,
+        ) -> Result<()> {
+            let status = unsafe {
+                sys::$sys(
+                    batch, heads, q_len, k_len, d_k, d_v,
+                    if is_causal { 1 } else { 0 },
+                )
+            };
+            check(status, concat!($label, "_can_implement"))
+        }
+    };
+}
+
+sdpa_arbmask_can_impl!(sdpa_arbmask_f32_can_implement,  baracuda_kernels_sdpa_f32_arbmask_can_implement,  "sdpa_arbmask_f32");
+sdpa_arbmask_can_impl!(sdpa_arbmask_f64_can_implement,  baracuda_kernels_sdpa_f64_arbmask_can_implement,  "sdpa_arbmask_f64");
+sdpa_arbmask_can_impl!(sdpa_arbmask_f16_can_implement,  baracuda_kernels_sdpa_f16_arbmask_can_implement,  "sdpa_arbmask_f16");
+sdpa_arbmask_can_impl!(sdpa_arbmask_bf16_can_implement, baracuda_kernels_sdpa_bf16_arbmask_can_implement, "sdpa_arbmask_bf16");
