@@ -2699,6 +2699,174 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+#[test]
+#[ignore]
+fn vulkan_dispatch_rms_norm_last_dim_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host_f32: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        2.0, 4.0, 6.0, 8.0,
+    ];
+    let host: Vec<half::f16> = host_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let in_storage = upload_f16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::RmsNormLastDim,
+            &[DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let eps = 1e-6f64;
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("rmsnorm f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    // Reference in f32 (matches kernel's mixed-precision pattern), then
+    // round to f16 for comparison; tolerance reflects f16's ~3-decimal
+    // mantissa.
+    for row in 0..outer {
+        let xs = &host_f32[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let mean_sq: f32 = xs.iter().map(|x| x * x).sum::<f32>() / last as f32;
+        let scale = (mean_sq + eps as f32).sqrt();
+        for (i, (x, y)) in xs.iter().zip(ys.iter()).enumerate() {
+            let expected = x / scale;
+            let got_f32 = y.to_f32();
+            assert!((got_f32 - expected).abs() < 5e-3,
+                "rmsnorm-f16 row {row} col {i}: got {got_f32}, expected {expected}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_rms_norm_last_dim_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;            // MUST be even — lane-pair packing.
+    let n = outer * last;
+    let host_f32: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        2.0, 4.0, 6.0, 8.0,
+    ];
+    let host: Vec<half::bf16> = host_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    let in_storage = upload_bf16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::RmsNormLastDim,
+            &[DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let eps = 1e-6f64;
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("rmsnorm bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    // bf16 has only 8 mantissa bits — wider tolerance than f16 despite
+    // the same width, because the exponent range is preserved at the
+    // cost of mantissa precision.
+    for row in 0..outer {
+        let xs = &host_f32[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let mean_sq: f32 = xs.iter().map(|x| x * x).sum::<f32>() / last as f32;
+        let scale = (mean_sq + eps as f32).sqrt();
+        for (i, (x, y)) in xs.iter().zip(ys.iter()).enumerate() {
+            let expected = x / scale;
+            let got_f32 = y.to_f32();
+            assert!((got_f32 - expected).abs() < 5e-2,
+                "rmsnorm-bf16 row {row} col {i}: got {got_f32}, expected {expected}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_rms_norm_last_dim_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host: Vec<f64> = vec![
+        1.0, 2.0, 3.0, 4.0,
+        2.0, 4.0, 6.0, 8.0,
+    ];
+
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::RmsNormLastDim,
+            &[DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let eps = 1e-12f64;
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("rmsnorm f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    // Native f64 throughout — tight tolerance, verifies subgroup sum
+    // and GLSL.std.450 Sqrt both work on doubles under shaderFloat64.
+    for row in 0..outer {
+        let xs = &host[row * last .. (row + 1) * last];
+        let ys = &got[row * last .. (row + 1) * last];
+        let mean_sq: f64 = xs.iter().map(|x| x * x).sum::<f64>() / last as f64;
+        let scale = (mean_sq + eps).sqrt();
+        for (i, (x, y)) in xs.iter().zip(ys.iter()).enumerate() {
+            let expected = x / scale;
+            assert!((y - expected).abs() < 1e-10,
+                "rmsnorm-f64 row {row} col {i}: got {y}, expected {expected}");
+        }
+    }
+}
+
 // ===========================================================================
 // V.3 fan-out: triu/tril, flip, roll, bf16 unary+binary, F8E4M3 cast,
 // write_slice b1.

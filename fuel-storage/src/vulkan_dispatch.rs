@@ -461,6 +461,20 @@ pub mod softmax {
 pub mod norm {
     use super::*;
 
+    // Internal helper: pull (outer_count, last_dim, eps) from the
+    // OpParams::NormLastDim variant, returning a tagged error if the
+    // executor passed the wrong params shape.
+    fn norm_params(fn_name: &str, params: &OpParams) -> Result<(usize, usize, f64)> {
+        match params {
+            OpParams::NormLastDim { outer_count, last_dim, eps } => {
+                Ok((*outer_count, *last_dim, *eps))
+            }
+            other => Err(Error::Msg(format!(
+                "vulkan_dispatch::norm::{fn_name}: expected OpParams::NormLastDim, got {other:?}",
+            )).bt()),
+        }
+    }
+
     pub fn rms_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -473,17 +487,7 @@ pub mod norm {
                 inputs.len(), outputs.len(),
             )).bt());
         }
-        let (outer_count, last_dim, eps) = match params {
-            OpParams::NormLastDim { outer_count, last_dim, eps } => {
-                (*outer_count, *last_dim, *eps)
-            }
-            other => {
-                return Err(Error::Msg(format!(
-                    "vulkan_dispatch::norm::rms_f32: expected OpParams::NormLastDim, got {:?}",
-                    other,
-                )).bt());
-            }
-        };
+        let (outer_count, last_dim, eps) = norm_params("rms_f32", params)?;
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
         let a = vulkan_input(&in_guard)?;
@@ -497,6 +501,81 @@ pub mod norm {
         })?;
         let out = vulkan_output(&mut out_guard)?;
         backend.rms_norm_last_dim_f32_bytes(a, out, outer_count, last_dim, eps)
+    }
+
+    pub fn rms_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::norm::rms_f16: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim, eps) = norm_params("rms_f16", params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::norm::rms_f16: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.rms_norm_last_dim_f16_bytes(a, out, outer_count, last_dim, eps)
+    }
+
+    pub fn rms_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::norm::rms_bf16: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim, eps) = norm_params("rms_bf16", params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::norm::rms_bf16: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.rms_norm_last_dim_bf16_bytes(a, out, outer_count, last_dim, eps)
+    }
+
+    pub fn rms_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::norm::rms_f64: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim, eps) = norm_params("rms_f64", params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::norm::rms_f64: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.rms_norm_last_dim_f64_bytes(a, out, outer_count, last_dim, eps)
     }
 }
 
@@ -1923,6 +2002,22 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     const RMS_NORM_REASON: &str = "fuel-vulkan-backend RmsNormLastDim: per-row x² + sum (subgroup-tree reduction) + sqrt + divide; no static bound — FADD order is scheduler-determined per dispatch.";
     table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::none(SOFTMAX_REASON));
     table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::none(RMS_NORM_REASON));
+
+    // ----- RmsNorm last-dim, f16/bf16/f64 (V.3.G, 2026-05-30).
+    // f16/bf16 mirror baracuda's mixed-precision pattern: storage in
+    // half precision, accumulation + rsqrt in f32. f64 is native end-
+    // to-end (verifies GLSL.std.450 Sqrt on doubles works under
+    // shaderFloat64 — NOT OpenCL.std). bf16 uses the lane-pair scheme
+    // (each lane processes one u32 = two bf16 lanes) to avoid bf16-
+    // pair write races. CONTIGUOUS-ONLY for all three variants. -----
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
+        table.register_with_precision(OpKind::RmsNormLastDim, &u(f16),  vk, norm::rms_f16,  PrecisionGuarantee::none(RMS_NORM_REASON));
+        table.register_with_precision(OpKind::RmsNormLastDim, &u(bf16), vk, norm::rms_bf16, PrecisionGuarantee::none(RMS_NORM_REASON));
+        table.register_with_precision(OpKind::RmsNormLastDim, &u(f64),  vk, norm::rms_f64,  PrecisionGuarantee::none(RMS_NORM_REASON));
+    }
 
     // ----- RoPE (V.2.C, f32) — pointwise rotation with cos/sin tables.
     // STRIDE-AWARE on `x`: rope.slang's Params struct carries

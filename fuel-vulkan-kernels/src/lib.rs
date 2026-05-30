@@ -98,6 +98,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("reduce",                    include_bytes!("../spv/reduce.spv")),
     ("reduce_last_dim",           include_bytes!("../spv/reduce_last_dim.spv")),
     ("rms_norm_last_dim",         include_bytes!("../spv/rms_norm_last_dim.spv")),
+    ("rms_norm_last_dim_f16",     include_bytes!("../spv/rms_norm_last_dim_f16.spv")),
+    ("rms_norm_last_dim_bf16",    include_bytes!("../spv/rms_norm_last_dim_bf16.spv")),
+    ("rms_norm_last_dim_f64",     include_bytes!("../spv/rms_norm_last_dim_f64.spv")),
     ("rms_norm_last_dim_backward", include_bytes!("../spv/rms_norm_last_dim_backward.spv")),
     ("rope",                      include_bytes!("../spv/rope.spv")),
     ("softmax",                   include_bytes!("../spv/softmax.spv")),
@@ -233,8 +236,17 @@ pub const LAYER_NORM_LAST_DIM_BACKWARD: &str = "layer_norm_last_dim_backward";
 pub const REDUCE: &str = "reduce";
 /// Per-row reduction along the last dimension.
 pub const REDUCE_LAST_DIM: &str = "reduce_last_dim";
-/// Fused root-mean-square normalization along the last dimension.
+/// Fused root-mean-square normalization along the last dimension (f32).
 pub const RMS_NORM_LAST_DIM: &str = "rms_norm_last_dim";
+/// RMSNorm last-dim, f16 storage with f32 accumulation.
+pub const RMS_NORM_LAST_DIM_F16: &str = "rms_norm_last_dim_f16";
+/// RMSNorm last-dim, bf16 storage (packed u32) with f32 accumulation.
+/// Lane-pair scheme: each lane processes one u32 = two bf16 lanes;
+/// `n_cols` must be even (LLM hidden_dim always is).
+pub const RMS_NORM_LAST_DIM_BF16: &str = "rms_norm_last_dim_bf16";
+/// RMSNorm last-dim, native f64 end-to-end. Needs shaderFloat64 +
+/// GroupNonUniformArithmetic; uses GLSL.std.450 Sqrt (NOT OpenCL.std).
+pub const RMS_NORM_LAST_DIM_F64: &str = "rms_norm_last_dim_f64";
 /// Fused RMSNorm backward (grad_x from x + upstream).
 pub const RMS_NORM_LAST_DIM_BACKWARD: &str = "rms_norm_last_dim_backward";
 /// Strided copy (permute / broadcast / concat / slice).
