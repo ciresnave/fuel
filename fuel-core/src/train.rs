@@ -731,6 +731,78 @@ mod tests {
         );
     }
 
+    /// CausalConv1d end-to-end: build a tiny depthwise-conv graph,
+    /// realize through the dispatcher, verify the hand-computed
+    /// output. Mirrors the byte-kernel `causal_conv1d_f32_no_silu_basic`
+    /// test but goes through Tensor::causal_conv1d + binding-table
+    /// dispatch instead of calling the kernel directly.
+    #[test]
+    fn causal_conv1d_basic_end_to_end() {
+        let device = crate::Device::cpu();
+        // x = [0, 0, 1, 2] (single batch, single channel, pre-padded)
+        let x = LazyTensor::from_f32(
+            vec![0.0_f32, 0.0, 1.0, 2.0],
+            Shape::from_dims(&[1, 1, 4]),
+            &device,
+        );
+        // weight = [0.5, 1.0, 2.0] for one channel, kernel 3
+        let w = x.const_f32_like(
+            vec![0.5_f32, 1.0, 2.0],
+            Shape::from_dims(&[1, 1, 3]),
+        );
+        let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]));
+        let out = x.causal_conv1d(&w, &bias, false).realize_f32();
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 2.1).abs() < 1e-5, "out[0]={}", out[0]);
+        assert!((out[1] - 5.1).abs() < 1e-5, "out[1]={}", out[1]);
+    }
+
+    /// CausalConv1d with use_silu = true through the dispatcher.
+    #[test]
+    fn causal_conv1d_with_silu_end_to_end() {
+        let device = crate::Device::cpu();
+        let x = LazyTensor::from_f32(
+            vec![0.0_f32, 0.0, 1.0, 2.0],
+            Shape::from_dims(&[1, 1, 4]),
+            &device,
+        );
+        let w = x.const_f32_like(
+            vec![0.5_f32, 1.0, 2.0],
+            Shape::from_dims(&[1, 1, 3]),
+        );
+        let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]));
+        let out = x.causal_conv1d(&w, &bias, true).realize_f32();
+        let expected0 = 2.1_f32 / (1.0 + (-2.1_f32).exp());
+        let expected1 = 5.1_f32 / (1.0 + (-5.1_f32).exp());
+        assert!((out[0] - expected0).abs() < 1e-5, "out[0]={}", out[0]);
+        assert!((out[1] - expected1).abs() < 1e-5, "out[1]={}", out[1]);
+    }
+
+    /// Registry: the CausalConv1d entry is wired into the default
+    /// registry and reachable by id + name.
+    #[test]
+    fn causal_conv1d_registry_entry_registered() {
+        let r = fuel_graph::registry::default_registry();
+        let e = r
+            .entry(fuel_graph::registry::FusedOps::CAUSAL_CONV1D)
+            .expect("CAUSAL_CONV1D registered");
+        assert_eq!(e.name, "CausalConv1d");
+        assert_eq!(
+            r.id_for_name("CausalConv1d"),
+            Some(fuel_graph::registry::FusedOps::CAUSAL_CONV1D),
+        );
+        // Shape rule produces [batch, channels, seq_in - (kernel - 1)].
+        let out_shape = (e.shape_rule)(
+            &[
+                Shape::from_dims(&[2, 4, 8]),  // x: batch=2, channels=4, seq_in=8
+                Shape::from_dims(&[4, 1, 3]),  // weight: channels=4, 1, kernel=3
+                Shape::from_dims(&[4]),        // bias: channels=4
+            ],
+            &fuel_graph::registry::FusedOpParams::CausalConv1d { use_silu: false },
+        );
+        assert_eq!(out_shape.dims(), &[2, 4, 6]);
+    }
+
     /// Registry: the FusedSoftmaxCrossEntropy entry is wired into the
     /// default registry and reachable by id + name.
     #[test]

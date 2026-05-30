@@ -2822,6 +2822,54 @@ fn fused_softmax_cross_entropy_f32_cpu_wrapper(
     )
 }
 
+/// Dispatch wrapper for `(CausalConv1d, [F32, F32, F32, F32], Cpu)`.
+/// Three inputs (x, weight, bias) → one output. Geometry +
+/// `use_silu` flow through `OpParams::CausalConv1d`.
+fn causal_conv1d_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 3 {
+        return Err(Error::Msg(format!(
+            "causal_conv1d wrapper expects 3 inputs (x, weight, bias), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "causal_conv1d wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
+        OpParams::CausalConv1d {
+            batch, channels, seq_in, seq_out, kernel, use_silu,
+        } => (*batch, *channels, *seq_in, *seq_out, *kernel, *use_silu),
+        other => {
+            return Err(Error::Msg(format!(
+                "causal_conv1d wrapper expects OpParams::CausalConv1d, got {other:?}",
+            ))
+            .bt());
+        }
+    };
+    let x_guard = read_storage(&inputs[0])?;
+    let w_guard = read_storage(&inputs[1])?;
+    let bias_guard = read_storage(&inputs[2])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let x_cpu = cpu_input(&x_guard)?;
+    let w_cpu = cpu_input(&w_guard)?;
+    let bias_cpu = cpu_input(&bias_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::causal_conv1d_f32(
+        x_cpu, w_cpu, bias_cpu, out_cpu,
+        batch, channels, seq_in, seq_out, kernel, use_silu,
+    )
+}
+
 /// Dispatch wrapper for `(FlashAttn, *, Cpu)`. Three or four inputs
 /// (q, k, v, optional alibi_slopes). Geometry + math params flow
 /// through `OpParams::FlashAttn`.
@@ -3497,6 +3545,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         &[DType::F32, DType::I64, DType::F32],
         cpu,
         fused_softmax_cross_entropy_f32_cpu_wrapper,
+    );
+
+    // CausalConv1d: 3 inputs (x, weight, bias) + 1 output, all F32.
+    table.register(
+        CausalConv1d,
+        &[DType::F32, DType::F32, DType::F32, DType::F32],
+        cpu,
+        causal_conv1d_f32_cpu_wrapper,
     );
 
     // In-place unary activations — Phase 3e of in-place ops. Same
@@ -4582,12 +4638,14 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// the step-9 binding-table refactor.
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
     use crate::fused::{
-        cost_attn_cpu, cost_conv2d_cpu, cost_conv_transpose2d_cpu,
-        cost_fused_linear_cpu, cost_fused_softmax_cross_entropy_cpu,
+        cost_attn_cpu, cost_causal_conv1d_cpu, cost_conv2d_cpu,
+        cost_conv_transpose2d_cpu, cost_fused_linear_cpu,
+        cost_fused_softmax_cross_entropy_cpu,
         cost_inplace_affine_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
-        ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
+        ATTN_CPU_PRECISION, CAUSAL_CONV1D_CPU_PRECISION,
+        CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
         FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION,
         INPLACE_AFFINE_CPU_PRECISION, NORM_FAMILY_CPU_PRECISION,
@@ -5018,6 +5076,14 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         fused_softmax_cross_entropy_f32_cpu_wrapper,
         cost = cost_fused_softmax_cross_entropy_cpu,
         precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
+
+    // CAUSAL_CONV1D — four-tuple (x, weight, bias, out), all F32.
+    // v1 F32 only; per-dtype siblings follow the same pattern.
+    const CC1D_F32: &[DType] = &[DType::F32, DType::F32, DType::F32, DType::F32];
+    register_fused!(r, FusedOps::CAUSAL_CONV1D, cpu, CC1D_F32,
+        causal_conv1d_f32_cpu_wrapper,
+        cost = cost_causal_conv1d_cpu,
+        precision = CAUSAL_CONV1D_CPU_PRECISION);
 }
 
 #[cfg(test)]
@@ -5114,6 +5180,7 @@ mod tests {
             OpKind::QMatMul,
             OpKind::Copy,
             OpKind::FusedSoftmaxCrossEntropy,
+            OpKind::CausalConv1d,
         ];
 
         // Populate the binding table the same way the production
@@ -5274,6 +5341,7 @@ mod tests {
             OpKind::QMatMul,
             OpKind::Copy,
             OpKind::FusedSoftmaxCrossEntropy,
+            OpKind::CausalConv1d,
         ];
 
         let mut table = KernelBindingTable::new();

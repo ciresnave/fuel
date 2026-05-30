@@ -30,6 +30,7 @@ use crate::{Graph, NodeId};
 use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
+pub mod causal_conv1d;
 pub mod conv2d;
 pub mod conv_transpose_2d;
 pub mod flash_attn;
@@ -209,6 +210,22 @@ pub enum FusedOpParams {
     /// `Op::destructive_input`). Phase 1 of the in-place ops
     /// infrastructure.
     InplaceAffine { mul: f64, add: f64 },
+    /// CausalConv1d — depthwise 1-D convolution with causal masking
+    /// (left-pad-only) + optional fused SiLU. Three inputs:
+    /// - `x`: `[batch, channels, seq + (kernel - 1)]` — caller pre-pads
+    ///   with `kernel - 1` zeros on the left for the causal mask.
+    /// - `weight`: `[channels, 1, kernel]` — depthwise, one filter per
+    ///   channel (groups == channels in conv terminology).
+    /// - `bias`: `[channels]`.
+    ///
+    /// Output: `[batch, channels, seq]`, same dtype as inputs.
+    ///
+    /// Designed to mirror baracuda's `causal_conv1d_*_run` signature
+    /// (which already carries a `use_silu` flag) and the Mamba-1 /
+    /// Mamba-2 prefill convolution. See
+    /// [[match-external-convention-for-well-known-ops]] for the
+    /// "match baracuda's contract exactly" reasoning.
+    CausalConv1d { use_silu: bool },
     /// FusedSoftmaxCrossEntropy — fused softmax + negative log-likelihood
     /// over class-indexed targets, the standard PyTorch / Liger-Kernel
     /// training-time loss. Two inputs:
@@ -411,6 +428,11 @@ impl FusedOpParams {
                 tag: 17,
                 bits: Vec::new(),
                 ints: vec![reduction.key(), *ignore_index],
+            },
+            FusedOpParams::CausalConv1d { use_silu } => FusedOpParamsKey {
+                tag: 18,
+                bits: Vec::new(),
+                ints: vec![*use_silu as i64],
             },
         }
     }
@@ -741,6 +763,16 @@ impl FusedOps {
     /// the primitive chain; the in-place Liger-style fused backward is a
     /// later session (needs in-place mutation infrastructure).
     pub const FUSED_SOFTMAX_CROSS_ENTROPY: FusedOpId = FusedOpId(17);
+
+    /// CausalConv1d — depthwise 1-D convolution + causal masking +
+    /// optional fused SiLU. Three inputs `[x, weight, bias]` where
+    /// `x: [batch, channels, seq + kernel - 1]`,
+    /// `weight: [channels, 1, kernel]`, `bias: [channels]`. Carries
+    /// `use_silu: bool` in [`FusedOpParams::CausalConv1d`]. The forward
+    /// kernel matches baracuda's `causal_conv1d_*_run` contract.
+    /// `BackwardKind::NotDifferentiable` for v1 (Mamba inference path
+    /// today is inference-only).
+    pub const CAUSAL_CONV1D: FusedOpId = FusedOpId(18);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -772,6 +804,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(powi_backward::entry())
             .with_entry(inplace_affine::entry())
             .with_entry(fused_softmax_cross_entropy::entry())
+            .with_entry(causal_conv1d::entry())
     })
 }
 

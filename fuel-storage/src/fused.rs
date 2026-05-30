@@ -548,6 +548,69 @@ pub const FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION: PrecisionGuarantee = Precis
             same-hardware re-run bit-identical.",
 };
 
+/// Static cost model for `(CAUSAL_CONV1D, Cpu)` — depthwise 1-D conv.
+/// FLOPs scale with `batch × channels × seq_out × kernel`; bandwidth
+/// is `batch × channels × seq_in` (x reads) + `channels × kernel`
+/// (weight reads) + `channels` (bias) + `batch × channels × seq_out`
+/// (output writes). SiLU adds one transcendental per output element.
+///
+/// Shapes: `[x, weight, bias]` where `x = [batch, channels, seq_in]`,
+/// `weight = [channels, 1, kernel]`, `bias = [channels]`.
+pub fn cost_causal_conv1d_cpu(
+    shapes: &[Shape],
+    params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(
+        shapes.len(), 3,
+        "CausalConv1d cost: expected 3 input shapes (x, weight, bias)",
+    );
+    let use_silu = match params {
+        FusedOpParams::CausalConv1d { use_silu } => *use_silu,
+        _ => return CostEstimate::default(),
+    };
+    let x_dims = shapes[0].dims();
+    let w_dims = shapes[1].dims();
+    if x_dims.len() != 3 || w_dims.len() != 3 {
+        return CostEstimate::default();
+    }
+    let batch = x_dims[0] as u64;
+    let channels = x_dims[1] as u64;
+    let seq_in = x_dims[2] as u64;
+    let kernel = w_dims[2] as u64;
+    if seq_in < kernel - 1 {
+        return CostEstimate::default();
+    }
+    let seq_out = seq_in - (kernel - 1);
+    // 2·kernel FLOPs per output element (FMA = 2). SiLU adds ~10
+    // FLOPs per element (transcendental convention).
+    let per_out_flops = 2 * kernel + if use_silu { 10 } else { 0 };
+    let flops = batch * channels * seq_out * per_out_flops;
+    let bytes_moved = batch * channels * seq_in * 4
+        + channels * kernel * 4
+        + channels * 4
+        + batch * channels * seq_out * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(CAUSAL_CONV1D, Cpu, *)` — textbook
+/// nested-loop depthwise conv with F32 accumulator; SiLU computed
+/// element-wise via `x / (1 + exp(-x))`. Iteration order fixed;
+/// bit-identical re-run on same hardware.
+pub const CAUSAL_CONV1D_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend CausalConv1d: textbook depthwise nested-loop \
+            with F32 accumulator; optional SiLU via x/(1+exp(-x)); \
+            same-hardware re-run bit-identical.",
+};
+
 /// Static cost model for `(CONV2D, Cpu)` kernels — FLOP + bandwidth
 /// per architecture v1.0 §"Layer-1 cost model."
 ///
@@ -1546,16 +1609,16 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 17 registered fused ops covered.
+        // Sanity: we should see all 18 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
         // (autograd switched from emitting the primitive decomposition
         // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
         // (Phase 3 of the in-place ops infrastructure) +
-        // FUSED_SOFTMAX_CROSS_ENTROPY (the CPU OpKind coverage plan's
-        // first fused-op addition).
+        // FUSED_SOFTMAX_CROSS_ENTROPY + CAUSAL_CONV1D (the CPU OpKind
+        // coverage plan's first two fused-op additions).
         assert_eq!(
-            covered, 17,
-            "expected 17 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 18,
+            "expected 18 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 

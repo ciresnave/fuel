@@ -42,7 +42,8 @@ use std::thread;
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
-use fuel_graph::{topo_order, topo_order_multi, Graph, Node, NodeId, Op};
+use fuel_graph::opt::{execution_plan, insert_safety_copies};
+use fuel_graph::{Graph, Node, NodeId, Op};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
@@ -330,20 +331,29 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        // Topo order + initial layouts for the input cache entries
-        // computed on the calling thread to keep the compiler
-        // thread free of graph-locking responsibilities. Side-effect
-        // roots (Op::Print, Op::Save, etc.) are merged into the walk
-        // so their effects fire even when not reachable from the
-        // user's `target`.
+        // Auto-insert safety copies for in-place ops whose target
+        // has additional readers in this realize set (residual-
+        // connection cycle break). No-op when no destructive ops
+        // are present.
+        {
+            let mut g = graph.write().map_err(|_| poisoned("graph lock"))?;
+            let effective_roots = extend_with_side_effect_roots(&g, &[target]);
+            insert_safety_copies(&mut g, &effective_roots);
+        }
+
+        // Execution plan + initial layouts for the input cache
+        // entries, computed on the calling thread to keep the
+        // compiler thread free of graph-locking responsibilities.
+        // Side-effect roots (Op::Print, Op::Save, etc.) are merged
+        // into the walk so their effects fire even when not
+        // reachable from the user's `target`. `execution_plan`
+        // integrates `derive_ordering`'s view-aware pinning so
+        // destructive ops run AFTER non-destructive readers of
+        // their targets.
         let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
-            let order = if effective_roots.len() == 1 {
-                topo_order(&g, target)
-            } else {
-                topo_order_multi(&g, &effective_roots)
-            };
+            let order = execution_plan(&g, &effective_roots);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
@@ -402,8 +412,8 @@ impl PipelinedExecutor {
     }
 
     /// Realize multiple targets in one walk. Each target's transitive
-    /// dependency set is collapsed into a single topological order
-    /// (via [`topo_order_multi`]); shared subgraphs are evaluated
+    /// dependency set is collapsed into a single execution plan
+    /// (via [`execution_plan`]); shared subgraphs are evaluated
     /// once. Returns a `Vec<(Storage, Layout)>` whose order matches
     /// `targets`.
     ///
@@ -424,14 +434,26 @@ impl PipelinedExecutor {
             return Ok(Vec::new());
         }
 
-        // Topo order covering every target's dependency set + initial
-        // layouts for the input cache entries. Side-effect roots merge
-        // in so their effects fire even when not reachable from any
-        // target.
+        // Auto-insert safety copies for in-place ops whose target
+        // has additional readers in this realize set (residual-
+        // connection cycle break). No-op when no destructive ops
+        // are present.
+        {
+            let mut g = graph.write().map_err(|_| poisoned("graph lock"))?;
+            let effective_roots = extend_with_side_effect_roots(&g, targets);
+            insert_safety_copies(&mut g, &effective_roots);
+        }
+
+        // Execution plan covering every target's dependency set +
+        // initial layouts for the input cache entries. Side-effect
+        // roots merge in so their effects fire even when not
+        // reachable from any target. `execution_plan` integrates
+        // `derive_ordering`'s view-aware pinning so destructive ops
+        // run AFTER non-destructive readers of their targets.
         let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, targets);
-            let order = topo_order_multi(&g, &effective_roots);
+            let order = execution_plan(&g, &effective_roots);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
@@ -1184,6 +1206,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::FusedSoftmaxCrossEntropy)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::CAUSAL_CONV1D =>
+        {
+            Some(OpKind::CausalConv1d)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -1505,6 +1532,59 @@ fn op_to_op_params(
                 vocab,
                 reduction: *reduction,
                 ignore_index: *ignore_index,
+            }
+        }
+        // CausalConv1d: derive (batch, channels, seq_in, seq_out, kernel)
+        // from the input layouts. x is `[batch, channels, seq_in]`
+        // (caller pre-pads with kernel-1 zeros), weight is
+        // `[channels, 1, kernel]`. seq_out = seq_in - (kernel - 1).
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::CausalConv1d { use_silu },
+        ) => {
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "CausalConv1d expects 3 inputs (x, weight, bias), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let w_layout = input_layout(node.inputs[1]);
+            let x_dims = x_layout.shape().dims();
+            let w_dims = w_layout.shape().dims();
+            if x_dims.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "CausalConv1d: x must be rank 3 [batch, channels, seq+pad], got {x_dims:?}",
+                ))
+                .bt());
+            }
+            if w_dims.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "CausalConv1d: weight must be rank 3 [channels, 1, kernel], got {w_dims:?}",
+                ))
+                .bt());
+            }
+            let batch = x_dims[0];
+            let channels = x_dims[1];
+            let seq_in = x_dims[2];
+            let kernel = w_dims[2];
+            if seq_in < kernel - 1 {
+                return Err(Error::Msg(format!(
+                    "CausalConv1d: x time dim {seq_in} must be ≥ kernel-1 = {} \
+                     (caller must pre-pad with kernel-1 zeros)",
+                    kernel - 1,
+                ))
+                .bt());
+            }
+            let seq_out = seq_in - (kernel - 1);
+            OpParams::CausalConv1d {
+                batch,
+                channels,
+                seq_in,
+                seq_out,
+                kernel,
+                use_silu: *use_silu,
             }
         }
         // Phase 7.6 step 3: SoftmaxLastDim flows through
