@@ -2699,6 +2699,144 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- MaskedFill (V.3.G.masked_fill, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_masked_fill_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let input = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let mask: [u8; 8] = [0, 1, 0, 0, 1, 1, 0, 1];   // fill positions 1, 4, 5, 7
+    let fill: f32 = -42.0;
+
+    let in_storage = upload_f32(&backend, &input);
+    let mask_bytes_u: &[u8] = &mask;
+    let mask_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(mask_bytes_u).expect("mask upload")),
+        DType::U8,
+    );
+    let out_bytes = backend.alloc_bytes_handle(8 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let mask_arc = Arc::new(RwLock::new(mask_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MaskedFill,
+            &[DType::F32, DType::U8, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[8]));
+    kernel(
+        &[Arc::clone(&in_arc), Arc::clone(&mask_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::MaskedFill { fill_bytes: fill.to_le_bytes().to_vec() },
+    ).expect("masked_fill f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let expected = [1.0_f32, fill, 3.0, 4.0, fill, fill, 7.0, fill];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "masked_fill f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_masked_fill_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let input_f32 = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let input: Vec<half::bf16> = input_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let mask: [u8; 8] = [0, 1, 0, 0, 1, 1, 0, 1];
+    let fill = half::bf16::from_f32(-1.0);
+
+    let in_storage = upload_bf16(&backend, &input);
+    let mask_bytes_u: &[u8] = &mask;
+    let mask_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(mask_bytes_u).expect("mask upload")),
+        DType::U8,
+    );
+    let out_bytes = backend.alloc_bytes_handle(8 * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let mask_arc = Arc::new(RwLock::new(mask_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MaskedFill,
+            &[DType::BF16, DType::U8, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[8]));
+    kernel(
+        &[Arc::clone(&in_arc), Arc::clone(&mask_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::MaskedFill { fill_bytes: fill.to_le_bytes().to_vec() },
+    ).expect("masked_fill bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let expected_f32 = [1.0_f32, -1.0, 3.0, 4.0, -1.0, -1.0, 7.0, -1.0];
+    for (i, (g, e)) in got.iter().zip(expected_f32.iter()).enumerate() {
+        assert_eq!(g.to_f32(), *e, "masked_fill bf16[{i}]: got {}, expected {e}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_masked_fill_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let input = [1.0_f64, 2.0, 3.0, 4.0];
+    let mask: [u8; 4] = [1, 0, 1, 0];
+    let fill = -99.5_f64;
+
+    let in_storage = upload_f64(&backend, &input);
+    let mask_bytes_u: &[u8] = &mask;
+    let mask_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(mask_bytes_u).expect("mask upload")),
+        DType::U8,
+    );
+    let out_bytes = backend.alloc_bytes_handle(4 * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let mask_arc = Arc::new(RwLock::new(mask_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MaskedFill,
+            &[DType::F64, DType::U8, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[4]));
+    kernel(
+        &[Arc::clone(&in_arc), Arc::clone(&mask_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::MaskedFill { fill_bytes: fill.to_le_bytes().to_vec() },
+    ).expect("masked_fill f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    let expected = [fill, 2.0, fill, 4.0];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "masked_fill f64[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- Pad (constant mode) f32/f16/bf16/f64/u8 (V.3.G.pad, 2026-05-30) ----
 
 #[test]

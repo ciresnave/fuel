@@ -3413,6 +3413,139 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// MaskedFill, byte-width-keyed (1/2/4/8). `input` and `output`
+    /// have the same dtype + element count; `mask` is u8 (one byte per
+    /// element). For each element: if mask byte is non-zero, write
+    /// `fill_bytes`; otherwise copy from input.
+    ///
+    /// Constraints:
+    /// - b2: element count must be even (pair-thread).
+    /// - b1: element count must be a multiple of 4 (quad-thread).
+    pub fn masked_fill_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        mask: &VulkanStorageBytes,
+        output: &mut VulkanStorageBytes,
+        n_elem: usize,
+        elem_bytes: usize,
+        fill_bytes: &[u8],
+    ) -> fuel_core_types::Result<()> {
+        if fill_bytes.len() != elem_bytes {
+            fuel_core_types::bail!(
+                "masked_fill_bytes: fill_bytes.len() ({}) != elem_bytes ({elem_bytes})",
+                fill_bytes.len(),
+            );
+        }
+        let need_data = n_elem * elem_bytes;
+        if input.len_bytes() < need_data || output.len_bytes() < need_data {
+            fuel_core_types::bail!(
+                "masked_fill_bytes: data buffer too small (need {need_data}; in={}, out={})",
+                input.len_bytes(), output.len_bytes(),
+            );
+        }
+        if mask.len_bytes() < n_elem {
+            fuel_core_types::bail!(
+                "masked_fill_bytes: mask {} bytes < required {n_elem}",
+                mask.len_bytes(),
+            );
+        }
+        if elem_bytes == 2 && n_elem % 2 != 0 {
+            fuel_core_types::bail!(
+                "masked_fill_bytes b2: n_elem ({n_elem}) must be even",
+            );
+        }
+        if elem_bytes == 1 && n_elem % 4 != 0 {
+            fuel_core_types::bail!(
+                "masked_fill_bytes b1: n_elem ({n_elem}) must be a multiple of 4",
+            );
+        }
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "masked_fill_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let mask_buf = mask.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "masked_fill_bytes: mask is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = output.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "masked_fill_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+
+        let mask_bind_len = ((mask.len_bytes() + 3) & !3) as u64;
+
+        let (pbuf, pmem, pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
+            1 => {
+                let fill_u32 = fill_bytes[0] as u32;
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct MFParams { n: u32, fill_value: u32 }
+                let p = MFParams { n: n_elem as u32, fill_value: fill_u32 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.masked_fill_b1_pipeline,
+                 &self.pipelines.masked_fill_b1_layout,
+                 "masked_fill_b1", n_elem / 4)
+            }
+            2 => {
+                let fill_u32 = u16::from_le_bytes([fill_bytes[0], fill_bytes[1]]) as u32;
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct MFParams { n: u32, fill_value: u32 }
+                let p = MFParams { n: n_elem as u32, fill_value: fill_u32 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.masked_fill_b2_pipeline,
+                 &self.pipelines.masked_fill_b2_layout,
+                 "masked_fill_b2", n_elem / 2)
+            }
+            4 => {
+                let mut a = [0u8; 4]; a.copy_from_slice(&fill_bytes[..4]);
+                let fill_u32 = u32::from_le_bytes(a);
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct MFParams { n: u32, fill_value: u32 }
+                let p = MFParams { n: n_elem as u32, fill_value: fill_u32 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.masked_fill_b4_pipeline,
+                 &self.pipelines.masked_fill_b4_layout,
+                 "masked_fill_b4", n_elem)
+            }
+            8 => {
+                let mut a = [0u8; 8]; a.copy_from_slice(&fill_bytes[..8]);
+                let fill_u64 = u64::from_le_bytes(a);
+                #[repr(C)] #[derive(Clone, Copy)]
+                struct MFParams { n: u32, _pad: u32, fill_value: u64 }
+                let p = MFParams { n: n_elem as u32, _pad: 0, fill_value: fill_u64 };
+                let (b, m) = self.upload_params(&p)?;
+                (b, m,
+                 &self.pipelines.masked_fill_b8_pipeline,
+                 &self.pipelines.masked_fill_b8_layout,
+                 "masked_fill_b8", n_elem)
+            }
+            other => fuel_core_types::bail!(
+                "masked_fill_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, mask_buf, 0, mask_bind_len);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, output.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_dispatch);
+        let rb = [in_buf.raw() as u64, mask_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Pad with constant fill, byte-width-keyed (1/2/4/8). One thread
     /// per output element (b4/b8) or per pair / quad (b2/b1). The
     /// caller passes `fill_bytes` (length must equal `elem_bytes`)

@@ -1342,6 +1342,55 @@ pub mod matmul {
 // + the first input's layout (outer_count = product of dims before
 // the concat axis).
 
+pub mod masked_fill {
+    use super::*;
+
+    /// MaskedFill — 2 inputs (input, mask) + 1 output. mask is U8.
+    /// Byte width is taken from the OUTPUT dtype size; same dispatch
+    /// shim handles all dtypes.
+    pub fn masked_fill(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::masked_fill::masked_fill: expected 2 inputs (input, mask) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let fill_bytes = match params {
+            OpParams::MaskedFill { fill_bytes } => fill_bytes.clone(),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::masked_fill::masked_fill: expected OpParams::MaskedFill, got {other:?}",
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mask_guard = read_storage(&inputs[1])?;
+        if mask_guard.dtype != DType::U8 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::masked_fill::masked_fill: mask must be U8, got {:?}",
+                mask_guard.dtype,
+            )).bt());
+        }
+        let mut out_guard = write_storage(&outputs[0])?;
+        let elem_bytes = out_guard.dtype.size_in_bytes();
+        let a = vulkan_input(&in_guard)?;
+        let mask = vulkan_input(&mask_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::masked_fill::masked_fill: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        let n_elem = a.len_bytes() / elem_bytes;
+        backend.masked_fill_bytes(a, mask, out, n_elem, elem_bytes, &fill_bytes)
+    }
+}
+
 pub mod pad {
     use super::*;
 
@@ -2836,6 +2885,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::Pad, &u(f64_d), vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::Pad, &u(u8_d),  vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::Pad, &u(u32_d), vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+
+        // ----- MaskedFill (V.3.G.masked_fill, 2026-05-30).
+        // 2 inputs (data + U8 mask) → 1 output. Same byte-width family
+        // as Pad; one dispatch shim across all dtypes.
+        table.register_with_precision(OpKind::MaskedFill, &[f32,   DType::U8, f32],   vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::MaskedFill, &[f16,   DType::U8, f16],   vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::MaskedFill, &[bf16,  DType::U8, bf16],  vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::MaskedFill, &[f64_d, DType::U8, f64_d], vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::MaskedFill, &[u8_d,  DType::U8, u8_d],  vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::MaskedFill, &[u32_d, DType::U8, u32_d], vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
     }
     // V.3.G.concat (2026-05-30): f16/f64 concat (pure data movement).
     // bf16 deferred — adjacent-thread writes race on the same u32
