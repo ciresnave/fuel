@@ -3445,6 +3445,219 @@ impl VulkanBackend {
         )
     }
 
+    // ---- Per-row reduction along the last dim, non-f32 dtypes. ----
+    //
+    // Mirrors `reduce_f32_bytes`'s last-dim fast path. Full-reduction
+    // (all-dims) is not yet ported for these dtypes — the executor
+    // falls back to CPU for that. `op_id` selects the reduction:
+    // 0=sum, 1=max, 2=min, 3=mean (matches the f32 path).
+
+    /// f16 per-row reduce. Storage is `float16_t`, accumulation in f32.
+    pub fn reduce_last_dim_f16_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        dims: &[usize],
+    ) -> fuel_core_types::Result<()> {
+        let shape = layout.shape();
+        let rank = shape.dims().len();
+        if !(dims.len() == 1 && dims[0] == rank - 1) {
+            fuel_core_types::bail!(
+                "{op_name}: only last-dim reduce is native on f16 (dims={dims:?}, rank={rank})",
+            );
+        }
+        let dims_slice = shape.dims();
+        let n_cols = dims_slice[rank - 1];
+        let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+        if n_rows == 0 || n_cols == 0 {
+            fuel_core_types::bail!(
+                "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
+            );
+        }
+        let need_out_bytes = n_rows * 2;
+        if out.len_bytes() < need_out_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: f16 out {} bytes < required {}",
+                out.len_bytes(), need_out_bytes,
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+        let p = RLParams {
+            n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.reduce_last_dim_f16_pipeline,
+            &self.pipelines.reduce_last_dim_f16_layout,
+            desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// bf16 per-row reduce. Storage is bf16 packed two-per-u32; the
+    /// kernel uses `InterlockedOr` on the output u32 to write a single
+    /// half-word per row without racing the other workgroup writing
+    /// to the same u32 — which requires the output buffer to be
+    /// **zero-initialized** before dispatch. `n_cols` MUST be even.
+    pub fn reduce_last_dim_bf16_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        dims: &[usize],
+    ) -> fuel_core_types::Result<()> {
+        let shape = layout.shape();
+        let rank = shape.dims().len();
+        if !(dims.len() == 1 && dims[0] == rank - 1) {
+            fuel_core_types::bail!(
+                "{op_name}: only last-dim reduce is native on bf16 (dims={dims:?}, rank={rank})",
+            );
+        }
+        let dims_slice = shape.dims();
+        let n_cols = dims_slice[rank - 1];
+        let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+        if n_rows == 0 || n_cols == 0 {
+            fuel_core_types::bail!(
+                "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
+            );
+        }
+        if n_cols % 2 != 0 {
+            fuel_core_types::bail!(
+                "{op_name}: bf16 last-dim must be even (lane-pair packing); got {n_cols}",
+            );
+        }
+        let need_out_bytes = n_rows * 2;
+        if out.len_bytes() < need_out_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: bf16 out {} bytes < required {}",
+                out.len_bytes(), need_out_bytes,
+            );
+        }
+        // The kernel uses InterlockedOr to write a single bf16 half-
+        // word per row — that's correctness-dependent on the other
+        // half-word being zero. Zero-init here so the OR acts as a
+        // single-half write.
+        self.fill_bytes_zero(out)?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+        let p = RLParams {
+            n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        // Bind the output descriptor with the u32-rounded size — the
+        // kernel writes via InterlockedOr to whole u32 words, and for
+        // odd n_rows the last word straddles bytes (n_rows*2) and
+        // (n_rows*2 + 2). With a non-rounded bind, the OOB write
+        // would be discarded under Vulkan's robust-access path. The
+        // underlying alloc_bytes_handle buffer is already 4-byte
+        // aligned, so the rounded bind is in-bounds.
+        let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.reduce_last_dim_bf16_pipeline,
+            &self.pipelines.reduce_last_dim_bf16_layout,
+            desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// f64 per-row reduce. Native f64 end-to-end.
+    pub fn reduce_last_dim_f64_bytes(
+        &self,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        layout: &Layout,
+        dims: &[usize],
+    ) -> fuel_core_types::Result<()> {
+        let shape = layout.shape();
+        let rank = shape.dims().len();
+        if !(dims.len() == 1 && dims[0] == rank - 1) {
+            fuel_core_types::bail!(
+                "{op_name}: only last-dim reduce is native on f64 (dims={dims:?}, rank={rank})",
+            );
+        }
+        let dims_slice = shape.dims();
+        let n_cols = dims_slice[rank - 1];
+        let n_rows: usize = dims_slice[..rank - 1].iter().product::<usize>().max(1);
+        if n_rows == 0 || n_cols == 0 {
+            fuel_core_types::bail!(
+                "{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",
+            );
+        }
+        let need_out_bytes = n_rows * 8;
+        if out.len_bytes() < need_out_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: f64 out {} bytes < required {}",
+                out.len_bytes(), need_out_bytes,
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RLParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+        let p = RLParams {
+            n_rows: n_rows as u32, n_cols: n_cols as u32, op_id, _pad: 0,
+        };
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: output host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            &self.pipelines.reduce_last_dim_f64_pipeline,
+            &self.pipelines.reduce_last_dim_f64_layout,
+            desc, (n_rows as u32, 1, 1), vec![(pbuf, pmem)], &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 IndexSelect: gather slices along the selected dim from
     /// `src` using rank-1 U32 `ids`. The geometry is pre-computed
     /// upstream and passed via `OpParams::IndexSelect`:
