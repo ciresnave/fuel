@@ -29,8 +29,11 @@
 //! CPU. The Phase 6b dispatch table picks among them by `BackendId`,
 //! not by `DeviceLocation`.
 
+pub mod binding_table;
 mod dll_path;
 pub mod probe;
+
+pub use binding_table::register_aocl_cpu_kernels;
 
 use fuel_core_types::{DType, Layout, Result, Shape};
 use fuel_graph_cpu::CpuBackend;
