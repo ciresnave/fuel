@@ -77,6 +77,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("strided_copy_signed_b2",    include_bytes!("../spv/strided_copy_signed_b2.spv")),
     ("strided_copy_signed_b4",    include_bytes!("../spv/strided_copy_signed_b4.spv")),
     ("strided_copy_signed_b8",    include_bytes!("../spv/strided_copy_signed_b8.spv")),
+    ("gather_b1",                 include_bytes!("../spv/gather_b1.spv")),
+    ("gather_b2",                 include_bytes!("../spv/gather_b2.spv")),
+    ("gather_b4",                 include_bytes!("../spv/gather_b4.spv")),
+    ("gather_b8",                 include_bytes!("../spv/gather_b8.spv")),
     ("masked_fill_b1",            include_bytes!("../spv/masked_fill_b1.spv")),
     ("masked_fill_b2",            include_bytes!("../spv/masked_fill_b2.spv")),
     ("masked_fill_b4",            include_bytes!("../spv/masked_fill_b4.spv")),
@@ -218,6 +222,14 @@ pub const MASKED_FILL_B1: &str = "masked_fill_b1";
 pub const MASKED_FILL_B2: &str = "masked_fill_b2";
 pub const MASKED_FILL_B4: &str = "masked_fill_b4";
 pub const MASKED_FILL_B8: &str = "masked_fill_b8";
+/// Gather along `dim`: each output position's source coord at `dim`
+/// is read from a U32 indices tensor (same shape as output). All
+/// other coords are shared between source and output. Byte-width-
+/// keyed by element size.
+pub const GATHER_B1: &str = "gather_b1";
+pub const GATHER_B2: &str = "gather_b2";
+pub const GATHER_B4: &str = "gather_b4";
+pub const GATHER_B8: &str = "gather_b8";
 /// In-place rectangular slab write for 1-byte elements (u8/i8).
 /// `range_start[last]` and `src_shape[last]` must both be multiples
 /// of 4 — wrapper falls back to CPU otherwise.

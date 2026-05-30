@@ -1342,6 +1342,55 @@ pub mod matmul {
 // + the first input's layout (outer_count = product of dims before
 // the concat axis).
 
+pub mod gather {
+    use super::*;
+
+    /// Gather along `dim`. 2 inputs (src, U32 indices) + 1 output.
+    /// Output dtype determines byte width.
+    pub fn gather(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::gather::gather: expected 2 inputs (src, indices) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (source_shape, output_shape, dim) = match params {
+            OpParams::Gather { source_shape, output_shape, dim } => {
+                (source_shape.clone(), output_shape.clone(), *dim)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::gather::gather: expected OpParams::Gather, got {other:?}",
+                )).bt());
+            }
+        };
+        let src_guard = read_storage(&inputs[0])?;
+        let idx_guard = read_storage(&inputs[1])?;
+        if idx_guard.dtype != DType::U32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::gather::gather: indices must be U32, got {:?}",
+                idx_guard.dtype,
+            )).bt());
+        }
+        let mut out_guard = write_storage(&outputs[0])?;
+        let elem_bytes = out_guard.dtype.size_in_bytes();
+        let src = vulkan_input(&src_guard)?;
+        let indices = vulkan_input(&idx_guard)?;
+        let backend = src.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::gather::gather: src has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.gather_bytes(src, indices, out, &source_shape, &output_shape, dim, elem_bytes)
+    }
+}
+
 pub mod masked_fill {
     use super::*;
 
@@ -2895,6 +2944,17 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::MaskedFill, &[f64_d, DType::U8, f64_d], vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::MaskedFill, &[u8_d,  DType::U8, u8_d],  vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::MaskedFill, &[u32_d, DType::U8, u32_d], vk, masked_fill::masked_fill, VULKAN_BYTE_LEVEL_PRECISION);
+
+        // ----- Gather (V.3.G.gather, 2026-05-30).
+        // 2 inputs (src + U32 indices) → 1 output. Same byte-width
+        // family as Pad/MaskedFill; one dispatch shim across all
+        // dtypes.
+        table.register_with_precision(OpKind::Gather, &[f32,   DType::U32, f32],   vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Gather, &[f16,   DType::U32, f16],   vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Gather, &[bf16,  DType::U32, bf16],  vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Gather, &[f64_d, DType::U32, f64_d], vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Gather, &[u8_d,  DType::U32, u8_d],  vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::Gather, &[u32_d, DType::U32, u32_d], vk, gather::gather, VULKAN_BYTE_LEVEL_PRECISION);
     }
     // V.3.G.concat (2026-05-30): f16/f64 concat (pure data movement).
     // bf16 deferred — adjacent-thread writes race on the same u32

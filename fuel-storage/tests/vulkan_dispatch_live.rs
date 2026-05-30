@@ -2699,6 +2699,168 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- Gather (V.3.G.gather, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_gather_f32_dim1() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // src = [[1,2,3],[10,20,30]]
+    // indices shape = [2,4]: pick columns per row
+    // Expected: out[r,c] = src[r, indices[r,c]]
+    let src = [1.0_f32, 2.0, 3.0,  10.0, 20.0, 30.0];
+    let indices: Vec<u32> = vec![
+        2, 0, 1, 0,    // row 0 picks: 3, 1, 2, 1
+        1, 1, 2, 0,    // row 1 picks: 20, 20, 30, 10
+    ];
+    let expected = [3.0_f32, 1.0, 2.0, 1.0,  20.0, 20.0, 30.0, 10.0];
+
+    let src_storage = upload_f32(&backend, &src);
+    let idx_bytes: &[u8] = bytemuck::cast_slice(&indices);
+    let idx_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(idx_bytes).expect("idx upload")),
+        DType::U32,
+    );
+    let out_bytes = backend.alloc_bytes_handle(8 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let idx_arc = Arc::new(RwLock::new(idx_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Gather,
+            &[DType::F32, DType::U32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let idx_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&idx_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[src_layout, idx_layout, out_layout],
+        &OpParams::Gather {
+            source_shape: vec![2, 3], output_shape: vec![2, 4], dim: 1,
+        },
+    ).expect("gather f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "gather f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_gather_f64_dim0() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // src shape [3, 2], gather along dim 0.
+    // Each output position picks a row index for that column.
+    let src = [1.0_f64, 2.0,  10.0, 20.0,  100.0, 200.0];
+    let indices: Vec<u32> = vec![
+        2, 0,     // out[0] = (src[2,0], src[0,1])
+        1, 2,     // out[1] = (src[1,0], src[2,1])
+    ];
+    let expected = [100.0_f64, 2.0,  10.0, 200.0];
+
+    let src_storage = upload_f64(&backend, &src);
+    let idx_bytes: &[u8] = bytemuck::cast_slice(&indices);
+    let idx_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(idx_bytes).expect("idx upload")),
+        DType::U32,
+    );
+    let out_bytes = backend.alloc_bytes_handle(4 * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let idx_arc = Arc::new(RwLock::new(idx_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Gather,
+            &[DType::F64, DType::U32, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[3, 2]));
+    let idx_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&idx_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[src_layout, idx_layout, out_layout],
+        &OpParams::Gather {
+            source_shape: vec![3, 2], output_shape: vec![2, 2], dim: 0,
+        },
+    ).expect("gather f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "gather f64[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_gather_bf16_dim1() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // n_out = 8 (even) — pair-thread path.
+    let src_f32 = [1.0_f32, 2.0, 3.0, 4.0,  10.0, 20.0, 30.0, 40.0];
+    let src: Vec<half::bf16> = src_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let indices: Vec<u32> = vec![
+        3, 0, 1, 2,
+        2, 1, 0, 3,
+    ];
+    let expected_f32 = [4.0_f32, 1.0, 2.0, 3.0,  30.0, 20.0, 10.0, 40.0];
+
+    let src_storage = upload_bf16(&backend, &src);
+    let idx_bytes: &[u8] = bytemuck::cast_slice(&indices);
+    let idx_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(idx_bytes).expect("idx upload")),
+        DType::U32,
+    );
+    let out_bytes = backend.alloc_bytes_handle(8 * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let idx_arc = Arc::new(RwLock::new(idx_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::Gather,
+            &[DType::BF16, DType::U32, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    let idx_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&idx_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[src_layout, idx_layout, out_layout],
+        &OpParams::Gather {
+            source_shape: vec![2, 4], output_shape: vec![2, 4], dim: 1,
+        },
+    ).expect("gather bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected_f32.iter()).enumerate() {
+        assert_eq!(g.to_f32(), *e, "gather bf16[{i}]: got {}, expected {e}", g.to_f32());
+    }
+}
+
 // ---- MaskedFill (V.3.G.masked_fill, 2026-05-30) ----
 
 #[test]
