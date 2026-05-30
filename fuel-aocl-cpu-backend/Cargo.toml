@@ -13,12 +13,9 @@
     aocl-types             = { workspace = true }
     fuel-conv              = { workspace = true }
     fuel-core-types        = { workspace = true }
+    fuel-cpu-backend       = { workspace = true }
     fuel-graph             = { workspace = true }
     fuel-graph-cpu         = { workspace = true }
     fuel-graph-executor    = { workspace = true }
     fuel-reference-backend = { workspace = true }
-
-[dev-dependencies]
-    # Phase 7.5 G2: tests need a CpuBackendDevice handle for
-    # slot-populating constructors (cpu_dev() helper).
-    fuel-cpu-backend = { workspace = true }
+    fuel-storage           = { workspace = true }
