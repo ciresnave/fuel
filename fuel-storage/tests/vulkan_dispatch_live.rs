@@ -2699,6 +2699,215 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- SoftmaxLastDimBackward f32/f16/bf16/f64 (V.3.G.softmax-bwd, 2026-05-30) ----
+//
+// Reference: dx_j = y_j * (g_j - sum_i(y_i * g_i))
+
+fn softmax_backward_ref(y: &[f32], g: &[f32], outer: usize, last: usize) -> Vec<f32> {
+    let mut out = vec![0.0_f32; y.len()];
+    for r in 0..outer {
+        let off = r * last;
+        let dot: f32 = (0..last).map(|i| y[off + i] * g[off + i]).sum();
+        for i in 0..last {
+            out[off + i] = y[off + i] * (g[off + i] - dot);
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_backward_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    // y is a softmax output (positive, sum=1 per row). g is the upstream grad.
+    let y: Vec<f32> = vec![
+        0.1, 0.2, 0.3, 0.4,
+        0.4, 0.3, 0.2, 0.1,
+    ];
+    let g: Vec<f32> = vec![
+        1.0, -1.0, 2.0, -2.0,
+        0.5,  1.5, -0.5, -1.5,
+    ];
+
+    let y_storage = upload_f32(&backend, &y);
+    let g_storage = upload_f32(&backend, &g);
+    let dx_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let dx_storage = Storage::new(BackendStorage::Vulkan(dx_bytes), DType::F32);
+    let y_arc = Arc::new(RwLock::new(y_storage));
+    let g_arc = Arc::new(RwLock::new(g_storage));
+    let dx_arc = Arc::new(RwLock::new(dx_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDimBackward,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&y_arc), Arc::clone(&g_arc)],
+        &mut [Arc::clone(&dx_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax_backward f32 dispatch");
+
+    let got = download_f32(&backend, &dx_arc.read().unwrap());
+    let expected = softmax_backward_ref(&y, &g, outer, last);
+    for (i, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((a - b).abs() < 1e-5, "softmax_bwd f32[{i}]: got {a}, expected {b}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_backward_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let y_f32: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4,    0.4, 0.3, 0.2, 0.1];
+    let g_f32: Vec<f32> = vec![1.0, -1.0, 2.0, -2.0,  0.5, 1.5, -0.5, -1.5];
+    let y: Vec<half::f16> = y_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let g: Vec<half::f16> = g_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let y_storage = upload_f16(&backend, &y);
+    let g_storage = upload_f16(&backend, &g);
+    let dx_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let dx_storage = Storage::new(BackendStorage::Vulkan(dx_bytes), DType::F16);
+    let y_arc = Arc::new(RwLock::new(y_storage));
+    let g_arc = Arc::new(RwLock::new(g_storage));
+    let dx_arc = Arc::new(RwLock::new(dx_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDimBackward,
+            &[DType::F16, DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&y_arc), Arc::clone(&g_arc)],
+        &mut [Arc::clone(&dx_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax_backward f16 dispatch");
+
+    let got = download_f16(&backend, &dx_arc.read().unwrap());
+    let expected = softmax_backward_ref(&y_f32, &g_f32, outer, last);
+    for (i, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = a.to_f32();
+        assert!((got_f32 - b).abs() < 5e-3,
+            "softmax_bwd f16[{i}]: got {got_f32}, expected {b}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_backward_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;        // MUST be even.
+    let n = outer * last;
+    let y_f32: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4,    0.4, 0.3, 0.2, 0.1];
+    let g_f32: Vec<f32> = vec![1.0, -1.0, 2.0, -2.0,  0.5, 1.5, -0.5, -1.5];
+    let y: Vec<half::bf16> = y_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let g: Vec<half::bf16> = g_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    let y_storage = upload_bf16(&backend, &y);
+    let g_storage = upload_bf16(&backend, &g);
+    let dx_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+    let dx_storage = Storage::new(BackendStorage::Vulkan(dx_bytes), DType::BF16);
+    let y_arc = Arc::new(RwLock::new(y_storage));
+    let g_arc = Arc::new(RwLock::new(g_storage));
+    let dx_arc = Arc::new(RwLock::new(dx_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDimBackward,
+            &[DType::BF16, DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&y_arc), Arc::clone(&g_arc)],
+        &mut [Arc::clone(&dx_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax_backward bf16 dispatch");
+
+    let got = download_bf16(&backend, &dx_arc.read().unwrap());
+    let expected = softmax_backward_ref(&y_f32, &g_f32, outer, last);
+    for (i, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = a.to_f32();
+        assert!((got_f32 - b).abs() < 5e-2,
+            "softmax_bwd bf16[{i}]: got {got_f32}, expected {b}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_last_dim_backward_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let y: Vec<f64> = vec![0.1, 0.2, 0.3, 0.4,    0.4, 0.3, 0.2, 0.1];
+    let g: Vec<f64> = vec![1.0, -1.0, 2.0, -2.0,  0.5, 1.5, -0.5, -1.5];
+
+    let y_storage = upload_f64(&backend, &y);
+    let g_storage = upload_f64(&backend, &g);
+    let dx_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let dx_storage = Storage::new(BackendStorage::Vulkan(dx_bytes), DType::F64);
+    let y_arc = Arc::new(RwLock::new(y_storage));
+    let g_arc = Arc::new(RwLock::new(g_storage));
+    let dx_arc = Arc::new(RwLock::new(dx_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SoftmaxLastDimBackward,
+            &[DType::F64, DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&y_arc), Arc::clone(&g_arc)],
+        &mut [Arc::clone(&dx_arc)],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+    ).expect("softmax_backward f64 dispatch");
+
+    let got = download_f64(&backend, &dx_arc.read().unwrap());
+    // Pure arithmetic (no exp/log) so f64 is bit-accurate.
+    for r in 0..outer {
+        let off = r * last;
+        let dot: f64 = (0..last).map(|i| y[off + i] * g[off + i]).sum();
+        for i in 0..last {
+            let expected = y[off + i] * (g[off + i] - dot);
+            assert!((got[off + i] - expected).abs() < 1e-12,
+                "softmax_bwd f64[{}][{}]: got {}, expected {expected}", r, i, got[off + i]);
+        }
+    }
+}
+
 // ---- Concat f16/f64 (V.3.G.concat, 2026-05-30) ----
 
 #[test]

@@ -3413,6 +3413,146 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f32 SoftmaxLastDimBackward via the byte-storage dispatch path
+    /// (parallel to the existing `softmax_last_dim_backward` trait
+    /// method which uses `Self::Storage`). Takes pre-allocated output.
+    pub fn softmax_last_dim_backward_f32_bytes(
+        &self,
+        y: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.softmax_last_dim_backward_typed_bytes(
+            "softmax_last_dim_backward_f32_bytes",
+            4,
+            y, g, dx, outer_count, last_dim,
+            &self.pipelines.softmax_last_dim_backward_pipeline,
+            &self.pipelines.softmax_last_dim_backward_layout,
+        )
+    }
+
+    /// f16 SoftmaxLastDimBackward. Mixed precision (f16 storage, f32
+    /// dot reduction + per-element compute).
+    pub fn softmax_last_dim_backward_f16_bytes(
+        &self,
+        y: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.softmax_last_dim_backward_typed_bytes(
+            "softmax_last_dim_backward_f16_bytes",
+            2,
+            y, g, dx, outer_count, last_dim,
+            &self.pipelines.softmax_last_dim_backward_f16_pipeline,
+            &self.pipelines.softmax_last_dim_backward_f16_layout,
+        )
+    }
+
+    /// bf16 SoftmaxLastDimBackward. Lane-pair input, pair-thread
+    /// Phase-2 writes (one u32 per thread iter, no race). Requires
+    /// `last_dim % 2 == 0`.
+    pub fn softmax_last_dim_backward_bf16_bytes(
+        &self,
+        y: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        if last_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "softmax_last_dim_backward_bf16_bytes: last_dim must be even \
+                 (lane-pair packing); got {last_dim}",
+            );
+        }
+        self.softmax_last_dim_backward_typed_bytes(
+            "softmax_last_dim_backward_bf16_bytes",
+            2,
+            y, g, dx, outer_count, last_dim,
+            &self.pipelines.softmax_last_dim_backward_bf16_pipeline,
+            &self.pipelines.softmax_last_dim_backward_bf16_layout,
+        )
+    }
+
+    /// f64 SoftmaxLastDimBackward. Native f64 end-to-end.
+    pub fn softmax_last_dim_backward_f64_bytes(
+        &self,
+        y: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.softmax_last_dim_backward_typed_bytes(
+            "softmax_last_dim_backward_f64_bytes",
+            8,
+            y, g, dx, outer_count, last_dim,
+            &self.pipelines.softmax_last_dim_backward_f64_pipeline,
+            &self.pipelines.softmax_last_dim_backward_f64_layout,
+        )
+    }
+
+    /// Per-dtype softmax-backward core. `elem_bytes` sizes the buffer
+    /// validation; all Params are 8 bytes regardless of dtype.
+    fn softmax_last_dim_backward_typed_bytes(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        y: &VulkanStorageBytes,
+        g: &VulkanStorageBytes,
+        dx: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * elem_bytes;
+        if y.len_bytes() < need_bytes || g.len_bytes() < need_bytes || dx.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: buffer too small (need {need_bytes}; y={}, g={}, dx={})",
+                y.len_bytes(), g.len_bytes(), dx.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SBwdParams { n_rows: u32, n_cols: u32 }
+        let p = SBwdParams { n_rows: outer_count as u32, n_cols: last_dim as u32 };
+
+        let y_buf = y.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: y is host-evicted; fault back first"),
+        ))?;
+        let g_buf = g.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: g is host-evicted; fault back first"),
+        ))?;
+        let dx_buf = dx.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: dx is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, y_buf, 0, y.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, g_buf, 0, g.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, dx_buf, 0, dx.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
+        let rb = [y_buf.raw() as u64, g_buf.raw() as u64];
+        let wb = [dx_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f16 concat along arbitrary dim. Per-element 2 bytes.
     pub fn concat_along_dim_f16_bytes(
         &self,
