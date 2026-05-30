@@ -3175,6 +3175,163 @@ fn vulkan_dispatch_masked_fill_f64() {
     }
 }
 
+// ---- Pad reflect mode (V.3.G.pad.reflect, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_reflect_f32_1d() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // 1D reflect: in=[1,2,3], padding=(2, 2) → out=[8,5] = 5.
+    // Reference per the CPU reflect_index:
+    //   c=0: i=-2 → -i=2 → in[2]=3
+    //   c=1: i=-1 → -i=1 → in[1]=2
+    //   c=2: i= 0           → in[0]=1
+    //   c=3: i= 1           → in[1]=2
+    //   c=4: i= 2           → in[2]=3
+    //   c=5: i= 3 (>=3) → 2*2-3=1 → in[1]=2
+    //   c=6: i= 4 (>=3) → 2*2-4=0 → in[0]=1
+    let input = [1.0_f32, 2.0, 3.0];
+    let expected = [3.0_f32, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0];
+
+    let in_storage = upload_f32(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(7 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[7]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![3],
+            out_shape: vec![7],
+            padding: vec![(2, 2)],
+            mode_tag: 1,
+            fill_bytes: vec![0u8; 4],   // unused for reflect
+        },
+    ).expect("pad reflect f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "pad reflect f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_reflect_bf16_2d() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // 2D reflect: in=[2,3], padding=[(1,1), (1,1)] → out=[4,5] = 20
+    // (even, satisfies b2 pair-thread constraint).
+    let input_f32 = [
+        1.0_f32, 2.0, 3.0,
+        4.0,     5.0, 6.0,
+    ];
+    let input: Vec<half::bf16> = input_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    // Reference per axis: each row d∈{0,1} maps via reflect_index.
+    // Row 0 (out_r=0): in_r=1 (reflect c=0 with left=1: -i = 1 → in[1])
+    // Row 1 (out_r=1): in_r=0
+    // Row 2 (out_r=2): in_r=1
+    // Row 3 (out_r=3): in_r=0 (reflect: i=2 (>=2) → 2*1-2=0)
+    // Col reflect (left=1):
+    //   c=0 → in_c=1
+    //   c=1 → in_c=0
+    //   c=2 → in_c=1
+    //   c=3 → in_c=2
+    //   c=4 → in_c=1 (i=3 (>=3) → 2*2-3=1)
+    // Composing: out[r,c] = in[reflect_row(r), reflect_col(c)]
+    let in_2d = |r: usize, c: usize| input_f32[r * 3 + c];
+    let mut expected = vec![0.0_f32; 4 * 5];
+    let row_map = [1usize, 0, 1, 0];
+    let col_map = [1usize, 0, 1, 2, 1];
+    for r in 0..4 { for c in 0..5 {
+        expected[r * 5 + c] = in_2d(row_map[r], col_map[c]);
+    }}
+
+    let in_storage = upload_bf16(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(4 * 5 * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[4, 5]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![2, 3],
+            out_shape: vec![4, 5],
+            padding: vec![(1, 1), (1, 1)],
+            mode_tag: 1,
+            fill_bytes: vec![0u8; 2],
+        },
+    ).expect("pad reflect bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert_eq!(got_f32, *e, "pad reflect bf16[{i}]: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_reflect_f64_1d() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let input = [1.0_f64, 2.0, 3.0, 4.0];
+    let expected = [2.0_f64, 1.0, 2.0, 3.0, 4.0, 3.0, 2.0];   // pad=(1,2)
+
+    let in_storage = upload_f64(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(7 * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F64, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[4]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[7]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![4],
+            out_shape: vec![7],
+            padding: vec![(1, 2)],
+            mode_tag: 1,
+            fill_bytes: vec![0u8; 8],
+        },
+    ).expect("pad reflect f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "pad reflect f64[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- Pad (constant mode) f32/f16/bf16/f64/u8 (V.3.G.pad, 2026-05-30) ----
 
 #[test]

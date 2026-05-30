@@ -89,6 +89,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("pad_const_b2",              include_bytes!("../spv/pad_const_b2.spv")),
     ("pad_const_b4",              include_bytes!("../spv/pad_const_b4.spv")),
     ("pad_const_b8",              include_bytes!("../spv/pad_const_b8.spv")),
+    ("pad_reflect_b1",            include_bytes!("../spv/pad_reflect_b1.spv")),
+    ("pad_reflect_b2",            include_bytes!("../spv/pad_reflect_b2.spv")),
+    ("pad_reflect_b4",            include_bytes!("../spv/pad_reflect_b4.spv")),
+    ("pad_reflect_b8",            include_bytes!("../spv/pad_reflect_b8.spv")),
     ("write_slice_b1",            include_bytes!("../spv/write_slice_b1.spv")),
     ("write_slice_b2",            include_bytes!("../spv/write_slice_b2.spv")),
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
@@ -221,6 +225,14 @@ pub const PAD_CONST_B1: &str = "pad_const_b1";
 pub const PAD_CONST_B2: &str = "pad_const_b2";
 pub const PAD_CONST_B4: &str = "pad_const_b4";
 pub const PAD_CONST_B8: &str = "pad_const_b8";
+/// Pad with reflect mode (no-repeat), byte-width-keyed. Same shape
+/// as pad_const_* but each thread maps out-of-range coords via the
+/// reflect formula. PRECONDITION: per-axis left_pad and right_pad
+/// must both be <= in_dim - 1.
+pub const PAD_REFLECT_B1: &str = "pad_reflect_b1";
+pub const PAD_REFLECT_B2: &str = "pad_reflect_b2";
+pub const PAD_REFLECT_B4: &str = "pad_reflect_b4";
+pub const PAD_REFLECT_B8: &str = "pad_reflect_b8";
 /// MaskedFill: for each element, if mask byte != 0 → fill_value, else
 /// copy input. Mask is always U8. Byte-width-keyed by element size.
 pub const MASKED_FILL_B1: &str = "masked_fill_b1";
