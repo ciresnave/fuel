@@ -2627,6 +2627,77 @@ impl Tensor {
         self.unary_op(Op::Abs)
     }
 
+    // ---- In-place unary builders (Phase 2 of the in-place ops
+    // infrastructure) ----
+    //
+    // Each emits an `Op::*Inplace` node whose input is `self`. The
+    // returned `Tensor` shares the underlying graph and is the new
+    // root; subsequent ops should use the returned handle to make the
+    // mutation-after-read ordering observable to `derive_ordering`.
+    //
+    // Phase 4 (the mutation-safety pass) is what makes these safe to
+    // call on tape-tracked tensors. Until Phase 4 lands, calling these
+    // on a tensor that's been saved for backward will panic at
+    // `Tensor::backward` time (clear error, no silent gradient
+    // corruption).
+
+    /// Append a `ReluInplace` node — mutates `self`'s storage with
+    /// `max(0, self)`. See `Tensor::relu` for the functional variant.
+    pub fn relu_inplace(&self) -> Tensor {
+        self.unary_op(Op::ReluInplace)
+    }
+
+    /// Append a `SiluInplace` node — mutates `self`'s storage with
+    /// `self * sigmoid(self)`. See `Tensor::silu` for the functional
+    /// variant.
+    pub fn silu_inplace(&self) -> Tensor {
+        self.unary_op(Op::SiluInplace)
+    }
+
+    /// Append a `GeluInplace` node — mutates `self`'s storage with
+    /// the tanh-approximation GELU. See `Tensor::gelu` for the
+    /// functional variant.
+    pub fn gelu_inplace(&self) -> Tensor {
+        self.unary_op(Op::GeluInplace)
+    }
+
+    /// Append a `TanhInplace` node — mutates `self`'s storage with
+    /// `tanh(self)`. See `Tensor::tanh` for the functional variant.
+    pub fn tanh_inplace(&self) -> Tensor {
+        self.unary_op(Op::TanhInplace)
+    }
+
+    /// Append a `SigmoidInplace` node — mutates `self`'s storage
+    /// with `sigmoid(self)`. See `Tensor::sigmoid` for the functional
+    /// variant.
+    pub fn sigmoid_inplace(&self) -> Tensor {
+        self.unary_op(Op::SigmoidInplace)
+    }
+
+    /// Append an `Op::Fused(INPLACE_AFFINE, ...)` node — mutates
+    /// `self`'s storage with `self = mul · self + add`. Single-input
+    /// fused op (no functional `Op::Affine` exists on
+    /// `fuel-graph::Op`; the non-inplace equivalent is `self
+    /// .mul_scalar(mul).add_scalar(add)`). Wired to baracuda's
+    /// `affine_inplace_*` symbol on CUDA when Phase 3 lands.
+    pub fn affine_inplace(&self, mul: f64, add: f64) -> Tensor {
+        let shape = self.shape();
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Fused(
+                crate::registry::FusedOps::INPLACE_AFFINE,
+                crate::registry::FusedOpParams::InplaceAffine { mul, add },
+            ),
+            inputs: vec![self.id],
+            shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `Floor` node (`⌊self⌋`). Output dtype = input dtype.
     /// Backward is the zero distribution almost everywhere; gradient
     /// is dropped silently.
@@ -8141,6 +8212,63 @@ mod tests {
         let c = crate::registry::FusedOpParams::InplaceAffine { mul: 2.0, add: 0.5 };
         assert_eq!(a.key(), b.key(), "identical mul/add must dedupe");
         assert_ne!(a.key(), c.key(), "different add must produce distinct key");
+    }
+
+    #[test]
+    fn relu_inplace_builder_emits_op_reluinplace() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, -1.0, 2.0, -2.0], Shape::from_dims(&[4]), cpu_dev(),
+        );
+        let y = x.relu_inplace();
+        let g = y.graph().read().unwrap();
+        let node = g.node(y.id());
+        assert!(matches!(node.op, Op::ReluInplace));
+        assert_eq!(node.inputs, vec![x.id()]);
+        assert_eq!(node.shape.dims(), &[4]);
+        assert_eq!(node.dtype, DType::F32);
+    }
+
+    #[test]
+    fn affine_inplace_builder_emits_fused_inplace_affine() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev(),
+        );
+        let y = x.affine_inplace(2.0, 0.5);
+        let g = y.graph().read().unwrap();
+        let node = g.node(y.id());
+        match &node.op {
+            Op::Fused(id, crate::registry::FusedOpParams::InplaceAffine { mul, add }) => {
+                assert_eq!(*id, crate::registry::FusedOps::INPLACE_AFFINE);
+                assert_eq!(*mul, 2.0);
+                assert_eq!(*add, 0.5);
+            }
+            other => panic!("expected Op::Fused(INPLACE_AFFINE, InplaceAffine), got {other:?}"),
+        }
+        assert_eq!(node.inputs, vec![x.id()]);
+        assert_eq!(node.shape.dims(), &[4]);
+    }
+
+    #[test]
+    fn all_inplace_unary_builders_round_trip_through_op_variants() {
+        // One smoke per variant — each builder emits exactly the
+        // matching `Op::*Inplace` variant, single input, shape +
+        // dtype unchanged.
+        let x = Tensor::from_f32(
+            vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev(),
+        );
+        fn check(y: Tensor, x_id: NodeId, expect: fn(&Op) -> bool) {
+            let g = y.graph().read().unwrap();
+            let node = g.node(y.id());
+            assert!(expect(&node.op), "wrong Op variant: {:?}", node.op);
+            assert_eq!(node.inputs, vec![x_id]);
+            assert_eq!(node.shape.dims(), &[8]);
+            assert_eq!(node.dtype, DType::F32);
+        }
+        check(x.relu_inplace(),    x.id(), |o| matches!(o, Op::ReluInplace));
+        check(x.silu_inplace(),    x.id(), |o| matches!(o, Op::SiluInplace));
+        check(x.gelu_inplace(),    x.id(), |o| matches!(o, Op::GeluInplace));
+        check(x.tanh_inplace(),    x.id(), |o| matches!(o, Op::TanhInplace));
+        check(x.sigmoid_inplace(), x.id(), |o| matches!(o, Op::SigmoidInplace));
     }
 
     #[test]
