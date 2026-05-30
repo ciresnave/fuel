@@ -258,6 +258,15 @@ pub struct Pipelines {
     pub layer_norm_last_dim_backward_pipeline: ComputePipeline,
     pub layer_norm_last_dim_backward_layout: PipelineLayout,
 
+    pub layer_norm_last_dim_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_layout: PipelineLayout,
+    pub layer_norm_last_dim_f16_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_f16_layout: PipelineLayout,
+    pub layer_norm_last_dim_bf16_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_bf16_layout: PipelineLayout,
+    pub layer_norm_last_dim_f64_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_f64_layout: PipelineLayout,
+
     pub strided_copy_pipeline: ComputePipeline,
     pub strided_copy_layout: PipelineLayout,
 
@@ -550,6 +559,10 @@ impl Pipelines {
         let softmax_last_dim_backward_bf16_mod = registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_BF16)?;
         let softmax_last_dim_backward_f64_mod  = registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_F64)?;
         let layer_norm_last_dim_backward_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD)?;
+        let layer_norm_last_dim_mod      = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM)?;
+        let layer_norm_last_dim_f16_mod  = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_F16)?;
+        let layer_norm_last_dim_bf16_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BF16)?;
+        let layer_norm_last_dim_f64_mod  = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_F64)?;
         let strided_copy_mod = registry.load_module(device, shaders::STRIDED_COPY)?;
         let index_select_mod = registry.load_module(device, shaders::INDEX_SELECT)?;
         let index_select_f16_mod = registry.load_module(device, shaders::INDEX_SELECT_F16)?;
@@ -666,6 +679,10 @@ impl Pipelines {
         let softmax_last_dim_backward_bf16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let softmax_last_dim_backward_f64_layout  = PipelineLayout::new(device, &[&layout_3s1u])?;
         let layer_norm_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let layer_norm_last_dim_layout      = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let layer_norm_last_dim_f16_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let layer_norm_last_dim_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let layer_norm_last_dim_f64_layout  = PipelineLayout::new(device, &[&layout_2s1u])?;
         let strided_copy_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let index_select_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let index_select_f16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -779,6 +796,10 @@ impl Pipelines {
         let softmax_last_dim_backward_bf16_pipeline = ComputePipeline::new(device, &softmax_last_dim_backward_bf16_layout, &softmax_last_dim_backward_bf16_mod, "main")?;
         let softmax_last_dim_backward_f64_pipeline  = ComputePipeline::new(device, &softmax_last_dim_backward_f64_layout, &softmax_last_dim_backward_f64_mod, "main")?;
         let layer_norm_last_dim_backward_pipeline = ComputePipeline::new(device, &layer_norm_last_dim_backward_layout, &layer_norm_last_dim_backward_mod, "main")?;
+        let layer_norm_last_dim_pipeline      = ComputePipeline::new(device, &layer_norm_last_dim_layout,      &layer_norm_last_dim_mod,      "main")?;
+        let layer_norm_last_dim_f16_pipeline  = ComputePipeline::new(device, &layer_norm_last_dim_f16_layout,  &layer_norm_last_dim_f16_mod,  "main")?;
+        let layer_norm_last_dim_bf16_pipeline = ComputePipeline::new(device, &layer_norm_last_dim_bf16_layout, &layer_norm_last_dim_bf16_mod, "main")?;
+        let layer_norm_last_dim_f64_pipeline  = ComputePipeline::new(device, &layer_norm_last_dim_f64_layout,  &layer_norm_last_dim_f64_mod,  "main")?;
         let strided_copy_pipeline = ComputePipeline::new(device, &strided_copy_layout, &strided_copy_mod, "main")?;
         let index_select_pipeline = ComputePipeline::new(device, &index_select_layout, &index_select_mod, "main")?;
         let index_select_f16_pipeline = ComputePipeline::new(device, &index_select_f16_layout, &index_select_f16_mod, "main")?;
@@ -890,6 +911,10 @@ impl Pipelines {
             softmax_last_dim_backward_bf16_pipeline, softmax_last_dim_backward_bf16_layout,
             softmax_last_dim_backward_f64_pipeline,  softmax_last_dim_backward_f64_layout,
             layer_norm_last_dim_backward_pipeline, layer_norm_last_dim_backward_layout,
+            layer_norm_last_dim_pipeline,      layer_norm_last_dim_layout,
+            layer_norm_last_dim_f16_pipeline,  layer_norm_last_dim_f16_layout,
+            layer_norm_last_dim_bf16_pipeline, layer_norm_last_dim_bf16_layout,
+            layer_norm_last_dim_f64_pipeline,  layer_norm_last_dim_f64_layout,
             strided_copy_pipeline, strided_copy_layout,
             index_select_pipeline, index_select_layout,
             index_select_f16_pipeline, index_select_f16_layout,

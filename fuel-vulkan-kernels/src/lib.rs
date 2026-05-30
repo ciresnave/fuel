@@ -140,6 +140,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("softmax_last_dim_backward_bf16", include_bytes!("../spv/softmax_last_dim_backward_bf16.spv")),
     ("softmax_last_dim_backward_f64",  include_bytes!("../spv/softmax_last_dim_backward_f64.spv")),
     ("layer_norm_last_dim_backward", include_bytes!("../spv/layer_norm_last_dim_backward.spv")),
+    ("layer_norm_last_dim",       include_bytes!("../spv/layer_norm_last_dim.spv")),
+    ("layer_norm_last_dim_f16",   include_bytes!("../spv/layer_norm_last_dim_f16.spv")),
+    ("layer_norm_last_dim_bf16",  include_bytes!("../spv/layer_norm_last_dim_bf16.spv")),
+    ("layer_norm_last_dim_f64",   include_bytes!("../spv/layer_norm_last_dim_f64.spv")),
     ("strided_copy",              include_bytes!("../spv/strided_copy.spv")),
     ("unary",                     include_bytes!("../spv/unary.spv")),
     ("unary_f16",                 include_bytes!("../spv/unary_f16.spv")),
@@ -308,6 +312,14 @@ pub const SOFTMAX_LAST_DIM_BACKWARD_BF16: &str = "softmax_last_dim_backward_bf16
 pub const SOFTMAX_LAST_DIM_BACKWARD_F64: &str = "softmax_last_dim_backward_f64";
 /// Fused layer-norm backward (4 reductions: sum_x, sum_x², sum_g, sum_gx).
 pub const LAYER_NORM_LAST_DIM_BACKWARD: &str = "layer_norm_last_dim_backward";
+/// Fused layer-norm forward: y = (x - mean) / sqrt(var + eps).
+pub const LAYER_NORM_LAST_DIM: &str = "layer_norm_last_dim";
+/// LayerNorm forward, f16 mixed precision.
+pub const LAYER_NORM_LAST_DIM_F16: &str = "layer_norm_last_dim_f16";
+/// LayerNorm forward, bf16 packed-u32 mixed precision.
+pub const LAYER_NORM_LAST_DIM_BF16: &str = "layer_norm_last_dim_bf16";
+/// LayerNorm forward, native f64.
+pub const LAYER_NORM_LAST_DIM_F64: &str = "layer_norm_last_dim_f64";
 /// Parallel reduction over all elements (f32).
 pub const REDUCE: &str = "reduce";
 /// Full-tensor reduction, f16 storage with f32 accumulator.

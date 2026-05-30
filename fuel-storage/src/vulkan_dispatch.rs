@@ -724,6 +724,83 @@ pub mod norm {
         backend.rms_norm_last_dim_bf16_bytes(a, out, outer_count, last_dim, eps)
     }
 
+    // ----- LayerNorm (V.3.G.layer_norm, 2026-05-30) -----
+
+    pub fn layer_norm_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        layer_norm_typed("layer_norm_f32", inputs, outputs, params, |b, i, o, oc, ld, eps| {
+            b.layer_norm_last_dim_f32_bytes(i, o, oc, ld, eps)
+        })
+    }
+    pub fn layer_norm_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        layer_norm_typed("layer_norm_f16", inputs, outputs, params, |b, i, o, oc, ld, eps| {
+            b.layer_norm_last_dim_f16_bytes(i, o, oc, ld, eps)
+        })
+    }
+    pub fn layer_norm_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        layer_norm_typed("layer_norm_bf16", inputs, outputs, params, |b, i, o, oc, ld, eps| {
+            b.layer_norm_last_dim_bf16_bytes(i, o, oc, ld, eps)
+        })
+    }
+    pub fn layer_norm_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        layer_norm_typed("layer_norm_f64", inputs, outputs, params, |b, i, o, oc, ld, eps| {
+            b.layer_norm_last_dim_f64_bytes(i, o, oc, ld, eps)
+        })
+    }
+
+    fn layer_norm_typed<F>(
+        label: &'static str,
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        params: &OpParams,
+        call: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize, usize, f64,
+        ) -> fuel_core_types::Result<()>,
+    {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::norm::{label}: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim, eps) = norm_params(label, params)?;
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::norm::{label}: input has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        call(backend, a, out, outer_count, last_dim, eps)
+    }
+
     pub fn rms_f64(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -2819,6 +2896,20 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::SoftmaxLastDim, &u(f16),  vk, softmax::softmax_f16,  PrecisionGuarantee::none(SOFTMAX_REASON));
         table.register_with_precision(OpKind::SoftmaxLastDim, &u(bf16), vk, softmax::softmax_bf16, PrecisionGuarantee::none(SOFTMAX_REASON));
         table.register_with_precision(OpKind::SoftmaxLastDim, &u(f64),  vk, softmax::softmax_f64,  PrecisionGuarantee::none(SOFTMAX_REASON));
+    }
+
+    // ----- LayerNorm last-dim (V.3.G.layer_norm, 2026-05-30). NEW
+    // family on Vulkan; CPU + CUDA also have it via separate paths.
+    // Two reductions per row (mean + variance), then per-element
+    // normalize.
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64_d = DType::F64;
+        table.register_with_precision(OpKind::LayerNormLastDim, &u(f32),   vk, norm::layer_norm_f32,  PrecisionGuarantee::none(RMS_NORM_REASON));
+        table.register_with_precision(OpKind::LayerNormLastDim, &u(f16),   vk, norm::layer_norm_f16,  PrecisionGuarantee::none(RMS_NORM_REASON));
+        table.register_with_precision(OpKind::LayerNormLastDim, &u(bf16),  vk, norm::layer_norm_bf16, PrecisionGuarantee::none(RMS_NORM_REASON));
+        table.register_with_precision(OpKind::LayerNormLastDim, &u(f64_d), vk, norm::layer_norm_f64,  PrecisionGuarantee::none(RMS_NORM_REASON));
     }
 
     // ----- RmsNorm last-dim, f16/bf16/f64 (V.3.G, 2026-05-30).

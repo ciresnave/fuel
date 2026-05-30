@@ -3413,6 +3413,142 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// LayerNorm forward, last-dim, byte-width family (f32/f16/bf16/f64).
+    /// `out[i] = (x[i] - mean) / sqrt(var + eps)` per row.
+    pub fn layer_norm_last_dim_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        self.layer_norm_typed_bytes(
+            "layer_norm_last_dim_f32_bytes", 4, false,
+            input, out, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_pipeline,
+            &self.pipelines.layer_norm_last_dim_layout,
+        )
+    }
+
+    pub fn layer_norm_last_dim_f16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        self.layer_norm_typed_bytes(
+            "layer_norm_last_dim_f16_bytes", 2, false,
+            input, out, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_f16_pipeline,
+            &self.pipelines.layer_norm_last_dim_f16_layout,
+        )
+    }
+
+    pub fn layer_norm_last_dim_bf16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        if last_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "layer_norm_last_dim_bf16_bytes: last_dim must be even (lane-pair); got {last_dim}",
+            );
+        }
+        self.layer_norm_typed_bytes(
+            "layer_norm_last_dim_bf16_bytes", 2, false,
+            input, out, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_bf16_pipeline,
+            &self.pipelines.layer_norm_last_dim_bf16_layout,
+        )
+    }
+
+    pub fn layer_norm_last_dim_f64_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        self.layer_norm_typed_bytes(
+            "layer_norm_last_dim_f64_bytes", 8, true,
+            input, out, outer_count, last_dim, eps,
+            &self.pipelines.layer_norm_last_dim_f64_pipeline,
+            &self.pipelines.layer_norm_last_dim_f64_layout,
+        )
+    }
+
+    /// Per-dtype LayerNorm core. `eps_is_f64` selects between two
+    /// Params layouts — `{u32, u32, f32, u32}` (16 bytes) or
+    /// `{u32, u32, f64}` (16 bytes with f64 at offset 8).
+    fn layer_norm_typed_bytes(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        eps_is_f64: bool,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * elem_bytes;
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: buffer too small (need {need_bytes}; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out is host-evicted; fault back first"),
+        ))?;
+
+        let (pbuf, pmem) = if eps_is_f64 {
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct LnParamsF64 { n_rows: u32, n_cols: u32, eps: f64 }
+            let p = LnParamsF64 { n_rows: outer_count as u32, n_cols: last_dim as u32, eps };
+            self.upload_params(&p)?
+        } else {
+            #[repr(C)] #[derive(Clone, Copy)]
+            struct LnParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+            let p = LnParams {
+                n_rows: outer_count as u32, n_cols: last_dim as u32,
+                eps: eps as f32, _pad: 0,
+            };
+            self.upload_params(&p)?
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Gather along `dim`, byte-width-keyed (1/2/4/8). Source and
     /// output shapes agree on every dim except `dim`. The `indices`
     /// tensor (U32) has output_shape and supplies the source coord
