@@ -1627,15 +1627,10 @@ pub mod pad {
                 )).bt());
             }
         };
-        if mode_tag != 0 {
-            return Err(Error::Msg(format!(
-                "vulkan_dispatch::pad::pad_backward: mode_tag {mode_tag} not yet native on Vulkan \
-                 (reflect/replicate need atomic float add; only const=0 is wired)",
-            )).bt());
-        }
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
-        let elem_bytes = out_guard.dtype.size_in_bytes();
+        let dtype = out_guard.dtype;
+        let elem_bytes = dtype.size_in_bytes();
         let go = vulkan_input(&in_guard)?;
         let backend = go.backend().ok_or_else(|| {
             Error::Msg(
@@ -1644,7 +1639,21 @@ pub mod pad {
         })?;
         let gi = vulkan_output(&mut out_guard)?;
         let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
-        backend.pad_backward_const_bytes(go, gi, in_shape, out_shape, &left_pad, elem_bytes)
+        match mode_tag {
+            0 => backend.pad_backward_const_bytes(go, gi, in_shape, out_shape, &left_pad, elem_bytes),
+            1 | 2 => {
+                if dtype != DType::F32 {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::pad::pad_backward: mode_tag {mode_tag} only \
+                         supports F32 on Vulkan (atomic CAS path); got {dtype:?}",
+                    )).bt());
+                }
+                backend.pad_backward_atomic_f32_bytes(go, gi, in_shape, out_shape, &left_pad, mode_tag)
+            }
+            other => Err(Error::Msg(format!(
+                "vulkan_dispatch::pad::pad_backward: unknown mode_tag {other}",
+            )).bt()),
+        }
     }
 
     /// Pad — 1 input + 1 output. Reads geometry from OpParams::Pad.

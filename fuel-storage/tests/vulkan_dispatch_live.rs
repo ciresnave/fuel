@@ -3648,6 +3648,95 @@ fn vulkan_dispatch_argmax_last_dim_f64() {
     }
 }
 
+// ---- PadBackward reflect / replicate f32 (V.3.G.pad_backward.atomic, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_backward_reflect_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Forward reflect: in=[3] pad=(2,2) → out=[7] = [3,2,1,2,3,2,1]
+    // Backward (each out coord c reflects to some in_coord; accumulate):
+    //   c=0 → in[2] += 10
+    //   c=1 → in[1] += 20
+    //   c=2 → in[0] += 30
+    //   c=3 → in[1] += 40
+    //   c=4 → in[2] += 50
+    //   c=5 → in[1] += 60
+    //   c=6 → in[0] += 70
+    // expected: in[0]=30+70=100, in[1]=20+40+60=120, in[2]=10+50=60
+    let grad_out: Vec<f32> = vec![10., 20., 30., 40., 50., 60., 70.];
+    let expected: [f32; 3] = [100., 120., 60.];
+
+    let go_storage = upload_f32(&backend, &grad_out);
+    let gi_bytes = backend.alloc_bytes_handle(3 * 4).expect("alloc");
+    let gi_storage = Storage::new(BackendStorage::Vulkan(gi_bytes), DType::F32);
+    let go_arc = Arc::new(RwLock::new(go_storage));
+    let gi_arc = Arc::new(RwLock::new(gi_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::PadBackward, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let go_layout = Layout::contiguous(Shape::from_dims(&[7]));
+    let gi_layout = Layout::contiguous(Shape::from_dims(&[3]));
+    kernel(
+        &[Arc::clone(&go_arc)],
+        &mut [Arc::clone(&gi_arc)],
+        &[go_layout, gi_layout],
+        &OpParams::PadBackward {
+            in_shape: vec![3], out_shape: vec![7], padding: vec![(2, 2)], mode_tag: 1,
+        },
+    ).expect("pad_backward reflect f32 dispatch");
+
+    let got = download_f32(&backend, &gi_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-5, "pad_backward reflect[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_backward_replicate_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Forward replicate: in=[3] pad=(2,3) → out=[8] = [1,1,1,2,3,3,3,3]
+    // Backward (clamp each out coord):
+    //   c=0,1,2: in[0] += grad_out[0..3]   → in[0] = 10+20+30 = 60
+    //   c=3: in[1] += grad_out[3]          → in[1] = 40
+    //   c=4..7: in[2] += grad_out[4..8]    → in[2] = 50+60+70+80 = 260
+    let grad_out: Vec<f32> = vec![10., 20., 30., 40., 50., 60., 70., 80.];
+    let expected: [f32; 3] = [60., 40., 260.];
+
+    let go_storage = upload_f32(&backend, &grad_out);
+    let gi_bytes = backend.alloc_bytes_handle(3 * 4).expect("alloc");
+    let gi_storage = Storage::new(BackendStorage::Vulkan(gi_bytes), DType::F32);
+    let go_arc = Arc::new(RwLock::new(go_storage));
+    let gi_arc = Arc::new(RwLock::new(gi_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::PadBackward, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let go_layout = Layout::contiguous(Shape::from_dims(&[8]));
+    let gi_layout = Layout::contiguous(Shape::from_dims(&[3]));
+    kernel(
+        &[Arc::clone(&go_arc)],
+        &mut [Arc::clone(&gi_arc)],
+        &[go_layout, gi_layout],
+        &OpParams::PadBackward {
+            in_shape: vec![3], out_shape: vec![8], padding: vec![(2, 3)], mode_tag: 2,
+        },
+    ).expect("pad_backward replicate f32 dispatch");
+
+    let got = download_f32(&backend, &gi_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-5, "pad_backward replicate[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- PadBackward (constant mode) (V.3.G.pad_backward.const, 2026-05-30) ----
 
 #[test]

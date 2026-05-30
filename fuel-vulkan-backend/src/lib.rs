@@ -4038,6 +4038,106 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// PadBackward reflect / replicate mode — f32 only. Each output
+    /// position atomically accumulates its grad into the per-axis
+    /// mapped input position. Wrapper zero-fills grad_in before
+    /// dispatch.
+    pub fn pad_backward_atomic_f32_bytes(
+        &self,
+        grad_out: &VulkanStorageBytes,
+        grad_in: &mut VulkanStorageBytes,
+        in_shape: &[usize],
+        out_shape: &[usize],
+        left_pad: &[usize],
+        mode_tag: u8,
+    ) -> fuel_core_types::Result<()> {
+        let rank = in_shape.len();
+        if out_shape.len() != rank || left_pad.len() != rank {
+            fuel_core_types::bail!(
+                "pad_backward_atomic_f32_bytes: rank mismatch (in={}, out={}, left_pad={})",
+                in_shape.len(), out_shape.len(), left_pad.len(),
+            );
+        }
+        if rank > 8 {
+            fuel_core_types::bail!("pad_backward_atomic_f32_bytes: rank > 8 not supported");
+        }
+        if mode_tag != 1 && mode_tag != 2 {
+            fuel_core_types::bail!(
+                "pad_backward_atomic_f32_bytes: mode_tag must be 1 (reflect) or 2 (replicate), got {mode_tag}",
+            );
+        }
+        let n_in: usize = in_shape.iter().product();
+        let n_out: usize = out_shape.iter().product();
+        let need_in = n_in * 4;
+        let need_out = n_out * 4;
+        if grad_out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "pad_backward_atomic_f32_bytes: grad_out {} bytes < required {need_out}",
+                grad_out.len_bytes(),
+            );
+        }
+        if grad_in.len_bytes() < need_in {
+            fuel_core_types::bail!(
+                "pad_backward_atomic_f32_bytes: grad_in {} bytes < required {need_in}",
+                grad_in.len_bytes(),
+            );
+        }
+
+        // Zero-fill grad_in so atomic accumulation starts from 0.
+        self.fill_bytes_zero(grad_in)?;
+
+        let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
+        for &d in in_shape { sd.push(d as u32); }
+        for &d in out_shape { sd.push(d as u32); }
+        for &p in left_pad { sd.push(p as u32); }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+        let sd_byte_size = (sd.len() * 4) as u64;
+
+        let go_buf = grad_out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_backward_atomic_f32_bytes: grad_out is host-evicted".into(),
+        ))?;
+        let gi_buf = grad_in.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_backward_atomic_f32_bytes: grad_in is host-evicted".into(),
+        ))?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct PBRParams { n_out: u32, rank: u32, _pad0: u32, _pad1: u32 }
+        let p = PBRParams { n_out: n_out as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout, op_name) = if mode_tag == 1 {
+            (&self.pipelines.pad_backward_reflect_f32_pipeline,
+             &self.pipelines.pad_backward_reflect_f32_layout,
+             "pad_backward_reflect_f32")
+        } else {
+            (&self.pipelines.pad_backward_replicate_f32_pipeline,
+             &self.pipelines.pad_backward_replicate_f32_layout,
+             "pad_backward_replicate_f32")
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, go_buf, 0, grad_out.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, gi_buf, 0, grad_in.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_out);
+        // grad_in is both read (CAS) and written, so list in both rb and wb.
+        let rb = [go_buf.raw() as u64, gi_buf.raw() as u64];
+        let wb = [gi_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// PadBackward constant mode, byte-width-keyed. Each thread =
     /// one INPUT element. Reads grad_out at the unpadded position
     /// `in_coord + left_pad`. No accumulation (constant mode has at
