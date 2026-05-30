@@ -101,6 +101,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("pad_backward_const_b2",     include_bytes!("../spv/pad_backward_const_b2.spv")),
     ("pad_backward_const_b4",     include_bytes!("../spv/pad_backward_const_b4.spv")),
     ("pad_backward_const_b8",     include_bytes!("../spv/pad_backward_const_b8.spv")),
+    ("pad_backward_reflect_f32",   include_bytes!("../spv/pad_backward_reflect_f32.spv")),
+    ("pad_backward_replicate_f32", include_bytes!("../spv/pad_backward_replicate_f32.spv")),
     ("write_slice_b1",            include_bytes!("../spv/write_slice_b1.spv")),
     ("write_slice_b2",            include_bytes!("../spv/write_slice_b2.spv")),
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
@@ -263,6 +265,11 @@ pub const PAD_BACKWARD_CONST_B1: &str = "pad_backward_const_b1";
 pub const PAD_BACKWARD_CONST_B2: &str = "pad_backward_const_b2";
 pub const PAD_BACKWARD_CONST_B4: &str = "pad_backward_const_b4";
 pub const PAD_BACKWARD_CONST_B8: &str = "pad_backward_const_b8";
+/// PadBackward reflect/replicate mode — f32 only. Atomic-add via
+/// uint CAS into the (zero-initialized) grad_in buffer. f16/bf16/
+/// f64 follow once the sub-word / u64 CAS variants are wired.
+pub const PAD_BACKWARD_REFLECT_F32: &str = "pad_backward_reflect_f32";
+pub const PAD_BACKWARD_REPLICATE_F32: &str = "pad_backward_replicate_f32";
 /// MaskedFill: for each element, if mask byte != 0 → fill_value, else
 /// copy input. Mask is always U8. Byte-width-keyed by element size.
 pub const MASKED_FILL_B1: &str = "masked_fill_b1";
