@@ -93,6 +93,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("pad_reflect_b2",            include_bytes!("../spv/pad_reflect_b2.spv")),
     ("pad_reflect_b4",            include_bytes!("../spv/pad_reflect_b4.spv")),
     ("pad_reflect_b8",            include_bytes!("../spv/pad_reflect_b8.spv")),
+    ("pad_replicate_b1",          include_bytes!("../spv/pad_replicate_b1.spv")),
+    ("pad_replicate_b2",          include_bytes!("../spv/pad_replicate_b2.spv")),
+    ("pad_replicate_b4",          include_bytes!("../spv/pad_replicate_b4.spv")),
+    ("pad_replicate_b8",          include_bytes!("../spv/pad_replicate_b8.spv")),
     ("write_slice_b1",            include_bytes!("../spv/write_slice_b1.spv")),
     ("write_slice_b2",            include_bytes!("../spv/write_slice_b2.spv")),
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
@@ -233,6 +237,13 @@ pub const PAD_REFLECT_B1: &str = "pad_reflect_b1";
 pub const PAD_REFLECT_B2: &str = "pad_reflect_b2";
 pub const PAD_REFLECT_B4: &str = "pad_reflect_b4";
 pub const PAD_REFLECT_B8: &str = "pad_reflect_b8";
+/// Pad with replicate (edge-repeat) mode, byte-width-keyed. Each
+/// out-of-range coord clamps to [0, in_dim - 1]. No precondition on
+/// left_pad/right_pad sizes.
+pub const PAD_REPLICATE_B1: &str = "pad_replicate_b1";
+pub const PAD_REPLICATE_B2: &str = "pad_replicate_b2";
+pub const PAD_REPLICATE_B4: &str = "pad_replicate_b4";
+pub const PAD_REPLICATE_B8: &str = "pad_replicate_b8";
 /// MaskedFill: for each element, if mask byte != 0 → fill_value, else
 /// copy input. Mask is always U8. Byte-width-keyed by element size.
 pub const MASKED_FILL_B1: &str = "masked_fill_b1";
