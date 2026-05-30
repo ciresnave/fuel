@@ -169,6 +169,31 @@ enum WorkItemKind {
     /// architecturally clean "Op::Alloc (uninit) → Op::ZeroFill
     /// (explicit fill)" pipeline.
     ZeroFill,
+    /// In-place kernel — the output adopts the input at index
+    /// `target_idx`'s Storage Arc and the kernel mutates that Arc's
+    /// bytes through a single write lock. Phase 3 of the in-place ops
+    /// infrastructure
+    /// (`docs/session-prompts/in-place-ops-infrastructure.md`).
+    ///
+    /// Kernel lookup goes through the standard binding table at
+    /// `(op_to_op_kind, [target_dtype], target_backend)`. The wrapper's
+    /// `inputs` slice is empty; `outputs[0]` is the target Arc. The
+    /// wrapper acquires `outputs[0]`'s write lock and calls the
+    /// underlying single-pointer kernel (e.g. baracuda's
+    /// `affine_inplace_*` on CUDA, or the chassis with `src == dst`
+    /// on CPU).
+    ///
+    /// Output Arc adoption: identical to `WorkItemKind::WriteSlice`
+    /// (the output's slot = the target's Arc; the realize loop's
+    /// `destructive_input` cleanup evicts the target's NodeId from the
+    /// cache afterward). Downstream consumers read post-mutation bytes
+    /// through this op's NodeId, not the target's.
+    InplaceKernel {
+        /// Index into `inputs` whose Storage Arc the output adopts.
+        /// Always equal to the source `Op::destructive_input().unwrap()`;
+        /// stored explicitly so the executor doesn't re-derive it.
+        target_idx: usize,
+    },
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -621,6 +646,60 @@ fn compile_one(
             output_layout,
             destructive_input,
         });
+    }
+
+    // In-place ops (Phase 3 of in-place ops infrastructure): kernel
+    // lookup goes through the standard binding-table path, but the
+    // executor adopts the target's Arc as the output instead of
+    // allocating fresh bytes. The compile-time predicate is exactly
+    // `op.destructive_input().is_some()` AND NOT one of the
+    // structural ops (WriteSlice / ZeroFill / Release / Move) which
+    // have their own dedicated WorkItemKind arms above this one.
+    if !matches!(node.op,
+        Op::WriteSlice { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
+    ) {
+        if let Some(target_idx) = node.op.destructive_input() {
+            if inputs.len() <= target_idx {
+                return Err(Error::Msg(format!(
+                    "in-place op {:?} declares destructive_input={target_idx} \
+                     but has only {} input(s)",
+                    node.op, inputs.len(),
+                ))
+                .bt());
+            }
+            let target_backend = graph.target_backend(id).ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: in-place op node {id:?} has no target_backend set",
+                ))
+                .bt()
+            })?;
+            let op_kind = op_to_op_kind(&node.op).ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: in-place op {:?} has no op_to_op_kind mapping",
+                    node.op,
+                ))
+                .bt()
+            })?;
+            let op_params = op_to_op_params(graph, node, layout_cache)?;
+            let dtypes = build_lookup_dtypes(graph, node);
+            let compiled = compile_node(
+                op_kind, &dtypes, target_backend, op_params, bindings,
+            )?;
+            // Output adopts target's Layout (same Storage Arc, same shape).
+            let output_layout = graph.layout(inputs[target_idx]);
+            layout_cache.insert(id, output_layout.clone());
+            return Ok(WorkItem {
+                node_id: id,
+                inputs: inputs.clone(),
+                elem_count,
+                dtype: node.dtype,
+                target_backend,
+                kind: WorkItemKind::InplaceKernel { target_idx },
+                compiled: Some(compiled),
+                output_layout,
+                destructive_input,
+            });
+        }
     }
 
     if matches!(node.op, Op::WriteSlice { .. }) {
@@ -1088,6 +1167,18 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         // arm, since target_location differs from target_backend for
         // this op (the only one with that property today).
         Op::Copy { .. } => Some(OpKind::Copy),
+        // Phase 3 of the in-place ops infrastructure: each in-place Op
+        // variant maps to its OpKind so the binding-table dispatch can
+        // resolve a kernel. The executor's dedicated WorkItemKind
+        // arms (added alongside) handle the storage-Arc adoption.
+        Op::ReluInplace        => Some(OpKind::ReluInplace),
+        Op::SiluInplace        => Some(OpKind::SiluInplace),
+        Op::GeluInplace        => Some(OpKind::GeluInplace),
+        Op::TanhInplace        => Some(OpKind::TanhInplace),
+        Op::SigmoidInplace     => Some(OpKind::SigmoidInplace),
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::INPLACE_AFFINE => {
+            Some(OpKind::InplaceAffine)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -1873,6 +1964,14 @@ fn op_to_op_params(
         // FusedOpParams::PowIBackward (autograd carries it across).
         Op::Fused(_, fuel_graph::registry::FusedOpParams::PowIBackward { exp }) => {
             OpParams::PowI { exp: *exp }
+        }
+        // In-place affine (Phase 3 of the in-place ops infrastructure):
+        // reuse the existing `OpParams::Affine` payload — the kernel
+        // side doesn't care whether the destination is fresh or aliases
+        // the input; the structural decision lives in the executor's
+        // dedicated `WorkItemKind::InplaceKernel` arm.
+        Op::Fused(_, fuel_graph::registry::FusedOpParams::InplaceAffine { mul, add }) => {
+            OpParams::Affine { mul: *mul, add: *add }
         }
         // Phase 7.6 step 5: legacy `Op::Conv2D` arm retired with the
         // variant; Conv2D routes through `Op::Fused(CONV2D, _)`.
@@ -2790,6 +2889,63 @@ fn execute_work_item(
 
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::InplaceKernel { target_idx } => {
+            let compiled = item.compiled.as_ref().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: InplaceKernel work item {:?} has no compiled node",
+                    item.node_id,
+                ))
+                .bt()
+            })?;
+            let target_id = *item.inputs.get(*target_idx).ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: InplaceKernel work item {:?} target_idx={} \
+                     out of bounds (inputs.len()={})",
+                    item.node_id, target_idx, item.inputs.len(),
+                ))
+                .bt()
+            })?;
+            let target_arc = cache.get(&target_id).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: InplaceKernel target {:?} of {:?} not realized",
+                    target_id, item.node_id,
+                ))
+                .bt()
+            })?;
+            let target_layout = layout_cache.get(&target_id).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: InplaceKernel target {:?} of {:?} has no cached layout",
+                    target_id, item.node_id,
+                ))
+                .bt()
+            })?;
+            // v1 contract: target must be contiguous + zero offset.
+            // Strided in-place targets would force the kernel to walk
+            // strides for writes too; defer until a concrete consumer
+            // needs it (mirrors `Op::WriteSlice`'s v1 dest contract).
+            if !target_layout.is_contiguous() || target_layout.start_offset() != 0 {
+                return Err(Error::Msg(format!(
+                    "InplaceKernel (Phase 3 v1): target {:?} must be contiguous + \
+                     zero-offset; got Layout {:?}",
+                    target_id, target_layout,
+                ))
+                .bt());
+            }
+            // Kernel sees inputs=[] and outputs=[target_arc]. The
+            // wrapper acquires outputs[0]'s write lock and mutates
+            // through its bytes_mut(). Layout vector matches:
+            // [output_layout] only.
+            let input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::new();
+            let mut output_arcs = vec![target_arc.clone()];
+            let kernel_layouts = vec![target_layout.clone()];
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // Adopt the target Arc at this node's slot. The realize
+            // loop's destructive_input cleanup evicts the target's own
+            // NodeId from the cache afterward.
+            cache.insert(item.node_id, target_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }

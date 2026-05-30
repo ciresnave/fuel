@@ -2125,6 +2125,78 @@ fn affine_f32_cpu_wrapper(
     fuel_cpu_backend::byte_kernels::affine_f32(in_cpu, out_cpu, mul, add)
 }
 
+/// Dispatch wrapper macro for in-place affine on CPU. Inputs is
+/// empty (the executor's `WorkItemKind::InplaceKernel` arm passes the
+/// target Arc as `outputs[0]`); the kernel reads + writes through the
+/// single write lock.
+macro_rules! cpu_affine_inplace_wrapper {
+    ($name:ident, $kernel:ident, $T:ty) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (mul, add) = match params {
+                OpParams::Affine { mul, add } => (*mul as $T, *add as $T),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($name), ": expected OpParams::Affine, got {:?}"),
+                        other,
+                    ))
+                    .bt())
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            fuel_cpu_backend::byte_kernels::$kernel(out_cpu, mul, add)
+        }
+    };
+    ($name:ident, $kernel:ident, $T:ty, half) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (mul, add) = match params {
+                OpParams::Affine { mul, add } => (*mul, *add),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($name), ": expected OpParams::Affine, got {:?}"),
+                        other,
+                    ))
+                    .bt())
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            fuel_cpu_backend::byte_kernels::$kernel(out_cpu, mul, add)
+        }
+    };
+}
+
+cpu_affine_inplace_wrapper!(inplace_affine_f32_cpu_wrapper, affine_inplace_f32, f32);
+cpu_affine_inplace_wrapper!(inplace_affine_f64_cpu_wrapper, affine_inplace_f64, f64);
+cpu_affine_inplace_wrapper!(inplace_affine_bf16_cpu_wrapper, affine_inplace_bf16, f64, half);
+cpu_affine_inplace_wrapper!(inplace_affine_f16_cpu_wrapper,  affine_inplace_f16,  f64, half);
+
 /// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
 fn clamp_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
@@ -3313,6 +3385,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     }
 
     table.register(Affine,             &unary(f32_dt), cpu, affine_f32_cpu_wrapper);
+
+    // In-place affine — Phase 3c of in-place ops infrastructure.
+    // Binding-table key shape mirrors the non-inplace Affine ([T, T])
+    // because `build_lookup_dtypes` produces that for an Op::Fused
+    // INPLACE_AFFINE node with 1 input + 1 output of the same dtype.
+    // The wrapper rejects non-empty `inputs` (the executor's
+    // InplaceKernel arm passes the target as `outputs[0]` instead),
+    // but the binding-table KEY is what matters for lookup.
+    table.register(InplaceAffine, &unary(f32_dt),  cpu, inplace_affine_f32_cpu_wrapper);
+    table.register(InplaceAffine, &unary(f64_dt),  cpu, inplace_affine_f64_cpu_wrapper);
+    table.register(InplaceAffine, &unary(bf16_dt), cpu, inplace_affine_bf16_cpu_wrapper);
+    table.register(InplaceAffine, &unary(f16_dt),  cpu, inplace_affine_f16_cpu_wrapper);
     table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
     table.register(MaximumElementwise, &binary(f32_dt), cpu, maximum_elementwise_f32_cpu_wrapper);
@@ -4387,11 +4471,13 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
     use crate::fused::{
         cost_attn_cpu, cost_conv2d_cpu, cost_conv_transpose2d_cpu,
-        cost_fused_linear_cpu, cost_norm_family_cpu, cost_powi_backward_cpu,
+        cost_fused_linear_cpu, cost_inplace_affine_cpu,
+        cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
         ATTN_CPU_PRECISION, CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
-        NORM_FAMILY_CPU_PRECISION, POWI_BACKWARD_CPU_PRECISION,
+        INPLACE_AFFINE_CPU_PRECISION, NORM_FAMILY_CPU_PRECISION,
+        POWI_BACKWARD_CPU_PRECISION,
         QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
         ROPE_CPU_PRECISION,
     };
@@ -4788,6 +4874,27 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         powi_backward_f16_cpu_wrapper,
         cost = cost_powi_backward_cpu,
         precision = POWI_BACKWARD_CPU_PRECISION);
+
+    // INPLACE_AFFINE — `x = mul · x + add`, single-input + same-dtype
+    // output. The binding-table key shape is `[T, T]` (mirrors the
+    // non-inplace Affine OpKind so `build_lookup_dtypes` produces the
+    // same canonical key). 4 dtypes: f32, f64, bf16, f16.
+    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_F32,
+        inplace_affine_f32_cpu_wrapper,
+        cost = cost_inplace_affine_cpu,
+        precision = INPLACE_AFFINE_CPU_PRECISION);
+    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_F64,
+        inplace_affine_f64_cpu_wrapper,
+        cost = cost_inplace_affine_cpu,
+        precision = INPLACE_AFFINE_CPU_PRECISION);
+    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_BF16,
+        inplace_affine_bf16_cpu_wrapper,
+        cost = cost_inplace_affine_cpu,
+        precision = INPLACE_AFFINE_CPU_PRECISION);
+    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_F16,
+        inplace_affine_f16_cpu_wrapper,
+        cost = cost_inplace_affine_cpu,
+        precision = INPLACE_AFFINE_CPU_PRECISION);
 }
 
 #[cfg(test)]

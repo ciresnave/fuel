@@ -367,6 +367,66 @@ mod tests {
         }
     }
 
+    /// Phase 3 of the in-place ops infrastructure
+    /// (docs/session-prompts/in-place-ops-infrastructure.md): realize a
+    /// graph node `Op::Fused(INPLACE_AFFINE, {mul, add})` on top of a
+    /// CPU const tensor and verify the executor mutates the const's
+    /// bytes via the `WorkItemKind::InplaceKernel` arm + the
+    /// `inplace_affine_f32_cpu_wrapper` registered in the binding
+    /// table.
+    #[test]
+    fn op_inplace_affine_cpu_mutates_target_storage() {
+        use crate::pipelined::{PipelinedExecutor, StorageCache};
+        use fuel_core_types::{probe::BackendId, Shape};
+        use fuel_graph::{
+            registry::{FusedOpParams, FusedOps},
+            Graph, Node, NodeId, Op,
+        };
+        use std::sync::{Arc, RwLock};
+
+        let data = [1.0_f32, 2.0, 3.0, 4.0];
+        let src_storage = from_slice_cpu(&data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, affine_id): (NodeId, NodeId) = {
+            let mut g = graph.write().unwrap();
+            let src = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
+            });
+            let affine = g.push(Node {
+                op: Op::Fused(
+                    FusedOps::INPLACE_AFFINE,
+                    FusedOpParams::InplaceAffine { mul: 2.0, add: 0.5 },
+                ),
+                inputs: vec![src],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(affine, BackendId::Cpu);
+            (src, affine)
+        };
+
+        let mut cache = StorageCache::new();
+        cache.insert(src_id, Arc::new(RwLock::new(src_storage)));
+
+        let (result_arc, _layout) =
+            PipelinedExecutor::realize(graph, affine_id, cache)
+                .expect("Op::Fused(INPLACE_AFFINE, _) realize");
+
+        let guard = result_arc.read().unwrap();
+        match &guard.inner {
+            BackendStorage::Cpu(c) => {
+                let got: &[f32] = c.as_slice().expect("f32 cast");
+                // 2 · [1,2,3,4] + 0.5 = [2.5, 4.5, 6.5, 8.5]
+                assert_eq!(got, &[2.5_f32, 4.5, 6.5, 8.5]);
+            }
+            other => panic!("expected CPU storage; got {other:?}"),
+        }
+    }
+
     /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes
     /// produce the same shape.
     #[test]
