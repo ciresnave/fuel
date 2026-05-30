@@ -4608,12 +4608,14 @@ impl VulkanBackend {
         Ok(())
     }
 
-    /// PadBackward reflect / replicate mode — f32 only. Each output
-    /// position atomically accumulates its grad into the per-axis
-    /// mapped input position. Wrapper zero-fills grad_in before
-    /// dispatch.
-    pub fn pad_backward_atomic_f32_bytes(
+    /// PadBackward reflect / replicate mode — f32/f64/bf16/f16. Each
+    /// output position atomically accumulates its grad into the
+    /// per-axis mapped input position. Wrapper zero-fills grad_in
+    /// before dispatch. The atomic primitive varies by dtype: uint
+    /// CAS for f32, u64 CAS for f64, sub-word CAS for bf16/f16.
+    pub fn pad_backward_atomic_bytes(
         &self,
+        dtype: DType,
         grad_out: &VulkanStorageBytes,
         grad_in: &mut VulkanStorageBytes,
         in_shape: &[usize],
@@ -4621,34 +4623,42 @@ impl VulkanBackend {
         left_pad: &[usize],
         mode_tag: u8,
     ) -> fuel_core_types::Result<()> {
+        let elem_bytes = match dtype {
+            DType::F32  => 4,
+            DType::F64  => 8,
+            DType::F16 | DType::BF16 => 2,
+            other => fuel_core_types::bail!(
+                "pad_backward_atomic_bytes: unsupported dtype {other:?}",
+            ),
+        };
         let rank = in_shape.len();
         if out_shape.len() != rank || left_pad.len() != rank {
             fuel_core_types::bail!(
-                "pad_backward_atomic_f32_bytes: rank mismatch (in={}, out={}, left_pad={})",
+                "pad_backward_atomic_bytes: rank mismatch (in={}, out={}, left_pad={})",
                 in_shape.len(), out_shape.len(), left_pad.len(),
             );
         }
         if rank > 8 {
-            fuel_core_types::bail!("pad_backward_atomic_f32_bytes: rank > 8 not supported");
+            fuel_core_types::bail!("pad_backward_atomic_bytes: rank > 8 not supported");
         }
         if mode_tag != 1 && mode_tag != 2 {
             fuel_core_types::bail!(
-                "pad_backward_atomic_f32_bytes: mode_tag must be 1 (reflect) or 2 (replicate), got {mode_tag}",
+                "pad_backward_atomic_bytes: mode_tag must be 1 (reflect) or 2 (replicate), got {mode_tag}",
             );
         }
         let n_in: usize = in_shape.iter().product();
         let n_out: usize = out_shape.iter().product();
-        let need_in = n_in * 4;
-        let need_out = n_out * 4;
+        let need_in = n_in * elem_bytes;
+        let need_out = n_out * elem_bytes;
         if grad_out.len_bytes() < need_out {
             fuel_core_types::bail!(
-                "pad_backward_atomic_f32_bytes: grad_out {} bytes < required {need_out}",
+                "pad_backward_atomic_bytes: grad_out {} bytes < required {need_out}",
                 grad_out.len_bytes(),
             );
         }
         if grad_in.len_bytes() < need_in {
             fuel_core_types::bail!(
-                "pad_backward_atomic_f32_bytes: grad_in {} bytes < required {need_in}",
+                "pad_backward_atomic_bytes: grad_in {} bytes < required {need_in}",
                 grad_in.len_bytes(),
             );
         }
@@ -4664,10 +4674,10 @@ impl VulkanBackend {
         let sd_byte_size = (sd.len() * 4) as u64;
 
         let go_buf = grad_out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "pad_backward_atomic_f32_bytes: grad_out is host-evicted".into(),
+            "pad_backward_atomic_bytes: grad_out is host-evicted".into(),
         ))?;
         let gi_buf = grad_in.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
-            "pad_backward_atomic_f32_bytes: grad_in is host-evicted".into(),
+            "pad_backward_atomic_bytes: grad_in is host-evicted".into(),
         ))?;
 
         #[repr(C)] #[derive(Clone, Copy)]
@@ -4675,24 +4685,47 @@ impl VulkanBackend {
         let p = PBRParams { n_out: n_out as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
         let (pbuf, pmem) = self.upload_params(&p)?;
 
-        let (pipeline, pipe_layout, op_name) = if mode_tag == 1 {
-            (&self.pipelines.pad_backward_reflect_f32_pipeline,
-             &self.pipelines.pad_backward_reflect_f32_layout,
-             "pad_backward_reflect_f32")
-        } else {
-            (&self.pipelines.pad_backward_replicate_f32_pipeline,
-             &self.pipelines.pad_backward_replicate_f32_layout,
-             "pad_backward_replicate_f32")
+        let (pipeline, pipe_layout, op_name): (&vulkane::safe::ComputePipeline, &vulkane::safe::PipelineLayout, &'static str) = match (dtype, mode_tag) {
+            (DType::F32,  1) => (&self.pipelines.pad_backward_reflect_f32_pipeline,
+                                 &self.pipelines.pad_backward_reflect_f32_layout,
+                                 "pad_backward_reflect_f32"),
+            (DType::F32,  2) => (&self.pipelines.pad_backward_replicate_f32_pipeline,
+                                 &self.pipelines.pad_backward_replicate_f32_layout,
+                                 "pad_backward_replicate_f32"),
+            (DType::F64,  1) => (&self.pipelines.pad_backward_reflect_f64_pipeline,
+                                 &self.pipelines.pad_backward_reflect_f64_layout,
+                                 "pad_backward_reflect_f64"),
+            (DType::F64,  2) => (&self.pipelines.pad_backward_replicate_f64_pipeline,
+                                 &self.pipelines.pad_backward_replicate_f64_layout,
+                                 "pad_backward_replicate_f64"),
+            (DType::BF16, 1) => (&self.pipelines.pad_backward_reflect_bf16_pipeline,
+                                 &self.pipelines.pad_backward_reflect_bf16_layout,
+                                 "pad_backward_reflect_bf16"),
+            (DType::BF16, 2) => (&self.pipelines.pad_backward_replicate_bf16_pipeline,
+                                 &self.pipelines.pad_backward_replicate_bf16_layout,
+                                 "pad_backward_replicate_bf16"),
+            (DType::F16,  1) => (&self.pipelines.pad_backward_reflect_f16_pipeline,
+                                 &self.pipelines.pad_backward_reflect_f16_layout,
+                                 "pad_backward_reflect_f16"),
+            (DType::F16,  2) => (&self.pipelines.pad_backward_replicate_f16_pipeline,
+                                 &self.pipelines.pad_backward_replicate_f16_layout,
+                                 "pad_backward_replicate_f16"),
+            _ => unreachable!(),
         };
 
+        // Round descriptor ranges to u32 multiples so sub-word CAS
+        // on bf16/f16 doesn't lose the final half-word write under
+        // robust-access.
+        let go_bind_len = ((grad_out.len_bytes() + 3) & !3) as u64;
+        let gi_bind_len = ((grad_in.len_bytes() + 3) & !3) as u64;
+
         let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
-        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, go_buf, 0, grad_out.len_bytes() as u64);
-        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, gi_buf, 0, grad_in.len_bytes() as u64);
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, go_buf, 0, go_bind_len);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, gi_buf, 0, gi_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_out);
-        // grad_in is both read (CAS) and written, so list in both rb and wb.
         let rb = [go_buf.raw() as u64, gi_buf.raw() as u64];
         let wb = [gi_buf.raw() as u64];
         self.record_dispatch_batched(

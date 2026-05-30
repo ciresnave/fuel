@@ -1641,15 +1641,15 @@ pub mod pad {
         let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
         match mode_tag {
             0 => backend.pad_backward_const_bytes(go, gi, in_shape, out_shape, &left_pad, elem_bytes),
-            1 | 2 => {
-                if dtype != DType::F32 {
-                    return Err(Error::Msg(format!(
-                        "vulkan_dispatch::pad::pad_backward: mode_tag {mode_tag} only \
-                         supports F32 on Vulkan (atomic CAS path); got {dtype:?}",
-                    )).bt());
+            1 | 2 => match dtype {
+                DType::F32 | DType::F64 | DType::BF16 | DType::F16 => {
+                    backend.pad_backward_atomic_bytes(dtype, go, gi, in_shape, out_shape, &left_pad, mode_tag)
                 }
-                backend.pad_backward_atomic_f32_bytes(go, gi, in_shape, out_shape, &left_pad, mode_tag)
-            }
+                _ => Err(Error::Msg(format!(
+                    "vulkan_dispatch::pad::pad_backward: mode_tag {mode_tag} only \
+                     supports F32/F64/BF16/F16 on Vulkan (atomic CAS path); got {dtype:?}",
+                )).bt()),
+            },
             other => Err(Error::Msg(format!(
                 "vulkan_dispatch::pad::pad_backward: unknown mode_tag {other}",
             )).bt()),
