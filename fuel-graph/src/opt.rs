@@ -1403,14 +1403,63 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
         let Some(d_idx) = node.op.destructive_input() else { continue };
         if d_idx >= node.inputs.len() { continue }
         let destroyed = node.inputs[d_idx];
-        let Some(readers) = consumers.get(&destroyed) else { continue };
-        for &reader in readers {
-            if reader != nid {
-                ordering.entry(nid).or_default().push(reader);
+        // The alias set of `destroyed`: the destructive op writes
+        // through `destroyed`'s Storage Arc, and every view-op node
+        // transitively derived from `destroyed` shares that same Arc
+        // (executor's view-op materialization wraps the source's Arc
+        // in a fresh Layout — see `is_view_op` in `lib.rs`). So a
+        // reader of any alias-set member sees `destroyed`'s bytes
+        // and must run BEFORE the destructive op. Without this
+        // walk, `y = x.transpose(); z = relu(y); x.relu_inplace()`
+        // would not pin `relu(y)` before `relu_inplace(x)`, even
+        // though they share storage.
+        let alias_set = collect_alias_set(graph, destroyed, &consumers, &order);
+        for &alias in &alias_set {
+            let Some(readers) = consumers.get(&alias) else { continue };
+            for &reader in readers {
+                // Skip the destructive op itself + readers that are
+                // themselves alias members (those are view ops; their
+                // own consumers are what we actually need to pin, and
+                // they show up in subsequent iterations).
+                if reader != nid && !alias_set.contains(&reader) {
+                    ordering.entry(nid).or_default().push(reader);
+                }
             }
         }
     }
     OrderingEdges(ordering)
+}
+
+/// Collect the alias set of `root`: `root` itself plus every view-op
+/// node transitively derived from `root`. View-op nodes share their
+/// input's Storage Arc at realize time (the executor wraps the source's
+/// Arc with a fresh Layout for view ops — never allocates a copy), so a
+/// destructive op on `root`'s Storage clobbers bytes that every
+/// alias-set member's consumers might be reading.
+///
+/// Implementation: walk `order` once forward. A node enters the alias
+/// set iff it's `root` or its `Op::is_view_op()` returns true AND its
+/// (single) input is already in the alias set. Linear in `order.len()`.
+fn collect_alias_set(
+    graph: &crate::Graph,
+    root: NodeId,
+    _consumers: &HashMap<NodeId, Vec<NodeId>>,
+    order: &[NodeId],
+) -> std::collections::HashSet<NodeId> {
+    let mut alias: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+    alias.insert(root);
+    for &nid in order {
+        if alias.contains(&nid) { continue }
+        let node = graph.node(nid);
+        if !node.op.is_view_op() { continue }
+        // View ops are rank-1 in input count; check the (sole) input.
+        if let Some(&inp) = node.inputs.first() {
+            if alias.contains(&inp) {
+                alias.insert(nid);
+            }
+        }
+    }
+    alias
 }
 
 /// Build an execution plan that respects both data-flow edges (via
@@ -1891,6 +1940,66 @@ mod tests {
         let deps = ord.deps_of(r.id());
         assert_eq!(deps.len(), 1, "release should have one ordering dep (the relu)");
         assert_eq!(deps[0], b.id(), "release must run after relu");
+    }
+
+    #[test]
+    fn derive_ordering_follows_view_chains_for_destructive_op() {
+        // Phase 4a of in-place ops infrastructure: a destructive op
+        // on `x` must run after any reader of any view-of-x, because
+        // views share `x`'s Storage Arc at realize time. Without the
+        // alias-set walk in derive_ordering, this case would not pin
+        // `reader(view)` before `destructive(x)`.
+        //
+        // Graph:
+        //   x       (producer; rank-2)
+        //   v       = x.transpose()    (view of x)
+        //   z       = v.relu()         (reader of v, transitively reads x's bytes)
+        //   r       = x.release()      (destructive on x)
+        // Expected: r must run after z (not just after v).
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev(),
+        );
+        let v = x.transpose();
+        let z = v.relu();
+        let r = x.release();
+        let ord = derive_ordering(&x.graph().read().unwrap(), &[z.id(), r.id()]);
+        let deps = ord.deps_of(r.id());
+        assert!(
+            deps.contains(&z.id()),
+            "release(x) must be pinned after relu(transpose(x)) (view-aware alias set); got deps = {deps:?}",
+        );
+    }
+
+    #[test]
+    fn derive_ordering_inplace_unary_through_view_chain() {
+        // Specifically for the in-place ops Phase 4 use case:
+        // `y = x.transpose(); z = y.relu(); x.relu_inplace()` —
+        // ReluInplace must be pinned after the read through the
+        // transpose view chain.
+        let x = Tensor::from_f32(
+            vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev(),
+        );
+        let y = x.transpose();
+        let z = y.relu();
+        // Capture x's shape + dtype + id BEFORE acquiring the write
+        // lock — otherwise the args evaluate inside the locked region
+        // and self-deadlock (RwLock doesn't grant a read lock to the
+        // writer-holding thread).
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+        let inplace_id = x.graph().write().unwrap().push(crate::Node {
+            op: crate::Op::ReluInplace,
+            inputs: vec![x_id],
+            shape: x_shape,
+            dtype: x_dtype,
+        });
+        let ord = derive_ordering(&x.graph().read().unwrap(), &[z.id(), inplace_id]);
+        let deps = ord.deps_of(inplace_id);
+        assert!(
+            deps.contains(&z.id()),
+            "ReluInplace(x) must be pinned after Relu(Transpose(x)) via view-aware alias set; got deps = {deps:?}",
+        );
     }
 
     #[test]
