@@ -1601,6 +1601,52 @@ pub mod masked_fill {
 pub mod pad {
     use super::*;
 
+    /// PadBackward — 1 input (grad_out) + 1 output (grad_in). Reads
+    /// geometry from OpParams::PadBackward. Currently handles
+    /// mode_tag == 0 (constant) only; reflect/replicate need atomic
+    /// float add (not yet wired) and fall through to CPU.
+    pub fn pad_backward(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::pad::pad_backward: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (in_shape, out_shape, padding, mode_tag) = match params {
+            OpParams::PadBackward { in_shape, out_shape, padding, mode_tag } => {
+                (in_shape, out_shape, padding, *mode_tag)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::pad::pad_backward: expected OpParams::PadBackward, got {other:?}",
+                )).bt());
+            }
+        };
+        if mode_tag != 0 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::pad::pad_backward: mode_tag {mode_tag} not yet native on Vulkan \
+                 (reflect/replicate need atomic float add; only const=0 is wired)",
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let elem_bytes = out_guard.dtype.size_in_bytes();
+        let go = vulkan_input(&in_guard)?;
+        let backend = go.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::pad::pad_backward: grad_out has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let gi = vulkan_output(&mut out_guard)?;
+        let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
+        backend.pad_backward_const_bytes(go, gi, in_shape, out_shape, &left_pad, elem_bytes)
+    }
+
     /// Pad — 1 input + 1 output. Reads geometry from OpParams::Pad.
     /// `mode_tag == 0` (constant) is the only mode this dispatch
     /// shim handles; other modes fall through to CPU.
@@ -3132,6 +3178,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::Pad, &u(f64_d), vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::Pad, &u(u8_d),  vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
         table.register_with_precision(OpKind::Pad, &u(u32_d), vk, pad::pad_const, VULKAN_BYTE_LEVEL_PRECISION);
+
+        // ----- PadBackward (V.3.G.pad_backward, 2026-05-30).
+        // Const mode only on Vulkan; reflect/replicate fall through
+        // to CPU (need atomic float add).
+        table.register_with_precision(OpKind::PadBackward, &u(f32),   vk, pad::pad_backward, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::PadBackward, &u(f16),   vk, pad::pad_backward, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::PadBackward, &u(bf16),  vk, pad::pad_backward, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::PadBackward, &u(f64_d), vk, pad::pad_backward, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::PadBackward, &u(u8_d),  vk, pad::pad_backward, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::PadBackward, &u(u32_d), vk, pad::pad_backward, VULKAN_BYTE_LEVEL_PRECISION);
 
         // ----- MaskedFill (V.3.G.masked_fill, 2026-05-30).
         // 2 inputs (data + U8 mask) → 1 output. Same byte-width family
