@@ -3825,6 +3825,123 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// PadBackward constant mode, byte-width-keyed. Each thread =
+    /// one INPUT element. Reads grad_out at the unpadded position
+    /// `in_coord + left_pad`. No accumulation (constant mode has at
+    /// most one out → in mapping per input position).
+    pub fn pad_backward_const_bytes(
+        &self,
+        grad_out: &VulkanStorageBytes,
+        grad_in: &mut VulkanStorageBytes,
+        in_shape: &[usize],
+        out_shape: &[usize],
+        left_pad: &[usize],
+        elem_bytes: usize,
+    ) -> fuel_core_types::Result<()> {
+        let rank = in_shape.len();
+        if out_shape.len() != rank || left_pad.len() != rank {
+            fuel_core_types::bail!(
+                "pad_backward_const_bytes: rank mismatch (in={}, out={}, left_pad={})",
+                in_shape.len(), out_shape.len(), left_pad.len(),
+            );
+        }
+        if rank > 8 {
+            fuel_core_types::bail!("pad_backward_const_bytes: rank > 8 not supported");
+        }
+        let n_in: usize = in_shape.iter().product();
+        let n_out: usize = out_shape.iter().product();
+        let need_in = n_in * elem_bytes;
+        let need_out = n_out * elem_bytes;
+        if grad_out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "pad_backward_const_bytes: grad_out {} bytes < required {need_out}",
+                grad_out.len_bytes(),
+            );
+        }
+        if grad_in.len_bytes() < need_in {
+            fuel_core_types::bail!(
+                "pad_backward_const_bytes: grad_in {} bytes < required {need_in}",
+                grad_in.len_bytes(),
+            );
+        }
+        if elem_bytes == 2 && n_in % 2 != 0 {
+            fuel_core_types::bail!(
+                "pad_backward_const_bytes b2: n_in ({n_in}) must be even (pair-thread)",
+            );
+        }
+        if elem_bytes == 1 && n_in % 4 != 0 {
+            fuel_core_types::bail!(
+                "pad_backward_const_bytes b1: n_in ({n_in}) must be a multiple of 4",
+            );
+        }
+
+        let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
+        for &d in in_shape { sd.push(d as u32); }
+        for &d in out_shape { sd.push(d as u32); }
+        for &p in left_pad { sd.push(p as u32); }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+        let sd_byte_size = (sd.len() * 4) as u64;
+
+        let go_buf = grad_out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_backward_const_bytes: grad_out is host-evicted; fault back first".into(),
+        ))?;
+        let gi_buf = grad_in.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_backward_const_bytes: grad_in is host-evicted; fault back first".into(),
+        ))?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct PBParams { n_in: u32, rank: u32, _pad0: u32, _pad1: u32 }
+        let p = PBParams { n_in: n_in as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
+            1 => (
+                &self.pipelines.pad_backward_const_b1_pipeline,
+                &self.pipelines.pad_backward_const_b1_layout,
+                "pad_backward_const_b1", n_in / 4,
+            ),
+            2 => (
+                &self.pipelines.pad_backward_const_b2_pipeline,
+                &self.pipelines.pad_backward_const_b2_layout,
+                "pad_backward_const_b2", n_in / 2,
+            ),
+            4 => (
+                &self.pipelines.pad_backward_const_b4_pipeline,
+                &self.pipelines.pad_backward_const_b4_layout,
+                "pad_backward_const_b4", n_in,
+            ),
+            8 => (
+                &self.pipelines.pad_backward_const_b8_pipeline,
+                &self.pipelines.pad_backward_const_b8_layout,
+                "pad_backward_const_b8", n_in,
+            ),
+            other => fuel_core_types::bail!(
+                "pad_backward_const_bytes: unsupported elem_bytes {other}",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, go_buf, 0, grad_out.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, gi_buf, 0, grad_in.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_dispatch);
+        let rb = [go_buf.raw() as u64];
+        let wb = [gi_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Pad with replicate (edge) mode, byte-width-keyed. Each
     /// out-of-range coord clamps to [0, in_dim - 1]. No precondition
     /// on pad sizes — replicate works for any.

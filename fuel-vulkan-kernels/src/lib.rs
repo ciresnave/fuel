@@ -97,6 +97,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("pad_replicate_b2",          include_bytes!("../spv/pad_replicate_b2.spv")),
     ("pad_replicate_b4",          include_bytes!("../spv/pad_replicate_b4.spv")),
     ("pad_replicate_b8",          include_bytes!("../spv/pad_replicate_b8.spv")),
+    ("pad_backward_const_b1",     include_bytes!("../spv/pad_backward_const_b1.spv")),
+    ("pad_backward_const_b2",     include_bytes!("../spv/pad_backward_const_b2.spv")),
+    ("pad_backward_const_b4",     include_bytes!("../spv/pad_backward_const_b4.spv")),
+    ("pad_backward_const_b8",     include_bytes!("../spv/pad_backward_const_b8.spv")),
     ("write_slice_b1",            include_bytes!("../spv/write_slice_b1.spv")),
     ("write_slice_b2",            include_bytes!("../spv/write_slice_b2.spv")),
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
@@ -247,6 +251,13 @@ pub const PAD_REPLICATE_B1: &str = "pad_replicate_b1";
 pub const PAD_REPLICATE_B2: &str = "pad_replicate_b2";
 pub const PAD_REPLICATE_B4: &str = "pad_replicate_b4";
 pub const PAD_REPLICATE_B8: &str = "pad_replicate_b8";
+/// PadBackward constant mode: one thread per input element reads
+/// the corresponding (offset by left_pad) output element. No
+/// accumulation needed for constant mode.
+pub const PAD_BACKWARD_CONST_B1: &str = "pad_backward_const_b1";
+pub const PAD_BACKWARD_CONST_B2: &str = "pad_backward_const_b2";
+pub const PAD_BACKWARD_CONST_B4: &str = "pad_backward_const_b4";
+pub const PAD_BACKWARD_CONST_B8: &str = "pad_backward_const_b8";
 /// MaskedFill: for each element, if mask byte != 0 → fill_value, else
 /// copy input. Mask is always U8. Byte-width-keyed by element size.
 pub const MASKED_FILL_B1: &str = "masked_fill_b1";
