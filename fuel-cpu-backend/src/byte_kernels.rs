@@ -2807,6 +2807,36 @@ pub fn affine_f32(
     Ok(())
 }
 
+// =============================================================================
+// In-place elementwise unary kernels — Phase 3e of in-place ops
+// =============================================================================
+//
+// Each kernel mutates the target buffer in place: `out[i] = f(out[i])`.
+// The op math reuses the chassis's `UnaryOpCore` impls so the in-place
+// path stays in lockstep with the non-inplace cousins (same numerics
+// bit-for-bit; new ops added to the chassis are one-line additions here).
+// Each kernel takes only `&mut CpuStorageBytes` — the executor's
+// `WorkItemKind::InplaceKernel` arm acquires the target's write lock and
+// passes it as the sole buffer.
+
+macro_rules! unary_inplace_thunk {
+    ($name:ident, $T:ty, $Op:ident, $method:ident) => {
+        pub fn $name(out: &mut CpuStorageBytes) -> Result<()> {
+            let view: &mut [$T] = out.as_slice_mut()?;
+            for slot in view.iter_mut() {
+                *slot = <crate::chassis::unary::$Op as crate::chassis::unary::UnaryOpCore>::$method(*slot);
+            }
+            Ok(())
+        }
+    };
+}
+
+unary_inplace_thunk!(relu_inplace_f32,    f32, Relu,     f32);
+unary_inplace_thunk!(silu_inplace_f32,    f32, Silu,     f32);
+unary_inplace_thunk!(gelu_inplace_f32,    f32, GeluTanh, f32);
+unary_inplace_thunk!(tanh_inplace_f32,    f32, Tanh,     f32);
+unary_inplace_thunk!(sigmoid_inplace_f32, f32, Sigmoid,  f32);
+
 /// In-place affine: mutates `out[i] = mul * out[i] + add`. The
 /// caller passes `out` as both the input + output through the
 /// PipelinedExecutor's `WorkItemKind::InplaceKernel` arm. Mirrors

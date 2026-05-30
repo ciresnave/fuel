@@ -427,6 +427,60 @@ mod tests {
         }
     }
 
+    /// Phase 3e of the in-place ops infrastructure: realize a graph
+    /// `Op::ReluInplace` node on top of a CPU const tensor and verify
+    /// the executor mutates the const's bytes via
+    /// `relu_inplace_f32_cpu_wrapper`. Smoke test for the unary
+    /// in-place dispatch path; the other 4 activations (Silu/Gelu/Tanh/
+    /// Sigmoid) go through the identical wrapper+macro layer so a
+    /// single round-trip is sufficient validation at this layer.
+    #[test]
+    fn op_relu_inplace_cpu_mutates_target_storage() {
+        use crate::pipelined::{PipelinedExecutor, StorageCache};
+        use fuel_core_types::{probe::BackendId, Shape};
+        use fuel_graph::{Graph, Node, NodeId, Op};
+        use std::sync::{Arc, RwLock};
+
+        let data = [-1.0_f32, 0.0, 1.0, 2.0];
+        let src_storage = from_slice_cpu(&data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, relu_id): (NodeId, NodeId) = {
+            let mut g = graph.write().unwrap();
+            let src = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
+            });
+            let relu = g.push(Node {
+                op: Op::ReluInplace,
+                inputs: vec![src],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(relu, BackendId::Cpu);
+            (src, relu)
+        };
+
+        let mut cache = StorageCache::new();
+        cache.insert(src_id, Arc::new(RwLock::new(src_storage)));
+
+        let (result_arc, _layout) =
+            PipelinedExecutor::realize(graph, relu_id, cache)
+                .expect("Op::ReluInplace realize");
+
+        let guard = result_arc.read().unwrap();
+        match &guard.inner {
+            BackendStorage::Cpu(c) => {
+                let got: &[f32] = c.as_slice().expect("f32 cast");
+                // ReLU: [-1, 0, 1, 2] -> [0, 0, 1, 2]
+                assert_eq!(got, &[0.0_f32, 0.0, 1.0, 2.0]);
+            }
+            other => panic!("expected CPU storage; got {other:?}"),
+        }
+    }
+
     /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes
     /// produce the same shape.
     #[test]
