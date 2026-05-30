@@ -171,6 +171,15 @@ pub struct Pipelines {
     pub rms_norm_last_dim_pipeline: ComputePipeline,
     pub rms_norm_last_dim_layout: PipelineLayout,
 
+    pub rms_norm_last_dim_f16_pipeline: ComputePipeline,
+    pub rms_norm_last_dim_f16_layout: PipelineLayout,
+
+    pub rms_norm_last_dim_bf16_pipeline: ComputePipeline,
+    pub rms_norm_last_dim_bf16_layout: PipelineLayout,
+
+    pub rms_norm_last_dim_f64_pipeline: ComputePipeline,
+    pub rms_norm_last_dim_f64_layout: PipelineLayout,
+
     pub rms_norm_last_dim_backward_pipeline: ComputePipeline,
     pub rms_norm_last_dim_backward_layout: PipelineLayout,
 
@@ -416,6 +425,9 @@ impl Pipelines {
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
         let rms_norm_last_dim_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM)?;
+        let rms_norm_last_dim_f16_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM_F16)?;
+        let rms_norm_last_dim_bf16_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BF16)?;
+        let rms_norm_last_dim_f64_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM_F64)?;
         let rms_norm_last_dim_backward_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BACKWARD)?;
         let softmax_last_dim_backward_mod = registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD)?;
         let layer_norm_last_dim_backward_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD)?;
@@ -494,6 +506,9 @@ impl Pipelines {
         let reduce_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let rms_norm_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let rms_norm_last_dim_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let rms_norm_last_dim_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let rms_norm_last_dim_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         // backward takes 3 storage buffers (x, upstream, grad_x) + params
         let rms_norm_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let softmax_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -571,6 +586,9 @@ impl Pipelines {
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
         let rms_norm_last_dim_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_layout, &rms_norm_last_dim_mod, "main")?;
+        let rms_norm_last_dim_f16_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_f16_layout, &rms_norm_last_dim_f16_mod, "main")?;
+        let rms_norm_last_dim_bf16_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_bf16_layout, &rms_norm_last_dim_bf16_mod, "main")?;
+        let rms_norm_last_dim_f64_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_f64_layout, &rms_norm_last_dim_f64_mod, "main")?;
         let rms_norm_last_dim_backward_pipeline = ComputePipeline::new(device, &rms_norm_last_dim_backward_layout, &rms_norm_last_dim_backward_mod, "main")?;
         let softmax_last_dim_backward_pipeline = ComputePipeline::new(device, &softmax_last_dim_backward_layout, &softmax_last_dim_backward_mod, "main")?;
         let layer_norm_last_dim_backward_pipeline = ComputePipeline::new(device, &layer_norm_last_dim_backward_layout, &layer_norm_last_dim_backward_mod, "main")?;
@@ -645,6 +663,9 @@ impl Pipelines {
             reduce_pipeline, reduce_layout,
             reduce_last_dim_pipeline, reduce_last_dim_layout,
             rms_norm_last_dim_pipeline, rms_norm_last_dim_layout,
+            rms_norm_last_dim_f16_pipeline, rms_norm_last_dim_f16_layout,
+            rms_norm_last_dim_bf16_pipeline, rms_norm_last_dim_bf16_layout,
+            rms_norm_last_dim_f64_pipeline, rms_norm_last_dim_f64_layout,
             rms_norm_last_dim_backward_pipeline, rms_norm_last_dim_backward_layout,
             softmax_last_dim_backward_pipeline, softmax_last_dim_backward_layout,
             layer_norm_last_dim_backward_pipeline, layer_norm_last_dim_backward_layout,

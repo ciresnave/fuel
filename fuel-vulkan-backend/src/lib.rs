@@ -1605,6 +1605,186 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f16 RMS-norm along the last dim. Storage is `float16_t`;
+    /// accumulation and rsqrt are f32 (10-bit mantissa cannot resolve
+    /// sum-of-squares across long rows). Eps is widened from f64 → f32
+    /// at upload.
+    pub fn rms_norm_last_dim_f16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * 2;
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::rms_norm_last_dim_f16_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        let p = RmsParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+            eps: eps as f32,
+            _pad: 0,
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_f16_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_f16_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "rms_norm_last_dim_f16_bytes",
+            &self.pipelines.rms_norm_last_dim_f16_pipeline,
+            &self.pipelines.rms_norm_last_dim_f16_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// bf16 RMS-norm along the last dim. Storage is bf16 packed
+    /// two-per-u32 (lane 0 = low 16 bits). Accumulation + rsqrt in f32.
+    /// `last_dim` MUST be even — every LLM hidden_dim is, but the
+    /// kernel addresses a u32 word per lane to avoid bf16-pair write
+    /// races, so an odd column count would corrupt the last bf16.
+    pub fn rms_norm_last_dim_bf16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        if last_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "VulkanBackend::rms_norm_last_dim_bf16_bytes: last_dim must be even \
+                 (lane-pair packing); got {last_dim}",
+            );
+        }
+        let n = outer_count * last_dim;
+        let need_bytes = n * 2;
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::rms_norm_last_dim_bf16_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RmsParams { n_rows: u32, n_cols: u32, eps: f32, _pad: u32 }
+        let p = RmsParams {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+            eps: eps as f32,
+            _pad: 0,
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_bf16_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_bf16_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "rms_norm_last_dim_bf16_bytes",
+            &self.pipelines.rms_norm_last_dim_bf16_pipeline,
+            &self.pipelines.rms_norm_last_dim_bf16_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// f64 RMS-norm along the last dim. Native f64 end-to-end; eps
+    /// stays f64. Requires shaderFloat64 + GroupNonUniformArithmetic.
+    /// Params struct is `{ u32, u32, f64 }` = 16 bytes (eps at offset
+    /// 8 is 8-aligned by repr(C)).
+    pub fn rms_norm_last_dim_f64_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+        eps: f64,
+    ) -> fuel_core_types::Result<()> {
+        let n = outer_count * last_dim;
+        let need_bytes = n * std::mem::size_of::<f64>();
+        if input.len_bytes() < need_bytes || out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "VulkanBackend::rms_norm_last_dim_f64_bytes: buffer too small \
+                 (need {need_bytes} bytes; in={}, out={})",
+                input.len_bytes(), out.len_bytes(),
+            );
+        }
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct RmsParamsF64 { n_rows: u32, n_cols: u32, eps: f64 }
+        let p = RmsParamsF64 {
+            n_rows: outer_count as u32,
+            n_cols: last_dim as u32,
+            eps,
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_f64_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "rms_norm_last_dim_f64_bytes: output is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "rms_norm_last_dim_f64_bytes",
+            &self.pipelines.rms_norm_last_dim_f64_pipeline,
+            &self.pipelines.rms_norm_last_dim_f64_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// In-place rectangular slab write, byte-width-keyed dispatch.
     /// `byte_width` ∈ {2, 4, 8} selects the pipeline (b2 covers
     /// f16/bf16, b4 covers f32/i32/u32, b8 covers f64/i64). Mirrors
