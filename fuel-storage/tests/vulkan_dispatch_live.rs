@@ -3175,6 +3175,100 @@ fn vulkan_dispatch_masked_fill_f64() {
     }
 }
 
+// ---- Pad replicate mode (V.3.G.pad.replicate, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_replicate_f32_1d() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // in=[1,2,3], padding=(2,3) → out=[1,1,1,2,3,3,3,3]
+    let input = [1.0_f32, 2.0, 3.0];
+    let expected = [1.0_f32, 1.0, 1.0, 2.0, 3.0, 3.0, 3.0, 3.0];
+
+    let in_storage = upload_f32(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(8 * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[8]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![3],
+            out_shape: vec![8],
+            padding: vec![(2, 3)],
+            mode_tag: 2,
+            fill_bytes: vec![0u8; 4],
+        },
+    ).expect("pad replicate f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "pad replicate f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_pad_replicate_f16_2d() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // in=[2,2], padding=[(1,1), (1,1)] → out=[4,4] = 16 (even, ok for b2)
+    let input_f32 = [1.0_f32, 2.0,  3.0, 4.0];
+    let input: Vec<half::f16> = input_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let in_2d = |r: usize, c: usize| input_f32[r * 2 + c];
+
+    // Replicate row map: r=0→0, r=1→0, r=2→1, r=3→1
+    // Replicate col map: same shape.
+    let row_map = [0_usize, 0, 1, 1];
+    let col_map = [0_usize, 0, 1, 1];
+    let mut expected = vec![0.0_f32; 4 * 4];
+    for r in 0..4 { for c in 0..4 {
+        expected[r * 4 + c] = in_2d(row_map[r], col_map[c]);
+    }}
+
+    let in_storage = upload_f16(&backend, &input);
+    let out_bytes = backend.alloc_bytes_handle(4 * 4 * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Pad, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let in_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[4, 4]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, out_layout],
+        &OpParams::Pad {
+            in_shape: vec![2, 2],
+            out_shape: vec![4, 4],
+            padding: vec![(1, 1), (1, 1)],
+            mode_tag: 2,
+            fill_bytes: vec![0u8; 2],
+        },
+    ).expect("pad replicate f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(g.to_f32(), *e, "pad replicate f16[{i}]: got {}, expected {e}", g.to_f32());
+    }
+}
+
 // ---- Pad reflect mode (V.3.G.pad.reflect, 2026-05-30) ----
 
 #[test]
