@@ -2236,6 +2236,154 @@ fn vulkan_dispatch_matmul_bf16_bf16_f32_multi_tile() {
     }
 }
 
+/// Pure-bf16 matmul bf16 × bf16 → bf16 (downcast store).
+/// Same shape as the f32-output test; expected matches but tolerance
+/// reflects the bf16 truncation on the output store.
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_bf16_bf16_bf16_coop_size() {
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let m = 16usize;
+    let n = 16usize;
+    let k = 16usize;
+
+    let a_bf16: Vec<bf16> = vec![bf16::from_f32(1.0); m * k];
+    let mut b_bf16: Vec<bf16> = Vec::with_capacity(k * n);
+    for _i in 0..k {
+        for j in 0..n {
+            b_bf16.push(bf16::from_f32(j as f32));
+        }
+    }
+
+    let a_bytes: &[u8] = bytemuck::cast_slice(&a_bf16);
+    let b_bytes: &[u8] = bytemuck::cast_slice(&b_bf16);
+    let a_vk = backend.upload_bytes_handle(a_bytes).expect("a upload");
+    let b_vk = backend.upload_bytes_handle(b_bytes).expect("b upload");
+    let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::BF16);
+    let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::BF16);
+    let out_bytes_h = backend.alloc_bytes_handle(m * n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::BF16);
+
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MatMul,
+            &[DType::BF16, DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[m, k])),
+        Layout::contiguous(Shape::from_dims(&[k, n])),
+        Layout::contiguous(Shape::from_dims(&[m, n])),
+    ];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Matmul {
+            lhs_batch_dims: vec![],
+            rhs_batch_dims: vec![],
+            m, n, k,
+        },
+    ).expect("bf16→bf16 coop-size matmul dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    // Expected: out[i, j] = K * j. With K=16 and j ∈ [0, 16), all
+    // outputs are integers in [0, 240]. bf16 represents integers
+    // ≤ 256 exactly, so the post-downcast values round-trip clean.
+    for i in 0..m {
+        for j in 0..n {
+            let expected = (k * j) as f32;
+            let g = got[i * n + j].to_f32();
+            assert_eq!(g, expected, "bf16→bf16 coop-size [{i}, {j}]: got {g}, expected {expected}");
+        }
+    }
+}
+
+/// Pure-bf16 matmul bf16 × bf16 → bf16, larger shape (multi-tile).
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_bf16_bf16_bf16_multi_tile() {
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let m = 32usize;
+    let n = 64usize;
+    let k = 32usize;
+
+    let a_bf16: Vec<bf16> = vec![bf16::from_f32(1.0); m * k];
+    let mut b_bf16: Vec<bf16> = Vec::with_capacity(k * n);
+    for _i in 0..k {
+        for j in 0..n {
+            b_bf16.push(bf16::from_f32(j as f32));
+        }
+    }
+
+    let a_bytes: &[u8] = bytemuck::cast_slice(&a_bf16);
+    let b_bytes: &[u8] = bytemuck::cast_slice(&b_bf16);
+    let a_vk = backend.upload_bytes_handle(a_bytes).expect("a upload");
+    let b_vk = backend.upload_bytes_handle(b_bytes).expect("b upload");
+    let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::BF16);
+    let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::BF16);
+    let out_bytes_h = backend.alloc_bytes_handle(m * n * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::BF16);
+
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MatMul,
+            &[DType::BF16, DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[m, k])),
+        Layout::contiguous(Shape::from_dims(&[k, n])),
+        Layout::contiguous(Shape::from_dims(&[m, n])),
+    ];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Matmul {
+            lhs_batch_dims: vec![],
+            rhs_batch_dims: vec![],
+            m, n, k,
+        },
+    ).expect("bf16→bf16 multi-tile matmul dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    // out[i, j] = K * j; K=32, j ∈ [0, 64), so max = 32 * 63 = 2016.
+    // bf16's mantissa-7 can represent integer multiples of 8 above 1024
+    // (when 2016 actually rounds to 2016 in bf16). Loose tolerance to
+    // ±16 (one bf16 ULP near 2048) to be safe.
+    for i in 0..m {
+        for j in 0..n {
+            let expected = (k * j) as f32;
+            let g = got[i * n + j].to_f32();
+            assert!((g - expected).abs() <= 16.0,
+                "bf16→bf16 multi-tile [{i}, {j}]: got {g}, expected {expected}");
+        }
+    }
+}
+
 /// Pure-f16 matmul f16 × f16 → f32 via cooperative-matrix tile.
 /// 16×16×16 single-tile sanity check.
 #[test]

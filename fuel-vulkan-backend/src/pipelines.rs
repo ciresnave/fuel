@@ -241,6 +241,8 @@ pub struct Pipelines {
     pub matmul_coop_bf16_bf16_layout: Option<PipelineLayout>,
     pub matmul_coop_f16_f16_pipeline: Option<ComputePipeline>,
     pub matmul_coop_f16_f16_layout: Option<PipelineLayout>,
+    pub matmul_coop_bf16_bf16_bf16_pipeline: Option<ComputePipeline>,
+    pub matmul_coop_bf16_bf16_bf16_layout: Option<PipelineLayout>,
     pub softmax_pipeline: ComputePipeline,
     pub softmax_layout: PipelineLayout,
 
@@ -666,6 +668,11 @@ impl Pipelines {
         } else {
             None
         };
+        let matmul_coop_bf16_bf16_bf16_mod = if has_coop_matrix {
+            Some(registry.load_module(device, shaders::MATMUL_COOP_BF16_BF16_BF16)?)
+        } else {
+            None
+        };
         let softmax_mod = registry.load_module(device, shaders::SOFTMAX)?;
         let softmax_f16_mod = registry.load_module(device, shaders::SOFTMAX_F16)?;
         let softmax_bf16_mod = registry.load_module(device, shaders::SOFTMAX_BF16)?;
@@ -832,6 +839,9 @@ impl Pipelines {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else { None };
         let matmul_coop_f16_f16_layout = if has_coop_matrix {
+            Some(PipelineLayout::new(device, &[&layout_3s1u])?)
+        } else { None };
+        let matmul_coop_bf16_bf16_bf16_layout = if has_coop_matrix {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else { None };
         let softmax_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -1003,6 +1013,10 @@ impl Pipelines {
             (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
             _ => None,
         };
+        let matmul_coop_bf16_bf16_bf16_pipeline = match (&matmul_coop_bf16_bf16_bf16_mod, &matmul_coop_bf16_bf16_bf16_layout) {
+            (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
+            _ => None,
+        };
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
         let softmax_f16_pipeline = ComputePipeline::new(device, &softmax_f16_layout, &softmax_f16_mod, "main")?;
         let softmax_bf16_pipeline = ComputePipeline::new(device, &softmax_bf16_layout, &softmax_bf16_mod, "main")?;
@@ -1165,6 +1179,8 @@ impl Pipelines {
             matmul_coop_bf16_bf16_layout,
             matmul_coop_f16_f16_pipeline,
             matmul_coop_f16_f16_layout,
+            matmul_coop_bf16_bf16_bf16_pipeline,
+            matmul_coop_bf16_bf16_bf16_layout,
             softmax_pipeline, softmax_layout,
             softmax_f16_pipeline, softmax_f16_layout,
             softmax_bf16_pipeline, softmax_bf16_layout,

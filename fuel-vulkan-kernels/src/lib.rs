@@ -138,6 +138,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matmul_coop",               include_bytes!("../spv/matmul_coop.spv")),
     ("matmul_coop_bf16_bf16",     include_bytes!("../spv/matmul_coop_bf16_bf16.spv")),
     ("matmul_coop_f16_f16",       include_bytes!("../spv/matmul_coop_f16_f16.spv")),
+    ("matmul_coop_bf16_bf16_bf16",include_bytes!("../spv/matmul_coop_bf16_bf16_bf16.spv")),
     ("matvec",                    include_bytes!("../spv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
     ("reduce",                    include_bytes!("../spv/reduce.spv")),
@@ -378,6 +379,11 @@ pub const MATMUL_COOP_BF16_BF16: &str = "matmul_coop_bf16_bf16";
 /// inputs (no downcast); same coop[3] tile + f32 accumulator as the
 /// bf16 sibling.
 pub const MATMUL_COOP_F16_F16: &str = "matmul_coop_f16_f16";
+/// Cooperative-matrix tiled matmul, bf16 × bf16 → bf16 (downcast
+/// store). f32 accumulator staged to shared mem, then 128 threads
+/// convert+pack to packed-u32 bf16 output. Closes the bf16 inference
+/// chain (next layer can consume bf16 directly).
+pub const MATMUL_COOP_BF16_BF16_BF16: &str = "matmul_coop_bf16_bf16_bf16";
 /// GLSL gemv (M == 1 matmul specialization), all-f32.
 pub const MATVEC_GLSL: &str = "matvec";
 /// GLSL gemv (M == 1) with bf16 weight matrix (B), f32 activations
