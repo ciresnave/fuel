@@ -255,6 +255,12 @@ pub struct Pipelines {
     pub concat_along_dim_pipeline: ComputePipeline,
     pub concat_along_dim_layout: PipelineLayout,
 
+    pub concat_along_dim_f16_pipeline: ComputePipeline,
+    pub concat_along_dim_f16_layout: PipelineLayout,
+
+    pub concat_along_dim_f64_pipeline: ComputePipeline,
+    pub concat_along_dim_f64_layout: PipelineLayout,
+
     /// Conv2D im2col patches rearrangement. Pairs with the existing
     /// matmul pipelines: dispatch this first to write the patches
     /// matrix, then dispatch matmul (weight × patches) per group.
@@ -504,6 +510,8 @@ impl Pipelines {
         let rope_bf16_mod = registry.load_module(device, shaders::ROPE_BF16)?;
         let rope_f64_mod = registry.load_module(device, shaders::ROPE_F64)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
+        let concat_along_dim_f16_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM_F16)?;
+        let concat_along_dim_f64_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM_F64)?;
         let conv2d_im2col_mod = registry.load_module(device, shaders::CONV2D_IM2COL)?;
         let flash_attention_mod = registry.load_module(device, shaders::FLASH_ATTENTION)?;
         let dequant_q4_0_mod = registry.load_module(device, shaders::DEQUANT_Q4_0)?;
@@ -603,6 +611,8 @@ impl Pipelines {
         let rope_bf16_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let rope_f64_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let concat_along_dim_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let concat_along_dim_f16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let concat_along_dim_f64_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         // conv2d_im2col uses 1 storage in (x) + 1 storage out (patches) + 1 uniform.
         let conv2d_im2col_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         // flash_attention: q + k + v + alibi (or dummy) + o + params.
@@ -699,6 +709,8 @@ impl Pipelines {
         let rope_bf16_pipeline = ComputePipeline::new(device, &rope_bf16_layout, &rope_bf16_mod, "main")?;
         let rope_f64_pipeline = ComputePipeline::new(device, &rope_f64_layout, &rope_f64_mod, "main")?;
         let concat_along_dim_pipeline = ComputePipeline::new(device, &concat_along_dim_layout, &concat_along_dim_mod, "main")?;
+        let concat_along_dim_f16_pipeline = ComputePipeline::new(device, &concat_along_dim_f16_layout, &concat_along_dim_f16_mod, "main")?;
+        let concat_along_dim_f64_pipeline = ComputePipeline::new(device, &concat_along_dim_f64_layout, &concat_along_dim_f64_mod, "main")?;
         let conv2d_im2col_pipeline = ComputePipeline::new(device, &conv2d_im2col_layout, &conv2d_im2col_mod, "main")?;
         let flash_attention_pipeline = ComputePipeline::new(device, &flash_attention_layout, &flash_attention_mod, "main")?;
         let dequant_q4_0_pipeline = ComputePipeline::new(device, &dequant_q4_0_layout, &dequant_q4_0_mod, "main")?;
@@ -793,6 +805,8 @@ impl Pipelines {
             rope_bf16_pipeline, rope_bf16_layout,
             rope_f64_pipeline, rope_f64_layout,
             concat_along_dim_pipeline, concat_along_dim_layout,
+            concat_along_dim_f16_pipeline, concat_along_dim_f16_layout,
+            concat_along_dim_f64_pipeline, concat_along_dim_f64_layout,
             conv2d_im2col_pipeline, conv2d_im2col_layout,
             flash_attention_pipeline, flash_attention_layout,
             dequant_q4_0_pipeline, dequant_q4_0_layout,

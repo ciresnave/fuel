@@ -1261,6 +1261,186 @@ pub mod concat {
     use crate::BackendStorage;
     use fuel_core_types::Shape;
 
+    /// Generic concat dispatcher. Takes the per-pair concat call
+    /// (which knows the source/destination dtype) plus the per-element
+    /// byte size for sizing intermediates in the N>2 chain. The same
+    /// N=1/N=2/N>2 shape works across all float dtypes.
+    fn concat_typed<F>(
+        label: &'static str,
+        elem_bytes: usize,
+        dtype: DType,
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+        pair_call: F,
+    ) -> Result<()>
+    where
+        F: Fn(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize,
+            &Layout,
+            &Layout,
+        ) -> fuel_core_types::Result<()>,
+    {
+        if outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: expected 1 output, got {}",
+                outputs.len(),
+            )).bt());
+        }
+        if inputs.is_empty() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: 0 inputs",
+            )).bt());
+        }
+        let (outer_count, input_dim_sizes, inner_count, dim) = match params {
+            OpParams::Concat { outer_count, input_dim_sizes, inner_count, axis } => {
+                (*outer_count, input_dim_sizes.clone(), *inner_count, *axis)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::concat::{label}: expected OpParams::Concat, got {other:?}",
+                )).bt());
+            }
+        };
+        if input_dim_sizes.len() != inputs.len() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: OpParams declares {} inputs but work item carries {}",
+                input_dim_sizes.len(), inputs.len(),
+            )).bt());
+        }
+        if layouts.len() < inputs.len() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: layouts.len() = {} < inputs.len() = {}",
+                layouts.len(), inputs.len(),
+            )).bt());
+        }
+
+        let n_inputs = inputs.len();
+
+        if n_inputs == 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: N=1 concat unsupported \
+                 (should be elided at graph level)",
+            )).bt());
+        }
+
+        if n_inputs == 2 {
+            let a_guard = read_storage(&inputs[0])?;
+            let b_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&a_guard)?;
+            let b = vulkan_input(&b_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::concat::{label}: a has no VulkanBackend handle.",
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            return pair_call(backend, a, b, out, dim, &layouts[0], &layouts[1]);
+        }
+
+        // N > 2: chain pair-wise.
+        let in_guards: Vec<_> = inputs.iter().map(read_storage).collect::<Result<Vec<_>>>()?;
+        let mut in_vk: Vec<&fuel_vulkan_backend::VulkanStorageBytes> = Vec::with_capacity(n_inputs);
+        for g in &in_guards {
+            in_vk.push(vulkan_input(g)?);
+        }
+        let backend = in_vk[0].backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: inputs[0] has no VulkanBackend handle.",
+            )).bt()
+        })?.clone();
+
+        let template_dims: Vec<usize> = layouts[0].shape().dims().to_vec();
+        let make_layout = |cum_dim: usize| -> Layout {
+            let mut dims = template_dims.clone();
+            dims[dim] = cum_dim;
+            Layout::contiguous(Shape::from_dims(&dims))
+        };
+
+        let mut acc_dim = input_dim_sizes[0] + input_dim_sizes[1];
+        let acc_elems = outer_count * acc_dim * inner_count;
+        let acc_bytes = backend.alloc_bytes_handle(acc_elems * elem_bytes).map_err(|e| {
+            Error::Msg(format!(
+                "vulkan_dispatch::concat::{label}: alloc intermediate failed: {e}",
+            )).bt()
+        })?;
+        let mut acc_storage = Storage::new(BackendStorage::Vulkan(acc_bytes), dtype);
+        {
+            let acc_vk = match &mut acc_storage.inner {
+                BackendStorage::Vulkan(v) => v,
+                _ => unreachable!("just allocated as Vulkan"),
+            };
+            pair_call(&backend, in_vk[0], in_vk[1], acc_vk, dim, &layouts[0], &layouts[1])?;
+        }
+
+        for i in 2..(n_inputs - 1) {
+            let new_acc_dim = acc_dim + input_dim_sizes[i];
+            let new_elems = outer_count * new_acc_dim * inner_count;
+            let new_bytes = backend.alloc_bytes_handle(new_elems * elem_bytes).map_err(|e| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::concat::{label}: alloc intermediate {i} failed: {e}",
+                )).bt()
+            })?;
+            let mut new_storage = Storage::new(BackendStorage::Vulkan(new_bytes), dtype);
+
+            let acc_layout = make_layout(acc_dim);
+            let acc_vk_ref = match &acc_storage.inner {
+                BackendStorage::Vulkan(v) => v,
+                _ => unreachable!(),
+            };
+            let new_vk = match &mut new_storage.inner {
+                BackendStorage::Vulkan(v) => v,
+                _ => unreachable!(),
+            };
+            pair_call(&backend, acc_vk_ref, in_vk[i], new_vk, dim, &acc_layout, &layouts[i])?;
+
+            acc_storage = new_storage;
+            acc_dim = new_acc_dim;
+        }
+
+        let acc_layout = make_layout(acc_dim);
+        let acc_vk_ref = match &acc_storage.inner {
+            BackendStorage::Vulkan(v) => v,
+            _ => unreachable!(),
+        };
+        let mut out_guard = write_storage(&outputs[0])?;
+        let out_vk = vulkan_output(&mut out_guard)?;
+        pair_call(&backend, acc_vk_ref, in_vk[n_inputs - 1], out_vk, dim,
+            &acc_layout, &layouts[n_inputs - 1])
+    }
+
+    pub fn concat_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        concat_typed(
+            "concat_f16", 2, DType::F16,
+            inputs, outputs, layouts, params,
+            |b, a, bb, o, dim, la, lb| b.concat_along_dim_f16_bytes(a, bb, o, dim, la, lb),
+        )
+    }
+
+    pub fn concat_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        concat_typed(
+            "concat_f64", 8, DType::F64,
+            inputs, outputs, layouts, params,
+            |b, a, bb, o, dim, la, lb| b.concat_along_dim_f64_bytes(a, bb, o, dim, la, lb),
+        )
+    }
+
     pub fn concat_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -2489,6 +2669,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // operand stride support so either input may be a lazy view
     // (permute, broadcast). N==2 only; N>2 falls back to next alt. -----
     table.register_with_caps_and_precision(OpKind::Concat, &u(f32), vk, concat::concat_f32, strided, VULKAN_BYTE_LEVEL_PRECISION);
+    // V.3.G.concat (2026-05-30): f16/f64 concat (pure data movement).
+    // bf16 deferred — adjacent-thread writes race on the same u32
+    // when concat_dim is the last dim or when a_dim is odd; the
+    // pair-thread/InterlockedOr fix needs a separate session.
+    {
+        let f16 = DType::F16;
+        let f64_d = DType::F64;
+        table.register_with_caps_and_precision(OpKind::Concat, &u(f16),   vk, concat::concat_f16, strided, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Concat, &u(f64_d), vk, concat::concat_f64, strided, VULKAN_BYTE_LEVEL_PRECISION);
+    }
 
     // ----- MatMul f32 (V.2.D) — deterministic per-output-element FMA
     // accumulation. CONTIGUOUS-ONLY: tiled / reg-tile / matvec

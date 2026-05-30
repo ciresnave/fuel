@@ -3413,6 +3413,152 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f16 concat along arbitrary dim. Per-element 2 bytes.
+    pub fn concat_along_dim_f16_bytes(
+        &self,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        dim: usize,
+        a_layout: &Layout,
+        b_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.concat_along_dim_typed_bytes(
+            "concat_along_dim_f16_bytes",
+            2,
+            a, b, out, dim, a_layout, b_layout,
+            &self.pipelines.concat_along_dim_f16_pipeline,
+            &self.pipelines.concat_along_dim_f16_layout,
+        )
+    }
+
+    /// f64 concat along arbitrary dim. Per-element 8 bytes.
+    pub fn concat_along_dim_f64_bytes(
+        &self,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        dim: usize,
+        a_layout: &Layout,
+        b_layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        self.concat_along_dim_typed_bytes(
+            "concat_along_dim_f64_bytes",
+            8,
+            a, b, out, dim, a_layout, b_layout,
+            &self.pipelines.concat_along_dim_f64_pipeline,
+            &self.pipelines.concat_along_dim_f64_layout,
+        )
+    }
+
+    /// Per-dtype concat core. Identical layout/params/dispatch to
+    /// `concat_along_dim_f32_bytes`; the f32 method predates the
+    /// extraction.
+    fn concat_along_dim_typed_bytes(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        a: &VulkanStorageBytes,
+        b: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        dim: usize,
+        a_layout: &Layout,
+        b_layout: &Layout,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let a_dims = a_layout.shape().dims();
+        let b_dims = b_layout.shape().dims();
+        if a_dims.len() != b_dims.len() || dim >= a_dims.len() {
+            fuel_core_types::bail!(
+                "{op_name}: rank/dim mismatch (a={a_dims:?}, b={b_dims:?}, dim={dim})",
+            );
+        }
+        for (i, (&da, &db)) in a_dims.iter().zip(b_dims.iter()).enumerate() {
+            if i != dim && da != db {
+                fuel_core_types::bail!(
+                    "{op_name}: non-concat dims disagree at {i} (a={da}, b={db})",
+                );
+            }
+        }
+        let rank = a_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("{op_name}: rank \u{2264} 4 required, got {rank}");
+        }
+        let a_dim = a_dims[dim];
+        let b_dim = b_dims[dim];
+        let mut out_dims_vec: Vec<usize> = a_dims.to_vec();
+        out_dims_vec[dim] = a_dim + b_dim;
+        let out_elems: usize = out_dims_vec.iter().product();
+        let need_out_bytes = out_elems * elem_bytes;
+        if out.len_bytes() < need_out_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: out {} bytes < required {}",
+                out.len_bytes(), need_out_bytes,
+            );
+        }
+
+        let pad = 4 - rank;
+        let mut out_d = [1u32; 4];
+        let mut a_s = [0u32; 4];
+        let mut b_s = [0u32; 4];
+        for i in 0..rank {
+            out_d[pad + i] = out_dims_vec[i] as u32;
+            a_s[pad + i] = a_layout.stride()[i] as u32;
+            b_s[pad + i] = b_layout.stride()[i] as u32;
+        }
+        let concat_dim_padded = (pad + dim) as u32;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct CParams {
+            out_d0: u32, out_d1: u32, out_d2: u32, out_d3: u32,
+            concat_dim: u32, a_dim: u32, b_dim: u32, total: u32,
+            a_s0: u32, a_s1: u32, a_s2: u32, a_s3: u32,
+            b_s0: u32, b_s1: u32, b_s2: u32, b_s3: u32,
+        }
+        let p = CParams {
+            out_d0: out_d[0], out_d1: out_d[1], out_d2: out_d[2], out_d3: out_d[3],
+            concat_dim: concat_dim_padded,
+            a_dim: a_dim as u32,
+            b_dim: b_dim as u32,
+            total: out_elems as u32,
+            a_s0: a_s[0], a_s1: a_s[1], a_s2: a_s[2], a_s3: a_s[3],
+            b_s0: b_s[0], b_s1: b_s[1], b_s2: b_s[2], b_s3: b_s[3],
+        };
+
+        let a_buf = a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: a is host-evicted; fault back first"),
+        ))?;
+        let b_buf = b.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: b is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, a_buf, 0, a.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, b_buf, 0, b.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<CParams>() as u64);
+
+        let groups = ((out_elems as u32 + 63) / 64).max(1);
+        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 multi-axis Reduce. `op_id`: 0=Sum, 1=Max, 2=Min. Mirrors
     /// the legacy `fn reduce` two-fast-path strategy:
     ///
