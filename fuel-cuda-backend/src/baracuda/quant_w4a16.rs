@@ -383,3 +383,195 @@ nf4_gemv!(nf4_gemv_m1_bf16, baracuda_kernels_nf4_gemv_m1_bf16_run, 2, 1, "bf16 a
 nf4_gemv!(nf4_gemv_m2_bf16, baracuda_kernels_nf4_gemv_m2_bf16_run, 2, 2, "bf16 act");
 nf4_gemv!(nf4_gemv_m4_bf16, baracuda_kernels_nf4_gemv_m4_bf16_run, 2, 4, "bf16 act");
 nf4_gemv!(nf4_gemv_m8_bf16, baracuda_kernels_nf4_gemv_m8_bf16_run, 2, 8, "bf16 act");
+
+// =============================================================================
+// Named wrapper types (xn-pattern #1, 2026-05-29 audit)
+// =============================================================================
+//
+// xn (Laurent's clean-room rewrite) wraps each quant format in a
+// named struct (`Fp8Tensor { data, scales, scale_mode, shape }`)
+// instead of just an enum arm in a giant `Storage` enum. The named
+// struct gives format-aware code a typed handle without exposing
+// the format to dtype-erased dispatch.
+//
+// Fuel's storage-variant model handles the dtype-erased dispatch
+// path well (one matmul that pattern-matches on the storage
+// variant). The wrappers below complement that with typed entry
+// points for callers that know the format — concretely, future
+// Fuel `Linear` layers that load AWQ / Marlin / NF4 checkpoints
+// can hold one of these structs as a field and call the format-
+// specific kernel directly via `awq_gemm_f16(...)` /
+// `marlin_gemm_f16(...)` / `nf4_gemv_m1_*(...)` without going
+// through dispatch.
+//
+// The structs hold storage handles + the format-specific metadata
+// the kernel needs (group_size, in/out features, packing layout).
+// They are NOT storage variants — they are wrappers that compose
+// existing CudaStorageBytes handles. Loader code populates them
+// from `.safetensors` / `.gguf` blobs once per model load.
+
+/// AWQ (mit-han-lab, asymmetric int4 W4A16) packed weight bundle.
+///
+/// Loaded once from a HuggingFace `*-AWQ` checkpoint. Holds the
+/// three storage blobs and the metadata `awq_gemm_f16_run` needs:
+///
+/// - `packed_weights`: `[OC, IC/8]` int32 packed int4 weights
+///   (OC-major, IC-minor — transpose of naive [K, N]).
+/// - `scaling_factors`: `[IC/group_size, OC]` f16 scales.
+/// - `zeros`: `[IC/group_size, OC/8]` int32 packed int4
+///   zero-points.
+/// - `group_size`: ∈ {64, 128} per AWQ's format.
+/// - `(in_features, out_features)`: logical weight matrix shape.
+///
+/// `Arc<RwLock<...>>` is the same shape Fuel's Tensor holds its
+/// storage in, so these wrappers compose cleanly with the rest of
+/// the framework. A future `AwqLinear` layer wraps this + an
+/// optional bias and exposes `forward(activations) -> Tensor`.
+#[derive(Clone)]
+pub struct AwqWeight {
+    pub packed_weights: std::sync::Arc<CudaStorageBytes>,
+    pub scaling_factors: std::sync::Arc<CudaStorageBytes>,
+    pub zeros: std::sync::Arc<CudaStorageBytes>,
+    pub group_size: i32,
+    pub in_features: usize,
+    pub out_features: usize,
+    /// Default `split_k_iters` for `awq_gemm_f16`. Typical = 8;
+    /// caller can override per-call but storing the model-loader-
+    /// chosen value avoids re-derivation.
+    pub split_k_iters: i32,
+}
+
+impl AwqWeight {
+    /// Convenience: matmul `activations[M, IC] @ self.weights.T -> [M, OC]`.
+    /// Delegates to [`awq_gemm_f16`] with `self.group_size` and
+    /// `self.split_k_iters`.
+    pub fn matmul_f16(
+        &self,
+        activations: &CudaStorageBytes,
+        m: usize,
+    ) -> Result<CudaStorageBytes> {
+        awq_gemm_f16(
+            activations,
+            &self.packed_weights,
+            &self.scaling_factors,
+            &self.zeros,
+            m,
+            self.in_features,
+            self.out_features,
+            self.group_size,
+            self.split_k_iters,
+        )
+    }
+}
+
+/// Marlin (IST-DASLab, symmetric int4 W4A16) packed weight bundle.
+///
+/// Loaded once from a GPTQ checkpoint repacked via Marlin's
+/// host-side `gptq_to_marlin` utility (lives in baracuda's safe
+/// layer). Holds the two storage blobs plus shape + groupsize.
+///
+/// - `b_packed`: `[K/16, N*16/8]` int32 Marlin-shuffled int4
+///   weights.
+/// - `scales`: `[K/groupsize, N]` f16 (or `[1, N]` for
+///   `groupsize == -1`), pre-permuted.
+/// - `groupsize`: ∈ {-1, 128}.
+/// - `(n, k)`: logical weight matrix shape `[N rows, K cols]`.
+/// - `max_par`: parallel-tile upper bound for the kernel's
+///   workspace sizing. Typical 16 (matches upstream IST-DASLab
+///   default).
+#[derive(Clone)]
+pub struct MarlinWeight {
+    pub b_packed: std::sync::Arc<CudaStorageBytes>,
+    pub scales: std::sync::Arc<CudaStorageBytes>,
+    pub groupsize: i32,
+    pub n: usize,
+    pub k: usize,
+    pub max_par: i32,
+}
+
+impl MarlinWeight {
+    /// Convenience: matmul `activations[M, K] @ self.weights.T -> [M, N]`.
+    pub fn matmul_f16(
+        &self,
+        activations: &CudaStorageBytes,
+        m: usize,
+    ) -> Result<CudaStorageBytes> {
+        marlin_gemm_f16(
+            activations,
+            &self.b_packed,
+            &self.scales,
+            m,
+            self.n,
+            self.k,
+            self.groupsize,
+            self.max_par,
+        )
+    }
+}
+
+/// NF4 (bitsandbytes NormalFloat-4) packed weight bundle.
+///
+/// Loaded once from a bitsandbytes 4-bit checkpoint. Holds the
+/// two storage blobs plus shape + block_size.
+///
+/// - `w_packed`: `[N/2, K]` u8 (two 4-bit codes per byte).
+/// - `absmax`: `[N * (K / block_size)]` f32 per-output-row,
+///   per-K-block absmax scales.
+/// - `block_size`: typically 64.
+/// - `(n, k)`: logical weight matrix shape.
+#[derive(Clone)]
+pub struct NF4Weight {
+    pub w_packed: std::sync::Arc<CudaStorageBytes>,
+    pub absmax: std::sync::Arc<CudaStorageBytes>,
+    pub block_size: usize,
+    pub n: usize,
+    pub k: usize,
+}
+
+impl NF4Weight {
+    /// Dequantize to a fresh f16 tensor (debug / general path).
+    pub fn dequantize_f16(&self) -> Result<CudaStorageBytes> {
+        nf4_dequantize_f16(&self.w_packed, &self.absmax, self.n, self.k, self.block_size)
+    }
+
+    /// Dequantize to bf16.
+    pub fn dequantize_bf16(&self) -> Result<CudaStorageBytes> {
+        nf4_dequantize_bf16(&self.w_packed, &self.absmax, self.n, self.k, self.block_size)
+    }
+
+    /// GEMV decode-step kernel for `M ∈ {1, 2, 4, 8}`, f16
+    /// activations. `m` outside the set returns Err.
+    pub fn gemv_f16(
+        &self,
+        activations: &CudaStorageBytes,
+        m: usize,
+    ) -> Result<CudaStorageBytes> {
+        match m {
+            1 => nf4_gemv_m1_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            2 => nf4_gemv_m2_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            4 => nf4_gemv_m4_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            8 => nf4_gemv_m8_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            other => fuel_core_types::bail!(
+                "NF4Weight::gemv_f16: M ∈ {{1, 2, 4, 8}} required, got {other}"
+            ),
+        }
+    }
+
+    /// GEMV decode-step kernel for `M ∈ {1, 2, 4, 8}`, bf16
+    /// activations.
+    pub fn gemv_bf16(
+        &self,
+        activations: &CudaStorageBytes,
+        m: usize,
+    ) -> Result<CudaStorageBytes> {
+        match m {
+            1 => nf4_gemv_m1_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            2 => nf4_gemv_m2_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            4 => nf4_gemv_m4_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            8 => nf4_gemv_m8_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
+            other => fuel_core_types::bail!(
+                "NF4Weight::gemv_bf16: M ∈ {{1, 2, 4, 8}} required, got {other}"
+            ),
+        }
+    }
+}
