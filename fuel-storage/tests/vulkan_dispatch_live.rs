@@ -2699,6 +2699,182 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- LayerNormLastDim f32/f16/bf16/f64 (V.3.G.layer_norm, 2026-05-30) ----
+
+fn layer_norm_ref(x: &[f32], outer: usize, last: usize, eps: f32) -> Vec<f32> {
+    let mut out = vec![0.0_f32; x.len()];
+    let inv_n = 1.0 / last as f32;
+    for r in 0..outer {
+        let off = r * last;
+        let mean = x[off..off + last].iter().sum::<f32>() * inv_n;
+        let var = x[off..off + last].iter().map(|&v| (v - mean).powi(2)).sum::<f32>() * inv_n;
+        let inv_std = 1.0 / (var + eps).sqrt();
+        for i in 0..last {
+            out[off + i] = (x[off + i] - mean) * inv_std;
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_layer_norm_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let host: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0,   2.0, 4.0, 6.0, 8.0];
+    let eps = 1e-5_f64;
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(outer * last * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::LayerNormLastDim, &[DType::F32, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("layer_norm f32 dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    let expected = layer_norm_ref(&host, outer, last, eps as f32);
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-5, "layer_norm f32[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_layer_norm_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let host_f32: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0,   2.0, 4.0, 6.0, 8.0];
+    let host: Vec<half::f16> = host_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let eps = 1e-5_f64;
+
+    let in_storage = upload_f16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(outer * last * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::LayerNormLastDim, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("layer_norm f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let expected = layer_norm_ref(&host_f32, outer, last, eps as f32);
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert!((got_f32 - e).abs() < 5e-3,
+            "layer_norm f16[{i}]: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_layer_norm_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let host_f32: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0,   2.0, 4.0, 6.0, 8.0];
+    let host: Vec<half::bf16> = host_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let eps = 1e-5_f64;
+
+    let in_storage = upload_bf16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(outer * last * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::LayerNormLastDim, &[DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("layer_norm bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let expected = layer_norm_ref(&host_f32, outer, last, eps as f32);
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert!((got_f32 - e).abs() < 5e-2,
+            "layer_norm bf16[{i}]: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_layer_norm_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let host: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0,   2.0, 4.0, 6.0, 8.0];
+    let eps = 1e-12_f64;
+
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(outer * last * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::LayerNormLastDim, &[DType::F64, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::NormLastDim { outer_count: outer, last_dim: last, eps },
+    ).expect("layer_norm f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    // Pure arithmetic (sqrt is precise on f64) — tight tolerance.
+    let inv_n = 1.0 / last as f64;
+    for r in 0..outer {
+        let off = r * last;
+        let mean = host[off..off + last].iter().sum::<f64>() * inv_n;
+        let var = host[off..off + last].iter().map(|&v| (v - mean).powi(2)).sum::<f64>() * inv_n;
+        let inv_std = 1.0 / (var + eps).sqrt();
+        for i in 0..last {
+            let expected = (host[off + i] - mean) * inv_std;
+            assert!((got[off + i] - expected).abs() < 1e-10,
+                "layer_norm f64[{}][{}]: got {}, expected {expected}", r, i, got[off + i]);
+        }
+    }
+}
+
 // ---- Gather (V.3.G.gather, 2026-05-30) ----
 
 #[test]
