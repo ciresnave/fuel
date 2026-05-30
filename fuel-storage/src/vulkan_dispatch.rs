@@ -285,6 +285,9 @@ pub mod unary {
     vk_unary_f32_wrapper!(gelu_f32,    10, "unary_gelu_f32");
     vk_unary_f32_wrapper!(relu_f32,    11, "unary_relu_f32");
     vk_unary_f32_wrapper!(step_f32,    12, "unary_step_f32");
+    vk_unary_f32_wrapper!(abs_f32,     13, "unary_abs_f32");
+    vk_unary_f32_wrapper!(sign_f32,    14, "unary_sign_f32");
+    vk_unary_f32_wrapper!(recip_f32,   15, "unary_recip_f32");
 }
 
 // V.3.E — f16 fan-out via native float16_t (shaderFloat16 + 16BitStorage).
@@ -342,6 +345,9 @@ pub mod unary_f16 {
     vk_unary_f16_wrapper!(gelu_f16,    10, "unary_gelu_f16");
     vk_unary_f16_wrapper!(relu_f16,    11, "unary_relu_f16");
     vk_unary_f16_wrapper!(step_f16,    12, "unary_step_f16");
+    vk_unary_f16_wrapper!(abs_f16,     13, "unary_abs_f16");
+    vk_unary_f16_wrapper!(sign_f16,    14, "unary_sign_f16");
+    vk_unary_f16_wrapper!(recip_f16,   15, "unary_recip_f16");
 }
 
 // V.3.E.5 — f64 fan-out via native `double` (shaderFloat64).
@@ -399,6 +405,9 @@ pub mod unary_f64 {
     vk_unary_f64_wrapper!(gelu_f64,    10, "unary_gelu_f64");
     vk_unary_f64_wrapper!(relu_f64,    11, "unary_relu_f64");
     vk_unary_f64_wrapper!(step_f64,    12, "unary_step_f64");
+    vk_unary_f64_wrapper!(abs_f64,     13, "unary_abs_f64");
+    vk_unary_f64_wrapper!(sign_f64,    14, "unary_sign_f64");
+    vk_unary_f64_wrapper!(recip_f64,   15, "unary_recip_f64");
 }
 
 // ===========================================================================
@@ -1554,6 +1563,9 @@ pub mod unary_bf16 {
     vk_unary_bf16_wrapper!(gelu_bf16,    10, "unary_gelu_bf16");
     vk_unary_bf16_wrapper!(relu_bf16,    11, "unary_relu_bf16");
     vk_unary_bf16_wrapper!(step_bf16,    12, "unary_step_bf16");
+    vk_unary_bf16_wrapper!(abs_bf16,     13, "unary_abs_bf16");
+    vk_unary_bf16_wrapper!(sign_bf16,    14, "unary_sign_bf16");
+    vk_unary_bf16_wrapper!(recip_bf16,   15, "unary_recip_bf16");
 }
 
 macro_rules! vk_binary_bf16_wrapper {
@@ -2133,6 +2145,10 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f32), vk, unary::sigmoid_f32, strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    // V.3.G.unary (2026-05-30): Abs/Sign/Recip — pure arithmetic.
+    table.register_with_caps_and_precision(OpKind::AbsElementwise,     &u(f32), vk, unary::abs_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SignElementwise,    &u(f32), vk, unary::sign_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::RecipElementwise,   &u(f32), vk, unary::recip_f32,   strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — per-row reductions
     // with subgroup-tree internal accumulation. CONTIGUOUS-ONLY by
@@ -2316,6 +2332,9 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16, strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::AbsElementwise,     &u(f16), vk, unary_f16::abs_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SignElementwise,    &u(f16), vk, unary_f16::sign_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::RecipElementwise,   &u(f16), vk, unary_f16::recip_f16,   strided, VULKAN_HALF_POINTWISE_PRECISION);
 
     // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64.
     // STRIDE-AWARE: binary_f64.slang mirrors binary.slang's stride-aware
@@ -2342,6 +2361,9 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_caps_and_precision(OpKind::AbsElementwise,     &u(f64_d), vk, unary_f64::abs_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::SignElementwise,    &u(f64_d), vk, unary_f64::sign_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    table.register_with_caps_and_precision(OpKind::RecipElementwise,   &u(f64_d), vk, unary_f64::recip_f64,   strided, VULKAN_FLOAT_POINTWISE_PRECISION);
     table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64, strided, VULKAN_TRANSCENDENTAL_PRECISION);
@@ -2392,6 +2414,9 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::SigmoidElementwise, &u(bf16_d), vk, unary_bf16::sigmoid_bf16, VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
     table.register_with_precision(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
+    table.register_with_precision(OpKind::AbsElementwise,     &u(bf16_d), vk, unary_bf16::abs_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::SignElementwise,    &u(bf16_d), vk, unary_bf16::sign_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
+    table.register_with_precision(OpKind::RecipElementwise,   &u(bf16_d), vk, unary_bf16::recip_bf16,   VULKAN_HALF_POINTWISE_PRECISION);
 
     // ----- Triu / Tril — pure byte-level mask kernel (rank-3 reshape).
     // CONTIGUOUS-ONLY by design: triu_b4 / tril_b4 view inputs as a
