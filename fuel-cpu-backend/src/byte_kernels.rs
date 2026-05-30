@@ -3214,6 +3214,107 @@ cast_kernel!(
     "Convert `f16` → `f32`. Lossless widening within f16's representable range."
 );
 
+// F8E4M3 ↔ {f32, f16, bf16} — mirrors baracuda alpha.29's CastSubBytePlan
+// surface (see fuel-cuda-backend/src/baracuda/cast.rs). `float8::F8E4M3`
+// doesn't impl `bytemuck::Pod`, so we can't use the generic
+// `cast_kernel!` macro (which requires `Pod` on both src + dst element
+// types). Instead, we handle F8E4M3 as raw `u8` bytes via `from_bits` /
+// `to_bits` round-trips. F16↔F8E4M3 and BF16↔F8E4M3 pivot through f32
+// because `float8::F8E4M3` only exposes `from_f32` / `to_f32`; the f32
+// pivot leg is lossless for both F16 and BF16 (each is a strict subset
+// of f32's representable values).
+
+macro_rules! cast_kernel_to_fp8 {
+    ($name:ident, $TIn:ty, $convert:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+            let in_size = std::mem::size_of::<$TIn>();
+            if input.len_bytes() % in_size != 0 {
+                return Err(Error::Msg(format!(
+                    "{}: input bytes {} not a multiple of {} size {}",
+                    stringify!($name), input.len_bytes(), stringify!($TIn), in_size,
+                )).bt());
+            }
+            let elem_count = input.len_bytes() / in_size;
+            if out.len_bytes() != elem_count {
+                return Err(Error::Msg(format!(
+                    "{}: output bytes {} doesn't match input elem count {} (F8E4M3 is 1 byte/elem)",
+                    stringify!($name), out.len_bytes(), elem_count,
+                )).bt());
+            }
+            let in_view: &[$TIn] = input.as_slice()?;
+            let out_bytes: &mut [u8] = out.bytes_mut();
+            let convert: fn($TIn) -> float8::F8E4M3 = $convert;
+            for (i, slot) in out_bytes.iter_mut().enumerate() {
+                *slot = convert(in_view[i]).to_bits();
+            }
+            Ok(())
+        }
+    };
+}
+
+macro_rules! cast_kernel_from_fp8 {
+    ($name:ident, $TOut:ty, $convert:expr, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name(input: &CpuStorageBytes, out: &mut CpuStorageBytes) -> Result<()> {
+            let out_size = std::mem::size_of::<$TOut>();
+            let elem_count = input.len_bytes();
+            let want_out = elem_count.saturating_mul(out_size);
+            if out.len_bytes() != want_out {
+                return Err(Error::Msg(format!(
+                    "{}: output bytes {} doesn't match input elem count {} × {} ({}) = {}",
+                    stringify!($name), out.len_bytes(), elem_count, out_size,
+                    stringify!($TOut), want_out,
+                )).bt());
+            }
+            let in_bytes: &[u8] = input.bytes();
+            let out_view: &mut [$TOut] = out.as_slice_mut()?;
+            let convert: fn(float8::F8E4M3) -> $TOut = $convert;
+            for (i, slot) in out_view.iter_mut().enumerate() {
+                *slot = convert(float8::F8E4M3::from_bits(in_bytes[i]));
+            }
+            Ok(())
+        }
+    };
+}
+
+cast_kernel_to_fp8!(
+    cast_f32_to_f8e4m3,
+    f32,
+    float8::F8E4M3::from_f32,
+    "Convert `f32` → `F8E4M3`. Lossy narrowing per NV/OCP FP8 E4M3."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_f32,
+    f32,
+    |x: float8::F8E4M3| x.to_f32(),
+    "Convert `F8E4M3` → `f32`. Lossless widening (FP8 is a strict subset of f32)."
+);
+cast_kernel_to_fp8!(
+    cast_bf16_to_f8e4m3,
+    half::bf16,
+    |x: half::bf16| float8::F8E4M3::from_f32(x.to_f32()),
+    "Convert `bf16` → `F8E4M3` via f32. Lossy narrowing on the f8 leg only."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_bf16,
+    half::bf16,
+    |x: float8::F8E4M3| half::bf16::from_f32(x.to_f32()),
+    "Convert `F8E4M3` → `bf16` via f32. Lossless within F8E4M3's range."
+);
+cast_kernel_to_fp8!(
+    cast_f16_to_f8e4m3,
+    half::f16,
+    |x: half::f16| float8::F8E4M3::from_f32(x.to_f32()),
+    "Convert `f16` → `F8E4M3` via f32. Lossy narrowing on the f8 leg only."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_f16,
+    half::f16,
+    |x: float8::F8E4M3| half::f16::from_f32(x.to_f32()),
+    "Convert `F8E4M3` → `f16` via f32. Lossless within F8E4M3's range."
+);
+
 // =============================================================================
 // Matrix multiplication (f32)
 // =============================================================================
@@ -3478,6 +3579,139 @@ macro_rules! matmul_half_kernel {
 
 matmul_half_kernel!(matmul_bf16, half::bf16, "matmul_bf16");
 matmul_half_kernel!(matmul_f16, half::f16, "matmul_f16");
+
+/// Batched row-major matmul for 8-bit integer types (i8/u8) with i32
+/// accumulation and saturating cast on store. Mirrors baracuda's
+/// `gemm_{s8,u8}_rrr_sm80_run` contract: `alpha = 1`, `beta = 0`,
+/// identity epilogue, output type = input type. This is the CPU sibling
+/// of the baracuda Int8 tensor-core kernel; it's correctness-first
+/// (textbook (i, k, j) triple loop) and not a performance target.
+macro_rules! matmul_int_kernel {
+    ($name:ident, $T:ty, $type_name:literal) => {
+        pub fn $name(
+            lhs: &CpuStorageBytes,
+            rhs: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            lhs_batch_dims: &[usize],
+            rhs_batch_dims: &[usize],
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<()> {
+            if lhs_batch_dims.len() != rhs_batch_dims.len() {
+                return Err(Error::Msg(format!(
+                    "{}: batch ranks must match (lhs={}, rhs={})",
+                    $type_name,
+                    lhs_batch_dims.len(),
+                    rhs_batch_dims.len(),
+                ))
+                .bt());
+            }
+            let batch_rank = lhs_batch_dims.len();
+            let mut n_rep: Vec<usize> = Vec::with_capacity(batch_rank);
+            for i in 0..batch_rank {
+                let la = lhs_batch_dims[i];
+                let ra = rhs_batch_dims[i];
+                if la == ra {
+                    n_rep.push(1);
+                } else if ra > 0 && la > ra && la % ra == 0 {
+                    n_rep.push(la / ra);
+                } else {
+                    return Err(Error::Msg(format!(
+                        "{}: batch dim {i} disallowed combination (lhs={la}, rhs={ra})",
+                        $type_name,
+                    ))
+                    .bt());
+                }
+            }
+            let elem = std::mem::size_of::<$T>();
+            let lhs_per_batch = m.saturating_mul(k);
+            let rhs_per_batch = k.saturating_mul(n);
+            let out_per_batch = m.saturating_mul(n);
+            let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+            let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+            let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
+            let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
+            let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+            if lhs.len_bytes() != need_lhs {
+                return Err(Error::Msg(format!(
+                    "{}: lhs bytes={} doesn't match shape {:?} + [{m}, {k}]",
+                    $type_name, lhs.len_bytes(), lhs_batch_dims,
+                ))
+                .bt());
+            }
+            if rhs.len_bytes() != need_rhs {
+                return Err(Error::Msg(format!(
+                    "{}: rhs bytes={} doesn't match shape {:?} + [{k}, {n}]",
+                    $type_name, rhs.len_bytes(), rhs_batch_dims,
+                ))
+                .bt());
+            }
+            if out.len_bytes() != need_out {
+                return Err(Error::Msg(format!(
+                    "{}: out bytes={} doesn't match shape {:?} + [{m}, {n}]",
+                    $type_name, out.len_bytes(), lhs_batch_dims,
+                ))
+                .bt());
+            }
+            let lhs_view: &[$T] = lhs.as_slice()?;
+            let rhs_view: &[$T] = rhs.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let mut lhs_multi = vec![0usize; batch_rank];
+            let mut rhs_multi = vec![0usize; batch_rank];
+            // Per-batch i32 accumulator buffer (reused across batches).
+            // i32 holds 128×128 i8 products without overflow up to K ≈
+            // 2^31 / 128^2 ≈ 131k, which dwarfs realistic GEMM K.
+            let mut acc = vec![0_i32; out_per_batch];
+            const T_MIN: i32 = <$T>::MIN as i32;
+            const T_MAX: i32 = <$T>::MAX as i32;
+            for b in 0..lhs_batch_count {
+                let mut rem = b;
+                for d in (0..batch_rank).rev() {
+                    let s = lhs_batch_dims[d];
+                    lhs_multi[d] = rem % s;
+                    rem /= s;
+                }
+                for d in 0..batch_rank {
+                    rhs_multi[d] = lhs_multi[d] / n_rep[d];
+                }
+                let mut rhs_b = 0usize;
+                for d in 0..batch_rank {
+                    rhs_b = rhs_b * rhs_batch_dims[d] + rhs_multi[d];
+                }
+                let lhs_off = b * lhs_per_batch;
+                let rhs_off = rhs_b * rhs_per_batch;
+                let out_off = b * out_per_batch;
+                for slot in acc.iter_mut() {
+                    *slot = 0;
+                }
+                for i in 0..m {
+                    for kk in 0..k {
+                        let a = lhs_view[lhs_off + i * k + kk] as i32;
+                        let rhs_row_off = rhs_off + kk * n;
+                        let acc_row_off = i * n;
+                        for j in 0..n {
+                            acc[acc_row_off + j] +=
+                                a * (rhs_view[rhs_row_off + j] as i32);
+                        }
+                    }
+                }
+                // Saturating cast i32 → T on store. Matches the CUDA
+                // path's `.satfinite.s32.s8.s8.s32` MMA epilogue.
+                for (slot, &v) in out_view[out_off..out_off + out_per_batch]
+                    .iter_mut()
+                    .zip(&acc)
+                {
+                    *slot = v.clamp(T_MIN, T_MAX) as $T;
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+matmul_int_kernel!(matmul_i8, i8, "matmul_i8");
+matmul_int_kernel!(matmul_u8, u8, "matmul_u8");
 
 /// Batched row-major `f64` matrix multiply — a direct mirror of
 /// [`matmul_f32`] with f64 element type and accumulator. Same
@@ -8222,5 +8456,156 @@ mod tests {
         ).expect("write_slice");
         let r: &[f64] = dest.as_slice().unwrap();
         assert_eq!(r, &[0.0, 0.0, 1.5, 2.5, 0.0, 0.0]);
+    }
+
+    // ---- F8E4M3 casts -------------------------------------------------------
+    //
+    // Mirrors the live-CUDA pattern in
+    // fuel-storage/tests/baracuda_cast_live.rs: exercise round-trips on
+    // values that are exactly representable in F8E4M3 (1 sign bit, 4 exp,
+    // 3 mantissa). All powers of two from 2^-9 up to 2^8 with mantissa=0
+    // are exact; we use the small-integer subset for readable assertions.
+
+    #[test]
+    fn cast_f32_f8e4m3_round_trip_exact_for_representable() {
+        // 0, ±0.5, ±1, ±2, ±4 — all exact in F8E4M3.
+        let input: Vec<f32> = vec![0.0, 0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0];
+        let src = CpuStorageBytes::from_slice(&input);
+        let mut fp8 = CpuStorageBytes::from_zero_bytes(input.len());
+        cast_f32_to_f8e4m3(&src, &mut fp8).expect("f32 → f8e4m3");
+        assert_eq!(fp8.len_bytes(), input.len(), "F8E4M3 is 1 byte/elem");
+
+        let mut back = CpuStorageBytes::from_zero_bytes(input.len() * 4);
+        cast_f8e4m3_to_f32(&fp8, &mut back).expect("f8e4m3 → f32");
+        let got: &[f32] = back.as_slice().unwrap();
+        for (i, (&want, &g)) in input.iter().zip(got.iter()).enumerate() {
+            assert_eq!(want, g, "round-trip mismatch at {i}: want {want}, got {g}");
+        }
+    }
+
+    #[test]
+    fn cast_f8e4m3_through_bf16_round_trip() {
+        let input: Vec<f32> = vec![0.0, 0.5, 1.0, 2.0];
+        let src = CpuStorageBytes::from_slice(&input);
+        let mut fp8 = CpuStorageBytes::from_zero_bytes(input.len());
+        cast_f32_to_f8e4m3(&src, &mut fp8).expect("f32 → f8e4m3");
+
+        let mut bf = CpuStorageBytes::from_zero_bytes(input.len() * 2);
+        cast_f8e4m3_to_bf16(&fp8, &mut bf).expect("f8e4m3 → bf16");
+
+        let mut fp8_back = CpuStorageBytes::from_zero_bytes(input.len());
+        cast_bf16_to_f8e4m3(&bf, &mut fp8_back).expect("bf16 → f8e4m3");
+        assert_eq!(
+            fp8.bytes(),
+            fp8_back.bytes(),
+            "F8E4M3 → BF16 → F8E4M3 must be bit-stable for representable inputs",
+        );
+    }
+
+    #[test]
+    fn cast_f8e4m3_through_f16_round_trip() {
+        let input: Vec<f32> = vec![0.0, 0.5, 1.0, 2.0];
+        let src = CpuStorageBytes::from_slice(&input);
+        let mut fp8 = CpuStorageBytes::from_zero_bytes(input.len());
+        cast_f32_to_f8e4m3(&src, &mut fp8).expect("f32 → f8e4m3");
+
+        let mut f16 = CpuStorageBytes::from_zero_bytes(input.len() * 2);
+        cast_f8e4m3_to_f16(&fp8, &mut f16).expect("f8e4m3 → f16");
+
+        let mut fp8_back = CpuStorageBytes::from_zero_bytes(input.len());
+        cast_f16_to_f8e4m3(&f16, &mut fp8_back).expect("f16 → f8e4m3");
+        assert_eq!(
+            fp8.bytes(),
+            fp8_back.bytes(),
+            "F8E4M3 → F16 → F8E4M3 must be bit-stable for representable inputs",
+        );
+    }
+
+    #[test]
+    fn cast_f8e4m3_size_mismatch_errors() {
+        let src = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let mut wrong_size = CpuStorageBytes::from_zero_bytes(5); // want 3
+        assert!(cast_f32_to_f8e4m3(&src, &mut wrong_size).is_err());
+
+        let fp8 = CpuStorageBytes::from_zero_bytes(3);
+        let mut wrong_out = CpuStorageBytes::from_zero_bytes(7); // want 12
+        assert!(cast_f8e4m3_to_f32(&fp8, &mut wrong_out).is_err());
+    }
+
+    // ---- Integer MatMul (i8 / u8) -------------------------------------------
+
+    /// 2×3 @ 3×2 → 2×2 with hand-computed expected values. Mirrors the
+    /// baracuda `gemm_s8` shape exactly; no batching.
+    #[test]
+    fn matmul_i8_small() {
+        // A = [[1, 2, 3], [4, 5, 6]]
+        // B = [[1, 2], [3, 4], [5, 6]]
+        // A @ B = [[1+6+15, 2+8+18], [4+15+30, 8+20+36]] = [[22, 28], [49, 64]]
+        let a = CpuStorageBytes::from_slice(&[1_i8, 2, 3, 4, 5, 6]);
+        let b = CpuStorageBytes::from_slice(&[1_i8, 2, 3, 4, 5, 6]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        matmul_i8(&a, &b, &mut out, &[], &[], 2, 2, 3).expect("matmul_i8");
+        assert_eq!(out.as_slice::<i8>().unwrap(), &[22, 28, 49, 64]);
+    }
+
+    /// Negative inputs accumulate correctly through i32.
+    #[test]
+    fn matmul_i8_with_negatives() {
+        // [[-1, 2], [3, -4]] @ [[5, -6], [-7, 8]] =
+        //   [[-1*5 + 2*-7, -1*-6 + 2*8], [3*5 + -4*-7, 3*-6 + -4*8]]
+        // = [[-19, 22], [43, -50]]
+        let a = CpuStorageBytes::from_slice(&[-1_i8, 2, 3, -4]);
+        let b = CpuStorageBytes::from_slice(&[5_i8, -6, -7, 8]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        matmul_i8(&a, &b, &mut out, &[], &[], 2, 2, 2).expect("matmul_i8");
+        assert_eq!(out.as_slice::<i8>().unwrap(), &[-19, 22, 43, -50]);
+    }
+
+    /// Accumulator overflow saturates to i8::MAX rather than wrapping.
+    /// 127 × 127 × 4 = 64516, far above i8::MAX (127); must clamp.
+    #[test]
+    fn matmul_i8_saturates_on_overflow() {
+        // 1×4 @ 4×1: a single dot product that saturates positive.
+        let a = CpuStorageBytes::from_slice(&[127_i8, 127, 127, 127]);
+        let b = CpuStorageBytes::from_slice(&[127_i8, 127, 127, 127]);
+        let mut out = CpuStorageBytes::from_zero_bytes(1);
+        matmul_i8(&a, &b, &mut out, &[], &[], 1, 1, 4).expect("matmul_i8");
+        assert_eq!(out.as_slice::<i8>().unwrap(), &[i8::MAX]);
+
+        // And saturates negative: -128 × 127 × 4 ≈ -65k → i8::MIN.
+        let a = CpuStorageBytes::from_slice(&[-128_i8, -128, -128, -128]);
+        let b = CpuStorageBytes::from_slice(&[127_i8, 127, 127, 127]);
+        let mut out = CpuStorageBytes::from_zero_bytes(1);
+        matmul_i8(&a, &b, &mut out, &[], &[], 1, 1, 4).expect("matmul_i8");
+        assert_eq!(out.as_slice::<i8>().unwrap(), &[i8::MIN]);
+    }
+
+    /// u8 path: same shape as the i8 small test, all positive.
+    #[test]
+    fn matmul_u8_small() {
+        let a = CpuStorageBytes::from_slice(&[1_u8, 2, 3, 4, 5, 6]);
+        let b = CpuStorageBytes::from_slice(&[1_u8, 2, 3, 4, 5, 6]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        matmul_u8(&a, &b, &mut out, &[], &[], 2, 2, 3).expect("matmul_u8");
+        assert_eq!(out.as_slice::<u8>().unwrap(), &[22, 28, 49, 64]);
+    }
+
+    /// u8 saturates at 255 on overflow (no negative direction).
+    #[test]
+    fn matmul_u8_saturates_on_overflow() {
+        let a = CpuStorageBytes::from_slice(&[255_u8, 255, 255, 255]);
+        let b = CpuStorageBytes::from_slice(&[255_u8, 255, 255, 255]);
+        let mut out = CpuStorageBytes::from_zero_bytes(1);
+        matmul_u8(&a, &b, &mut out, &[], &[], 1, 1, 4).expect("matmul_u8");
+        assert_eq!(out.as_slice::<u8>().unwrap(), &[u8::MAX]);
+    }
+
+    /// Size-mismatch on any operand errors instead of panicking.
+    #[test]
+    fn matmul_i8_size_mismatch_errors() {
+        let a = CpuStorageBytes::from_slice(&[1_i8, 2, 3]);     // 1×3
+        let b = CpuStorageBytes::from_slice(&[1_i8, 2, 3, 4]);  // 4×1 — K mismatch
+        let mut out = CpuStorageBytes::from_zero_bytes(1);
+        assert!(matmul_i8(&a, &b, &mut out, &[], &[], 1, 1, 3).is_err());
     }
 }

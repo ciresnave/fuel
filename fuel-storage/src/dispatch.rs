@@ -2820,9 +2820,10 @@ cpu_cast_wrapper!(
     DType::F32,
     "f32",
     {
-        DType::F64  => fuel_cpu_backend::byte_kernels::cast_f64_to_f32,
-        DType::BF16 => fuel_cpu_backend::byte_kernels::cast_bf16_to_f32,
-        DType::F16  => fuel_cpu_backend::byte_kernels::cast_f16_to_f32,
+        DType::F64    => fuel_cpu_backend::byte_kernels::cast_f64_to_f32,
+        DType::BF16   => fuel_cpu_backend::byte_kernels::cast_bf16_to_f32,
+        DType::F16    => fuel_cpu_backend::byte_kernels::cast_f16_to_f32,
+        DType::F8E4M3 => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f32,
     },
 );
 cpu_cast_wrapper!(
@@ -2838,7 +2839,8 @@ cpu_cast_wrapper!(
     DType::BF16,
     "bf16",
     {
-        DType::F32 => fuel_cpu_backend::byte_kernels::cast_f32_to_bf16,
+        DType::F32    => fuel_cpu_backend::byte_kernels::cast_f32_to_bf16,
+        DType::F8E4M3 => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_bf16,
     },
 );
 cpu_cast_wrapper!(
@@ -2846,7 +2848,18 @@ cpu_cast_wrapper!(
     DType::F16,
     "f16",
     {
-        DType::F32 => fuel_cpu_backend::byte_kernels::cast_f32_to_f16,
+        DType::F32    => fuel_cpu_backend::byte_kernels::cast_f32_to_f16,
+        DType::F8E4M3 => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f16,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_f8e4m3_cpu_wrapper,
+    DType::F8E4M3,
+    "f8e4m3",
+    {
+        DType::F32  => fuel_cpu_backend::byte_kernels::cast_f32_to_f8e4m3,
+        DType::F16  => fuel_cpu_backend::byte_kernels::cast_f16_to_f8e4m3,
+        DType::BF16 => fuel_cpu_backend::byte_kernels::cast_bf16_to_f8e4m3,
     },
 );
 
@@ -2955,6 +2968,8 @@ macro_rules! cpu_matmul_wrapper {
 
 cpu_matmul_wrapper!(matmul_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::matmul_bf16, "matmul_bf16");
 cpu_matmul_wrapper!(matmul_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::matmul_f16,  "matmul_f16");
+cpu_matmul_wrapper!(matmul_i8_cpu_wrapper,   fuel_cpu_backend::byte_kernels::matmul_i8,   "matmul_i8");
+cpu_matmul_wrapper!(matmul_u8_cpu_wrapper,   fuel_cpu_backend::byte_kernels::matmul_u8,   "matmul_u8");
 
 /// f64 mirror of [`matmul_f32_cpu_wrapper`]. Same OpKind
 /// (MatMul); the binding-table key picks this entry when the
@@ -3194,6 +3209,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
     table.register(MatMul,             &binary(bf16_dt), cpu, matmul_bf16_cpu_wrapper);
     table.register(MatMul,             &binary(f16_dt),  cpu, matmul_f16_cpu_wrapper);
+    // Integer MatMul — i32 accumulator, saturating cast back to T on
+    // store. Mirrors baracuda's `gemm_{s8,u8}_rrr_sm80_run` contract.
+    table.register(MatMul,             &binary(DType::I8), cpu, matmul_i8_cpu_wrapper);
+    table.register(MatMul,             &binary(u8_dt),     cpu, matmul_u8_cpu_wrapper);
 
     // bf16 + f16 reductions — accumulate in f32 for stability.
     table.register(SumReduce,          &unary(bf16_dt), cpu, sum_reduce_bf16_cpu_wrapper);
@@ -3220,6 +3239,17 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Cast, &[DType::F32,  DType::F64], cpu, cast_to_f64_cpu_wrapper);
     table.register(Cast, &[DType::F32,  DType::BF16], cpu, cast_to_bf16_cpu_wrapper);
     table.register(Cast, &[DType::F32,  DType::F16], cpu, cast_to_f16_cpu_wrapper);
+
+    // F8E4M3 ↔ {F32, F16, BF16} — mirrors baracuda alpha.29's
+    // CastSubBytePlan surface. CPU side pivots F16/BF16 through f32
+    // (see byte_kernels.rs cast section).
+    let cast_to_f8 = cast_to_f8e4m3_cpu_wrapper as KernelRef;
+    table.register(Cast, &[DType::F8E4M3, DType::F32],    cpu, cast_to_f32);
+    table.register(Cast, &[DType::F8E4M3, DType::BF16],   cpu, cast_to_bf16_cpu_wrapper);
+    table.register(Cast, &[DType::F8E4M3, DType::F16],    cpu, cast_to_f16_cpu_wrapper);
+    table.register(Cast, &[DType::F32,    DType::F8E4M3], cpu, cast_to_f8);
+    table.register(Cast, &[DType::BF16,   DType::F8E4M3], cpu, cast_to_f8);
+    table.register(Cast, &[DType::F16,    DType::F8E4M3], cpu, cast_to_f8);
 
     // Conv2D — register both no-bias (3 operands) and with-bias
     // (4 operands) shapes per dtype; the wrapper handles both.
@@ -5319,6 +5349,34 @@ mod tests {
         // Phase C's multi-dtype expansion.)
         let result = table.lookup(OpKind::AddElementwise, &[DType::I64, DType::I64, DType::I64], BackendId::Cpu);
         assert!(result.is_err());
+    }
+
+    /// F8E4M3 ↔ {F32, F16, BF16} casts (alpha.29 CastSubBytePlan sibling
+    /// on the CPU side) are all reachable through the binding table.
+    #[test]
+    fn cpu_f8e4m3_cast_pairs_registered() {
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+        for other in [DType::F32, DType::F16, DType::BF16] {
+            for (src, dst) in [(DType::F8E4M3, other), (other, DType::F8E4M3)] {
+                table
+                    .lookup(OpKind::Cast, &[src, dst], BackendId::Cpu)
+                    .unwrap_or_else(|e| panic!("Cast {src:?} → {dst:?} (CPU) not registered: {e}"));
+            }
+        }
+    }
+
+    /// Integer MatMul (i8 / u8) registrations land under the same
+    /// `(MatMul, [T, T, T], Cpu)` key shape as the float variants.
+    #[test]
+    fn cpu_int_matmul_registered() {
+        let mut table = KernelBindingTable::new();
+        register_cpu_kernels(&mut table);
+        for t in [DType::I8, DType::U8] {
+            table
+                .lookup(OpKind::MatMul, &[t, t, t], BackendId::Cpu)
+                .unwrap_or_else(|e| panic!("MatMul {t:?} (CPU) not registered: {e}"));
+        }
     }
 
     /// End-to-end: register, resolve target backend, look up the
