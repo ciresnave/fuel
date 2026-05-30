@@ -2090,6 +2090,152 @@ fn vulkan_dispatch_matmul_f32_bf16_b_coop_size() {
     }
 }
 
+/// Pure-bf16 matmul bf16 × bf16 → f32 via cooperative-matrix tile.
+/// 16×16×16 = smallest coop-eligible shape (one workgroup).
+/// Reference: A is ones, B[:, j] = j → out[i, j] = K * j.
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_bf16_bf16_f32_coop_size() {
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let m = 16usize;
+    let n = 16usize;
+    let k = 16usize;
+
+    let a_bf16: Vec<bf16> = vec![bf16::from_f32(1.0); m * k];
+    let mut b_bf16: Vec<bf16> = Vec::with_capacity(k * n);
+    for _i in 0..k {
+        for j in 0..n {
+            b_bf16.push(bf16::from_f32(j as f32));
+        }
+    }
+
+    let a_bytes: &[u8] = bytemuck::cast_slice(&a_bf16);
+    let b_bytes: &[u8] = bytemuck::cast_slice(&b_bf16);
+    let a_vk = backend.upload_bytes_handle(a_bytes).expect("a upload");
+    let b_vk = backend.upload_bytes_handle(b_bytes).expect("b upload");
+    let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::BF16);
+    let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::BF16);
+    let out_n = m * n;
+    let out_bytes_h = backend.alloc_bytes_handle(out_n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F32);
+
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MatMul,
+            &[DType::BF16, DType::BF16, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[m, k])),
+        Layout::contiguous(Shape::from_dims(&[k, n])),
+        Layout::contiguous(Shape::from_dims(&[m, n])),
+    ];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Matmul {
+            lhs_batch_dims: vec![],
+            rhs_batch_dims: vec![],
+            m, n, k,
+        },
+    ).expect("bf16 coop-size matmul dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for i in 0..m {
+        for j in 0..n {
+            let expected = (k * j) as f32;
+            let g = got[i * n + j];
+            assert!((g - expected).abs() < 0.5,
+                "bf16 coop-size [{i}, {j}]: got {g}, expected {expected}");
+        }
+    }
+}
+
+/// Pure-bf16 matmul bf16 × bf16 → f32, larger shape (multiple workgroups).
+/// 32×64×32 — exercises k_tiles=2, gx=1, gy=2.
+#[test]
+#[ignore]
+fn vulkan_dispatch_matmul_bf16_bf16_f32_multi_tile() {
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let m = 32usize;
+    let n = 64usize;
+    let k = 32usize;
+
+    // A[i, j] = 1; B[i, j] = j. Same pattern: out[i, j] = K * j.
+    let a_bf16: Vec<bf16> = vec![bf16::from_f32(1.0); m * k];
+    let mut b_bf16: Vec<bf16> = Vec::with_capacity(k * n);
+    for _i in 0..k {
+        for j in 0..n {
+            b_bf16.push(bf16::from_f32(j as f32));
+        }
+    }
+
+    let a_bytes: &[u8] = bytemuck::cast_slice(&a_bf16);
+    let b_bytes: &[u8] = bytemuck::cast_slice(&b_bf16);
+    let a_vk = backend.upload_bytes_handle(a_bytes).expect("a upload");
+    let b_vk = backend.upload_bytes_handle(b_bytes).expect("b upload");
+    let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::BF16);
+    let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::BF16);
+    let out_bytes_h = backend.alloc_bytes_handle(m * n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F32);
+
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MatMul,
+            &[DType::BF16, DType::BF16, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[m, k])),
+        Layout::contiguous(Shape::from_dims(&[k, n])),
+        Layout::contiguous(Shape::from_dims(&[m, n])),
+    ];
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &layouts,
+        &OpParams::Matmul {
+            lhs_batch_dims: vec![],
+            rhs_batch_dims: vec![],
+            m, n, k,
+        },
+    ).expect("bf16 multi-tile matmul dispatch");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for i in 0..m {
+        for j in 0..n {
+            let expected = (k * j) as f32;
+            let g = got[i * n + j];
+            // Wider tolerance: K=32 means sum can drift more under bf16→f16 downcast.
+            assert!((g - expected).abs() < 2.0,
+                "bf16 multi-tile [{i}, {j}]: got {g}, expected {expected}");
+        }
+    }
+}
+
 /// Mixed-precision matmul f32 × bf16 → f32, m == 1 (matvec_bf16_b path).
 #[test]
 #[ignore]
