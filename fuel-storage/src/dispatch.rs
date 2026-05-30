@@ -220,7 +220,7 @@ pub fn resolve_target_backend_residency_aware(
 
 /// Helper: extract `&CpuStorageBytes` from `&Storage`. Returns
 /// Err if the variant isn't `BackendStorage::Cpu`.
-fn cpu_input(s: &Storage) -> Result<&fuel_cpu_backend::CpuStorageBytes> {
+pub fn cpu_input(s: &Storage) -> Result<&fuel_cpu_backend::CpuStorageBytes> {
     match &s.inner {
         BackendStorage::Cpu(c) => Ok(c),
         #[allow(unreachable_patterns)]
@@ -231,8 +231,12 @@ fn cpu_input(s: &Storage) -> Result<&fuel_cpu_backend::CpuStorageBytes> {
     }
 }
 
-/// Helper: extract `&mut CpuStorageBytes` from `&mut Storage`.
-pub(crate) fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes> {
+/// Helper: extract `&mut CpuStorageBytes` from `&mut Storage`. `pub`
+/// (along with [`cpu_input`], [`read_storage`], [`write_storage`]) so
+/// external backend crates (fuel-mkl-cpu-backend, fuel-aocl-cpu-backend)
+/// can build their own binding-table wrappers without reimplementing
+/// the lock + dtype-match shape.
+pub fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBytes> {
     match &mut s.inner {
         BackendStorage::Cpu(c) => Ok(c),
         #[allow(unreachable_patterns)]
@@ -247,14 +251,14 @@ pub(crate) fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuSt
 /// programming bug (a previous writer panicked while holding the
 /// lock); production code surfaces it as a typed error rather than
 /// re-panicking through `unwrap`.
-pub(crate) fn read_storage(
+pub fn read_storage(
     arc: &Arc<RwLock<Storage>>,
 ) -> Result<std::sync::RwLockReadGuard<'_, Storage>> {
     arc.read()
         .map_err(|_| Error::Msg("kernel wrapper: storage RwLock poisoned (read)".to_string()).bt())
 }
 
-pub(crate) fn write_storage(
+pub fn write_storage(
     arc: &Arc<RwLock<Storage>>,
 ) -> Result<std::sync::RwLockWriteGuard<'_, Storage>> {
     arc.write()

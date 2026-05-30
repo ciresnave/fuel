@@ -28,8 +28,11 @@
 //! `AnyStorage::Cpu` wraps all three; switching among them is a
 //! vtable swap, not a transfer.
 
+pub mod binding_table;
 mod dll_path;
 pub mod probe;
+
+pub use binding_table::register_mkl_cpu_kernels;
 
 use fuel_core_types::{DType, Layout, Result, Shape};
 use fuel_graph_cpu::CpuBackend;
