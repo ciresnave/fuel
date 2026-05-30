@@ -1428,20 +1428,20 @@ pub mod reduce {
     vk_reduce_f32_wrapper!(mean_f32, 3, "reduce_mean_f32");
 
     // ----- V.3.G (2026-05-30): f16/bf16/f64 per-row reductions.
-    vk_reduce_last_dim_wrapper!(sum_f16,  0, "reduce_sum_f16",  reduce_last_dim_f16_bytes);
-    vk_reduce_last_dim_wrapper!(max_f16,  1, "reduce_max_f16",  reduce_last_dim_f16_bytes);
-    vk_reduce_last_dim_wrapper!(min_f16,  2, "reduce_min_f16",  reduce_last_dim_f16_bytes);
-    vk_reduce_last_dim_wrapper!(mean_f16, 3, "reduce_mean_f16", reduce_last_dim_f16_bytes);
+    vk_reduce_last_dim_wrapper!(sum_f16,  0, "reduce_sum_f16",  reduce_f16_bytes);
+    vk_reduce_last_dim_wrapper!(max_f16,  1, "reduce_max_f16",  reduce_f16_bytes);
+    vk_reduce_last_dim_wrapper!(min_f16,  2, "reduce_min_f16",  reduce_f16_bytes);
+    vk_reduce_last_dim_wrapper!(mean_f16, 3, "reduce_mean_f16", reduce_f16_bytes);
 
-    vk_reduce_last_dim_wrapper!(sum_bf16,  0, "reduce_sum_bf16",  reduce_last_dim_bf16_bytes);
-    vk_reduce_last_dim_wrapper!(max_bf16,  1, "reduce_max_bf16",  reduce_last_dim_bf16_bytes);
-    vk_reduce_last_dim_wrapper!(min_bf16,  2, "reduce_min_bf16",  reduce_last_dim_bf16_bytes);
-    vk_reduce_last_dim_wrapper!(mean_bf16, 3, "reduce_mean_bf16", reduce_last_dim_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(sum_bf16,  0, "reduce_sum_bf16",  reduce_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(max_bf16,  1, "reduce_max_bf16",  reduce_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(min_bf16,  2, "reduce_min_bf16",  reduce_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(mean_bf16, 3, "reduce_mean_bf16", reduce_bf16_bytes);
 
-    vk_reduce_last_dim_wrapper!(sum_f64,  0, "reduce_sum_f64",  reduce_last_dim_f64_bytes);
-    vk_reduce_last_dim_wrapper!(max_f64,  1, "reduce_max_f64",  reduce_last_dim_f64_bytes);
-    vk_reduce_last_dim_wrapper!(min_f64,  2, "reduce_min_f64",  reduce_last_dim_f64_bytes);
-    vk_reduce_last_dim_wrapper!(mean_f64, 3, "reduce_mean_f64", reduce_last_dim_f64_bytes);
+    vk_reduce_last_dim_wrapper!(sum_f64,  0, "reduce_sum_f64",  reduce_f64_bytes);
+    vk_reduce_last_dim_wrapper!(max_f64,  1, "reduce_max_f64",  reduce_f64_bytes);
+    vk_reduce_last_dim_wrapper!(min_f64,  2, "reduce_min_f64",  reduce_f64_bytes);
+    vk_reduce_last_dim_wrapper!(mean_f64, 3, "reduce_mean_f64", reduce_f64_bytes);
 }
 
 // ===========================================================================
