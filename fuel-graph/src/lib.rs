@@ -987,6 +987,7 @@ fn host_buffer_elem_count(buf: &fuel_core_types::HostBuffer) -> usize {
         HostBuffer::BF16(v) => v.len(),
         HostBuffer::F16(v) => v.len(),
         HostBuffer::U32(v) => v.len(),
+        HostBuffer::I64(v) => v.len(),
         other => panic!(
             "Tensor::from_*: unsupported host-buffer dtype {:?}",
             other.dtype(),
@@ -1776,6 +1777,20 @@ impl Tensor {
         let v: Arc<[u32]> = data.into();
         self.const_like_host_buffer(
             fuel_core_types::HostBuffer::U32(v.to_vec()), DType::U32, shape,
+        )
+    }
+
+    /// Build a sibling I64 `Const` on the same graph. Used by
+    /// integer-target ops (e.g. cross-entropy with class indices in
+    /// PyTorch convention).
+    pub fn const_i64_like(
+        &self,
+        data: impl Into<Arc<[i64]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        let v: Arc<[i64]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::I64(v.to_vec()), DType::I64, shape,
         )
     }
 
@@ -3454,6 +3469,81 @@ impl Tensor {
             crate::registry::FusedOps::SOFTMAX_LAST_DIM,
             crate::registry::FusedOpParams::SoftmaxLastDim,
         ))
+    }
+
+    /// Append a `FusedSoftmaxCrossEntropy` node. Two inputs:
+    /// - `self` (logits): `[..., V]` F32
+    /// - `targets`: `[...]` I64 (class indices; matches PyTorch /
+    ///   baracuda convention)
+    ///
+    /// Output dtype is always F32; output shape depends on `reduction`:
+    /// - `Reduction::Mean` / `Reduction::Sum` → scalar `[]`
+    /// - `Reduction::None` → same as `targets.shape`
+    ///
+    /// `ignore_index` rows are dropped from the loss accumulator and
+    /// the Mean denominator. The conventional sentinel is `-100`.
+    ///
+    /// Emits `Op::Fused(FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+    /// FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index })`.
+    /// See `fuel-graph/src/registry/fused_softmax_cross_entropy.rs` for
+    /// the registry entry and decompose chain.
+    pub fn fused_softmax_cross_entropy(
+        &self,
+        targets: &Tensor,
+        reduction: crate::registry::Reduction,
+        ignore_index: i64,
+    ) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &targets.graph),
+            "fused_softmax_cross_entropy: tensors must live on the same graph",
+        );
+        assert_eq!(
+            self.dtype(),
+            DType::F32,
+            "fused_softmax_cross_entropy v1: logits must be F32, got {:?}",
+            self.dtype(),
+        );
+        assert_eq!(
+            targets.dtype(),
+            DType::I64,
+            "fused_softmax_cross_entropy: targets must be I64, got {:?}",
+            targets.dtype(),
+        );
+        let logits_dims = self.shape();
+        let logits_dims = logits_dims.dims();
+        assert!(
+            !logits_dims.is_empty(),
+            "fused_softmax_cross_entropy: logits must have rank ≥ 1",
+        );
+        let target_dims = targets.shape();
+        let target_dims = target_dims.dims();
+        assert_eq!(
+            target_dims, &logits_dims[..logits_dims.len() - 1],
+            "fused_softmax_cross_entropy: targets shape {target_dims:?} must equal \
+             logits shape {logits_dims:?} minus the last dim",
+        );
+        let out_shape = match reduction {
+            crate::registry::Reduction::Mean | crate::registry::Reduction::Sum => {
+                Shape::from_dims(&[])
+            }
+            crate::registry::Reduction::None => Shape::from_dims(target_dims),
+        };
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Fused(
+                crate::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+                crate::registry::FusedOpParams::FusedSoftmaxCrossEntropy {
+                    reduction,
+                    ignore_index,
+                },
+            ),
+            inputs: vec![self.id, targets.id],
+            shape:  out_shape,
+            dtype:  DType::F32,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
     }
 
     /// Append a `LayerNormLastDim` node with the given epsilon. Shape is
@@ -6413,30 +6503,73 @@ impl Tensor {
                     // meaningless. Like Op::Const / Op::Alloc, no
                     // gradient propagates back.
                 }
-                Op::ReluInplace
-                | Op::SiluInplace
-                | Op::GeluInplace
-                | Op::TanhInplace
-                | Op::SigmoidInplace => {
-                    // Phase 1 of the in-place ops infrastructure
-                    // (`docs/session-prompts/in-place-ops-infrastructure.md`).
-                    // Backward integration is the Phase 4 mutation-safety
-                    // pass: when an in-place op would clobber a tape-
-                    // tracked tensor, the pass inserts an `Op::Clone`
-                    // before the mutation and rewires the saved-for-
-                    // backward edge to the clone. Until Phase 4 lands,
-                    // an in-place node reaching this arm means model
-                    // code mutated a tape-tracked tensor without the
-                    // safety pass — fail loudly rather than silently
-                    // produce wrong gradients.
+                Op::ReluInplace => {
+                    // Same backward as Op::Relu — d(relu(x))/dx = step(x).
+                    // The view-aware `derive_ordering` (Phase 4a) pins
+                    // `Op::Step(x)` to run BEFORE Op::ReluInplace, so the
+                    // step kernel sees x's original bytes.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let step_x = push_node(&graph_handle, Op::Step, vec![x], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, step_x], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::SiluInplace => {
+                    // Same backward as Op::Silu — grad_x = upstream * (s + y*(1-s))
+                    // where s = sigmoid(x) and y = silu(x) = this in-place node's
+                    // output. The post-mutation bytes at `id` ARE silu(x) (the
+                    // in-place op runs after the Sigmoid(x) read because of the
+                    // alias-aware ordering pass). `Op::Sigmoid(x)` reads x's
+                    // pre-mutation bytes; `Op::Mul(id, ...)` reads post-mutation
+                    // bytes — both correct.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let s = push_node(&graph_handle, Op::Sigmoid, vec![x], x_shape.clone(), dtype);
+                    let ones = build_ones(&graph_handle, x_shape.clone(), dtype);
+                    let one_minus_s = push_node(&graph_handle, Op::Sub, vec![ones, s], x_shape.clone(), dtype);
+                    let y_times_1ms = push_node(&graph_handle, Op::Mul, vec![id, one_minus_s], x_shape.clone(), dtype);
+                    let inner = push_node(&graph_handle, Op::Add, vec![s, y_times_1ms], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, inner], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::TanhInplace => {
+                    // Same backward as Op::Tanh — grad_x = upstream * (1 - y²)
+                    // where y = tanh(x) = this in-place node's output. `Op::Sqr(id)`
+                    // reads post-mutation bytes (= tanh(x) by definition of the
+                    // in-place op); no need to reference x at all.
+                    let x = inputs[0];
+                    let y_shape = node_shape(&graph_handle, id);
+                    let dtype = node_dtype(&graph_handle, id);
+                    let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], y_shape.clone(), dtype);
+                    let ones = build_ones(&graph_handle, y_shape.clone(), dtype);
+                    let one_minus_sq = push_node(&graph_handle, Op::Sub, vec![ones, y_sq], y_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, one_minus_sq], y_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::SigmoidInplace => {
+                    // Same backward as Op::Sigmoid — grad_x = upstream * y * (1 - y)
+                    // where y = sigmoid(x) = this in-place node's output.
+                    let x = inputs[0];
+                    let y_shape = node_shape(&graph_handle, id);
+                    let dtype = node_dtype(&graph_handle, id);
+                    let ones = build_ones(&graph_handle, y_shape.clone(), dtype);
+                    let one_minus_y = push_node(&graph_handle, Op::Sub, vec![ones, id], y_shape.clone(), dtype);
+                    let y_times_1my = push_node(&graph_handle, Op::Mul, vec![id, one_minus_y], y_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, y_times_1my], y_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::GeluInplace => {
+                    // Mirrors Op::Gelu's panic — the tanh-approximation
+                    // gradient is non-trivial and not yet implemented
+                    // for the non-inplace variant either. Users who
+                    // need a differentiable GELU should use SiluInplace
+                    // (which has a proper backward).
                     panic!(
-                        "Op::{:?} reached autograd backward without the \
-                         mutation-safety pass running first. Phase 4 of the \
-                         in-place ops infrastructure is not yet shipped; \
-                         until then, in-place ops are only safe on tensors \
-                         outside the autograd tape (call `.detach()` first \
-                         or use the functional equivalent).",
-                        op,
+                        "backward: GeluInplace gradient is not yet supported. \
+                         Use SiluInplace for differentiable training; GeluInplace \
+                         is currently inference-only (mirrors Op::Gelu's status)."
                     );
                 }
             }
@@ -8212,6 +8345,106 @@ mod tests {
         let c = crate::registry::FusedOpParams::InplaceAffine { mul: 2.0, add: 0.5 };
         assert_eq!(a.key(), b.key(), "identical mul/add must dedupe");
         assert_ne!(a.key(), c.key(), "different add must produce distinct key");
+    }
+
+    // ---- Phase 4 — autograd through in-place ops ----
+    //
+    // The view-aware `derive_ordering` (Phase 4a) ensures backward
+    // grad nodes that read forward inputs run BEFORE any in-place
+    // mutation of those inputs. The backward arms in
+    // `Tensor::backward` (Phase 4b) emit the same gradient graph as
+    // the non-inplace cousins. These tests prove that calling
+    // `.backward()` through an in-place node:
+    //   (1) does NOT panic (was previously guarded by the Phase 1
+    //       defensive panic);
+    //   (2) emits the same gradient-node structure as the non-inplace
+    //       cousin (matching node counts + op types as a structural
+    //       proxy for numerical equivalence — the actual numerics are
+    //       exercised by the live oracle tests in fuel-storage).
+
+    #[test]
+    fn backward_through_relu_inplace_does_not_panic() {
+        // y = x.relu_inplace(); loss = y.sum_all(); loss.backward()
+        // Phase 1's defensive panic is removed; backward emits
+        // Op::Step(x) + Op::Mul(upstream, step) — same as Op::Relu.
+        let x = Tensor::from_f32(vec![1.0, -2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let y = x.relu_inplace();
+        let loss = y.sum_all();
+        let grads = loss.backward();
+        let g_x = grads.get(&x).expect("gradient for x should be present");
+        // Same structural form as Op::Relu's backward: gradient node
+        // is an Op::Mul (upstream × step(x)).
+        let g_node = g_x.graph().read().unwrap().node(g_x.id()).clone();
+        assert!(matches!(g_node.op, Op::Mul), "relu backward grad is Mul; got {:?}", g_node.op);
+    }
+
+    #[test]
+    fn backward_through_sigmoid_inplace_does_not_panic() {
+        let x = Tensor::from_f32(vec![0.5, -0.5], Shape::from_dims(&[2]), cpu_dev());
+        let y = x.sigmoid_inplace();
+        let loss = y.sum_all();
+        let grads = loss.backward();
+        let g_x = grads.get(&x);
+        assert!(g_x.is_some());
+    }
+
+    #[test]
+    fn backward_through_tanh_inplace_does_not_panic() {
+        let x = Tensor::from_f32(vec![0.1, 0.2, 0.3], Shape::from_dims(&[3]), cpu_dev());
+        let y = x.tanh_inplace();
+        let loss = y.sum_all();
+        let grads = loss.backward();
+        let g_x = grads.get(&x);
+        assert!(g_x.is_some());
+    }
+
+    #[test]
+    fn backward_through_silu_inplace_does_not_panic() {
+        let x = Tensor::from_f32(vec![0.1, 0.2], Shape::from_dims(&[2]), cpu_dev());
+        let y = x.silu_inplace();
+        let loss = y.sum_all();
+        let grads = loss.backward();
+        let g_x = grads.get(&x);
+        assert!(g_x.is_some());
+    }
+
+    #[test]
+    fn backward_through_gelu_inplace_panics_matching_op_gelu() {
+        // GeluInplace mirrors Op::Gelu's "currently inference-only"
+        // panic — both rely on the same not-yet-implemented gradient.
+        // SiluInplace is the recommended differentiable alternative.
+        let x = Tensor::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev());
+        let y = x.gelu_inplace();
+        let loss = y.sum_all();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            loss.backward()
+        }));
+        assert!(result.is_err(), "GeluInplace backward should panic (mirrors Op::Gelu)");
+    }
+
+    #[test]
+    fn backward_through_relu_inplace_emits_same_graph_shape_as_functional() {
+        // Structural parity: relu_inplace backward emits the same node
+        // count + same op variants as relu backward, since the
+        // gradient formula is identical.
+        let x_inp = Tensor::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let y_inp = x_inp.relu_inplace();
+        let loss_inp = y_inp.sum_all();
+        let nodes_before_inp = loss_inp.graph().read().unwrap().len();
+        let _ = loss_inp.backward();
+        let added_inp = loss_inp.graph().read().unwrap().len() - nodes_before_inp;
+
+        let x_fn = Tensor::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let y_fn = x_fn.relu();
+        let loss_fn = y_fn.sum_all();
+        let nodes_before_fn = loss_fn.graph().read().unwrap().len();
+        let _ = loss_fn.backward();
+        let added_fn = loss_fn.graph().read().unwrap().len() - nodes_before_fn;
+
+        assert_eq!(
+            added_inp, added_fn,
+            "ReluInplace backward should add the same number of nodes as Relu backward ({added_fn}), got {added_inp}",
+        );
     }
 
     #[test]
