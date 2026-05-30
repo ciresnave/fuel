@@ -1367,6 +1367,56 @@ macro_rules! vk_reduce_f32_wrapper {
     };
 }
 
+// V.3.G (2026-05-30): non-f32 dtypes only support the last-dim fast
+// path. The macro parameterizes the backend method so f16/bf16/f64
+// each get their 4-op surface (sum/max/min/mean) without dispatching
+// through the f32 unified entry point. For dim combos other than the
+// single-last-dim case, the backend method bails and the executor
+// falls back to CPU.
+macro_rules! vk_reduce_last_dim_wrapper {
+    ($name:ident, $op_id:expr, $label:expr, $method:ident $(,)?) => {
+        pub fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::reduce::{}: expected 1 input + 1 output, got {} + {}",
+                    $label, inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let dims = match params {
+                OpParams::Reduce { dims, keepdim: _ } => dims.clone(),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::reduce::{}: expected OpParams::Reduce, got {:?}",
+                        $label, other,
+                    )).bt());
+                }
+            };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::reduce::{}: layouts[0] required",
+                    $label,
+                )).bt()
+            })?;
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a = vulkan_input(&in_guard)?;
+            let backend = a.backend().ok_or_else(|| {
+                Error::Msg(format!(
+                    "vulkan_dispatch::reduce::{}: input has no VulkanBackend handle.",
+                    $label,
+                )).bt()
+            })?;
+            let out = vulkan_output(&mut out_guard)?;
+            backend.$method($op_id, $label, a, out, layout, &dims)
+        }
+    };
+}
+
 pub mod reduce {
     use super::*;
 
@@ -1376,6 +1426,22 @@ pub mod reduce {
     // V.3.A.2: Mean added to reduce.slang + reduce_last_dim.slang as
     // op_id=3 (sum then divide by element count).
     vk_reduce_f32_wrapper!(mean_f32, 3, "reduce_mean_f32");
+
+    // ----- V.3.G (2026-05-30): f16/bf16/f64 per-row reductions.
+    vk_reduce_last_dim_wrapper!(sum_f16,  0, "reduce_sum_f16",  reduce_last_dim_f16_bytes);
+    vk_reduce_last_dim_wrapper!(max_f16,  1, "reduce_max_f16",  reduce_last_dim_f16_bytes);
+    vk_reduce_last_dim_wrapper!(min_f16,  2, "reduce_min_f16",  reduce_last_dim_f16_bytes);
+    vk_reduce_last_dim_wrapper!(mean_f16, 3, "reduce_mean_f16", reduce_last_dim_f16_bytes);
+
+    vk_reduce_last_dim_wrapper!(sum_bf16,  0, "reduce_sum_bf16",  reduce_last_dim_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(max_bf16,  1, "reduce_max_bf16",  reduce_last_dim_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(min_bf16,  2, "reduce_min_bf16",  reduce_last_dim_bf16_bytes);
+    vk_reduce_last_dim_wrapper!(mean_bf16, 3, "reduce_mean_bf16", reduce_last_dim_bf16_bytes);
+
+    vk_reduce_last_dim_wrapper!(sum_f64,  0, "reduce_sum_f64",  reduce_last_dim_f64_bytes);
+    vk_reduce_last_dim_wrapper!(max_f64,  1, "reduce_max_f64",  reduce_last_dim_f64_bytes);
+    vk_reduce_last_dim_wrapper!(min_f64,  2, "reduce_min_f64",  reduce_last_dim_f64_bytes);
+    vk_reduce_last_dim_wrapper!(mean_f64, 3, "reduce_mean_f64", reduce_last_dim_f64_bytes);
 }
 
 // ===========================================================================
@@ -2145,6 +2211,27 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::MaxReduce,  &u(f32), vk, reduce::max_f32,  PrecisionGuarantee::none(MAX_REASON));
     table.register_with_precision(OpKind::MinReduce,  &u(f32), vk, reduce::min_f32,  PrecisionGuarantee::none(MIN_REASON));
     table.register_with_precision(OpKind::MeanReduce, &u(f32), vk, reduce::mean_f32, PrecisionGuarantee::none(MEAN_REASON));
+
+    // ----- Reduce last-dim, f16/bf16/f64 (V.3.G, 2026-05-30). Only
+    // the single-last-dim fast path is native on these dtypes; other
+    // dim combos bail and the executor falls back to CPU. -----
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64 = DType::F64;
+        table.register_with_precision(OpKind::SumReduce,  &u(f16),  vk, reduce::sum_f16,   PrecisionGuarantee::none(SUM_REASON));
+        table.register_with_precision(OpKind::MaxReduce,  &u(f16),  vk, reduce::max_f16,   PrecisionGuarantee::none(MAX_REASON));
+        table.register_with_precision(OpKind::MinReduce,  &u(f16),  vk, reduce::min_f16,   PrecisionGuarantee::none(MIN_REASON));
+        table.register_with_precision(OpKind::MeanReduce, &u(f16),  vk, reduce::mean_f16,  PrecisionGuarantee::none(MEAN_REASON));
+        table.register_with_precision(OpKind::SumReduce,  &u(bf16), vk, reduce::sum_bf16,  PrecisionGuarantee::none(SUM_REASON));
+        table.register_with_precision(OpKind::MaxReduce,  &u(bf16), vk, reduce::max_bf16,  PrecisionGuarantee::none(MAX_REASON));
+        table.register_with_precision(OpKind::MinReduce,  &u(bf16), vk, reduce::min_bf16,  PrecisionGuarantee::none(MIN_REASON));
+        table.register_with_precision(OpKind::MeanReduce, &u(bf16), vk, reduce::mean_bf16, PrecisionGuarantee::none(MEAN_REASON));
+        table.register_with_precision(OpKind::SumReduce,  &u(f64),  vk, reduce::sum_f64,   PrecisionGuarantee::none(SUM_REASON));
+        table.register_with_precision(OpKind::MaxReduce,  &u(f64),  vk, reduce::max_f64,   PrecisionGuarantee::none(MAX_REASON));
+        table.register_with_precision(OpKind::MinReduce,  &u(f64),  vk, reduce::min_f64,   PrecisionGuarantee::none(MIN_REASON));
+        table.register_with_precision(OpKind::MeanReduce, &u(f64),  vk, reduce::mean_f64,  PrecisionGuarantee::none(MEAN_REASON));
+    }
 
     // ----- Concat f32 (V.2.D) — memcpy (byte-level).
     // STRIDE-AWARE: concat_along_dim.slang explicitly supports per-

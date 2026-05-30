@@ -97,6 +97,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
     ("reduce",                    include_bytes!("../spv/reduce.spv")),
     ("reduce_last_dim",           include_bytes!("../spv/reduce_last_dim.spv")),
+    ("reduce_last_dim_f16",       include_bytes!("../spv/reduce_last_dim_f16.spv")),
+    ("reduce_last_dim_bf16",      include_bytes!("../spv/reduce_last_dim_bf16.spv")),
+    ("reduce_last_dim_f64",       include_bytes!("../spv/reduce_last_dim_f64.spv")),
     ("rms_norm_last_dim",         include_bytes!("../spv/rms_norm_last_dim.spv")),
     ("rms_norm_last_dim_f16",     include_bytes!("../spv/rms_norm_last_dim_f16.spv")),
     ("rms_norm_last_dim_bf16",    include_bytes!("../spv/rms_norm_last_dim_bf16.spv")),
@@ -246,8 +249,18 @@ pub const SOFTMAX_LAST_DIM_BACKWARD: &str = "softmax_last_dim_backward";
 pub const LAYER_NORM_LAST_DIM_BACKWARD: &str = "layer_norm_last_dim_backward";
 /// Parallel reduction over all elements.
 pub const REDUCE: &str = "reduce";
-/// Per-row reduction along the last dimension.
+/// Per-row reduction along the last dimension (f32).
 pub const REDUCE_LAST_DIM: &str = "reduce_last_dim";
+/// Per-row reduction along last dim, f16 storage with f32 accumulator.
+pub const REDUCE_LAST_DIM_F16: &str = "reduce_last_dim_f16";
+/// Per-row reduction along last dim, bf16 storage (packed u32, lane-
+/// pair input) with f32 accumulator. Output buffer MUST be
+/// zero-initialized by the wrapper; the kernel uses InterlockedOr to
+/// write a single bf16 half-word per row without racing the other
+/// workgroup writing to the same u32.
+pub const REDUCE_LAST_DIM_BF16: &str = "reduce_last_dim_bf16";
+/// Per-row reduction along last dim, native f64 end-to-end.
+pub const REDUCE_LAST_DIM_F64: &str = "reduce_last_dim_f64";
 /// Fused root-mean-square normalization along the last dimension (f32).
 pub const RMS_NORM_LAST_DIM: &str = "rms_norm_last_dim";
 /// RMSNorm last-dim, f16 storage with f32 accumulation.

@@ -2701,6 +2701,156 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
 
 #[test]
 #[ignore]
+fn vulkan_dispatch_reduce_sum_last_dim_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let n = outer * last;
+    let host_f32: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,    // row sum = 10
+        0.5, 1.5, 2.5, 3.5,    // row sum = 8
+    ];
+    let host: Vec<half::f16> = host_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let in_storage = upload_f16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(outer * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::SumReduce,
+            &[DType::F16, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![1], keepdim: false },
+    ).expect("sum-reduce f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let _ = n;  // silence unused
+    let expected = [10.0_f32, 8.0_f32];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert!((got_f32 - e).abs() < 5e-3,
+            "sum-reduce-f16 row {i}: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_max_last_dim_bf16_odd_rows() {
+    // 5 rows exercises the InterlockedOr edge case: the last row
+    // lives in the high half of the 3rd u32 word (padded region of
+    // the output buffer). The wrapper's zero-fill keeps that word's
+    // low half zero so the OR is a clean half-word write.
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 5usize;
+    let last = 4usize;            // MUST be even.
+    let host_f32: Vec<f32> = vec![
+        1.0, 2.0, 3.0, 4.0,        // row max = 4
+        -1.0, 5.0, 2.0, 0.0,       // row max = 5
+        0.5, 1.5, 2.5, 3.5,        // row max = 3.5
+        -5.0, -3.0, -2.0, -1.0,    // row max = -1
+        7.0, 6.0, 8.0, 4.5,        // row max = 8
+    ];
+    let host: Vec<half::bf16> = host_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    let in_storage = upload_bf16(&backend, &host);
+    // n_rows*2 = 10 bytes; alloc_bytes_handle rounds to 12 (u32-align).
+    let out_bytes = backend.alloc_bytes_handle(outer * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MaxReduce,
+            &[DType::BF16, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![1], keepdim: false },
+    ).expect("max-reduce bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let expected = [4.0_f32, 5.0, 3.5, -1.0, 8.0];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        let got_f32 = g.to_f32();
+        assert!((got_f32 - e).abs() < 5e-2,
+            "max-reduce-bf16 row {i}: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_mean_last_dim_f64() {
+    // mean exercises the op_id=3 path (subgroup sum + final divide).
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let outer = 2usize;
+    let last = 4usize;
+    let host: Vec<f64> = vec![
+        1.0, 2.0, 3.0, 4.0,    // mean = 2.5
+        0.5, 1.5, 2.5, 3.5,    // mean = 2.0
+    ];
+
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(outer * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::MeanReduce,
+            &[DType::F64, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[outer, last]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![1], keepdim: false },
+    ).expect("mean-reduce f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    let expected = [2.5_f64, 2.0];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-12,
+            "mean-reduce-f64 row {i}: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
 fn vulkan_dispatch_softmax_last_dim_f16() {
     let Some(backend) = backend_or_skip() else { return };
 
@@ -2845,6 +2995,11 @@ fn vulkan_dispatch_softmax_last_dim_f64() {
     ).expect("softmax f64 dispatch");
 
     let got = download_f64(&backend, &out_arc.read().unwrap());
+    // 1e-7 (not 1e-12): empirically the RTX 4070's GLSL.std.450 Exp
+    // on f64 lowers through a ~f32-accuracy path before re-widening
+    // (observed ~1.2e-9 absolute drift on inputs around 0.03). The
+    // kernel structure is bit-stable; only the transcendental is
+    // implementation-defined.
     for row in 0..outer {
         let xs = &host[row * last .. (row + 1) * last];
         let ys = &got[row * last .. (row + 1) * last];
@@ -2853,7 +3008,7 @@ fn vulkan_dispatch_softmax_last_dim_f64() {
         let sum: f64 = exps.iter().sum();
         for (i, (e, y)) in exps.iter().zip(ys.iter()).enumerate() {
             let expected = e / sum;
-            assert!((y - expected).abs() < 1e-12,
+            assert!((y - expected).abs() < 1e-7,
                 "softmax-f64 row {row} col {i}: got {y}, expected {expected}");
         }
     }
