@@ -100,6 +100,15 @@ pub struct Pipelines {
     pub pad_const_b8_pipeline: ComputePipeline,
     pub pad_const_b8_layout: PipelineLayout,
 
+    pub pad_reflect_b1_pipeline: ComputePipeline,
+    pub pad_reflect_b1_layout: PipelineLayout,
+    pub pad_reflect_b2_pipeline: ComputePipeline,
+    pub pad_reflect_b2_layout: PipelineLayout,
+    pub pad_reflect_b4_pipeline: ComputePipeline,
+    pub pad_reflect_b4_layout: PipelineLayout,
+    pub pad_reflect_b8_pipeline: ComputePipeline,
+    pub pad_reflect_b8_layout: PipelineLayout,
+
     pub masked_fill_b1_pipeline: ComputePipeline,
     pub masked_fill_b1_layout: PipelineLayout,
     pub masked_fill_b2_pipeline: ComputePipeline,
@@ -500,6 +509,10 @@ impl Pipelines {
         let pad_const_b2_mod = registry.load_module(device, shaders::PAD_CONST_B2)?;
         let pad_const_b4_mod = registry.load_module(device, shaders::PAD_CONST_B4)?;
         let pad_const_b8_mod = registry.load_module(device, shaders::PAD_CONST_B8)?;
+        let pad_reflect_b1_mod = registry.load_module(device, shaders::PAD_REFLECT_B1)?;
+        let pad_reflect_b2_mod = registry.load_module(device, shaders::PAD_REFLECT_B2)?;
+        let pad_reflect_b4_mod = registry.load_module(device, shaders::PAD_REFLECT_B4)?;
+        let pad_reflect_b8_mod = registry.load_module(device, shaders::PAD_REFLECT_B8)?;
         let masked_fill_b1_mod = registry.load_module(device, shaders::MASKED_FILL_B1)?;
         let masked_fill_b2_mod = registry.load_module(device, shaders::MASKED_FILL_B2)?;
         let masked_fill_b4_mod = registry.load_module(device, shaders::MASKED_FILL_B4)?;
@@ -619,6 +632,10 @@ impl Pipelines {
         let pad_const_b2_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let pad_const_b4_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let pad_const_b8_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let pad_reflect_b1_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let pad_reflect_b2_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let pad_reflect_b4_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let pad_reflect_b8_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let masked_fill_b1_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let masked_fill_b2_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let masked_fill_b4_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
@@ -740,6 +757,10 @@ impl Pipelines {
         let pad_const_b2_pipeline = ComputePipeline::new(device, &pad_const_b2_layout, &pad_const_b2_mod, "main")?;
         let pad_const_b4_pipeline = ComputePipeline::new(device, &pad_const_b4_layout, &pad_const_b4_mod, "main")?;
         let pad_const_b8_pipeline = ComputePipeline::new(device, &pad_const_b8_layout, &pad_const_b8_mod, "main")?;
+        let pad_reflect_b1_pipeline = ComputePipeline::new(device, &pad_reflect_b1_layout, &pad_reflect_b1_mod, "main")?;
+        let pad_reflect_b2_pipeline = ComputePipeline::new(device, &pad_reflect_b2_layout, &pad_reflect_b2_mod, "main")?;
+        let pad_reflect_b4_pipeline = ComputePipeline::new(device, &pad_reflect_b4_layout, &pad_reflect_b4_mod, "main")?;
+        let pad_reflect_b8_pipeline = ComputePipeline::new(device, &pad_reflect_b8_layout, &pad_reflect_b8_mod, "main")?;
         let masked_fill_b1_pipeline = ComputePipeline::new(device, &masked_fill_b1_layout, &masked_fill_b1_mod, "main")?;
         let masked_fill_b2_pipeline = ComputePipeline::new(device, &masked_fill_b2_layout, &masked_fill_b2_mod, "main")?;
         let masked_fill_b4_pipeline = ComputePipeline::new(device, &masked_fill_b4_layout, &masked_fill_b4_mod, "main")?;
@@ -858,6 +879,10 @@ impl Pipelines {
             pad_const_b2_pipeline, pad_const_b2_layout,
             pad_const_b4_pipeline, pad_const_b4_layout,
             pad_const_b8_pipeline, pad_const_b8_layout,
+            pad_reflect_b1_pipeline, pad_reflect_b1_layout,
+            pad_reflect_b2_pipeline, pad_reflect_b2_layout,
+            pad_reflect_b4_pipeline, pad_reflect_b4_layout,
+            pad_reflect_b8_pipeline, pad_reflect_b8_layout,
             masked_fill_b1_pipeline, masked_fill_b1_layout,
             masked_fill_b2_pipeline, masked_fill_b2_layout,
             masked_fill_b4_pipeline, masked_fill_b4_layout,

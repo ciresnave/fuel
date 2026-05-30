@@ -1546,12 +1546,6 @@ pub mod pad {
                 )).bt());
             }
         };
-        if mode_tag != 0 {
-            return Err(Error::Msg(format!(
-                "vulkan_dispatch::pad::pad_const: mode_tag {mode_tag} not yet native \
-                 (only constant=0 is on Vulkan; reflect/replicate fall back to CPU)",
-            )).bt());
-        }
         let in_guard = read_storage(&inputs[0])?;
         let mut out_guard = write_storage(&outputs[0])?;
         let elem_bytes = out_guard.dtype.size_in_bytes();
@@ -1563,7 +1557,14 @@ pub mod pad {
         })?;
         let out = vulkan_output(&mut out_guard)?;
         let left_pad: Vec<usize> = padding.iter().map(|&(b, _)| b).collect();
-        backend.pad_const_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes, fill_bytes)
+        match mode_tag {
+            0 => backend.pad_const_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes, fill_bytes),
+            1 => backend.pad_reflect_bytes(a, out, in_shape, out_shape, &left_pad, elem_bytes),
+            other => Err(Error::Msg(format!(
+                "vulkan_dispatch::pad::pad_const: mode_tag {other} not yet native on Vulkan \
+                 (have const=0, reflect=1; replicate=2 falls back to CPU)",
+            )).bt()),
+        }
     }
 }
 

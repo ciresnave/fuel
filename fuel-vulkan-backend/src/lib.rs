@@ -3681,6 +3681,150 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Pad with reflect mode, byte-width-keyed. No fill_value (each
+    /// out-of-range output coord maps back into [0, in_dim) via the
+    /// reflect formula). Per-axis precondition: `left_pad` and
+    /// `right_pad` must each be `<= in_dim - 1` so the reflection
+    /// stays within the input.
+    pub fn pad_reflect_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        dst: &mut VulkanStorageBytes,
+        in_shape: &[usize],
+        out_shape: &[usize],
+        left_pad: &[usize],
+        elem_bytes: usize,
+    ) -> fuel_core_types::Result<()> {
+        let rank = in_shape.len();
+        if out_shape.len() != rank || left_pad.len() != rank {
+            fuel_core_types::bail!(
+                "pad_reflect_bytes: rank mismatch (in={}, out={}, left_pad={})",
+                in_shape.len(), out_shape.len(), left_pad.len(),
+            );
+        }
+        if rank > 8 {
+            fuel_core_types::bail!("pad_reflect_bytes: rank > 8 not supported");
+        }
+        // Per-axis: right_pad = out_dim - in_dim - left_pad; both
+        // <= in_dim - 1 required for reflect to stay within input.
+        for d in 0..rank {
+            let in_d = in_shape[d];
+            let out_d = out_shape[d];
+            let l = left_pad[d];
+            if out_d < in_d + l {
+                fuel_core_types::bail!(
+                    "pad_reflect_bytes: axis {d}: out_dim ({out_d}) < in_dim ({in_d}) + left_pad ({l})",
+                );
+            }
+            let r = out_d - in_d - l;
+            if in_d == 0 {
+                if l != 0 || r != 0 {
+                    fuel_core_types::bail!(
+                        "pad_reflect_bytes: axis {d}: in_dim is 0; cannot reflect-pad",
+                    );
+                }
+            } else if l > in_d - 1 || r > in_d - 1 {
+                fuel_core_types::bail!(
+                    "pad_reflect_bytes: axis {d}: reflect requires left ({l}) and right ({r}) \
+                     each <= in_dim - 1 ({})",
+                    in_d - 1,
+                );
+            }
+        }
+        let n_in: usize = in_shape.iter().product();
+        let n_out: usize = out_shape.iter().product();
+        let need_src = n_in * elem_bytes;
+        let need_dst = n_out * elem_bytes;
+        if src.len_bytes() < need_src {
+            fuel_core_types::bail!(
+                "pad_reflect_bytes: src {} bytes < required {need_src}",
+                src.len_bytes(),
+            );
+        }
+        if dst.len_bytes() < need_dst {
+            fuel_core_types::bail!(
+                "pad_reflect_bytes: dst {} bytes < required {need_dst}",
+                dst.len_bytes(),
+            );
+        }
+        if elem_bytes == 2 && n_out % 2 != 0 {
+            fuel_core_types::bail!(
+                "pad_reflect_bytes b2: n_out ({n_out}) must be even",
+            );
+        }
+        if elem_bytes == 1 && n_out % 4 != 0 {
+            fuel_core_types::bail!(
+                "pad_reflect_bytes b1: n_out ({n_out}) must be a multiple of 4",
+            );
+        }
+
+        let mut sd: Vec<u32> = Vec::with_capacity(3 * rank);
+        for &d in in_shape { sd.push(d as u32); }
+        for &d in out_shape { sd.push(d as u32); }
+        for &p in left_pad { sd.push(p as u32); }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+        let sd_byte_size = (sd.len() * 4) as u64;
+
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_reflect_bytes: src is host-evicted; fault back first".into(),
+        ))?;
+        let dst_buf = dst.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "pad_reflect_bytes: dst is host-evicted; fault back first".into(),
+        ))?;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct PRParams { n_out: u32, rank: u32, _pad0: u32, _pad1: u32 }
+        let p = PRParams { n_out: n_out as u32, rank: rank as u32, _pad0: 0, _pad1: 0 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let (pipeline, pipe_layout, op_name, n_dispatch) = match elem_bytes {
+            1 => (
+                &self.pipelines.pad_reflect_b1_pipeline,
+                &self.pipelines.pad_reflect_b1_layout,
+                "pad_reflect_b1", n_out / 4,
+            ),
+            2 => (
+                &self.pipelines.pad_reflect_b2_pipeline,
+                &self.pipelines.pad_reflect_b2_layout,
+                "pad_reflect_b2", n_out / 2,
+            ),
+            4 => (
+                &self.pipelines.pad_reflect_b4_pipeline,
+                &self.pipelines.pad_reflect_b4_layout,
+                "pad_reflect_b4", n_out,
+            ),
+            8 => (
+                &self.pipelines.pad_reflect_b8_pipeline,
+                &self.pipelines.pad_reflect_b8_layout,
+                "pad_reflect_b8", n_out,
+            ),
+            other => fuel_core_types::bail!(
+                "pad_reflect_bytes: unsupported elem_bytes {other} (have 1/2/4/8)",
+            ),
+        };
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, dst_buf, 0, dst.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_dispatch);
+        let rb = [src_buf.raw() as u64];
+        let wb = [dst_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// MaskedFill, byte-width-keyed (1/2/4/8). `input` and `output`
     /// have the same dtype + element count; `mask` is u8 (one byte per
     /// element). For each element: if mask byte is non-zero, write
