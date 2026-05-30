@@ -204,3 +204,81 @@ fn baracuda_is_sole_affine_source() {
     assert_eq!(before, 0, "PTX path no longer registers F32 affine");
     assert_eq!(after, 1, "baracuda is the sole F32 affine source");
 }
+
+// ---- In-place affine — Phase 3d of in-place ops infrastructure ----
+//
+// baracuda alpha.60 exposes `affine_inplace_{f32,f64}_run` only; no
+// bf16/f16/integer variants today. The wrappers' signature differs
+// from the non-inplace `cuda_affine_baracuda_wrapper!` — `inputs` is
+// empty and `outputs[0]` is the target (the executor's
+// `WorkItemKind::InplaceKernel` arm enforces this). Tests mirror the
+// `op_inplace_affine_cpu_mutates_target_storage` lib test but on
+// CUDA.
+
+fn run_affine_inplace<T: bytemuck::Pod>(
+    table: &KernelBindingTable,
+    dt: DType,
+    expected: fuel_storage::KernelRef,
+    target_initial: &[T],
+    mul: f64,
+    add: f64,
+) -> Vec<u8> {
+    let dev = CudaDevice::new(0).expect("cuda");
+    // Seed the target with the initial values + acquire the kernel.
+    let target = upload(&dev, dt, target_initial);
+    let target_arc = Arc::new(RwLock::new(target));
+    let alternatives = table.lookup_alternatives(OpKind::InplaceAffine, &[dt, dt], BackendId::Cuda);
+    assert!(!alternatives.is_empty(),
+        "no alternatives at (OpKind::InplaceAffine, [{dt:?}, {dt:?}], Cuda)");
+    let expected_ptr = expected as usize;
+    let kernel = alternatives
+        .iter()
+        .map(|a| a.kernel)
+        .find(|k| (*k as usize) == expected_ptr)
+        .expect("expected baracuda KernelRef not registered");
+    kernel(
+        &[],
+        &mut [target_arc.clone()],
+        &[],
+        &OpParams::Affine { mul, add },
+    )
+    .expect("inplace affine kernel call");
+    download_bytes(&target_arc.read().unwrap())
+}
+
+#[test]
+#[ignore]
+fn baracuda_affine_inplace_f32() {
+    let Some(_dev) = dev_or_skip() else { return };
+    let table = dual_table();
+    let input: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    let out = run_affine_inplace(
+        &table,
+        DType::F32,
+        fuel_storage::baracuda_dispatch::affine::affine_inplace_f32,
+        &input,
+        2.0,
+        0.5,
+    );
+    let got: &[f32] = bytemuck::cast_slice(&out);
+    // 2 · [1,2,3,4] + 0.5 = [2.5, 4.5, 6.5, 8.5]
+    assert_eq!(got, &[2.5_f32, 4.5, 6.5, 8.5]);
+}
+
+#[test]
+#[ignore]
+fn baracuda_affine_inplace_f64() {
+    let Some(_dev) = dev_or_skip() else { return };
+    let table = dual_table();
+    let input: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+    let out = run_affine_inplace(
+        &table,
+        DType::F64,
+        fuel_storage::baracuda_dispatch::affine::affine_inplace_f64,
+        &input,
+        2.0,
+        0.5,
+    );
+    let got: &[f64] = bytemuck::cast_slice(&out);
+    assert_eq!(got, &[2.5_f64, 4.5, 6.5, 8.5]);
+}

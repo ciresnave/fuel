@@ -1285,6 +1285,56 @@ pub mod affine {
     cuda_affine_baracuda_wrapper!(affine_i32, bk::affine_i32, |v: f64| v as i32);
     cuda_affine_baracuda_wrapper!(affine_i64, bk::affine_i64, |v: f64| v as i64);
     cuda_affine_baracuda_wrapper!(affine_u8, bk::affine_u8, |v: f64| v as u8);
+
+    // In-place affine — Phase 3d of the in-place ops infrastructure.
+    // baracuda's `affine_inplace_{f32,f64}_run` symbols take a single
+    // pointer (`y` = read+write). The executor's
+    // `WorkItemKind::InplaceKernel` arm passes the target Arc as
+    // `outputs[0]` with `inputs=[]`; we acquire its write lock and
+    // mutate through `bytes_mut()` (via `cuda_output` which returns
+    // `&mut CudaStorageBytes`).
+    //
+    // baracuda only ships f32 + f64 in-place variants today; bf16/f16
+    // in-place affine compose via Cast → Affine → Cast or wait for
+    // baracuda to add the variants.
+    macro_rules! cuda_affine_inplace_baracuda_wrapper {
+        ($wrapper_name:ident, $baracuda_fn:path, $scalar_cast:expr $(,)?) => {
+            pub fn $wrapper_name(
+                inputs: &[Arc<RwLock<Storage>>],
+                outputs: &mut [Arc<RwLock<Storage>>],
+                _layouts: &[Layout],
+                params: &OpParams,
+            ) -> Result<()> {
+                if !inputs.is_empty() || outputs.len() != 1 {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name),
+                            ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                        inputs.len(), outputs.len(),
+                    )).bt());
+                }
+                let (mul_f64, add_f64) = match params {
+                    OpParams::Affine { mul, add } => (*mul, *add),
+                    other => {
+                        return Err(Error::Msg(format!(
+                            concat!(stringify!($wrapper_name), ": expected OpParams::Affine, got {:?}"),
+                            other,
+                        )).bt());
+                    }
+                };
+                let cast = $scalar_cast;
+                let mul = cast(mul_f64);
+                let add = cast(add_f64);
+                let mut out_guard = write_storage(&outputs[0])?;
+                let out_cuda = cuda_output(&mut out_guard)?;
+                $baracuda_fn(out_cuda, mul, add)
+            }
+        };
+    }
+
+    cuda_affine_inplace_baracuda_wrapper!(
+        affine_inplace_f32, bk::affine_inplace_f32, |v: f64| v as f32);
+    cuda_affine_inplace_baracuda_wrapper!(
+        affine_inplace_f64, bk::affine_inplace_f64, |v: f64| v);
 }
 
 // ===========================================================================
@@ -1987,6 +2037,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(Affine, &u(DType::I32), cuda, affine::affine_i32, strided);
     table.register_with_caps(Affine, &u(DType::I64), cuda, affine::affine_i64, strided);
     table.register_with_caps(Affine, &u(DType::U8),  cuda, affine::affine_u8,  strided);
+
+    // In-place affine — Phase 3d of in-place ops infrastructure.
+    // baracuda only ships f32 + f64 in-place variants today. No
+    // strided variant: the executor rejects strided in-place targets
+    // up front, so we register without the `strided` cap (default
+    // KernelCaps).
+    table.register(InplaceAffine, &u(f32), cuda, affine::affine_inplace_f32);
+    table.register(InplaceAffine, &u(f64), cuda, affine::affine_inplace_f64);
 
     // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
     // U32 collapses to baracuda i32 at the FFI level (bit-identical for

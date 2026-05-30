@@ -196,3 +196,61 @@ affine_kernel!(
     baracuda_kernels_affine_u8_strided_run,
     1, "affine_u8"
 );
+
+/// In-place affine on CUDA via baracuda alpha.60's
+/// `baracuda_kernels_affine_inplace_{f32,f64}_run`. Single-pointer
+/// ABI: `y = mul * y + offset`. baracuda only ships f32 + f64
+/// in-place variants today — bf16/f16 callers must compose via the
+/// non-inplace `affine_*` cousin (Cast → Affine → Cast) or wait for
+/// baracuda to add the variants.
+///
+/// No strided in-place variant exists in baracuda. The executor's
+/// `WorkItemKind::InplaceKernel` arm rejects strided targets up front
+/// (contig + zero-offset only), so callers see a clear error rather
+/// than a kernel mismatch.
+macro_rules! affine_inplace_kernel {
+    ($name:ident, $scalar:ty, $sym:ident, $dtype_size:expr, $op_label:expr) => {
+        pub fn $name(
+            target: &mut CudaStorageBytes,
+            mul: $scalar,
+            add: $scalar,
+        ) -> Result<()> {
+            let op_label = $op_label;
+            let device = target.device().clone();
+            let numel = (target.len_bytes() / $dtype_size) as i64;
+            if numel == 0 {
+                return Ok(());
+            }
+            let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+            let y_ptr = target.buffer().as_raw().0 as *mut std::ffi::c_void;
+            let scratch = Workspace::alloc(&device, 0)?;
+            // SAFETY: y_ptr valid for `numel * dtype_size` bytes;
+            // scratch null/0; stream comes from baracuda driver.
+            let status = unsafe {
+                sys::$sym(
+                    numel,
+                    mul,
+                    add,
+                    y_ptr,
+                    scratch.as_raw(),
+                    scratch.bytes(),
+                    stream,
+                )
+            };
+            check(status, op_label)?;
+            device.synchronize()?;
+            Ok(())
+        }
+    };
+}
+
+affine_inplace_kernel!(
+    affine_inplace_f32, f32,
+    baracuda_kernels_affine_inplace_f32_run,
+    4, "affine_inplace_f32"
+);
+affine_inplace_kernel!(
+    affine_inplace_f64, f64,
+    baracuda_kernels_affine_inplace_f64_run,
+    8, "affine_inplace_f64"
+);
