@@ -2699,6 +2699,104 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- Abs / Sign / Recip (V.3.G.unary, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_abs_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_unary_f32(&backend, OpKind::AbsElementwise, &[1.0, -2.0, 0.0, -3.5]);
+    assert_eq!(got, vec![1.0, 2.0, 0.0, 3.5]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_sign_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_unary_f32(&backend, OpKind::SignElementwise, &[5.0, -3.0, 0.0, -0.0, 7.5]);
+    assert_eq!(got, vec![1.0, -1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_recip_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_unary_f32(&backend, OpKind::RecipElementwise, &[1.0, 2.0, 4.0, -8.0]);
+    assert_close(&got, &[1.0, 0.5, 0.25, -0.125], 1e-6, 1e-6);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_sign_f16() {
+    // Exercises the explicit float16_t(sign(x)) cast added because
+    // Slang's sign() on half returns int.
+    let Some(backend) = backend_or_skip() else { return };
+    let host: Vec<half::f16> = [5.0_f32, -3.0, 0.0, 7.5]
+        .iter().map(|&x| half::f16::from_f32(x)).collect();
+    let got = run_unary_f16(&backend, OpKind::SignElementwise, &host);
+    let got_f32: Vec<f32> = got.iter().map(|x| x.to_f32()).collect();
+    assert_eq!(got_f32, vec![1.0, -1.0, 0.0, 1.0]);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_recip_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let got = run_unary_f64(&backend, OpKind::RecipElementwise, &[1.0_f64, 2.0, 4.0, -8.0, 16.0]);
+    let expected = [1.0_f64, 0.5, 0.25, -0.125, 0.0625];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert!((g - e).abs() < 1e-15, "recip-f64[{i}]: got {g}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_unary_abs_sign_recip_bf16() {
+    use half::bf16;
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<bf16> = [1.0_f32, -2.0, 0.0, -3.5, 4.0, 0.25].iter()
+        .map(|&x| bf16::from_f32(x)).collect();
+    let n = host.len();
+
+    for (op, label, expected) in [
+        (OpKind::AbsElementwise,   "abs",   vec![1.0_f32, 2.0, 0.0, 3.5, 4.0, 0.25]),
+        (OpKind::SignElementwise,  "sign",  vec![1.0_f32, -1.0, 0.0, -1.0, 1.0, 1.0]),
+        (OpKind::RecipElementwise, "recip", vec![1.0_f32, -0.5, f32::INFINITY, -0.2857143, 0.25, 4.0]),
+    ] {
+        let kernel = table
+            .lookup_alternatives(op, &[DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+            .kernel;
+        let in_storage = upload_bf16(&backend, &host);
+        let out_bytes = backend.alloc_bytes_handle(n * 2).expect("alloc");
+        let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+        let in_arc = Arc::new(RwLock::new(in_storage));
+        let out_arc = Arc::new(RwLock::new(out_storage));
+        let layout = Layout::contiguous(Shape::from_dims(&[n]));
+        kernel(
+            &[Arc::clone(&in_arc)],
+            &mut [Arc::clone(&out_arc)],
+            &[layout.clone(), layout],
+            &OpParams::None,
+        ).expect("bf16 unary");
+        let got = download_bf16(&backend, &out_arc.read().unwrap());
+        for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+            let got_f32 = g.to_f32();
+            if e.is_infinite() {
+                assert!(got_f32.is_infinite() && got_f32.signum() == e.signum(),
+                    "{label}-bf16[{i}]: got {got_f32}, expected ±inf");
+            } else {
+                // bf16 ~7-bit mantissa → ~1% relative.
+                let tol = e.abs() * 0.01 + 5e-3;
+                assert!((got_f32 - e).abs() < tol,
+                    "{label}-bf16[{i}]: got {got_f32}, expected {e}");
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn vulkan_dispatch_reduce_sum_full_f16() {
