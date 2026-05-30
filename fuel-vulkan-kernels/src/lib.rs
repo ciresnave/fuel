@@ -82,6 +82,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("write_slice_b4",            include_bytes!("../spv/write_slice_b4.spv")),
     ("write_slice_b8",            include_bytes!("../spv/write_slice_b8.spv")),
     ("concat_along_dim",          include_bytes!("../spv/concat_along_dim.spv")),
+    ("concat_along_dim_f16",      include_bytes!("../spv/concat_along_dim_f16.spv")),
+    ("concat_along_dim_f64",      include_bytes!("../spv/concat_along_dim_f64.spv")),
     ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
     ("flash_attention",           include_bytes!("../spv/flash_attention.spv")),
     ("dequant_q4_0",              include_bytes!("../spv/dequant_q4_0.spv")),
@@ -321,8 +323,12 @@ pub const ROPE_F16: &str = "rope_f16";
 pub const ROPE_BF16: &str = "rope_bf16";
 /// Fused RoPE, native f64 end-to-end.
 pub const ROPE_F64: &str = "rope_f64";
-/// Single-dispatch concat along an arbitrary dim.
+/// Single-dispatch concat along an arbitrary dim (f32).
 pub const CONCAT_ALONG_DIM: &str = "concat_along_dim";
+/// Concat f16, native float16_t storage.
+pub const CONCAT_ALONG_DIM_F16: &str = "concat_along_dim_f16";
+/// Concat f64, native double storage.
+pub const CONCAT_ALONG_DIM_F64: &str = "concat_along_dim_f64";
 /// Conv2D im2col patches rearrangement. Output of this kernel feeds
 /// the existing matmul shaders as the right-hand operand to compute
 /// conv2d (one matmul per (batch, group) sub-block).

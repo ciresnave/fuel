@@ -2699,6 +2699,102 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- Concat f16/f64 (V.3.G.concat, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_concat_along_dim_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // Shape: a=[2, 3] + b=[2, 4] → out=[2, 7] along dim=1.
+    let a_f32: Vec<f32> = vec![1.0, 2.0, 3.0,   10.0, 20.0, 30.0];
+    let b_f32: Vec<f32> = vec![4.0, 5.0, 6.0, 7.0,   40.0, 50.0, 60.0, 70.0];
+    let a: Vec<half::f16> = a_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let b: Vec<half::f16> = b_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let a_storage = upload_f16(&backend, &a);
+    let b_storage = upload_f16(&backend, &b);
+    let out_bytes = backend.alloc_bytes_handle(2 * 7 * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Concat, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let a_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let b_layout = Layout::contiguous(Shape::from_dims(&[2, 4]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 7]));
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[a_layout, b_layout, out_layout],
+        &OpParams::Concat {
+            outer_count: 2, input_dim_sizes: vec![3, 4], inner_count: 1, axis: 1,
+        },
+    ).expect("concat f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let expected_f32 = [
+        1.0, 2.0, 3.0,   4.0, 5.0, 6.0, 7.0,
+        10.0, 20.0, 30.0,  40.0, 50.0, 60.0, 70.0,
+    ];
+    for (i, (g, e)) in got.iter().zip(expected_f32.iter()).enumerate() {
+        assert_eq!(g.to_f32(), *e, "concat f16[{i}]: got {}, expected {e}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_concat_along_dim_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // N=3 chain test: a=[2,1] + b=[2,2] + c=[2,3] → out=[2,6] along dim=1.
+    let a: Vec<f64> = vec![1.0, 10.0];
+    let b: Vec<f64> = vec![2.0, 3.0, 20.0, 30.0];
+    let c: Vec<f64> = vec![4.0, 5.0, 6.0, 40.0, 50.0, 60.0];
+
+    let a_storage = upload_f64(&backend, &a);
+    let b_storage = upload_f64(&backend, &b);
+    let c_storage = upload_f64(&backend, &c);
+    let out_bytes = backend.alloc_bytes_handle(2 * 6 * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let a_arc = Arc::new(RwLock::new(a_storage));
+    let b_arc = Arc::new(RwLock::new(b_storage));
+    let c_arc = Arc::new(RwLock::new(c_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Concat, &[DType::F64, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let a_layout = Layout::contiguous(Shape::from_dims(&[2, 1]));
+    let b_layout = Layout::contiguous(Shape::from_dims(&[2, 2]));
+    let c_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[2, 6]));
+    kernel(
+        &[Arc::clone(&a_arc), Arc::clone(&b_arc), Arc::clone(&c_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[a_layout, b_layout, c_layout, out_layout],
+        &OpParams::Concat {
+            outer_count: 2, input_dim_sizes: vec![1, 2, 3], inner_count: 1, axis: 1,
+        },
+    ).expect("concat f64 dispatch (N=3 chain)");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    let expected = [
+        1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0,
+        10.0,    20.0, 30.0, 40.0, 50.0, 60.0,
+    ];
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "concat f64[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- IndexSelect f16/bf16/f64 (V.3.G.index_select, 2026-05-30) ----
 
 fn index_select_test_shape() -> (usize, usize, usize, Vec<u32>) {
