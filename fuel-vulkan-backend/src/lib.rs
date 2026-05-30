@@ -2596,6 +2596,222 @@ impl VulkanBackend {
     /// f32 affine `y = mul * x + add` with scalar `mul`, `add` (read
     /// from `OpParams::Affine`). Element-count derived from the input
     /// byte size. Inputs must be contiguous (auto-contiguized upstream).
+    /// Affine: y = x * mul + add. f64 native; stride-aware (rank ≤ 4).
+    pub fn affine_f64_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        mul: f64,
+        add: f64,
+        layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("affine_f64_bytes: rank {rank} > 4");
+        }
+        let need_bytes = out_elem * 8;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "affine_f64_bytes: out {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct AffParams {
+            out_size: u32, flags: u32,
+            // f64 alignment: place doubles on 8-byte boundary; pad is the
+            // {out_size, flags} pair already two u32 = 8 bytes.
+            mul: f64, add: f64,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
+        let p = AffParams {
+            out_size: out_elem as u32, flags,
+            mul, add,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f64_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f64_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<AffParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "affine_f64_bytes",
+            &self.pipelines.affine_f64_pipeline,
+            &self.pipelines.affine_f64_layout,
+            desc,
+            (Self::workgroups(out_elem), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Affine: y = x * mul + add. f16 native (float16_t); stride-aware
+    /// (rank ≤ 4); math at f32.
+    pub fn affine_f16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        mul: f64,
+        add: f64,
+        layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let out_dims = layout.shape().dims();
+        let out_elem = layout.shape().elem_count();
+        let rank = out_dims.len();
+        if rank > 4 {
+            fuel_core_types::bail!("affine_f16_bytes: rank {rank} > 4");
+        }
+        let need_bytes = out_elem * 2;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "affine_f16_bytes: out {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        let mut shape = [1u32; 4];
+        let mut in_s = [0u32; 4];
+        let pad = 4 - rank;
+        for i in 0..rank {
+            shape[pad + i] = out_dims[i] as u32;
+            in_s[pad + i] = layout.stride()[i] as u32;
+        }
+        let in_contig = layout.is_contiguous()
+            && layout.shape().dims() == out_dims
+            && layout.stride().iter().all(|&s| s != 0);
+        let flags = in_contig as u32;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct AffParams {
+            out_size: u32, flags: u32, mul: f32, add: f32,
+            shape0: u32, shape1: u32, shape2: u32, shape3: u32,
+            in_s0: u32, in_s1: u32, in_s2: u32, in_s3: u32,
+        }
+        let p = AffParams {
+            out_size: out_elem as u32, flags,
+            mul: mul as f32, add: add as f32,
+            shape0: shape[0], shape1: shape[1], shape2: shape[2], shape3: shape[3],
+            in_s0: in_s[0], in_s1: in_s[1], in_s2: in_s[2], in_s3: in_s[3],
+        };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f16_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f16_bytes: out is host-evicted; fault back first".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<AffParams>() as u64;
+
+        // Round bf16/f16 buffer ranges to u32 boundaries (the lane is
+        // 2 bytes; an odd element count would underflow the descriptor).
+        let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
+        let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "affine_f16_bytes",
+            &self.pipelines.affine_f16_pipeline,
+            &self.pipelines.affine_f16_layout,
+            desc,
+            (Self::workgroups(out_elem), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
+    /// Affine: y = x * mul + add. bf16 packed-u32 pair-thread;
+    /// CONTIGUOUS-ONLY (the wrapper auto-Contiguizes upstream); math at f32.
+    pub fn affine_bf16_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        mul: f64,
+        add: f64,
+        layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let out_elem = layout.shape().elem_count();
+        if out_elem % 2 != 0 {
+            fuel_core_types::bail!("affine_bf16_bytes: out_elem {out_elem} must be even (pair-thread)");
+        }
+        let need_bytes = out_elem * 2;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "affine_bf16_bytes: out {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+        let n_pairs = out_elem / 2;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct AffParams { n_pairs: u32, _pad0: u32, mul: f32, add: f32 }
+        let p = AffParams { n_pairs: n_pairs as u32, _pad0: 0, mul: mul as f32, add: add as f32 };
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_bf16_bytes: input is host-evicted".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_bf16_bytes: out is host-evicted".into(),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+        let params_size = std::mem::size_of::<AffParams>() as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            "affine_bf16_bytes",
+            &self.pipelines.affine_bf16_pipeline,
+            &self.pipelines.affine_bf16_layout,
+            desc,
+            (Self::workgroups(n_pairs), 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     pub fn affine_f32_bytes(
         &self,
         input: &VulkanStorageBytes,

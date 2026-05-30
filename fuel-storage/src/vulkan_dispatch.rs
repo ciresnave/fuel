@@ -1373,6 +1373,83 @@ pub mod affine {
         let out = vulkan_output(&mut out_guard)?;
         backend.affine_f32_bytes(a, out, mul, add, &layouts[0])
     }
+
+    pub fn affine_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        affine_typed("affine_f64", inputs, outputs, layouts, params,
+            |b, a, out, mul, add, layout| b.affine_f64_bytes(a, out, mul, add, layout))
+    }
+
+    pub fn affine_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        affine_typed("affine_f16", inputs, outputs, layouts, params,
+            |b, a, out, mul, add, layout| b.affine_f16_bytes(a, out, mul, add, layout))
+    }
+
+    pub fn affine_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        affine_typed("affine_bf16", inputs, outputs, layouts, params,
+            |b, a, out, mul, add, layout| b.affine_bf16_bytes(a, out, mul, add, layout))
+    }
+
+    fn affine_typed<F>(
+        debug_name: &'static str,
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            f64, f64, &Layout,
+        ) -> Result<()>,
+    {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::affine::{debug_name}: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        if layouts.is_empty() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::affine::{debug_name}: layouts.len() = 0",
+            )).bt());
+        }
+        let (mul, add) = match params {
+            OpParams::Affine { mul, add } => (*mul, *add),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::affine::{debug_name}: expected OpParams::Affine, got {other:?}",
+                )).bt());
+            }
+        };
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a = vulkan_input(&in_guard)?;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::affine::{debug_name}: input has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        f(backend, a, out, mul, add, &layouts[0])
+    }
 }
 
 // ===========================================================================
@@ -3686,6 +3763,17 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // `affine_f32_bytes` packs the layout identically to the unary
     // path. -----
     table.register_with_caps_and_precision(OpKind::Affine, &u(f32), vk, affine::affine_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    {
+        let f16_d  = DType::F16;
+        let bf16_d = DType::BF16;
+        let f64_d  = DType::F64;
+        // f64 and f16: stride-aware via native typed buffers.
+        table.register_with_caps_and_precision(OpKind::Affine, &u(f64_d), vk, affine::affine_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+        table.register_with_caps_and_precision(OpKind::Affine, &u(f16_d), vk, affine::affine_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
+        // bf16: pair-thread packed-u32 kernel; CONTIGUOUS-ONLY (no strided caps,
+        // so Fuel auto-Contiguizes upstream).
+        table.register_with_precision(OpKind::Affine, &u(bf16_d), vk, affine::affine_bf16, VULKAN_HALF_POINTWISE_PRECISION);
+    }
 
     // ----- Clamp f32 (V.3.A.1) — pointwise min/max with constants.
     // STRIDE-AWARE (converted 2026-05-24): clamp.slang mirrors the
