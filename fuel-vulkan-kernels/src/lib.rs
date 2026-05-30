@@ -138,6 +138,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("scatter_add_f64",           include_bytes!("../spv/scatter_add_f64.spv")),
     ("scatter_add_bf16",          include_bytes!("../spv/scatter_add_bf16.spv")),
     ("scatter_add_f16",           include_bytes!("../spv/scatter_add_f16.spv")),
+    ("arg_reduce_any_dim_f32",    include_bytes!("../spv/arg_reduce_any_dim_f32.spv")),
+    ("arg_reduce_any_dim_f64",    include_bytes!("../spv/arg_reduce_any_dim_f64.spv")),
+    ("arg_reduce_any_dim_bf16",   include_bytes!("../spv/arg_reduce_any_dim_bf16.spv")),
+    ("arg_reduce_any_dim_f16",    include_bytes!("../spv/arg_reduce_any_dim_f16.spv")),
     ("arg_reduce_last_dim_f16",   include_bytes!("../spv/arg_reduce_last_dim_f16.spv")),
     ("arg_reduce_last_dim_bf16",  include_bytes!("../spv/arg_reduce_last_dim_bf16.spv")),
     ("arg_reduce_last_dim_f64",   include_bytes!("../spv/arg_reduce_last_dim_f64.spv")),
@@ -408,6 +412,19 @@ pub const SCATTER_ADD_BF16: &str = "scatter_add_bf16";
 /// ScatterAdd f16 via sub-word CAS. Same pattern as bf16 but uses
 /// Slang's `f16tof32`/`f32tof16` half-word builtins.
 pub const SCATTER_ADD_F16: &str = "scatter_add_f16";
+/// Argmax/Argmin along an arbitrary dim (f32). Slow-path counterpart
+/// to `arg_reduce_last_dim_f32`: one thread per output element,
+/// serial scan over the reduction dim. Used when dim != last.
+pub const ARG_REDUCE_ANY_DIM_F32: &str = "arg_reduce_any_dim_f32";
+/// Argmax/Argmin along an arbitrary dim (f64). Same shape as
+/// `arg_reduce_any_dim_f32` with native double values.
+pub const ARG_REDUCE_ANY_DIM_F64: &str = "arg_reduce_any_dim_f64";
+/// Argmax/Argmin along an arbitrary dim (bf16). Lane-select reads
+/// from packed-u32 input; reduction direction is strided.
+pub const ARG_REDUCE_ANY_DIM_BF16: &str = "arg_reduce_any_dim_bf16";
+/// Argmax/Argmin along an arbitrary dim (f16). Same as bf16 path
+/// with `f16tof32` half-word conversion.
+pub const ARG_REDUCE_ANY_DIM_F16: &str = "arg_reduce_any_dim_f16";
 pub const ARG_REDUCE_LAST_DIM_F16: &str = "arg_reduce_last_dim_f16";
 pub const ARG_REDUCE_LAST_DIM_BF16: &str = "arg_reduce_last_dim_bf16";
 pub const ARG_REDUCE_LAST_DIM_F64: &str = "arg_reduce_last_dim_f64";
