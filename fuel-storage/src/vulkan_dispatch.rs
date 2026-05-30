@@ -2316,6 +2316,92 @@ pub mod scatter_add {
         let out = vulkan_output(&mut out_guard)?;
         backend.scatter_add_f64_bytes(base, indices, src, out, &base_shape, &src_shape, dim)
     }
+
+    /// ScatterAdd along `dim` — bf16. 2-byte elements; backend runs
+    /// a sub-word CAS on packed-u32 output.
+    pub fn scatter_add_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        scatter_add_subword(inputs, outputs, params, DType::BF16, "scatter_add_bf16",
+            |backend, base, indices, src, out, bs, ss, dim| {
+                backend.scatter_add_bf16_bytes(base, indices, src, out, bs, ss, dim)
+            })
+    }
+
+    /// ScatterAdd along `dim` — f16. Same shape as bf16 path.
+    pub fn scatter_add_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        scatter_add_subword(inputs, outputs, params, DType::F16, "scatter_add_f16",
+            |backend, base, indices, src, out, bs, ss, dim| {
+                backend.scatter_add_f16_bytes(base, indices, src, out, bs, ss, dim)
+            })
+    }
+
+    fn scatter_add_subword<F>(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        params: &OpParams,
+        expected_dtype: DType,
+        debug_name: &'static str,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            &[usize],
+            &[usize],
+            usize,
+        ) -> Result<()>,
+    {
+        if inputs.len() != 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::scatter_add::{debug_name}: expected 3 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (base_shape, src_shape, dim) = match params {
+            OpParams::ScatterAdd { base_shape, src_shape, dim } => {
+                (base_shape.clone(), src_shape.clone(), *dim)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::scatter_add::{debug_name}: expected OpParams::ScatterAdd, got {other:?}",
+                )).bt());
+            }
+        };
+        let _ = expected_dtype;
+        let base_guard = read_storage(&inputs[0])?;
+        let idx_guard = read_storage(&inputs[1])?;
+        if idx_guard.dtype != DType::U32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::scatter_add::{debug_name}: indices must be U32, got {:?}",
+                idx_guard.dtype,
+            )).bt());
+        }
+        let src_guard = read_storage(&inputs[2])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let base = vulkan_input(&base_guard)?;
+        let indices = vulkan_input(&idx_guard)?;
+        let src = vulkan_input(&src_guard)?;
+        let backend = base.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::scatter_add::{debug_name}: base has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        f(backend, base, indices, src, out, &base_shape, &src_shape, dim)
+    }
 }
 
 pub mod arg_reduce {
@@ -3329,12 +3415,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // works on stock Vulkan, no VK_EXT_shader_atomic_float required.
     // f16/bf16 would need sub-word CAS and are deferred. -----
     {
-        const SCATTER_ADD_REASON: &str = "fuel-vulkan-backend ScatterAdd: atomic float add via uint/u64 CAS loop; FADD order is scheduler-determined per dispatch.";
+        const SCATTER_ADD_REASON: &str = "fuel-vulkan-backend ScatterAdd: atomic float add via uint/u64/sub-word CAS loop; FADD order is scheduler-determined per dispatch.";
         let u32_d = DType::U32;
         let f64_d = DType::F64;
+        let f16_d = DType::F16;
+        let bf16_d = DType::BF16;
         // 4-dtype binding key: [base, indices, src, out]
-        table.register_with_precision(OpKind::ScatterAdd, &[f32,   u32_d, f32,   f32  ], vk, scatter_add::scatter_add_f32, PrecisionGuarantee::none(SCATTER_ADD_REASON));
-        table.register_with_precision(OpKind::ScatterAdd, &[f64_d, u32_d, f64_d, f64_d], vk, scatter_add::scatter_add_f64, PrecisionGuarantee::none(SCATTER_ADD_REASON));
+        table.register_with_precision(OpKind::ScatterAdd, &[f32,    u32_d, f32,    f32   ], vk, scatter_add::scatter_add_f32,  PrecisionGuarantee::none(SCATTER_ADD_REASON));
+        table.register_with_precision(OpKind::ScatterAdd, &[f64_d,  u32_d, f64_d,  f64_d ], vk, scatter_add::scatter_add_f64,  PrecisionGuarantee::none(SCATTER_ADD_REASON));
+        table.register_with_precision(OpKind::ScatterAdd, &[bf16_d, u32_d, bf16_d, bf16_d], vk, scatter_add::scatter_add_bf16, PrecisionGuarantee::none(SCATTER_ADD_REASON));
+        table.register_with_precision(OpKind::ScatterAdd, &[f16_d,  u32_d, f16_d,  f16_d ], vk, scatter_add::scatter_add_f16,  PrecisionGuarantee::none(SCATTER_ADD_REASON));
     }
 
     // ----- ArgMaxDim / ArgMinDim along last dim (V.3.G.arg_reduce,

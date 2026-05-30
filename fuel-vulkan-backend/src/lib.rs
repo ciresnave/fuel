@@ -3948,6 +3948,168 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// ScatterAdd along `dim` — bf16. 2-byte elements; the kernel
+    /// runs a sub-word CAS on the packed-u32 output.
+    pub fn scatter_add_bf16_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        base_shape: &[usize],
+        src_shape: &[usize],
+        dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.scatter_add_subword_bytes(
+            base, indices, src, out, base_shape, src_shape, dim,
+            "scatter_add_bf16_bytes",
+            &self.pipelines.scatter_add_bf16_pipeline,
+            &self.pipelines.scatter_add_bf16_layout,
+        )
+    }
+
+    /// ScatterAdd along `dim` — f16. Same sub-word CAS path as bf16
+    /// but with `f16tof32`/`f32tof16` half-word conversions.
+    pub fn scatter_add_f16_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        base_shape: &[usize],
+        src_shape: &[usize],
+        dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.scatter_add_subword_bytes(
+            base, indices, src, out, base_shape, src_shape, dim,
+            "scatter_add_f16_bytes",
+            &self.pipelines.scatter_add_f16_pipeline,
+            &self.pipelines.scatter_add_f16_layout,
+        )
+    }
+
+    /// Shared sub-word (2-byte element) wrapper for ScatterAdd bf16
+    /// and f16. The kernel reads `src` as packed-u32 (two lanes per
+    /// word), computes a destination lane index, and CAS-replaces only
+    /// the target half of the output u32 word. The output descriptor
+    /// is bound with a u32-rounded length so robust-access does not
+    /// discard the final half-word write when `n_dst` is odd.
+    fn scatter_add_subword_bytes(
+        &self,
+        base: &VulkanStorageBytes,
+        indices: &VulkanStorageBytes,
+        src: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        base_shape: &[usize],
+        src_shape: &[usize],
+        dim: usize,
+        debug_name: &'static str,
+        pipeline: &vulkane::safe::ComputePipeline,
+        layout: &vulkane::safe::PipelineLayout,
+    ) -> fuel_core_types::Result<()> {
+        let rank = base_shape.len();
+        if src_shape.len() != rank {
+            fuel_core_types::bail!(
+                "{debug_name}: base rank ({}) != src rank ({})",
+                base_shape.len(), src_shape.len(),
+            );
+        }
+        if rank > 8 {
+            fuel_core_types::bail!("{debug_name}: rank > 8 not supported");
+        }
+        if dim >= rank {
+            fuel_core_types::bail!("{debug_name}: dim {dim} >= rank {rank}");
+        }
+        for d in 0..rank {
+            if d != dim && base_shape[d] != src_shape[d] {
+                fuel_core_types::bail!(
+                    "{debug_name}: shapes differ at dim {d} (base={}, src={})",
+                    base_shape[d], src_shape[d],
+                );
+            }
+        }
+        let n_base: usize = base_shape.iter().product();
+        let n_src: usize = src_shape.iter().product();
+        let need_base = n_base * 2;
+        let need_src = n_src * 2;
+        let need_idx = n_src * 4;
+        if base.len_bytes() < need_base {
+            fuel_core_types::bail!("{debug_name}: base {} bytes < required {need_base}", base.len_bytes());
+        }
+        if out.len_bytes() < need_base {
+            fuel_core_types::bail!("{debug_name}: out {} bytes < required {need_base}", out.len_bytes());
+        }
+        if src.len_bytes() < need_src {
+            fuel_core_types::bail!("{debug_name}: src {} bytes < required {need_src}", src.len_bytes());
+        }
+        if indices.len_bytes() < need_idx {
+            fuel_core_types::bail!("{debug_name}: indices {} bytes < required {need_idx}", indices.len_bytes());
+        }
+
+        let base_buf = base.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: base host-evicted").into(),
+        ))?;
+        let out_buf_for_copy = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: out host-evicted").into(),
+        ))?;
+        self.flush_pending()?;
+        let copy_size = need_base as u64;
+        self.queue.one_shot(&self.device, self.queue_family, |cmd| {
+            cmd.copy_buffer(base_buf, out_buf_for_copy, &[BufferCopy {
+                src_offset: 0, dst_offset: 0, size: copy_size,
+            }]);
+            Ok(())
+        }).map_err(vk_err)?;
+
+        let mut sd: Vec<u32> = Vec::with_capacity(2 * rank);
+        for &d in src_shape { sd.push(d as u32); }
+        for &d in base_shape { sd.push(d as u32); }
+        let (sd_buf, sd_mem) = self.upload_slice_raw(&sd)?;
+        let sd_byte_size = (sd.len() * 4) as u64;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct SAParams { n_src: u32, rank: u32, dim: u32, _pad: u32 }
+        let p = SAParams { n_src: n_src as u32, rank: rank as u32, dim: dim as u32, _pad: 0 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let idx_buf = indices.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: indices host-evicted").into(),
+        ))?;
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: src host-evicted").into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: out host-evicted after copy?").into(),
+        ))?;
+
+        // Round descriptor ranges to u32 multiples so robust-access
+        // does not discard the final half-word atomic write.
+        let src_bind_len = ((src.len_bytes() + 3) & !3) as u64;
+        let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_4s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, idx_buf, 0, indices.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, src_buf, 0, src_bind_len);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
+        desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+
+        let groups = Self::workgroups(n_src);
+        let rb = [idx_buf.raw() as u64, src_buf.raw() as u64, out_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            debug_name,
+            pipeline,
+            layout,
+            desc,
+            (groups, 1, 1),
+            vec![(sd_buf, sd_mem), (pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// ScatterAdd along `dim` — f32. Three inputs (base, U32 indices,
     /// src) → one output of base's shape. The wrapper copies base to
     /// out first; then the kernel atomically accumulates src into
