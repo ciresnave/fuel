@@ -3825,6 +3825,86 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Argmax / argmin along last dim. `op_id`: 0=argmax, 1=argmin.
+    /// One workgroup per row; tree reduction in shared memory tracks
+    /// (val, idx) pairs; lower index wins on ties. Output dtype is
+    /// U32 (4 bytes per row).
+    pub fn arg_reduce_last_dim_bytes(
+        &self,
+        input_dtype: DType,
+        op_id: u32,
+        op_name: &'static str,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        last_dim: usize,
+    ) -> fuel_core_types::Result<()> {
+        if input_dtype == DType::BF16 && last_dim % 2 != 0 {
+            fuel_core_types::bail!(
+                "{op_name}: last_dim must be even on bf16 (lane-pair); got {last_dim}",
+            );
+        }
+        let elem_bytes = match input_dtype {
+            DType::F32 => 4, DType::F16 => 2, DType::BF16 => 2, DType::F64 => 8,
+            other => fuel_core_types::bail!("{op_name}: unsupported input dtype {other:?}"),
+        };
+        let need_in = outer_count * last_dim * elem_bytes;
+        let need_out = outer_count * 4;
+        if input.len_bytes() < need_in {
+            fuel_core_types::bail!(
+                "{op_name}: input {} bytes < required {need_in}",
+                input.len_bytes(),
+            );
+        }
+        if out.len_bytes() < need_out {
+            fuel_core_types::bail!(
+                "{op_name}: out {} bytes < required {need_out}",
+                out.len_bytes(),
+            );
+        }
+        let (pipeline, pipe_layout) = match input_dtype {
+            DType::F32  => (&self.pipelines.arg_reduce_last_dim_f32_pipeline,
+                            &self.pipelines.arg_reduce_last_dim_f32_layout),
+            DType::F16  => (&self.pipelines.arg_reduce_last_dim_f16_pipeline,
+                            &self.pipelines.arg_reduce_last_dim_f16_layout),
+            DType::BF16 => (&self.pipelines.arg_reduce_last_dim_bf16_pipeline,
+                            &self.pipelines.arg_reduce_last_dim_bf16_layout),
+            DType::F64  => (&self.pipelines.arg_reduce_last_dim_f64_pipeline,
+                            &self.pipelines.arg_reduce_last_dim_f64_layout),
+            _ => unreachable!(),
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct ARParams { n_rows: u32, n_cols: u32, op_id: u32, _pad: u32 }
+        let p = ARParams { n_rows: outer_count as u32, n_cols: last_dim as u32, op_id, _pad: 0 };
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: input host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out host-evicted; fault back first"),
+        ))?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
+        let rb = [in_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (outer_count as u32, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// PadBackward constant mode, byte-width-keyed. Each thread =
     /// one INPUT element. Reads grad_out at the unpadded position
     /// `in_coord + left_pad`. No accumulation (constant mode has at
