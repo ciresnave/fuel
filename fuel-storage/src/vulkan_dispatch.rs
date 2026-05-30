@@ -534,6 +534,92 @@ pub mod softmax {
         let out = vulkan_output(&mut out_guard)?;
         backend.softmax_last_dim_f64_bytes(a, out, outer_count, last_dim)
     }
+
+    // ----- SoftmaxLastDimBackward (V.3.G.softmax-bwd, 2026-05-30) -----
+    // 2 inputs (y, g) → 1 output (dx). Reuses OpParams::SoftmaxLastDim
+    // (same outer × last_dim contract as the forward).
+
+    pub fn softmax_last_dim_backward_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        softmax_backward_typed("softmax_last_dim_backward_f32", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
+            b.softmax_last_dim_backward_f32_bytes(y, g, dx, oc, ld)
+        })
+    }
+
+    pub fn softmax_last_dim_backward_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        softmax_backward_typed("softmax_last_dim_backward_f16", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
+            b.softmax_last_dim_backward_f16_bytes(y, g, dx, oc, ld)
+        })
+    }
+
+    pub fn softmax_last_dim_backward_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        softmax_backward_typed("softmax_last_dim_backward_bf16", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
+            b.softmax_last_dim_backward_bf16_bytes(y, g, dx, oc, ld)
+        })
+    }
+
+    pub fn softmax_last_dim_backward_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        softmax_backward_typed("softmax_last_dim_backward_f64", inputs, outputs, layouts, params, |b, y, g, dx, oc, ld| {
+            b.softmax_last_dim_backward_f64_bytes(y, g, dx, oc, ld)
+        })
+    }
+
+    fn softmax_backward_typed<F>(
+        label: &'static str,
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+        call: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize, usize,
+        ) -> fuel_core_types::Result<()>,
+    {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::softmax::{label}: expected 2 inputs (y, g) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, last_dim) = softmax_params(label, params)?;
+        let y_guard = read_storage(&inputs[0])?;
+        let g_guard = read_storage(&inputs[1])?;
+        let mut dx_guard = write_storage(&outputs[0])?;
+        let y = vulkan_input(&y_guard)?;
+        let g = vulkan_input(&g_guard)?;
+        let backend = y.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::softmax::{label}: y has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let dx = vulkan_output(&mut dx_guard)?;
+        call(backend, y, g, dx, outer_count, last_dim)
+    }
 }
 
 // ===========================================================================
@@ -2556,6 +2642,21 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     const RMS_NORM_REASON: &str = "fuel-vulkan-backend RmsNormLastDim: per-row x² + sum (subgroup-tree reduction) + sqrt + divide; no static bound — FADD order is scheduler-determined per dispatch.";
     table.register_with_precision(OpKind::SoftmaxLastDim, &u(f32), vk, softmax::softmax_f32, PrecisionGuarantee::none(SOFTMAX_REASON));
     table.register_with_precision(OpKind::RmsNormLastDim, &u(f32), vk, norm::rms_f32,        PrecisionGuarantee::none(RMS_NORM_REASON));
+
+    // ----- SoftmaxLastDimBackward, f32 + f16/bf16/f64 (V.3.G.softmax-bwd,
+    // 2026-05-30). 2 inputs (y, g) → 1 output (dx); reuses
+    // OpParams::SoftmaxLastDim. Reduction order is scheduler-determined. -----
+    const SOFTMAX_BWD_REASON: &str = "fuel-vulkan-backend SoftmaxLastDimBackward: per-row dot(y,g) reduction + per-element y*(g-dot); no static bound \u{2014} FADD order is scheduler-determined per dispatch.";
+    {
+        let bf16 = DType::BF16;
+        let f16  = DType::F16;
+        let f64_d = DType::F64;
+        // 3 dtypes in binding key: [y_dtype, g_dtype, dx_dtype]
+        table.register_with_precision(OpKind::SoftmaxLastDimBackward, &[f32,   f32,   f32],   vk, softmax::softmax_last_dim_backward_f32,  PrecisionGuarantee::none(SOFTMAX_BWD_REASON));
+        table.register_with_precision(OpKind::SoftmaxLastDimBackward, &[f16,   f16,   f16],   vk, softmax::softmax_last_dim_backward_f16,  PrecisionGuarantee::none(SOFTMAX_BWD_REASON));
+        table.register_with_precision(OpKind::SoftmaxLastDimBackward, &[bf16,  bf16,  bf16],  vk, softmax::softmax_last_dim_backward_bf16, PrecisionGuarantee::none(SOFTMAX_BWD_REASON));
+        table.register_with_precision(OpKind::SoftmaxLastDimBackward, &[f64_d, f64_d, f64_d], vk, softmax::softmax_last_dim_backward_f64,  PrecisionGuarantee::none(SOFTMAX_BWD_REASON));
+    }
 
     // ----- Softmax last-dim, f16/bf16/f64 (V.3.G, 2026-05-30).
     // Same mixed-precision pattern as the RmsNorm variants below:

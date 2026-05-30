@@ -124,6 +124,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("softmax_bf16",              include_bytes!("../spv/softmax_bf16.spv")),
     ("softmax_f64",               include_bytes!("../spv/softmax_f64.spv")),
     ("softmax_last_dim_backward", include_bytes!("../spv/softmax_last_dim_backward.spv")),
+    ("softmax_last_dim_backward_f16",  include_bytes!("../spv/softmax_last_dim_backward_f16.spv")),
+    ("softmax_last_dim_backward_bf16", include_bytes!("../spv/softmax_last_dim_backward_bf16.spv")),
+    ("softmax_last_dim_backward_f64",  include_bytes!("../spv/softmax_last_dim_backward_f64.spv")),
     ("layer_norm_last_dim_backward", include_bytes!("../spv/layer_norm_last_dim_backward.spv")),
     ("strided_copy",              include_bytes!("../spv/strided_copy.spv")),
     ("unary",                     include_bytes!("../spv/unary.spv")),
@@ -260,8 +263,15 @@ pub const SOFTMAX_BF16: &str = "softmax_bf16";
 /// Softmax last-dim, native f64 end-to-end. Needs shaderFloat64 +
 /// GroupNonUniformArithmetic; uses GLSL.std.450 Exp (NOT OpenCL.std).
 pub const SOFTMAX_F64: &str = "softmax_f64";
-/// Fused softmax backward: dx = y * (g - dot(y, g)).
+/// Fused softmax backward: dx = y * (g - dot(y, g)) (f32).
 pub const SOFTMAX_LAST_DIM_BACKWARD: &str = "softmax_last_dim_backward";
+/// Softmax backward, f16 storage, f32 dot reduction.
+pub const SOFTMAX_LAST_DIM_BACKWARD_F16: &str = "softmax_last_dim_backward_f16";
+/// Softmax backward, bf16 packed-u32 storage with pair-thread layout
+/// in Phase 2 (no race). Requires `n_cols % 2 == 0`.
+pub const SOFTMAX_LAST_DIM_BACKWARD_BF16: &str = "softmax_last_dim_backward_bf16";
+/// Softmax backward, native f64 end-to-end.
+pub const SOFTMAX_LAST_DIM_BACKWARD_F64: &str = "softmax_last_dim_backward_f64";
 /// Fused layer-norm backward (4 reductions: sum_x, sum_x², sum_g, sum_gx).
 pub const LAYER_NORM_LAST_DIM_BACKWARD: &str = "layer_norm_last_dim_backward";
 /// Parallel reduction over all elements (f32).
