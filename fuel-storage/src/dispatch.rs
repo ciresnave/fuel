@@ -2201,6 +2201,39 @@ cpu_affine_inplace_wrapper!(inplace_affine_f64_cpu_wrapper, affine_inplace_f64, 
 cpu_affine_inplace_wrapper!(inplace_affine_bf16_cpu_wrapper, affine_inplace_bf16, f64, half);
 cpu_affine_inplace_wrapper!(inplace_affine_f16_cpu_wrapper,  affine_inplace_f16,  f64, half);
 
+/// Dispatch wrapper macro for in-place elementwise unary ops on CPU.
+/// Same shape as `cpu_affine_inplace_wrapper!` (inputs empty, target
+/// adopted as outputs[0] by the executor), but the kernel takes no
+/// scalar params — just the target buffer.
+macro_rules! cpu_unary_inplace_wrapper {
+    ($name:ident, $kernel:ident) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            fuel_cpu_backend::byte_kernels::$kernel(out_cpu)
+        }
+    };
+}
+
+cpu_unary_inplace_wrapper!(relu_inplace_f32_cpu_wrapper,    relu_inplace_f32);
+cpu_unary_inplace_wrapper!(silu_inplace_f32_cpu_wrapper,    silu_inplace_f32);
+cpu_unary_inplace_wrapper!(gelu_inplace_f32_cpu_wrapper,    gelu_inplace_f32);
+cpu_unary_inplace_wrapper!(tanh_inplace_f32_cpu_wrapper,    tanh_inplace_f32);
+cpu_unary_inplace_wrapper!(sigmoid_inplace_f32_cpu_wrapper, sigmoid_inplace_f32);
+
 /// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
 fn clamp_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
@@ -3401,6 +3434,17 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(InplaceAffine, &unary(f64_dt),  cpu, inplace_affine_f64_cpu_wrapper);
     table.register(InplaceAffine, &unary(bf16_dt), cpu, inplace_affine_bf16_cpu_wrapper);
     table.register(InplaceAffine, &unary(f16_dt),  cpu, inplace_affine_f16_cpu_wrapper);
+
+    // In-place unary activations — Phase 3e of in-place ops. Same
+    // `[T, T]` key shape as the non-inplace cousins (the natural
+    // shape build_lookup_dtypes produces for a 1-input + 1-output
+    // node with matching dtypes). f32 starter set; bf16/f16/f64 land
+    // when consumers materialize.
+    table.register(ReluInplace,    &unary(f32_dt), cpu, relu_inplace_f32_cpu_wrapper);
+    table.register(SiluInplace,    &unary(f32_dt), cpu, silu_inplace_f32_cpu_wrapper);
+    table.register(GeluInplace,    &unary(f32_dt), cpu, gelu_inplace_f32_cpu_wrapper);
+    table.register(TanhInplace,    &unary(f32_dt), cpu, tanh_inplace_f32_cpu_wrapper);
+    table.register(SigmoidInplace, &unary(f32_dt), cpu, sigmoid_inplace_f32_cpu_wrapper);
     table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
     table.register(MaximumElementwise, &binary(f32_dt), cpu, maximum_elementwise_f32_cpu_wrapper);

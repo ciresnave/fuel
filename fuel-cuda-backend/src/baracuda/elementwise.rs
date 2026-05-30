@@ -165,6 +165,48 @@ fn is_contiguous_zero_offset(layout: &Layout) -> bool {
     layout.start_offset() == 0 && layout.is_contiguous()
 }
 
+/// In-place unary driver. Reuses the same baracuda kernel symbol as
+/// the non-inplace cousin but passes the target's pointer for BOTH
+/// `x` (read) and `y` (write). Elementwise unary kernels write index
+/// `i` after reading index `i` with no cross-thread aliasing, so
+/// same-pointer dispatch is safe.
+///
+/// No strided variant — the executor's `WorkItemKind::InplaceKernel`
+/// arm rejects strided targets up front, so we only need the contig
+/// kernel path.
+fn unary_inplace_run(
+    target: &mut CudaStorageBytes,
+    contig_run: UnaryContigRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
+    let numel: i64 = (target.len_bytes() / dtype_size_bytes.max(1)) as i64;
+    if numel == 0 {
+        return Ok(());
+    }
+    let device = target.device().clone();
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let ptr_mut = target.buffer().as_raw().0 as *mut std::ffi::c_void;
+    let ptr_const = ptr_mut as *const std::ffi::c_void;
+    // SAFETY: same buffer for x + y is safe for elementwise unary
+    // kernels (no cross-thread aliasing); pointers / stream / scratch
+    // validated above.
+    let status = unsafe {
+        contig_run(
+            numel,
+            ptr_const,
+            ptr_mut,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(())
+}
+
 /// Manifest macro for one (kind, dtype) unary entry. Emits a public
 /// `pub fn <name>(src: &CudaStorageBytes, layout: &Layout) ->
 /// Result<CudaStorageBytes>` that binds the FFI triple
@@ -219,6 +261,37 @@ unary_kernel!(unary_relu_f32, unary_relu_f32, 4, "unary_relu_f32");
 unary_kernel!(unary_gelu_f32, unary_gelu_f32, 4, "unary_gelu_f32");
 unary_kernel!(unary_silu_f32, unary_silu_f32, 4, "unary_silu_f32");
 unary_kernel!(unary_sigmoid_f32, unary_sigmoid_f32, 4, "unary_sigmoid_f32");
+
+/// Manifest macro for one (kind, dtype) in-place unary entry. Emits a
+/// `pub fn <name>(target: &mut CudaStorageBytes) -> Result<()>` that
+/// calls `unary_inplace_run` against the matching baracuda contig
+/// symbol. No strided variant per the in-place ops infrastructure's
+/// "v1 contract: target must be contiguous + zero-offset".
+macro_rules! unary_inplace_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("In-place baracuda unary `", $op_label, "` kernel — mutates `target`.")]
+            pub fn $name(target: &mut CudaStorageBytes) -> Result<()> {
+                unary_inplace_run(
+                    target,
+                    sys::[<baracuda_kernels_ $sys_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+// F32 in-place unary kernels — Phase 3e of in-place ops. Starter set
+// matches Op::ReluInplace / SiluInplace / GeluInplace / TanhInplace /
+// SigmoidInplace (the activations most likely to want in-place
+// mutation in real model code).
+unary_inplace_kernel!(unary_inplace_relu_f32,    unary_relu_f32,    4, "unary_inplace_relu_f32");
+unary_inplace_kernel!(unary_inplace_silu_f32,    unary_silu_f32,    4, "unary_inplace_silu_f32");
+unary_inplace_kernel!(unary_inplace_gelu_f32,    unary_gelu_f32,    4, "unary_inplace_gelu_f32");
+unary_inplace_kernel!(unary_inplace_tanh_f32,    unary_tanh_f32,    4, "unary_inplace_tanh_f32");
+unary_inplace_kernel!(unary_inplace_sigmoid_f32, unary_sigmoid_f32, 4, "unary_inplace_sigmoid_f32");
 
 // ---------------------------------------------------------------------------
 // F64 / F16 / BF16 unary kernels.

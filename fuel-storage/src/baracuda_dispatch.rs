@@ -67,6 +67,35 @@ macro_rules! cuda_unary_baracuda_wrapper {
     };
 }
 
+/// Generate one CUDA in-place unary dispatch wrapper. Phase 3e of
+/// in-place ops infrastructure. The executor's `WorkItemKind::InplaceKernel`
+/// arm passes the target Arc as `outputs[0]` with `inputs=[]`; the
+/// wrapper acquires the target's write lock and calls the baracuda
+/// in-place kernel (same baracuda symbol as the non-inplace cousin,
+/// but with src_ptr == dst_ptr).
+macro_rules! cuda_unary_inplace_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            _params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            $baracuda_fn(out_cuda)
+        }
+    };
+}
+
 /// Generate one CUDA binary dispatch wrapper.
 macro_rules! cuda_binary_baracuda_wrapper {
     ($wrapper_name:ident, $baracuda_fn:path) => {
@@ -1691,6 +1720,16 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(silu_f32, bk::unary_silu_f32);
     cuda_unary_baracuda_wrapper!(sigmoid_f32, bk::unary_sigmoid_f32);
 
+    // In-place unary surface — Phase 3e of in-place ops infrastructure.
+    // Reuses the same baracuda symbols but the wrapper passes the
+    // target's pointer for both x + y. f32 starter set; other dtypes
+    // land when consumers materialize.
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f32,    bk::unary_inplace_relu_f32);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f32,    bk::unary_inplace_silu_f32);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f32,    bk::unary_inplace_gelu_f32);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f32,    bk::unary_inplace_tanh_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f32, bk::unary_inplace_sigmoid_f32);
+
     // f16
     cuda_unary_baracuda_wrapper!(neg_f16, bk::unary_neg_f16);
     cuda_unary_baracuda_wrapper!(abs_f16, bk::unary_abs_f16);
@@ -2045,6 +2084,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // KernelCaps).
     table.register(InplaceAffine, &u(f32), cuda, affine::affine_inplace_f32);
     table.register(InplaceAffine, &u(f64), cuda, affine::affine_inplace_f64);
+
+    // In-place unary activations — Phase 3e of in-place ops. Same
+    // structural rules as InplaceAffine (no strided cap, contig-only).
+    table.register(ReluInplace,    &u(f32), cuda, unary::relu_inplace_f32);
+    table.register(SiluInplace,    &u(f32), cuda, unary::silu_inplace_f32);
+    table.register(GeluInplace,    &u(f32), cuda, unary::gelu_inplace_f32);
+    table.register(TanhInplace,    &u(f32), cuda, unary::tanh_inplace_f32);
+    table.register(SigmoidInplace, &u(f32), cuda, unary::sigmoid_inplace_f32);
 
     // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
     // U32 collapses to baracuda i32 at the FFI level (bit-identical for
