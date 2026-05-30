@@ -391,6 +391,15 @@ pub enum OpKind {
     /// `OpParams::FusedSoftmaxCrossEntropy`. Backs
     /// [`FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY`](fuel_graph::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY).
     FusedSoftmaxCrossEntropy,
+    /// Depthwise 1-D causal convolution + bias + optional fused SiLU.
+    /// Inputs `[x, weight, bias]` where
+    /// `x: [batch, channels, seq + kernel - 1]` (left-pre-padded by
+    /// caller), `weight: [channels, 1, kernel]`, `bias: [channels]`.
+    /// Output `[batch, channels, seq]`. Geometry + `use_silu` flow
+    /// through `OpParams::CausalConv1d`. Backs
+    /// [`FusedOps::CAUSAL_CONV1D`](fuel_graph::registry::FusedOps::CAUSAL_CONV1D)
+    /// — the Mamba-1 / Mamba-2 prefill convolution fusion.
+    CausalConv1d,
 }
 
 impl OpKind {
@@ -486,6 +495,7 @@ impl OpKind {
             OpKind::SigmoidInplace    => "sigmoid_inplace",
             OpKind::InplaceAffine     => "inplace_affine",
             OpKind::FusedSoftmaxCrossEntropy => "fused_softmax_cross_entropy",
+            OpKind::CausalConv1d        => "causal_conv1d",
         }
     }
 }

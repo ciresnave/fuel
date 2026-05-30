@@ -5036,6 +5036,122 @@ pub fn fused_softmax_cross_entropy_f32(
 }
 
 // =============================================================================
+// CausalConv1d — depthwise 1-D conv + bias + optional fused SiLU
+// =============================================================================
+//
+// The Mamba-1 / Mamba-2 prefill convolution. The textbook depthwise
+// recurrence computed in scalar Rust:
+//
+//   for b in 0..batch, c in 0..channels, t in 0..seq_out:
+//     y = bias[c]
+//     for k in 0..kernel:
+//       y += weight[c, 0, k] * x[b, c, t + k]
+//     out[b, c, t] = if use_silu { y * sigmoid(y) } else { y }
+//
+// Caller is responsible for left-padding x with `kernel - 1` zeros
+// (matches Mamba's existing prefill convention — see mamba2.rs:552).
+// The kernel does NOT pad internally; it just walks `seq_out` output
+// positions and reads `kernel` consecutive elements per position.
+//
+// Memory: zero allocations beyond inputs/output. Per-output-element
+// work is `O(kernel)` FMAs — the inner loop is bandwidth-bound for
+// typical kernel sizes (4 for Mamba).
+
+/// CausalConv1d CPU kernel (F32). Output buffer size is
+/// `batch * channels * seq_out * 4` bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn causal_conv1d_f32(
+    x: &CpuStorageBytes,
+    weight: &CpuStorageBytes,
+    bias: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
+    use_silu: bool,
+) -> Result<()> {
+    if seq_in != seq_out + kernel - 1 {
+        return Err(Error::Msg(format!(
+            "causal_conv1d_f32: seq_in={seq_in} must equal seq_out={seq_out} + kernel-1={}",
+            kernel - 1,
+        ))
+        .bt());
+    }
+    let elem = std::mem::size_of::<f32>();
+    let x_need = batch
+        .saturating_mul(channels)
+        .saturating_mul(seq_in)
+        .saturating_mul(elem);
+    let w_need = channels.saturating_mul(kernel).saturating_mul(elem);
+    let b_need = channels.saturating_mul(elem);
+    let out_need = batch
+        .saturating_mul(channels)
+        .saturating_mul(seq_out)
+        .saturating_mul(elem);
+    if x.len_bytes() != x_need {
+        return Err(Error::Msg(format!(
+            "causal_conv1d_f32: x bytes={} doesn't match \
+             batch={batch} × channels={channels} × seq_in={seq_in} × {elem} = {x_need}",
+            x.len_bytes(),
+        ))
+        .bt());
+    }
+    if weight.len_bytes() != w_need {
+        return Err(Error::Msg(format!(
+            "causal_conv1d_f32: weight bytes={} doesn't match \
+             channels={channels} × 1 × kernel={kernel} × {elem} = {w_need}",
+            weight.len_bytes(),
+        ))
+        .bt());
+    }
+    if bias.len_bytes() != b_need {
+        return Err(Error::Msg(format!(
+            "causal_conv1d_f32: bias bytes={} doesn't match channels={channels} × {elem} = {b_need}",
+            bias.len_bytes(),
+        ))
+        .bt());
+    }
+    if out.len_bytes() != out_need {
+        return Err(Error::Msg(format!(
+            "causal_conv1d_f32: out bytes={} doesn't match \
+             batch={batch} × channels={channels} × seq_out={seq_out} × {elem} = {out_need}",
+            out.len_bytes(),
+        ))
+        .bt());
+    }
+    if seq_out == 0 || channels == 0 || batch == 0 {
+        return Ok(());
+    }
+    let x_view: &[f32] = x.as_slice()?;
+    let w_view: &[f32] = weight.as_slice()?;
+    let b_view: &[f32] = bias.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+    for b in 0..batch {
+        for c in 0..channels {
+            let x_row_off = (b * channels + c) * seq_in;
+            let w_row_off = c * kernel;
+            let out_row_off = (b * channels + c) * seq_out;
+            let bias_c = b_view[c];
+            for t in 0..seq_out {
+                let mut acc = bias_c;
+                for k in 0..kernel {
+                    acc += w_view[w_row_off + k] * x_view[x_row_off + t + k];
+                }
+                out_view[out_row_off + t] = if use_silu {
+                    // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+                    acc / (1.0 + (-acc).exp())
+                } else {
+                    acc
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
 // FlashAttn — naive multi-head SDPA (math definition)
 // =============================================================================
 //
@@ -8967,6 +9083,102 @@ mod tests {
             &logits, &targets, &mut out,
             1, 4, REDUCTION_MEAN, -100,
         );
+        assert!(r.is_err());
+    }
+
+    /// CausalConv1d: hand-computed result for a single-channel,
+    /// batch=1, kernel=3, seq_out=2 case. Caller pre-pads x with
+    /// 2 zeros on the left.
+    ///   x (pre-padded) = [0, 0, 1, 2]  (seq_in = 4)
+    ///   weight         = [w0=0.5, w1=1.0, w2=2.0]
+    ///   bias           = [b=0.1]
+    ///   out[0] = 0.1 + 0.5*0 + 1.0*0 + 2.0*1 = 2.1
+    ///   out[1] = 0.1 + 0.5*0 + 1.0*1 + 2.0*2 = 5.1
+    #[test]
+    fn causal_conv1d_f32_no_silu_basic() {
+        let x = CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 1.0, 2.0]);
+        let w = CpuStorageBytes::from_slice(&[0.5_f32, 1.0, 2.0]);
+        let b = CpuStorageBytes::from_slice(&[0.1_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, false)
+            .expect("causal_conv1d");
+        let result: &[f32] = out.as_slice().unwrap();
+        assert!((result[0] - 2.1).abs() < 1e-5, "out[0]={}", result[0]);
+        assert!((result[1] - 5.1).abs() < 1e-5, "out[1]={}", result[1]);
+    }
+
+    /// CausalConv1d with SiLU: out = y * sigmoid(y) for the raw outputs
+    /// computed in the no-silu test.
+    #[test]
+    fn causal_conv1d_f32_with_silu() {
+        let x = CpuStorageBytes::from_slice(&[0.0_f32, 0.0, 1.0, 2.0]);
+        let w = CpuStorageBytes::from_slice(&[0.5_f32, 1.0, 2.0]);
+        let b = CpuStorageBytes::from_slice(&[0.1_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 2, 3, true)
+            .expect("causal_conv1d");
+        let result: &[f32] = out.as_slice().unwrap();
+        let expected0 = 2.1_f32 / (1.0 + (-2.1_f32).exp());
+        let expected1 = 5.1_f32 / (1.0 + (-5.1_f32).exp());
+        assert!((result[0] - expected0).abs() < 1e-5, "out[0]={}, expected {expected0}", result[0]);
+        assert!((result[1] - expected1).abs() < 1e-5, "out[1]={}, expected {expected1}", result[1]);
+    }
+
+    /// CausalConv1d: two channels share x layout but have different
+    /// weights — verify the depthwise per-channel separation.
+    #[test]
+    fn causal_conv1d_f32_two_channels_depthwise() {
+        // batch=1, channels=2, kernel=2, seq_out=3, so seq_in=4.
+        // x = [c0: [0, 1, 2, 3], c1: [0, 10, 20, 30]]
+        let x = CpuStorageBytes::from_slice(&[
+            0.0_f32, 1.0, 2.0, 3.0,    // channel 0
+            0.0,    10.0, 20.0, 30.0,  // channel 1
+        ]);
+        // weight c0 = [1.0, 1.0], c1 = [2.0, 3.0]
+        let w = CpuStorageBytes::from_slice(&[
+            1.0_f32, 1.0,  // channel 0
+            2.0,     3.0,  // channel 1
+        ]);
+        // bias: c0 = 0.0, c1 = 0.0
+        let b = CpuStorageBytes::from_slice(&[0.0_f32, 0.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 3 * 4);
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 2, 4, 3, 2, false)
+            .expect("causal_conv1d");
+        let result: &[f32] = out.as_slice().unwrap();
+        // channel 0: out[t] = 1*x[t] + 1*x[t+1]
+        //   t=0: 1*0 + 1*1 = 1
+        //   t=1: 1*1 + 1*2 = 3
+        //   t=2: 1*2 + 1*3 = 5
+        // channel 1: out[t] = 2*x[t] + 3*x[t+1]
+        //   t=0: 2*0 + 3*10 = 30
+        //   t=1: 2*10 + 3*20 = 80
+        //   t=2: 2*20 + 3*30 = 130
+        assert_eq!(result, &[1.0, 3.0, 5.0, 30.0, 80.0, 130.0]);
+    }
+
+    /// CausalConv1d: kernel=1 degenerate case is pointwise (out[t] =
+    /// weight * x[t] + bias). seq_in == seq_out.
+    #[test]
+    fn causal_conv1d_f32_kernel_1_is_pointwise() {
+        let x = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0]);
+        let w = CpuStorageBytes::from_slice(&[2.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+        causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 3, 3, 1, false)
+            .expect("causal_conv1d");
+        let result: &[f32] = out.as_slice().unwrap();
+        assert_eq!(result, &[3.0, 5.0, 7.0]);
+    }
+
+    /// CausalConv1d: bad shapes error rather than panicking.
+    #[test]
+    fn causal_conv1d_f32_bad_shapes_error() {
+        let x = CpuStorageBytes::from_slice(&[0.0_f32; 4]);
+        let w = CpuStorageBytes::from_slice(&[0.5_f32, 1.0, 2.0]);
+        let b = CpuStorageBytes::from_slice(&[0.1_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        // seq_in (4) != seq_out (3) + kernel - 1 (2) → 4 != 5 → error
+        let r = causal_conv1d_f32(&x, &w, &b, &mut out, 1, 1, 4, 3, 3, false);
         assert!(r.is_err());
     }
 }

@@ -549,6 +549,25 @@ pub enum OpParams {
         reduction:    fuel_graph::registry::Reduction,
         ignore_index: i64,
     },
+
+    /// CausalConv1d execution parameters. Inputs:
+    /// `x [batch, channels, seq_in]` (pre-padded by caller with
+    /// `kernel - 1` left zeros), `weight [channels, 1, kernel]`,
+    /// `bias [channels]`. Output `[batch, channels, seq_out]` where
+    /// `seq_out = seq_in - (kernel - 1)`. All tensors share dtype.
+    ///
+    /// Carries both `seq_in` and `seq_out` so the kernel walks the
+    /// time axis without re-deriving from shapes. `use_silu` toggles
+    /// the fused SiLU activation on the output store (matches
+    /// baracuda's `causal_conv1d_*_run` signature flag).
+    CausalConv1d {
+        batch:    usize,
+        channels: usize,
+        seq_in:   usize,
+        seq_out:  usize,
+        kernel:   usize,
+        use_silu: bool,
+    },
 }
 
 // =============================================================================

@@ -727,6 +727,21 @@ impl LazyTensor {
         }
     }
 
+    /// Depthwise 1-D causal convolution + bias + optional fused SiLU
+    /// — the Mamba-1 / Mamba-2 prefill convolution fusion. See
+    /// [`fuel_graph::Tensor::causal_conv1d`] for the full shape
+    /// contract (caller must left-pad x with `kernel - 1` zeros).
+    pub fn causal_conv1d(
+        &self,
+        weight: &Self,
+        bias: &Self,
+        use_silu: bool,
+    ) -> Self {
+        Self {
+            inner: self.inner.causal_conv1d(&weight.inner, &bias.inner, use_silu),
+        }
+    }
+
     /// Fused softmax + cross-entropy with integer (class-index)
     /// targets — the standard PyTorch CE loss. See
     /// [`fuel_graph::Tensor::fused_softmax_cross_entropy`] for the full

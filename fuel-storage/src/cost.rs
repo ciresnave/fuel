@@ -542,6 +542,39 @@ pub fn cost_softmax_last_dim_primitive_cpu(
     }
 }
 
+/// Cost for `CausalConv1d` (binding-table form). Reads
+/// `batch × channels × seq_out × kernel` FLOPs (2 per FMA) plus an
+/// optional ~10-FLOP SiLU per output. Bandwidth approximation: x +
+/// weight + bias + out, all F32.
+pub fn cost_causal_conv1d_primitive_cpu(
+    _shapes: &[Shape],
+    _dtypes: &[DType],
+    params: &OpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
+        OpParams::CausalConv1d {
+            batch, channels, seq_in, seq_out, kernel, use_silu,
+        } => (
+            *batch as u64, *channels as u64,
+            *seq_in as u64, *seq_out as u64,
+            *kernel as u64, *use_silu,
+        ),
+        _ => return CostEstimate::default(),
+    };
+    let per_out_flops = 2 * kernel + if use_silu { 10 } else { 0 };
+    let flops = batch * channels * seq_out * per_out_flops;
+    let bytes_moved = batch * channels * seq_in * 4
+        + channels * kernel * 4
+        + channels * 4
+        + batch * channels * seq_out * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 /// Cost for `FusedSoftmaxCrossEntropy` (binding-table form). Reads
 /// `n_rows × vocab` from `OpParams::FusedSoftmaxCrossEntropy`. Two
 /// passes per row (max + sum_exp), plus one transcendental log per
@@ -745,6 +778,7 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         | LogSoftmaxLastDim | LogSoftmaxLastDimBackward
             => cost_softmax_last_dim_primitive_cpu,
         FusedSoftmaxCrossEntropy => cost_fused_softmax_cross_entropy_primitive_cpu,
+        CausalConv1d => cost_causal_conv1d_primitive_cpu,
         RmsNormLastDim | RmsNormLastDimBackward
         | LayerNormLastDim | LayerNormLastDimBackward
             => cost_norm_last_dim_primitive_cpu,

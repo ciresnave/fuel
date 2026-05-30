@@ -3471,6 +3471,110 @@ impl Tensor {
         ))
     }
 
+    /// Append a `CausalConv1d` node — depthwise 1-D causal convolution
+    /// + bias + optional fused SiLU. Three inputs:
+    /// - `self` (x): `[batch, channels, seq + kernel - 1]` F32
+    ///   (caller pre-pads with `kernel - 1` zeros on the left for the
+    ///   causal mask — matches Mamba-2's prefill convention).
+    /// - `weight`: `[channels, 1, kernel]` F32 (depthwise — one filter
+    ///   per channel; `groups == channels`).
+    /// - `bias`: `[channels]` F32 (required — matches baracuda's
+    ///   `causal_conv1d_*_run` signature; pass zeros if you don't want
+    ///   a bias).
+    ///
+    /// Output: `[batch, channels, seq]` F32 where `seq = x.dims[2] -
+    /// (kernel - 1)`.
+    ///
+    /// Emits `Op::Fused(FusedOps::CAUSAL_CONV1D,
+    /// FusedOpParams::CausalConv1d { use_silu })`. See
+    /// `fuel-graph/src/registry/causal_conv1d.rs` for the registry
+    /// entry. No primitive decomposition exists (fuel-graph has no
+    /// `Op::Conv1D`); backends without a native kernel fall through
+    /// to the executor's cpu_fallback path.
+    pub fn causal_conv1d(
+        &self,
+        weight: &Tensor,
+        bias: &Tensor,
+        use_silu: bool,
+    ) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &weight.graph)
+                && Arc::ptr_eq(&self.graph, &bias.graph),
+            "causal_conv1d: tensors must live on the same graph",
+        );
+        assert_eq!(
+            self.dtype(),
+            DType::F32,
+            "causal_conv1d v1: x must be F32, got {:?}",
+            self.dtype(),
+        );
+        assert_eq!(
+            weight.dtype(),
+            DType::F32,
+            "causal_conv1d v1: weight must be F32, got {:?}",
+            weight.dtype(),
+        );
+        assert_eq!(
+            bias.dtype(),
+            DType::F32,
+            "causal_conv1d v1: bias must be F32, got {:?}",
+            bias.dtype(),
+        );
+        let x_dims = self.shape();
+        let x_dims = x_dims.dims();
+        let w_dims = weight.shape();
+        let w_dims = w_dims.dims();
+        let b_dims = bias.shape();
+        let b_dims = b_dims.dims();
+        assert_eq!(
+            x_dims.len(), 3,
+            "causal_conv1d: x must be rank 3 [batch, channels, seq+pad], got {x_dims:?}",
+        );
+        assert_eq!(
+            w_dims.len(), 3,
+            "causal_conv1d: weight must be rank 3 [channels, 1, kernel], got {w_dims:?}",
+        );
+        assert_eq!(
+            b_dims.len(), 1,
+            "causal_conv1d: bias must be rank 1 [channels], got {b_dims:?}",
+        );
+        let batch = x_dims[0];
+        let channels = x_dims[1];
+        let x_seq = x_dims[2];
+        let kernel = w_dims[2];
+        assert_eq!(
+            w_dims[0], channels,
+            "causal_conv1d: weight's first dim {} must equal channels {channels}", w_dims[0],
+        );
+        assert_eq!(
+            w_dims[1], 1,
+            "causal_conv1d: weight's middle dim must be 1 (depthwise), got {}", w_dims[1],
+        );
+        assert_eq!(
+            b_dims[0], channels,
+            "causal_conv1d: bias length {} must equal channels {channels}", b_dims[0],
+        );
+        assert!(
+            x_seq >= kernel - 1,
+            "causal_conv1d: x time dim {x_seq} must be ≥ kernel - 1 = {} \
+             (caller must pre-pad with {} zeros)", kernel - 1, kernel - 1,
+        );
+        let out_seq = x_seq - (kernel - 1);
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Fused(
+                crate::registry::FusedOps::CAUSAL_CONV1D,
+                crate::registry::FusedOpParams::CausalConv1d { use_silu },
+            ),
+            inputs: vec![self.id, weight.id, bias.id],
+            shape:  Shape::from_dims(&[batch, channels, out_seq]),
+            dtype:  DType::F32,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `FusedSoftmaxCrossEntropy` node. Two inputs:
     /// - `self` (logits): `[..., V]` F32
     /// - `targets`: `[...]` I64 (class indices; matches PyTorch /
