@@ -3908,6 +3908,157 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// f16 IndexSelect. Mirrors `index_select_f32_bytes`; per-element
+    /// 2 bytes.
+    pub fn index_select_f16_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        ids: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        source_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.index_select_typed_bytes(
+            "index_select_f16_bytes",
+            2,
+            src, ids, out,
+            outer_count, source_dim_size, n_indices, inner_count,
+            &self.pipelines.index_select_f16_pipeline,
+            &self.pipelines.index_select_f16_layout,
+            /* pair_thread */ false,
+        )
+    }
+
+    /// bf16 IndexSelect. Packed-u32 storage with pair-thread layout
+    /// (each thread copies a single u32 = 2 bf16 lanes). Requires
+    /// `inner_count % 2 == 0`.
+    pub fn index_select_bf16_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        ids: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        source_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        if inner_count % 2 != 0 {
+            fuel_core_types::bail!(
+                "index_select_bf16_bytes: inner_count must be even (pair-thread \
+                 packing); got {inner_count}",
+            );
+        }
+        self.index_select_typed_bytes(
+            "index_select_bf16_bytes",
+            2,
+            src, ids, out,
+            outer_count, source_dim_size, n_indices, inner_count,
+            &self.pipelines.index_select_bf16_pipeline,
+            &self.pipelines.index_select_bf16_layout,
+            /* pair_thread */ true,
+        )
+    }
+
+    /// f64 IndexSelect. Per-element 8 bytes.
+    pub fn index_select_f64_bytes(
+        &self,
+        src: &VulkanStorageBytes,
+        ids: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        source_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.index_select_typed_bytes(
+            "index_select_f64_bytes",
+            8,
+            src, ids, out,
+            outer_count, source_dim_size, n_indices, inner_count,
+            &self.pipelines.index_select_f64_pipeline,
+            &self.pipelines.index_select_f64_layout,
+            /* pair_thread */ false,
+        )
+    }
+
+    /// Per-dtype IndexSelect core. `elem_bytes` sizes the output check
+    /// and the bf16 pair-thread variant halves the dispatch count.
+    fn index_select_typed_bytes(
+        &self,
+        op_name: &'static str,
+        elem_bytes: usize,
+        src: &VulkanStorageBytes,
+        ids: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        outer_count: usize,
+        source_dim_size: usize,
+        n_indices: usize,
+        inner_count: usize,
+        pipeline: &ComputePipeline,
+        pipe_layout: &PipelineLayout,
+        pair_thread: bool,
+    ) -> fuel_core_types::Result<()> {
+        let out_size = outer_count * n_indices * inner_count;
+        let need_bytes = out_size * elem_bytes;
+        if out.len_bytes() < need_bytes {
+            fuel_core_types::bail!(
+                "{op_name}: out buffer {} bytes < required {}",
+                out.len_bytes(), need_bytes,
+            );
+        }
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct IParams {
+            out_size: u32, outer: u32, axis_out: u32, inner: u32,
+            axis_in: u32, _pad0: u32, _pad1: u32, _pad2: u32,
+        }
+        let p = IParams {
+            out_size: out_size as u32,
+            outer: outer_count as u32,
+            axis_out: n_indices as u32,
+            inner: inner_count as u32,
+            axis_in: source_dim_size as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
+        };
+
+        let src_buf = src.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: src is host-evicted; fault back first"),
+        ))?;
+        let ids_buf = ids.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: ids is host-evicted; fault back first"),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{op_name}: out is host-evicted; fault back first"),
+        ))?;
+        let (pbuf, pmem) = self.upload_params(&p)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, src_buf, 0, src.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, ids_buf, 0, ids.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<IParams>() as u64);
+
+        // Pair-thread dispatch halves the count because each thread
+        // processes 2 bf16 lanes per iteration.
+        let thread_count = if pair_thread { out_size / 2 } else { out_size };
+        let groups = Self::workgroups(thread_count);
+        let rb = [src_buf.raw() as u64, ids_buf.raw() as u64];
+        let wb = [out_buf.raw() as u64];
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (groups, 1, 1),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 RoPE with pre-computed cos/sin tables. Three storage
     /// inputs: `x` is `[..., seq, head_dim]`, `cos` and `sin` are
     /// `[seq, head_dim/2]` (or `[seq, head_dim]` — the kernel only

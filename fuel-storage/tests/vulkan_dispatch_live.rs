@@ -2699,6 +2699,195 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- IndexSelect f16/bf16/f64 (V.3.G.index_select, 2026-05-30) ----
+
+fn index_select_test_shape() -> (usize, usize, usize, Vec<u32>) {
+    // outer=1, axis_in=4 source rows of inner=8 elements each;
+    // pick indices [3, 0, 2] → 3 output rows.
+    let outer = 1usize;
+    let axis_in = 4usize;
+    let inner = 8usize;
+    let ids = vec![3u32, 0u32, 2u32];
+    (outer, axis_in, inner, ids)
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_index_select_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let (outer, axis_in, inner, ids) = index_select_test_shape();
+    let n_in = outer * axis_in * inner;
+    let n_out = outer * ids.len() * inner;
+
+    // Source: rows are 0..7, 100..107, 200..207, 300..307.
+    let src_f32: Vec<f32> = (0..axis_in)
+        .flat_map(|r| (0..inner).map(move |c| (r * 100 + c) as f32))
+        .collect();
+    let src: Vec<half::f16> = src_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+
+    let src_storage = upload_f16(&backend, &src);
+    let ids_bytes: &[u8] = bytemuck::cast_slice(&ids);
+    let ids_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(ids_bytes).expect("ids upload")),
+        DType::U32,
+    );
+    let out_bytes = backend.alloc_bytes_handle(n_out * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let ids_arc = Arc::new(RwLock::new(ids_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let _ = n_in;
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::IndexSelect,
+            &[DType::F16, DType::U32, DType::F16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[outer, axis_in, inner]));
+    let ids_layout = Layout::contiguous(Shape::from_dims(&[ids.len()]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer, ids.len(), inner]));
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&ids_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[src_layout, ids_layout, out_layout],
+        &OpParams::IndexSelect {
+            outer_count: outer, source_dim_size: axis_in,
+            n_indices: ids.len(), inner_count: inner,
+        },
+    ).expect("index_select f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    // Expected: pick rows 3, 0, 2 in that order.
+    let expected_f32: Vec<f32> = ids.iter()
+        .flat_map(|&id| (0..inner).map(move |c| (id as usize * 100 + c) as f32))
+        .collect();
+    for (i, (g, e)) in got.iter().zip(expected_f32.iter()).enumerate() {
+        assert_eq!(g.to_f32(), *e, "index_select_f16[{i}]: got {}, expected {e}", g.to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_index_select_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let (outer, axis_in, inner, ids) = index_select_test_shape();
+    // inner=8 satisfies the inner%2==0 pair-thread constraint.
+    let n_out = outer * ids.len() * inner;
+
+    let src_f32: Vec<f32> = (0..axis_in)
+        .flat_map(|r| (0..inner).map(move |c| (r * 100 + c) as f32))
+        .collect();
+    let src: Vec<half::bf16> = src_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+
+    let src_storage = upload_bf16(&backend, &src);
+    let ids_bytes: &[u8] = bytemuck::cast_slice(&ids);
+    let ids_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(ids_bytes).expect("ids upload")),
+        DType::U32,
+    );
+    let out_bytes = backend.alloc_bytes_handle(n_out * 2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let ids_arc = Arc::new(RwLock::new(ids_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::IndexSelect,
+            &[DType::BF16, DType::U32, DType::BF16],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[outer, axis_in, inner]));
+    let ids_layout = Layout::contiguous(Shape::from_dims(&[ids.len()]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer, ids.len(), inner]));
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&ids_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[src_layout, ids_layout, out_layout],
+        &OpParams::IndexSelect {
+            outer_count: outer, source_dim_size: axis_in,
+            n_indices: ids.len(), inner_count: inner,
+        },
+    ).expect("index_select bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let expected_f32: Vec<f32> = ids.iter()
+        .flat_map(|&id| (0..inner).map(move |c| (id as usize * 100 + c) as f32))
+        .collect();
+    for (i, (g, e)) in got.iter().zip(expected_f32.iter()).enumerate() {
+        // bf16 round-trip is exact for integer values <= 256; our test
+        // values go up to ~307 which loses ~1 ULP at most. Use loose
+        // tolerance.
+        let got_f32 = g.to_f32();
+        assert!((got_f32 - e).abs() < 5.0,
+            "index_select_bf16[{i}]: got {got_f32}, expected {e}");
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_index_select_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let (outer, axis_in, inner, ids) = index_select_test_shape();
+    let n_out = outer * ids.len() * inner;
+
+    let src: Vec<f64> = (0..axis_in)
+        .flat_map(|r| (0..inner).map(move |c| (r * 100 + c) as f64))
+        .collect();
+
+    let src_storage = upload_f64(&backend, &src);
+    let ids_bytes: &[u8] = bytemuck::cast_slice(&ids);
+    let ids_storage = Storage::new(
+        BackendStorage::Vulkan(backend.upload_bytes_handle(ids_bytes).expect("ids upload")),
+        DType::U32,
+    );
+    let out_bytes = backend.alloc_bytes_handle(n_out * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let src_arc = Arc::new(RwLock::new(src_storage));
+    let ids_arc = Arc::new(RwLock::new(ids_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(
+            OpKind::IndexSelect,
+            &[DType::F64, DType::U32, DType::F64],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+    let src_layout = Layout::contiguous(Shape::from_dims(&[outer, axis_in, inner]));
+    let ids_layout = Layout::contiguous(Shape::from_dims(&[ids.len()]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[outer, ids.len(), inner]));
+    kernel(
+        &[Arc::clone(&src_arc), Arc::clone(&ids_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[src_layout, ids_layout, out_layout],
+        &OpParams::IndexSelect {
+            outer_count: outer, source_dim_size: axis_in,
+            n_indices: ids.len(), inner_count: inner,
+        },
+    ).expect("index_select f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    let expected: Vec<f64> = ids.iter()
+        .flat_map(|&id| (0..inner).map(move |c| (id as usize * 100 + c) as f64))
+        .collect();
+    for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(*g, *e, "index_select_f64[{i}]: got {g}, expected {e}");
+    }
+}
+
 // ---- RoPE f16/f64 (V.3.G.rope, 2026-05-30) ----
 
 #[test]

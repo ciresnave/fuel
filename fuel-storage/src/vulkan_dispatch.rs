@@ -1643,6 +1643,92 @@ pub mod indexing {
             outer_count, source_dim_size, n_indices, inner_count,
         )
     }
+
+    pub fn index_select_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_select_typed("index_select_f16", inputs, outputs, layouts, params, |b, s, i, o, oc, sd, ni, ic| {
+            b.index_select_f16_bytes(s, i, o, oc, sd, ni, ic)
+        })
+    }
+
+    pub fn index_select_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_select_typed("index_select_bf16", inputs, outputs, layouts, params, |b, s, i, o, oc, sd, ni, ic| {
+            b.index_select_bf16_bytes(s, i, o, oc, sd, ni, ic)
+        })
+    }
+
+    pub fn index_select_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        index_select_typed("index_select_f64", inputs, outputs, layouts, params, |b, s, i, o, oc, sd, ni, ic| {
+            b.index_select_f64_bytes(s, i, o, oc, sd, ni, ic)
+        })
+    }
+
+    fn index_select_typed<F>(
+        label: &'static str,
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+        call: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize, usize, usize, usize,
+        ) -> fuel_core_types::Result<()>,
+    {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::indexing::{label}: expected 2 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (outer_count, source_dim_size, n_indices, inner_count) = match params {
+            OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count } => {
+                (*outer_count, *source_dim_size, *n_indices, *inner_count)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::indexing::{label}: expected OpParams::IndexSelect, got {other:?}",
+                )).bt());
+            }
+        };
+        let src_guard = read_storage(&inputs[0])?;
+        let ids_guard = read_storage(&inputs[1])?;
+        if ids_guard.dtype != DType::U32 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::indexing::{label}: ids must be U32, got {:?}",
+                ids_guard.dtype,
+            )).bt());
+        }
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src = vulkan_input(&src_guard)?;
+        let ids = vulkan_input(&ids_guard)?;
+        let backend = src.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::indexing::{label}: src has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        call(backend, src, ids, out, outer_count, source_dim_size, n_indices, inner_count)
+    }
 }
 
 // ===========================================================================
@@ -2351,6 +2437,15 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // Indices are u32; their layout-strided variant is a follow-up. -----
     let idx_dts = [f32, DType::U32, f32];
     table.register_with_precision(OpKind::IndexSelect, &idx_dts, vk, indexing::index_select_f32, VULKAN_BYTE_LEVEL_PRECISION);
+    // V.3.G.index_select (2026-05-30): f16/bf16/f64.
+    {
+        let f16 = DType::F16;
+        let bf16 = DType::BF16;
+        let f64_d = DType::F64;
+        table.register_with_precision(OpKind::IndexSelect, &[f16,   DType::U32, f16],   vk, indexing::index_select_f16,  VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::IndexSelect, &[bf16,  DType::U32, bf16],  vk, indexing::index_select_bf16, VULKAN_BYTE_LEVEL_PRECISION);
+        table.register_with_precision(OpKind::IndexSelect, &[f64_d, DType::U32, f64_d], vk, indexing::index_select_f64,  VULKAN_BYTE_LEVEL_PRECISION);
+    }
 
     // ----- Reduce f32 (V.2.D + V.3.A.2) — Sum / Max / Min / Mean.
     // CONTIGUOUS-ONLY by design: reduce.slang does a tree reduction

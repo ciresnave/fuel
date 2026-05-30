@@ -228,6 +228,15 @@ pub struct Pipelines {
     pub index_select_pipeline: ComputePipeline,
     pub index_select_layout: PipelineLayout,
 
+    pub index_select_f16_pipeline: ComputePipeline,
+    pub index_select_f16_layout: PipelineLayout,
+
+    pub index_select_bf16_pipeline: ComputePipeline,
+    pub index_select_bf16_layout: PipelineLayout,
+
+    pub index_select_f64_pipeline: ComputePipeline,
+    pub index_select_f64_layout: PipelineLayout,
+
     pub add_assign_scaled_pipeline: ComputePipeline,
     pub add_assign_scaled_layout: PipelineLayout,
 
@@ -486,6 +495,9 @@ impl Pipelines {
         let layer_norm_last_dim_backward_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD)?;
         let strided_copy_mod = registry.load_module(device, shaders::STRIDED_COPY)?;
         let index_select_mod = registry.load_module(device, shaders::INDEX_SELECT)?;
+        let index_select_f16_mod = registry.load_module(device, shaders::INDEX_SELECT_F16)?;
+        let index_select_bf16_mod = registry.load_module(device, shaders::INDEX_SELECT_BF16)?;
+        let index_select_f64_mod = registry.load_module(device, shaders::INDEX_SELECT_F64)?;
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
         let rope_f16_mod = registry.load_module(device, shaders::ROPE_F16)?;
@@ -582,6 +594,9 @@ impl Pipelines {
         let layer_norm_last_dim_backward_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let strided_copy_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let index_select_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let index_select_f16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let index_select_bf16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let index_select_f64_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let add_assign_scaled_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let rope_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
         let rope_f16_layout = PipelineLayout::new(device, &[&layout_4s1u])?;
@@ -675,6 +690,9 @@ impl Pipelines {
         let layer_norm_last_dim_backward_pipeline = ComputePipeline::new(device, &layer_norm_last_dim_backward_layout, &layer_norm_last_dim_backward_mod, "main")?;
         let strided_copy_pipeline = ComputePipeline::new(device, &strided_copy_layout, &strided_copy_mod, "main")?;
         let index_select_pipeline = ComputePipeline::new(device, &index_select_layout, &index_select_mod, "main")?;
+        let index_select_f16_pipeline = ComputePipeline::new(device, &index_select_f16_layout, &index_select_f16_mod, "main")?;
+        let index_select_bf16_pipeline = ComputePipeline::new(device, &index_select_bf16_layout, &index_select_bf16_mod, "main")?;
+        let index_select_f64_pipeline = ComputePipeline::new(device, &index_select_f64_layout, &index_select_f64_mod, "main")?;
         let add_assign_scaled_pipeline = ComputePipeline::new(device, &add_assign_scaled_layout, &add_assign_scaled_mod, "main")?;
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
         let rope_f16_pipeline = ComputePipeline::new(device, &rope_f16_layout, &rope_f16_mod, "main")?;
@@ -766,6 +784,9 @@ impl Pipelines {
             layer_norm_last_dim_backward_pipeline, layer_norm_last_dim_backward_layout,
             strided_copy_pipeline, strided_copy_layout,
             index_select_pipeline, index_select_layout,
+            index_select_f16_pipeline, index_select_f16_layout,
+            index_select_bf16_pipeline, index_select_bf16_layout,
+            index_select_f64_pipeline, index_select_f64_layout,
             add_assign_scaled_pipeline, add_assign_scaled_layout,
             rope_pipeline, rope_layout,
             rope_f16_pipeline, rope_f16_layout,
