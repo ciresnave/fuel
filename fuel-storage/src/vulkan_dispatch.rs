@@ -1716,6 +1716,53 @@ pub mod matmul {
             lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
         )
     }
+
+    /// MatMul f16 × f16 → f16 (downcast store). Native float16_t
+    /// inputs; f32 accumulator + shared-mem staging + per-lane
+    /// `float16BitsToUint16` pack.
+    pub fn matmul_f16_f16_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::matmul::matmul_f16_f16_f16: expected 2 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+            OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::matmul::matmul_f16_f16_f16: expected OpParams::Matmul, got {other:?}",
+                )).bt());
+            }
+        };
+        let lhs_guard = read_storage(&inputs[0])?;
+        let rhs_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        if lhs_guard.dtype != DType::F16 || rhs_guard.dtype != DType::F16 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::matmul::matmul_f16_f16_f16: lhs/rhs must be F16, got ({:?}, {:?})",
+                lhs_guard.dtype, rhs_guard.dtype,
+            )).bt());
+        }
+        let lhs = vulkan_input(&lhs_guard)?;
+        let rhs = vulkan_input(&rhs_guard)?;
+        let backend = lhs.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::matmul::matmul_f16_f16_f16: lhs has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.matmul_f16_f16_f16_bytes(
+            lhs, rhs, out, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+        )
+    }
 }
 
 // ===========================================================================
@@ -3920,6 +3967,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // and packed to bf16 lanes on store. Closes the end-to-end bf16
     // inference chain (next layer can consume bf16 activations). -----
     table.register_with_precision(OpKind::MatMul, &[bf16, bf16, bf16], vk, matmul::matmul_bf16_bf16_bf16, VULKAN_MATMUL_TENSORCORE_PRECISION);
+    // ----- MatMul pure f16 × f16 → f16 (downcast store). Sibling
+    // of bf16→bf16; native float16_t inputs + `float16BitsToUint16`
+    // on the pack step. Closes the f16 inference chain. -----
+    {
+        let f16_d = DType::F16;
+        table.register_with_precision(OpKind::MatMul, &[f16_d, f16_d, f16_d], vk, matmul::matmul_f16_f16_f16, VULKAN_MATMUL_TENSORCORE_PRECISION);
+    }
     // ----- MatMul pure f16 × f16 → f32 (V.3 coop-matrix). Native
     // float16_t inputs (no downcast); same coop[3] tile + f32
     // accumulator. Same shape constraints as the bf16 variant. -----
