@@ -768,6 +768,22 @@ fn eval_node(
                  fuel-graph-cpu path should never see it.",
             );
         }
+        Op::ReluInplace
+        | Op::SiluInplace
+        | Op::GeluInplace
+        | Op::TanhInplace
+        | Op::SigmoidInplace => {
+            // Phase 1 of the in-place ops infrastructure
+            // (docs/session-prompts/in-place-ops-infrastructure.md).
+            // Backend execution lands in Phase 3 — until then the eager
+            // fuel-graph-cpu path treats these as a structural error.
+            unreachable!(
+                "fuel-graph-cpu eval_node: in-place ops {:?} are not yet \
+                 wired through the eager path (Phase 3 of the in-place \
+                 ops infrastructure). Use the non-inplace variant.",
+                op,
+            );
+        }
     }
 }
 

@@ -847,6 +847,26 @@ pub fn eval_node_with_op(
                  reference-backend tests should not invoke it.",
             );
         }
+        Op::ReluInplace
+        | Op::SiluInplace
+        | Op::GeluInplace
+        | Op::TanhInplace
+        | Op::SigmoidInplace => {
+            // Phase 1 of the in-place ops infrastructure
+            // (docs/session-prompts/in-place-ops-infrastructure.md).
+            // Backend execution lands in Phase 3 (CPU + CUDA same-
+            // pointer dispatch). Reference backend doesn't intend to
+            // serve in-place ops directly — its job is to be a clean
+            // functional oracle, not to model mutation. Callers that
+            // need a functional comparison should use the non-inplace
+            // variant before realizing on the reference path.
+            unreachable!(
+                "fuel-reference-backend eval_node: in-place ops {:?} \
+                 have no functional reference. Use the non-inplace \
+                 variant (Op::Relu / Op::Silu / etc.) for ref comparison.",
+                op,
+            );
+        }
     }
 }
 
