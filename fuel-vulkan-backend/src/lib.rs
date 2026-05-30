@@ -2604,6 +2604,29 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// MatMul f16 × f16 → f16 (downcast store). Native float16_t
+    /// inputs; f32 accumulator staged to shared mem; per-lane
+    /// `float16BitsToUint16` pack writes packed-u32 f16 output.
+    pub fn matmul_f16_f16_f16_bytes(
+        &self,
+        lhs: &VulkanStorageBytes,
+        rhs: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        lhs_batch_dims: &[usize],
+        rhs_batch_dims: &[usize],
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> fuel_core_types::Result<()> {
+        self.matmul_half_half_half_coop_bytes(
+            "matmul_f16_f16_f16_bytes",
+            self.pipelines.matmul_coop_f16_f16_f16_pipeline.as_ref(),
+            self.pipelines.matmul_coop_f16_f16_f16_layout.as_ref(),
+            "matmul_coop_f16_f16_f16",
+            lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+        )
+    }
+
     /// MatMul f16 × f16 → f32 via cooperative-matrix tensor cores.
     /// Same shape constraints as the bf16 sibling; native float16_t
     /// inputs (no downcast).
