@@ -2699,6 +2699,88 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
     }
 }
 
+// ---- Cast f32 ↔ f64 (V.3.G.cast, 2026-05-30) ----
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_f32_to_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f32> = vec![1.0, 2.5, -3.125, 0.0, f32::MIN_POSITIVE, 1.0e20];
+    let n = host.len();
+
+    let in_storage = upload_f32(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Cast, &[DType::F32, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::None,
+    ).expect("cast f32→f64");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    for (i, (g, h)) in got.iter().zip(host.iter()).enumerate() {
+        // Widening is exact — f32 representable in f64 bit-for-bit.
+        assert_eq!(*g, *h as f64, "cast_f32_to_f64[{i}]: got {g}, expected {}", *h as f64);
+    }
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_cast_f64_to_f32() {
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let host: Vec<f64> = vec![
+        1.0, 2.5, -3.125, 0.0,
+        1.0e20,                              // representable in f32
+        1.0e40,                              // overflows to +Inf in f32
+        1.0e-50,                             // underflows in f32
+        std::f64::consts::PI,                // round-to-nearest at narrowing
+    ];
+    let n = host.len();
+
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(n * 4).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::Cast, &[DType::F64, DType::F32], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &OpParams::None,
+    ).expect("cast f64→f32");
+
+    let got = download_f32(&backend, &out_arc.read().unwrap());
+    for (i, (g, h)) in got.iter().zip(host.iter()).enumerate() {
+        let expected = *h as f32;
+        if expected.is_infinite() {
+            assert!(g.is_infinite() && g.signum() == expected.signum(),
+                "cast_f64_to_f32[{i}]: got {g}, expected ±inf");
+        } else {
+            // Narrowing rounds to nearest-even — should match Rust's `as f32`.
+            assert_eq!(*g, expected, "cast_f64_to_f32[{i}]: got {g}, expected {expected}");
+        }
+    }
+}
+
 // ---- Abs / Sign / Recip (V.3.G.unary, 2026-05-30) ----
 
 #[test]

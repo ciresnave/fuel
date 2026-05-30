@@ -183,6 +183,12 @@ pub struct Pipelines {
     pub reduce_f64_pipeline: ComputePipeline,
     pub reduce_f64_layout: PipelineLayout,
 
+    pub cast_f32_to_f64_pipeline: ComputePipeline,
+    pub cast_f32_to_f64_layout: PipelineLayout,
+
+    pub cast_f64_to_f32_pipeline: ComputePipeline,
+    pub cast_f64_to_f32_layout: PipelineLayout,
+
     pub reduce_last_dim_pipeline: ComputePipeline,
     pub reduce_last_dim_layout: PipelineLayout,
 
@@ -456,6 +462,8 @@ impl Pipelines {
         let reduce_f16_mod = registry.load_module(device, shaders::REDUCE_F16)?;
         let reduce_bf16_mod = registry.load_module(device, shaders::REDUCE_BF16)?;
         let reduce_f64_mod = registry.load_module(device, shaders::REDUCE_F64)?;
+        let cast_f32_to_f64_mod = registry.load_module(device, shaders::CAST_F32_TO_F64)?;
+        let cast_f64_to_f32_mod = registry.load_module(device, shaders::CAST_F64_TO_F32)?;
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
         let reduce_last_dim_f16_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_F16)?;
         let reduce_last_dim_bf16_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_BF16)?;
@@ -546,6 +554,8 @@ impl Pipelines {
         let reduce_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f32_to_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let cast_f64_to_f32_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -635,6 +645,8 @@ impl Pipelines {
         let reduce_f16_pipeline = ComputePipeline::new(device, &reduce_f16_layout, &reduce_f16_mod, "main")?;
         let reduce_bf16_pipeline = ComputePipeline::new(device, &reduce_bf16_layout, &reduce_bf16_mod, "main")?;
         let reduce_f64_pipeline = ComputePipeline::new(device, &reduce_f64_layout, &reduce_f64_mod, "main")?;
+        let cast_f32_to_f64_pipeline = ComputePipeline::new(device, &cast_f32_to_f64_layout, &cast_f32_to_f64_mod, "main")?;
+        let cast_f64_to_f32_pipeline = ComputePipeline::new(device, &cast_f64_to_f32_layout, &cast_f64_to_f32_mod, "main")?;
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
         let reduce_last_dim_f16_pipeline = ComputePipeline::new(device, &reduce_last_dim_f16_layout, &reduce_last_dim_f16_mod, "main")?;
         let reduce_last_dim_bf16_pipeline = ComputePipeline::new(device, &reduce_last_dim_bf16_layout, &reduce_last_dim_bf16_mod, "main")?;
@@ -721,6 +733,8 @@ impl Pipelines {
             reduce_f16_pipeline, reduce_f16_layout,
             reduce_bf16_pipeline, reduce_bf16_layout,
             reduce_f64_pipeline, reduce_f64_layout,
+            cast_f32_to_f64_pipeline, cast_f32_to_f64_layout,
+            cast_f64_to_f32_pipeline, cast_f64_to_f32_layout,
             reduce_last_dim_pipeline, reduce_last_dim_layout,
             reduce_last_dim_f16_pipeline, reduce_last_dim_f16_layout,
             reduce_last_dim_bf16_pipeline, reduce_last_dim_bf16_layout,
