@@ -855,6 +855,50 @@ pub mod write_slice {
 pub mod cast {
     use super::*;
 
+    pub fn cast_f32_f64(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 1 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::cast::cast_f32_f64: expected 1 input + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let src_dtype = in_guard.dtype;
+        let dst_dtype = out_guard.dtype;
+        let a = vulkan_input(&in_guard)?;
+        let n_bytes = a.len_bytes();
+        let src_elem = match src_dtype {
+            DType::F32 => 4,
+            DType::F64 => 8,
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::cast::cast_f32_f64: unsupported src dtype {other:?}",
+                )).bt());
+            }
+        };
+        if n_bytes % src_elem != 0 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::cast::cast_f32_f64: input bytes {n_bytes} not a multiple of \
+                 src elem size {src_elem} ({src_dtype:?})",
+            )).bt());
+        }
+        let n = n_bytes / src_elem;
+        let backend = a.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::cast::cast_f32_f64: input has no VulkanBackend handle."
+                    .to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.cast_f32_f64_bytes(a, out, n, src_dtype, dst_dtype)
+    }
+
     pub fn cast_f32_half(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
@@ -2300,6 +2344,15 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
     table.register_with_precision(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
     table.register_with_precision(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
+    // V.3.G.cast (2026-05-30): f32↔f64 — the f64 escape hatch for
+    // ops that can't run natively on Vulkan f64 (per the GLSL.std.450
+    // transcendental precision constraint, the graph-level pattern is
+    // Cast→f32→op→Cast).
+    {
+        let f64_d = DType::F64;
+        table.register_with_precision(OpKind::Cast, &[f32,   f64_d], vk, cast::cast_f32_f64, VULKAN_CAST_PRECISION);
+        table.register_with_precision(OpKind::Cast, &[f64_d, f32],   vk, cast::cast_f32_f64, VULKAN_CAST_PRECISION);
+    }
 
     // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16.
     // STRIDE-AWARE: binary_f16.slang mirrors binary.slang's stride-

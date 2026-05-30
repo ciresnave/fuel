@@ -50,6 +50,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("cast_f16_to_f32",           include_bytes!("../spv/cast_f16_to_f32.spv")),
     ("cast_f32_to_bf16",          include_bytes!("../spv/cast_f32_to_bf16.spv")),
     ("cast_bf16_to_f32",          include_bytes!("../spv/cast_bf16_to_f32.spv")),
+    ("cast_f32_to_f64",           include_bytes!("../spv/cast_f32_to_f64.spv")),
+    ("cast_f64_to_f32",           include_bytes!("../spv/cast_f64_to_f32.spv")),
     ("cast_f32_to_f8e4m3",        include_bytes!("../spv/cast_f32_to_f8e4m3.spv")),
     ("cast_f8e4m3_to_f32",        include_bytes!("../spv/cast_f8e4m3_to_f32.spv")),
     ("cast_f16_to_f8e4m3",        include_bytes!("../spv/cast_f16_to_f8e4m3.spv")),
@@ -167,6 +169,10 @@ pub const CAST_F16_TO_F32: &str = "cast_f16_to_f32";
 pub const CAST_F32_TO_BF16: &str = "cast_f32_to_bf16";
 /// Cast bf16 → f32 (exact: bits << 16).
 pub const CAST_BF16_TO_F32: &str = "cast_bf16_to_f32";
+/// Cast f32 → f64 (widening, lossless). One thread per element.
+pub const CAST_F32_TO_F64: &str = "cast_f32_to_f64";
+/// Cast f64 → f32 (narrowing, round-to-nearest-even).
+pub const CAST_F64_TO_F32: &str = "cast_f64_to_f32";
 /// Cast f32 → F8E4M3 (round-to-nearest-even, saturate to ±448).
 pub const CAST_F32_TO_F8E4M3: &str = "cast_f32_to_f8e4m3";
 /// Cast F8E4M3 → f32 (exact reverse).
