@@ -36,9 +36,12 @@
     baracuda-cudnn      = { workspace = true, optional = true }
     baracuda-cudnn-sys  = { workspace = true, optional = true }
     baracuda-nccl       = { workspace = true, optional = true }
-    # FlashAttention v2 sm80 kernels — optional, behind the `flash-attn`
-    # feature. The -sys crate has no fuel deps so this dep is one-way
-    # (no cycle with the eager-wrapper crate).
+    # FlashAttention v2 — `flash-attn` feature gate kept (transitional)
+    # until the eager `fuel-flash-attn-cuda` wrapper is migrated off the
+    # `-sys` crate too. The lazy launcher in `crate::flash_attn` calls
+    # baracuda's `fa2_sdpa_*_run_v2` (alpha.60) and no longer needs the
+    # `-sys` crate — but the eager wrapper still does, so the optional
+    # dep stays for now to avoid breaking downstream transformers.
     fuel-flash-attn-cuda-sys = { workspace = true, optional = true }
     # Numeric + tracing
     float8     = { workspace = true }
@@ -54,6 +57,10 @@
     default = []
     nccl    = ["dep:baracuda-nccl"]
     ug      = ["dep:fuel-ug"]
+    # Transitional: gates the lazy `Op::FlashAttn` launcher (uses
+    # baracuda's `fa2_sdpa_*_run_v2`) — no longer pulls in the old
+    # vendored kernels. Will be removed once the eager `fuel-flash-attn-cuda`
+    # wrapper migrates off `-sys` (or is retired).
     flash-attn = ["dep:fuel-flash-attn-cuda-sys"]
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]

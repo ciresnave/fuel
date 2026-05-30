@@ -204,9 +204,13 @@ baracuda-kernels-sys   = { version = "0.0.1-alpha.60", features = [
     "flashinfer",
     # Phase 43 HyperConnection (mhc_layer_static) is exotic; left off
     # by default. Add "mhc" when a Fuel layer needs it.
-    # Phase 42 FA2 deferred until baracuda Tier 2+3 lands (GQA + non-128
-    # head_dim + ALiBi + sliding-window + softcap support). Leave "fa2"
-    # off until then.
+    # Phase 42 + 59a + 59b + 60 FA2 — alpha.60 vendor closes the full
+    # 9 head_dim set {32,64,96,128,160,192,224,256,512} for FW (BW
+    # only covers the original 6 per VENDOR.md). Fuel-side flash_attn
+    # launcher migrated off the upstream vendored FA2 onto baracuda's
+    # `fa2_sdpa_*_run_v2` symbols. SD 1.5 hd40/hd80 paths still use
+    # Fuel's standard-attention fallback (no FA2 path).
+    "fa2",
 ] }
 fancy-regex = "0.17.0"
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
