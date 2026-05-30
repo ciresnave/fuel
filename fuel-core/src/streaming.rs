@@ -247,8 +247,35 @@ impl StreamTensor {
 /// ```
 pub trait StreamingModule {
     /// Process the next chunk of input and return any output that is ready.
+    ///
+    /// This is the unmasked entry point — equivalent to calling
+    /// [`step_with_mask`](Self::step_with_mask) with an empty mask
+    /// (all batch elements treated as active). Existing impls only
+    /// override this method; mask-aware impls (audio decoders where
+    /// batch elements finish at different times) override
+    /// [`step_with_mask`](Self::step_with_mask) instead.
     // TODO: Should we also have a flush method?
     fn step(&mut self, xs: &StreamTensor) -> Result<StreamTensor>;
+
+    /// Process the next chunk with a per-batch-element active mask.
+    ///
+    /// `mask` controls which batch rows update their state from `xs`:
+    /// active rows behave like [`step`](Self::step); finished rows
+    /// (where `mask.is_active(i)` is `false`) preserve their existing
+    /// state. The empty mask (`StreamMask::empty()`) treats all rows
+    /// as active and short-circuits to [`step`](Self::step).
+    ///
+    /// **Default implementation ignores the mask** and delegates to
+    /// [`step`](Self::step). Override this method directly in modules
+    /// whose internal state needs per-batch-element gating
+    /// (e.g. `ConvDownsample1d` / `ConvTrUpsample1d` accumulating
+    /// per-row partial outputs across streaming calls). Existing
+    /// impls that don't track batch-element state can leave the
+    /// default in place — they get the (un-)mask-aware API for free
+    /// without functional change.
+    fn step_with_mask(&mut self, xs: &StreamTensor, _mask: &StreamMask) -> Result<StreamTensor> {
+        self.step(xs)
+    }
 
     /// Clear all internal buffers and state, preparing the module for a new sequence.
     fn reset_state(&mut self);
