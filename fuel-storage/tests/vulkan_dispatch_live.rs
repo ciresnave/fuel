@@ -2701,6 +2701,115 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
 
 #[test]
 #[ignore]
+fn vulkan_dispatch_reduce_sum_full_f16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let n = 8usize;
+    let host_f32: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5];
+    let host: Vec<half::f16> = host_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+    let expected: f32 = host_f32.iter().sum();   // = 18.0
+
+    let in_storage = upload_f16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::SumReduce, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[1]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![], keepdim: false },
+    ).expect("sum-full-reduce f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let got_f32 = got[0].to_f32();
+    assert!((got_f32 - expected).abs() < 5e-3,
+        "sum-full-f16: got {got_f32}, expected {expected}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_min_full_bf16() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let n = 8usize;            // MUST be even (lane-pair input).
+    let host_f32: Vec<f32> = vec![3.0, -1.0, 4.0, 1.5, -5.0, 9.0, 2.0, 6.0];
+    let host: Vec<half::bf16> = host_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+    let expected = host_f32.iter().cloned().fold(f32::INFINITY, f32::min);   // = -5.0
+
+    let in_storage = upload_bf16(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(2).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::MinReduce, &[DType::BF16, DType::BF16], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[1]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![], keepdim: false },
+    ).expect("min-full-reduce bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let got_f32 = got[0].to_f32();
+    assert!((got_f32 - expected).abs() < 5e-2,
+        "min-full-bf16: got {got_f32}, expected {expected}");
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_mean_full_f64() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let n = 8usize;
+    let host: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let expected: f64 = host.iter().sum::<f64>() / n as f64;   // = 4.5
+
+    let in_storage = upload_f64(&backend, &host);
+    let out_bytes = backend.alloc_bytes_handle(8).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
+    let in_arc = Arc::new(RwLock::new(in_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table
+        .lookup_alternatives(OpKind::MeanReduce, &[DType::F64, DType::F64], BackendId::Vulkan)[0]
+        .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[n]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[1]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout, out_layout],
+        &OpParams::Reduce { dims: vec![], keepdim: false },
+    ).expect("mean-full-reduce f64 dispatch");
+
+    let got = download_f64(&backend, &out_arc.read().unwrap());
+    assert!((got[0] - expected).abs() < 1e-12,
+        "mean-full-f64: got {}, expected {}", got[0], expected);
+}
+
+#[test]
+#[ignore]
 fn vulkan_dispatch_reduce_sum_last_dim_f16() {
     let Some(backend) = backend_or_skip() else { return };
 

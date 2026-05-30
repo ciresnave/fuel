@@ -174,6 +174,15 @@ pub struct Pipelines {
     pub reduce_pipeline: ComputePipeline,
     pub reduce_layout: PipelineLayout,
 
+    pub reduce_f16_pipeline: ComputePipeline,
+    pub reduce_f16_layout: PipelineLayout,
+
+    pub reduce_bf16_pipeline: ComputePipeline,
+    pub reduce_bf16_layout: PipelineLayout,
+
+    pub reduce_f64_pipeline: ComputePipeline,
+    pub reduce_f64_layout: PipelineLayout,
+
     pub reduce_last_dim_pipeline: ComputePipeline,
     pub reduce_last_dim_layout: PipelineLayout,
 
@@ -444,6 +453,9 @@ impl Pipelines {
         let softmax_bf16_mod = registry.load_module(device, shaders::SOFTMAX_BF16)?;
         let softmax_f64_mod = registry.load_module(device, shaders::SOFTMAX_F64)?;
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
+        let reduce_f16_mod = registry.load_module(device, shaders::REDUCE_F16)?;
+        let reduce_bf16_mod = registry.load_module(device, shaders::REDUCE_BF16)?;
+        let reduce_f64_mod = registry.load_module(device, shaders::REDUCE_F64)?;
         let reduce_last_dim_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM)?;
         let reduce_last_dim_f16_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_F16)?;
         let reduce_last_dim_bf16_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_BF16)?;
@@ -531,6 +543,9 @@ impl Pipelines {
         let softmax_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let softmax_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let reduce_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let reduce_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let reduce_f64_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let reduce_last_dim_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -617,6 +632,9 @@ impl Pipelines {
         let softmax_bf16_pipeline = ComputePipeline::new(device, &softmax_bf16_layout, &softmax_bf16_mod, "main")?;
         let softmax_f64_pipeline = ComputePipeline::new(device, &softmax_f64_layout, &softmax_f64_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
+        let reduce_f16_pipeline = ComputePipeline::new(device, &reduce_f16_layout, &reduce_f16_mod, "main")?;
+        let reduce_bf16_pipeline = ComputePipeline::new(device, &reduce_bf16_layout, &reduce_bf16_mod, "main")?;
+        let reduce_f64_pipeline = ComputePipeline::new(device, &reduce_f64_layout, &reduce_f64_mod, "main")?;
         let reduce_last_dim_pipeline = ComputePipeline::new(device, &reduce_last_dim_layout, &reduce_last_dim_mod, "main")?;
         let reduce_last_dim_f16_pipeline = ComputePipeline::new(device, &reduce_last_dim_f16_layout, &reduce_last_dim_f16_mod, "main")?;
         let reduce_last_dim_bf16_pipeline = ComputePipeline::new(device, &reduce_last_dim_bf16_layout, &reduce_last_dim_bf16_mod, "main")?;
@@ -700,6 +718,9 @@ impl Pipelines {
             softmax_bf16_pipeline, softmax_bf16_layout,
             softmax_f64_pipeline, softmax_f64_layout,
             reduce_pipeline, reduce_layout,
+            reduce_f16_pipeline, reduce_f16_layout,
+            reduce_bf16_pipeline, reduce_bf16_layout,
+            reduce_f64_pipeline, reduce_f64_layout,
             reduce_last_dim_pipeline, reduce_last_dim_layout,
             reduce_last_dim_f16_pipeline, reduce_last_dim_f16_layout,
             reduce_last_dim_bf16_pipeline, reduce_last_dim_bf16_layout,

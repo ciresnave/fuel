@@ -96,6 +96,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matvec",                    include_bytes!("../spv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
     ("reduce",                    include_bytes!("../spv/reduce.spv")),
+    ("reduce_f16",                include_bytes!("../spv/reduce_f16.spv")),
+    ("reduce_bf16",               include_bytes!("../spv/reduce_bf16.spv")),
+    ("reduce_f64",                include_bytes!("../spv/reduce_f64.spv")),
     ("reduce_last_dim",           include_bytes!("../spv/reduce_last_dim.spv")),
     ("reduce_last_dim_f16",       include_bytes!("../spv/reduce_last_dim_f16.spv")),
     ("reduce_last_dim_bf16",      include_bytes!("../spv/reduce_last_dim_bf16.spv")),
@@ -247,8 +250,16 @@ pub const SOFTMAX_F64: &str = "softmax_f64";
 pub const SOFTMAX_LAST_DIM_BACKWARD: &str = "softmax_last_dim_backward";
 /// Fused layer-norm backward (4 reductions: sum_x, sum_x², sum_g, sum_gx).
 pub const LAYER_NORM_LAST_DIM_BACKWARD: &str = "layer_norm_last_dim_backward";
-/// Parallel reduction over all elements.
+/// Parallel reduction over all elements (f32).
 pub const REDUCE: &str = "reduce";
+/// Full-tensor reduction, f16 storage with f32 accumulator.
+pub const REDUCE_F16: &str = "reduce_f16";
+/// Full-tensor reduction, bf16 storage (packed u32, lane-pair input)
+/// with f32 accumulator. Single output bf16 in low 16 bits of
+/// output[0]; n MUST be even.
+pub const REDUCE_BF16: &str = "reduce_bf16";
+/// Full-tensor reduction, native f64.
+pub const REDUCE_F64: &str = "reduce_f64";
 /// Per-row reduction along the last dimension (f32).
 pub const REDUCE_LAST_DIM: &str = "reduce_last_dim";
 /// Per-row reduction along last dim, f16 storage with f32 accumulator.
