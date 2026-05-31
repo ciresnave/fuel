@@ -8462,6 +8462,99 @@ fn vulkan_dispatch_conv2d_f32() {
     assert!(max_rel < 1e-4, "conv2d worst rel err {max_rel:e} > 1e-4");
 }
 
+/// Conv2D bf16 via im2col_bf16 + matmul_coop_bf16_bf16_bf16.
+/// Shape chosen so the coop tile constraint holds (c_out % 16 == 0
+/// and h_out * w_out % 16 == 0). Compares against the f32 CPU
+/// reference with a tolerance reflecting bf16 precision.
+#[test]
+#[ignore]
+fn vulkan_dispatch_conv2d_bf16() {
+    use fuel_conv::{ConvShape, conv2d_direct};
+    use half::bf16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    // c_out = 16 (% 16 == 0); h_out = w_out = 8, so N = 64 (% 16 == 0).
+    let shape = ConvShape {
+        batch: 1, c_in: 3, c_out: 16,
+        h: 8, w: 8, k_h: 3, k_w: 3,
+        stride: (1, 1), padding: (1, 1), groups: 1,
+    };
+    shape.validate().unwrap();
+
+    let n_in = shape.batch * shape.c_in * shape.h * shape.w;
+    let n_w  = shape.c_out * shape.c_in * shape.k_h * shape.k_w;
+    let n_out = shape.output_len();
+
+    let input_f32: Vec<f32> = (0..n_in)
+        .map(|i| (i as f32 * 0.013).sin() * 0.5)
+        .collect();
+    let weight_f32: Vec<f32> = (0..n_w)
+        .map(|i| ((i as f32 + 1.0) * 0.027).cos() * 0.3)
+        .collect();
+
+    // bf16-quantize inputs so the CPU reference sees the same values
+    // the GPU kernel does, isolating "do we matmul correctly?" from
+    // "did we round bf16 right?".
+    let input_bf16: Vec<bf16> = input_f32.iter().map(|&x| bf16::from_f32(x)).collect();
+    let weight_bf16: Vec<bf16> = weight_f32.iter().map(|&x| bf16::from_f32(x)).collect();
+    let input_q: Vec<f32> = input_bf16.iter().map(|x| x.to_f32()).collect();
+    let weight_q: Vec<f32> = weight_bf16.iter().map(|x| x.to_f32()).collect();
+
+    let mut cpu_out_f32 = vec![0.0_f32; n_out];
+    conv2d_direct(&input_q, &weight_q, None, &shape, &mut cpu_out_f32);
+    // Then round the CPU result to bf16 to match the kernel's downcast store.
+    let cpu_ref: Vec<f32> = cpu_out_f32.iter().map(|&x| bf16::from_f32(x).to_f32()).collect();
+
+    // GPU dispatch.
+    let in_storage  = upload_bf16(&backend, &input_bf16);
+    let w_storage   = upload_bf16(&backend, &weight_bf16);
+    let out_bytes_h = backend.alloc_bytes_handle(((n_out * 2 + 3) & !3) as usize).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::BF16);
+    let in_arc  = Arc::new(RwLock::new(in_storage));
+    let w_arc   = Arc::new(RwLock::new(w_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table.lookup_alternatives(
+        OpKind::Conv2D,
+        &[DType::BF16, DType::BF16, DType::BF16],
+        BackendId::Vulkan,
+    )[0].kernel;
+
+    let in_layout  = Layout::contiguous(Shape::from_dims(&[shape.batch, shape.c_in, shape.h, shape.w]));
+    let w_layout   = Layout::contiguous(Shape::from_dims(&[shape.c_out, shape.c_in, shape.k_h, shape.k_w]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[shape.batch, shape.c_out, shape.h_out(), shape.w_out()]));
+    kernel(
+        &[Arc::clone(&in_arc), Arc::clone(&w_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, w_layout, out_layout],
+        &OpParams::Conv2D {
+            x_shape: [shape.batch, shape.c_in, shape.h, shape.w],
+            w_shape: [shape.c_out, shape.c_in, shape.k_h, shape.k_w],
+            out_shape: [shape.batch, shape.c_out, shape.h_out(), shape.w_out()],
+            stride: shape.stride,
+            padding: shape.padding,
+            dilation: (1, 1),
+            groups: 1,
+        },
+    ).expect("conv2d bf16 dispatch");
+
+    let got = download_bf16(&backend, &out_arc.read().unwrap());
+    let mut max_abs = 0.0_f32;
+    for (i, (g, r)) in got.iter().zip(cpu_ref.iter()).enumerate() {
+        let abs = (g.to_f32() - r).abs();
+        if abs > max_abs { max_abs = abs; }
+        // Per-element bound: the K=27 reduction in f32, the bf16→f16
+        // downcast on each input, and the final bf16 round on output
+        // collectively bound the error to roughly 1 bf16 ULP near the
+        // output magnitude (≈ 0.01 here). Leave generous headroom.
+        assert!(abs < 0.05, "conv2d bf16[{i}]: got {} vs cpu_ref {r}, |diff| = {abs}", g.to_f32());
+    }
+    eprintln!("conv2d bf16: max abs err = {max_abs:e}");
+}
+
 // ===========================================================================
 // Per-Vulkan-kernel PrecisionGuarantee + cost coverage lint
 // (Phase 7.6 step 9c follow-up, 2026-05-23)

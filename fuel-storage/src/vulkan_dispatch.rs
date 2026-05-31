@@ -3463,6 +3463,63 @@ pub mod conv2d {
             x_shape, w_shape, stride, padding, groups,
         )
     }
+
+    /// Conv2D bf16 via im2col_bf16 + cooperative-matrix bf16 matmul.
+    /// Same shape contract as the f32 path; activations + weights +
+    /// output all bf16. COOP-ONLY shape constraints: c_out % 16 == 0
+    /// AND (h_out * w_out) % 16 == 0. Bails on small shapes — route
+    /// picker should fall through to f32 conv2d via Cast.
+    pub fn conv2d_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() < 2 || inputs.len() > 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::conv2d::conv2d_bf16: expected 2-3 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        if inputs.len() == 3 {
+            return Err(Error::Msg(
+                "vulkan_dispatch::conv2d::conv2d_bf16: bias-fused conv2d not supported \
+                 on Vulkan yet; route picker should pick a fused-conv alternative when \
+                 bias is present.".to_string(),
+            ).bt());
+        }
+        let (x_shape, w_shape, stride, padding, dilation, groups) = match params {
+            OpParams::Conv2D { x_shape, w_shape, out_shape: _, stride, padding, dilation, groups } => {
+                (*x_shape, *w_shape, *stride, *padding, *dilation, *groups)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::conv2d::conv2d_bf16: expected OpParams::Conv2D, got {other:?}",
+                )).bt());
+            }
+        };
+        if dilation != (1, 1) {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::conv2d::conv2d_bf16: dilation {dilation:?} != (1,1) \
+                 not yet supported on Vulkan; route picker should fall back to CPU/CUDA",
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let w_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let input = vulkan_input(&in_guard)?;
+        let weight = vulkan_input(&w_guard)?;
+        let backend = input.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::conv2d::conv2d_bf16: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.conv2d_bf16_bytes(
+            input, weight, out,
+            x_shape, w_shape, stride, padding, groups,
+        )
+    }
 }
 
 // ===========================================================================
@@ -4208,6 +4265,19 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         vk,
         conv2d::conv2d_f32,
         VULKAN_MATMUL_PRECISION,
+    );
+    // ----- Conv2D bf16 (V.3.I extended) — im2col_bf16 + cooperative-
+    // matrix bf16 matmul (matmul_coop_bf16_bf16_bf16). Activations,
+    // weights, and output all bf16. COOP-ONLY shape constraints:
+    // c_out % 16 == 0 && (h_out * w_out) % 16 == 0. Wider ULP than
+    // f32 conv2d due to bf16→f16 downcast on matmul inputs; the
+    // tensor-core precision tag reflects that. -----
+    table.register_with_precision(
+        OpKind::Conv2D,
+        &[DType::BF16, DType::BF16, DType::BF16],
+        vk,
+        conv2d::conv2d_bf16,
+        VULKAN_MATMUL_TENSORCORE_PRECISION,
     );
 
     // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — pure dtype conversion.
