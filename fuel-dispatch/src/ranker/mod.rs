@@ -39,9 +39,14 @@ pub mod candidate;
 pub mod chain;
 pub mod enumerate;
 pub mod filter;
+pub mod filters;
 
 pub use alternative_set::{AlternativeSet, DEFAULT_MAX_N};
 pub use candidate::{Candidate, CouplingAdjustment};
 pub use chain::apply_filter_chain;
 pub use enumerate::{enumerate_candidates, enumerate_candidates_default};
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
+pub use filters::{
+    default_chain, BitStablePreferenceFilter, PrecisionFloorFilter, PrecisionRequirement,
+    StridedInputPreferenceFilter,
+};

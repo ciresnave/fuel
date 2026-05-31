@@ -56,7 +56,9 @@ pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
 pub use plan::{compile_plan, resolve_kernel, ExecutionPlan, NodeKernelBinding, TolerancePolicy};
 pub use ranker::{
-    apply_filter_chain, enumerate_candidates, enumerate_candidates_default,
-    AlternativeFilter, AlternativeSet, Candidate, CouplingAdjustment, FilterClass,
-    FilterContext, DEFAULT_MAX_N,
+    apply_filter_chain, default_chain, enumerate_candidates,
+    enumerate_candidates_default, AlternativeFilter, AlternativeSet,
+    BitStablePreferenceFilter, Candidate, CouplingAdjustment, FilterClass,
+    FilterContext, PrecisionFloorFilter, PrecisionRequirement,
+    StridedInputPreferenceFilter, DEFAULT_MAX_N,
 };
