@@ -95,11 +95,11 @@ phase.
 
 ### 2026-05-30 overnight session ship summary
 
-Six commits, all additive (zero backend-file touches; chosen to avoid
-merge conflicts with the user's parallel in-place-ops dtype-expansion
-work in the same fuel-storage / fuel-cpu-backend / fuel-vulkan-backend
-trees). 100 new tests across all phases; full fuel-core lib suite at
-274/274 green.
+**Eleven commits**; ~140 new tests; full fuel-core lib suite at 313/313
+green. All Phase A sub-phases addressed; Phase B shipped; key deferred
+items closed.
+
+First half (before user unblocked A.6–A.9 work):
 
 - `b1dad029` — Phase A.1–A.5 wrapper / composite push (59 tests)
 - `37ea082a` — Phase B LazyKvCache option (b) (8 tests)
@@ -107,12 +107,36 @@ trees). 100 new tests across all phases; full fuel-core lib suite at
 - `befd1a03` — A.x narrow/chunk/get/multi-dim/rand (20 tests)
 - `5f5eff87` — A.x arange/linspace/norm (6 tests)
 - `b322dcdd` — A.x pad_with_zeros (3 tests)
+- `f19a8267` — docs(plan) update
 
-Phase A sub-phases A.6 (general conv1d), A.7 (pooling/interpolation),
-A.8 (signature harmonization), A.9 (in-place init), and Phase C
-(rotating KV) all share the same blocker: they need changes to backend
-files the user is actively modifying. They're deferred to the user's
-awake review.
+After user unblocked Phase A.6–A.9:
+
+- `0cb4a66d` — fix: complete return_state plumbing on
+  SsdChunkScan + SelectiveScan (mechanical WIP-completion to unblock
+  the workspace build before A.6)
+- `a612440f` — Phase A.6 general conv1d as Conv2D composite (10 tests).
+  Hand-decomposed Conv1d pattern from `lazy_whisper.rs` promoted to a
+  first-class wrapper method. Works through every backend's Conv2D
+  dispatch.
+- `416b4247` — Phase A.7 pooling + interpolation composites (14 tests).
+  avg_pool2d via depthwise Conv2D, max_pool2d via slice+maximum,
+  upsample_nearest1d/2d via reshape+concat, interpolate1d/2d.
+  Generalizes the per-port composites in `lazy_yolov8.rs` +
+  `lazy_convnext.rs` + `lazy_sd_unet.rs`.
+- `d3dfb129` — Phase A.8 scope-limited harmonization aliases
+  (6 tests): numel, dim(i), to_dtype, try_cast, try_to_dtype, detach,
+  track_op. Breaking-change harmonization (matmul Result, permute
+  Dims, shape return type) saved for awake review.
+
+**Phase A.9 (in-place init)** stays deferred to Phase G per master
+plan — eager `const_set` / `zero_set` / `scatter_set` patterns are
+training-time concerns and the lazy port pattern (Arc-flat weights
+loaded once at init) already covers inference.
+
+**Phase C (rotating KV)** stays deferred — it needs a new
+`Op::WriteSliceRotating` variant + dispatch + kernel. Best left for
+awake review since the design choice (graph Op vs eager fallback for
+sliding-window models) has architectural impact.
 
 ## Phase A subdivision
 
