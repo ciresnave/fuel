@@ -2383,6 +2383,52 @@ impl LazyTensor {
         }
     }
 
+    /// `arange(start, end, device)`: a rank-1 tensor of `[start, end)` in
+    /// step 1, dtype F32. Matches NumPy / PyTorch convention.
+    pub fn arange(start: f32, end: f32, device: &Device) -> Self {
+        Self::arange_step(start, end, 1.0, device)
+    }
+
+    /// `arange_step(start, end, step, device)`: a rank-1 tensor of
+    /// `[start, end)` with constant step. F32 only for the static
+    /// factory; cast for other dtypes. Errors at runtime if `step ==
+    /// 0`.
+    pub fn arange_step(start: f32, end: f32, step: f32, device: &Device) -> Self {
+        assert!(step != 0.0, "arange_step: step must be non-zero");
+        let mut data = Vec::new();
+        let mut current = start;
+        if step > 0.0 {
+            while current < end {
+                data.push(current);
+                current += step;
+            }
+        } else {
+            while current > end {
+                data.push(current);
+                current += step;
+            }
+        }
+        let n = data.len();
+        Self::from_f32(data, vec![n], device)
+    }
+
+    /// Linearly-spaced 1D tensor with `n` points from `start` to `end`
+    /// (inclusive on both ends). Matches NumPy's `linspace`.
+    pub fn linspace(start: f32, end: f32, n: usize, device: &Device) -> Self {
+        assert!(n >= 1, "linspace: n must be >= 1");
+        if n == 1 {
+            return Self::from_f32(vec![start], vec![1], device);
+        }
+        let step = (end - start) / ((n - 1) as f32);
+        let data: Vec<f32> = (0..n).map(|i| start + step * (i as f32)).collect();
+        Self::from_f32(data, vec![n], device)
+    }
+
+    /// Frobenius norm: `sqrt(sum(self * self))`. Returns a scalar tensor.
+    pub fn norm(&self) -> Self {
+        self.sqr().sum_all().sqrt()
+    }
+
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
     /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
     ///
@@ -9040,5 +9086,47 @@ mod phase_a5_factory_tests {
         let mean: f64 = v.iter().sum::<f64>() / v.len() as f64;
         // Normal(0,1) mean should be near 0; n=1000 gives stderr ~0.03.
         assert!(mean.abs() < 0.2, "mean {mean} too far from 0");
+    }
+
+    #[test]
+    fn arange_int_step() {
+        let t = LazyTensor::arange(0.0, 5.0, &Device::cpu());
+        assert_eq!(t.shape().dims(), &[5]);
+        assert_eq!(t.realize_f32(), vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn arange_step_fractional() {
+        let t = LazyTensor::arange_step(2.0, 4.0, 0.5, &Device::cpu());
+        assert_eq!(t.realize_f32(), vec![2.0, 2.5, 3.0, 3.5]);
+    }
+
+    #[test]
+    fn arange_step_negative_descends() {
+        let t = LazyTensor::arange_step(5.0, 0.0, -1.0, &Device::cpu());
+        assert_eq!(t.realize_f32(), vec![5.0, 4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn linspace_includes_endpoints() {
+        let t = LazyTensor::linspace(0.0, 1.0, 5, &Device::cpu());
+        assert_eq!(t.shape().dims(), &[5]);
+        let v = t.realize_f32();
+        assert!((v[0] - 0.0).abs() < 1e-6);
+        assert!((v[4] - 1.0).abs() < 1e-6);
+        assert!((v[2] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn linspace_n_one_returns_start() {
+        let t = LazyTensor::linspace(7.0, 99.0, 1, &Device::cpu());
+        assert_eq!(t.realize_f32(), vec![7.0]);
+    }
+
+    #[test]
+    fn norm_is_sqrt_sum_sq() {
+        let t = LazyTensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu());
+        let n = t.norm();
+        assert!((n.realize_f32()[0] - 5.0).abs() < 1e-6);
     }
 }
