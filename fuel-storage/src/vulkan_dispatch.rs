@@ -3474,6 +3474,122 @@ pub mod flash_attn {
             scale, causal,
         )
     }
+
+    /// FlashAttention forward, bf16. Inputs / outputs / alibi all
+    /// bf16; math at f32. Same shape contract and constraint set as
+    /// the f32 variant.
+    pub fn flash_attn_bf16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        flash_attn_half_typed(inputs, outputs, params, DType::BF16, "flash_attn_bf16",
+            |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
+                backend.flash_attn_bf16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            })
+    }
+
+    /// FlashAttention forward, f16. Inputs / outputs / alibi all f16.
+    pub fn flash_attn_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        flash_attn_half_typed(inputs, outputs, params, DType::F16, "flash_attn_f16",
+            |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
+                backend.flash_attn_f16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            })
+    }
+
+    fn flash_attn_half_typed<F>(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        params: &OpParams,
+        expected_dtype: DType,
+        debug_name: &'static str,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            Option<&fuel_vulkan_backend::VulkanStorageBytes>,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize, usize, usize, usize, usize, usize,
+            f32, bool,
+        ) -> Result<()>,
+    {
+        if inputs.len() < 3 || inputs.len() > 4 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: expected 3-4 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
+            OpParams::FlashAttn {
+                b, hq, hkv, sq, sk, d,
+                softmax_scale, causal,
+                window_size_left, window_size_right, softcap,
+            } => (
+                *b, *hq, *hkv, *sq, *sk, *d,
+                *softmax_scale, *causal,
+                *window_size_left, *window_size_right, *softcap,
+            ),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::{debug_name}: expected OpParams::FlashAttn, got {other:?}",
+                )).bt());
+            }
+        };
+        if wl.is_some() || wr.is_some() || softcap.is_some() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: window/softcap not supported on Vulkan v1",
+            )).bt());
+        }
+
+        let q_guard = read_storage(&inputs[0])?;
+        let k_guard = read_storage(&inputs[1])?;
+        let v_guard = read_storage(&inputs[2])?;
+        let alibi_guard = match inputs.get(3) {
+            Some(arc) => Some(read_storage(arc)?),
+            None => None,
+        };
+        for (name, dt) in [
+            ("q", q_guard.dtype), ("k", k_guard.dtype), ("v", v_guard.dtype),
+        ] {
+            if dt != expected_dtype {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::{debug_name}: {name} must be {expected_dtype:?}, got {dt:?}",
+                )).bt());
+            }
+        }
+        if let Some(g) = &alibi_guard {
+            if g.dtype != expected_dtype {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::{debug_name}: alibi must be {expected_dtype:?}, got {:?}", g.dtype,
+                )).bt());
+            }
+        }
+        let mut out_guard = write_storage(&outputs[0])?;
+        let q = vulkan_input(&q_guard)?;
+        let k = vulkan_input(&k_guard)?;
+        let v = vulkan_input(&v_guard)?;
+        let alibi = match &alibi_guard {
+            Some(g) => Some(vulkan_input(g)?),
+            None => None,
+        };
+        let backend = q.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: q has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        f(backend, q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
+    }
 }
 
 pub mod conv2d {
@@ -4409,6 +4525,38 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         flash_attn::flash_attn_f32,
         VULKAN_FLOAT_POINTWISE_PRECISION,
     );
+    {
+        let bf16_d = DType::BF16;
+        let f16_d = DType::F16;
+        table.register_with_precision(
+            OpKind::FlashAttn,
+            &[bf16_d, bf16_d, bf16_d, bf16_d],
+            vk,
+            flash_attn::flash_attn_bf16,
+            VULKAN_HALF_POINTWISE_PRECISION,
+        );
+        table.register_with_precision(
+            OpKind::FlashAttn,
+            &[bf16_d, bf16_d, bf16_d, bf16_d, bf16_d],
+            vk,
+            flash_attn::flash_attn_bf16,
+            VULKAN_HALF_POINTWISE_PRECISION,
+        );
+        table.register_with_precision(
+            OpKind::FlashAttn,
+            &[f16_d, f16_d, f16_d, f16_d],
+            vk,
+            flash_attn::flash_attn_f16,
+            VULKAN_HALF_POINTWISE_PRECISION,
+        );
+        table.register_with_precision(
+            OpKind::FlashAttn,
+            &[f16_d, f16_d, f16_d, f16_d, f16_d],
+            vk,
+            flash_attn::flash_attn_f16,
+            VULKAN_HALF_POINTWISE_PRECISION,
+        );
+    }
 
     // ----- Conv2D bf16 (V.3.I extended) — im2col_bf16 + cooperative-
     // matrix bf16 matmul (matmul_coop_bf16_bf16_bf16). Activations,

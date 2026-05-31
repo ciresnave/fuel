@@ -145,6 +145,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matmul_small_f16_f16_f32",  include_bytes!("../spv/matmul_small_f16_f16_f32.spv")),
     ("matmul_small_f16_f16_f16",  include_bytes!("../spv/matmul_small_f16_f16_f16.spv")),
     ("flash_attn_f32",            include_bytes!("../spv/flash_attn_f32.spv")),
+    ("flash_attn_bf16",           include_bytes!("../spv/flash_attn_bf16.spv")),
+    ("flash_attn_f16",            include_bytes!("../spv/flash_attn_f16.spv")),
     ("matmul_coop_f16_f16_f16",   include_bytes!("../spv/matmul_coop_f16_f16_f16.spv")),
     ("matvec",                    include_bytes!("../spv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
@@ -411,6 +413,13 @@ pub const MATMUL_SMALL_F16_F16_F16: &str = "matmul_small_f16_f16_f16";
 /// Supports GQA, causal mask, softmax_scale, alibi. Window + softcap
 /// fall through to other backends.
 pub const FLASH_ATTN_F32: &str = "flash_attn_f32";
+/// FlashAttention forward, bf16. Same algorithm as the f32 variant;
+/// bf16 inputs/outputs with f32 accumulators (math at f32, narrow on
+/// output store — matches CPU's `flash_attn_bf16` reference).
+pub const FLASH_ATTN_BF16: &str = "flash_attn_bf16";
+/// FlashAttention forward, f16. Native float16_t inputs/outputs;
+/// f32 accumulators.
+pub const FLASH_ATTN_F16: &str = "flash_attn_f16";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f16 (downcast
 /// store). Same staging pattern as the bf16→bf16 sibling but uses
 /// `float16BitsToUint16` to pack the f32 accumulator into f16 lanes.
