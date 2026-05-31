@@ -23,6 +23,12 @@ use std::time::Instant;
 use tracing::{debug_span, info_span};
 use vulkane::safe::*;
 
+/// Which of `flash_attn_backward_{q,k,v}_f32` is dispatching — drives
+/// the output-buffer size and workgroup count in
+/// [`VulkanBackend::flash_attn_backward_bytes_impl`].
+#[derive(Copy, Clone)]
+enum FaBackwardDispatch { Q, K, V }
+
 /// The Arc-shared GPU buffer + its backing allocation. Separating this
 /// from `VulkanStorage` lets us cheaply clone a storage handle (just
 /// bump the Arc refcount) for pure-shape-relabel clones like reshape
@@ -3997,6 +4003,226 @@ impl VulkanBackend {
             &mm_rb, &mm_wb,
         )?;
         self.flush_pending()?;
+        Ok(())
+    }
+
+    /// FlashAttention backward — dQ, f32. Same shape contract as
+    /// `flash_attn_f32_bytes`; produces grad-Q (same shape as Q)
+    /// given (Q, K, V, dO, [alibi]). Dispatch: one workgroup per
+    /// (b, h_q, q_i).
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attn_backward_q_f32_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        do_grad: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        d_out: &mut VulkanStorageBytes,
+        b: usize, hq: usize, hkv: usize,
+        sq: usize, sk: usize, d: usize,
+        softmax_scale: f32,
+        causal: bool,
+    ) -> fuel_core_types::Result<()> {
+        self.flash_attn_backward_bytes_impl(
+            "flash_attn_backward_q_f32_bytes",
+            &self.pipelines.flash_attn_backward_q_f32_pipeline,
+            &self.pipelines.flash_attn_backward_q_f32_layout,
+            "flash_attn_backward_q_f32",
+            FaBackwardDispatch::Q,
+            q, k, v, do_grad, alibi, d_out,
+            b, hq, hkv, sq, sk, d,
+            softmax_scale, causal,
+        )
+    }
+
+    /// FlashAttention backward — dK, f32. Output shape == K shape.
+    /// Dispatch: one workgroup per (b, h_kv, k_j).
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attn_backward_k_f32_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        do_grad: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        d_out: &mut VulkanStorageBytes,
+        b: usize, hq: usize, hkv: usize,
+        sq: usize, sk: usize, d: usize,
+        softmax_scale: f32,
+        causal: bool,
+    ) -> fuel_core_types::Result<()> {
+        self.flash_attn_backward_bytes_impl(
+            "flash_attn_backward_k_f32_bytes",
+            &self.pipelines.flash_attn_backward_k_f32_pipeline,
+            &self.pipelines.flash_attn_backward_k_f32_layout,
+            "flash_attn_backward_k_f32",
+            FaBackwardDispatch::K,
+            q, k, v, do_grad, alibi, d_out,
+            b, hq, hkv, sq, sk, d,
+            softmax_scale, causal,
+        )
+    }
+
+    /// FlashAttention backward — dV, f32. Output shape == V shape.
+    /// Same dispatch shape as dK.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attn_backward_v_f32_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        do_grad: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        d_out: &mut VulkanStorageBytes,
+        b: usize, hq: usize, hkv: usize,
+        sq: usize, sk: usize, d: usize,
+        softmax_scale: f32,
+        causal: bool,
+    ) -> fuel_core_types::Result<()> {
+        self.flash_attn_backward_bytes_impl(
+            "flash_attn_backward_v_f32_bytes",
+            &self.pipelines.flash_attn_backward_v_f32_pipeline,
+            &self.pipelines.flash_attn_backward_v_f32_layout,
+            "flash_attn_backward_v_f32",
+            FaBackwardDispatch::V,
+            q, k, v, do_grad, alibi, d_out,
+            b, hq, hkv, sq, sk, d,
+            softmax_scale, causal,
+        )
+    }
+
+    /// Shared body for the three FA backward wrappers. The only
+    /// per-variant difference is which output gradient is produced
+    /// (Q/K/V) — selected by the `which` arg, which determines the
+    /// expected output size and the workgroup dispatch shape.
+    #[allow(clippy::too_many_arguments)]
+    fn flash_attn_backward_bytes_impl(
+        &self,
+        debug_name: &'static str,
+        pipeline: &vulkane::safe::ComputePipeline,
+        pipe_layout: &vulkane::safe::PipelineLayout,
+        op_name: &'static str,
+        which: FaBackwardDispatch,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        do_grad: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        d_out: &mut VulkanStorageBytes,
+        b: usize, hq: usize, hkv: usize,
+        sq: usize, sk: usize, d: usize,
+        softmax_scale: f32,
+        causal: bool,
+    ) -> fuel_core_types::Result<()> {
+        if hkv == 0 || hq % hkv != 0 {
+            fuel_core_types::bail!(
+                "{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",
+            );
+        }
+        if sk > 4096 {
+            fuel_core_types::bail!(
+                "{debug_name}: sk={sk} > 4096; tiled kernel for long contexts is a follow-up",
+            );
+        }
+        // dV/dK kernels need TPB ≥ D for the per-thread accumulator
+        // pattern; dQ doesn't, but we cap uniformly at D ≤ 256 for
+        // shared-memory budget.
+        if d > 256 {
+            fuel_core_types::bail!("{debug_name}: d={d} > 256");
+        }
+        let elem = 4usize;
+        let need_q   = b * hq  * sq * d * elem;
+        let need_k   = b * hkv * sk * d * elem;
+        let need_v   = need_k;
+        let need_do  = need_q;
+        let need_out = match which {
+            FaBackwardDispatch::Q => need_q,
+            FaBackwardDispatch::K | FaBackwardDispatch::V => need_k,
+        };
+        if q.len_bytes()       < need_q   { fuel_core_types::bail!("{debug_name}: q {} < {need_q}",   q.len_bytes()); }
+        if k.len_bytes()       < need_k   { fuel_core_types::bail!("{debug_name}: k {} < {need_k}",   k.len_bytes()); }
+        if v.len_bytes()       < need_v   { fuel_core_types::bail!("{debug_name}: v {} < {need_v}",   v.len_bytes()); }
+        if do_grad.len_bytes() < need_do  { fuel_core_types::bail!("{debug_name}: do {} < {need_do}", do_grad.len_bytes()); }
+        if d_out.len_bytes()   < need_out { fuel_core_types::bail!("{debug_name}: d_out {} < {need_out}", d_out.len_bytes()); }
+        if let Some(a) = alibi {
+            let need_a = hq * elem;
+            if a.len_bytes() < need_a {
+                fuel_core_types::bail!("{debug_name}: alibi {} < {need_a}", a.len_bytes());
+            }
+        }
+
+        let q_buf  = q.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: q host-evicted")))?;
+        let k_buf  = k.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: k host-evicted")))?;
+        let v_buf  = v.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: v host-evicted")))?;
+        let do_buf = do_grad.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: do host-evicted")))?;
+        let dout_buf = d_out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            format!("{debug_name}: d_out host-evicted")))?;
+
+        let mut dummy_alibi: Option<VulkanStorageBytes> = None;
+        let alibi_buf = if let Some(a) = alibi {
+            a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+                format!("{debug_name}: alibi host-evicted")))?
+        } else {
+            dummy_alibi = Some(self.alloc_bytes(16)?);
+            dummy_alibi.as_ref().unwrap().buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+                format!("{debug_name}: dummy alibi alloc failed")))?
+        };
+        let alibi_bind_len = match alibi {
+            Some(a) => a.len_bytes() as u64,
+            None => 16,
+        };
+        let alibi_bind_len = ((alibi_bind_len as usize + 3) & !3) as u64;
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct FaParams {
+            b: u32, hq: u32, hkv: u32,
+            sq: u32, sk: u32, d: u32,
+            softmax_scale: f32,
+            causal: u32,
+            use_alibi: u32,
+            _pad0: u32, _pad1: u32, _pad2: u32,
+        }
+        let params = FaParams {
+            b: b as u32, hq: hq as u32, hkv: hkv as u32,
+            sq: sq as u32, sk: sk as u32, d: d as u32,
+            softmax_scale,
+            causal: causal as u32,
+            use_alibi: alibi.is_some() as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&params)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_6s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, q_buf,    0, q.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, k_buf,    0, k.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, v_buf,    0, v.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, do_buf,   0, do_grad.len_bytes() as u64);
+        desc.write_buffer(4, DescriptorType::STORAGE_BUFFER, alibi_buf, 0, alibi_bind_len);
+        desc.write_buffer(5, DescriptorType::STORAGE_BUFFER, dout_buf, 0, d_out.len_bytes() as u64);
+        desc.write_buffer(6, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<FaParams>() as u64);
+
+        let rb = [q_buf.raw() as u64, k_buf.raw() as u64, v_buf.raw() as u64, do_buf.raw() as u64, alibi_buf.raw() as u64];
+        let wb = [dout_buf.raw() as u64];
+        let total_z = match which {
+            FaBackwardDispatch::Q => (b * hq  * sq) as u32,
+            FaBackwardDispatch::K | FaBackwardDispatch::V => (b * hkv * sk) as u32,
+        };
+        self.record_dispatch_batched(
+            op_name,
+            pipeline,
+            pipe_layout,
+            desc,
+            (1, 1, total_z),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        drop(dummy_alibi);
         Ok(())
     }
 

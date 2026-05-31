@@ -9002,6 +9002,117 @@ fn vulkan_dispatch_flash_attn_f32_causal() {
     eprintln!("flash_attn f32 causal: max abs err = {max_abs:e}");
 }
 
+/// FlashAttention backward (Q/K/V), f32. Compares against the CPU
+/// `flash_attn_backward_f32` reference.
+#[test]
+#[ignore]
+fn vulkan_dispatch_flash_attn_backward_f32_causal() {
+    use fuel_cpu_backend::byte_kernels::{
+        flash_attn_backward_f32, FaBackwardWhich,
+    };
+    use fuel_cpu_backend::CpuStorageBytes;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let b = 1usize;
+    let hq = 2usize;
+    let hkv = 1usize;
+    let sq = 4usize;
+    let sk = 4usize;
+    let d = 8usize;
+    let scale: f32 = 1.0 / (d as f32).sqrt();
+    let q_n = b * hq * sq * d;
+    let kv_n = b * hkv * sk * d;
+
+    let q_host: Vec<f32> = (0..q_n).map(|i| (i as f32 * 0.013).sin() * 0.4).collect();
+    let k_host: Vec<f32> = (0..kv_n).map(|i| ((i as f32 + 1.0) * 0.027).cos() * 0.3).collect();
+    let v_host: Vec<f32> = (0..kv_n).map(|i| ((i as f32 + 2.0) * 0.019).sin() * 0.5).collect();
+    let do_host: Vec<f32> = (0..q_n).map(|i| ((i as f32 + 3.0) * 0.031).cos() * 0.4).collect();
+
+    let q_cpu = CpuStorageBytes::from_bytes(bytemuck::cast_slice(&q_host));
+    let k_cpu = CpuStorageBytes::from_bytes(bytemuck::cast_slice(&k_host));
+    let v_cpu = CpuStorageBytes::from_bytes(bytemuck::cast_slice(&v_host));
+    let do_cpu = CpuStorageBytes::from_bytes(bytemuck::cast_slice(&do_host));
+    let mut dq_cpu = CpuStorageBytes::from_bytes(&vec![0u8; q_n * 4]);
+    let mut dk_cpu = CpuStorageBytes::from_bytes(&vec![0u8; kv_n * 4]);
+    let mut dv_cpu = CpuStorageBytes::from_bytes(&vec![0u8; kv_n * 4]);
+    flash_attn_backward_f32(
+        &q_cpu, &k_cpu, &v_cpu, &do_cpu, None, &mut dq_cpu, FaBackwardWhich::Q,
+        b, hq, hkv, sq, sk, d, scale, true, None, None, None,
+    ).expect("cpu dq ref");
+    flash_attn_backward_f32(
+        &q_cpu, &k_cpu, &v_cpu, &do_cpu, None, &mut dk_cpu, FaBackwardWhich::K,
+        b, hq, hkv, sq, sk, d, scale, true, None, None, None,
+    ).expect("cpu dk ref");
+    flash_attn_backward_f32(
+        &q_cpu, &k_cpu, &v_cpu, &do_cpu, None, &mut dv_cpu, FaBackwardWhich::V,
+        b, hq, hkv, sq, sk, d, scale, true, None, None, None,
+    ).expect("cpu dv ref");
+    let dq_ref: Vec<f32> = bytemuck::cast_slice::<u8, f32>(dq_cpu.bytes()).to_vec();
+    let dk_ref: Vec<f32> = bytemuck::cast_slice::<u8, f32>(dk_cpu.bytes()).to_vec();
+    let dv_ref: Vec<f32> = bytemuck::cast_slice::<u8, f32>(dv_cpu.bytes()).to_vec();
+
+    let q_st = upload_f32(&backend, &q_host);
+    let k_st = upload_f32(&backend, &k_host);
+    let v_st = upload_f32(&backend, &v_host);
+    let do_st = upload_f32(&backend, &do_host);
+    let q_arc = Arc::new(RwLock::new(q_st));
+    let k_arc = Arc::new(RwLock::new(k_st));
+    let v_arc = Arc::new(RwLock::new(v_st));
+    let do_arc = Arc::new(RwLock::new(do_st));
+
+    let q_layout = Layout::contiguous(Shape::from_dims(&[b, hq, sq, d]));
+    let k_layout = Layout::contiguous(Shape::from_dims(&[b, hkv, sk, d]));
+    let v_layout = Layout::contiguous(Shape::from_dims(&[b, hkv, sk, d]));
+    let do_layout = q_layout.clone();
+    let op_params = OpParams::FlashAttn {
+        b, hq, hkv, sq, sk, d,
+        softmax_scale: scale,
+        causal: true,
+        window_size_left: None, window_size_right: None,
+        softcap: None,
+    };
+
+    for (kind, expected, expected_size, name) in [
+        (OpKind::FlashAttnBackwardQ, &dq_ref, q_n,  "dQ"),
+        (OpKind::FlashAttnBackwardK, &dk_ref, kv_n, "dK"),
+        (OpKind::FlashAttnBackwardV, &dv_ref, kv_n, "dV"),
+    ] {
+        let out_bytes = backend.alloc_bytes_handle(expected_size * 4).expect("alloc");
+        let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+        let out_arc = Arc::new(RwLock::new(out_storage));
+        let kernel = table.lookup_alternatives(
+            kind,
+            &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+            BackendId::Vulkan,
+        )[0].kernel;
+        let out_layout = if matches!(kind, OpKind::FlashAttnBackwardQ) {
+            q_layout.clone()
+        } else {
+            k_layout.clone()
+        };
+        kernel(
+            &[Arc::clone(&q_arc), Arc::clone(&k_arc), Arc::clone(&v_arc), Arc::clone(&do_arc)],
+            &mut [Arc::clone(&out_arc)],
+            &[q_layout.clone(), k_layout.clone(), v_layout.clone(), do_layout.clone(), out_layout],
+            &op_params,
+        ).unwrap_or_else(|e| panic!("vulkan {name} dispatch: {e}"));
+        let got = download_f32(&backend, &out_arc.read().unwrap());
+        let mut max_abs = 0.0_f32;
+        for (i, (g, r)) in got.iter().zip(expected.iter()).enumerate() {
+            let abs = (g - r).abs();
+            if abs > max_abs { max_abs = abs; }
+            assert!(
+                abs < 5e-4,
+                "fa bw {name}[{i}]: got {g} vs cpu {r}, |diff| = {abs}",
+            );
+        }
+        eprintln!("flash_attn_backward_{name}: max abs err = {max_abs:e}");
+    }
+}
+
 // ===========================================================================
 // Per-Vulkan-kernel PrecisionGuarantee + cost coverage lint
 // (Phase 7.6 step 9c follow-up, 2026-05-23)

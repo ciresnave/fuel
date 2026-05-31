@@ -3590,6 +3590,143 @@ pub mod flash_attn {
         let out = vulkan_output(&mut out_guard)?;
         f(backend, q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
     }
+
+    /// FlashAttention backward — dQ, f32. Inputs (q, k, v, dO, [alibi]);
+    /// output dQ (same shape as Q). Bails on window/softcap (route
+    /// picker falls through to CPU).
+    pub fn flash_attn_backward_q_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        flash_attn_backward_f32_typed(inputs, outputs, params, "flash_attn_backward_q_f32",
+            |backend, q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
+                backend.flash_attn_backward_q_f32_bytes(q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            })
+    }
+
+    /// FlashAttention backward — dK, f32.
+    pub fn flash_attn_backward_k_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        flash_attn_backward_f32_typed(inputs, outputs, params, "flash_attn_backward_k_f32",
+            |backend, q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
+                backend.flash_attn_backward_k_f32_bytes(q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            })
+    }
+
+    /// FlashAttention backward — dV, f32.
+    pub fn flash_attn_backward_v_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        flash_attn_backward_f32_typed(inputs, outputs, params, "flash_attn_backward_v_f32",
+            |backend, q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
+                backend.flash_attn_backward_v_f32_bytes(q, k, v, dgrad, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            })
+    }
+
+    /// Shared dispatch shim body for the three FA backward variants.
+    /// Validates input counts (4-5: Q, K, V, dO, optional alibi),
+    /// extracts shape params, asserts all inputs are F32, then hands
+    /// off to the per-variant backend method.
+    #[allow(clippy::too_many_arguments)]
+    fn flash_attn_backward_f32_typed<F>(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        params: &OpParams,
+        debug_name: &'static str,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(
+            &fuel_vulkan_backend::VulkanBackend,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            &fuel_vulkan_backend::VulkanStorageBytes,
+            Option<&fuel_vulkan_backend::VulkanStorageBytes>,
+            &mut fuel_vulkan_backend::VulkanStorageBytes,
+            usize, usize, usize, usize, usize, usize,
+            f32, bool,
+        ) -> Result<()>,
+    {
+        if inputs.len() < 4 || inputs.len() > 5 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: expected 4-5 inputs (q, k, v, do, [alibi]) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
+            OpParams::FlashAttn {
+                b, hq, hkv, sq, sk, d,
+                softmax_scale, causal,
+                window_size_left, window_size_right, softcap,
+            } => (
+                *b, *hq, *hkv, *sq, *sk, *d,
+                *softmax_scale, *causal,
+                *window_size_left, *window_size_right, *softcap,
+            ),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::{debug_name}: expected OpParams::FlashAttn, got {other:?}",
+                )).bt());
+            }
+        };
+        if wl.is_some() || wr.is_some() || softcap.is_some() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: window/softcap not supported on Vulkan v1",
+            )).bt());
+        }
+
+        let q_guard = read_storage(&inputs[0])?;
+        let k_guard = read_storage(&inputs[1])?;
+        let v_guard = read_storage(&inputs[2])?;
+        let do_guard = read_storage(&inputs[3])?;
+        let alibi_guard = match inputs.get(4) {
+            Some(arc) => Some(read_storage(arc)?),
+            None => None,
+        };
+        for (name, dt) in [
+            ("q", q_guard.dtype), ("k", k_guard.dtype), ("v", v_guard.dtype),
+            ("do", do_guard.dtype),
+        ] {
+            if dt != DType::F32 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::{debug_name}: {name} must be F32, got {dt:?}",
+                )).bt());
+            }
+        }
+        if let Some(g) = &alibi_guard {
+            if g.dtype != DType::F32 {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::{debug_name}: alibi must be F32, got {:?}", g.dtype,
+                )).bt());
+            }
+        }
+        let mut out_guard = write_storage(&outputs[0])?;
+        let q = vulkan_input(&q_guard)?;
+        let k = vulkan_input(&k_guard)?;
+        let v = vulkan_input(&v_guard)?;
+        let do_storage = vulkan_input(&do_guard)?;
+        let alibi = match &alibi_guard {
+            Some(g) => Some(vulkan_input(g)?),
+            None => None,
+        };
+        let backend = q.backend().ok_or_else(|| {
+            Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: q has no VulkanBackend handle.",
+            )).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        f(backend, q, k, v, do_storage, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
+    }
 }
 
 pub mod conv2d {
@@ -4557,6 +4694,53 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
             VULKAN_HALF_POINTWISE_PRECISION,
         );
     }
+
+    // ----- FlashAttn backward Q/K/V, f32. Vulkan kernels for the
+    // three OpKinds added at 3fd33aae. Same window/softcap caveats as
+    // forward; bf16/f16 backward kernels are own session. Binding key
+    // shape: 4-input (q,k,v,do,out) + 5-input (q,k,v,do,alibi,out). -----
+    table.register_with_precision(
+        OpKind::FlashAttnBackwardQ,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_backward_q_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+    table.register_with_precision(
+        OpKind::FlashAttnBackwardQ,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_backward_q_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+    table.register_with_precision(
+        OpKind::FlashAttnBackwardK,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_backward_k_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+    table.register_with_precision(
+        OpKind::FlashAttnBackwardK,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_backward_k_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+    table.register_with_precision(
+        OpKind::FlashAttnBackwardV,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_backward_v_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+    table.register_with_precision(
+        OpKind::FlashAttnBackwardV,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_backward_v_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
 
     // ----- Conv2D bf16 (V.3.I extended) — im2col_bf16 + cooperative-
     // matrix bf16 matmul (matmul_coop_bf16_bf16_bf16). Activations,
