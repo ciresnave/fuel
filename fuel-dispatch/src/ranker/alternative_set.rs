@@ -131,12 +131,42 @@ impl AlternativeSet {
         });
     }
 
-    /// Truncate to top-`max_n`. Caller must have called
-    /// `rank_by_cost` first; this is a pure suffix-drop. Phase 1.4
-    /// lands the rank; until then this just truncates in current
-    /// order.
+    /// Truncate to top-`max_n`. Caller is expected to have called
+    /// [`Self::rank_by_composite_cost`] first; this is a pure
+    /// suffix-drop.
     pub fn truncate_to_top_n(&mut self) {
         self.candidates.truncate(self.max_n);
+    }
+
+    /// Sort candidates ascending by their composite static cost
+    /// (Layer-1 score; see [`super::cost::composite_ns`]). Stable
+    /// sort — candidates with identical costs keep their relative
+    /// order, which matters when registration order is the
+    /// tie-breaker.
+    ///
+    /// Phase 1.4 of the picker-work arc. Composite cost is
+    /// `max(compute_ns, memory_ns) + overhead_ns`, treating
+    /// compute and memory as parallel (roofline model). Phase 3
+    /// will compose Layer-2 Judge data on top either by refining
+    /// `static_cost` before this call or by providing a separate
+    /// rank method.
+    pub fn rank_by_composite_cost(&mut self) {
+        use super::cost::composite_ns;
+        self.candidates
+            .sort_by_key(|c| composite_ns(&c.static_cost));
+    }
+
+    /// Set the `static_cost` field of the candidate at `index`.
+    /// Used by [`super::cost::compute_static_costs`] to populate
+    /// the field after enumeration. Panics in debug builds if
+    /// `index >= len`.
+    pub fn set_static_cost(&mut self, index: usize, cost: crate::fused::CostEstimate) {
+        debug_assert!(
+            index < self.candidates.len(),
+            "set_static_cost: index {index} out of range (len={})",
+            self.candidates.len(),
+        );
+        self.candidates[index].static_cost = cost;
     }
 
     /// The current top candidate (first entry). After the full
