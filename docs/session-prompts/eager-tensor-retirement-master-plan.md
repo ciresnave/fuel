@@ -79,19 +79,40 @@ hand-decomposition in Whisper.
 
 ## Phase sequence
 
-| Phase | Work | Sessions | Sequencing |
-|-------|------|----------|------------|
-| **A** | Close API gap on LazyTensor / `fuel_graph::Tensor` | 8–12 | First; blocks all consumer ports |
-| **B** | LazyKvCache option (b) | 1–2 | Parallel with A |
-| **C** | Rotating-window KV cache (new Op) | 1 | Parallel with A+B if attention allows |
-| **D** | LLM lazy ports (~14 models) | 7–10 | After A+B complete |
-| **E** | Vision/multimodal lazy ports (~25 models) | 8–12 | After A (pooling), parallel with D |
-| **F** | Diffusion lazy ports (~34 files) | 8–12 | After A + any new attention ops |
-| **G** | Training-path migration (BatchNorm EMA, optimizer) | 2–4 | After at least one model trains end-to-end |
-| **H** | Delete eager Tensor + retire fuel-nn | 2–3 | Last; only after every consumer migrated |
+| Phase | Work | Sessions | Sequencing | Status |
+|-------|------|----------|------------|--------|
+| **A** | Close API gap on LazyTensor / `fuel_graph::Tensor` | 8–12 | First; blocks all consumer ports | **A.1–A.5 shipped 2026-05-30** + most A.x deferred items |
+| **B** | LazyKvCache option (b) | 1–2 | Parallel with A | **Shipped 2026-05-30** (commit `37ea082a`) |
+| **C** | Rotating-window KV cache (new Op) | 1 | Parallel with A+B if attention allows | Awake review (new Op variant) |
+| **D** | LLM lazy ports (~14 models) | 7–10 | After A+B complete | Pending |
+| **E** | Vision/multimodal lazy ports (~25 models) | 8–12 | After A (pooling), parallel with D | Pending |
+| **F** | Diffusion lazy ports (~34 files) | 8–12 | After A + any new attention ops | Pending |
+| **G** | Training-path migration (BatchNorm EMA, optimizer) | 2–4 | After at least one model trains end-to-end | Pending |
+| **H** | Delete eager Tensor + retire fuel-nn | 2–3 | Last; only after every consumer migrated | Pending |
 
 **Total: 35–55 focused sessions.** Multi-month effort, parallelizable per
 phase.
+
+### 2026-05-30 overnight session ship summary
+
+Six commits, all additive (zero backend-file touches; chosen to avoid
+merge conflicts with the user's parallel in-place-ops dtype-expansion
+work in the same fuel-storage / fuel-cpu-backend / fuel-vulkan-backend
+trees). 100 new tests across all phases; full fuel-core lib suite at
+274/274 green.
+
+- `b1dad029` — Phase A.1–A.5 wrapper / composite push (59 tests)
+- `37ea082a` — Phase B LazyKvCache option (b) (8 tests)
+- `1453cb7c` — A.x meshgrid (4 tests)
+- `befd1a03` — A.x narrow/chunk/get/multi-dim/rand (20 tests)
+- `5f5eff87` — A.x arange/linspace/norm (6 tests)
+- `b322dcdd` — A.x pad_with_zeros (3 tests)
+
+Phase A sub-phases A.6 (general conv1d), A.7 (pooling/interpolation),
+A.8 (signature harmonization), A.9 (in-place init), and Phase C
+(rotating KV) all share the same blocker: they need changes to backend
+files the user is actively modifying. They're deferred to the user's
+awake review.
 
 ## Phase A subdivision
 
