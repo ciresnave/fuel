@@ -77,6 +77,40 @@ pub trait BackendStorage: Send + Sync + std::fmt::Debug {
 // Phase 7.5 A4 — capability advertisement
 // =============================================================================
 
+/// Classifies the underlying allocator / pointer namespace a backend's
+/// storage lives in. Two backends share a substrate class **iff their
+/// storage variants are byte-compatible on the same device** — calling
+/// one backend's kernel after the other's is a vtable swap, not a data
+/// copy.
+///
+/// SystemTopology consumes this for its `shares_storage` predicate
+/// (Phase 7.6 system-topology session, 2026-05-30). When both backends
+/// declare the same `SubstrateClass` *and* target the same
+/// [`DeviceLocation`], they can freely interleave on the same `Storage`
+/// handle without an Op::Copy.
+///
+/// Forward-extension: a new backend that introduces a new pointer
+/// namespace adds a new variant. The enum is `#[non_exhaustive]` so
+/// downstream pattern matches stay forward-compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SubstrateClass {
+    /// Host-addressable bytes — the CPU trio (Cpu / Aocl / Mkl) plus
+    /// `Reference` all share this. A storage allocated as
+    /// `CpuStorageBytes` flows through any of them without a copy.
+    HostBytes,
+    /// CUDA untyped device buffer. Two CUDA backends on the same
+    /// `gpu_id` share; CUDA on `gpu_id=0` vs `gpu_id=1` do not.
+    CudaUntyped,
+    /// Vulkan device buffer (`VkBuffer`). Two Vulkan backends on the
+    /// same physical device share; Vulkan vs CUDA on the same silicon
+    /// do not (different pointer namespaces, separate allocators).
+    VulkanBuffer,
+    /// Metal device buffer (`MTLBuffer`). Reserved for future Metal
+    /// backend wiring.
+    MetalBuffer,
+}
+
 /// How bytes can move from one device to another. Backends advertise
 /// the paths they support as the source; Router consumes this to
 /// pick the cheapest available path between two specific devices.
@@ -133,6 +167,13 @@ pub struct BackendCapabilities {
     /// path that connects them. Router builds a transfer matrix
     /// from these entries at registration.
     pub transfer_paths: Vec<(DeviceLocation, TransferPath)>,
+    /// Allocator / pointer-namespace class. SystemTopology's
+    /// `shares_storage(a, b)` predicate is true iff both backends
+    /// declare the same class **and** target the same device. CPU
+    /// trio all declare [`SubstrateClass::HostBytes`]; CUDA declares
+    /// [`SubstrateClass::CudaUntyped`]; Vulkan declares
+    /// [`SubstrateClass::VulkanBuffer`].
+    pub storage_substrate: SubstrateClass,
 }
 
 /// Backends implement this to advertise their capabilities at
@@ -168,6 +209,7 @@ mod tests {
             required_alignment: 64,
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
+            storage_substrate: SubstrateClass::HostBytes,
         };
         assert_eq!(caps.backend_id, BackendId::Cpu);
         assert_eq!(caps.required_alignment, 64);
@@ -190,6 +232,7 @@ mod tests {
                     required_alignment: 1,
                     access_granularity_bits: 8,
                     transfer_paths: Vec::new(),
+                    storage_substrate: SubstrateClass::HostBytes,
                 }
             }
         }
