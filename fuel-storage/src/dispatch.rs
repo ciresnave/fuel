@@ -2993,6 +2993,58 @@ fn ssd_chunk_scan_f32_cpu_wrapper(
     )
 }
 
+/// Per-dtype Nf4Matmul wrapper. Three inputs (activations, w_packed
+/// U8, absmax F32) → one output of the activations' dtype.
+/// `block_size` flows through `OpParams::Nf4Matmul`.
+macro_rules! cpu_nf4_matmul_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "nf4_matmul wrapper expects 3 inputs (activations, w_packed, absmax), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "nf4_matmul wrapper expects 1 output, got {}", outputs.len(),
+                ))
+                .bt());
+            }
+            let (batch, m, n, k, block_size) = match params {
+                OpParams::Nf4Matmul { batch, m, n, k, block_size } => {
+                    (*batch, *m, *n, *k, *block_size)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "nf4_matmul wrapper expects OpParams::Nf4Matmul, got {other:?}",
+                    ))
+                    .bt());
+                }
+            };
+            let a_guard = read_storage(&inputs[0])?;
+            let w_guard = read_storage(&inputs[1])?;
+            let abs_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let a_cpu = cpu_input(&a_guard)?;
+            let w_cpu = cpu_input(&w_guard)?;
+            let abs_cpu = cpu_input(&abs_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(a_cpu, w_cpu, abs_cpu, out_cpu, batch, m, n, k, block_size)
+        }
+    };
+}
+
+cpu_nf4_matmul_wrapper!(nf4_matmul_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::nf4_matmul_f32);
+cpu_nf4_matmul_wrapper!(nf4_matmul_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::nf4_matmul_f16);
+cpu_nf4_matmul_wrapper!(nf4_matmul_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::nf4_matmul_bf16);
+
 /// Dispatch wrapper for `(FlashAttn, *, Cpu)`. Three or four inputs
 /// (q, k, v, optional alibi_slopes). Geometry + math params flow
 /// through `OpParams::FlashAttn`.
@@ -3692,6 +3744,28 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
         cpu,
         ssd_chunk_scan_f32_cpu_wrapper,
+    );
+
+    // Nf4Matmul: 3 inputs (activations T, w_packed U8, absmax F32) + 1
+    // output T, where T ∈ {F32, F16, BF16}. The binding-table key
+    // shape is [T, U8, F32, T].
+    table.register(
+        Nf4Matmul,
+        &[DType::F32, DType::U8, DType::F32, DType::F32],
+        cpu,
+        nf4_matmul_f32_cpu_wrapper,
+    );
+    table.register(
+        Nf4Matmul,
+        &[DType::F16, DType::U8, DType::F32, DType::F16],
+        cpu,
+        nf4_matmul_f16_cpu_wrapper,
+    );
+    table.register(
+        Nf4Matmul,
+        &[DType::BF16, DType::U8, DType::F32, DType::BF16],
+        cpu,
+        nf4_matmul_bf16_cpu_wrapper,
     );
 
     // In-place unary activations — Phase 3e of in-place ops. Same
@@ -4831,7 +4905,7 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost_attn_cpu, cost_causal_conv1d_cpu, cost_conv2d_cpu,
         cost_conv_transpose2d_cpu, cost_fused_linear_cpu,
         cost_fused_softmax_cross_entropy_cpu,
-        cost_inplace_affine_cpu,
+        cost_inplace_affine_cpu, cost_nf4_matmul_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
         cost_selective_scan_cpu, cost_ssd_chunk_scan_cpu,
@@ -4839,7 +4913,8 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
         FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION,
-        INPLACE_AFFINE_CPU_PRECISION, NORM_FAMILY_CPU_PRECISION,
+        INPLACE_AFFINE_CPU_PRECISION, NF4_MATMUL_CPU_PRECISION,
+        NORM_FAMILY_CPU_PRECISION,
         POWI_BACKWARD_CPU_PRECISION,
         QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
         ROPE_CPU_PRECISION, SELECTIVE_SCAN_CPU_PRECISION,
@@ -5298,6 +5373,24 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         ssd_chunk_scan_f32_cpu_wrapper,
         cost = cost_ssd_chunk_scan_cpu,
         precision = SSD_CHUNK_SCAN_CPU_PRECISION);
+
+    // NF4_MATMUL — four-tuple (activations T, w_packed U8, absmax
+    // F32, out T), 3 dtype variants (T ∈ {F32, F16, BF16}).
+    const NF4_F32:  &[DType] = &[DType::F32,  DType::U8, DType::F32, DType::F32];
+    const NF4_F16:  &[DType] = &[DType::F16,  DType::U8, DType::F32, DType::F16];
+    const NF4_BF16: &[DType] = &[DType::BF16, DType::U8, DType::F32, DType::BF16];
+    register_fused!(r, FusedOps::NF4_MATMUL, cpu, NF4_F32,
+        nf4_matmul_f32_cpu_wrapper,
+        cost = cost_nf4_matmul_cpu,
+        precision = NF4_MATMUL_CPU_PRECISION);
+    register_fused!(r, FusedOps::NF4_MATMUL, cpu, NF4_F16,
+        nf4_matmul_f16_cpu_wrapper,
+        cost = cost_nf4_matmul_cpu,
+        precision = NF4_MATMUL_CPU_PRECISION);
+    register_fused!(r, FusedOps::NF4_MATMUL, cpu, NF4_BF16,
+        nf4_matmul_bf16_cpu_wrapper,
+        cost = cost_nf4_matmul_cpu,
+        precision = NF4_MATMUL_CPU_PRECISION);
 }
 
 #[cfg(test)]
@@ -5397,6 +5490,7 @@ mod tests {
             OpKind::CausalConv1d,
             OpKind::SelectiveScan,
             OpKind::SsdChunkScan,
+            OpKind::Nf4Matmul,
         ];
 
         // Populate the binding table the same way the production
@@ -5560,6 +5654,7 @@ mod tests {
             OpKind::CausalConv1d,
             OpKind::SelectiveScan,
             OpKind::SsdChunkScan,
+            OpKind::Nf4Matmul,
         ];
 
         let mut table = KernelBindingTable::new();

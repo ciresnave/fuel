@@ -723,6 +723,73 @@ pub const SSD_CHUNK_SCAN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee 
             bit-identical. v1 single-chunk only (chunk_size == seqlen).",
 };
 
+/// Static cost model for `(NF4_MATMUL, Cpu)` — bitsandbytes 4-bit
+/// quantized matmul. FLOPs scale with `batch · m · n · k`
+/// (one FMA per k step, after dequant). Bandwidth reads
+/// `batch·m·k` activations + `n·k/2` packed weight bytes + `n·k/block_size`
+/// absmax scales + writes `batch·m·n` outputs.
+pub fn cost_nf4_matmul_cpu(
+    shapes: &[Shape],
+    params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(
+        shapes.len(), 3,
+        "Nf4Matmul cost: expected 3 input shapes (activations, w_packed, absmax)",
+    );
+    let block_size = match params {
+        FusedOpParams::Nf4Matmul { block_size } => *block_size as u64,
+        _ => return CostEstimate::default(),
+    };
+    let a_dims = shapes[0].dims();
+    let w_dims = shapes[1].dims();
+    if a_dims.len() < 2 || w_dims.len() != 2 {
+        return CostEstimate::default();
+    }
+    let m = a_dims[a_dims.len() - 2] as u64;
+    let k = a_dims[a_dims.len() - 1] as u64;
+    let n = w_dims[0] as u64;
+    let batch: u64 = a_dims[..a_dims.len() - 2]
+        .iter()
+        .map(|d| *d as u64)
+        .product::<u64>()
+        .max(1);
+    if block_size == 0 || k % block_size != 0 {
+        return CostEstimate::default();
+    }
+    // 2 FLOPs per FMA (mul + add). Dequant lookup is one mul per k step.
+    let flops = batch * m * n * k * 3;
+    // Bandwidth: 4 B/elem default (F32-ish), 1 B/elem for w_packed.
+    let elem_bytes = 4;
+    let bytes_moved = batch * m * k * elem_bytes
+        + n * (k / 2)
+        + n * (k / block_size) * 4
+        + batch * m * n * elem_bytes;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(NF4_MATMUL, Cpu, *)` — inner product
+/// accumulated in F32 regardless of activation/output dtype (F16 +
+/// BF16 variants up-cast on load and narrow on store, matching
+/// bitsandbytes' fp16/bf16 GEMV behavior). Iteration order fixed;
+/// bit-identical re-run on same hardware. The 16-entry NF4 LUT is
+/// baked in as a const so quantization roundtrips are reproducible.
+pub const NF4_MATMUL_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend Nf4Matmul: dequant via baked NF4_LUT × \
+            per-block absmax; F32 accumulator for the inner product \
+            (F16/BF16 up-cast on load, narrow on store); \
+            deterministic iteration order; same-hardware re-run \
+            bit-identical.",
+};
+
 /// Static cost model for `(CONV2D, Cpu)` kernels — FLOP + bandwidth
 /// per architecture v1.0 §"Layer-1 cost model."
 ///
@@ -1721,17 +1788,17 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 20 registered fused ops covered.
+        // Sanity: we should see all 21 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
         // (autograd switched from emitting the primitive decomposition
         // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
         // (Phase 3 of the in-place ops infrastructure) +
         // FUSED_SOFTMAX_CROSS_ENTROPY + CAUSAL_CONV1D + SELECTIVE_SCAN
-        // + SSD_CHUNK_SCAN (the CPU OpKind coverage plan's Mamba-adjacent
-        // fused-op trio + FSCE).
+        // + SSD_CHUNK_SCAN + NF4_MATMUL (the full CPU OpKind coverage
+        // plan: FSCE + Mamba-adjacent trio + NF4).
         assert_eq!(
-            covered, 20,
-            "expected 20 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 21,
+            "expected 21 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 

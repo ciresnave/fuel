@@ -36,6 +36,7 @@ pub mod conv_transpose_2d;
 pub mod flash_attn;
 pub mod fused_linear;
 pub mod fused_softmax_cross_entropy;
+pub mod nf4_matmul;
 pub mod selective_scan;
 pub mod ssd_chunk_scan;
 pub mod inplace_affine;
@@ -226,6 +227,20 @@ pub enum FusedOpParams {
     /// multi-chunk with proper inter-chunk decay propagation is a
     /// follow-up. See the registry module for the rationale.
     SsdChunkScan { chunk_size: usize },
+    /// Nf4Matmul — bitsandbytes-style 4-bit NormalFloat quantized
+    /// matrix multiply. Three inputs:
+    /// - `activations`: `[..., M, K]`
+    /// - `w_packed`:    `[N, K/2]` U8 (two 4-bit codes per byte,
+    ///   K must be even).
+    /// - `absmax`:      `[N, K/block_size]` F32 (per-output-row,
+    ///   per-block scales).
+    ///
+    /// Output: `[..., M, N]` matching the activations' dtype.
+    ///
+    /// `block_size` is the NF4 quantization block size (typically
+    /// 64 in bitsandbytes). The NF4 NormalFloat lookup table is
+    /// baked into the kernel — not a runtime input.
+    Nf4Matmul { block_size: usize },
     /// SelectiveScan — Mamba-1's selective state-space scan
     /// (forward only). Five inputs:
     /// - `u`:     `[batch, seqlen, dim]` — input sequence.
@@ -476,6 +491,11 @@ impl FusedOpParams {
                 tag: 20,
                 bits: Vec::new(),
                 ints: vec![*chunk_size as i64],
+            },
+            FusedOpParams::Nf4Matmul { block_size } => FusedOpParamsKey {
+                tag: 21,
+                bits: Vec::new(),
+                ints: vec![*block_size as i64],
             },
         }
     }
@@ -835,6 +855,16 @@ impl FusedOps {
     /// inter-chunk decay propagation is a follow-up.
     /// `BackwardKind::NotDifferentiable` for v1.
     pub const SSD_CHUNK_SCAN: FusedOpId = FusedOpId(20);
+
+    /// Nf4Matmul — bitsandbytes-style 4-bit NormalFloat quantized
+    /// matrix multiply. Three inputs `[activations, w_packed, absmax]`
+    /// where `w_packed: [N, K/2] U8` and `absmax: [N, K/block_size] F32`.
+    /// Output `[..., M, N]` matching activations' dtype (F32/F16/BF16
+    /// in v1). Carries `block_size: usize` in
+    /// [`FusedOpParams::Nf4Matmul`]. `BackwardKind::NotDifferentiable`
+    /// (NF4 weights are frozen; the dequant-then-matmul fallback is
+    /// the wrong path for the cases NF4 exists to optimize).
+    pub const NF4_MATMUL: FusedOpId = FusedOpId(21);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -869,6 +899,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(causal_conv1d::entry())
             .with_entry(selective_scan::entry())
             .with_entry(ssd_chunk_scan::entry())
+            .with_entry(nf4_matmul::entry())
     })
 }
 

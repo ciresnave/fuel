@@ -542,6 +542,37 @@ pub fn cost_softmax_last_dim_primitive_cpu(
     }
 }
 
+/// Cost for `Nf4Matmul` (binding-table form). FLOPs scale with
+/// `batch × m × n × k`. Bandwidth: activations + w_packed (4-bit per
+/// elem, so n*k/2 bytes) + absmax + output.
+pub fn cost_nf4_matmul_primitive_cpu(
+    _shapes: &[Shape],
+    dtypes: &[DType],
+    params: &OpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    let (batch, m, n, k, block_size) = match params {
+        OpParams::Nf4Matmul { batch, m, n, k, block_size } => {
+            (*batch as u64, *m as u64, *n as u64, *k as u64, *block_size as u64)
+        }
+        _ => return CostEstimate::default(),
+    };
+    if block_size == 0 || k % block_size != 0 {
+        return CostEstimate::default();
+    }
+    let flops = batch * m * n * k * 3;
+    let elem_bytes = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
+    let bytes_moved = batch * m * k * elem_bytes
+        + n * (k / 2)
+        + n * (k / block_size) * 4
+        + batch * m * n * elem_bytes;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 /// Cost for `SsdChunkScan` (binding-table form). FLOPs scale with
 /// `batch × seqlen × heads × head_dim × state_dim`. Conservative
 /// ~8 FLOPs per inner iteration (mul-mul-add for h update + mul-add
@@ -839,6 +870,7 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         CausalConv1d => cost_causal_conv1d_primitive_cpu,
         SelectiveScan => cost_selective_scan_primitive_cpu,
         SsdChunkScan => cost_ssd_chunk_scan_primitive_cpu,
+        Nf4Matmul => cost_nf4_matmul_primitive_cpu,
         RmsNormLastDim | RmsNormLastDimBackward
         | LayerNormLastDim | LayerNormLastDimBackward
             => cost_norm_last_dim_primitive_cpu,
