@@ -2496,6 +2496,292 @@ impl LazyTensor {
         self.conv1d(weight, bias, stride, padding, groups)
     }
 
+    /// 2-D average pooling. Input `[N, C, H, W]`, output
+    /// `[N, C, H_out, W_out]` where
+    /// `H_out = (H + 2·padding.0 - kernel.0) / stride.0 + 1`.
+    ///
+    /// Implemented as a **depthwise Conv2D** with a constant
+    /// `1/(kh·kw)` kernel: one graph node + the kernel const. Works
+    /// through every backend's Conv2D dispatch and inherits Conv2D's
+    /// gradient. Composite supports arbitrary kernel / stride /
+    /// padding.
+    pub fn avg_pool2d(
+        &self,
+        kernel: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        if dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "avg_pool2d: input must be rank 4 [N, C, H, W], got {dims:?}",
+            )).bt());
+        }
+        let c = dims[1];
+        let (kh, kw) = kernel;
+        if kh == 0 || kw == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "avg_pool2d: kernel sizes must be positive".into(),
+            ).bt());
+        }
+        let inv = 1.0_f32 / ((kh * kw) as f32);
+        // Depthwise kernel: one filter per input channel, each filter
+        // is a constant 1/(kh·kw). Shape [C, 1, kh, kw] with groups=C
+        // makes Conv2D compute one independent kernel per channel.
+        let weight = self.const_f32_like(
+            vec![inv; c * kh * kw],
+            Shape::from_dims(&[c, 1, kh, kw]),
+        );
+        Ok(self.conv2d(&weight, None, stride, padding, c))
+    }
+
+    /// Eager-API parity for `avg_pool2d_with_stride`. Same shape as
+    /// [`Self::avg_pool2d`] but the stride is passed explicitly rather
+    /// than inferred from kernel.
+    pub fn avg_pool2d_with_stride(
+        &self,
+        kernel: (usize, usize),
+        stride: (usize, usize),
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.avg_pool2d(kernel, stride, (0, 0))
+    }
+
+    /// 2-D max pooling. Input `[N, C, H, W]`, output
+    /// `[N, C, H_out, W_out]` where
+    /// `H_out = (H + 2·padding.0 - kernel.0) / stride.0 + 1`.
+    ///
+    /// Composite via slice + maximum: pad the input, then for every
+    /// `(ky, kx)` in `[0..kh, 0..kw]` slice the strided grid of taps
+    /// (one tap per output position) and take the elementwise max.
+    /// Produces `kh·kw` nodes per call plus padding — cheap for the
+    /// common 2×2 / 3×3 cases.
+    ///
+    /// Strided-slice trick: for stride `sh`, reshape the padded H from
+    /// `(H_out · sh)` to `(H_out, sh)`, then slice the inner `sh`-dim
+    /// at the tap index. Requires `H_padded == H_out · sh` exactly.
+    /// Inputs that don't divide cleanly will be padded so they do.
+    pub fn max_pool2d(
+        &self,
+        kernel: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        if dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "max_pool2d: input must be rank 4 [N, C, H, W], got {dims:?}",
+            )).bt());
+        }
+        let (n, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
+        let (kh, kw) = kernel;
+        let (sh, sw) = stride;
+        let (ph, pw) = padding;
+        if kh == 0 || kw == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "max_pool2d: kernel sizes must be positive".into(),
+            ).bt());
+        }
+        if sh == 0 || sw == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "max_pool2d: strides must be positive".into(),
+            ).bt());
+        }
+        let h_padded_min = h + 2 * ph;
+        let w_padded_min = w + 2 * pw;
+        if h_padded_min < kh || w_padded_min < kw {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "max_pool2d: padded input ({h_padded_min}×{w_padded_min}) smaller than kernel ({kh}×{kw})",
+            )).bt());
+        }
+        let h_out = (h_padded_min - kh) / sh + 1;
+        let w_out = (w_padded_min - kw) / sw + 1;
+        // Pad H/W to be exactly (h_out · sh + (kh - sh)) and (w_out · sw + (kw - sw)),
+        // i.e., enough to contain every (ky, kx) tap for every output.
+        let h_total = h_out * sh + (kh - 1);
+        let w_total = w_out * sw + (kw - 1);
+        let extra_h = h_total.saturating_sub(h_padded_min);
+        let extra_w = w_total.saturating_sub(w_padded_min);
+        let padded = self
+            .pad_with_zeros(2, ph, ph + extra_h)?
+            .pad_with_zeros(3, pw, pw + extra_w)?;
+        // For each (ky, kx) collect the strided tap.
+        let mut acc: Option<LazyTensor> = None;
+        for ky in 0..kh {
+            // Slice H starting at ky, length h_out · sh, then reshape
+            // to [N, C, h_out, sh, w_total] and slice the sh-dim at 0
+            // (we'll handle stride > 1 by reshape).
+            let row_slice = padded.slice(2, ky, h_out * sh);
+            // Reshape H dim of length `h_out · sh` into (h_out, sh),
+            // then take dim 3 at offset 0 (the tap on the sh axis).
+            let row_reshaped = row_slice.try_reshape(vec![n, c, h_out, sh, w_total])?;
+            let row_tap = row_reshaped.slice(3, 0, 1).squeeze(3)?;
+            for kx in 0..kw {
+                let col_slice = row_tap.slice(3, kx, w_out * sw);
+                let col_reshaped = col_slice.try_reshape(vec![n, c, h_out, w_out, sw])?;
+                let win = col_reshaped.slice(4, 0, 1).squeeze(4)?;
+                acc = Some(match acc {
+                    None => win,
+                    Some(a) => a.maximum(&win),
+                });
+            }
+        }
+        acc.ok_or_else(|| fuel_core_types::Error::Msg(
+            "max_pool2d: empty kernel".into(),
+        ).bt())
+    }
+
+    /// Eager-API parity for `max_pool2d_with_stride`.
+    pub fn max_pool2d_with_stride(
+        &self,
+        kernel: (usize, usize),
+        stride: (usize, usize),
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.max_pool2d(kernel, stride, (0, 0))
+    }
+
+    /// Nearest-neighbor upsample by integer factor `scale` along the
+    /// last two spatial dims. Input `[N, C, H, W]` → output
+    /// `[N, C, H·scale, W·scale]`.
+    ///
+    /// Composite via reshape + concat + reshape: insert a unit dim
+    /// after each spatial dim, concat `scale` copies of the tensor on
+    /// each new dim, then collapse the inflated dims back. Same shape
+    /// as the `upsample_nearest_2x` helper in [`crate::lazy_yolov8`]
+    /// and [`crate::lazy_sd_unet`], generalized to arbitrary scale.
+    pub fn upsample_nearest2d(
+        &self,
+        scale: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if scale == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "upsample_nearest2d: scale must be positive".into(),
+            ).bt());
+        }
+        let dims = self.shape().dims().to_vec();
+        if dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "upsample_nearest2d: input must be rank 4 [N, C, H, W], got {dims:?}",
+            )).bt());
+        }
+        if scale == 1 {
+            return Ok(self.clone());
+        }
+        let (n, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
+        // [N, C, H, 1, W, 1]
+        let expanded = self.try_reshape(vec![n, c, h, 1, w, 1])?;
+        // Replicate along the new unit dims by concatenating scale copies.
+        let h_expanded = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
+            Some(match acc {
+                None => expanded.clone(),
+                Some(a) => a.concat(&expanded, 3),
+            })
+        }).unwrap();
+        let h_then_w = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
+            Some(match acc {
+                None => h_expanded.clone(),
+                Some(a) => a.concat(&h_expanded, 5),
+            })
+        }).unwrap();
+        h_then_w.try_reshape(vec![n, c, h * scale, w * scale])
+    }
+
+    /// Nearest-neighbor upsample for 1-D signals `[N, C, T]` by integer
+    /// `scale`. Reshape to insert a unit dim, concat scale copies,
+    /// reshape back.
+    pub fn upsample_nearest1d(
+        &self,
+        scale: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if scale == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "upsample_nearest1d: scale must be positive".into(),
+            ).bt());
+        }
+        let dims = self.shape().dims().to_vec();
+        if dims.len() != 3 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "upsample_nearest1d: input must be rank 3 [N, C, T], got {dims:?}",
+            )).bt());
+        }
+        if scale == 1 {
+            return Ok(self.clone());
+        }
+        let (n, c, t) = (dims[0], dims[1], dims[2]);
+        let expanded = self.try_reshape(vec![n, c, t, 1])?;
+        let replicated = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
+            Some(match acc {
+                None => expanded.clone(),
+                Some(a) => a.concat(&expanded, 3),
+            })
+        }).unwrap();
+        replicated.try_reshape(vec![n, c, t * scale])
+    }
+
+    /// 2-D nearest interpolation to an explicit target size. Equivalent
+    /// to `upsample_nearest2d` when `target_h` / `target_w` are integer
+    /// multiples of `H` / `W` and the multiplier is the same on both
+    /// axes; for non-uniform / non-integer ratios this is a future
+    /// enhancement.
+    pub fn interpolate2d(
+        &self,
+        target_h: usize,
+        target_w: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        if dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "interpolate2d: input must be rank 4 [N, C, H, W], got {dims:?}",
+            )).bt());
+        }
+        let h = dims[2];
+        let w = dims[3];
+        if h == 0 || w == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "interpolate2d: input spatial dims must be positive".into(),
+            ).bt());
+        }
+        if target_h % h != 0 || target_w % w != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "interpolate2d: target ({target_h}×{target_w}) must be integer multiple of input ({h}×{w}); non-integer ratios are future work",
+            )).bt());
+        }
+        let sh = target_h / h;
+        let sw = target_w / w;
+        if sh != sw {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "interpolate2d: non-uniform scale ({sh} vs {sw}) is future work",
+            )).bt());
+        }
+        self.upsample_nearest2d(sh)
+    }
+
+    /// 1-D nearest interpolation to an explicit target size. Same
+    /// constraints as [`Self::interpolate2d`]: integer-multiple targets
+    /// only.
+    pub fn interpolate1d(
+        &self,
+        target_t: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        if dims.len() != 3 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "interpolate1d: input must be rank 3 [N, C, T], got {dims:?}",
+            )).bt());
+        }
+        let t = dims[2];
+        if t == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "interpolate1d: input length must be positive".into(),
+            ).bt());
+        }
+        if target_t % t != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "interpolate1d: target {target_t} must be integer multiple of input {t}; non-integer ratios are future work",
+            )).bt());
+        }
+        self.upsample_nearest1d(target_t / t)
+    }
+
     /// Pad with zeros along `dim`: `left` zeros before, `right` zeros
     /// after. Wraps [`Self::pad`] with `PadMode::Constant` and value 0
     /// for the named dim (other dims get `(0, 0)`). Composite — no new
@@ -9337,5 +9623,136 @@ mod phase_a5_factory_tests {
         let a = x.conv1d_with_algo(&w, None, 1, 0, 1, "unused").unwrap();
         let b = x.conv1d(&w, None, 1, 0, 1).unwrap();
         assert_eq!(a.realize_f32(), b.realize_f32());
+    }
+
+    // ---- Phase A.7 pooling / interpolation composite tests ----
+
+    #[test]
+    fn avg_pool2d_2x2_stride2() {
+        // 1×1×4×4 input with values 0..15.
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let x = cpu_f32(data, &[1, 1, 4, 4]);
+        let out = x.avg_pool2d((2, 2), (2, 2), (0, 0)).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 2, 2]);
+        // Each 2x2 block average: top-left = (0+1+4+5)/4 = 2.5,
+        // top-right = (2+3+6+7)/4 = 4.5, bottom-left = (8+9+12+13)/4 = 10.5,
+        // bottom-right = (10+11+14+15)/4 = 12.5.
+        let v = out.realize_f32();
+        assert!((v[0] - 2.5).abs() < 1e-5);
+        assert!((v[1] - 4.5).abs() < 1e-5);
+        assert!((v[2] - 10.5).abs() < 1e-5);
+        assert!((v[3] - 12.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn avg_pool2d_3x3_stride1_padding1_preserves_size() {
+        let x = cpu_f32(vec![1.0; 16], &[1, 1, 4, 4]);
+        let out = x.avg_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 4, 4]);
+    }
+
+    #[test]
+    fn avg_pool2d_multi_channel() {
+        // 1×2×2×2: each channel is filled with its index.
+        let x = cpu_f32(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], &[1, 2, 2, 2]);
+        let out = x.avg_pool2d((2, 2), (2, 2), (0, 0)).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 2, 1, 1]);
+        assert_eq!(out.realize_f32(), vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn max_pool2d_2x2_stride2() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let x = cpu_f32(data, &[1, 1, 4, 4]);
+        let out = x.max_pool2d((2, 2), (2, 2), (0, 0)).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 2, 2]);
+        // Each 2x2 block max: 5, 7, 13, 15.
+        assert_eq!(out.realize_f32(), vec![5.0, 7.0, 13.0, 15.0]);
+    }
+
+    #[test]
+    fn max_pool2d_3x3_stride1_padding1() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &[1, 1, 3, 3]);
+        let out = x.max_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 3, 3]);
+        // Center should be the global max 9; corners should be the max of their 2×2 window.
+        let v = out.realize_f32();
+        // (1,1) center: max of all 9 = 9
+        assert!((v[4] - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn upsample_nearest2d_2x() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]);
+        let out = x.upsample_nearest2d(2).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 4, 4]);
+        // Each cell replicated 2×2: rows are [1,1,2,2; 1,1,2,2; 3,3,4,4; 3,3,4,4].
+        assert_eq!(
+            out.realize_f32(),
+            vec![
+                1.0, 1.0, 2.0, 2.0,
+                1.0, 1.0, 2.0, 2.0,
+                3.0, 3.0, 4.0, 4.0,
+                3.0, 3.0, 4.0, 4.0,
+            ],
+        );
+    }
+
+    #[test]
+    fn upsample_nearest2d_3x() {
+        let x = cpu_f32(vec![5.0], &[1, 1, 1, 1]);
+        let out = x.upsample_nearest2d(3).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 3, 3]);
+        assert_eq!(out.realize_f32(), vec![5.0; 9]);
+    }
+
+    #[test]
+    fn upsample_nearest2d_identity_scale_one() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]);
+        let out = x.upsample_nearest2d(1).unwrap();
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn upsample_nearest1d_2x() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0], &[1, 1, 3]);
+        let out = x.upsample_nearest1d(2).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 6]);
+        assert_eq!(out.realize_f32(), vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn interpolate2d_integer_multiple() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]);
+        let out = x.interpolate2d(4, 4).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 4, 4]);
+    }
+
+    #[test]
+    fn interpolate2d_rejects_non_integer_ratio() {
+        let x = cpu_f32(vec![1.0; 4], &[1, 1, 2, 2]);
+        assert!(x.interpolate2d(3, 4).is_err());
+    }
+
+    #[test]
+    fn interpolate1d_integer_multiple() {
+        let x = cpu_f32(vec![1.0, 2.0], &[1, 1, 2]);
+        let out = x.interpolate1d(6).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 6]);
+        assert_eq!(out.realize_f32(), vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn pool_rejects_bad_rank() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        assert!(x.avg_pool2d((2, 2), (2, 2), (0, 0)).is_err());
+        assert!(x.max_pool2d((2, 2), (2, 2), (0, 0)).is_err());
+    }
+
+    #[test]
+    fn pool_rejects_zero_kernel() {
+        let x = cpu_f32(vec![1.0; 16], &[1, 1, 4, 4]);
+        assert!(x.avg_pool2d((0, 2), (1, 1), (0, 0)).is_err());
+        assert!(x.max_pool2d((2, 0), (1, 1), (0, 0)).is_err());
     }
 }
