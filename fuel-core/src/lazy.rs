@@ -2429,6 +2429,73 @@ impl LazyTensor {
         self.sqr().sum_all().sqrt()
     }
 
+    /// General 1-D cross-correlation. Shapes:
+    /// - `self`: `[N, Cin, T]`
+    /// - `weight`: `[Cout, Cin/groups, K]`
+    /// - `bias` (optional): `[Cout]`
+    /// - returns: `[N, Cout, Tout]` where `Tout = (T + 2·padding - K) /
+    ///   stride + 1`
+    ///
+    /// Implemented as a composite via Conv2D: unsqueeze the spatial dim
+    /// to make a unit `H = 1`, run `Conv2D` with `Kh = 1, stride.0 = 1,
+    /// padding.0 = 0`, then squeeze the dim back out. Works through
+    /// every backend's Conv2D dispatch (CPU, CUDA via baracuda,
+    /// Vulkan, AOCL, MKL). The future fused `Op::Conv1D` will collapse
+    /// the unsqueeze/squeeze pair when a high-volume Conv1D consumer
+    /// materializes.
+    pub fn conv1d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let x_dims = self.shape().dims().to_vec();
+        let w_dims = weight.shape().dims().to_vec();
+        if x_dims.len() != 3 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv1d: x must be rank 3 [N, Cin, T], got {x_dims:?}",
+            )).bt());
+        }
+        if w_dims.len() != 3 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv1d: weight must be rank 3 [Cout, Cin/groups, K], got {w_dims:?}",
+            )).bt());
+        }
+        if groups < 1 {
+            return Err(fuel_core_types::Error::Msg(
+                "conv1d: groups must be ≥ 1".into(),
+            ).bt());
+        }
+        if stride < 1 {
+            return Err(fuel_core_types::Error::Msg(
+                "conv1d: stride must be ≥ 1".into(),
+            ).bt());
+        }
+        // Add a unit H dim at index 2 → [N, Cin, 1, T] and [Cout, Cin/g, 1, K].
+        let x_4d = self.unsqueeze(2);
+        let w_4d = weight.unsqueeze(2);
+        let out_4d = x_4d.conv2d(&w_4d, bias, (1, stride), (0, padding), groups);
+        out_4d.squeeze(2)
+    }
+
+    /// Eager-API parity for `conv1d_with_algo`. The `_algo` selector is
+    /// ignored on the lazy path — algorithm selection happens at
+    /// backend dispatch time, not at graph construction. Reduces to
+    /// [`Self::conv1d`].
+    pub fn conv1d_with_algo<A>(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        _algo: A,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.conv1d(weight, bias, stride, padding, groups)
+    }
+
     /// Pad with zeros along `dim`: `left` zeros before, `right` zeros
     /// after. Wraps [`Self::pad`] with `PadMode::Constant` and value 0
     /// for the named dim (other dims get `(0, 0)`). Composite — no new
@@ -9173,5 +9240,102 @@ mod phase_a5_factory_tests {
     fn pad_with_zeros_rejects_bad_dim() {
         let t = cpu_f32(vec![1.0, 2.0], &[2]);
         assert!(t.pad_with_zeros(3, 1, 1).is_err());
+    }
+
+    // ---- Phase A.6 conv1d composite tests ----
+
+    #[test]
+    fn conv1d_identity_kernel_passes_input_through() {
+        // Single-batch, single-channel, kernel-1 identity → output equals input.
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0], &[1, 1, 5]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        let out = x.conv1d(&w, None, 1, 0, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 5]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn conv1d_sum_kernel_two_wide() {
+        // Sum kernel of size 2: out[t] = x[t] + x[t+1].
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
+        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
+        let out = x.conv1d(&w, None, 1, 0, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 3]);
+        assert_eq!(out.realize_f32(), vec![3.0, 5.0, 7.0]);
+    }
+
+    #[test]
+    fn conv1d_with_bias_applies_correctly() {
+        let x = cpu_f32(vec![1.0, 1.0, 1.0], &[1, 1, 3]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        let bias = x.const_f32_like(vec![10.0], vec![1]);
+        let out = x.conv1d(&w, Some(&bias), 1, 0, 1).unwrap();
+        assert_eq!(out.realize_f32(), vec![11.0, 11.0, 11.0]);
+    }
+
+    #[test]
+    fn conv1d_stride_two_halves_output() {
+        // Input length 6, kernel 2, stride 2 → output length (6-2)/2+1 = 3.
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 1, 6]);
+        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
+        let out = x.conv1d(&w, None, 2, 0, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 3]);
+        assert_eq!(out.realize_f32(), vec![3.0, 7.0, 11.0]);
+    }
+
+    #[test]
+    fn conv1d_padding_one_preserves_length() {
+        // Input length 4, kernel 3, padding 1, stride 1 → output length 4.
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
+        let w = x.const_f32_like(vec![1.0, 1.0, 1.0], vec![1, 1, 3]);
+        let out = x.conv1d(&w, None, 1, 1, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 4]);
+        // out[0] = 0+x[0]+x[1] = 3; out[1] = x[0]+x[1]+x[2] = 6;
+        // out[2] = x[1]+x[2]+x[3] = 9; out[3] = x[2]+x[3]+0 = 7
+        assert_eq!(out.realize_f32(), vec![3.0, 6.0, 9.0, 7.0]);
+    }
+
+    #[test]
+    fn conv1d_multi_channel_output() {
+        // 1 batch, 1 in-channel, 3 timesteps; 2 out-channels with kernel 1.
+        let x = cpu_f32(vec![1.0, 2.0, 3.0], &[1, 1, 3]);
+        // Weight [Cout=2, Cin=1, K=1]: filter 0 = 2.0, filter 1 = -1.0.
+        let w = x.const_f32_like(vec![2.0, -1.0], vec![2, 1, 1]);
+        let out = x.conv1d(&w, None, 1, 0, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 2, 3]);
+        // Channel 0: 2.0 × input. Channel 1: -1.0 × input.
+        assert_eq!(out.realize_f32(), vec![2.0, 4.0, 6.0, -1.0, -2.0, -3.0]);
+    }
+
+    #[test]
+    fn conv1d_rejects_rank_two_input() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        assert!(x.conv1d(&w, None, 1, 0, 1).is_err());
+    }
+
+    #[test]
+    fn conv1d_rejects_rank_two_weight() {
+        let x = cpu_f32(vec![1.0; 4], &[1, 1, 4]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1]);
+        assert!(x.conv1d(&w, None, 1, 0, 1).is_err());
+    }
+
+    #[test]
+    fn conv1d_rejects_zero_groups_or_stride() {
+        let x = cpu_f32(vec![1.0; 4], &[1, 1, 4]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        assert!(x.conv1d(&w, None, 0, 0, 1).is_err());
+        assert!(x.conv1d(&w, None, 1, 0, 0).is_err());
+    }
+
+    #[test]
+    fn conv1d_with_algo_ignores_algo_param() {
+        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
+        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
+        // Pass a dummy algo (the parameter is ignored on the lazy path).
+        let a = x.conv1d_with_algo(&w, None, 1, 0, 1, "unused").unwrap();
+        let b = x.conv1d(&w, None, 1, 0, 1).unwrap();
+        assert_eq!(a.realize_f32(), b.realize_f32());
     }
 }
