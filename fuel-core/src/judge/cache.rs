@@ -1,7 +1,7 @@
 //! Ranked dispatch tables — Phase 6b's O(1) runtime lookup.
 //!
 //! The [`Judge`](crate::judge) produces a [`ProfileReport`]
-//! ([`crate::judge::ProfileReport`]) of raw measurements. That's
+//! ([`crate::judge::cache::ProfileReport`]) of raw measurements. That's
 //! not yet useful for realize-time dispatch — the router needs
 //! to ask "given this (op, dtype, size_class), which backend wins
 //! under criterion X?" and get a constant-time answer. This
@@ -107,7 +107,7 @@ pub fn populate_dispatch_table() -> Result<()> {
         probe.save(&p)?;
     }
     let report = crate::judge::Judge::default().run(&probe);
-    if let Some(p) = crate::judge::default_report_path() {
+    if let Some(p) = super::default_report_path() {
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -133,7 +133,7 @@ pub fn invalidate() -> Result<()> {
     if let Some(p) = crate::probe::default_report_path() {
         let _ = std::fs::remove_file(&p);
     }
-    if let Some(p) = crate::judge::default_report_path() {
+    if let Some(p) = super::default_report_path() {
         let _ = std::fs::remove_file(&p);
     }
     Ok(())
@@ -150,7 +150,7 @@ fn try_load_persisted() -> Option<DispatchTable> {
     if now_probe.diff(&prior_probe).needs_rejudge() {
         return None;
     }
-    let judge_path = crate::judge::default_report_path()?;
+    let judge_path = super::default_report_path()?;
     let report = ProfileReport::load(&judge_path).ok().flatten()?;
     Some(DispatchTable::build(&report))
 }

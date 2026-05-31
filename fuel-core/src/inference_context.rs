@@ -47,10 +47,8 @@ use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape};
 use fuel_graph::{Graph, Node, NodeId, Op};
-use fuel_storage::{
-    pipelined::{PipelinedExecutor, StorageCache},
-    BackendStorage, Storage,
-};
+use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
+use fuel_storage::{BackendStorage, Storage};
 
 use crate::Device;
 

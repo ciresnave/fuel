@@ -871,9 +871,9 @@ impl LazyTensor {
 
     /// Realize this tensor as an `f32` `Vec`.
     ///
-    /// When [`crate::dispatch::cached`] returns a populated dispatch
+    /// When [`crate::judge::cached`] returns a populated dispatch
     /// table — i.e. the app called
-    /// [`crate::dispatch::populate_dispatch_table`] earlier this
+    /// [`crate::judge::populate_dispatch_table`] earlier this
     /// process, OR a prior process persisted one for this hardware —
     /// the realize uses a `Router` that consults the table per op,
     /// picking among every registered CPU backend (`fuel-graph-cpu`
@@ -886,7 +886,7 @@ impl LazyTensor {
     /// `populate_dispatch_table` see no behaviour change and pay no
     /// startup cost.
     pub fn realize_f32(&self) -> Vec<f32> {
-        if let Some(table) = crate::dispatch::cached() {
+        if let Some(table) = crate::judge::cached() {
             // Router path: stays on the legacy executor until Phase G
             // of the 9c migration retires the trait surface the Router
             // dispatches through.

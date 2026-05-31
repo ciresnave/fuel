@@ -33,7 +33,7 @@
 //! - the Conv2D builder routes through `Op::Fused(CONV2D, _)`, so the
 //!   primitive `Op` enum loses one more variant in step 5;
 //! - CPU Conv2D kernels register as per-decision-point `BackendImpl`s
-//!   in `fuel_storage::fused::FusedKernelRegistry` (the same shape
+//!   in `fuel_dispatch::fused::FusedKernelRegistry` (the same shape
 //!   FusedLinear uses), populating the alternative-set substrate that
 //!   step 9 reads for pre-resolved KernelRef dispatch;
 //! - CSE / `op_key` automatically dedupes via [`super::FusedOpParams`]'s

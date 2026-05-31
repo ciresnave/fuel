@@ -28,7 +28,7 @@ pub mod byte_storage;
 
 /// Typed byte-shaped kernels — Phase 7.5 B5. These operate on
 /// `CpuStorageBytes` directly via `bytemuck` typed views. The
-/// dispatch wrapper in `fuel_storage::dispatch::cpu_wrappers`
+/// dispatch wrapper in `fuel_dispatch::dispatch::cpu_wrappers`
 /// extracts `CpuStorageBytes` from `BackendStorage::Cpu(...)` and
 /// calls these kernels.
 pub mod byte_kernels;
