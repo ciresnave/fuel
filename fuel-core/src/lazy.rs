@@ -2429,6 +2429,30 @@ impl LazyTensor {
         self.sqr().sum_all().sqrt()
     }
 
+    /// Pad with zeros along `dim`: `left` zeros before, `right` zeros
+    /// after. Wraps [`Self::pad`] with `PadMode::Constant` and value 0
+    /// for the named dim (other dims get `(0, 0)`). Composite — no new
+    /// graph op.
+    pub fn pad_with_zeros(
+        &self,
+        dim: usize,
+        left: usize,
+        right: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let rank = self.shape().dims().len();
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "pad_with_zeros: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
+        if left == 0 && right == 0 {
+            return Ok(self.clone());
+        }
+        let mut padding: Vec<(usize, usize)> = vec![(0, 0); rank];
+        padding[dim] = (left, right);
+        self.pad(padding, fuel_graph::PadMode::Constant, 0.0)
+    }
+
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
     /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
     ///
@@ -9128,5 +9152,26 @@ mod phase_a5_factory_tests {
         let t = LazyTensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu());
         let n = t.norm();
         assert!((n.realize_f32()[0] - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pad_with_zeros_left_and_right() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let p = t.pad_with_zeros(0, 2, 1).unwrap();
+        assert_eq!(p.shape().dims(), &[6]);
+        assert_eq!(p.realize_f32(), vec![0.0, 0.0, 1.0, 2.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn pad_with_zeros_identity_when_both_zero() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let p = t.pad_with_zeros(0, 0, 0).unwrap();
+        assert_eq!(p.realize_f32(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn pad_with_zeros_rejects_bad_dim() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        assert!(t.pad_with_zeros(3, 1, 1).is_err());
     }
 }
