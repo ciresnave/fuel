@@ -12,7 +12,7 @@
 //! `probe_mkl_loadable()`:
 //!
 //! ```ignore
-//! use fuel_storage::dispatch::extend_global_bindings;
+//! use fuel_dispatch::dispatch::extend_global_bindings;
 //! use fuel_mkl_cpu_backend::{probe_mkl_loadable, register_mkl_cpu_kernels};
 //!
 //! if probe_mkl_loadable().is_ok() {
@@ -27,12 +27,8 @@
 use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
-use fuel_storage::{
-    dispatch::{cpu_input, cpu_output, read_storage, write_storage},
-    fused::PrecisionGuarantee,
-    kernel::OpParams,
-    KernelBindingTable, Storage,
-};
+use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
+use fuel_storage::{Storage};
 
 /// Register MKL's CPU-side wrappers as sibling alternatives on the
 /// unified binding table. Trust the caller has already probed MKL (the
@@ -430,7 +426,7 @@ fn run_mkl_conv2d_via_gemm(
 mod tests {
     use super::*;
     use fuel_core_types::probe::BackendId;
-    use fuel_storage::dispatch::register_cpu_kernels;
+    use fuel_dispatch::dispatch::register_cpu_kernels;
 
     /// Registration smoke: after `register_mkl_cpu_kernels`, the
     /// MatMul/F32 binding has at least 2 alternatives (scalar CPU +
@@ -483,7 +479,8 @@ mod tests {
     #[test]
     fn mkl_matmul_matches_scalar_when_available() {
         use fuel_core_types::dispatch::OpKind;
-        use fuel_storage::{kernel::OpParams, BackendStorage, Storage};
+        use fuel_dispatch::{kernel::OpParams};
+use fuel_storage::{BackendStorage, Storage};
 
         if crate::probe_mkl_loadable().is_err() {
             eprintln!("MKL not available, skipping");

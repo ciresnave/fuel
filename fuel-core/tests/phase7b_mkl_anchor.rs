@@ -13,7 +13,7 @@
 
 #![cfg(feature = "onemkl")]
 
-use fuel_core::dispatch::{Criterion, DispatchTable};
+use fuel_core::judge::{Criterion, DispatchTable};
 use fuel_core::judge::{Judge, OpKind, OpSize, SizeClass};
 use fuel_core::lazy::LazyTensor;
 use fuel_core::probe::ProbeReport;

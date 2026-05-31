@@ -6,7 +6,7 @@
 //! return.
 //!
 //! These are the per-T monomorphic units that the dispatch wrapper
-//! in `fuel_storage::dispatch::cpu_wrappers` calls after extracting
+//! in `fuel_dispatch::dispatch::cpu_wrappers` calls after extracting
 //! the `CpuStorageBytes` from a `BackendStorage::Cpu(...)` variant.
 //!
 //! ## Status

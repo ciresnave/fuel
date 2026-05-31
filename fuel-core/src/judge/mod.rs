@@ -7,6 +7,17 @@
 //! [`ProfileReport`] that the (future) ranked dispatch table indexes
 //! at realize time.
 //!
+//! ## Submodules
+//!
+//! - [`cache`] — process-wide [`DispatchTable`] cache. Hosts
+//!   `cached()`, `populate_dispatch_table()`, `invalidate()`. Was
+//!   `fuel_core::dispatch` before the 2026-05-31 dispatch-move; the
+//!   name was a misnomer (it caches the Judge's output, not the
+//!   binding-table dispatch path), so it now lives under the Judge
+//!   module that owns its lifecycle. The cache surface is re-exported
+//!   at this module's top level so callers can write
+//!   `fuel_core::judge::cached()` directly.
+//!
 //! # Scope of this revision
 //!
 //! Ships the types, the runner skeleton, and per-family probe
@@ -62,6 +73,9 @@
 //! like a cross-device equivalence test. Carrying both axes lets a
 //! dispatch table serve both "fastest" and "most accurate"
 //! criteria without re-profiling.
+
+pub mod cache;
+pub use cache::*;
 
 use crate::probe::ProbeReport;
 use fuel_core_types::probe::{BackendId, DeviceDescriptor};

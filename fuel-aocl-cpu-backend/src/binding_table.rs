@@ -12,7 +12,7 @@
 //! `probe_aocl_loadable()`:
 //!
 //! ```ignore
-//! use fuel_storage::dispatch::extend_global_bindings;
+//! use fuel_dispatch::dispatch::extend_global_bindings;
 //! use fuel_aocl_cpu_backend::{probe_aocl_loadable, register_aocl_cpu_kernels};
 //!
 //! if probe_aocl_loadable().is_ok() {
@@ -27,12 +27,8 @@
 use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
-use fuel_storage::{
-    dispatch::{cpu_input, cpu_output, read_storage, write_storage},
-    fused::PrecisionGuarantee,
-    kernel::OpParams,
-    KernelBindingTable, Storage,
-};
+use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
+use fuel_storage::{Storage};
 
 /// Register AOCL's CPU-side wrappers as sibling alternatives on the
 /// unified binding table. Trust the caller has already probed AOCL
@@ -385,7 +381,7 @@ fn conv2d_f32_aocl_cpu_wrapper(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_storage::dispatch::register_cpu_kernels;
+    use fuel_dispatch::dispatch::register_cpu_kernels;
 
     /// Registration smoke: after `register_aocl_cpu_kernels`, the
     /// MatMul/F32 binding has one more alternative. Doesn't need AOCL

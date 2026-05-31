@@ -11,7 +11,7 @@
 //! ops so you can see the dispatch-table-driven recommendations and
 //! the fallback-to-default behaviour side by side.
 
-use fuel::dispatch::Criterion;
+use fuel::judge::Criterion;
 use fuel::scheduling::{
     auto_place_and_route, prepare_dispatch_table, recommend_placement, ScheduleOptions,
 };

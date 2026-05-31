@@ -70,10 +70,8 @@ use fuel_core_types::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Result,
 };
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
-use fuel_storage::{
-    pipelined::{PipelinedExecutor, StorageCache},
-    BackendStorage, Storage,
-};
+use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
+use fuel_storage::{BackendStorage, Storage};
 
 use crate::Device;
 

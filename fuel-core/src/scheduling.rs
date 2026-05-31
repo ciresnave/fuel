@@ -33,7 +33,7 @@
 //! Linux). Callers that want explicit paths (for CI, containers,
 //! per-user config) can override via [`ScheduleOptions`].
 
-use crate::dispatch::{Criterion, DispatchOptions, DispatchTable, Pick};
+use crate::judge::{Criterion, DispatchOptions, DispatchTable, Pick};
 use crate::judge::{Judge, OpKind, ProfileEntry, ProfileReport, SizeClass};
 use crate::probe::{HardwareChange, ProbeReport};
 use crate::transfer_cost::BandwidthMatrix;
@@ -571,7 +571,7 @@ pub fn dp_plan(
     placement
         .into_iter()
         .map(|(id, b)| {
-            let pick = crate::dispatch::Pick { backend: b, device_index: 0 };
+            let pick = crate::judge::Pick { backend: b, device_index: 0 };
             (id, pick_to_location(pick).unwrap_or(fallback_device))
         })
         .collect()
@@ -776,7 +776,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    use crate::dispatch::Criterion;
+    use crate::judge::Criterion;
     use crate::judge::{ProfileEntry, ProfileReport, PROFILE_REPORT_VERSION};
     use fuel_graph::Tensor;
     use fuel_core_types::Shape;

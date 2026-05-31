@@ -25,7 +25,7 @@
 //! - **TDP-4** TransferPath is returned as the enum discriminator;
 //!   numeric cost estimates are deferred.
 //! - **TDP-5** Lifecycle uses a generation counter
-//!   ([`fuel_storage::dispatch::topology_generation`]) plus an
+//!   ([`fuel_dispatch::dispatch::topology_generation`]) plus an
 //!   `RwLock<Option<Arc<…>>>`. `current()` rebuilds atomically when
 //!   the counter advances; otherwise it returns the cached `Arc`.
 //! - **TDP-6** The build re-reads the generation counter *inside*
@@ -44,7 +44,7 @@ use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation};
-use fuel_storage::dispatch::{global_bindings, global_registry, topology_generation};
+use fuel_dispatch::dispatch::{global_bindings, global_registry, topology_generation};
 
 use crate::probe::ProbeReport;
 
@@ -109,7 +109,7 @@ impl SystemTopology {
     /// Return a snapshot of the current topology. Cheap when nothing
     /// has changed since the last call (one atomic load + `Arc::clone`);
     /// rebuilds + atomically swaps when the
-    /// [generation counter](fuel_storage::dispatch::topology_generation)
+    /// [generation counter](fuel_dispatch::dispatch::topology_generation)
     /// has advanced.
     ///
     /// The returned `Arc` lives independent of the cache lock — a
@@ -151,7 +151,7 @@ impl SystemTopology {
     /// `register_backend_capabilities` / `extend_global_bindings`
     /// helpers in fuel-storage.
     pub fn refresh() {
-        fuel_storage::dispatch::bump_topology_generation();
+        fuel_dispatch::dispatch::bump_topology_generation();
     }
 
     /// Generation counter this snapshot was built against. Two
@@ -264,7 +264,7 @@ impl SystemTopology {
     }
 
     /// Per-backend [`BackendCapabilities`] snapshot if the backend has
-    /// registered with [`fuel_storage::dispatch::register_backend_capabilities`].
+    /// registered with [`fuel_dispatch::dispatch::register_backend_capabilities`].
     /// Backends that only registered kernels into the binding table
     /// (most production paths today) return `None`. The picker should
     /// not assume capabilities are present; it can fall back to the
@@ -607,7 +607,7 @@ mod tests {
     /// advance, then assert Arc identity over that window.
     #[test]
     fn no_change_reuses_arc() {
-        use fuel_storage::dispatch::topology_generation;
+        use fuel_dispatch::dispatch::topology_generation;
         for _ in 0..32 {
             let gen_before = topology_generation();
             let a = SystemTopology::current();

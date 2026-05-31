@@ -6,7 +6,7 @@
 //! `realize_f32` was hardcoded to `GraphExecutor<CpuBackend>` and the
 //! AOCL/MKL infrastructure built earlier was invisible to anyone
 //! using the default realize path. Post-refactor, it consults
-//! `fuel_core::dispatch::cached()` and uses a Router with all
+//! `fuel_core::judge::cached()` and uses a Router with all
 //! registered CPU backends when a table is present.
 
 #![cfg(any(feature = "aocl", feature = "onemkl"))]
@@ -29,8 +29,8 @@ fn build_matmul() -> LazyTensor {
 fn realize_f32_falls_through_to_cpu_when_no_dispatch_table_cached() {
     // Make sure invalidate runs first so this test is independent of
     // any prior populate from sibling tests in the same process.
-    fuel_core::dispatch::invalidate().expect("invalidate");
-    assert!(fuel_core::dispatch::cached().is_none());
+    fuel_core::judge::invalidate().expect("invalidate");
+    assert!(fuel_core::judge::cached().is_none());
 
     let c = build_matmul();
     let result = c.realize_f32();
@@ -60,11 +60,11 @@ fn realize_f32_routes_through_dispatch_table_when_populated() {
         eprintln!("skipping: FUEL_SKIP_JUDGE_RUN set");
         return;
     }
-    fuel_core::dispatch::invalidate().expect("invalidate");
-    fuel_core::dispatch::populate_dispatch_table()
+    fuel_core::judge::invalidate().expect("invalidate");
+    fuel_core::judge::populate_dispatch_table()
         .expect("populate (judge run)");
     assert!(
-        fuel_core::dispatch::cached().is_some(),
+        fuel_core::judge::cached().is_some(),
         "after populate, cached() should return Some",
     );
 

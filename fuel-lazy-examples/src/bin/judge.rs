@@ -13,7 +13,7 @@
 //! is max element-wise relative error vs the reference backend's
 //! output on the same input.
 
-use fuel::dispatch::{Criterion, DispatchTable};
+use fuel::judge::{Criterion, DispatchTable};
 use fuel::judge::{Judge, ProfileEntry};
 use fuel::probe::ProbeReport;
 

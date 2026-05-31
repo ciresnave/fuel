@@ -19,7 +19,7 @@
 //! awareness changed the answer — those are the cases Phase 6b's
 //! single-op winner-only model would have routed sub-optimally.
 
-use fuel::dispatch::{Criterion, DispatchTable};
+use fuel::judge::{Criterion, DispatchTable};
 use fuel::lazy::LazyTensor;
 use fuel::scheduling::{dp_plan, prepare_dp_inputs, recommend_placement, ScheduleOptions};
 use fuel_core_types::{probe::BackendId, DeviceLocation};

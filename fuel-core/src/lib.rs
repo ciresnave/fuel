@@ -89,7 +89,11 @@ pub mod model_progress;
 pub mod vulkan_backend;
 #[cfg(feature = "mkl")]
 mod mkl;
-pub mod dispatch;
+// dispatch.rs (Judge cache) moved into judge::cache 2026-05-31 — the
+// `fuel_core::dispatch` name was a misnomer for what was just the
+// cached output of the Judge. Callers now reach the cache via
+// `fuel_core::judge::cached()` / `populate_dispatch_table()` /
+// `invalidate()` (re-exported at the judge module's top level).
 pub mod factories;
 pub mod inference_context;
 pub mod pipelined_bridge;

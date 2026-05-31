@@ -639,7 +639,7 @@ pub struct Router {
     /// consult it to pick between competing backends sharing the same
     /// `DeviceLocation` — e.g. the portable CpuBackend vs an
     /// AoclBackend at `DeviceLocation::Cpu`. Populated externally by
-    /// `fuel_core::dispatch::populate_dispatch_table()` and passed in
+    /// `fuel_core::judge::populate_dispatch_table()` and passed in
     /// via [`Router::with_dispatch_table`]. None means no empirical
     /// data available yet — Router falls through to first-registered.
     dispatch_table: Option<Arc<DispatchTable>>,
@@ -665,7 +665,7 @@ impl Router {
     /// sites consult it to pick between competing backends sharing
     /// the same `DeviceLocation` (e.g. CpuBackend vs AoclBackend at
     /// `DeviceLocation::Cpu`). Apps typically obtain the table from
-    /// `fuel_core::dispatch::cached()` after calling
+    /// `fuel_core::judge::cached()` after calling
     /// `populate_dispatch_table()` either eagerly or in a background
     /// thread.
     pub fn with_dispatch_table(mut self, table: Arc<DispatchTable>) -> Self {
