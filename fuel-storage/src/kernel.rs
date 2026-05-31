@@ -603,6 +603,22 @@ pub enum OpParams {
         state_dim:  usize,
         chunk_size: usize,
     },
+
+    /// Nf4Matmul execution parameters. 3 inputs:
+    /// `activations [batch, m, k]` (rank ≥ 2; leading dims flattened
+    /// into `batch`), `w_packed [n, k/2]` U8, `absmax [n, k/block_size]`
+    /// F32. Output `[batch, m, n]` matching activations' dtype.
+    ///
+    /// `block_size` is the per-output-row, per-block scale granularity
+    /// (typically 64 in bitsandbytes). `k` must be even (w_packed
+    /// layout requirement) and a multiple of `block_size`.
+    Nf4Matmul {
+        batch:      usize,
+        m:          usize,
+        n:          usize,
+        k:          usize,
+        block_size: usize,
+    },
 }
 
 // =============================================================================

@@ -414,6 +414,13 @@ pub enum OpKind {
     /// `y: [batch, seqlen, heads, head_dim]`. Geometry + `chunk_size`
     /// flow through `OpParams::SsdChunkScan`.
     SsdChunkScan,
+    /// bitsandbytes-style 4-bit NormalFloat quantized matmul. Three
+    /// inputs `[activations, w_packed, absmax]` — see
+    /// [`FusedOps::NF4_MATMUL`](fuel_graph::registry::FusedOps::NF4_MATMUL)
+    /// for the full shape contract. Output `[..., M, N]` matches the
+    /// activations' dtype. Geometry + `block_size` flow through
+    /// `OpParams::Nf4Matmul`.
+    Nf4Matmul,
 }
 
 impl OpKind {
@@ -512,6 +519,7 @@ impl OpKind {
             OpKind::CausalConv1d        => "causal_conv1d",
             OpKind::SelectiveScan       => "selective_scan",
             OpKind::SsdChunkScan        => "ssd_chunk_scan",
+            OpKind::Nf4Matmul           => "nf4_matmul",
         }
     }
 }

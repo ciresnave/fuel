@@ -905,6 +905,68 @@ mod tests {
         assert_eq!(out_shape.dims(), &[2, 16, 8, 64]);
     }
 
+    /// Nf4Matmul end-to-end: F32 case through the dispatcher.
+    /// Verifies the full plumbing builder → Op::Fused → op_to_op_kind
+    /// / op_to_op_params → wrapper → kernel.
+    #[test]
+    fn nf4_matmul_basic_end_to_end() {
+        let device = crate::Device::cpu();
+        // m=1, n=2, k=4, block_size=2 — same hand-computed test as
+        // the byte-kernel two-outputs-two-blocks check.
+        let activations = LazyTensor::from_f32(
+            vec![1.0_f32, 2.0, 2.0, 4.0],
+            Shape::from_dims(&[1, 4]),
+            &device,
+        );
+        let w_packed_t = activations.graph_tensor().const_u8_like(
+            vec![247_u8, 247, 127, 127],
+            Shape::from_dims(&[2, 2]),
+        );
+        let w_packed = LazyTensor::from_graph_tensor(w_packed_t);
+        let absmax = activations.const_f32_like(
+            vec![1.0_f32, 2.0, 10.0, 20.0],
+            Shape::from_dims(&[2, 2]),
+        );
+        let y = activations.nf4_matmul(&w_packed, &absmax, 2).realize_f32();
+        assert_eq!(y.len(), 2);
+        assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);
+        assert!((y[1] - 50.0).abs() < 1e-5, "out 1: {}", y[1]);
+    }
+
+    /// Nf4Matmul registry roundtrip + shape rule.
+    #[test]
+    fn nf4_matmul_registry_entry_registered() {
+        let r = fuel_graph::registry::default_registry();
+        let e = r
+            .entry(fuel_graph::registry::FusedOps::NF4_MATMUL)
+            .expect("NF4_MATMUL registered");
+        assert_eq!(e.name, "Nf4Matmul");
+        assert_eq!(
+            r.id_for_name("Nf4Matmul"),
+            Some(fuel_graph::registry::FusedOps::NF4_MATMUL),
+        );
+        // Shape rule: output last dim becomes w_packed's n.
+        let out_shape = (e.shape_rule)(
+            &[
+                Shape::from_dims(&[4, 32, 128]),    // activations [..., m, k]
+                Shape::from_dims(&[256, 64]),       // w_packed [n, k/2]
+                Shape::from_dims(&[256, 2]),        // absmax [n, k/block_size]
+            ],
+            &fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size: 64 },
+        );
+        assert_eq!(out_shape.dims(), &[4, 32, 256]);
+        // Dtype rule: F16 activations → F16 output.
+        let out_dtype = (e.dtype_rule)(
+            &[
+                fuel_core_types::DType::F16,
+                fuel_core_types::DType::U8,
+                fuel_core_types::DType::F32,
+            ],
+            &fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size: 64 },
+        );
+        assert_eq!(out_dtype, fuel_core_types::DType::F16);
+    }
+
     /// Registry: the FusedSoftmaxCrossEntropy entry is wired into the
     /// default registry and reachable by id + name.
     #[test]

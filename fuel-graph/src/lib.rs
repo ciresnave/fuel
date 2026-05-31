@@ -986,6 +986,7 @@ fn host_buffer_elem_count(buf: &fuel_core_types::HostBuffer) -> usize {
         HostBuffer::F64(v) => v.len(),
         HostBuffer::BF16(v) => v.len(),
         HostBuffer::F16(v) => v.len(),
+        HostBuffer::U8(v) => v.len(),
         HostBuffer::U32(v) => v.len(),
         HostBuffer::I64(v) => v.len(),
         other => panic!(
@@ -1777,6 +1778,20 @@ impl Tensor {
         let v: Arc<[u32]> = data.into();
         self.const_like_host_buffer(
             fuel_core_types::HostBuffer::U32(v.to_vec()), DType::U32, shape,
+        )
+    }
+
+    /// Build a sibling U8 `Const` on the same graph. Used by
+    /// byte-stream inputs (e.g. NF4 quantized weights packed two
+    /// codes per byte).
+    pub fn const_u8_like(
+        &self,
+        data: impl Into<Arc<[u8]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        let v: Arc<[u8]> = data.into();
+        self.const_like_host_buffer(
+            fuel_core_types::HostBuffer::U8(v.to_vec()), DType::U8, shape,
         )
     }
 
@@ -3568,6 +3583,105 @@ impl Tensor {
             inputs: vec![self.id, weight.id, bias.id],
             shape:  Shape::from_dims(&[batch, channels, out_seq]),
             dtype:  DType::F32,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append an `Nf4Matmul` node — bitsandbytes-style 4-bit
+    /// NormalFloat quantized matrix multiply. Three inputs:
+    /// - `self` (activations): `[..., M, K]`, dtype ∈ {F32, F16, BF16}
+    /// - `w_packed`: `[N, K/2]` U8 (two 4-bit codes per byte)
+    /// - `absmax`:   `[N, K/block_size]` F32 (per-output-row, per-block)
+    ///
+    /// Output: `[..., M, N]` matching activations' dtype.
+    ///
+    /// `block_size` is the NF4 quantization block size (typically 64
+    /// in bitsandbytes). `K` must be even AND a multiple of
+    /// `block_size`.
+    ///
+    /// Emits `Op::Fused(FusedOps::NF4_MATMUL, FusedOpParams::Nf4Matmul
+    /// { block_size })`. No primitive decomposition (the dequant +
+    /// matmul roundtrip is exactly what NF4's fused dequant-in-kernel
+    /// design avoids); backends without a native kernel fall through
+    /// to the executor's cpu_fallback path.
+    pub fn nf4_matmul(
+        &self,
+        w_packed: &Tensor,
+        absmax: &Tensor,
+        block_size: usize,
+    ) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &w_packed.graph)
+                && Arc::ptr_eq(&self.graph, &absmax.graph),
+            "nf4_matmul: tensors must live on the same graph",
+        );
+        let act_dtype = self.dtype();
+        assert!(
+            matches!(act_dtype, DType::F32 | DType::F16 | DType::BF16),
+            "nf4_matmul v1: activations must be F32/F16/BF16, got {:?}", act_dtype,
+        );
+        assert_eq!(
+            w_packed.dtype(),
+            DType::U8,
+            "nf4_matmul: w_packed must be U8 (two 4-bit codes per byte), got {:?}",
+            w_packed.dtype(),
+        );
+        assert_eq!(
+            absmax.dtype(),
+            DType::F32,
+            "nf4_matmul: absmax must be F32, got {:?}", absmax.dtype(),
+        );
+        let a_dims = self.shape();
+        let a_dims = a_dims.dims();
+        let w_dims = w_packed.shape();
+        let w_dims = w_dims.dims();
+        let abs_dims = absmax.shape();
+        let abs_dims = abs_dims.dims();
+        assert!(
+            a_dims.len() >= 2,
+            "nf4_matmul: activations must be rank ≥ 2, got {a_dims:?}",
+        );
+        assert_eq!(
+            w_dims.len(), 2,
+            "nf4_matmul: w_packed must be rank 2 [n, k/2], got {w_dims:?}",
+        );
+        assert_eq!(
+            abs_dims.len(), 2,
+            "nf4_matmul: absmax must be rank 2 [n, k/block_size], got {abs_dims:?}",
+        );
+        let m = a_dims[a_dims.len() - 2];
+        let k = a_dims[a_dims.len() - 1];
+        let n = w_dims[0];
+        assert!(
+            k % 2 == 0,
+            "nf4_matmul: k={k} must be even (w_packed holds 2 nibbles per byte along k)",
+        );
+        assert!(
+            block_size > 0 && k % block_size == 0,
+            "nf4_matmul: k={k} must be a positive multiple of block_size={block_size}",
+        );
+        assert_eq!(
+            w_dims[1], k / 2,
+            "nf4_matmul: w_packed second dim {} must equal k/2 = {}", w_dims[1], k / 2,
+        );
+        assert_eq!(
+            abs_dims, &[n, k / block_size][..],
+            "nf4_matmul: absmax {abs_dims:?} must be [n={n}, k/block_size={}]",
+            k / block_size,
+        );
+        let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
+        out_dims.push(n);
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Fused(
+                crate::registry::FusedOps::NF4_MATMUL,
+                crate::registry::FusedOpParams::Nf4Matmul { block_size },
+            ),
+            inputs: vec![self.id, w_packed.id, absmax.id],
+            shape:  Shape::from_dims(&out_dims),
+            dtype:  act_dtype,
         });
         Self {
             graph: self.graph.clone(),

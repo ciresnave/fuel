@@ -1221,6 +1221,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::SsdChunkScan)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::NF4_MATMUL =>
+        {
+            Some(OpKind::Nf4Matmul)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -1686,6 +1691,66 @@ fn op_to_op_params(
                 head_dim,
                 state_dim,
                 chunk_size: *chunk_size,
+            }
+        }
+        // Nf4Matmul: derive (batch, m, n, k) from activations + w_packed
+        // layouts. activations: [..., m, k] (leading dims flatten into
+        // batch); w_packed: [n, k/2] U8.
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size },
+        ) => {
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Nf4Matmul expects 3 inputs (activations, w_packed, absmax), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let a_layout = input_layout(node.inputs[0]);
+            let w_layout = input_layout(node.inputs[1]);
+            let a_dims = a_layout.shape().dims();
+            let w_dims = w_layout.shape().dims();
+            if a_dims.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "Nf4Matmul: activations must be rank ≥ 2, got {a_dims:?}",
+                ))
+                .bt());
+            }
+            if w_dims.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "Nf4Matmul: w_packed must be rank 2 [n, k/2], got {w_dims:?}",
+                ))
+                .bt());
+            }
+            let m = a_dims[a_dims.len() - 2];
+            let k = a_dims[a_dims.len() - 1];
+            let n = w_dims[0];
+            let batch: usize = a_dims[..a_dims.len() - 2].iter().product::<usize>().max(1);
+            if k % 2 != 0 {
+                return Err(Error::Msg(format!(
+                    "Nf4Matmul: k={k} must be even (w_packed holds 2 nibbles per byte along k)",
+                ))
+                .bt());
+            }
+            if k % *block_size != 0 {
+                return Err(Error::Msg(format!(
+                    "Nf4Matmul: k={k} must be a multiple of block_size={block_size}",
+                ))
+                .bt());
+            }
+            if w_dims[1] != k / 2 {
+                return Err(Error::Msg(format!(
+                    "Nf4Matmul: w_packed second dim {} must equal k/2 = {}", w_dims[1], k / 2,
+                ))
+                .bt());
+            }
+            OpParams::Nf4Matmul {
+                batch,
+                m,
+                n,
+                k,
+                block_size: *block_size,
             }
         }
         // Phase 7.6 step 3: SoftmaxLastDim flows through

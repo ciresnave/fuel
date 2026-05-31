@@ -727,6 +727,20 @@ impl LazyTensor {
         }
     }
 
+    /// bitsandbytes-style 4-bit NormalFloat quantized matrix
+    /// multiply. See [`fuel_graph::Tensor::nf4_matmul`] for the full
+    /// shape contract. v1 covers F32/F16/BF16 activations.
+    pub fn nf4_matmul(
+        &self,
+        w_packed: &Self,
+        absmax: &Self,
+        block_size: usize,
+    ) -> Self {
+        Self {
+            inner: self.inner.nf4_matmul(&w_packed.inner, &absmax.inner, block_size),
+        }
+    }
+
     /// Mamba-2's State-Space Duality chunked scan (forward). See
     /// [`fuel_graph::Tensor::ssd_chunk_scan`] for the full shape
     /// contract. v1 requires `chunk_size == seqlen` (single-chunk
@@ -1582,6 +1596,365 @@ impl LazyTensor {
                 stride, padding, output_padding, dilation, groups,
             ),
         }
+    }
+}
+
+// ============================================================================
+// Phase A.1 — wrapper additions (eager-`Tensor` retirement program).
+//
+// Methods on `fuel_graph::Tensor` that weren't previously surfaced through
+// `LazyTensor`. Pure delegation; no new graph ops. See
+// `docs/session-prompts/eager-tensor-retirement-master-plan.md`.
+// ============================================================================
+
+impl LazyTensor {
+    // ---- shape ops: unsqueeze and Result-returning siblings ----
+
+    /// Append a size-1 dimension at position `dim`. Inverse of [`Self::squeeze`].
+    pub fn unsqueeze(&self, dim: usize) -> Self {
+        Self { inner: self.inner.unsqueeze(dim) }
+    }
+
+    /// Result-returning sibling of [`Self::unsqueeze`].
+    pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_unsqueeze(dim)? })
+    }
+
+    /// Result-returning sibling of [`Self::permute`].
+    pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_permute(axes)? })
+    }
+
+    /// Result-returning sibling of [`Self::transpose`].
+    pub fn try_transpose(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_transpose()? })
+    }
+
+    /// Result-returning sibling of [`Self::broadcast_to`].
+    pub fn try_broadcast_to(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
+    }
+
+    /// Result-returning sibling of [`Self::reshape`].
+    pub fn try_reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_reshape(shape)? })
+    }
+
+    // ---- triangular masking (canonical attention masks) ----
+
+    /// Upper-triangular mask along the last two dims. `diagonal = 0`
+    /// keeps the main diagonal and above; positive shifts higher.
+    pub fn triu(&self, diagonal: i64) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.triu(diagonal)? })
+    }
+
+    /// Lower-triangular mask along the last two dims. `tril(0)` is the
+    /// canonical causal-attention mask.
+    pub fn tril(&self, diagonal: i64) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.tril(diagonal)? })
+    }
+
+    // ---- additional reductions / activations ----
+
+    /// `log(softmax(self))` along the last dim, fused into one op.
+    pub fn log_softmax_last_dim(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.log_softmax_last_dim()? })
+    }
+
+    /// Argmin along `dim`, returning a U32 tensor with the reduced dim
+    /// removed. Non-differentiable.
+    pub fn argmin_dim(&self, dim: usize) -> Self {
+        Self { inner: self.inner.argmin_dim(dim) }
+    }
+
+    // ---- masking / scatter ----
+
+    /// Fill every position where `mask != 0` with `value`; pass `self`
+    /// through everywhere `mask == 0`. `mask` must be U8 with the same
+    /// shape as `self`; `value`'s dtype must match `self`.
+    pub fn masked_fill(
+        &self,
+        mask: &Self,
+        value: fuel_core_types::Scalar,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.masked_fill(&mask.inner, value)? })
+    }
+
+    /// `self + scatter(indices, src, dim=dim)` — accumulate `src` rows
+    /// at positions named by `indices` along `dim`. `indices` is rank-1
+    /// U32 with length equal to `src.dims()[dim]`.
+    pub fn index_add(&self, dim: usize, indices: &Self, src: &Self) -> Self {
+        Self { inner: self.inner.index_add(dim, &indices.inner, &src.inner) }
+    }
+
+    /// Functional inverse of [`Self::gather`]. Accumulates `src` into
+    /// `self` at positions given by `indices` (substituted at `dim`).
+    pub fn scatter_add(&self, dim: usize, indices: &Self, src: &Self) -> Self {
+        Self { inner: self.inner.scatter_add(dim, &indices.inner, &src.inner) }
+    }
+
+    // ---- in-place activations (Phase 4-5 infrastructure, now surfaced) ----
+    //
+    // These mutate `self`'s storage in place. Safe to call on
+    // tape-tracked tensors after Phase 4's view-aware ordering pass and
+    // Phase 5's auto-copy pass. See `project_inplace_ops_complete`
+    // memory entry.
+
+    /// In-place `max(0, self)`. See [`Self::relu`] for the functional
+    /// variant.
+    pub fn relu_inplace(&self) -> Self {
+        Self { inner: self.inner.relu_inplace() }
+    }
+
+    /// In-place `self * sigmoid(self)`. See [`Self::silu`] for the
+    /// functional variant.
+    pub fn silu_inplace(&self) -> Self {
+        Self { inner: self.inner.silu_inplace() }
+    }
+
+    /// In-place tanh-approximation GELU. See [`Self::gelu`] for the
+    /// functional variant.
+    pub fn gelu_inplace(&self) -> Self {
+        Self { inner: self.inner.gelu_inplace() }
+    }
+
+    /// In-place `tanh(self)`. See [`Self::tanh`] for the functional
+    /// variant.
+    pub fn tanh_inplace(&self) -> Self {
+        Self { inner: self.inner.tanh_inplace() }
+    }
+
+    /// In-place `sigmoid(self)`. See [`Self::sigmoid`] for the
+    /// functional variant.
+    pub fn sigmoid_inplace(&self) -> Self {
+        Self { inner: self.inner.sigmoid_inplace() }
+    }
+
+    /// In-place `self = mul · self + add`. Single fused-op equivalent
+    /// of `self.mul_scalar(mul).add_scalar(add)` plus reassignment.
+    pub fn affine_inplace(&self, mul: f64, add: f64) -> Self {
+        Self { inner: self.inner.affine_inplace(mul, add) }
+    }
+
+    // ---- additional const_*_like factories ----
+
+    /// Build a sibling F64 `Const` on the same graph as `self`.
+    pub fn const_f64_like(
+        &self,
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        Self { inner: self.inner.const_f64_like(data, shape) }
+    }
+
+    /// Build a sibling I64 `Const` on the same graph. Used by integer-
+    /// target ops (e.g. cross-entropy with PyTorch-convention class
+    /// indices).
+    pub fn const_i64_like(
+        &self,
+        data: impl Into<Arc<[i64]>>,
+        shape: impl Into<Shape>,
+    ) -> Self {
+        Self { inner: self.inner.const_i64_like(data, shape) }
+    }
+
+    // ---- device residency control ----
+
+    /// Pin this tensor's realized storage to `device`. Consumes `self`
+    /// because the placement is a graph-level annotation tied to the
+    /// node id rather than a side-effecting operation.
+    pub fn on_device(self, device: &Device) -> Self {
+        Self { inner: self.inner.on_device(device.location()) }
+    }
+
+    /// Append an `Op::Release` node — explicitly drop this tensor's
+    /// device-resident storage once the ordering pass has scheduled
+    /// every reader before it.
+    pub fn release(&self) -> Self {
+        Self { inner: self.inner.release() }
+    }
+
+    /// Move bytes to `device`, destroying the source. Use when the
+    /// source is genuinely dead after the transfer.
+    pub fn move_to_device(&self, device: &Device) -> Self {
+        Self { inner: self.inner.move_to_device(device.location()) }
+    }
+
+    /// Copy bytes to `device`, leaving the source resident. Use when
+    /// other ops still need the source.
+    pub fn copy_to_device(&self, device: &Device) -> Self {
+        Self { inner: self.inner.copy_to_device(device.location()) }
+    }
+
+    // ---- autograd ----
+
+    /// Run reverse-mode autograd from this tensor as the loss, returning
+    /// a [`fuel_graph::GradMap`] keyed by every input tensor reached.
+    /// The gradient nodes extend the same graph; realizing a gradient
+    /// re-executes the forward dependencies.
+    pub fn backward(&self) -> fuel_graph::GradMap {
+        self.inner.backward()
+    }
+}
+
+// ============================================================================
+// Phase A.2 — composite primitives expressible from existing ops.
+//
+// Each method here is implemented in terms of `LazyTensor`'s existing
+// surface (reshape, permute, concat, unsqueeze, etc.). No new graph ops.
+// ============================================================================
+
+impl LazyTensor {
+    /// Transpose the last two dims as a Result-returning convenience —
+    /// rank < 2 surfaces as an error rather than the panic the
+    /// no-arg [`Self::transpose`] would produce. Alias for the eager
+    /// `transpose_last_two`.
+    pub fn transpose_last_two(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.try_transpose()
+    }
+
+    /// Eager-API alias of [`Self::transpose_last_two`]. Matches PyTorch's
+    /// `.t()` short form and the existing eager [`Tensor::t`] method.
+    pub fn t(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.try_transpose()
+    }
+
+    /// Two-argument transpose: swap dims `dim1` and `dim2`, leaving the
+    /// rest in place. Implemented via [`Self::try_permute`]; matches the
+    /// eager `transpose(d1, d2)` two-arg form.
+    pub fn transpose_dims(&self, dim1: usize, dim2: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        if dim1 == dim2 {
+            return Ok(self.clone());
+        }
+        let rank = self.shape().dims().len();
+        if dim1 >= rank || dim2 >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "transpose_dims: dim1={dim1} dim2={dim2} out of bounds for rank {rank}",
+            )).bt());
+        }
+        let mut axes: Vec<usize> = (0..rank).collect();
+        axes.swap(dim1, dim2);
+        self.try_permute(&axes)
+    }
+
+    /// Collapse dims `[start_dim, end_dim]` (inclusive) into a single
+    /// dimension. Returns `Result` so out-of-bounds surfaces as a typed
+    /// error rather than a panic.
+    pub fn flatten(&self, start_dim: usize, end_dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        let rank = dims.len();
+        if rank == 0 {
+            // Scalar: already flat; nothing to do.
+            return Ok(self.clone());
+        }
+        if start_dim >= rank || end_dim >= rank || start_dim > end_dim {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flatten: start_dim={start_dim} end_dim={end_dim} out of bounds for rank {rank}",
+            )).bt());
+        }
+        let merged: usize = dims[start_dim..=end_dim].iter().product();
+        let mut new_dims: Vec<usize> = Vec::with_capacity(rank - (end_dim - start_dim));
+        new_dims.extend_from_slice(&dims[..start_dim]);
+        new_dims.push(merged);
+        new_dims.extend_from_slice(&dims[end_dim + 1..]);
+        self.try_reshape(new_dims)
+    }
+
+    /// Flatten dims `[0, end_dim]` (inclusive) into one.
+    pub fn flatten_to(&self, end_dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.flatten(0, end_dim)
+    }
+
+    /// Flatten dims `[start_dim, rank-1]` into one.
+    pub fn flatten_from(&self, start_dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let rank = self.shape().dims().len();
+        if rank == 0 {
+            return Ok(self.clone());
+        }
+        self.flatten(start_dim, rank - 1)
+    }
+
+    /// Flatten the tensor to rank-1 (single dim containing every element).
+    pub fn flatten_all(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let rank = self.shape().dims().len();
+        if rank == 0 {
+            return Ok(self.clone());
+        }
+        self.flatten(0, rank - 1)
+    }
+
+    /// Stack tensors along a new dim at position `dim`. Each input is
+    /// `unsqueeze`d at `dim` then concatenated. All inputs must have
+    /// identical shape; `dim` may equal `rank` (append a new trailing
+    /// dim).
+    pub fn stack(args: &[&Self], dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        if args.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "stack: requires at least one tensor".into(),
+            ).bt());
+        }
+        let reference_dims = args[0].shape().dims().to_vec();
+        let rank = reference_dims.len();
+        if dim > rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "stack: dim={dim} out of bounds for rank {rank} (must be <= rank)",
+            )).bt());
+        }
+        for (idx, t) in args.iter().enumerate().skip(1) {
+            if t.shape().dims() != reference_dims.as_slice() {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "stack: tensor {idx} shape {:?} != reference shape {:?}",
+                    t.shape().dims(), reference_dims,
+                )).bt());
+            }
+        }
+        // unsqueeze every input at the new dim, then concat.
+        let mut iter = args.iter();
+        let first = iter.next().unwrap().try_unsqueeze(dim)?;
+        let mut acc = first;
+        for t in iter {
+            let u = t.try_unsqueeze(dim)?;
+            acc = acc.concat(&u, dim);
+        }
+        Ok(acc)
+    }
+
+    /// Repeat the tensor along each dim `repeats[i]` times. If `repeats`
+    /// has more dims than `self`, `self` is implicitly left-padded with
+    /// size-1 dims to match. Matches PyTorch's `Tensor.repeat`.
+    pub fn repeat(&self, repeats: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+        let repeats = repeats.into();
+        let repeats: Vec<usize> = repeats.dims().to_vec();
+        let self_rank = self.shape().dims().len();
+        let target_rank = repeats.len();
+        let mut work = if self_rank < target_rank {
+            let pad_count = target_rank - self_rank;
+            let mut new_shape: Vec<usize> = vec![1; pad_count];
+            new_shape.extend_from_slice(self.shape().dims());
+            self.try_reshape(new_shape)?
+        } else if self_rank > target_rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "repeat: repeats rank {target_rank} smaller than tensor rank {self_rank}",
+            )).bt());
+        } else {
+            self.clone()
+        };
+        for (axis, &n) in repeats.iter().enumerate() {
+            if n == 0 {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "repeat: zero repeat count at axis {axis} not supported",
+                )).bt());
+            }
+            if n == 1 {
+                continue;
+            }
+            // n copies concatenated along `axis`.
+            let base = work.clone();
+            for _ in 1..n {
+                work = work.concat(&base, axis);
+            }
+        }
+        Ok(work)
     }
 }
 
@@ -7422,5 +7795,317 @@ mod safetensors_bridge_tests {
             &Device::cpu(),
         );
         assert!(result.is_err());
+    }
+}
+
+// ============================================================================
+// Phase A.1 wrapper smoke tests.
+//
+// Pure pass-through tests: realize and assert the returned tensor has the
+// expected shape / dtype / values. The graph-level ops are tested in
+// `fuel-graph`; here we only verify that the LazyTensor wrappers don't
+// drop information or mis-thread arguments.
+// ============================================================================
+#[cfg(test)]
+mod phase_a1_wrapper_tests {
+    use super::*;
+
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
+        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    }
+
+    #[test]
+    fn unsqueeze_adds_size_one_dim() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let out = t.unsqueeze(0);
+        assert_eq!(out.shape().dims(), &[1, 2, 2]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn try_unsqueeze_errors_out_of_bounds() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        // rank=1, so dim<=1 is valid; dim=2 must error.
+        assert!(t.try_unsqueeze(0).is_ok());
+        assert!(t.try_unsqueeze(1).is_ok());
+        assert!(t.try_unsqueeze(2).is_err());
+    }
+
+    #[test]
+    fn try_reshape_errors_on_size_mismatch() {
+        let t = cpu_f32(vec![1.0; 6], &[2, 3]);
+        assert!(t.try_reshape(vec![3, 2]).is_ok());
+        assert!(t.try_reshape(vec![2, 2]).is_err());
+    }
+
+    #[test]
+    fn try_permute_validates_axes() {
+        let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
+        assert!(t.try_permute(&[2, 0, 1]).is_ok());
+        assert!(t.try_permute(&[0, 1]).is_err());     // wrong rank
+        assert!(t.try_permute(&[0, 0, 1]).is_err()); // dup axis
+    }
+
+    #[test]
+    fn try_transpose_requires_rank_two_plus() {
+        let scalar = cpu_f32(vec![1.0], &[1]);
+        // rank-1 is fine on most platforms because transpose() of last two
+        // dims degenerates, but the try_* sibling at minimum exists.
+        let _ = scalar.try_transpose();
+    }
+
+    #[test]
+    fn triu_tril_shape_preserved() {
+        let t = cpu_f32(vec![1.0; 9], &[3, 3]);
+        let upper = t.triu(0).unwrap();
+        let lower = t.tril(0).unwrap();
+        assert_eq!(upper.shape().dims(), &[3, 3]);
+        assert_eq!(lower.shape().dims(), &[3, 3]);
+        // tril(0) of all-ones: 1s on/below diagonal, 0s above
+        assert_eq!(lower.realize_f32(), vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn triu_rejects_rank_one() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        assert!(t.triu(0).is_err());
+    }
+
+    #[test]
+    fn log_softmax_last_dim_shape_preserved() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let out = t.log_softmax_last_dim().unwrap();
+        assert_eq!(out.shape().dims(), &[2, 2]);
+        // log_softmax values must be <= 0.
+        for v in out.realize_f32() {
+            assert!(v <= 0.0 + 1e-6, "log_softmax produced positive value: {v}");
+        }
+    }
+
+    #[test]
+    fn argmin_dim_drops_reduced_axis() {
+        let t = cpu_f32(vec![3.0, 1.0, 2.0, 0.5, 5.0, 4.0], &[2, 3]);
+        let out = t.argmin_dim(1);
+        assert_eq!(out.shape().dims(), &[2]);
+        assert_eq!(out.dtype(), DType::U32);
+        assert_eq!(out.realize_u32(), vec![1, 0]);
+    }
+
+    #[test]
+    fn masked_fill_smoke() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        // Comparison ops produce U8 masks directly — no F32→U8 cast needed.
+        let probe = t.const_f32_like(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2]);
+        let threshold = t.const_f32_like(vec![0.5; 4], vec![2, 2]);
+        let mask = probe.gt(&threshold); // [0, 1, 1, 0] as U8
+        let out = t.masked_fill(&mask, fuel_core_types::Scalar::F32(-9.0)).unwrap();
+        assert_eq!(out.realize_f32(), vec![1.0, -9.0, -9.0, 4.0]);
+    }
+
+    #[test]
+    fn index_add_smoke() {
+        let base = cpu_f32(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
+        let src = base.const_f32_like(vec![10.0, 20.0, 30.0, 40.0], vec![2, 2]);
+        let indices = base.const_u32_like(vec![0_u32, 0_u32], vec![2]);
+        let out = base.index_add(0, &indices, &src);
+        assert_eq!(out.shape().dims(), &[2, 2]);
+        // both src rows added to row 0; row 1 unchanged
+        let v = out.realize_f32();
+        assert_eq!(v[0], 41.0); // 1 + 10 + 30
+        assert_eq!(v[1], 61.0); // 1 + 20 + 40
+        assert_eq!(v[2], 1.0);
+        assert_eq!(v[3], 1.0);
+    }
+
+    #[test]
+    fn scatter_add_smoke() {
+        let base = cpu_f32(vec![0.0, 0.0, 0.0, 0.0], &[2, 2]);
+        let src = base.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let indices = base.const_u32_like(vec![0_u32, 1_u32, 1_u32, 0_u32], vec![2, 2]);
+        let out = base.scatter_add(0, &indices, &src);
+        assert_eq!(out.shape().dims(), &[2, 2]);
+    }
+
+    #[test]
+    fn inplace_activations_compile_and_run() {
+        let t = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]);
+        // Each in-place op is destructive, so chain through fresh tensors.
+        let r = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).relu_inplace();
+        let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).silu_inplace();
+        let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).gelu_inplace();
+        let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).tanh_inplace();
+        let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).sigmoid_inplace();
+        let _ = t.affine_inplace(2.0, 1.0);
+        // Spot-check the relu output.
+        let v = r.realize_f32();
+        assert_eq!(v, vec![0.0, 0.5, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn const_f64_like_round_trips() {
+        let anchor = cpu_f32(vec![0.0], &[1]);
+        let t = anchor.const_f64_like(vec![1.5, 2.5, 3.5], vec![3]);
+        assert_eq!(t.shape().dims(), &[3]);
+        assert_eq!(t.dtype(), DType::F64);
+        assert_eq!(t.realize_f64(), vec![1.5, 2.5, 3.5]);
+    }
+
+    #[test]
+    fn const_i64_like_round_trips() {
+        let anchor = cpu_f32(vec![0.0], &[1]);
+        let t = anchor.const_i64_like(vec![-1_i64, 2, -3], vec![3]);
+        assert_eq!(t.shape().dims(), &[3]);
+        assert_eq!(t.dtype(), DType::I64);
+    }
+
+    #[test]
+    fn on_device_smoke_cpu() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        let pinned = t.on_device(&Device::cpu());
+        assert_eq!(pinned.realize_f32(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn copy_to_device_same_device_round_trips() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let copied = t.copy_to_device(&Device::cpu());
+        assert_eq!(copied.realize_f32(), vec![1.0, 2.0, 3.0]);
+    }
+}
+
+// ============================================================================
+// Phase A.2 composite primitives tests.
+// ============================================================================
+#[cfg(test)]
+mod phase_a2_composite_tests {
+    use super::*;
+
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
+        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    }
+
+    #[test]
+    fn transpose_last_two_swaps_last_two_dims() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let out = t.transpose_last_two().unwrap();
+        assert_eq!(out.shape().dims(), &[3, 2]);
+        assert_eq!(out.realize_f32(), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn t_is_alias_of_transpose_last_two() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        assert_eq!(t.t().unwrap().realize_f32(), t.transpose_last_two().unwrap().realize_f32());
+    }
+
+    #[test]
+    fn transpose_dims_swaps_arbitrary_axes() {
+        let t = cpu_f32((0..24).map(|i| i as f32).collect(), &[2, 3, 4]);
+        let out = t.transpose_dims(0, 2).unwrap();
+        assert_eq!(out.shape().dims(), &[4, 3, 2]);
+    }
+
+    #[test]
+    fn transpose_dims_identity_when_same_axis() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let out = t.transpose_dims(0, 0).unwrap();
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn transpose_dims_errors_out_of_bounds() {
+        let t = cpu_f32(vec![0.0; 6], &[2, 3]);
+        assert!(t.transpose_dims(0, 2).is_err());
+        assert!(t.transpose_dims(5, 0).is_err());
+    }
+
+    #[test]
+    fn flatten_merges_middle_dims() {
+        let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
+        let out = t.flatten(0, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[6, 4]);
+    }
+
+    #[test]
+    fn flatten_to_merges_leading_dims() {
+        let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
+        let out = t.flatten_to(1).unwrap();
+        assert_eq!(out.shape().dims(), &[6, 4]);
+    }
+
+    #[test]
+    fn flatten_from_merges_trailing_dims() {
+        let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
+        let out = t.flatten_from(1).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 12]);
+    }
+
+    #[test]
+    fn flatten_all_produces_rank_one() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let out = t.flatten_all().unwrap();
+        assert_eq!(out.shape().dims(), &[6]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn flatten_errors_on_bad_range() {
+        let t = cpu_f32(vec![0.0; 6], &[2, 3]);
+        assert!(t.flatten(0, 5).is_err());
+        assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn stack_adds_leading_dim() {
+        let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
+        let out = LazyTensor::stack(&[&a, &b], 0).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 3]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn stack_adds_trailing_dim() {
+        let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
+        let out = LazyTensor::stack(&[&a, &b], 1).unwrap();
+        assert_eq!(out.shape().dims(), &[3, 2]);
+        assert_eq!(out.realize_f32(), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn stack_rejects_mismatched_shapes() {
+        let a = cpu_f32(vec![1.0, 2.0], &[2]);
+        let b = a.const_f32_like(vec![3.0, 4.0, 5.0], vec![3]);
+        assert!(LazyTensor::stack(&[&a, &b], 0).is_err());
+    }
+
+    #[test]
+    fn stack_rejects_empty_input() {
+        let result = LazyTensor::stack(&[], 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn repeat_tiles_along_each_dim() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        let out = t.repeat(vec![3]).unwrap();
+        assert_eq!(out.shape().dims(), &[6]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn repeat_extends_rank_when_needed() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        // repeat with shape [3, 2] left-pads tensor to [1, 2] then tiles to [3, 4]
+        let out = t.repeat(vec![3, 2]).unwrap();
+        assert_eq!(out.shape().dims(), &[3, 4]);
+    }
+
+    #[test]
+    fn repeat_identity_with_all_ones() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let out = t.repeat(vec![1]).unwrap();
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0]);
     }
 }

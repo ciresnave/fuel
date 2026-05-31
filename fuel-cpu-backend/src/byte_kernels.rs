@@ -5396,6 +5396,167 @@ pub fn ssd_chunk_scan_f32(
 }
 
 // =============================================================================
+// Nf4Matmul — bitsandbytes 4-bit NormalFloat quantized matmul
+// =============================================================================
+//
+// Inputs:
+//   activations: [batch, m, k]      (T = F32/F16/BF16)
+//   w_packed:    [n, k/2]           (u8 — two 4-bit codes per byte)
+//   absmax:      [n, k/block_size]  (f32 — per-output-row, per-block)
+//
+// Output: [batch, m, n] (T)
+//
+// Per output position (b, i, j):
+//   acc = 0
+//   for kk in 0..k:
+//     byte = w_packed[j, kk/2]
+//     code = (byte >> (4 * (kk % 2))) & 0x0f   // even-k: low nibble; odd: high
+//     dequant = NF4_LUT[code] * absmax[j, kk/block_size]
+//     acc += activations[b, i, kk] * dequant
+//   out[b, i, j] = acc
+//
+// Accumulate in f32 regardless of T (matches bitsandbytes' fp16/bf16
+// path which also up-casts to f32 for the inner product); narrow on
+// store. The NF4 LUT is baked in here — same 16 values as
+// bitsandbytes' standard NF4 quantization curve.
+
+/// The 16 NormalFloat values used by NF4 quantization. Matches
+/// bitsandbytes' implementation byte-for-byte. These are the
+/// inverse-CDF quantiles of the standard normal N(0,1) that minimize
+/// the expected quantization error for normally-distributed weights.
+pub const NF4_LUT: [f32; 16] = [
+    -1.0,
+    -0.6961928009986877,
+    -0.5250730514526367,
+    -0.39491748809814453,
+    -0.28444138169288635,
+    -0.18477343022823334,
+    -0.09105003625154495,
+    0.0,
+    0.07958029955625534,
+    0.16093020141124725,
+    0.24611230194568634,
+    0.33791524171829224,
+    0.44070982933044434,
+    0.5626170039176941,
+    0.7229568362236023,
+    1.0,
+];
+
+/// Shared shape-validation for the three Nf4Matmul dtype variants.
+/// Returns the per-element byte size of `T` so callers can verify
+/// activation/output sizes without re-templating the check.
+fn nf4_matmul_check_shapes(
+    name: &str,
+    elem_bytes: usize,
+    activations_bytes: usize,
+    w_packed_bytes: usize,
+    absmax_bytes: usize,
+    out_bytes: usize,
+    batch: usize, m: usize, n: usize, k: usize, block_size: usize,
+) -> Result<()> {
+    if k == 0 || k % 2 != 0 {
+        return Err(Error::Msg(format!(
+            "{name}: k={k} must be even and non-zero",
+        )).bt());
+    }
+    if block_size == 0 || k % block_size != 0 {
+        return Err(Error::Msg(format!(
+            "{name}: k={k} must be a multiple of block_size={block_size}",
+        )).bt());
+    }
+    let n_blocks = k / block_size;
+    let a_need = batch.saturating_mul(m).saturating_mul(k).saturating_mul(elem_bytes);
+    let w_need = n.saturating_mul(k / 2);
+    let abs_need = n.saturating_mul(n_blocks).saturating_mul(std::mem::size_of::<f32>());
+    let out_need = batch.saturating_mul(m).saturating_mul(n).saturating_mul(elem_bytes);
+    if activations_bytes != a_need {
+        return Err(Error::Msg(format!(
+            "{name}: activations bytes={activations_bytes}, expected {a_need}",
+        )).bt());
+    }
+    if w_packed_bytes != w_need {
+        return Err(Error::Msg(format!(
+            "{name}: w_packed bytes={w_packed_bytes}, expected {w_need} (n={n} × k/2={})", k / 2,
+        )).bt());
+    }
+    if absmax_bytes != abs_need {
+        return Err(Error::Msg(format!(
+            "{name}: absmax bytes={absmax_bytes}, expected {abs_need} (n={n} × n_blocks={n_blocks} × 4)",
+        )).bt());
+    }
+    if out_bytes != out_need {
+        return Err(Error::Msg(format!(
+            "{name}: out bytes={out_bytes}, expected {out_need}",
+        )).bt());
+    }
+    Ok(())
+}
+
+/// Macro for the per-dtype Nf4Matmul kernel body. `T` is the
+/// activation/output type; conversion to/from f32 goes through the
+/// `from_f32`/`to_f32` helpers expected on T (these match the
+/// `half::f16` / `half::bf16` API; for the f32 case we use identity
+/// closures).
+macro_rules! nf4_matmul_native {
+    ($name:ident, $T:ty, $to_f32:expr, $from_f32:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            activations: &CpuStorageBytes,
+            w_packed: &CpuStorageBytes,
+            absmax: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            batch: usize, m: usize, n: usize, k: usize, block_size: usize,
+        ) -> Result<()> {
+            nf4_matmul_check_shapes(
+                stringify!($name),
+                std::mem::size_of::<$T>(),
+                activations.len_bytes(), w_packed.len_bytes(),
+                absmax.len_bytes(), out.len_bytes(),
+                batch, m, n, k, block_size,
+            )?;
+            if batch == 0 || m == 0 || n == 0 || k == 0 {
+                let out_view: &mut [$T] = out.as_slice_mut()?;
+                out_view.fill(<$T>::default());
+                return Ok(());
+            }
+            let act_view: &[$T] = activations.as_slice()?;
+            let w_view: &[u8] = w_packed.as_slice()?;
+            let abs_view: &[f32] = absmax.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let n_blocks = k / block_size;
+            let k_packed = k / 2;
+            for bi in 0..batch {
+                for i in 0..m {
+                    let a_row_off = (bi * m + i) * k;
+                    let out_row_off = (bi * m + i) * n;
+                    for j in 0..n {
+                        let w_row_off = j * k_packed;
+                        let abs_row_off = j * n_blocks;
+                        let mut acc: f32 = 0.0;
+                        for kk in 0..k {
+                            let byte = w_view[w_row_off + (kk / 2)];
+                            let nibble = if kk % 2 == 0 { byte & 0x0f } else { byte >> 4 };
+                            let lut_val = NF4_LUT[nibble as usize];
+                            let scale = abs_view[abs_row_off + (kk / block_size)];
+                            let dequant = lut_val * scale;
+                            let a_val: f32 = $to_f32(act_view[a_row_off + kk]);
+                            acc += a_val * dequant;
+                        }
+                        out_view[out_row_off + j] = $from_f32(acc);
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+nf4_matmul_native!(nf4_matmul_f32, f32, |v: f32| v, |v: f32| v);
+nf4_matmul_native!(nf4_matmul_f16, half::f16, |v: half::f16| v.to_f32(), |v: f32| half::f16::from_f32(v));
+nf4_matmul_native!(nf4_matmul_bf16, half::bf16, |v: half::bf16| v.to_f32(), |v: f32| half::bf16::from_f32(v));
+
+// =============================================================================
 // FlashAttn — naive multi-head SDPA (math definition)
 // =============================================================================
 //
@@ -9578,6 +9739,135 @@ mod tests {
         let c = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
         let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
         let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 4, 1, 1, 1, 2);
+        assert!(r.is_err());
+    }
+
+    /// Nf4Matmul: hand-computed F32 sanity case. Single output
+    /// position, k=2 (one packed byte), block_size=2 (one absmax
+    /// scale). Verifies the LUT lookup + dequant + dot product math.
+    ///
+    ///   activations = [a0, a1] = [1.0, 2.0]
+    ///   w_packed = [byte] where byte = code1<<4 | code0
+    ///     pick code0=8 (NF4_LUT[8] ≈ 0.0796), code1=15 (LUT[15] = 1.0)
+    ///     byte = (15<<4) | 8 = 248
+    ///   absmax = [3.0]  (single block, scale = 3.0)
+    ///   dequant_w[0] = 0.0796 * 3.0 ≈ 0.2387
+    ///   dequant_w[1] = 1.0 * 3.0 = 3.0
+    ///   y = 1.0 * 0.2387 + 2.0 * 3.0 ≈ 6.2387
+    #[test]
+    fn nf4_matmul_f32_hand_computed() {
+        let activations = CpuStorageBytes::from_slice(&[1.0_f32, 2.0]);  // [1,1,2]
+        let w_packed = CpuStorageBytes::from_slice(&[248_u8]);  // [1, 1]
+        let absmax = CpuStorageBytes::from_slice(&[3.0_f32]);  // [1, 1]
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        nf4_matmul_f32(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 2, 2)
+            .expect("nf4_matmul_f32");
+        let result: &[f32] = out.as_slice().unwrap();
+        let expected = 1.0 * NF4_LUT[8] * 3.0 + 2.0 * NF4_LUT[15] * 3.0;
+        assert!((result[0] - expected).abs() < 1e-5, "got {} expected {expected}", result[0]);
+    }
+
+    /// Nf4Matmul: same math as the F32 test, F16 activations/output.
+    /// F32 accumulator path means precision matches modulo F16 rounding.
+    #[test]
+    fn nf4_matmul_f16_hand_computed() {
+        let a_f16: Vec<half::f16> = [1.0_f32, 2.0].iter().map(|&v| half::f16::from_f32(v)).collect();
+        let activations = CpuStorageBytes::from_slice(&a_f16);
+        let w_packed = CpuStorageBytes::from_slice(&[248_u8]);
+        let absmax = CpuStorageBytes::from_slice(&[3.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        nf4_matmul_f16(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 2, 2)
+            .expect("nf4_matmul_f16");
+        let result: &[half::f16] = out.as_slice().unwrap();
+        let expected = 1.0_f32 * NF4_LUT[8] * 3.0 + 2.0 * NF4_LUT[15] * 3.0;
+        assert!(
+            (result[0].to_f32() - expected).abs() < 1e-2,
+            "got {} expected {expected}", result[0].to_f32(),
+        );
+    }
+
+    /// Nf4Matmul: BF16 activations/output, same math.
+    #[test]
+    fn nf4_matmul_bf16_hand_computed() {
+        let a_bf16: Vec<half::bf16> = [1.0_f32, 2.0].iter().map(|&v| half::bf16::from_f32(v)).collect();
+        let activations = CpuStorageBytes::from_slice(&a_bf16);
+        let w_packed = CpuStorageBytes::from_slice(&[248_u8]);
+        let absmax = CpuStorageBytes::from_slice(&[3.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        nf4_matmul_bf16(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 2, 2)
+            .expect("nf4_matmul_bf16");
+        let result: &[half::bf16] = out.as_slice().unwrap();
+        let expected = 1.0_f32 * NF4_LUT[8] * 3.0 + 2.0 * NF4_LUT[15] * 3.0;
+        assert!(
+            (result[0].to_f32() - expected).abs() < 5e-2,  // BF16 has only 7 mantissa bits
+            "got {} expected {expected}", result[0].to_f32(),
+        );
+    }
+
+    /// Nf4Matmul: m=1, n=2, k=4, block_size=2 — verifies per-output-
+    /// row distinct weights + per-block absmax scaling.
+    #[test]
+    fn nf4_matmul_f32_two_outputs_two_blocks() {
+        // activations [1, 2, 2, 4]: m=1, k=4
+        let activations = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 2.0, 4.0]);
+        // w_packed: [n=2, k/2=2] = 4 bytes
+        // Output 0: codes [7, 15, 7, 15] (LUT: 0.0, 1.0, 0.0, 1.0)
+        //   bytes: lo=7|hi=15 = (15<<4)|7 = 247; same for second byte
+        // Output 1: codes [15, 7, 15, 7] (LUT: 1.0, 0.0, 1.0, 0.0)
+        //   bytes: lo=15|hi=7 = (7<<4)|15 = 127
+        let w_packed = CpuStorageBytes::from_slice(&[247_u8, 247, 127, 127]);
+        // absmax: [n=2, k/block_size=2] = 4 floats
+        // Output 0: [1.0, 2.0] (block 0 scale 1.0, block 1 scale 2.0)
+        // Output 1: [10.0, 20.0]
+        let absmax = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 10.0, 20.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        nf4_matmul_f32(&activations, &w_packed, &absmax, &mut out, 1, 1, 2, 4, 2)
+            .expect("nf4_matmul_f32");
+        let result: &[f32] = out.as_slice().unwrap();
+        // Output 0:
+        //   k=0: code=7, scale=1.0, dequant=0.0  → contrib = 1.0 * 0.0 = 0
+        //   k=1: code=15, scale=1.0, dequant=1.0 → contrib = 2.0 * 1.0 = 2
+        //   k=2: code=7, scale=2.0, dequant=0.0  → contrib = 2.0 * 0.0 = 0
+        //   k=3: code=15, scale=2.0, dequant=2.0 → contrib = 4.0 * 2.0 = 8
+        //   y[0] = 10.0
+        assert!((result[0] - 10.0).abs() < 1e-5, "output 0: got {}", result[0]);
+        // Output 1:
+        //   k=0: code=15, scale=10.0, dequant=10.0 → 1.0 * 10.0 = 10
+        //   k=1: code=7, scale=10.0, dequant=0.0   → 2.0 * 0.0 = 0
+        //   k=2: code=15, scale=20.0, dequant=20.0 → 2.0 * 20.0 = 40
+        //   k=3: code=7, scale=20.0, dequant=0.0   → 4.0 * 0.0 = 0
+        //   y[1] = 50.0
+        assert!((result[1] - 50.0).abs() < 1e-5, "output 1: got {}", result[1]);
+    }
+
+    /// Nf4Matmul: validates the NF4 LUT contents — first 4 values
+    /// should match the standard NormalFloat curve.
+    #[test]
+    fn nf4_lut_known_values() {
+        assert_eq!(NF4_LUT.len(), 16);
+        assert!((NF4_LUT[0] - (-1.0)).abs() < 1e-6, "LUT[0] should be -1.0");
+        assert!((NF4_LUT[7] - 0.0).abs() < 1e-6, "LUT[7] should be 0.0");
+        assert!((NF4_LUT[15] - 1.0).abs() < 1e-6, "LUT[15] should be 1.0");
+        // Values should be monotonically increasing.
+        for i in 0..15 {
+            assert!(NF4_LUT[i] < NF4_LUT[i + 1], "LUT not monotonic at index {i}");
+        }
+    }
+
+    /// Nf4Matmul: bad shape errors — k odd, k not multiple of
+    /// block_size, byte-count mismatches.
+    #[test]
+    fn nf4_matmul_f32_bad_shapes_error() {
+        let activations = CpuStorageBytes::from_slice(&[1.0_f32; 3]);
+        let w_packed = CpuStorageBytes::from_slice(&[0_u8; 2]);
+        let absmax = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        // k=3 is odd
+        let r = nf4_matmul_f32(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 3, 1);
+        assert!(r.is_err());
+
+        // k=4 but block_size=3 — 4 % 3 != 0
+        let r = nf4_matmul_f32(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 4, 3);
         assert!(r.is_err());
     }
 
