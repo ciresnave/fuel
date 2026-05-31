@@ -48,9 +48,14 @@ pub mod fused;
 pub mod kernel;
 pub mod pipelined;
 pub mod plan;
+pub mod ranker;
 pub mod vulkan_dispatch;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
 pub use plan::{compile_plan, resolve_kernel, ExecutionPlan, NodeKernelBinding, TolerancePolicy};
+pub use ranker::{
+    apply_filter_chain, AlternativeFilter, AlternativeSet, Candidate, CouplingAdjustment,
+    FilterClass, FilterContext, DEFAULT_MAX_N,
+};

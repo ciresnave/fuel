@@ -1,0 +1,285 @@
+//! `AlternativeSet` — bounded collection of [`Candidate`]s at one
+//! graph decision point.
+//!
+//! Phase 1.1 of the picker-work arc. The set is what
+//! [`apply_filter_chain`] mutates and what (in later phases)
+//! `rank_by_cost` orders and `truncate_to_top_n` bounds. The newtype
+//! exists so we have somewhere to hang the per-decision-point
+//! invariants — top-N preservation, filter application, eventual
+//! coupling resolution — without exposing a bare `Vec`.
+//!
+//! [`apply_filter_chain`]: super::apply_filter_chain
+
+use smallvec::SmallVec;
+
+use super::candidate::Candidate;
+
+/// Default top-N preservation per architecture v1.0 §04
+/// ("Default N=3 per decision point gives the runtime picker
+/// meaningful flexibility ... without exploding storage or search
+/// cost"). Configurable per-`AlternativeSet` via
+/// [`AlternativeSet::with_max_n`].
+pub const DEFAULT_MAX_N: usize = 3;
+
+/// Bounded collection of [`Candidate`]s at one decision point. The
+/// optimizer ranker constructs one of these per kernel-bearing graph
+/// node, runs the filter chain, ranks survivors by composite cost,
+/// and truncates to `max_n` for storage on the optimized graph.
+///
+/// Stored as a `SmallVec` because:
+///
+/// - Inline capacity 4 covers every decision point that exists today
+///   (CPU + CUDA + Vulkan + one cuBLAS/CUTLASS sibling once that
+///   registers).
+/// - Spilling to heap only happens when a decision point genuinely
+///   has more than 4 alternatives — rare, and the cost is amortized
+///   over a one-time enumeration anyway.
+#[derive(Clone, Debug)]
+pub struct AlternativeSet {
+    candidates: SmallVec<[Candidate; 4]>,
+    max_n: usize,
+}
+
+impl AlternativeSet {
+    /// Build an empty set with [`DEFAULT_MAX_N`] (`= 3`). Tests + the
+    /// candidate enumerator both use this; consumers needing a
+    /// different `max_n` go through [`Self::with_max_n`].
+    pub fn empty() -> Self {
+        Self {
+            candidates: SmallVec::new(),
+            max_n: DEFAULT_MAX_N,
+        }
+    }
+
+    /// Empty set with an explicit `max_n`. Useful for tests + future
+    /// callers that want a per-node N (e.g. memory-constrained
+    /// realizes that want top-1 only).
+    pub fn with_max_n(max_n: usize) -> Self {
+        Self {
+            candidates: SmallVec::new(),
+            max_n,
+        }
+    }
+
+    /// Build a set from a pre-collected list of candidates. The
+    /// enumerator path; truncation to `max_n` happens after the
+    /// filter chain + cost rank, not here.
+    pub fn from_candidates(candidates: Vec<Candidate>, max_n: usize) -> Self {
+        Self {
+            candidates: SmallVec::from_vec(candidates),
+            max_n,
+        }
+    }
+
+    /// Append one candidate. Used by the enumerator as it walks
+    /// `(backend, device)` combinations.
+    pub fn push(&mut self, c: Candidate) {
+        self.candidates.push(c);
+    }
+
+    /// How many alternatives remain. Drives the filter chain's
+    /// hard-vs-soft decision and (in later phases) the executor's
+    /// "we have N to choose from" telemetry.
+    pub fn len(&self) -> usize {
+        self.candidates.len()
+    }
+
+    /// Is the set empty? (i.e., no admissible alternative).
+    pub fn is_empty(&self) -> bool {
+        self.candidates.is_empty()
+    }
+
+    /// The configured top-N bound.
+    pub fn max_n(&self) -> usize {
+        self.max_n
+    }
+
+    /// Borrow the full candidate list. Read-only — the filter chain
+    /// uses this to compute the keep-mask without mutating.
+    pub fn alternatives(&self) -> &[Candidate] {
+        &self.candidates
+    }
+
+    /// Retain only the entries at `indices` (must be sorted ascending,
+    /// distinct, and in-range). The filter-chain pipeline produces a
+    /// `Vec<usize>` from each filter and calls this to apply it.
+    ///
+    /// Panics in debug builds if `indices` is mis-shaped (out-of-range
+    /// or unsorted). Release builds skip the check — the producer is
+    /// always internal to the ranker.
+    pub fn retain_indices(&mut self, indices: &[usize]) {
+        debug_assert!(
+            indices.windows(2).all(|w| w[0] < w[1]),
+            "retain_indices: input must be sorted strictly ascending; got {indices:?}",
+        );
+        debug_assert!(
+            indices.iter().all(|&i| i < self.candidates.len()),
+            "retain_indices: out-of-range index in {indices:?} (len={})",
+            self.candidates.len(),
+        );
+        // Build a new vec in-place via the standard retain pattern.
+        // SmallVec doesn't have retain_indices, so we mark-and-sweep.
+        let mut iter = indices.iter().copied().peekable();
+        let mut idx = 0;
+        self.candidates.retain(|_| {
+            let keep = matches!(iter.peek(), Some(&i) if i == idx);
+            if keep {
+                iter.next();
+            }
+            idx += 1;
+            keep
+        });
+    }
+
+    /// Truncate to top-`max_n`. Caller must have called
+    /// `rank_by_cost` first; this is a pure suffix-drop. Phase 1.4
+    /// lands the rank; until then this just truncates in current
+    /// order.
+    pub fn truncate_to_top_n(&mut self) {
+        self.candidates.truncate(self.max_n);
+    }
+
+    /// The current top candidate (first entry). After the full
+    /// pipeline — filter → rank → truncate — this is the runtime
+    /// selector's (Picker 2) default pick. `None` if the set is
+    /// empty.
+    pub fn winner(&self) -> Option<&Candidate> {
+        self.candidates.first()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fused::{CostEstimate, PrecisionGuarantee};
+    use crate::kernel::{KernelCaps, OpParams};
+    use fuel_core_types::probe::BackendId;
+    use fuel_core_types::{DeviceLocation, Layout, Result};
+    use fuel_storage::Storage;
+    use std::sync::{Arc, RwLock};
+
+    fn noop(
+        _i: &[Arc<RwLock<Storage>>],
+        _o: &mut [Arc<RwLock<Storage>>],
+        _l: &[Layout],
+        _p: &OpParams,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn dummy_candidate(flops: u64) -> Candidate {
+        Candidate {
+            kernel: noop,
+            caps: KernelCaps::empty(),
+            backend: BackendId::Cpu,
+            device: DeviceLocation::Cpu,
+            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            static_cost: CostEstimate { flops, bytes_moved: 0, kernel_overhead_ns: 0 },
+            op_params: OpParams::None,
+            coupling: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn empty_has_no_winner() {
+        let s = AlternativeSet::empty();
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+        assert!(s.winner().is_none());
+        assert_eq!(s.max_n(), DEFAULT_MAX_N);
+    }
+
+    #[test]
+    fn push_grows_and_first_is_winner() {
+        let mut s = AlternativeSet::empty();
+        s.push(dummy_candidate(10));
+        s.push(dummy_candidate(20));
+        assert_eq!(s.len(), 2);
+        assert_eq!(s.winner().unwrap().static_cost.flops, 10);
+    }
+
+    #[test]
+    fn from_candidates_seeds_and_preserves_order() {
+        let s = AlternativeSet::from_candidates(
+            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
+            5,
+        );
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.max_n(), 5);
+        let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        assert_eq!(flops, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn truncate_respects_max_n() {
+        let mut s = AlternativeSet::with_max_n(2);
+        s.push(dummy_candidate(1));
+        s.push(dummy_candidate(2));
+        s.push(dummy_candidate(3));
+        s.push(dummy_candidate(4));
+        assert_eq!(s.len(), 4);
+        s.truncate_to_top_n();
+        assert_eq!(s.len(), 2);
+        let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        assert_eq!(flops, vec![1, 2]);
+    }
+
+    #[test]
+    fn truncate_no_op_when_under_max_n() {
+        let mut s = AlternativeSet::empty();
+        s.push(dummy_candidate(1));
+        s.truncate_to_top_n();
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn retain_indices_keeps_selected_entries() {
+        let mut s = AlternativeSet::from_candidates(
+            (0..5).map(|i| dummy_candidate(i)).collect(),
+            DEFAULT_MAX_N,
+        );
+        s.retain_indices(&[0, 2, 4]);
+        let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        assert_eq!(flops, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn retain_indices_empty_clears_set() {
+        let mut s = AlternativeSet::from_candidates(
+            vec![dummy_candidate(1), dummy_candidate(2)],
+            DEFAULT_MAX_N,
+        );
+        s.retain_indices(&[]);
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn retain_indices_keep_all_is_identity() {
+        let mut s = AlternativeSet::from_candidates(
+            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
+            DEFAULT_MAX_N,
+        );
+        s.retain_indices(&[0, 1, 2]);
+        assert_eq!(s.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "sorted strictly ascending")]
+    fn retain_indices_unsorted_panics_in_debug() {
+        let mut s = AlternativeSet::from_candidates(
+            vec![dummy_candidate(1), dummy_candidate(2)],
+            DEFAULT_MAX_N,
+        );
+        s.retain_indices(&[1, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out-of-range")]
+    fn retain_indices_out_of_range_panics_in_debug() {
+        let mut s = AlternativeSet::from_candidates(
+            vec![dummy_candidate(1)],
+            DEFAULT_MAX_N,
+        );
+        s.retain_indices(&[5]);
+    }
+}
