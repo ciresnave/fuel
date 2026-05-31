@@ -2855,6 +2855,89 @@ unary_inplace_thunk!(gelu_inplace_f16,    half::f16, GeluTanh);
 unary_inplace_thunk!(tanh_inplace_f16,    half::f16, Tanh);
 unary_inplace_thunk!(sigmoid_inplace_f16, half::f16, Sigmoid);
 
+// In-place unary op family expansion (2026-05-30). Each (op × dtype)
+// reuses the chassis's `UnaryOp<T>::apply` blanket impl, identical
+// numerics to the non-inplace cousin.
+unary_inplace_thunk!(neg_inplace_f32,      f32, Neg);
+unary_inplace_thunk!(neg_inplace_f64,      f64, Neg);
+unary_inplace_thunk!(neg_inplace_bf16,     half::bf16, Neg);
+unary_inplace_thunk!(neg_inplace_f16,      half::f16, Neg);
+
+unary_inplace_thunk!(abs_inplace_f32,      f32, Abs);
+unary_inplace_thunk!(abs_inplace_f64,      f64, Abs);
+unary_inplace_thunk!(abs_inplace_bf16,     half::bf16, Abs);
+unary_inplace_thunk!(abs_inplace_f16,      half::f16, Abs);
+
+unary_inplace_thunk!(sqr_inplace_f32,      f32, Sqr);
+unary_inplace_thunk!(sqr_inplace_f64,      f64, Sqr);
+unary_inplace_thunk!(sqr_inplace_bf16,     half::bf16, Sqr);
+unary_inplace_thunk!(sqr_inplace_f16,      half::f16, Sqr);
+
+unary_inplace_thunk!(sqrt_inplace_f32,     f32, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_f64,     f64, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_bf16,    half::bf16, Sqrt);
+unary_inplace_thunk!(sqrt_inplace_f16,     half::f16, Sqrt);
+
+unary_inplace_thunk!(rsqrt_inplace_f32,    f32, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_f64,    f64, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_bf16,   half::bf16, Rsqrt);
+unary_inplace_thunk!(rsqrt_inplace_f16,    half::f16, Rsqrt);
+
+unary_inplace_thunk!(recip_inplace_f32,    f32, Recip);
+unary_inplace_thunk!(recip_inplace_f64,    f64, Recip);
+unary_inplace_thunk!(recip_inplace_bf16,   half::bf16, Recip);
+unary_inplace_thunk!(recip_inplace_f16,    half::f16, Recip);
+
+unary_inplace_thunk!(exp_inplace_f32,      f32, Exp);
+unary_inplace_thunk!(exp_inplace_f64,      f64, Exp);
+unary_inplace_thunk!(exp_inplace_bf16,     half::bf16, Exp);
+unary_inplace_thunk!(exp_inplace_f16,      half::f16, Exp);
+
+unary_inplace_thunk!(log_inplace_f32,      f32, Log);
+unary_inplace_thunk!(log_inplace_f64,      f64, Log);
+unary_inplace_thunk!(log_inplace_bf16,     half::bf16, Log);
+unary_inplace_thunk!(log_inplace_f16,      half::f16, Log);
+
+unary_inplace_thunk!(sin_inplace_f32,      f32, Sin);
+unary_inplace_thunk!(sin_inplace_f64,      f64, Sin);
+unary_inplace_thunk!(sin_inplace_bf16,     half::bf16, Sin);
+unary_inplace_thunk!(sin_inplace_f16,      half::f16, Sin);
+
+unary_inplace_thunk!(cos_inplace_f32,      f32, Cos);
+unary_inplace_thunk!(cos_inplace_f64,      f64, Cos);
+unary_inplace_thunk!(cos_inplace_bf16,     half::bf16, Cos);
+unary_inplace_thunk!(cos_inplace_f16,      half::f16, Cos);
+
+unary_inplace_thunk!(sign_inplace_f32,     f32, Sign);
+unary_inplace_thunk!(sign_inplace_f64,     f64, Sign);
+unary_inplace_thunk!(sign_inplace_bf16,    half::bf16, Sign);
+unary_inplace_thunk!(sign_inplace_f16,     half::f16, Sign);
+
+unary_inplace_thunk!(floor_inplace_f32,    f32, Floor);
+unary_inplace_thunk!(floor_inplace_f64,    f64, Floor);
+unary_inplace_thunk!(floor_inplace_bf16,   half::bf16, Floor);
+unary_inplace_thunk!(floor_inplace_f16,    half::f16, Floor);
+
+unary_inplace_thunk!(ceil_inplace_f32,     f32, Ceil);
+unary_inplace_thunk!(ceil_inplace_f64,     f64, Ceil);
+unary_inplace_thunk!(ceil_inplace_bf16,    half::bf16, Ceil);
+unary_inplace_thunk!(ceil_inplace_f16,     half::f16, Ceil);
+
+unary_inplace_thunk!(round_inplace_f32,    f32, Round);
+unary_inplace_thunk!(round_inplace_f64,    f64, Round);
+unary_inplace_thunk!(round_inplace_bf16,   half::bf16, Round);
+unary_inplace_thunk!(round_inplace_f16,    half::f16, Round);
+
+unary_inplace_thunk!(erf_inplace_f32,      f32, Erf);
+unary_inplace_thunk!(erf_inplace_f64,      f64, Erf);
+unary_inplace_thunk!(erf_inplace_bf16,     half::bf16, Erf);
+unary_inplace_thunk!(erf_inplace_f16,      half::f16, Erf);
+
+unary_inplace_thunk!(gelu_erf_inplace_f32,  f32, GeluErf);
+unary_inplace_thunk!(gelu_erf_inplace_f64,  f64, GeluErf);
+unary_inplace_thunk!(gelu_erf_inplace_bf16, half::bf16, GeluErf);
+unary_inplace_thunk!(gelu_erf_inplace_f16,  half::f16, GeluErf);
+
 /// In-place affine: mutates `out[i] = mul * out[i] + add`. The
 /// caller passes `out` as both the input + output through the
 /// PipelinedExecutor's `WorkItemKind::InplaceKernel` arm. Mirrors
@@ -5274,95 +5357,133 @@ causal_conv1d_half_kernel!(causal_conv1d_f16,  half::f16);
 //
 // Algorithmic complexity: O(batch · seqlen · dim · dstate) FMAs.
 
-/// SelectiveScan CPU kernel (F32). Output buffer size is
-/// `batch * seqlen * dim * 4` bytes.
-#[allow(clippy::too_many_arguments)]
-pub fn selective_scan_f32(
-    u: &CpuStorageBytes,
-    delta: &CpuStorageBytes,
-    a: &CpuStorageBytes,
-    b: &CpuStorageBytes,
-    c: &CpuStorageBytes,
-    out: &mut CpuStorageBytes,
-    batch: usize,
-    seqlen: usize,
-    dim: usize,
-    dstate: usize,
-    delta_softplus: bool,
+/// Shared shape-validation for the SelectiveScan dtype variants.
+fn selective_scan_check_shapes(
+    name: &str,
+    elem_bytes: usize,
+    u_bytes: usize,
+    delta_bytes: usize,
+    a_bytes: usize,
+    b_bytes: usize,
+    c_bytes: usize,
+    out_bytes: usize,
+    batch: usize, seqlen: usize, dim: usize, dstate: usize,
 ) -> Result<()> {
-    let elem = std::mem::size_of::<f32>();
-    let u_need = batch.saturating_mul(seqlen).saturating_mul(dim).saturating_mul(elem);
+    let u_need = batch.saturating_mul(seqlen).saturating_mul(dim).saturating_mul(elem_bytes);
     let delta_need = u_need;
-    let a_need = dim.saturating_mul(dstate).saturating_mul(elem);
-    let b_need = batch.saturating_mul(seqlen).saturating_mul(dstate).saturating_mul(elem);
+    let a_need = dim.saturating_mul(dstate).saturating_mul(elem_bytes);
+    let b_need = batch.saturating_mul(seqlen).saturating_mul(dstate).saturating_mul(elem_bytes);
     let c_need = b_need;
     let out_need = u_need;
-    let check = |name: &str, got: usize, need: usize| -> Result<()> {
+    let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
             Err(Error::Msg(format!(
-                "selective_scan_f32: {name} bytes={got}, expected {need}",
+                "{name}: {name_arg} bytes={got}, expected {need}",
             ))
             .bt())
         } else {
             Ok(())
         }
     };
-    check("u",     u.len_bytes(),     u_need)?;
-    check("delta", delta.len_bytes(), delta_need)?;
-    check("a",     a.len_bytes(),     a_need)?;
-    check("b",     b.len_bytes(),     b_need)?;
-    check("c",     c.len_bytes(),     c_need)?;
-    check("out",   out.len_bytes(),   out_need)?;
-    if batch == 0 || seqlen == 0 || dim == 0 || dstate == 0 {
-        let out_view: &mut [f32] = out.as_slice_mut()?;
-        out_view.fill(0.0);
-        return Ok(());
-    }
-    let u_view: &[f32] = u.as_slice()?;
-    let delta_view: &[f32] = delta.as_slice()?;
-    let a_view: &[f32] = a.as_slice()?;
-    let b_view: &[f32] = b.as_slice()?;
-    let c_view: &[f32] = c.as_slice()?;
-    let out_view: &mut [f32] = out.as_slice_mut()?;
-
-    // Recurrent hidden state — allocated once, threaded across timesteps.
-    // Layout: [batch][dim][dstate], flat with strides (dim*dstate, dstate, 1).
-    let mut h = vec![0.0_f64; batch * dim * dstate];
-
-    for bi in 0..batch {
-        for t in 0..seqlen {
-            let u_row_off = (bi * seqlen + t) * dim;
-            let delta_row_off = u_row_off;
-            let b_row_off = (bi * seqlen + t) * dstate;
-            let c_row_off = b_row_off;
-            let out_row_off = u_row_off;
-            for i in 0..dim {
-                let raw_d = delta_view[delta_row_off + i] as f64;
-                let d = if delta_softplus {
-                    // softplus(x) = ln(1 + exp(x)). Numerically stable
-                    // form: max(x, 0) + ln(1 + exp(-|x|)).
-                    let abs_x = raw_d.abs();
-                    raw_d.max(0.0) + (1.0 + (-abs_x).exp()).ln()
-                } else {
-                    raw_d
-                };
-                let u_val = u_view[u_row_off + i] as f64;
-                let h_off = (bi * dim + i) * dstate;
-                let a_row_off = i * dstate;
-                let mut y_acc: f64 = 0.0;
-                for j in 0..dstate {
-                    let a_val = a_view[a_row_off + j] as f64;
-                    let b_val = b_view[b_row_off + j] as f64;
-                    let h_new = (d * a_val).exp() * h[h_off + j] + d * b_val * u_val;
-                    h[h_off + j] = h_new;
-                    y_acc += h_new * (c_view[c_row_off + j] as f64);
-                }
-                out_view[out_row_off + i] = y_acc as f32;
-            }
-        }
-    }
+    check("u",     u_bytes,     u_need)?;
+    check("delta", delta_bytes, delta_need)?;
+    check("a",     a_bytes,     a_need)?;
+    check("b",     b_bytes,     b_need)?;
+    check("c",     c_bytes,     c_need)?;
+    check("out",   out_bytes,   out_need)?;
     Ok(())
 }
+
+/// SelectiveScan kernel template. `T` is the element / accumulator
+/// dtype boundary — the state recurrence accumulates in F64
+/// internally regardless of T (matches bnb / Mamba implementations
+/// that up-cast to fp32+ for stability), then narrows to T on the
+/// y store. Conversion through f32 keeps F16/BF16 paths efficient
+/// without losing the F64 accumulator precision.
+macro_rules! selective_scan_kernel {
+    ($name:ident, $T:ty, $to_f64:expr, $from_f64:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            u: &CpuStorageBytes,
+            delta: &CpuStorageBytes,
+            a: &CpuStorageBytes,
+            b: &CpuStorageBytes,
+            c: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            batch: usize,
+            seqlen: usize,
+            dim: usize,
+            dstate: usize,
+            delta_softplus: bool,
+        ) -> Result<()> {
+            selective_scan_check_shapes(
+                stringify!($name),
+                std::mem::size_of::<$T>(),
+                u.len_bytes(), delta.len_bytes(), a.len_bytes(),
+                b.len_bytes(), c.len_bytes(), out.len_bytes(),
+                batch, seqlen, dim, dstate,
+            )?;
+            if batch == 0 || seqlen == 0 || dim == 0 || dstate == 0 {
+                let out_view: &mut [$T] = out.as_slice_mut()?;
+                out_view.fill(<$T>::default());
+                return Ok(());
+            }
+            let u_view: &[$T] = u.as_slice()?;
+            let delta_view: &[$T] = delta.as_slice()?;
+            let a_view: &[$T] = a.as_slice()?;
+            let b_view: &[$T] = b.as_slice()?;
+            let c_view: &[$T] = c.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+
+            // Recurrent hidden state — F64 accumulator regardless of T.
+            // Layout: [batch][dim][dstate].
+            let mut h = vec![0.0_f64; batch * dim * dstate];
+
+            for bi in 0..batch {
+                for t in 0..seqlen {
+                    let u_row_off = (bi * seqlen + t) * dim;
+                    let delta_row_off = u_row_off;
+                    let b_row_off = (bi * seqlen + t) * dstate;
+                    let c_row_off = b_row_off;
+                    let out_row_off = u_row_off;
+                    for i in 0..dim {
+                        let raw_d = $to_f64(delta_view[delta_row_off + i]);
+                        let d = if delta_softplus {
+                            // softplus(x) = ln(1 + exp(x)). Numerically stable
+                            // form: max(x, 0) + ln(1 + exp(-|x|)).
+                            let abs_x = raw_d.abs();
+                            raw_d.max(0.0) + (1.0 + (-abs_x).exp()).ln()
+                        } else {
+                            raw_d
+                        };
+                        let u_val = $to_f64(u_view[u_row_off + i]);
+                        let h_off = (bi * dim + i) * dstate;
+                        let a_row_off = i * dstate;
+                        let mut y_acc: f64 = 0.0;
+                        for j in 0..dstate {
+                            let a_val = $to_f64(a_view[a_row_off + j]);
+                            let b_val = $to_f64(b_view[b_row_off + j]);
+                            let h_new = (d * a_val).exp() * h[h_off + j] + d * b_val * u_val;
+                            h[h_off + j] = h_new;
+                            y_acc += h_new * $to_f64(c_view[c_row_off + j]);
+                        }
+                        out_view[out_row_off + i] = $from_f64(y_acc);
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+selective_scan_kernel!(selective_scan_f32, f32, |v: f32| v as f64, |v: f64| v as f32);
+selective_scan_kernel!(selective_scan_f64, f64, |v: f64| v,         |v: f64| v);
+selective_scan_kernel!(selective_scan_bf16, half::bf16,
+    |v: half::bf16| v.to_f64(),
+    |v: f64| half::bf16::from_f32(v as f32));
+selective_scan_kernel!(selective_scan_f16, half::f16,
+    |v: half::f16| v.to_f64(),
+    |v: f64| half::f16::from_f32(v as f32));
 
 // =============================================================================
 // SsdChunkScan — Mamba-2's State-Space Duality chunked scan (forward)
@@ -9797,6 +9918,53 @@ mod tests {
         let result: &[f32] = out.as_slice().unwrap();
         let expected = 2.0_f32.ln();
         assert!((result[0] - expected).abs() < 1e-5, "got {} expected {expected}", result[0]);
+    }
+
+    /// SelectiveScan F64 sanity — mirrors the F32 single-step test.
+    #[test]
+    fn selective_scan_f64_single_step() {
+        let u = CpuStorageBytes::from_slice(&[3.0_f64]);
+        let delta = CpuStorageBytes::from_slice(&[1.0_f64]);
+        let a = CpuStorageBytes::from_slice(&[-1.0_f64]);
+        let b = CpuStorageBytes::from_slice(&[2.0_f64]);
+        let c = CpuStorageBytes::from_slice(&[0.5_f64]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
+        selective_scan_f64(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
+            .expect("selective_scan_f64");
+        let r: &[f64] = out.as_slice().unwrap();
+        assert!((r[0] - 3.0).abs() < 1e-12);
+    }
+
+    /// SelectiveScan BF16 sanity. Loose tolerance for 7-bit mantissa
+    /// (the F64 internal accumulator keeps the recurrence stable;
+    /// rounding hits on the y store).
+    #[test]
+    fn selective_scan_bf16_single_step() {
+        let u = CpuStorageBytes::from_slice(&[half::bf16::from_f32(3.0)]);
+        let delta = CpuStorageBytes::from_slice(&[half::bf16::from_f32(1.0)]);
+        let a = CpuStorageBytes::from_slice(&[half::bf16::from_f32(-1.0)]);
+        let b = CpuStorageBytes::from_slice(&[half::bf16::from_f32(2.0)]);
+        let c = CpuStorageBytes::from_slice(&[half::bf16::from_f32(0.5)]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        selective_scan_bf16(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
+            .expect("selective_scan_bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!((r[0].to_f32() - 3.0).abs() < 5e-2);
+    }
+
+    /// SelectiveScan F16 sanity. Tighter than BF16 (10-bit mantissa).
+    #[test]
+    fn selective_scan_f16_single_step() {
+        let u = CpuStorageBytes::from_slice(&[half::f16::from_f32(3.0)]);
+        let delta = CpuStorageBytes::from_slice(&[half::f16::from_f32(1.0)]);
+        let a = CpuStorageBytes::from_slice(&[half::f16::from_f32(-1.0)]);
+        let b = CpuStorageBytes::from_slice(&[half::f16::from_f32(2.0)]);
+        let c = CpuStorageBytes::from_slice(&[half::f16::from_f32(0.5)]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        selective_scan_f16(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
+            .expect("selective_scan_f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        assert!((r[0].to_f32() - 3.0).abs() < 1e-2);
     }
 
     /// SelectiveScan: bad shapes error rather than panicking.
