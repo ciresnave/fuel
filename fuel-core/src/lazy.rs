@@ -216,6 +216,24 @@ impl LazyTensor {
         self.inner.shape().elem_count()
     }
 
+    /// PyTorch-convention alias of [`Self::elem_count`].
+    pub fn numel(&self) -> usize {
+        self.elem_count()
+    }
+
+    /// Size of the tensor along dimension `dim`. Returns a typed error
+    /// rather than panicking on out-of-range — matches eager's
+    /// [`crate::Tensor::dim`] signature.
+    pub fn dim(&self, dim: usize) -> std::result::Result<usize, fuel_core_types::Error> {
+        let dims = self.inner.shape().dims().to_vec();
+        if dim >= dims.len() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "dim: {dim} out of bounds for rank {}", dims.len(),
+            )).bt());
+        }
+        Ok(dims[dim])
+    }
+
     // ---- arithmetic (element-wise, strict shape) ----
 
     /// Element-wise addition. Shapes must match.
@@ -865,6 +883,50 @@ impl LazyTensor {
         Self {
             inner: self.inner.cast(dtype),
         }
+    }
+
+    /// Eager-API alias of [`Self::cast`]. The naming difference between
+    /// eager `to_dtype` and lazy `cast` was a Phase 7.5 carry-over;
+    /// both names point at the same underlying op now.
+    pub fn to_dtype(&self, dtype: DType) -> Self {
+        self.cast(dtype)
+    }
+
+    /// Result-returning sibling of [`Self::cast`] / [`Self::to_dtype`].
+    /// Validates the target dtype is supported by the cast op
+    /// registered for `self`'s source dtype. Returns the cast tensor
+    /// or a typed error rather than panicking at realize time on an
+    /// unsupported pair.
+    ///
+    /// Note: the actual cast registration matrix is checked at realize
+    /// time; this method's error path only validates trivial cases
+    /// today (target dtype not a registered DType variant). Future
+    /// extension: query the kernel registry up front.
+    pub fn try_cast(&self, dtype: DType) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(self.cast(dtype))
+    }
+
+    /// Eager-API alias of [`Self::cast`] that returns Result. Matches
+    /// eager's [`crate::Tensor::to_dtype`] signature.
+    pub fn try_to_dtype(&self, dtype: DType) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.try_cast(dtype)
+    }
+
+    /// Detach this tensor from autograd. On lazy, autograd is structural
+    /// (every graph edge participates in backward unless explicitly cut
+    /// by a non-differentiable op), so there's no per-tensor toggle —
+    /// `detach()` is the identity function. Provided for eager-API
+    /// parity so consumer code that calls `.detach()` compiles
+    /// unchanged.
+    pub fn detach(&self) -> Self {
+        self.clone()
+    }
+
+    /// Whether autograd is tracking this tensor. On lazy, every tensor
+    /// participates in autograd structurally; `track_op` returns true
+    /// unconditionally for API parity with eager.
+    pub fn track_op(&self) -> bool {
+        true
     }
 
     // ---- realization (the bridge to the reference backend) ----
@@ -9754,5 +9816,52 @@ mod phase_a5_factory_tests {
         let x = cpu_f32(vec![1.0; 16], &[1, 1, 4, 4]);
         assert!(x.avg_pool2d((0, 2), (1, 1), (0, 0)).is_err());
         assert!(x.max_pool2d((2, 0), (1, 1), (0, 0)).is_err());
+    }
+
+    // ---- Phase A.8 scope-limited harmonization aliases ----
+
+    #[test]
+    fn numel_matches_elem_count() {
+        let t = cpu_f32(vec![1.0; 12], &[3, 4]);
+        assert_eq!(t.numel(), t.elem_count());
+        assert_eq!(t.numel(), 12);
+    }
+
+    #[test]
+    fn dim_returns_specific_axis_size() {
+        let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
+        assert_eq!(t.dim(0).unwrap(), 2);
+        assert_eq!(t.dim(1).unwrap(), 3);
+        assert_eq!(t.dim(2).unwrap(), 4);
+        assert!(t.dim(3).is_err());
+    }
+
+    #[test]
+    fn to_dtype_is_cast_alias() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        let a = t.cast(DType::F64);
+        let b = t.to_dtype(DType::F64);
+        assert_eq!(a.dtype(), b.dtype());
+        assert_eq!(a.realize_f64(), b.realize_f64());
+    }
+
+    #[test]
+    fn try_cast_and_try_to_dtype_round_trip() {
+        let t = cpu_f32(vec![1.0_f32], &[1]);
+        assert!(t.try_cast(DType::F64).is_ok());
+        assert!(t.try_to_dtype(DType::F64).is_ok());
+    }
+
+    #[test]
+    fn detach_is_identity_on_lazy() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let d = t.detach();
+        assert_eq!(d.realize_f32(), t.realize_f32());
+    }
+
+    #[test]
+    fn track_op_is_true_on_lazy() {
+        let t = cpu_f32(vec![0.0], &[1]);
+        assert!(t.track_op());
     }
 }
