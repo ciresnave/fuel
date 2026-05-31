@@ -3893,10 +3893,11 @@ impl Tensor {
     ///
     /// Output: `y: [batch, seqlen, heads, head_dim]` F32 (same as x).
     ///
-    /// `chunk_size` is the SSD block size. v1 requires
-    /// `chunk_size == seqlen` (single-chunk degenerate case);
-    /// multi-chunk inter-block decay propagation is a follow-up.
-    /// The kernel returns an error if the constraint is violated.
+    /// `chunk_size` is the SSD block size (typically 256 in Mamba-2).
+    /// It controls GPU parallelism granularity but the mathematical
+    /// result is identical to a sequential scan; the CPU kernel runs
+    /// sequential regardless. Validation: `chunk_size > 0` and
+    /// `seqlen % chunk_size == 0`.
     ///
     /// Emits `Op::Fused(FusedOps::SSD_CHUNK_SCAN,
     /// FusedOpParams::SsdChunkScan { chunk_size })`. No primitive

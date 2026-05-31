@@ -711,7 +711,7 @@ pub fn cost_ssd_chunk_scan_cpu(
 }
 
 /// Precision guarantee for `(SSD_CHUNK_SCAN, Cpu, *)` — same shape
-/// as `SELECTIVE_SCAN_CPU_PRECISION`. v1 single-chunk only.
+/// as `SELECTIVE_SCAN_CPU_PRECISION`.
 pub const SSD_CHUNK_SCAN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
     bit_stable_on_same_hardware: true,
     max_ulp: None,
@@ -720,7 +720,9 @@ pub const SSD_CHUNK_SCAN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee 
     notes: "fuel-cpu-backend SsdChunkScan: per-head state recurrence \
             in F64 accumulator; narrow to F32 on y store; \
             deterministic iteration order; same-hardware re-run \
-            bit-identical. v1 single-chunk only (chunk_size == seqlen).",
+            bit-identical. chunk_size is a GPU-parallelism knob; \
+            CPU runs sequential, any positive chunk_size dividing \
+            seqlen produces the same answer.",
 };
 
 /// Static cost model for `(NF4_MATMUL, Cpu)` — bitsandbytes 4-bit
