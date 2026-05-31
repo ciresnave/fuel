@@ -1919,6 +1919,261 @@ impl LazyTensor {
         Ok(acc)
     }
 
+    // ---- keepdim reductions ----
+    //
+    // Each keepdim variant is the squeezed reduction post-composed with
+    // `unsqueeze` at the same dim. The graph optimizer can fuse these
+    // back into a single op when it's profitable; until then, the cost
+    // is one extra view-only node.
+
+    /// Sum along `dim`, keeping the reduced dim as size 1.
+    pub fn sum_keepdim(&self, dim: usize) -> Self {
+        self.sum_dim(dim).unsqueeze(dim)
+    }
+
+    /// Mean along `dim`, keeping the reduced dim as size 1.
+    pub fn mean_keepdim(&self, dim: usize) -> Self {
+        self.mean_dim(dim).unsqueeze(dim)
+    }
+
+    /// Max along `dim`, keeping the reduced dim as size 1.
+    pub fn max_keepdim(&self, dim: usize) -> Self {
+        self.max_dim(dim).unsqueeze(dim)
+    }
+
+    /// Min along `dim`, keeping the reduced dim as size 1.
+    pub fn min_keepdim(&self, dim: usize) -> Self {
+        self.min_dim(dim).unsqueeze(dim)
+    }
+
+    /// Unbiased sample variance along `dim`, keeping the reduced dim as
+    /// size 1. Divides squared deviations by `n - 1` (Bessel's
+    /// correction), matching the eager [`Tensor::var_keepdim`] and
+    /// PyTorch defaults. `n == 1` produces NaN.
+    pub fn var_keepdim(&self, dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        let rank = dims.len();
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "var_keepdim: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
+        let n = dims[dim];
+        let mean = self.mean_keepdim(dim);
+        let deviation = self.broadcast_sub(&mean);
+        let squares = deviation.sqr();
+        // sum_keepdim then divide by (n-1); leaves the reduced dim as 1.
+        let summed = squares.sum_keepdim(dim);
+        let divisor = (n.saturating_sub(1)) as f64;
+        Ok(summed.mul_scalar(1.0 / divisor))
+    }
+
+    /// Unbiased sample variance along `dim`, squeezing the reduced dim.
+    /// See [`Self::var_keepdim`].
+    pub fn var(&self, dim: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.var_keepdim(dim)?.squeeze(dim)
+    }
+
+    // ---- composite scalar / binary ops (Phase A.4) ----
+
+    /// `y = mul * self + add` element-wise. Two-op composite of
+    /// [`Self::mul_scalar`] then [`Self::add_scalar`]; a fused `Op::Affine`
+    /// can collapse this into a single op later (see the in-place
+    /// counterpart [`Self::affine_inplace`]).
+    pub fn affine(&self, mul: f64, add: f64) -> Self {
+        self.mul_scalar(mul).add_scalar(add)
+    }
+
+    /// `y = scale * self + shift`. Alias of [`Self::affine`] with
+    /// descriptive parameter names; matches eager's
+    /// `Tensor::scale_and_shift`.
+    pub fn scale_and_shift(&self, scale: f64, shift: f64) -> Self {
+        self.affine(scale, shift)
+    }
+
+    /// Exponential Linear Unit: `self` where `self > 0`,
+    /// `alpha * (exp(self) - 1)` otherwise. Composite of `where_cond`,
+    /// `gt`, `exp`, `affine`.
+    pub fn elu(&self, alpha: f64) -> Self {
+        // Negative-branch value: alpha * (exp(self) - 1) = alpha * exp(self) - alpha
+        let neg_branch = self.exp().affine(alpha, -alpha);
+        // Mask: self > 0. Build a zero on the same graph.
+        let zero = self.const_f32_like(vec![0.0; self.elem_count()], self.shape());
+        let mask = self.gt(&zero);
+        mask.where_cond(self, &neg_branch)
+    }
+
+    /// Inner product of two rank-1 tensors. Composite of `mul` +
+    /// `sum_all`; matches eager's [`Tensor::dot`].
+    pub fn dot(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let a = self.shape().dims().to_vec();
+        let b = rhs.shape().dims().to_vec();
+        if a.len() != 1 || b.len() != 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "dot: requires rank-1 inputs, got lhs={a:?} rhs={b:?}",
+            )).bt());
+        }
+        if a[0] != b[0] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "dot: length mismatch lhs={} rhs={}", a[0], b[0],
+            )).bt());
+        }
+        Ok(self.mul(rhs).sum_all())
+    }
+
+    /// Matrix × vector: `[m, n] · [n] -> [m]`. No broadcasting. Composite
+    /// of `unsqueeze` + `matmul` + `squeeze`. Matches eager's
+    /// [`Tensor::mv`].
+    pub fn mv(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let a = self.shape().dims().to_vec();
+        let b = rhs.shape().dims().to_vec();
+        if a.len() != 2 || b.len() != 1 || a[1] != b[0] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "mv: shape mismatch lhs={a:?} rhs={b:?} (need [m,n] · [n])",
+            )).bt());
+        }
+        // unsqueeze rhs to [n,1], matmul -> [m,1], squeeze trailing dim.
+        let rhs_col = rhs.try_unsqueeze(1)?;
+        let prod = self.matmul(&rhs_col);
+        prod.squeeze(1)
+    }
+
+    /// Alias of [`Self::mv`] with a more descriptive name. Matches
+    /// eager's [`Tensor::matvec`].
+    pub fn matvec(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.mv(rhs)
+    }
+
+    /// Broadcast-aware matmul. Lazy's [`Self::matmul`] already accepts
+    /// broadcast-compatible operands; this method is exposed for
+    /// signature compatibility with eager's `Tensor::broadcast_matmul`.
+    pub fn broadcast_matmul(&self, rhs: &Self) -> Self {
+        self.matmul(rhs)
+    }
+
+    // ---- Phase A.5 factory family ----
+    //
+    // Instance methods derive shape + dtype from `self` and place the new
+    // tensor on the same graph via `const_*_like`. Static methods build
+    // a fresh graph anchored on a host-allocated buffer.
+
+    /// New tensor with the same shape, dtype, and graph as `self`, filled
+    /// with ones.
+    pub fn ones_like(&self) -> Self {
+        let n = self.elem_count();
+        let shape = self.shape();
+        match self.dtype() {
+            DType::F32 => self.const_f32_like(vec![1.0_f32; n], shape),
+            DType::F64 => self.const_f64_like(vec![1.0_f64; n], shape),
+            DType::BF16 => self.const_bf16_like(vec![half::bf16::ONE; n], shape),
+            DType::F16 => self.const_f16_like(vec![half::f16::ONE; n], shape),
+            DType::U32 => self.const_u32_like(vec![1_u32; n], shape),
+            DType::I64 => self.const_i64_like(vec![1_i64; n], shape),
+            other => panic!("ones_like: unsupported dtype {other:?}"),
+        }
+    }
+
+    /// New tensor with the same shape, dtype, and graph as `self`, filled
+    /// with zeros.
+    pub fn zeros_like(&self) -> Self {
+        let n = self.elem_count();
+        let shape = self.shape();
+        match self.dtype() {
+            DType::F32 => self.const_f32_like(vec![0.0_f32; n], shape),
+            DType::F64 => self.const_f64_like(vec![0.0_f64; n], shape),
+            DType::BF16 => self.const_bf16_like(vec![half::bf16::ZERO; n], shape),
+            DType::F16 => self.const_f16_like(vec![half::f16::ZERO; n], shape),
+            DType::U32 => self.const_u32_like(vec![0_u32; n], shape),
+            DType::I64 => self.const_i64_like(vec![0_i64; n], shape),
+            other => panic!("zeros_like: unsupported dtype {other:?}"),
+        }
+    }
+
+    /// New tensor with `shape`/`dtype`/`device`, every element set to `1`.
+    /// Static factory equivalent of eager's `Tensor::ones`.
+    pub fn ones(shape: impl Into<Shape>, dtype: DType, device: &Device) -> Self {
+        let shape = shape.into();
+        let n = shape.elem_count();
+        match dtype {
+            DType::F32 => Self::from_f32(vec![1.0_f32; n], shape, device),
+            DType::F64 => Self::from_f64(vec![1.0_f64; n], shape, device),
+            DType::BF16 => Self::from_bf16(vec![half::bf16::ONE; n], shape, device),
+            DType::F16 => Self::from_f16(vec![half::f16::ONE; n], shape, device),
+            DType::U32 => Self::from_u32(vec![1_u32; n], shape, device),
+            other => panic!("ones: unsupported dtype {other:?}"),
+        }
+    }
+
+    /// New tensor with `shape`/`dtype`/`device`, every element set to `0`.
+    /// Static factory equivalent of eager's `Tensor::zeros`.
+    pub fn zeros(shape: impl Into<Shape>, dtype: DType, device: &Device) -> Self {
+        let shape = shape.into();
+        let n = shape.elem_count();
+        match dtype {
+            DType::F32 => Self::from_f32(vec![0.0_f32; n], shape, device),
+            DType::F64 => Self::from_f64(vec![0.0_f64; n], shape, device),
+            DType::BF16 => Self::from_bf16(vec![half::bf16::ZERO; n], shape, device),
+            DType::F16 => Self::from_f16(vec![half::f16::ZERO; n], shape, device),
+            DType::U32 => Self::from_u32(vec![0_u32; n], shape, device),
+            other => panic!("zeros: unsupported dtype {other:?}"),
+        }
+    }
+
+    /// New tensor of `shape`/`device` filled with `value`. The scalar's
+    /// dtype determines the tensor's dtype.
+    pub fn full(
+        shape: impl Into<Shape>,
+        value: fuel_core_types::Scalar,
+        device: &Device,
+    ) -> Self {
+        let shape = shape.into();
+        let n = shape.elem_count();
+        match value {
+            fuel_core_types::Scalar::F32(v) => Self::from_f32(vec![v; n], shape, device),
+            fuel_core_types::Scalar::F64(v) => Self::from_f64(vec![v; n], shape, device),
+            fuel_core_types::Scalar::BF16(v) => Self::from_bf16(vec![v; n], shape, device),
+            fuel_core_types::Scalar::F16(v) => Self::from_f16(vec![v; n], shape, device),
+            fuel_core_types::Scalar::U32(v) => Self::from_u32(vec![v; n], shape, device),
+            other => panic!("full: unsupported scalar dtype {:?}", other.dtype()),
+        }
+    }
+
+    /// Identity matrix `[n, n]` with the given dtype on the given device.
+    /// Built host-side as a flat Vec; no graph-layer arange dependency.
+    pub fn eye(n: usize, dtype: DType, device: &Device) -> Self {
+        let mut data = vec![0.0_f32; n * n];
+        for i in 0..n {
+            data[i * n + i] = 1.0;
+        }
+        let base = Self::from_f32(data, vec![n, n], device);
+        if dtype == DType::F32 { base } else { base.cast(dtype) }
+    }
+
+    /// Lower-triangular ones matrix `[n, n]`. `tril2(n).cast(dtype)` is the
+    /// causal-attention-mask building block.
+    pub fn tril2(n: usize, dtype: DType, device: &Device) -> Self {
+        let mut data = vec![0.0_f32; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                data[i * n + j] = 1.0;
+            }
+        }
+        let base = Self::from_f32(data, vec![n, n], device);
+        if dtype == DType::F32 { base } else { base.cast(dtype) }
+    }
+
+    /// Upper-triangular ones matrix `[n, n]`.
+    pub fn triu2(n: usize, dtype: DType, device: &Device) -> Self {
+        let mut data = vec![0.0_f32; n * n];
+        for i in 0..n {
+            for j in i..n {
+                data[i * n + j] = 1.0;
+            }
+        }
+        let base = Self::from_f32(data, vec![n, n], device);
+        if dtype == DType::F32 { base } else { base.cast(dtype) }
+    }
+
     /// Repeat the tensor along each dim `repeats[i]` times. If `repeats`
     /// has more dims than `self`, `self` is implicitly left-padded with
     /// size-1 dims to match. Matches PyTorch's `Tensor.repeat`.
@@ -8107,5 +8362,248 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
         let out = t.repeat(vec![1]).unwrap();
         assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0]);
+    }
+}
+
+// ============================================================================
+// Phase A.3 keepdim reduction tests.
+// ============================================================================
+#[cfg(test)]
+mod phase_a3_keepdim_tests {
+    use super::*;
+
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
+        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    }
+
+    #[test]
+    fn sum_keepdim_preserves_dim_as_one() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let out = t.sum_keepdim(1);
+        assert_eq!(out.shape().dims(), &[2, 1]);
+        assert_eq!(out.realize_f32(), vec![3.0, 7.0]);
+    }
+
+    #[test]
+    fn mean_keepdim_preserves_dim_as_one() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let out = t.mean_keepdim(0);
+        assert_eq!(out.shape().dims(), &[1, 2]);
+        assert_eq!(out.realize_f32(), vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn max_keepdim_preserves_dim_as_one() {
+        let t = cpu_f32(vec![1.0, 3.0, 2.0, 4.0], &[2, 2]);
+        let out = t.max_keepdim(1);
+        assert_eq!(out.shape().dims(), &[2, 1]);
+        assert_eq!(out.realize_f32(), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn min_keepdim_preserves_dim_as_one() {
+        let t = cpu_f32(vec![1.0, 3.0, 2.0, 4.0], &[2, 2]);
+        let out = t.min_keepdim(1);
+        assert_eq!(out.shape().dims(), &[2, 1]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn var_matches_unbiased_formula() {
+        // [[1,2,3],[4,5,6]] -> var along axis 1: each row has mean=mid, dev=[-1,0,1], sq sum=2, /2 = 1
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let out = t.var(1).unwrap();
+        assert_eq!(out.shape().dims(), &[2]);
+        let v = out.realize_f32();
+        assert!((v[0] - 1.0).abs() < 1e-5, "var row 0 = {} != 1.0", v[0]);
+        assert!((v[1] - 1.0).abs() < 1e-5, "var row 1 = {} != 1.0", v[1]);
+    }
+
+    #[test]
+    fn var_keepdim_preserves_dim() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let out = t.var_keepdim(1).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 1]);
+    }
+
+    #[test]
+    fn var_errors_out_of_bounds() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        assert!(t.var(3).is_err());
+        assert!(t.var_keepdim(3).is_err());
+    }
+}
+
+// ============================================================================
+// Phase A.4 scalar/binary composite tests.
+// ============================================================================
+#[cfg(test)]
+mod phase_a4_composite_tests {
+    use super::*;
+
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
+        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    }
+
+    #[test]
+    fn affine_applies_mul_then_add() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let out = t.affine(2.0, 10.0);
+        assert_eq!(out.realize_f32(), vec![12.0, 14.0, 16.0]);
+    }
+
+    #[test]
+    fn scale_and_shift_alias_of_affine() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        assert_eq!(
+            t.scale_and_shift(2.0, 10.0).realize_f32(),
+            t.affine(2.0, 10.0).realize_f32(),
+        );
+    }
+
+    #[test]
+    fn elu_matches_reference_values() {
+        let t = cpu_f32(vec![1.0, 0.0, -1.0, -2.0], &[4]);
+        let out = t.elu(1.0);
+        let v = out.realize_f32();
+        // x > 0: identity. x == 0: 0 (boundary; gt returns 0 → neg branch which is alpha*(1-1)=0).
+        // x < 0: alpha * (exp(x) - 1).
+        assert!((v[0] - 1.0).abs() < 1e-5);
+        assert!(v[1].abs() < 1e-5);
+        assert!((v[2] - ((-1.0_f32).exp() - 1.0)).abs() < 1e-5);
+        assert!((v[3] - ((-2.0_f32).exp() - 1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dot_of_rank_one_vectors() {
+        let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
+        let out = a.dot(&b).unwrap();
+        assert_eq!(out.shape().elem_count(), 1);
+        let v = out.realize_f32();
+        assert_eq!(v[0], 32.0); // 1*4 + 2*5 + 3*6
+    }
+
+    #[test]
+    fn dot_rejects_non_rank_one() {
+        let a = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let b = a.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+        assert!(a.dot(&b).is_err());
+    }
+
+    #[test]
+    fn dot_rejects_length_mismatch() {
+        let a = cpu_f32(vec![1.0, 2.0], &[2]);
+        let b = a.const_f32_like(vec![1.0, 2.0, 3.0], vec![3]);
+        assert!(a.dot(&b).is_err());
+    }
+
+    #[test]
+    fn mv_matrix_times_vector() {
+        let m = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let v = m.const_f32_like(vec![1.0, 1.0, 1.0], vec![3]);
+        let out = m.mv(&v).unwrap();
+        assert_eq!(out.shape().dims(), &[2]);
+        assert_eq!(out.realize_f32(), vec![6.0, 15.0]);
+    }
+
+    #[test]
+    fn matvec_is_mv_alias() {
+        let m = cpu_f32(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+        let v = m.const_f32_like(vec![3.0, 4.0], vec![2]);
+        let a = m.mv(&v).unwrap().realize_f32();
+        let b = m.matvec(&v).unwrap().realize_f32();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn mv_rejects_shape_mismatch() {
+        let m = cpu_f32(vec![1.0; 6], &[2, 3]);
+        let v = m.const_f32_like(vec![1.0, 1.0], vec![2]);
+        assert!(m.mv(&v).is_err());
+    }
+
+    #[test]
+    fn broadcast_matmul_passes_through_to_matmul() {
+        let a = cpu_f32(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+        let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let out = a.broadcast_matmul(&b);
+        assert_eq!(out.realize_f32(), vec![5.0, 6.0, 7.0, 8.0]);
+    }
+}
+
+// ============================================================================
+// Phase A.5 factory family tests.
+// ============================================================================
+#[cfg(test)]
+mod phase_a5_factory_tests {
+    use super::*;
+
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
+        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    }
+
+    #[test]
+    fn ones_like_matches_shape_dtype_graph() {
+        let t = cpu_f32(vec![5.0, 6.0, 7.0, 8.0], &[2, 2]);
+        let ones = t.ones_like();
+        assert_eq!(ones.shape().dims(), t.shape().dims());
+        assert_eq!(ones.dtype(), t.dtype());
+        assert_eq!(ones.realize_f32(), vec![1.0; 4]);
+    }
+
+    #[test]
+    fn zeros_like_matches_shape_dtype_graph() {
+        let t = cpu_f32(vec![5.0, 6.0, 7.0], &[3]);
+        let zeros = t.zeros_like();
+        assert_eq!(zeros.realize_f32(), vec![0.0; 3]);
+    }
+
+    #[test]
+    fn static_ones_f32() {
+        let t = LazyTensor::ones(vec![2, 3], DType::F32, &Device::cpu());
+        assert_eq!(t.shape().dims(), &[2, 3]);
+        assert_eq!(t.realize_f32(), vec![1.0; 6]);
+    }
+
+    #[test]
+    fn static_zeros_f64() {
+        let t = LazyTensor::zeros(vec![4], DType::F64, &Device::cpu());
+        assert_eq!(t.dtype(), DType::F64);
+        assert_eq!(t.realize_f64(), vec![0.0; 4]);
+    }
+
+    #[test]
+    fn full_with_f32_scalar() {
+        let t = LazyTensor::full(vec![5], fuel_core_types::Scalar::F32(2.5), &Device::cpu());
+        assert_eq!(t.realize_f32(), vec![2.5; 5]);
+    }
+
+    #[test]
+    fn eye_identity_matrix() {
+        let t = LazyTensor::eye(3, DType::F32, &Device::cpu());
+        assert_eq!(t.shape().dims(), &[3, 3]);
+        assert_eq!(
+            t.realize_f32(),
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        );
+    }
+
+    #[test]
+    fn tril2_lower_triangular_ones() {
+        let t = LazyTensor::tril2(3, DType::F32, &Device::cpu());
+        assert_eq!(
+            t.realize_f32(),
+            vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0],
+        );
+    }
+
+    #[test]
+    fn triu2_upper_triangular_ones() {
+        let t = LazyTensor::triu2(3, DType::F32, &Device::cpu());
+        assert_eq!(
+            t.realize_f32(),
+            vec![1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+        );
     }
 }
