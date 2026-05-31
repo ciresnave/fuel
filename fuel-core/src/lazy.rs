@@ -2174,6 +2174,58 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.cast(dtype) }
     }
 
+    /// Coordinate grids from rank-1 inputs. Matches PyTorch's
+    /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
+    ///
+    /// - `xy_indexing = true` (Cartesian, NumPy default): the first
+    ///   two inputs are swapped before broadcasting and the resulting
+    ///   grids reversed back, so for `(x, y)` the grids carry shape
+    ///   `[len(y), len(x)]` (image-coordinate convention).
+    /// - `xy_indexing = false` (matrix / ij): grids carry the input
+    ///   cardinalities in input order.
+    ///
+    /// Implemented as `reshape` + `repeat`. All inputs must share the
+    /// same dtype and live on the same graph.
+    pub fn meshgrid(
+        args: &[&Self],
+        xy_indexing: bool,
+    ) -> std::result::Result<Vec<Self>, fuel_core_types::Error> {
+        if args.len() < 2 {
+            return Err(fuel_core_types::Error::Msg(
+                "meshgrid: requires at least two rank-1 tensors".into(),
+            ).bt());
+        }
+        let ordered: Vec<&Self> = if xy_indexing {
+            args.iter().rev().copied().collect()
+        } else {
+            args.iter().copied().collect()
+        };
+        let mut lens = Vec::with_capacity(ordered.len());
+        for (i, t) in ordered.iter().enumerate() {
+            let dims = t.shape().dims().to_vec();
+            if dims.len() != 1 {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "meshgrid: input {i} must be rank 1, got shape {dims:?}",
+                )).bt());
+            }
+            lens.push(dims[0]);
+        }
+        let mut grids = Vec::with_capacity(ordered.len());
+        for (idx, t) in ordered.iter().enumerate() {
+            let mut shape = vec![1_usize; ordered.len()];
+            shape[idx] = lens[idx];
+            let placed = t.try_reshape(shape)?;
+            let mut repeats = lens.clone();
+            repeats[idx] = 1;
+            let grid = placed.repeat(repeats)?;
+            grids.push(grid);
+        }
+        if xy_indexing {
+            grids.reverse();
+        }
+        Ok(grids)
+    }
+
     /// Repeat the tensor along each dim `repeats[i]` times. If `repeats`
     /// has more dims than `self`, `self` is implicitly left-padded with
     /// size-1 dims to match. Matches PyTorch's `Tensor.repeat`.
@@ -8605,5 +8657,47 @@ mod phase_a5_factory_tests {
             t.realize_f32(),
             vec![1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
         );
+    }
+
+    #[test]
+    fn meshgrid_ij_indexing_two_inputs() {
+        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
+        let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
+        let grids = LazyTensor::meshgrid(&[&x, &y], false).unwrap();
+        assert_eq!(grids.len(), 2);
+        // ij: shapes are [len(x), len(y)] = [3, 2].
+        assert_eq!(grids[0].shape().dims(), &[3, 2]);
+        assert_eq!(grids[1].shape().dims(), &[3, 2]);
+        // X grid: each row repeats x's value, so each row is identical along axis 1.
+        assert_eq!(grids[0].realize_f32(), vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+        // Y grid: each column repeats y's value, so each column is identical along axis 0.
+        assert_eq!(grids[1].realize_f32(), vec![4.0, 5.0, 4.0, 5.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn meshgrid_xy_indexing_swaps_first_two() {
+        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
+        let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
+        let grids = LazyTensor::meshgrid(&[&x, &y], true).unwrap();
+        // xy: shapes flip to [len(y), len(x)] = [2, 3].
+        assert_eq!(grids[0].shape().dims(), &[2, 3]);
+        assert_eq!(grids[1].shape().dims(), &[2, 3]);
+        // X grid: same row twice, each row is x.
+        assert_eq!(grids[0].realize_f32(), vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+        // Y grid: each row repeats one y element.
+        assert_eq!(grids[1].realize_f32(), vec![4.0, 4.0, 4.0, 5.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn meshgrid_rejects_single_input() {
+        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu());
+        assert!(LazyTensor::meshgrid(&[&x], false).is_err());
+    }
+
+    #[test]
+    fn meshgrid_rejects_non_rank_one() {
+        let x = LazyTensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu());
+        let y = x.const_f32_like(vec![1.0, 2.0], vec![2]);
+        assert!(LazyTensor::meshgrid(&[&x, &y], false).is_err());
     }
 }
