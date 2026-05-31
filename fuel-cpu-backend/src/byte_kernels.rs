@@ -5435,6 +5435,9 @@ causal_conv1d_half_kernel!(causal_conv1d_f16,  half::f16);
 // Algorithmic complexity: O(batch · seqlen · dim · dstate) FMAs.
 
 /// Shared shape-validation for the SelectiveScan dtype variants.
+/// `return_state` switches the expected `out_bytes`: false →
+/// `batch · seqlen · dim · elem_bytes` (y), true →
+/// `batch · dim · dstate · elem_bytes` (last_state).
 fn selective_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -5445,13 +5448,18 @@ fn selective_scan_check_shapes(
     c_bytes: usize,
     out_bytes: usize,
     batch: usize, seqlen: usize, dim: usize, dstate: usize,
+    return_state: bool,
 ) -> Result<()> {
     let u_need = batch.saturating_mul(seqlen).saturating_mul(dim).saturating_mul(elem_bytes);
     let delta_need = u_need;
     let a_need = dim.saturating_mul(dstate).saturating_mul(elem_bytes);
     let b_need = batch.saturating_mul(seqlen).saturating_mul(dstate).saturating_mul(elem_bytes);
     let c_need = b_need;
-    let out_need = u_need;
+    let out_need = if return_state {
+        batch.saturating_mul(dim).saturating_mul(dstate).saturating_mul(elem_bytes)
+    } else {
+        u_need
+    };
     let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
             Err(Error::Msg(format!(
@@ -5479,6 +5487,12 @@ fn selective_scan_check_shapes(
 /// without losing the F64 accumulator precision.
 macro_rules! selective_scan_kernel {
     ($name:ident, $T:ty, $to_f64:expr, $from_f64:expr) => {
+        /// SelectiveScan CPU kernel. `return_state` switches the
+        /// output: false → `y [batch, seqlen, dim]` (the scanned
+        /// sequence); true → `last_state [batch, dim, dstate]`
+        /// (the final h-state). When `return_state` is true the
+        /// inner-loop y accumulator is skipped (no need to compute
+        /// it just to throw away).
         #[allow(clippy::too_many_arguments)]
         pub fn $name(
             u: &CpuStorageBytes,
@@ -5492,13 +5506,14 @@ macro_rules! selective_scan_kernel {
             dim: usize,
             dstate: usize,
             delta_softplus: bool,
+            return_state: bool,
         ) -> Result<()> {
             selective_scan_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
                 u.len_bytes(), delta.len_bytes(), a.len_bytes(),
                 b.len_bytes(), c.len_bytes(), out.len_bytes(),
-                batch, seqlen, dim, dstate,
+                batch, seqlen, dim, dstate, return_state,
             )?;
             if batch == 0 || seqlen == 0 || dim == 0 || dstate == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -5542,10 +5557,21 @@ macro_rules! selective_scan_kernel {
                             let b_val = $to_f64(b_view[b_row_off + j]);
                             let h_new = (d * a_val).exp() * h[h_off + j] + d * b_val * u_val;
                             h[h_off + j] = h_new;
-                            y_acc += h_new * $to_f64(c_view[c_row_off + j]);
+                            if !return_state {
+                                y_acc += h_new * $to_f64(c_view[c_row_off + j]);
+                            }
                         }
-                        out_view[out_row_off + i] = $from_f64(y_acc);
+                        if !return_state {
+                            out_view[out_row_off + i] = $from_f64(y_acc);
+                        }
                     }
+                }
+            }
+            if return_state {
+                // h is [batch, dim, dstate] F64; copy to out as T.
+                debug_assert_eq!(out_view.len(), batch * dim * dstate);
+                for (slot, &h_val) in out_view.iter_mut().zip(h.iter()) {
+                    *slot = $from_f64(h_val);
                 }
             }
             Ok(())
@@ -5588,6 +5614,9 @@ selective_scan_kernel!(selective_scan_f16, half::f16,
 /// size is `batch * seqlen * heads * head_dim * 4` bytes.
 ///
 /// Shared shape-validation for the SsdChunkScan dtype variants.
+/// `return_state` switches the expected `out_bytes`: false →
+/// `batch · seqlen · heads · head_dim · elem_bytes` (y), true →
+/// `batch · heads · head_dim · state_dim · elem_bytes` (last_state).
 fn ssd_chunk_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -5599,13 +5628,18 @@ fn ssd_chunk_scan_check_shapes(
     out_bytes: usize,
     batch: usize, seqlen: usize, heads: usize,
     head_dim: usize, state_dim: usize,
+    return_state: bool,
 ) -> Result<()> {
     let x_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(head_dim).saturating_mul(elem_bytes);
     let dt_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(elem_bytes);
     let a_need = heads.saturating_mul(elem_bytes);
     let b_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(state_dim).saturating_mul(elem_bytes);
     let c_need = b_need;
-    let out_need = x_need;
+    let out_need = if return_state {
+        batch.saturating_mul(heads).saturating_mul(head_dim).saturating_mul(state_dim).saturating_mul(elem_bytes)
+    } else {
+        x_need
+    };
     let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
             Err(Error::Msg(format!(
@@ -5662,6 +5696,7 @@ macro_rules! ssd_chunk_scan_kernel {
             head_dim: usize,
             state_dim: usize,
             chunk_size: usize,
+            return_state: bool,
         ) -> Result<()> {
             if chunk_size == 0 {
                 return Err(Error::Msg(format!(
@@ -5683,6 +5718,7 @@ macro_rules! ssd_chunk_scan_kernel {
                 x.len_bytes(), dt.len_bytes(), a.len_bytes(),
                 b.len_bytes(), c.len_bytes(), out.len_bytes(),
                 batch, seqlen, heads, head_dim, state_dim,
+                return_state,
             )?;
             if batch == 0 || seqlen == 0 || heads == 0 || head_dim == 0 || state_dim == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;

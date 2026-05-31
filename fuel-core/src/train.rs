@@ -857,7 +857,10 @@ mod tests {
                 Shape::from_dims(&[2, 8, 16]),   // b: [batch, seqlen, dstate]
                 Shape::from_dims(&[2, 8, 16]),   // c: [batch, seqlen, dstate]
             ],
-            &fuel_graph::registry::FusedOpParams::SelectiveScan { delta_softplus: false },
+            &fuel_graph::registry::FusedOpParams::SelectiveScan {
+                delta_softplus: false,
+                return_state: false,
+            },
         );
         assert_eq!(out_shape.dims(), &[2, 8, 64]);
     }
@@ -900,7 +903,10 @@ mod tests {
                 Shape::from_dims(&[2, 16, 8, 128]),   // b: [batch, seqlen, heads, state_dim]
                 Shape::from_dims(&[2, 16, 8, 128]),   // c
             ],
-            &fuel_graph::registry::FusedOpParams::SsdChunkScan { chunk_size: 16 },
+            &fuel_graph::registry::FusedOpParams::SsdChunkScan {
+                chunk_size: 16,
+                return_state: false,
+            },
         );
         assert_eq!(out_shape.dims(), &[2, 16, 8, 64]);
     }

@@ -3972,7 +3972,13 @@ impl Tensor {
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::Fused(
                 crate::registry::FusedOps::SSD_CHUNK_SCAN,
-                crate::registry::FusedOpParams::SsdChunkScan { chunk_size },
+                crate::registry::FusedOpParams::SsdChunkScan {
+                    chunk_size,
+                    // Default: no second state output. The future
+                    // builder that exposes resume-from-snapshot will
+                    // be a sibling `ssd_chunk_scan_with_state(...)`.
+                    return_state: false,
+                },
             ),
             inputs: vec![self.id, dt.id, a.id, b.id, c.id],
             shape:  Shape::from_dims(&[batch, seqlen, heads, head_dim]),
@@ -4073,7 +4079,12 @@ impl Tensor {
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::Fused(
                 crate::registry::FusedOps::SELECTIVE_SCAN,
-                crate::registry::FusedOpParams::SelectiveScan { delta_softplus },
+                crate::registry::FusedOpParams::SelectiveScan {
+                    delta_softplus,
+                    // Default: no second state output (matches the
+                    // builder's pre-`return_state` semantics).
+                    return_state: false,
+                },
             ),
             inputs: vec![self.id, delta.id, a.id, b.id, c.id],
             shape:  Shape::from_dims(&[batch, seqlen, dim]),
