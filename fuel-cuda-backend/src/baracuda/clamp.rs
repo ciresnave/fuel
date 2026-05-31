@@ -205,3 +205,98 @@ pub fn clamp_bf16(
         "clamp_bf16",
     )
 }
+
+/// In-place common driver — mirrors `clamp_run` but takes
+/// `target: &mut CudaStorageBytes` and passes its pointer for both
+/// the input (`a`) and output (`y`) slots. The executor's
+/// `WorkItemKind::InplaceKernel` arm guarantees the target is
+/// contiguous + zero-offset, so we walk it as rank-1 contig.
+fn clamp_inplace_run(
+    target: &mut CudaStorageBytes,
+    lo_bytes: &[u8],
+    hi_bytes: &[u8],
+    dtype_size_bytes: usize,
+    kernel: TernaryStridedRun,
+    op_label: &'static str,
+) -> Result<()> {
+    if lo_bytes.len() != dtype_size_bytes || hi_bytes.len() != dtype_size_bytes {
+        return Err(Error::Msg(format!(
+            "{op_label}: bound buffer size mismatch (got lo={}, hi={}, want {})",
+            lo_bytes.len(), hi_bytes.len(), dtype_size_bytes,
+        )).bt());
+    }
+    let numel = (target.len_bytes() / dtype_size_bytes.max(1)) as i64;
+    if numel == 0 {
+        return Ok(());
+    }
+    let device = target.device().clone();
+    let lo_buf = CudaStorageBytes::from_cpu_bytes(&device, lo_bytes)?;
+    let hi_buf = CudaStorageBytes::from_cpu_bytes(&device, hi_bytes)?;
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+
+    let ptr_mut = target.buffer().as_raw().0 as *mut std::ffi::c_void;
+    let ptr_const = ptr_mut as *const std::ffi::c_void;
+    let b_ptr = lo_buf.buffer().as_raw().0 as *const std::ffi::c_void;
+    let c_ptr = hi_buf.buffer().as_raw().0 as *const std::ffi::c_void;
+
+    // Rank-1 contig walk; bounds broadcast via stride 0.
+    let shape_i32: [i32; 1] = [i32::try_from(numel).map_err(|_| {
+        Error::Msg(format!("{op_label}: numel {numel} overflows i32")).bt()
+    })?];
+    let stride_a: [i64; 1] = [1];
+    let stride_b: [i64; 1] = [0];
+    let stride_c: [i64; 1] = [0];
+    let stride_y: [i64; 1] = [1];
+
+    // SAFETY: same pointer for a + y is safe for elementwise ternary
+    // clamp (no cross-thread aliasing); bounds + stream + scratch
+    // validated above.
+    let status = unsafe {
+        kernel(
+            numel, 1, shape_i32.as_ptr(),
+            stride_a.as_ptr(), stride_b.as_ptr(), stride_c.as_ptr(), stride_y.as_ptr(),
+            ptr_const, b_ptr, c_ptr, ptr_mut,
+            scratch.as_raw(), scratch.bytes(), stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(())
+}
+
+pub fn clamp_inplace_f32(target: &mut CudaStorageBytes, min: f32, max: f32) -> Result<()> {
+    clamp_inplace_run(
+        target, &min.to_le_bytes(), &max.to_le_bytes(), 4,
+        sys::baracuda_kernels_ternary_clamp_f32_strided_run,
+        "clamp_inplace_f32",
+    )
+}
+
+pub fn clamp_inplace_f64(target: &mut CudaStorageBytes, min: f64, max: f64) -> Result<()> {
+    clamp_inplace_run(
+        target, &min.to_le_bytes(), &max.to_le_bytes(), 8,
+        sys::baracuda_kernels_ternary_clamp_f64_strided_run,
+        "clamp_inplace_f64",
+    )
+}
+
+pub fn clamp_inplace_f16(target: &mut CudaStorageBytes, min: f32, max: f32) -> Result<()> {
+    let min_h = half::f16::from_f32(min);
+    let max_h = half::f16::from_f32(max);
+    clamp_inplace_run(
+        target, &min_h.to_le_bytes(), &max_h.to_le_bytes(), 2,
+        sys::baracuda_kernels_ternary_clamp_f16_strided_run,
+        "clamp_inplace_f16",
+    )
+}
+
+pub fn clamp_inplace_bf16(target: &mut CudaStorageBytes, min: f32, max: f32) -> Result<()> {
+    let min_b = half::bf16::from_f32(min);
+    let max_b = half::bf16::from_f32(max);
+    clamp_inplace_run(
+        target, &min_b.to_le_bytes(), &max_b.to_le_bytes(), 2,
+        sys::baracuda_kernels_ternary_clamp_bf16_strided_run,
+        "clamp_inplace_bf16",
+    )
+}

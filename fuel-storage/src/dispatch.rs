@@ -3933,6 +3933,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(InplaceAffine, &unary(bf16_dt), cpu, inplace_affine_bf16_cpu_wrapper);
     table.register(InplaceAffine, &unary(f16_dt),  cpu, inplace_affine_f16_cpu_wrapper);
 
+    // ClampInplace + PowIInplace — Phase 3e scalar-param family. Same
+    // [T, T] key shape as InplaceAffine; OpParams::{Clamp, PowI} carry
+    // the scalars to the wrapper.
+    table.register(ClampInplace, &unary(f32_dt),  cpu, clamp_inplace_f32_cpu_wrapper);
+    table.register(ClampInplace, &unary(f64_dt),  cpu, clamp_inplace_f64_cpu_wrapper);
+    table.register(ClampInplace, &unary(bf16_dt), cpu, clamp_inplace_bf16_cpu_wrapper);
+    table.register(ClampInplace, &unary(f16_dt),  cpu, clamp_inplace_f16_cpu_wrapper);
+
+    table.register(PowIInplace, &unary(f32_dt),  cpu, powi_inplace_f32_cpu_wrapper);
+    table.register(PowIInplace, &unary(f64_dt),  cpu, powi_inplace_f64_cpu_wrapper);
+    table.register(PowIInplace, &unary(bf16_dt), cpu, powi_inplace_bf16_cpu_wrapper);
+    table.register(PowIInplace, &unary(f16_dt),  cpu, powi_inplace_f16_cpu_wrapper);
+
     // FusedSoftmaxCrossEntropy: 2 inputs (logits F32, targets I64) →
     // 1 output (F32). The lookup key `[F32, I64, F32]` matches what
     // `build_lookup_dtypes` produces for this node shape.

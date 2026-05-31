@@ -1198,6 +1198,24 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::GeluInplace        => Some(OpKind::GeluInplace),
         Op::TanhInplace        => Some(OpKind::TanhInplace),
         Op::SigmoidInplace     => Some(OpKind::SigmoidInplace),
+        Op::NegInplace         => Some(OpKind::NegInplace),
+        Op::AbsInplace         => Some(OpKind::AbsInplace),
+        Op::SqrInplace         => Some(OpKind::SqrInplace),
+        Op::SqrtInplace        => Some(OpKind::SqrtInplace),
+        Op::RsqrtInplace       => Some(OpKind::RsqrtInplace),
+        Op::RecipInplace       => Some(OpKind::RecipInplace),
+        Op::ExpInplace         => Some(OpKind::ExpInplace),
+        Op::LogInplace         => Some(OpKind::LogInplace),
+        Op::SinInplace         => Some(OpKind::SinInplace),
+        Op::CosInplace         => Some(OpKind::CosInplace),
+        Op::SignInplace        => Some(OpKind::SignInplace),
+        Op::FloorInplace       => Some(OpKind::FloorInplace),
+        Op::CeilInplace        => Some(OpKind::CeilInplace),
+        Op::RoundInplace       => Some(OpKind::RoundInplace),
+        Op::ErfInplace         => Some(OpKind::ErfInplace),
+        Op::GeluErfInplace     => Some(OpKind::GeluErfInplace),
+        Op::ClampInplace { .. } => Some(OpKind::ClampInplace),
+        Op::PowIInplace(_)      => Some(OpKind::PowIInplace),
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::INPLACE_AFFINE => {
             Some(OpKind::InplaceAffine)
         }
@@ -2258,6 +2276,8 @@ fn op_to_op_params(
         Op::MulScalar(c) => OpParams::Affine { mul: *c, add: 0.0 },
         Op::Clamp { min, max } => OpParams::Clamp { min: *min, max: *max },
         Op::PowI(exp) => OpParams::PowI { exp: *exp },
+        Op::ClampInplace { min, max } => OpParams::Clamp { min: *min, max: *max },
+        Op::PowIInplace(exp) => OpParams::PowI { exp: *exp },
         // PowI backward — `(x, upstream) → grad_x = exp · x^(exp-1) ·
         // upstream`. Pulls the same `exp` as the forward through
         // FusedOpParams::PowIBackward (autograd carries it across).

@@ -9334,6 +9334,69 @@ mod tests {
         check(x.gelu_inplace(),    x.id(), |o| matches!(o, Op::GeluInplace));
         check(x.tanh_inplace(),    x.id(), |o| matches!(o, Op::TanhInplace));
         check(x.sigmoid_inplace(), x.id(), |o| matches!(o, Op::SigmoidInplace));
+        check(x.neg_inplace(),     x.id(), |o| matches!(o, Op::NegInplace));
+        check(x.abs_inplace(),     x.id(), |o| matches!(o, Op::AbsInplace));
+        check(x.sqr_inplace(),     x.id(), |o| matches!(o, Op::SqrInplace));
+        check(x.sqrt_inplace(),    x.id(), |o| matches!(o, Op::SqrtInplace));
+        check(x.rsqrt_inplace(),   x.id(), |o| matches!(o, Op::RsqrtInplace));
+        check(x.recip_inplace(),   x.id(), |o| matches!(o, Op::RecipInplace));
+        check(x.exp_inplace(),     x.id(), |o| matches!(o, Op::ExpInplace));
+        check(x.log_inplace(),     x.id(), |o| matches!(o, Op::LogInplace));
+        check(x.sin_inplace(),     x.id(), |o| matches!(o, Op::SinInplace));
+        check(x.cos_inplace(),     x.id(), |o| matches!(o, Op::CosInplace));
+        check(x.sign_inplace(),    x.id(), |o| matches!(o, Op::SignInplace));
+        check(x.floor_inplace(),   x.id(), |o| matches!(o, Op::FloorInplace));
+        check(x.ceil_inplace(),    x.id(), |o| matches!(o, Op::CeilInplace));
+        check(x.round_inplace(),   x.id(), |o| matches!(o, Op::RoundInplace));
+        check(x.erf_inplace(),     x.id(), |o| matches!(o, Op::ErfInplace));
+        check(x.gelu_erf_inplace(),x.id(), |o| matches!(o, Op::GeluErfInplace));
+        check(x.clamp_inplace(-1.0, 1.0), x.id(), |o| matches!(o, Op::ClampInplace { .. }));
+        check(x.powi_inplace(3),         x.id(), |o| matches!(o, Op::PowIInplace(3)));
+    }
+
+    /// Backward smoke for the expanded in-place op family — each variant
+    /// (except zero-grad ones) must produce a gradient node for x without
+    /// panicking. Zero-grad variants (Sign/Floor/Ceil/Round) drop the
+    /// gradient entirely (no entry in the GradMap), mirroring their
+    /// non-inplace cousins.
+    #[test]
+    fn backward_through_expanded_inplace_unary_emits_grad() {
+        fn check_emits_grad(make: impl FnOnce(&Tensor) -> Tensor) {
+            let x = Tensor::from_f32(vec![0.5_f32, 1.5, 2.5], Shape::from_dims(&[3]), cpu_dev());
+            let y = make(&x);
+            let loss = y.sum_all();
+            let grads = loss.backward();
+            assert!(grads.get(&x).is_some(), "backward must emit gradient for x");
+        }
+        check_emits_grad(|x| x.neg_inplace());
+        check_emits_grad(|x| x.abs_inplace());
+        check_emits_grad(|x| x.sqr_inplace());
+        check_emits_grad(|x| x.sqrt_inplace());
+        check_emits_grad(|x| x.rsqrt_inplace());
+        check_emits_grad(|x| x.recip_inplace());
+        check_emits_grad(|x| x.exp_inplace());
+        check_emits_grad(|x| x.log_inplace());
+        check_emits_grad(|x| x.sin_inplace());
+        check_emits_grad(|x| x.cos_inplace());
+        check_emits_grad(|x| x.erf_inplace());
+        check_emits_grad(|x| x.gelu_erf_inplace());
+        check_emits_grad(|x| x.clamp_inplace(-1.0, 2.0));
+        check_emits_grad(|x| x.powi_inplace(3));
+    }
+
+    #[test]
+    fn backward_through_zero_grad_inplace_drops_gradient() {
+        fn check_drops(make: impl FnOnce(&Tensor) -> Tensor) {
+            let x = Tensor::from_f32(vec![1.5_f32, 2.5, -3.5], Shape::from_dims(&[3]), cpu_dev());
+            let y = make(&x);
+            let loss = y.sum_all();
+            let grads = loss.backward();
+            assert!(grads.get(&x).is_none(), "zero-grad in-place op must not emit gradient");
+        }
+        check_drops(|x| x.sign_inplace());
+        check_drops(|x| x.floor_inplace());
+        check_drops(|x| x.ceil_inplace());
+        check_drops(|x| x.round_inplace());
     }
 
     #[test]

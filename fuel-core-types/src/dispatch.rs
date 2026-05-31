@@ -376,6 +376,45 @@ pub enum OpKind {
     TanhInplace,
     /// In-place [`OpKind::SigmoidElementwise`] — `x = 1 / (1 + exp(-x))`.
     SigmoidInplace,
+    /// In-place [`OpKind::NegElementwise`] — `x = -x`.
+    NegInplace,
+    /// In-place [`OpKind::AbsElementwise`] — `x = |x|`.
+    AbsInplace,
+    /// In-place [`OpKind::SqrElementwise`] — `x = x²`.
+    SqrInplace,
+    /// In-place [`OpKind::SqrtElementwise`] — `x = √x`.
+    SqrtInplace,
+    /// In-place [`OpKind::RsqrtElementwise`] — `x = 1/√x`.
+    RsqrtInplace,
+    /// In-place [`OpKind::RecipElementwise`] — `x = 1/x`.
+    RecipInplace,
+    /// In-place [`OpKind::ExpElementwise`] — `x = exp(x)`.
+    ExpInplace,
+    /// In-place [`OpKind::LogElementwise`] — `x = ln(x)`.
+    LogInplace,
+    /// In-place [`OpKind::SinElementwise`] — `x = sin(x)`.
+    SinInplace,
+    /// In-place [`OpKind::CosElementwise`] — `x = cos(x)`.
+    CosInplace,
+    /// In-place [`OpKind::SignElementwise`] — `x = sign(x)`.
+    SignInplace,
+    /// In-place [`OpKind::FloorElementwise`] — `x = ⌊x⌋`.
+    FloorInplace,
+    /// In-place [`OpKind::CeilElementwise`] — `x = ⌈x⌉`.
+    CeilInplace,
+    /// In-place [`OpKind::RoundElementwise`] — `x = round(x)`.
+    RoundInplace,
+    /// In-place [`OpKind::ErfElementwise`] — `x = erf(x)`.
+    ErfInplace,
+    /// In-place [`OpKind::GeluErfElementwise`] — exact-GeLU
+    /// `x = 0.5 · x · (1 + erf(x/√2))`.
+    GeluErfInplace,
+    /// In-place [`OpKind::ClampElementwise`] — `x = clamp(x, min, max)`.
+    /// Scalar `(min, max)` flow through [`OpParams::Clamp`].
+    ClampInplace,
+    /// In-place [`OpKind::PowIElementwise`] — `x = x.powi(exp)`.
+    /// Scalar `exp` flows through [`OpParams::PowI`].
+    PowIInplace,
     /// In-place [`OpKind::Affine`] — `x = mul · x + add`. The
     /// `(mul, add)` coefficients flow through
     /// [`OpParams::Affine`]; the kernel reads + writes the same
@@ -514,6 +553,24 @@ impl OpKind {
             OpKind::GeluInplace       => "gelu_inplace",
             OpKind::TanhInplace       => "tanh_inplace",
             OpKind::SigmoidInplace    => "sigmoid_inplace",
+            OpKind::NegInplace        => "neg_inplace",
+            OpKind::AbsInplace        => "abs_inplace",
+            OpKind::SqrInplace        => "sqr_inplace",
+            OpKind::SqrtInplace       => "sqrt_inplace",
+            OpKind::RsqrtInplace      => "rsqrt_inplace",
+            OpKind::RecipInplace      => "recip_inplace",
+            OpKind::ExpInplace        => "exp_inplace",
+            OpKind::LogInplace        => "log_inplace",
+            OpKind::SinInplace        => "sin_inplace",
+            OpKind::CosInplace        => "cos_inplace",
+            OpKind::SignInplace       => "sign_inplace",
+            OpKind::FloorInplace      => "floor_inplace",
+            OpKind::CeilInplace       => "ceil_inplace",
+            OpKind::RoundInplace      => "round_inplace",
+            OpKind::ErfInplace        => "erf_inplace",
+            OpKind::GeluErfInplace    => "gelu_erf_inplace",
+            OpKind::ClampInplace      => "clamp_inplace",
+            OpKind::PowIInplace       => "powi_inplace",
             OpKind::InplaceAffine     => "inplace_affine",
             OpKind::FusedSoftmaxCrossEntropy => "fused_softmax_cross_entropy",
             OpKind::CausalConv1d        => "causal_conv1d",

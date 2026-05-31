@@ -772,7 +772,25 @@ fn eval_node(
         | Op::SiluInplace
         | Op::GeluInplace
         | Op::TanhInplace
-        | Op::SigmoidInplace => {
+        | Op::SigmoidInplace
+        | Op::NegInplace
+        | Op::AbsInplace
+        | Op::SqrInplace
+        | Op::SqrtInplace
+        | Op::RsqrtInplace
+        | Op::RecipInplace
+        | Op::ExpInplace
+        | Op::LogInplace
+        | Op::SinInplace
+        | Op::CosInplace
+        | Op::SignInplace
+        | Op::FloorInplace
+        | Op::CeilInplace
+        | Op::RoundInplace
+        | Op::ErfInplace
+        | Op::GeluErfInplace
+        | Op::ClampInplace { .. }
+        | Op::PowIInplace(_) => {
             // Phase 1 of the in-place ops infrastructure
             // (docs/session-prompts/in-place-ops-infrastructure.md).
             // Backend execution lands in Phase 3 — until then the eager
