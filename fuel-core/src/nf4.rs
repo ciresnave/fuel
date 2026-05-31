@@ -166,6 +166,238 @@ impl Nf4Weight {
     }
 }
 
+// =============================================================================
+// bitsandbytes quant_state JSON parser + safetensors-view loader
+// =============================================================================
+
+/// The geometry + format discriminators extracted from a
+/// bitsandbytes `quant_state` JSON blob. Parsed via
+/// [`parse_bnb_quant_state`]; consumed by [`load_nf4_layer`] to
+/// reconstruct the `[N, K/block_size]` absmax layout from bnb's
+/// flat `[N * K / block_size]` storage.
+///
+/// Only the fields needed to drive [`Nf4Weight`] construction are
+/// extracted; the parser ignores unknown fields (forward-compat
+/// with future bnb metadata additions).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BnbQuantState {
+    /// Number of output features (rows of the weight matrix).
+    pub n: usize,
+    /// Number of input features (the K in `(M, K) @ (K, N) → (M, N)`).
+    pub k: usize,
+    /// First-level (un-nested) quantization block size — typically 64.
+    pub block_size: usize,
+}
+
+/// Parse the JSON `quant_state` blob that bitsandbytes 0.43+ stores
+/// alongside an NF4-quantized weight. Format documented at
+/// <https://github.com/bitsandbytes-foundation/bitsandbytes/blob/main/bitsandbytes/functional.py>
+/// (search for `quant_state` serialization).
+///
+/// **Validated fields:**
+/// - `quant_type == "nf4"` — refuses other formats (fp4 / nf4_double /
+///   etc.) with a clear error. v1 only handles standalone NF4.
+/// - `shape` is `[N, K]` two integers.
+/// - `blocksize` is a positive usize that divides K.
+///
+/// **Rejected with a clear error:**
+/// - Nested-absmax double quantization (`nested_absmax` /
+///   `nested_quant_map` keys present). The dequant of the absmax
+///   itself isn't implemented in this module — handle it in the
+///   caller, dequantize the absmax to F32 first, then pass the
+///   resulting F32 absmax tensor to [`nf4_from_bytes`].
+///
+/// **Ignored fields:** `dtype` (original pre-quantization dtype —
+/// the loader uses the activations' dtype at matmul time, not the
+/// original weight dtype), `device`, and any future bnb additions.
+pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_core_types::Result<BnbQuantState> {
+    let v: serde_json::Value = serde_json::from_slice(json_bytes).map_err(|e| {
+        fuel_core_types::Error::Msg(format!(
+            "parse_bnb_quant_state: failed to parse JSON: {e}",
+        ))
+        .bt()
+    })?;
+    let obj = v.as_object().ok_or_else(|| {
+        fuel_core_types::Error::Msg(
+            "parse_bnb_quant_state: expected a JSON object at the top level".to_string(),
+        )
+        .bt()
+    })?;
+    // Discriminator: must be "nf4". bnb also has "fp4" + variants;
+    // we explicitly reject those so the caller knows v1 scope.
+    let quant_type = obj.get("quant_type").and_then(|v| v.as_str()).ok_or_else(|| {
+        fuel_core_types::Error::Msg(
+            "parse_bnb_quant_state: missing or non-string 'quant_type' field".to_string(),
+        )
+        .bt()
+    })?;
+    if quant_type != "nf4" {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "parse_bnb_quant_state: only quant_type=\"nf4\" is supported, \
+             got {quant_type:?}. Other bnb formats (fp4, etc.) need their \
+             own loader path.",
+        ))
+        .bt());
+    }
+    // Reject nested-absmax (double-quantization). Caller must
+    // dequantize first.
+    if obj.contains_key("nested_absmax") || obj.contains_key("nested_quant_map") {
+        return Err(fuel_core_types::Error::Msg(
+            "parse_bnb_quant_state: this weight uses double-quantization \
+             (nested_absmax / nested_quant_map present). v1 only handles \
+             single-level absmax. Workaround: dequantize the absmax to F32 \
+             in your loader before calling nf4_from_bytes; pass the resulting \
+             F32 absmax directly."
+                .to_string(),
+        )
+        .bt());
+    }
+    // shape: [N, K]
+    let shape = obj.get("shape").and_then(|v| v.as_array()).ok_or_else(|| {
+        fuel_core_types::Error::Msg(
+            "parse_bnb_quant_state: missing or non-array 'shape' field".to_string(),
+        )
+        .bt()
+    })?;
+    if shape.len() != 2 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "parse_bnb_quant_state: 'shape' must be 2-element [N, K], got len={}",
+            shape.len(),
+        ))
+        .bt());
+    }
+    let n = shape[0].as_u64().ok_or_else(|| {
+        fuel_core_types::Error::Msg("parse_bnb_quant_state: shape[0] (N) must be a non-negative integer".to_string()).bt()
+    })? as usize;
+    let k = shape[1].as_u64().ok_or_else(|| {
+        fuel_core_types::Error::Msg("parse_bnb_quant_state: shape[1] (K) must be a non-negative integer".to_string()).bt()
+    })? as usize;
+    // blocksize
+    let block_size = obj.get("blocksize").and_then(|v| v.as_u64()).ok_or_else(|| {
+        fuel_core_types::Error::Msg(
+            "parse_bnb_quant_state: missing or non-integer 'blocksize' field".to_string(),
+        )
+        .bt()
+    })? as usize;
+    if block_size == 0 {
+        return Err(fuel_core_types::Error::Msg(
+            "parse_bnb_quant_state: blocksize must be positive".to_string(),
+        )
+        .bt());
+    }
+    if k % block_size != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "parse_bnb_quant_state: blocksize={block_size} doesn't divide K={k} \
+             (this would leave a partial block at the end of each row, which \
+             bnb's standard format doesn't produce — your checkpoint may be \
+             corrupted or use a non-standard variant)",
+        ))
+        .bt());
+    }
+    if k % 2 != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "parse_bnb_quant_state: K={k} must be even (NF4 packs 2 codes per byte)",
+        ))
+        .bt());
+    }
+    Ok(BnbQuantState { n, k, block_size })
+}
+
+/// Load a single NF4-quantized layer from a parsed safetensors view
+/// (typically obtained via the `safetensors` crate's
+/// `SafeTensors::deserialize` or fuel-core's
+/// [`crate::safetensors::MmapedSafetensors`]).
+///
+/// `prefix` is the layer's name in the safetensors file
+/// (e.g. `"model.layers.0.self_attn.q_proj"`). The function expects
+/// three tensors at:
+/// - `{prefix}.weight` — U8, flat `[N * K / 2]`.
+/// - `{prefix}.weight.absmax` — F32, flat `[N * K / block_size]`.
+/// - `{prefix}.weight.quant_state.bitsandbytes__nf4` — U8 bytes
+///   holding the JSON metadata blob (see [`parse_bnb_quant_state`]).
+///
+/// All three tensors are read into host memory, validated against
+/// the geometry from the JSON blob, and reshaped into the 2D
+/// layouts that [`Nf4Weight`] / [`fuel_graph::Tensor::nf4_matmul`]
+/// expect.
+///
+/// **Limitations** (see `parse_bnb_quant_state` for the full list):
+/// - Double-quantization (nested_absmax) is rejected.
+/// - Non-NF4 bnb formats (fp4, etc.) are rejected.
+pub fn load_nf4_layer(
+    st: &safetensors::SafeTensors,
+    prefix: &str,
+    device: &Device,
+) -> fuel_core_types::Result<Nf4Weight> {
+    let weight_key = format!("{prefix}.weight");
+    let absmax_key = format!("{prefix}.weight.absmax");
+    let quant_state_key = format!("{prefix}.weight.quant_state.bitsandbytes__nf4");
+
+    let weight_view = st.tensor(&weight_key).map_err(|e| {
+        fuel_core_types::Error::Msg(format!(
+            "load_nf4_layer: tensor {weight_key:?} not found in safetensors: {e}",
+        ))
+        .bt()
+    })?;
+    let absmax_view = st.tensor(&absmax_key).map_err(|e| {
+        fuel_core_types::Error::Msg(format!(
+            "load_nf4_layer: tensor {absmax_key:?} not found in safetensors: {e}",
+        ))
+        .bt()
+    })?;
+    let quant_state_view = st.tensor(&quant_state_key).map_err(|e| {
+        fuel_core_types::Error::Msg(format!(
+            "load_nf4_layer: tensor {quant_state_key:?} not found in safetensors: {e}",
+        ))
+        .bt()
+    })?;
+
+    // quant_state is a U8 byte stream holding UTF-8 JSON. Parse it
+    // first so we have the geometry to validate the other two
+    // tensors' shapes against.
+    let qs = parse_bnb_quant_state(quant_state_view.data())?;
+
+    // weight: U8, flat [N*K/2].
+    if weight_view.dtype() != safetensors::Dtype::U8 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "load_nf4_layer: {weight_key:?} dtype={:?}, expected U8",
+            weight_view.dtype(),
+        ))
+        .bt());
+    }
+    let w_bytes: Vec<u8> = weight_view.data().to_vec();
+
+    // absmax: F32, flat [N*K/block_size]. Read as raw bytes and
+    // bytemuck-cast to f32s (the safetensors crate exposes the
+    // bytes as &[u8] regardless of dtype).
+    if absmax_view.dtype() != safetensors::Dtype::F32 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "load_nf4_layer: {absmax_key:?} dtype={:?}, expected F32. \
+             If this is a double-quantized absmax stored as U8 with its own \
+             quant_state, dequantize it before calling this loader.",
+            absmax_view.dtype(),
+        ))
+        .bt());
+    }
+    let absmax_bytes = absmax_view.data();
+    if absmax_bytes.len() % 4 != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "load_nf4_layer: {absmax_key:?} has {} bytes (not a multiple of 4 — corrupt F32 data)",
+            absmax_bytes.len(),
+        ))
+        .bt());
+    }
+    let absmax_f32: Vec<f32> = absmax_bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    // Hand off to the bytes-in-hand helper for layout validation +
+    // LazyTensor construction. The byte/scale counts get checked
+    // against (n, k, block_size) there.
+    nf4_from_bytes(w_bytes, absmax_f32, qs.n, qs.k, qs.block_size, device)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +474,187 @@ mod tests {
             &Device::cpu(),
         );
         assert!(r.is_err());
+    }
+
+    /// Quant-state parser: well-formed minimal NF4 metadata.
+    #[test]
+    fn parse_bnb_quant_state_minimal_nf4() {
+        let json = br#"{"quant_type":"nf4","shape":[256,128],"blocksize":64,"dtype":"float16"}"#;
+        let qs = parse_bnb_quant_state(json).expect("parse_bnb_quant_state");
+        assert_eq!(qs, BnbQuantState { n: 256, k: 128, block_size: 64 });
+    }
+
+    /// Quant-state parser: rejects non-nf4 quant_type with a clear error.
+    #[test]
+    fn parse_bnb_quant_state_rejects_fp4() {
+        let json = br#"{"quant_type":"fp4","shape":[256,128],"blocksize":64}"#;
+        let r = parse_bnb_quant_state(json);
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("nf4"), "error should mention nf4: {err}");
+    }
+
+    /// Quant-state parser: rejects double-quantized weights with a
+    /// pointer to the workaround.
+    #[test]
+    fn parse_bnb_quant_state_rejects_nested_absmax() {
+        let json = br#"{"quant_type":"nf4","shape":[256,128],"blocksize":64,"nested_absmax":[1.0,2.0]}"#;
+        let r = parse_bnb_quant_state(json);
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("double-quantization"), "error should mention double-quantization: {err}");
+    }
+
+    /// Quant-state parser: rejects blocksize that doesn't divide K.
+    #[test]
+    fn parse_bnb_quant_state_rejects_misaligned_blocksize() {
+        let json = br#"{"quant_type":"nf4","shape":[256,130],"blocksize":64}"#;
+        let r = parse_bnb_quant_state(json);
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("doesn't divide K") || err.contains("must be even"),
+            "error should flag misalignment: {err}");
+    }
+
+    /// Quant-state parser: rejects odd K (NF4 packs 2 codes/byte).
+    #[test]
+    fn parse_bnb_quant_state_rejects_odd_k() {
+        let json = br#"{"quant_type":"nf4","shape":[256,127],"blocksize":1}"#;
+        let r = parse_bnb_quant_state(json);
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("must be even"), "error should flag odd K: {err}");
+    }
+
+    /// Quant-state parser: gracefully errors on malformed JSON.
+    #[test]
+    fn parse_bnb_quant_state_rejects_malformed_json() {
+        let r = parse_bnb_quant_state(b"not json at all");
+        assert!(r.is_err());
+    }
+
+    /// Quant-state parser: rejects missing required fields.
+    #[test]
+    fn parse_bnb_quant_state_rejects_missing_shape() {
+        let json = br#"{"quant_type":"nf4","blocksize":64}"#;
+        let r = parse_bnb_quant_state(json);
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("shape"), "error should mention shape: {err}");
+    }
+
+    /// End-to-end: synthesize a minimal in-memory safetensors file
+    /// containing the 3 expected entries (weight U8 + absmax F32 +
+    /// quant_state JSON-as-bytes), then load it via load_nf4_layer.
+    ///
+    /// Uses the same hand-computed numbers as
+    /// `nf4_weight_matmul_round_trip` so we know the loaded weight
+    /// produces the expected matmul output.
+    #[test]
+    fn load_nf4_layer_round_trip_synthetic_safetensors() {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+
+        let n: usize = 2;
+        let k: usize = 4;
+        let block_size: usize = 2;
+
+        // weight bytes [N * K / 2] = 4 bytes (same as hand-computed test).
+        let weight_bytes = vec![247_u8, 247, 127, 127];
+
+        // absmax bytes: [N * K / block_size] = 4 f32 = 16 bytes.
+        let absmax_floats: Vec<f32> = vec![1.0, 2.0, 10.0, 20.0];
+        let absmax_bytes: Vec<u8> = absmax_floats
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        // quant_state: UTF-8 JSON blob.
+        let quant_state_json = format!(
+            r#"{{"quant_type":"nf4","shape":[{n},{k}],"blocksize":{block_size},"dtype":"float16"}}"#,
+        );
+        let quant_state_bytes = quant_state_json.as_bytes().to_vec();
+
+        // Build TensorViews. safetensors::TensorView::new takes
+        // (dtype, shape, data) — shape is just metadata, data is
+        // the raw bytes.
+        let weight_view = TensorView::new(
+            safetensors::Dtype::U8,
+            vec![n * k / 2],
+            &weight_bytes,
+        )
+        .expect("weight TensorView");
+        let absmax_view = TensorView::new(
+            safetensors::Dtype::F32,
+            vec![n * k / block_size],
+            &absmax_bytes,
+        )
+        .expect("absmax TensorView");
+        let quant_state_view = TensorView::new(
+            safetensors::Dtype::U8,
+            vec![quant_state_bytes.len()],
+            &quant_state_bytes,
+        )
+        .expect("quant_state TensorView");
+
+        // Serialize to in-memory safetensors bytes.
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        tensors.insert("layer.weight".to_string(), weight_view);
+        tensors.insert("layer.weight.absmax".to_string(), absmax_view);
+        tensors.insert(
+            "layer.weight.quant_state.bitsandbytes__nf4".to_string(),
+            quant_state_view,
+        );
+        let metadata: Option<std::collections::HashMap<String, String>> = None;
+        let serialized = safetensors::serialize(&tensors, metadata.clone())
+            .expect("safetensors::serialize");
+
+        // Deserialize + load via the new loader.
+        let st = safetensors::SafeTensors::deserialize(&serialized)
+            .expect("SafeTensors::deserialize");
+        let weight = load_nf4_layer(&st, "layer", &Device::cpu())
+            .expect("load_nf4_layer");
+        assert_eq!(weight.n, n);
+        assert_eq!(weight.k, k);
+        assert_eq!(weight.block_size, block_size);
+
+        // Sanity matmul: same expected output as nf4_weight_matmul_round_trip.
+        let act = LazyTensor::from_graph_tensor(
+            weight.w_packed.graph_tensor().const_f32_like(
+                vec![1.0_f32, 2.0, 2.0, 4.0],
+                Shape::from_dims(&[1, 4]),
+            ),
+        );
+        let y = weight.matmul(&act).realize_f32();
+        assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);
+        assert!((y[1] - 50.0).abs() < 1e-5, "out 1: {}", y[1]);
+    }
+
+    /// load_nf4_layer: missing weight tensor produces a clear error
+    /// pointing at the missing key.
+    #[test]
+    fn load_nf4_layer_missing_weight_errors() {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        // Only the quant_state and absmax — no weight.
+        let quant_state_bytes = br#"{"quant_type":"nf4","shape":[2,4],"blocksize":2}"#.to_vec();
+        let absmax_bytes: Vec<u8> = [1.0_f32, 2.0, 10.0, 20.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        tensors.insert(
+            "layer.weight.absmax".to_string(),
+            TensorView::new(safetensors::Dtype::F32, vec![4], &absmax_bytes).unwrap(),
+        );
+        tensors.insert(
+            "layer.weight.quant_state.bitsandbytes__nf4".to_string(),
+            TensorView::new(safetensors::Dtype::U8, vec![quant_state_bytes.len()], &quant_state_bytes).unwrap(),
+        );
+        let metadata: Option<HashMap<String, String>> = None;
+        let serialized = safetensors::serialize(&tensors, metadata.clone()).unwrap();
+        let st = safetensors::SafeTensors::deserialize(&serialized).unwrap();
+        // `unwrap_err` would require Nf4Weight: Debug; match the Err
+        // arm explicitly so we don't pull in that bound.
+        let err = match load_nf4_layer(&st, "layer", &Device::cpu()) {
+            Ok(_) => panic!("expected an error from load_nf4_layer with missing weight tensor"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("layer.weight"), "error should mention the missing tensor: {err}");
     }
 }
