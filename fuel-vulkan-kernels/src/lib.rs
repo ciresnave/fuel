@@ -144,6 +144,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matmul_small_bf16_bf16_bf16",include_bytes!("../spv/matmul_small_bf16_bf16_bf16.spv")),
     ("matmul_small_f16_f16_f32",  include_bytes!("../spv/matmul_small_f16_f16_f32.spv")),
     ("matmul_small_f16_f16_f16",  include_bytes!("../spv/matmul_small_f16_f16_f16.spv")),
+    ("flash_attn_f32",            include_bytes!("../spv/flash_attn_f32.spv")),
     ("matmul_coop_f16_f16_f16",   include_bytes!("../spv/matmul_coop_f16_f16_f16.spv")),
     ("matvec",                    include_bytes!("../spv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
@@ -403,6 +404,13 @@ pub const MATMUL_SMALL_BF16_BF16_BF16: &str = "matmul_small_bf16_bf16_bf16";
 pub const MATMUL_SMALL_F16_F16_F32: &str = "matmul_small_f16_f16_f32";
 /// Small-shape f16 × f16 → f16 fallback (downcast store).
 pub const MATMUL_SMALL_F16_F16_F16: &str = "matmul_small_f16_f16_f16";
+/// FlashAttention-shape multi-head attention, f32. Naive
+/// single-pass implementation — materializes one row of the
+/// [Sq, Sk] score matrix in shared memory per workgroup. NOT a
+/// tiled online-softmax kernel; suitable for inference at Sk ≤ 4096.
+/// Supports GQA, causal mask, softmax_scale, alibi. Window + softcap
+/// fall through to other backends.
+pub const FLASH_ATTN_F32: &str = "flash_attn_f32";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f16 (downcast
 /// store). Same staging pattern as the bf16→bf16 sibling but uses
 /// `float16BitsToUint16` to pack the f32 accumulator into f16 lanes.

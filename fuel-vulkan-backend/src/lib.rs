@@ -4000,6 +4000,135 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// FlashAttention-shape multi-head attention forward, f32.
+    /// Naive single-pass — one workgroup per (b, h_q, q_i) row,
+    /// score matrix row materialized in shared memory. Suitable for
+    /// inference at Sk ≤ 4096; tiled online-softmax kernel for
+    /// long contexts is a separate session.
+    ///
+    /// Supports GQA, causal mask, softmax_scale, alibi_slopes.
+    /// Window left/right + softcap are NOT supported v1 — the
+    /// wrapper bails so the route picker falls through to CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attn_f32_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        out: &mut VulkanStorageBytes,
+        b: usize, hq: usize, hkv: usize,
+        sq: usize, sk: usize, d: usize,
+        softmax_scale: f32,
+        causal: bool,
+    ) -> fuel_core_types::Result<()> {
+        if hkv == 0 || hq % hkv != 0 {
+            fuel_core_types::bail!(
+                "flash_attn_f32_bytes: hq={hq} must be a positive multiple of hkv={hkv}",
+            );
+        }
+        if sk > 4096 {
+            fuel_core_types::bail!(
+                "flash_attn_f32_bytes: sk={sk} > 4096; tiled kernel for long contexts is a follow-up",
+            );
+        }
+        if d > 256 {
+            fuel_core_types::bail!(
+                "flash_attn_f32_bytes: d={d} > 256",
+            );
+        }
+        let elem = 4usize;
+        let need_q   = b * hq  * sq * d * elem;
+        let need_k   = b * hkv * sk * d * elem;
+        let need_v   = need_k;
+        let need_out = need_q;
+        if q.len_bytes()   < need_q   { fuel_core_types::bail!("flash_attn_f32_bytes: q {} < {need_q}",   q.len_bytes()); }
+        if k.len_bytes()   < need_k   { fuel_core_types::bail!("flash_attn_f32_bytes: k {} < {need_k}",   k.len_bytes()); }
+        if v.len_bytes()   < need_v   { fuel_core_types::bail!("flash_attn_f32_bytes: v {} < {need_v}",   v.len_bytes()); }
+        if out.len_bytes() < need_out { fuel_core_types::bail!("flash_attn_f32_bytes: out {} < {need_out}", out.len_bytes()); }
+        if let Some(a) = alibi {
+            let need_a = hq * elem;
+            if a.len_bytes() < need_a {
+                fuel_core_types::bail!("flash_attn_f32_bytes: alibi {} < {need_a}", a.len_bytes());
+            }
+        }
+
+        let q_buf = q.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "flash_attn_f32_bytes: q is host-evicted".into()))?;
+        let k_buf = k.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "flash_attn_f32_bytes: k is host-evicted".into()))?;
+        let v_buf = v.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "flash_attn_f32_bytes: v is host-evicted".into()))?;
+        let o_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "flash_attn_f32_bytes: out is host-evicted".into()))?;
+
+        // Alibi binding: either the supplied buffer, or a dummy
+        // 4-byte scratch (reads gated by `use_alibi`).
+        let use_alibi = alibi.is_some();
+        let mut dummy_alibi: Option<VulkanStorageBytes> = None;
+        let alibi_buf = if let Some(a) = alibi {
+            a.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+                "flash_attn_f32_bytes: alibi is host-evicted".into()))?
+        } else {
+            dummy_alibi = Some(self.alloc_bytes(16)?);
+            dummy_alibi.as_ref().unwrap().buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+                "flash_attn_f32_bytes: dummy alibi alloc failed".into()))?
+        };
+
+        let alibi_bind_len = match alibi {
+            Some(a) => a.len_bytes() as u64,
+            None => 16,
+        };
+
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct FaParams {
+            b: u32, hq: u32, hkv: u32,
+            sq: u32, sk: u32, d: u32,
+            softmax_scale: f32,
+            causal: u32,
+            use_alibi: u32,
+            _pad0: u32, _pad1: u32, _pad2: u32,
+        }
+        let params = FaParams {
+            b: b as u32, hq: hq as u32, hkv: hkv as u32,
+            sq: sq as u32, sk: sk as u32, d: d as u32,
+            softmax_scale,
+            causal: causal as u32,
+            use_alibi: use_alibi as u32,
+            _pad0: 0, _pad1: 0, _pad2: 0,
+        };
+        let (pbuf, pmem) = self.upload_params(&params)?;
+
+        let desc = self.pipelines.allocate_desc(&self.pipelines.layout_5s1u).map_err(vk_err)?;
+        desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, q_buf, 0, q.len_bytes() as u64);
+        desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, k_buf, 0, k.len_bytes() as u64);
+        desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, v_buf, 0, v.len_bytes() as u64);
+        desc.write_buffer(3, DescriptorType::STORAGE_BUFFER, o_buf, 0, out.len_bytes() as u64);
+        desc.write_buffer(4, DescriptorType::STORAGE_BUFFER, alibi_buf, 0, alibi_bind_len);
+        desc.write_buffer(5, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, std::mem::size_of::<FaParams>() as u64);
+
+        let rb = [q_buf.raw() as u64, k_buf.raw() as u64, v_buf.raw() as u64, alibi_buf.raw() as u64];
+        let wb = [o_buf.raw() as u64];
+        // Dispatch: (1, 1, b * hq * sq) workgroups.
+        let total_z = (b * hq * sq) as u32;
+        self.record_dispatch_batched(
+            "flash_attn_f32",
+            &self.pipelines.flash_attn_f32_pipeline,
+            &self.pipelines.flash_attn_f32_layout,
+            desc,
+            (1, 1, total_z),
+            vec![(pbuf, pmem)],
+            &rb, &wb,
+        )?;
+        self.flush_pending()?;
+        // Drop the dummy alibi scratch *after* dispatch records (it
+        // would otherwise free before the GPU reads it). flush_pending
+        // above blocks for GPU completion via the recorder, so the
+        // drop here is safe.
+        drop(dummy_alibi);
+        Ok(())
+    }
+
     /// Conv2D bf16 over byte-storage. Same shape contract as
     /// `conv2d_f32_bytes` (NCHW input, [Cout, Cin, k_h, k_w] weight,
     /// groups=1). Two-stage pipeline:
