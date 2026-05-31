@@ -102,6 +102,7 @@ pub mod transfer_cost;
 pub mod op;
 pub mod pickle;
 pub mod quantized;
+pub mod nf4;
 pub mod safetensors;
 pub mod sampling;
 pub mod train;
