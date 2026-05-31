@@ -3847,6 +3847,189 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Conv2D bf16 over byte-storage. Same shape contract as
+    /// `conv2d_f32_bytes` (NCHW input, [Cout, Cin, k_h, k_w] weight,
+    /// groups=1). Two-stage pipeline:
+    ///   1. `conv2d_im2col_bf16` rearranges input into the patches
+    ///      matrix (bf16 throughout).
+    ///   2. `matmul_coop_bf16_bf16_bf16` (weight @ patches) writes
+    ///      the output directly in bf16 via the f32-accumulator +
+    ///      shared-mem-staging downcast pattern.
+    ///
+    /// COOP-ONLY: requires VK_KHR_cooperative_matrix and the
+    /// 16-tile divisibility constraint (`c_out % 16 == 0` and
+    /// `h_out * w_out % 16 == 0`, `c_in * k_h * k_w >= 1`). Smaller
+    /// shapes bail; the route picker should fall through to f32
+    /// conv2d via a Cast in those cases.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv2d_bf16_bytes(
+        &self,
+        input:  &VulkanStorageBytes,
+        weight: &VulkanStorageBytes,
+        out:    &mut VulkanStorageBytes,
+        x_shape: [usize; 4],
+        w_shape: [usize; 4],
+        stride:  (usize, usize),
+        padding: (usize, usize),
+        groups:  usize,
+    ) -> fuel_core_types::Result<()> {
+        if groups != 1 {
+            fuel_core_types::bail!(
+                "conv2d_bf16_bytes: groups != 1 not yet supported (got groups={groups})"
+            );
+        }
+        let s = fuel_conv::ConvShape {
+            batch: x_shape[0], c_in: x_shape[1], h: x_shape[2], w: x_shape[3],
+            c_out: w_shape[0], k_h: w_shape[2], k_w: w_shape[3],
+            stride, padding, groups,
+        };
+        s.validate().map_err(|e| fuel_core_types::Error::Msg(
+            format!("conv2d_bf16_bytes: shape validation: {e}")
+        ))?;
+        let h_out = s.h_out();
+        let w_out = s.w_out();
+        let m = s.c_out;
+        let k_dim = s.c_in_per_group() * s.k_h * s.k_w;
+        let n = h_out * w_out;
+
+        // Coop-matrix shape constraint inherited from
+        // matmul_coop_bf16_bf16_bf16.
+        if m < 16 || n < 16 || m % 16 != 0 || n % 16 != 0 {
+            fuel_core_types::bail!(
+                "conv2d_bf16_bytes: coop tile requires c_out >= 16, h_out*w_out >= 16, \
+                 c_out % 16 == 0, h_out*w_out % 16 == 0; got c_out={m}, h_out*w_out={n}",
+            );
+        }
+        if self.pipelines.matmul_coop_bf16_bf16_bf16_pipeline.is_none() {
+            fuel_core_types::bail!(
+                "conv2d_bf16_bytes: VK_KHR_cooperative_matrix not available on this device",
+            );
+        }
+
+        let need_x = s.batch * s.c_in * s.h * s.w * 2;
+        let need_w = s.c_out * s.c_in_per_group() * s.k_h * s.k_w * 2;
+        let need_out = s.batch * s.c_out * h_out * w_out * 2;
+        if input.len_bytes() < need_x {
+            fuel_core_types::bail!("conv2d_bf16_bytes: input {} < {need_x}", input.len_bytes());
+        }
+        if weight.len_bytes() < need_w {
+            fuel_core_types::bail!("conv2d_bf16_bytes: weight {} < {need_w}", weight.len_bytes());
+        }
+        if out.len_bytes() < need_out {
+            fuel_core_types::bail!("conv2d_bf16_bytes: out {} < {need_out}", out.len_bytes());
+        }
+
+        let patches_n = s.im2col_len();
+        let patches_bytes = patches_n * 2;       // bf16
+        let mut patches = self.alloc_bytes(patches_bytes)?;
+
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "conv2d_bf16_bytes: input is host-evicted; fault back first".into()))?;
+        let w_buf = weight.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "conv2d_bf16_bytes: weight is host-evicted; fault back first".into()))?;
+        let patches_buf = patches.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "conv2d_bf16_bytes: scratch alloc failed to expose buffer".into()))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "conv2d_bf16_bytes: out is host-evicted; fault back first".into()))?;
+
+        // -------- im2col_bf16 dispatch --------
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct Im2ColParams {
+            batch: u32, c_in: u32, h: u32, w: u32,
+            h_out: u32, w_out: u32,
+            k_h: u32, k_w: u32,
+            stride_h: u32, stride_w: u32,
+            pad_h: u32, pad_w: u32,
+            groups: u32, cin_per_g: u32,
+            total_elements: u32, _pad: u32,
+        }
+        let total = patches_n as u32;
+        let im2col_params = Im2ColParams {
+            batch: s.batch as u32, c_in: s.c_in as u32,
+            h: s.h as u32, w: s.w as u32,
+            h_out: h_out as u32, w_out: w_out as u32,
+            k_h: s.k_h as u32, k_w: s.k_w as u32,
+            stride_h: s.stride.0 as u32, stride_w: s.stride.1 as u32,
+            pad_h: s.padding.0 as u32, pad_w: s.padding.1 as u32,
+            groups: s.groups as u32, cin_per_g: s.c_in_per_group() as u32,
+            total_elements: total, _pad: 0,
+        };
+        let (i_pbuf, i_pmem) = self.upload_params(&im2col_params)?;
+
+        // Round bf16 buffer ranges to u32 for robust-access safety.
+        let in_bind_len = ((input.len_bytes() + 3) & !3) as u64;
+        let patches_bind_len = ((patches_bytes + 3) & !3) as u64;
+
+        let im2col_desc = self.pipelines.allocate_desc(&self.pipelines.layout_2s1u).map_err(vk_err)?;
+        im2col_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf,      0, in_bind_len);
+        im2col_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf, 0, patches_bind_len);
+        im2col_desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &i_pbuf, 0, std::mem::size_of::<Im2ColParams>() as u64);
+        let i_rb = [in_buf.raw() as u64];
+        let i_wb = [patches_buf.raw() as u64];
+        let im2col_wg = (total + 255) / 256;
+        self.record_dispatch_batched(
+            "conv2d_im2col_bf16",
+            &self.pipelines.conv2d_im2col_bf16_pipeline,
+            &self.pipelines.conv2d_im2col_bf16_layout,
+            im2col_desc,
+            (im2col_wg, 1, 1),
+            vec![(i_pbuf, i_pmem)],
+            &i_rb, &i_wb,
+        )?;
+        self.flush_pending()?;
+
+        // -------- matmul_coop_bf16_bf16_bf16 dispatch --------
+        #[repr(C)] #[derive(Clone, Copy)]
+        struct MatmulParams {
+            m: u32, n: u32, k: u32,
+            sa_batch: u32, sa_row: u32, sa_col: u32,
+            sb_batch: u32, sb_row: u32, sb_col: u32,
+            sc_batch: u32,
+            n_rep: u32,
+            _pad: u32,
+        }
+        let matmul_params = MatmulParams {
+            m: m as u32, n: n as u32, k: k_dim as u32,
+            // weight is [c_out, k_dim] in bf16 elements, shared across batches
+            sa_batch: 0,
+            sa_row:   k_dim as u32, sa_col: 1,
+            // patches walks per batch: [batch, k_dim, n]
+            sb_batch: (k_dim * n) as u32,
+            sb_row:   n as u32, sb_col: 1,
+            sc_batch: (m * n) as u32,
+            n_rep: 1, _pad: 0,
+        };
+        let (mm_pbuf, mm_pmem) = self.upload_params(&matmul_params)?;
+        let mm_params_size = std::mem::size_of::<MatmulParams>() as u64;
+
+        let w_bind_len = ((weight.len_bytes() + 3) & !3) as u64;
+        let out_bind_len = ((out.len_bytes() + 3) & !3) as u64;
+
+        let pipeline = self.pipelines.matmul_coop_bf16_bf16_bf16_pipeline.as_ref().unwrap();
+        let pipe_layout = self.pipelines.matmul_coop_bf16_bf16_bf16_layout.as_ref().unwrap();
+
+        let mm_desc = self.pipelines.allocate_desc(&self.pipelines.layout_3s1u).map_err(vk_err)?;
+        mm_desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, w_buf,        0, w_bind_len);
+        mm_desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, patches_buf,  0, patches_bind_len);
+        mm_desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf,      0, out_bind_len);
+        mm_desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &mm_pbuf, 0, mm_params_size);
+        let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
+        let mm_wb = [out_buf.raw() as u64];
+
+        let gx = ((n + 63) / 64) as u32;
+        let gy = ((m + 15) / 16) as u32;
+        let gz = s.batch as u32;
+        self.record_dispatch_batched(
+            "conv2d.matmul_coop_bf16",
+            pipeline, pipe_layout, mm_desc,
+            (gx, gy, gz),
+            vec![(mm_pbuf, mm_pmem)],
+            &mm_rb, &mm_wb,
+        )?;
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// f32 binary concat along `dim`. Output shape == inputs with
     /// `dim` replaced by `a_dim + b_dim`. Rank ≤ 4 (the legacy
     /// kernel's limit). Inputs must be contiguous on the non-concat

@@ -121,6 +121,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("concat_along_dim_bf16",     include_bytes!("../spv/concat_along_dim_bf16.spv")),
     ("concat_along_dim_f64",      include_bytes!("../spv/concat_along_dim_f64.spv")),
     ("conv2d_im2col",             include_bytes!("../spv/conv2d_im2col.spv")),
+    ("conv2d_im2col_bf16",        include_bytes!("../spv/conv2d_im2col_bf16.spv")),
     ("flash_attention",           include_bytes!("../spv/flash_attention.spv")),
     ("dequant_q4_0",              include_bytes!("../spv/dequant_q4_0.spv")),
     ("dequant_q4_km",             include_bytes!("../spv/dequant_q4_km.spv")),
@@ -550,6 +551,10 @@ pub const CONCAT_ALONG_DIM_F64: &str = "concat_along_dim_f64";
 /// the existing matmul shaders as the right-hand operand to compute
 /// conv2d (one matmul per (batch, group) sub-block).
 pub const CONV2D_IM2COL: &str = "conv2d_im2col";
+/// Conv2D im2col rearrangement for bf16 input/output. Pairs with
+/// `MATMUL_COOP_BF16_BF16_BF16` to complete the Conv2D bf16 pipeline
+/// (im2col + half-precision coop matmul).
+pub const CONV2D_IM2COL_BF16: &str = "conv2d_im2col_bf16";
 /// FlashAttention v2 forward (Phase 8 Tier 2). Tile-based scaled-dot-
 /// product attention with online softmax. Handles GQA (Hq > Hkv),
 /// causal mask, sliding window, ALiBi, and softcap. Limited to
