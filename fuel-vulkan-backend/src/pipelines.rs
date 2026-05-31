@@ -41,6 +41,7 @@ pub struct Pipelines {
     /// 5 storage buffers + 1 uniform — used by flash_attention
     /// (q, k, v, alibi, o + params).
     pub layout_5s1u: DescriptorSetLayout,
+    pub layout_6s1u: DescriptorSetLayout,
 
     pub unary_pipeline: ComputePipeline,
     pub unary_layout: PipelineLayout,
@@ -257,6 +258,12 @@ pub struct Pipelines {
     pub flash_attn_bf16_layout: PipelineLayout,
     pub flash_attn_f16_pipeline: ComputePipeline,
     pub flash_attn_f16_layout: PipelineLayout,
+    pub flash_attn_backward_q_f32_pipeline: ComputePipeline,
+    pub flash_attn_backward_q_f32_layout: PipelineLayout,
+    pub flash_attn_backward_k_f32_pipeline: ComputePipeline,
+    pub flash_attn_backward_k_f32_layout: PipelineLayout,
+    pub flash_attn_backward_v_f32_pipeline: ComputePipeline,
+    pub flash_attn_backward_v_f32_layout: PipelineLayout,
     pub matmul_coop_f16_f16_f16_pipeline: Option<ComputePipeline>,
     pub matmul_coop_f16_f16_f16_layout: Option<PipelineLayout>,
     pub softmax_pipeline: ComputePipeline,
@@ -579,6 +586,15 @@ impl Pipelines {
             storage_binding(4),
             uniform_binding(5),
         ])?;
+        let layout_6s1u = DescriptorSetLayout::new(device, &[
+            storage_binding(0),
+            storage_binding(1),
+            storage_binding(2),
+            storage_binding(3),
+            storage_binding(4),
+            storage_binding(5),
+            uniform_binding(6),
+        ])?;
 
         let desc_pool = Mutex::new(make_desc_pool(device)?);
 
@@ -698,6 +714,9 @@ impl Pipelines {
         let flash_attn_f32_mod  = registry.load_module(device, shaders::FLASH_ATTN_F32)?;
         let flash_attn_bf16_mod = registry.load_module(device, shaders::FLASH_ATTN_BF16)?;
         let flash_attn_f16_mod  = registry.load_module(device, shaders::FLASH_ATTN_F16)?;
+        let flash_attn_backward_q_f32_mod = registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_Q_F32)?;
+        let flash_attn_backward_k_f32_mod = registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_K_F32)?;
+        let flash_attn_backward_v_f32_mod = registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_V_F32)?;
         let matmul_coop_f16_f16_f16_mod = if has_coop_matrix {
             Some(registry.load_module(device, shaders::MATMUL_COOP_F16_F16_F16)?)
         } else {
@@ -882,6 +901,9 @@ impl Pipelines {
         let flash_attn_f32_layout  = PipelineLayout::new(device, &[&layout_5s1u])?;
         let flash_attn_bf16_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
         let flash_attn_f16_layout  = PipelineLayout::new(device, &[&layout_5s1u])?;
+        let flash_attn_backward_q_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
+        let flash_attn_backward_k_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
+        let flash_attn_backward_v_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
         let matmul_coop_f16_f16_f16_layout = if has_coop_matrix {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else { None };
@@ -1080,6 +1102,15 @@ impl Pipelines {
         let flash_attn_f16_pipeline = ComputePipeline::new(
             device, &flash_attn_f16_layout, &flash_attn_f16_mod, "main",
         )?;
+        let flash_attn_backward_q_f32_pipeline = ComputePipeline::new(
+            device, &flash_attn_backward_q_f32_layout, &flash_attn_backward_q_f32_mod, "main",
+        )?;
+        let flash_attn_backward_k_f32_pipeline = ComputePipeline::new(
+            device, &flash_attn_backward_k_f32_layout, &flash_attn_backward_k_f32_mod, "main",
+        )?;
+        let flash_attn_backward_v_f32_pipeline = ComputePipeline::new(
+            device, &flash_attn_backward_v_f32_layout, &flash_attn_backward_v_f32_mod, "main",
+        )?;
         let matmul_coop_f16_f16_f16_pipeline = match (&matmul_coop_f16_f16_f16_mod, &matmul_coop_f16_f16_f16_layout) {
             (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
             _ => None,
@@ -1156,7 +1187,7 @@ impl Pipelines {
         let quantize_q8_0_pipeline = ComputePipeline::new(device, &quantize_q8_0_layout, &quantize_q8_0_mod, "main")?;
 
         Ok(Self {
-            layout_2s1u, layout_3s1u, layout_4s1u, layout_5s1u,
+            layout_2s1u, layout_3s1u, layout_4s1u, layout_5s1u, layout_6s1u,
             unary_pipeline, unary_layout,
             unary_f16_pipeline, unary_f16_layout,
             unary_f64_pipeline, unary_f64_layout,
@@ -1263,6 +1294,12 @@ impl Pipelines {
             flash_attn_bf16_layout,
             flash_attn_f16_pipeline,
             flash_attn_f16_layout,
+            flash_attn_backward_q_f32_pipeline,
+            flash_attn_backward_q_f32_layout,
+            flash_attn_backward_k_f32_pipeline,
+            flash_attn_backward_k_f32_layout,
+            flash_attn_backward_v_f32_pipeline,
+            flash_attn_backward_v_f32_layout,
             matmul_coop_f16_f16_f16_pipeline,
             matmul_coop_f16_f16_f16_layout,
             softmax_pipeline, softmax_layout,

@@ -147,6 +147,9 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("flash_attn_f32",            include_bytes!("../spv/flash_attn_f32.spv")),
     ("flash_attn_bf16",           include_bytes!("../spv/flash_attn_bf16.spv")),
     ("flash_attn_f16",            include_bytes!("../spv/flash_attn_f16.spv")),
+    ("flash_attn_backward_q_f32", include_bytes!("../spv/flash_attn_backward_q_f32.spv")),
+    ("flash_attn_backward_k_f32", include_bytes!("../spv/flash_attn_backward_k_f32.spv")),
+    ("flash_attn_backward_v_f32", include_bytes!("../spv/flash_attn_backward_v_f32.spv")),
     ("matmul_coop_f16_f16_f16",   include_bytes!("../spv/matmul_coop_f16_f16_f16.spv")),
     ("matvec",                    include_bytes!("../spv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
@@ -420,6 +423,18 @@ pub const FLASH_ATTN_BF16: &str = "flash_attn_bf16";
 /// FlashAttention forward, f16. Native float16_t inputs/outputs;
 /// f32 accumulators.
 pub const FLASH_ATTN_F16: &str = "flash_attn_f16";
+/// FlashAttention backward — dQ, f32. One workgroup per (b, h_q, q_i)
+/// row, same parallelism as the forward kernel. Recomputes softmax
+/// row + dP + dS in shared memory, then writes dQ. v1 supports
+/// GQA + causal + scale + alibi; bails on window/softcap/Sk>4096/D>256.
+pub const FLASH_ATTN_BACKWARD_Q_F32: &str = "flash_attn_backward_q_f32";
+/// FlashAttention backward — dK, f32. One workgroup per
+/// (b, h_kv, k_j); loops over (h_q in group, q_i) and accumulates.
+pub const FLASH_ATTN_BACKWARD_K_F32: &str = "flash_attn_backward_k_f32";
+/// FlashAttention backward — dV, f32. One workgroup per
+/// (b, h_kv, k_j); same loop shape as dK but accumulates over
+/// P[k_j] · dO instead of dS · Q.
+pub const FLASH_ATTN_BACKWARD_V_F32: &str = "flash_attn_backward_v_f32";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f16 (downcast
 /// store). Same staging pattern as the bf16→bf16 sibling but uses
 /// `float16BitsToUint16` to pack the f32 accumulator into f16 lanes.
