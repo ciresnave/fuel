@@ -303,6 +303,32 @@ pub enum Error {
 
     #[error("unwrap none")]
     UnwrapNone,
+
+    /// A hard filter in the optimizer ranker's filter chain rejected
+    /// every candidate at this decision point. Phase 1.1 of the
+    /// picker-work arc. The user asked for something the binding-table
+    /// can't deliver — typically a precision floor or tolerance budget
+    /// no registered kernel meets — and the ranker surfaces it rather
+    /// than silently substituting a non-admissible alternative.
+    ///
+    /// Soft filters (caps preferences, empirical refinements) never
+    /// raise this error; only filters classified `FilterClass::Hard`
+    /// fail loudly when they would leave the candidate set empty.
+    #[error(
+        "ranker hard filter `{filter}` rejected all {available_alternatives} candidate(s); \
+         context: {ctx_summary}"
+    )]
+    FilterRejected {
+        /// Name of the filter that triggered the rejection.
+        filter: &'static str,
+        /// Short diagnostic summary of the decision point's context
+        /// (op kind, dtypes, device).
+        ctx_summary: String,
+        /// How many candidates entered the filter (zero on the way
+        /// in is also possible — the candidate enumerator may have
+        /// produced an empty set).
+        available_alternatives: usize,
+    },
 }
 
 /// A specialized [`Result`](std::result::Result) type for fuel operations.
