@@ -14,10 +14,12 @@
 //! - **`CompiledNode` + `compile_node`** — the dispatch-time
 //!   `(KernelRef, KernelCaps, OpParams)` resolution result that the
 //!   executor invokes.
-//! - **`ExecutionPlan` + `compile_plan` + `resolve_kernel` +
-//!   `TolerancePolicy`** — Phase 7.6 step 9b's plan-time picker.
-//!   Replaced wholesale by the Phase 1 optimizer ranker; lives here
-//!   until that replacement lands.
+//! - **`ExecutionPlan` + `compile_plan` + `PlanOptions`** — Phase
+//!   1.5 reshape of the plan-time picker around per-decision-point
+//!   `AlternativeSet`s. Replaced the pre-1.5 `NodeKernelBinding`/
+//!   `TolerancePolicy`/`resolve_kernel` triple (which had zero
+//!   executor consumers; the verified-empty consumer list let the
+//!   rewrite ship without breakage).
 //! - **`FusedKernelRegistry`** + `PrecisionGuarantee` +
 //!   `KernelRevisionHash` — fused-op dispatch substrate.
 //! - **`PipelinedExecutor`** — the production executor that walks a
@@ -54,7 +56,7 @@ pub mod vulkan_dispatch;
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
-pub use plan::{compile_plan, resolve_kernel, ExecutionPlan, NodeKernelBinding, TolerancePolicy};
+pub use plan::{compile_plan, ExecutionPlan, PlanOptions};
 pub use ranker::{
     apply_filter_chain, composite_ns, compute_static_costs, default_chain,
     enumerate_candidates, enumerate_candidates_default, AlternativeFilter,
