@@ -34,6 +34,7 @@ pub mod causal_conv1d;
 pub mod conv2d;
 pub mod conv_transpose_2d;
 pub mod flash_attn;
+pub mod flash_attn_backward;
 pub mod fused_linear;
 pub mod fused_softmax_cross_entropy;
 pub mod nf4_matmul;
@@ -227,7 +228,7 @@ pub enum FusedOpParams {
     /// mathematical result — the CPU kernel runs a sequential scan
     /// regardless. Any `chunk_size ∈ [1, seqlen]` that divides
     /// `seqlen` is valid.
-    SsdChunkScan { chunk_size: usize },
+    SsdChunkScan { chunk_size: usize, return_state: bool },
     /// Nf4Matmul — bitsandbytes-style 4-bit NormalFloat quantized
     /// matrix multiply. Three inputs:
     /// - `activations`: `[..., M, K]`
@@ -242,6 +243,19 @@ pub enum FusedOpParams {
     /// 64 in bitsandbytes). The NF4 NormalFloat lookup table is
     /// baked into the kernel — not a runtime input.
     Nf4Matmul { block_size: usize },
+    /// FlashAttnBackward — shared params for the Q/K/V backward
+    /// variants. Carries the same shape parameters as the forward
+    /// `FlashAttn` so the recompute pass produces identical scores.
+    /// All three FusedOpId-marked variants (FLASH_ATTN_BACKWARD_Q/K/V)
+    /// use this single variant; the FusedOpId distinguishes which
+    /// gradient is being computed.
+    FlashAttnBackward {
+        softmax_scale:     f32,
+        causal:            bool,
+        window_size_left:  Option<usize>,
+        window_size_right: Option<usize>,
+        softcap:           Option<f32>,
+    },
     /// SelectiveScan — Mamba-1's selective state-space scan
     /// (forward only). Five inputs:
     /// - `u`:     `[batch, seqlen, dim]` — input sequence.
@@ -254,11 +268,16 @@ pub enum FusedOpParams {
     ///
     /// `delta_softplus` toggles the standard softplus(delta)
     /// activation before use (matches baracuda's `selective_scan_*_run`
-    /// flag). `last_state` and the optional inputs (d_skip, z,
-    /// delta_bias) from the full Mamba algorithm are NOT exposed in
-    /// v1 — they're mechanical extensions when a consumer needs
-    /// them. See the registry module docs for the rationale.
-    SelectiveScan { delta_softplus: bool },
+    /// flag). The optional inputs (d_skip, z, delta_bias) from the
+    /// full Mamba algorithm are NOT exposed in v1 — they're
+    /// mechanical extensions when a consumer needs them.
+    ///
+    /// `return_state` switches the output. When false (default),
+    /// returns `y: [batch, seqlen, dim]` — the scanned sequence.
+    /// When true, returns `last_state: [batch, dim, dstate]` — the
+    /// final h-state after the scan, used by callers that need to
+    /// resume autoregressive inference from a prefill snapshot.
+    SelectiveScan { delta_softplus: bool, return_state: bool },
     /// CausalConv1d — depthwise 1-D convolution with causal masking
     /// (left-pad-only) + optional fused SiLU. Three inputs:
     /// - `x`: `[batch, channels, seq + (kernel - 1)]` — caller pre-pads
@@ -483,20 +502,37 @@ impl FusedOpParams {
                 bits: Vec::new(),
                 ints: vec![*use_silu as i64],
             },
-            FusedOpParams::SelectiveScan { delta_softplus } => FusedOpParamsKey {
+            FusedOpParams::SelectiveScan { delta_softplus, return_state } => FusedOpParamsKey {
                 tag: 19,
                 bits: Vec::new(),
-                ints: vec![*delta_softplus as i64],
+                ints: vec![*delta_softplus as i64, *return_state as i64],
             },
-            FusedOpParams::SsdChunkScan { chunk_size } => FusedOpParamsKey {
+            FusedOpParams::SsdChunkScan { chunk_size, return_state } => FusedOpParamsKey {
                 tag: 20,
                 bits: Vec::new(),
-                ints: vec![*chunk_size as i64],
+                ints: vec![*chunk_size as i64, *return_state as i64],
             },
             FusedOpParams::Nf4Matmul { block_size } => FusedOpParamsKey {
                 tag: 21,
                 bits: Vec::new(),
                 ints: vec![*block_size as i64],
+            },
+            FusedOpParams::FlashAttnBackward {
+                softmax_scale, causal, window_size_left,
+                window_size_right, softcap,
+            } => FusedOpParamsKey {
+                // Distinct tag from forward FlashAttn (12) so the
+                // forward and backward nodes can't collide in CSE.
+                tag: 22,
+                bits: vec![
+                    softmax_scale.to_bits() as u64,
+                    softcap.map(|s| s.to_bits() as u64).unwrap_or(u64::MAX),
+                ],
+                ints: vec![
+                    if *causal { 1 } else { 0 },
+                    window_size_left.map(|w| w as i64).unwrap_or(i64::MIN),
+                    window_size_right.map(|w| w as i64).unwrap_or(i64::MIN),
+                ],
             },
         }
     }
@@ -866,6 +902,18 @@ impl FusedOps {
     /// (NF4 weights are frozen; the dequant-then-matmul fallback is
     /// the wrong path for the cases NF4 exists to optimize).
     pub const NF4_MATMUL: FusedOpId = FusedOpId(21);
+
+    /// FlashAttnBackwardQ — produces dQ from `(q, k, v, do, [alibi])`.
+    /// See [`fuel_core_types::OpKind::FlashAttnBackwardQ`]. Three
+    /// separate FusedOp ids (Q/K/V) is the v1 design — a single
+    /// multi-output op would share the recompute pass across all three
+    /// gradients but needs multi-output infrastructure that doesn't
+    /// exist yet. Reuses [`FusedOpParams::FlashAttnBackward`].
+    pub const FLASH_ATTN_BACKWARD_Q: FusedOpId = FusedOpId(22);
+    /// FlashAttnBackwardK — produces dK. See [`FLASH_ATTN_BACKWARD_Q`].
+    pub const FLASH_ATTN_BACKWARD_K: FusedOpId = FusedOpId(23);
+    /// FlashAttnBackwardV — produces dV. See [`FLASH_ATTN_BACKWARD_Q`].
+    pub const FLASH_ATTN_BACKWARD_V: FusedOpId = FusedOpId(24);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -892,6 +940,9 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(reduce_max_to_backward::entry())
             .with_entry(conv_transpose_2d::entry())
             .with_entry(flash_attn::entry())
+            .with_entry(flash_attn_backward::entry_q())
+            .with_entry(flash_attn_backward::entry_k())
+            .with_entry(flash_attn_backward::entry_v())
             .with_entry(paged_attn::entry())
             .with_entry(qmatmul::entry())
             .with_entry(powi_backward::entry())

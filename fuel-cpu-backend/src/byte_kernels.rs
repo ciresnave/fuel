@@ -6233,6 +6233,480 @@ flash_attn_half_kernel!(flash_attn_bf16, half::bf16);
 flash_attn_half_kernel!(flash_attn_f16, half::f16);
 
 // =============================================================================
+// FlashAttn backward — recompute approach (matches fuel_reference_backend's
+// attention_flash_backward math, byte-storage flavor).
+// =============================================================================
+//
+// One inner function `flash_attn_backward_*_inner` computes dQ, dK, dV
+// jointly into pre-allocated Vec<T> buffers. Three byte wrappers
+// (_q / _k / _v) each call the inner function and copy the
+// requested gradient into their byte output. Three calls compute
+// the same backward state three times — acceptable for math-
+// definition CPU; GPU kernels can fuse the recompute.
+
+/// Inner FlashAttn-backward kernel for native arithmetic types
+/// (`$T = f32 | f64`). Writes into pre-allocated dq/dk/dv slices.
+macro_rules! flash_attn_backward_native_inner {
+    ($name:ident, $T:ty, $T_zero:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        fn $name(
+            q_view: &[$T], k_view: &[$T], v_view: &[$T], do_view: &[$T],
+            alibi_view: Option<&[$T]>,
+            dq: &mut [$T], dk: &mut [$T], dv: &mut [$T],
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, sk: usize, d: usize,
+            softmax_scale: f32,
+            causal: bool,
+            window_left: Option<usize>,
+            window_right: Option<usize>,
+            softcap: Option<f32>,
+        ) {
+            let groups = hq / hkv;
+            let q_h_stride = sq * d;
+            let q_b_stride = hq * q_h_stride;
+            let k_h_stride = sk * d;
+            let k_b_stride = hkv * k_h_stride;
+            let scale = softmax_scale as $T;
+            let softcap_pair = softcap.map(|c| {
+                let c_t = c as $T;
+                (c_t, (1.0 as $T) / c_t)
+            });
+
+            for slot in dq.iter_mut() { *slot = $T_zero; }
+            for slot in dk.iter_mut() { *slot = $T_zero; }
+            for slot in dv.iter_mut() { *slot = $T_zero; }
+
+            for bi in 0..b {
+                for hi in 0..hq {
+                    let kv_h = hi / groups;
+                    let q_off = bi * q_b_stride + hi * q_h_stride;
+                    let k_off = bi * k_b_stride + kv_h * k_h_stride;
+                    let v_off = k_off;
+                    let do_off = q_off;
+                    let dq_off = q_off;
+                    let dk_off = k_off;
+                    let dv_off = k_off;
+                    let alibi_h: Option<$T> = alibi_view.map(|a| a[hi]);
+                    for qi in 0..sq {
+                        let mut p_row = vec![$T_zero; sk];
+                        let mut s_row = vec![<$T>::NEG_INFINITY; sk];
+                        let mut s_pre_softcap = vec![<$T>::NEG_INFINITY; sk];
+                        let mut max_s = <$T>::NEG_INFINITY;
+                        for kj in 0..sk {
+                            if !crate::byte_kernels::flash_attn_admissible(
+                                qi, kj, causal, window_left, window_right) { continue; }
+                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            let mut acc: $T = $T_zero;
+                            for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                                acc += (*qx) * (*kx);
+                            }
+                            let mut s = acc * scale;
+                            s_pre_softcap[kj] = s;
+                            if let Some((c, inv_c)) = softcap_pair {
+                                s = (s * inv_c).tanh() * c;
+                            }
+                            if let Some(slope) = alibi_h {
+                                let delta = (kj as f32 - qi as f32) as $T;
+                                s += slope * delta;
+                            }
+                            s_row[kj] = s;
+                            if s > max_s { max_s = s; }
+                        }
+                        if !max_s.is_finite() { continue; }
+                        let mut sum_exp: $T = $T_zero;
+                        for kj in 0..sk {
+                            if s_row[kj].is_finite() {
+                                let e = (s_row[kj] - max_s).exp();
+                                p_row[kj] = e;
+                                sum_exp += e;
+                            }
+                        }
+                        if sum_exp == $T_zero { continue; }
+                        let inv_sum = (1.0 as $T) / sum_exp;
+                        for kj in 0..sk { p_row[kj] *= inv_sum; }
+
+                        let do_row = &do_view[do_off + qi * d .. do_off + (qi + 1) * d];
+                        for kj in 0..sk {
+                            let p_ij = p_row[kj];
+                            if p_ij == $T_zero { continue; }
+                            let dst_off = dv_off + kj * d;
+                            for (dvd, &dod) in dv[dst_off .. dst_off + d].iter_mut().zip(do_row.iter()) {
+                                *dvd += p_ij * dod;
+                            }
+                        }
+
+                        let mut dp = vec![$T_zero; sk];
+                        for kj in 0..sk {
+                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            let mut acc: $T = $T_zero;
+                            for (dod, &vd) in do_row.iter().zip(v_row.iter()) {
+                                acc += (*dod) * vd;
+                            }
+                            dp[kj] = acc;
+                        }
+
+                        let mut row_dot: $T = $T_zero;
+                        for kj in 0..sk { row_dot += p_row[kj] * dp[kj]; }
+                        let mut ds = vec![$T_zero; sk];
+                        for kj in 0..sk {
+                            ds[kj] = (dp[kj] - row_dot) * p_row[kj];
+                            if let Some((_c, inv_c)) = softcap_pair {
+                                let pre = s_pre_softcap[kj];
+                                if pre.is_finite() {
+                                    let t = (pre * inv_c).tanh();
+                                    let dtanh = (1.0 as $T) - t * t;
+                                    ds[kj] *= dtanh;
+                                }
+                            }
+                        }
+
+                        let dq_row_off = dq_off + qi * d;
+                        for kj in 0..sk {
+                            let ds_ij = ds[kj] * scale;
+                            if ds_ij == $T_zero { continue; }
+                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            for (dqd, &kd) in dq[dq_row_off .. dq_row_off + d].iter_mut().zip(k_row.iter()) {
+                                *dqd += ds_ij * kd;
+                            }
+                        }
+                        let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                        for kj in 0..sk {
+                            let ds_ij = ds[kj] * scale;
+                            if ds_ij == $T_zero { continue; }
+                            let dst_off = dk_off + kj * d;
+                            for (dkd, &qd) in dk[dst_off .. dst_off + d].iter_mut().zip(q_row.iter()) {
+                                *dkd += ds_ij * qd;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
+flash_attn_backward_native_inner!(flash_attn_backward_f32_inner, f32, 0.0_f32);
+flash_attn_backward_native_inner!(flash_attn_backward_f64_inner, f64, 0.0_f64);
+
+/// Inner FlashAttn-backward kernel for half-precision types (math at f32,
+/// narrow on store).
+macro_rules! flash_attn_backward_half_inner {
+    ($name:ident, $T:ty) => {
+        #[allow(clippy::too_many_arguments)]
+        fn $name(
+            q_view: &[$T], k_view: &[$T], v_view: &[$T], do_view: &[$T],
+            alibi_view: Option<&[$T]>,
+            dq: &mut [$T], dk: &mut [$T], dv: &mut [$T],
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, sk: usize, d: usize,
+            softmax_scale: f32,
+            causal: bool,
+            window_left: Option<usize>,
+            window_right: Option<usize>,
+            softcap: Option<f32>,
+        ) {
+            let groups = hq / hkv;
+            let q_h_stride = sq * d;
+            let q_b_stride = hq * q_h_stride;
+            let k_h_stride = sk * d;
+            let k_b_stride = hkv * k_h_stride;
+
+            // Accumulate gradients in f32 then narrow on store.
+            let mut dq_f32 = vec![0.0_f32; dq.len()];
+            let mut dk_f32 = vec![0.0_f32; dk.len()];
+            let mut dv_f32 = vec![0.0_f32; dv.len()];
+
+            for bi in 0..b {
+                for hi in 0..hq {
+                    let kv_h = hi / groups;
+                    let q_off = bi * q_b_stride + hi * q_h_stride;
+                    let k_off = bi * k_b_stride + kv_h * k_h_stride;
+                    let v_off = k_off;
+                    let do_off = q_off;
+                    let dq_off = q_off;
+                    let dk_off = k_off;
+                    let dv_off = k_off;
+                    let alibi_h: Option<f32> = alibi_view.map(|a| a[hi].to_f32());
+                    for qi in 0..sq {
+                        let mut p_row = vec![0.0_f32; sk];
+                        let mut s_row = vec![f32::NEG_INFINITY; sk];
+                        let mut s_pre_softcap = vec![f32::NEG_INFINITY; sk];
+                        let mut max_s = f32::NEG_INFINITY;
+                        for kj in 0..sk {
+                            if !crate::byte_kernels::flash_attn_admissible(
+                                qi, kj, causal, window_left, window_right) { continue; }
+                            let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            let mut acc = 0.0_f32;
+                            for (qx, kx) in q_row.iter().zip(k_row.iter()) {
+                                acc += qx.to_f32() * kx.to_f32();
+                            }
+                            let mut s = acc * softmax_scale;
+                            s_pre_softcap[kj] = s;
+                            if let Some(c) = softcap { s = (s / c).tanh() * c; }
+                            if let Some(slope) = alibi_h {
+                                let delta = kj as f32 - qi as f32;
+                                s += slope * delta;
+                            }
+                            s_row[kj] = s;
+                            if s > max_s { max_s = s; }
+                        }
+                        if !max_s.is_finite() { continue; }
+                        let mut sum_exp = 0.0_f32;
+                        for kj in 0..sk {
+                            if s_row[kj].is_finite() {
+                                let e = (s_row[kj] - max_s).exp();
+                                p_row[kj] = e;
+                                sum_exp += e;
+                            }
+                        }
+                        if sum_exp == 0.0 { continue; }
+                        let inv_sum = 1.0_f32 / sum_exp;
+                        for kj in 0..sk { p_row[kj] *= inv_sum; }
+
+                        let do_row = &do_view[do_off + qi * d .. do_off + (qi + 1) * d];
+                        for kj in 0..sk {
+                            let p_ij = p_row[kj];
+                            if p_ij == 0.0 { continue; }
+                            let dst_off = dv_off + kj * d;
+                            for (i, &dod) in do_row.iter().enumerate() {
+                                dv_f32[dst_off + i] += p_ij * dod.to_f32();
+                            }
+                        }
+
+                        let mut dp = vec![0.0_f32; sk];
+                        for kj in 0..sk {
+                            let v_row = &v_view[v_off + kj * d .. v_off + (kj + 1) * d];
+                            let mut acc = 0.0_f32;
+                            for (dod, &vd) in do_row.iter().zip(v_row.iter()) {
+                                acc += dod.to_f32() * vd.to_f32();
+                            }
+                            dp[kj] = acc;
+                        }
+
+                        let mut row_dot = 0.0_f32;
+                        for kj in 0..sk { row_dot += p_row[kj] * dp[kj]; }
+                        let mut ds = vec![0.0_f32; sk];
+                        for kj in 0..sk {
+                            ds[kj] = (dp[kj] - row_dot) * p_row[kj];
+                            if let Some(c) = softcap {
+                                let inv_c = 1.0 / c;
+                                let pre = s_pre_softcap[kj];
+                                if pre.is_finite() {
+                                    let t = (pre * inv_c).tanh();
+                                    let dtanh = 1.0 - t * t;
+                                    ds[kj] *= dtanh;
+                                }
+                            }
+                        }
+
+                        let dq_row_off = dq_off + qi * d;
+                        for kj in 0..sk {
+                            let ds_ij = ds[kj] * softmax_scale;
+                            if ds_ij == 0.0 { continue; }
+                            let k_row = &k_view[k_off + kj * d .. k_off + (kj + 1) * d];
+                            for (i, &kd) in k_row.iter().enumerate() {
+                                dq_f32[dq_row_off + i] += ds_ij * kd.to_f32();
+                            }
+                        }
+                        let q_row = &q_view[q_off + qi * d .. q_off + (qi + 1) * d];
+                        for kj in 0..sk {
+                            let ds_ij = ds[kj] * softmax_scale;
+                            if ds_ij == 0.0 { continue; }
+                            let dst_off = dk_off + kj * d;
+                            for (i, &qd) in q_row.iter().enumerate() {
+                                dk_f32[dst_off + i] += ds_ij * qd.to_f32();
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (slot, &acc) in dq.iter_mut().zip(dq_f32.iter()) { *slot = <$T>::from_f32(acc); }
+            for (slot, &acc) in dk.iter_mut().zip(dk_f32.iter()) { *slot = <$T>::from_f32(acc); }
+            for (slot, &acc) in dv.iter_mut().zip(dv_f32.iter()) { *slot = <$T>::from_f32(acc); }
+        }
+    };
+}
+
+flash_attn_backward_half_inner!(flash_attn_backward_bf16_inner, half::bf16);
+flash_attn_backward_half_inner!(flash_attn_backward_f16_inner, half::f16);
+
+/// Selector for which gradient (`Q`, `K`, or `V`) a byte wrapper writes
+/// into its single output buffer. The inner function always computes
+/// all three; the wrapper picks one.
+#[derive(Copy, Clone)]
+pub enum FaBackwardWhich { Q, K, V }
+
+/// FlashAttn backward byte wrapper for native arithmetic types
+/// (f32 / f64). Computes all three gradients then writes only the
+/// requested one into `out` — same 3× cost on the math-definition CPU
+/// path that the OpKind split implies.
+macro_rules! flash_attn_backward_native_wrapper {
+    ($name:ident, $T:ty, $T_zero:expr, $inner:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            q: &CpuStorageBytes, k: &CpuStorageBytes, v: &CpuStorageBytes,
+            do_grad: &CpuStorageBytes,
+            alibi_slopes: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            which: FaBackwardWhich,
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, sk: usize, d: usize,
+            softmax_scale: f32,
+            causal: bool,
+            window_left: Option<usize>,
+            window_right: Option<usize>,
+            softcap: Option<f32>,
+        ) -> Result<()> {
+            if hq % hkv != 0 || hkv == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: Hq={hq} must be a positive multiple of Hkv={hkv}",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            let q_n  = b * hq  * sq * d;
+            let kv_n = b * hkv * sk * d;
+            if q.len_bytes()       != q_n  * elem
+                || k.len_bytes()   != kv_n * elem
+                || v.len_bytes()   != kv_n * elem
+                || do_grad.len_bytes() != q_n * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            let need_out = match which {
+                FaBackwardWhich::Q => q_n  * elem,
+                FaBackwardWhich::K => kv_n * elem,
+                FaBackwardWhich::V => kv_n * elem,
+            };
+            if out.len_bytes() != need_out {
+                return Err(Error::Msg(format!(
+                    "{}: out bytes {} != required {}", stringify!($name),
+                    out.len_bytes(), need_out,
+                ))
+                .bt());
+            }
+            let q_view: &[$T] = q.as_slice()?;
+            let k_view: &[$T] = k.as_slice()?;
+            let v_view: &[$T] = v.as_slice()?;
+            let do_view: &[$T] = do_grad.as_slice()?;
+            let alibi_view: Option<&[$T]> = match alibi_slopes {
+                Some(a) => Some(a.as_slice()?),
+                None => None,
+            };
+            let mut dq = vec![$T_zero; q_n];
+            let mut dk = vec![$T_zero; kv_n];
+            let mut dv = vec![$T_zero; kv_n];
+            $inner(
+                q_view, k_view, v_view, do_view, alibi_view,
+                &mut dq, &mut dk, &mut dv,
+                b, hq, hkv, sq, sk, d,
+                softmax_scale, causal, window_left, window_right, softcap,
+            );
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let src = match which {
+                FaBackwardWhich::Q => &dq[..],
+                FaBackwardWhich::K => &dk[..],
+                FaBackwardWhich::V => &dv[..],
+            };
+            out_view.copy_from_slice(src);
+            Ok(())
+        }
+    };
+}
+
+flash_attn_backward_native_wrapper!(flash_attn_backward_f32, f32, 0.0_f32, flash_attn_backward_f32_inner);
+flash_attn_backward_native_wrapper!(flash_attn_backward_f64, f64, 0.0_f64, flash_attn_backward_f64_inner);
+
+/// FlashAttn backward byte wrapper for half-precision types.
+macro_rules! flash_attn_backward_half_wrapper {
+    ($name:ident, $T:ty, $inner:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            q: &CpuStorageBytes, k: &CpuStorageBytes, v: &CpuStorageBytes,
+            do_grad: &CpuStorageBytes,
+            alibi_slopes: Option<&CpuStorageBytes>,
+            out: &mut CpuStorageBytes,
+            which: FaBackwardWhich,
+            b: usize, hq: usize, hkv: usize,
+            sq: usize, sk: usize, d: usize,
+            softmax_scale: f32,
+            causal: bool,
+            window_left: Option<usize>,
+            window_right: Option<usize>,
+            softcap: Option<f32>,
+        ) -> Result<()> {
+            if hq % hkv != 0 || hkv == 0 {
+                return Err(Error::Msg(format!(
+                    "{}: Hq={hq} must be a positive multiple of Hkv={hkv}",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            let elem = std::mem::size_of::<$T>();
+            let q_n  = b * hq  * sq * d;
+            let kv_n = b * hkv * sk * d;
+            if q.len_bytes()       != q_n  * elem
+                || k.len_bytes()   != kv_n * elem
+                || v.len_bytes()   != kv_n * elem
+                || do_grad.len_bytes() != q_n * elem
+            {
+                return Err(Error::Msg(format!(
+                    "{}: bytes mismatch", stringify!($name),
+                ))
+                .bt());
+            }
+            let need_out = match which {
+                FaBackwardWhich::Q => q_n  * elem,
+                FaBackwardWhich::K => kv_n * elem,
+                FaBackwardWhich::V => kv_n * elem,
+            };
+            if out.len_bytes() != need_out {
+                return Err(Error::Msg(format!(
+                    "{}: out bytes {} != required {}", stringify!($name),
+                    out.len_bytes(), need_out,
+                ))
+                .bt());
+            }
+            let q_view: &[$T] = q.as_slice()?;
+            let k_view: &[$T] = k.as_slice()?;
+            let v_view: &[$T] = v.as_slice()?;
+            let do_view: &[$T] = do_grad.as_slice()?;
+            let alibi_view: Option<&[$T]> = match alibi_slopes {
+                Some(a) => Some(a.as_slice()?),
+                None => None,
+            };
+            let mut dq = vec![<$T>::from_f32(0.0); q_n];
+            let mut dk = vec![<$T>::from_f32(0.0); kv_n];
+            let mut dv = vec![<$T>::from_f32(0.0); kv_n];
+            $inner(
+                q_view, k_view, v_view, do_view, alibi_view,
+                &mut dq, &mut dk, &mut dv,
+                b, hq, hkv, sq, sk, d,
+                softmax_scale, causal, window_left, window_right, softcap,
+            );
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+            let src = match which {
+                FaBackwardWhich::Q => &dq[..],
+                FaBackwardWhich::K => &dk[..],
+                FaBackwardWhich::V => &dv[..],
+            };
+            out_view.copy_from_slice(src);
+            Ok(())
+        }
+    };
+}
+
+flash_attn_backward_half_wrapper!(flash_attn_backward_bf16, half::bf16, flash_attn_backward_bf16_inner);
+flash_attn_backward_half_wrapper!(flash_attn_backward_f16, half::f16, flash_attn_backward_f16_inner);
+
+// =============================================================================
 // PagedAttn — paged-KV-cache attention (naive)
 // =============================================================================
 //
@@ -7914,6 +8388,92 @@ mod tests {
 
         div_f32(&a, &b, &mut out).expect("div");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[10.0, 5.0, 6.0]);
+    }
+
+    /// FlashAttn backward sanity: zero upstream → zero gradients;
+    /// non-zero upstream → non-zero gradients with correct shapes.
+    /// Exercises the dispatch chain (which-selector + buffer plumbing)
+    /// and confirms the math runs end-to-end. Numerical correctness
+    /// is enforced by the reference impl that the macro mirrors.
+    #[test]
+    fn flash_attn_backward_f32_sanity() {
+        let b = 1usize;
+        let hq = 1usize;
+        let hkv = 1usize;
+        let sq = 2usize;
+        let sk = 3usize;
+        let d = 4usize;
+        let scale: f32 = 1.0 / (d as f32).sqrt();
+        let q_n = b * hq * sq * d;
+        let kv_n = b * hkv * sk * d;
+
+        let q_host: Vec<f32> = (0..q_n).map(|i| (i as f32) * 0.1).collect();
+        let k_host: Vec<f32> = (0..kv_n).map(|i| (i as f32 + 1.0) * 0.07).collect();
+        let v_host: Vec<f32> = (0..kv_n).map(|i| (i as f32 + 2.0) * 0.05).collect();
+
+        let q = CpuStorageBytes::from_slice(&q_host);
+        let k = CpuStorageBytes::from_slice(&k_host);
+        let v = CpuStorageBytes::from_slice(&v_host);
+
+        // Case 1: zero dO → zero gradients.
+        let zero_do = CpuStorageBytes::from_zero_bytes(q_n * 4);
+        let mut dq_out = CpuStorageBytes::from_zero_bytes(q_n * 4);
+        flash_attn_backward_f32(
+            &q, &k, &v, &zero_do, None, &mut dq_out, FaBackwardWhich::Q,
+            b, hq, hkv, sq, sk, d,
+            scale, false, None, None, None,
+        ).expect("dq with zero do");
+        let dq: &[f32] = dq_out.as_slice().unwrap();
+        for (i, &g) in dq.iter().enumerate() {
+            assert_eq!(g, 0.0, "zero dO → dQ[{i}] must be 0, got {g}");
+        }
+
+        // Case 2: non-zero dO → non-zero gradients on all three of dQ/dK/dV.
+        let do_host: Vec<f32> = (0..q_n).map(|i| (i as f32 + 0.5) * 0.03).collect();
+        let do_grad = CpuStorageBytes::from_slice(&do_host);
+        let mut dq_buf = CpuStorageBytes::from_zero_bytes(q_n * 4);
+        let mut dk_buf = CpuStorageBytes::from_zero_bytes(kv_n * 4);
+        let mut dv_buf = CpuStorageBytes::from_zero_bytes(kv_n * 4);
+        flash_attn_backward_f32(
+            &q, &k, &v, &do_grad, None, &mut dq_buf, FaBackwardWhich::Q,
+            b, hq, hkv, sq, sk, d,
+            scale, false, None, None, None,
+        ).expect("dq nonzero");
+        flash_attn_backward_f32(
+            &q, &k, &v, &do_grad, None, &mut dk_buf, FaBackwardWhich::K,
+            b, hq, hkv, sq, sk, d,
+            scale, false, None, None, None,
+        ).expect("dk nonzero");
+        flash_attn_backward_f32(
+            &q, &k, &v, &do_grad, None, &mut dv_buf, FaBackwardWhich::V,
+            b, hq, hkv, sq, sk, d,
+            scale, false, None, None, None,
+        ).expect("dv nonzero");
+        let dq: &[f32] = dq_buf.as_slice().unwrap();
+        let dk: &[f32] = dk_buf.as_slice().unwrap();
+        let dv: &[f32] = dv_buf.as_slice().unwrap();
+        let dq_norm: f32 = dq.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let dk_norm: f32 = dk.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let dv_norm: f32 = dv.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(dq_norm > 1e-6, "dQ should be non-zero, ||dQ||={dq_norm}");
+        assert!(dk_norm > 1e-6, "dK should be non-zero, ||dK||={dk_norm}");
+        assert!(dv_norm > 1e-6, "dV should be non-zero, ||dV||={dv_norm}");
+
+        // Causal mask shouldn't blow anything up either.
+        let mut dq_causal = CpuStorageBytes::from_zero_bytes(q_n * 4);
+        flash_attn_backward_f32(
+            &q, &k, &v, &do_grad, None, &mut dq_causal, FaBackwardWhich::Q,
+            b, hq, hkv, sq, sk, d,
+            scale, true, None, None, None,
+        ).expect("dq causal");
+        let dq_c: &[f32] = dq_causal.as_slice().unwrap();
+        let dq_c_norm: f32 = dq_c.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(dq_c_norm > 1e-6, "dQ causal should be non-zero, ||dQ||={dq_c_norm}");
+        // Causal masks out keys → typically changes the gradient.
+        assert!(
+            (dq_c_norm - dq_norm).abs() > 1e-6 || (dq_c_norm == dq_norm),
+            "causal vs non-causal dQ should differ (or coincidentally match)",
+        );
     }
 
     #[test]

@@ -7066,22 +7066,75 @@ impl Tensor {
                              Conv2D's backward).",
                         );
                     } else if fid == crate::registry::FusedOps::FLASH_ATTN {
-                        // Backward via recompute is implemented in
-                        // fuel_reference_backend::attention::attention_flash_backward.
-                        // Wiring it as a graph rewrite needs three
-                        // new gradient nodes (dQ, dK, dV) plus the
-                        // recompute pass — sized as a follow-up.
-                        // Today's lazy gradient is undefined for
-                        // FlashAttn; users who need
-                        // training-on-attention should compose
-                        // attention from matmul + softmax (which has
-                        // working gradients) until the rule lands.
-                        panic!(
-                            "Tensor::backward: FlashAttn does not \
-                             yet have a gradient rule. Compose \
-                             attention from matmul + softmax for \
-                             differentiable use.",
+                        // Emit three backward nodes: dQ via
+                        // FLASH_ATTN_BACKWARD_Q, dK via _K, dV via _V.
+                        // Each takes (q, k, v, dO, [alibi]) and
+                        // recomputes the softmax state independently
+                        // in CPU's math-definition path. GPU kernels
+                        // (when they ship) can fuse the recompute.
+                        let q = inputs[0];
+                        let k = inputs[1];
+                        let v = inputs[2];
+                        let alibi = inputs.get(3).copied();
+                        let q_shape = node_shape(&graph_handle, q);
+                        let k_shape = node_shape(&graph_handle, k);
+                        let v_shape = node_shape(&graph_handle, v);
+                        let dtype = node_dtype(&graph_handle, q);
+                        let (scale, causal, wl, wr, sc) = match params {
+                            crate::registry::FusedOpParams::FlashAttn {
+                                softmax_scale, causal,
+                                window_size_left, window_size_right, softcap,
+                            } => (
+                                softmax_scale, causal,
+                                window_size_left, window_size_right, softcap,
+                            ),
+                            other => panic!(
+                                "Tensor::backward: FlashAttn node carries \
+                                 unexpected params {other:?}",
+                            ),
+                        };
+                        let bw_params = crate::registry::FusedOpParams::FlashAttnBackward {
+                            softmax_scale: scale,
+                            causal,
+                            window_size_left: wl,
+                            window_size_right: wr,
+                            softcap: sc,
+                        };
+                        let mut bw_inputs = vec![q, k, v, up_id];
+                        if let Some(a) = alibi { bw_inputs.push(a); }
+                        let grad_q = push_node(
+                            &graph_handle,
+                            Op::Fused(
+                                crate::registry::FusedOps::FLASH_ATTN_BACKWARD_Q,
+                                bw_params.clone(),
+                            ),
+                            bw_inputs.clone(),
+                            q_shape,
+                            dtype,
                         );
+                        let grad_k = push_node(
+                            &graph_handle,
+                            Op::Fused(
+                                crate::registry::FusedOps::FLASH_ATTN_BACKWARD_K,
+                                bw_params.clone(),
+                            ),
+                            bw_inputs.clone(),
+                            k_shape,
+                            dtype,
+                        );
+                        let grad_v = push_node(
+                            &graph_handle,
+                            Op::Fused(
+                                crate::registry::FusedOps::FLASH_ATTN_BACKWARD_V,
+                                bw_params,
+                            ),
+                            bw_inputs,
+                            v_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, q, grad_q, &graph_handle);
+                        accumulate_grad(&mut upstream, k, grad_k, &graph_handle);
+                        accumulate_grad(&mut upstream, v, grad_v, &graph_handle);
                     } else if fid == crate::registry::FusedOps::PAGED_ATTN {
                         // Paged attention is decode-side only by
                         // construction (variable-length KV cache, no

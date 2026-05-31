@@ -3117,10 +3117,10 @@ macro_rules! cpu_selective_scan_wrapper {
                 ))
                 .bt());
             }
-            let (batch, seqlen, dim, dstate, delta_softplus) = match params {
-                OpParams::SelectiveScan { batch, seqlen, dim, dstate, delta_softplus } => {
-                    (*batch, *seqlen, *dim, *dstate, *delta_softplus)
-                }
+            let (batch, seqlen, dim, dstate, delta_softplus, return_state) = match params {
+                OpParams::SelectiveScan {
+                    batch, seqlen, dim, dstate, delta_softplus, return_state,
+                } => (*batch, *seqlen, *dim, *dstate, *delta_softplus, *return_state),
                 other => {
                     return Err(Error::Msg(format!(
                         "selective_scan wrapper expects OpParams::SelectiveScan, got {other:?}",
@@ -3142,7 +3142,7 @@ macro_rules! cpu_selective_scan_wrapper {
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
                 u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-                batch, seqlen, dim, dstate, delta_softplus,
+                batch, seqlen, dim, dstate, delta_softplus, return_state,
             )
         }
     };
@@ -3178,10 +3178,10 @@ macro_rules! cpu_ssd_chunk_scan_wrapper {
                 ))
                 .bt());
             }
-            let (batch, seqlen, heads, head_dim, state_dim, chunk_size) = match params {
+            let (batch, seqlen, heads, head_dim, state_dim, chunk_size, return_state) = match params {
                 OpParams::SsdChunkScan {
-                    batch, seqlen, heads, head_dim, state_dim, chunk_size,
-                } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size),
+                    batch, seqlen, heads, head_dim, state_dim, chunk_size, return_state,
+                } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size, *return_state),
                 other => {
                     return Err(Error::Msg(format!(
                         "ssd_chunk_scan wrapper expects OpParams::SsdChunkScan, got {other:?}",
@@ -3203,7 +3203,7 @@ macro_rules! cpu_ssd_chunk_scan_wrapper {
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
                 x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-                batch, seqlen, heads, head_dim, state_dim, chunk_size,
+                batch, seqlen, heads, head_dim, state_dim, chunk_size, return_state,
             )
         }
     };
@@ -3337,6 +3337,89 @@ cpu_flash_attn_wrapper!(flash_attn_f32_cpu_wrapper,  fuel_cpu_backend::byte_kern
 cpu_flash_attn_wrapper!(flash_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f64);
 cpu_flash_attn_wrapper!(flash_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_bf16);
 cpu_flash_attn_wrapper!(flash_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f16);
+
+/// Dispatch wrapper for `(FlashAttnBackward{Q,K,V}, *, Cpu)`. Four or
+/// five inputs `(q, k, v, do, [alibi])`; one output (one of dQ/dK/dV).
+/// The CPU kernel always computes all three gradients; this wrapper
+/// only persists the requested one.
+macro_rules! cpu_flash_attn_backward_wrapper {
+    ($wrapper:ident, $kernel:path, $which:expr) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 4 && inputs.len() != 5 {
+                return Err(Error::Msg(format!(
+                    "flash_attn_backward wrapper expects 4 or 5 inputs (q, k, v, do, [alibi]), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "flash_attn_backward wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
+                OpParams::FlashAttn {
+                    b, hq, hkv, sq, sk, d,
+                    softmax_scale, causal,
+                    window_size_left, window_size_right, softcap,
+                } => (
+                    *b, *hq, *hkv, *sq, *sk, *d,
+                    *softmax_scale, *causal,
+                    *window_size_left, *window_size_right, *softcap,
+                ),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "flash_attn_backward wrapper expects OpParams::FlashAttn, got {other:?}",
+                    ))
+                    .bt())
+                }
+            };
+            let q_guard = read_storage(&inputs[0])?;
+            let k_guard = read_storage(&inputs[1])?;
+            let v_guard = read_storage(&inputs[2])?;
+            let do_guard = read_storage(&inputs[3])?;
+            let alibi_guard = match inputs.get(4) {
+                Some(arc) => Some(read_storage(arc)?),
+                None => None,
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let q_cpu = cpu_input(&q_guard)?;
+            let k_cpu = cpu_input(&k_guard)?;
+            let v_cpu = cpu_input(&v_guard)?;
+            let do_cpu = cpu_input(&do_guard)?;
+            let alibi_cpu = match &alibi_guard {
+                Some(g) => Some(cpu_input(g)?),
+                None => None,
+            };
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                q_cpu, k_cpu, v_cpu, do_cpu, alibi_cpu, out_cpu, $which,
+                b, hq, hkv, sq, sk, d,
+                scale, causal, wl, wr, softcap,
+            )
+        }
+    };
+}
+
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16, fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16, fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16, fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
+cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
 
 /// Dispatch wrapper for `(PagedAttn, *, Cpu)`. 5 or 6 inputs (q,
 /// k_cache, v_cache, block_table, context_lens, optional alibi_slopes).
@@ -3752,6 +3835,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     let fused_linear     = |t: DType| [t, t, t, t];             // (lhs, rhs, bias, out)
     let flash_attn_no_alibi   = |t: DType| [t, t, t, t];        // (q, k, v, out)
     let flash_attn_with_alibi = |t: DType| [t, t, t, t, t];     // (q, k, v, alibi, out)
+    let fa_bw_no_alibi   = |t: DType| [t, t, t, t, t];          // (q, k, v, do, out)
+    let fa_bw_with_alibi = |t: DType| [t, t, t, t, t, t];       // (q, k, v, do, alibi, out)
     let paged_attn_no_alibi   = |t: DType| [t, t, t, u32_dt, u32_dt, t];      // q,kc,vc,bt,cl,out
     let paged_attn_with_alibi = |t: DType| [t, t, t, u32_dt, u32_dt, t, t];   // +alibi
     let index_select  = |t: DType| [t, u32_dt, t];              // (data, indices, out)
@@ -3905,6 +3990,33 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     ] {
         table.register(FlashAttn, &flash_attn_no_alibi(dt),   cpu, w);
         table.register(FlashAttn, &flash_attn_with_alibi(dt), cpu, w);
+    }
+
+    // FlashAttn backward — three OpKinds (Q/K/V), four dtypes, two
+    // alibi shapes each. The CPU wrapper computes all three gradients
+    // every call and copies the requested one into `out`; expect ~3×
+    // the cost of a single-gradient backward kernel until a fused
+    // multi-output variant lands.
+    for (dt, wq, wk, wv) in [
+        (f32_dt,  flash_attn_backward_q_f32_cpu_wrapper  as KernelRef,
+                  flash_attn_backward_k_f32_cpu_wrapper  as KernelRef,
+                  flash_attn_backward_v_f32_cpu_wrapper  as KernelRef),
+        (f64_dt,  flash_attn_backward_q_f64_cpu_wrapper,
+                  flash_attn_backward_k_f64_cpu_wrapper,
+                  flash_attn_backward_v_f64_cpu_wrapper),
+        (bf16_dt, flash_attn_backward_q_bf16_cpu_wrapper,
+                  flash_attn_backward_k_bf16_cpu_wrapper,
+                  flash_attn_backward_v_bf16_cpu_wrapper),
+        (f16_dt,  flash_attn_backward_q_f16_cpu_wrapper,
+                  flash_attn_backward_k_f16_cpu_wrapper,
+                  flash_attn_backward_v_f16_cpu_wrapper),
+    ] {
+        table.register(FlashAttnBackwardQ, &fa_bw_no_alibi(dt),   cpu, wq);
+        table.register(FlashAttnBackwardQ, &fa_bw_with_alibi(dt), cpu, wq);
+        table.register(FlashAttnBackwardK, &fa_bw_no_alibi(dt),   cpu, wk);
+        table.register(FlashAttnBackwardK, &fa_bw_with_alibi(dt), cpu, wk);
+        table.register(FlashAttnBackwardV, &fa_bw_no_alibi(dt),   cpu, wv);
+        table.register(FlashAttnBackwardV, &fa_bw_with_alibi(dt), cpu, wv);
     }
 
     // PagedAttn — block_table + ctx_lens are always U32; alibi is
