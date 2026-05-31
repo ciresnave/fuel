@@ -481,6 +481,63 @@ mod tests {
         }
     }
 
+    /// Phase 3e dtype expansion — same executor smoke as
+    /// `op_relu_inplace_cpu_mutates_target_storage` but on BF16,
+    /// covering the half-precision dispatch path (bf16 entries land
+    /// in the binding table under `[BF16, BF16]`).
+    #[test]
+    fn op_relu_inplace_cpu_mutates_bf16_target() {
+        use crate::pipelined::{PipelinedExecutor, StorageCache};
+        use fuel_core_types::{probe::BackendId, Shape};
+        use fuel_graph::{Graph, Node, NodeId, Op};
+        use half::bf16;
+        use std::sync::{Arc, RwLock};
+
+        let data = [
+            bf16::from_f32(-1.0), bf16::from_f32(0.0),
+            bf16::from_f32(1.0),  bf16::from_f32(2.0),
+        ];
+        let src_storage = from_slice_cpu(&data);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, relu_id): (NodeId, NodeId) = {
+            let mut g = graph.write().unwrap();
+            let src = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::BF16,
+            });
+            let relu = g.push(Node {
+                op: Op::ReluInplace,
+                inputs: vec![src],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::BF16,
+            });
+            g.set_target_backend(relu, BackendId::Cpu);
+            (src, relu)
+        };
+
+        let mut cache = StorageCache::new();
+        cache.insert(src_id, Arc::new(RwLock::new(src_storage)));
+
+        let (result_arc, _layout) =
+            PipelinedExecutor::realize(graph, relu_id, cache)
+                .expect("Op::ReluInplace realize (bf16)");
+
+        let guard = result_arc.read().unwrap();
+        match &guard.inner {
+            BackendStorage::Cpu(c) => {
+                let got: &[bf16] = c.as_slice().expect("bf16 cast");
+                assert_eq!(got[0], bf16::from_f32(0.0));
+                assert_eq!(got[1], bf16::from_f32(0.0));
+                assert_eq!(got[2], bf16::from_f32(1.0));
+                assert_eq!(got[3], bf16::from_f32(2.0));
+            }
+            other => panic!("expected CPU storage; got {other:?}"),
+        }
+    }
+
     /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes
     /// produce the same shape.
     #[test]
