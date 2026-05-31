@@ -407,6 +407,13 @@ pub enum OpKind {
     /// Geometry + `delta_softplus` flow through
     /// `OpParams::SelectiveScan`.
     SelectiveScan,
+    /// Mamba-2's State-Space Duality chunked scan (forward). Five
+    /// inputs `[x, dt, a, b, c]` — see
+    /// [`FusedOps::SSD_CHUNK_SCAN`](fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN)
+    /// for the full shape contract. Output
+    /// `y: [batch, seqlen, heads, head_dim]`. Geometry + `chunk_size`
+    /// flow through `OpParams::SsdChunkScan`.
+    SsdChunkScan,
 }
 
 impl OpKind {
@@ -504,6 +511,7 @@ impl OpKind {
             OpKind::FusedSoftmaxCrossEntropy => "fused_softmax_cross_entropy",
             OpKind::CausalConv1d        => "causal_conv1d",
             OpKind::SelectiveScan       => "selective_scan",
+            OpKind::SsdChunkScan        => "ssd_chunk_scan",
         }
     }
 }

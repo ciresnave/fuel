@@ -3575,6 +3575,101 @@ impl Tensor {
         }
     }
 
+    /// Append an `SsdChunkScan` node — Mamba-2's State-Space
+    /// Duality chunked scan (forward). Five inputs:
+    /// - `self` (x): `[batch, seqlen, heads, head_dim]` F32
+    /// - `dt`:       `[batch, seqlen, heads]` F32
+    /// - `a`:        `[heads]` F32 (per-head scalar log A)
+    /// - `b`:        `[batch, seqlen, heads, state_dim]` F32
+    /// - `c`:        `[batch, seqlen, heads, state_dim]` F32
+    ///
+    /// Output: `y: [batch, seqlen, heads, head_dim]` F32 (same as x).
+    ///
+    /// `chunk_size` is the SSD block size. v1 requires
+    /// `chunk_size == seqlen` (single-chunk degenerate case);
+    /// multi-chunk inter-block decay propagation is a follow-up.
+    /// The kernel returns an error if the constraint is violated.
+    ///
+    /// Emits `Op::Fused(FusedOps::SSD_CHUNK_SCAN,
+    /// FusedOpParams::SsdChunkScan { chunk_size })`. No primitive
+    /// decomposition; backends without a native kernel fall through
+    /// to the executor's cpu_fallback path.
+    pub fn ssd_chunk_scan(
+        &self,
+        dt: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        c: &Tensor,
+        chunk_size: usize,
+    ) -> Tensor {
+        assert!(
+            Arc::ptr_eq(&self.graph, &dt.graph)
+                && Arc::ptr_eq(&self.graph, &a.graph)
+                && Arc::ptr_eq(&self.graph, &b.graph)
+                && Arc::ptr_eq(&self.graph, &c.graph),
+            "ssd_chunk_scan: all tensors must live on the same graph",
+        );
+        for (name, t) in [("x", self), ("dt", dt), ("a", a), ("b", b), ("c", c)] {
+            assert_eq!(
+                t.dtype(),
+                DType::F32,
+                "ssd_chunk_scan v1: {name} must be F32, got {:?}", t.dtype(),
+            );
+        }
+        let x_dims = self.shape();
+        let x_dims = x_dims.dims();
+        let dt_dims = dt.shape();
+        let dt_dims = dt_dims.dims();
+        let a_dims = a.shape();
+        let a_dims = a_dims.dims();
+        let b_dims = b.shape();
+        let b_dims = b_dims.dims();
+        let c_dims = c.shape();
+        let c_dims = c_dims.dims();
+        assert_eq!(
+            x_dims.len(), 4,
+            "ssd_chunk_scan: x must be rank 4 [batch, seqlen, heads, head_dim], got {x_dims:?}",
+        );
+        let batch = x_dims[0];
+        let seqlen = x_dims[1];
+        let heads = x_dims[2];
+        let head_dim = x_dims[3];
+        assert_eq!(
+            dt_dims, &[batch, seqlen, heads][..],
+            "ssd_chunk_scan: dt {dt_dims:?} must be [batch={batch}, seqlen={seqlen}, heads={heads}]",
+        );
+        assert_eq!(
+            a_dims, &[heads][..],
+            "ssd_chunk_scan: a {a_dims:?} must be [heads={heads}]",
+        );
+        assert_eq!(
+            b_dims.len(), 4,
+            "ssd_chunk_scan: b must be rank 4 [batch, seqlen, heads, state_dim], got {b_dims:?}",
+        );
+        let state_dim = b_dims[3];
+        assert_eq!(
+            b_dims, &[batch, seqlen, heads, state_dim][..],
+            "ssd_chunk_scan: b {b_dims:?} must be [batch={batch}, seqlen={seqlen}, heads={heads}, state_dim={state_dim}]",
+        );
+        assert_eq!(
+            c_dims, &[batch, seqlen, heads, state_dim][..],
+            "ssd_chunk_scan: c {c_dims:?} must match b shape",
+        );
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::Fused(
+                crate::registry::FusedOps::SSD_CHUNK_SCAN,
+                crate::registry::FusedOpParams::SsdChunkScan { chunk_size },
+            ),
+            inputs: vec![self.id, dt.id, a.id, b.id, c.id],
+            shape:  Shape::from_dims(&[batch, seqlen, heads, head_dim]),
+            dtype:  DType::F32,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `SelectiveScan` node — Mamba-1's selective
     /// state-space scan (forward). Five inputs:
     /// - `self` (u): `[batch, seqlen, dim]` F32

@@ -1216,6 +1216,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         {
             Some(OpKind::SelectiveScan)
         }
+        Op::Fused(fid, _)
+            if *fid == fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN =>
+        {
+            Some(OpKind::SsdChunkScan)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -1637,6 +1642,50 @@ fn op_to_op_params(
                 dim,
                 dstate,
                 delta_softplus: *delta_softplus,
+            }
+        }
+        // SsdChunkScan: derive (batch, seqlen, heads, head_dim,
+        // state_dim) from x and b layouts. x: [batch, seqlen, heads,
+        // head_dim]; b: [batch, seqlen, heads, state_dim].
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::SsdChunkScan { chunk_size },
+        ) => {
+            if node.inputs.len() != 5 {
+                return Err(Error::Msg(format!(
+                    "SsdChunkScan expects 5 inputs (x, dt, a, b, c), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let b_layout = input_layout(node.inputs[3]);
+            let x_dims = x_layout.shape().dims();
+            let b_dims = b_layout.shape().dims();
+            if x_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "SsdChunkScan: x must be rank 4 [batch, seqlen, heads, head_dim], got {x_dims:?}",
+                ))
+                .bt());
+            }
+            if b_dims.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "SsdChunkScan: b must be rank 4 [batch, seqlen, heads, state_dim], got {b_dims:?}",
+                ))
+                .bt());
+            }
+            let batch = x_dims[0];
+            let seqlen = x_dims[1];
+            let heads = x_dims[2];
+            let head_dim = x_dims[3];
+            let state_dim = b_dims[3];
+            OpParams::SsdChunkScan {
+                batch,
+                seqlen,
+                heads,
+                head_dim,
+                state_dim,
+                chunk_size: *chunk_size,
             }
         }
         // Phase 7.6 step 3: SoftmaxLastDim flows through

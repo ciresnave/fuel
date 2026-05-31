@@ -37,6 +37,7 @@ pub mod flash_attn;
 pub mod fused_linear;
 pub mod fused_softmax_cross_entropy;
 pub mod selective_scan;
+pub mod ssd_chunk_scan;
 pub mod inplace_affine;
 pub mod layer_norm_last_dim;
 pub mod layer_norm_last_dim_backward;
@@ -211,6 +212,20 @@ pub enum FusedOpParams {
     /// `Op::destructive_input`). Phase 1 of the in-place ops
     /// infrastructure.
     InplaceAffine { mul: f64, add: f64 },
+    /// SsdChunkScan — Mamba-2's State-Space Duality chunked scan
+    /// (forward only). Five inputs:
+    /// - `x`:   `[batch, seqlen, heads, head_dim]`
+    /// - `dt`:  `[batch, seqlen, heads]`
+    /// - `a`:   `[heads]` — per-head scalar log A.
+    /// - `b`/`c`: `[batch, seqlen, heads, state_dim]`
+    ///
+    /// Output: `y: [batch, seqlen, heads, head_dim]`.
+    ///
+    /// `chunk_size` is the SSD block size (typically 256 in Mamba-2).
+    /// v1 only supports `chunk_size == seqlen` (single-chunk case);
+    /// multi-chunk with proper inter-chunk decay propagation is a
+    /// follow-up. See the registry module for the rationale.
+    SsdChunkScan { chunk_size: usize },
     /// SelectiveScan — Mamba-1's selective state-space scan
     /// (forward only). Five inputs:
     /// - `u`:     `[batch, seqlen, dim]` — input sequence.
@@ -456,6 +471,11 @@ impl FusedOpParams {
                 tag: 19,
                 bits: Vec::new(),
                 ints: vec![*delta_softplus as i64],
+            },
+            FusedOpParams::SsdChunkScan { chunk_size } => FusedOpParamsKey {
+                tag: 20,
+                bits: Vec::new(),
+                ints: vec![*chunk_size as i64],
             },
         }
     }
@@ -805,6 +825,16 @@ impl FusedOps {
     /// output — both are mechanical follow-ups when a consumer needs
     /// them. `BackwardKind::NotDifferentiable` for v1.
     pub const SELECTIVE_SCAN: FusedOpId = FusedOpId(19);
+
+    /// SsdChunkScan — Mamba-2's State-Space Duality chunked scan
+    /// (forward only). Five inputs `[x, dt, a, b, c]`; one output
+    /// `y: [batch, seqlen, heads, head_dim]`. Carries
+    /// `chunk_size: usize` in [`FusedOpParams::SsdChunkScan`]. v1
+    /// supports only `chunk_size == seqlen` (single-chunk case
+    /// reduces to a per-head selective scan); multi-chunk with
+    /// inter-chunk decay propagation is a follow-up.
+    /// `BackwardKind::NotDifferentiable` for v1.
+    pub const SSD_CHUNK_SCAN: FusedOpId = FusedOpId(20);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -838,6 +868,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(fused_softmax_cross_entropy::entry())
             .with_entry(causal_conv1d::entry())
             .with_entry(selective_scan::entry())
+            .with_entry(ssd_chunk_scan::entry())
     })
 }
 
