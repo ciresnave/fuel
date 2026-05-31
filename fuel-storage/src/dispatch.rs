@@ -2253,6 +2253,89 @@ cpu_unary_inplace_wrapper!(gelu_inplace_f16_cpu_wrapper,    gelu_inplace_f16);
 cpu_unary_inplace_wrapper!(tanh_inplace_f16_cpu_wrapper,    tanh_inplace_f16);
 cpu_unary_inplace_wrapper!(sigmoid_inplace_f16_cpu_wrapper, sigmoid_inplace_f16);
 
+// In-place unary op family expansion (2026-05-30) — 16 new ops × 4
+// dtypes. Each wrapper is identical in shape to the original 5-op
+// starter set; the chassis handles per-dtype math.
+cpu_unary_inplace_wrapper!(neg_inplace_f32_cpu_wrapper,    neg_inplace_f32);
+cpu_unary_inplace_wrapper!(neg_inplace_f64_cpu_wrapper,    neg_inplace_f64);
+cpu_unary_inplace_wrapper!(neg_inplace_bf16_cpu_wrapper,   neg_inplace_bf16);
+cpu_unary_inplace_wrapper!(neg_inplace_f16_cpu_wrapper,    neg_inplace_f16);
+
+cpu_unary_inplace_wrapper!(abs_inplace_f32_cpu_wrapper,    abs_inplace_f32);
+cpu_unary_inplace_wrapper!(abs_inplace_f64_cpu_wrapper,    abs_inplace_f64);
+cpu_unary_inplace_wrapper!(abs_inplace_bf16_cpu_wrapper,   abs_inplace_bf16);
+cpu_unary_inplace_wrapper!(abs_inplace_f16_cpu_wrapper,    abs_inplace_f16);
+
+cpu_unary_inplace_wrapper!(sqr_inplace_f32_cpu_wrapper,    sqr_inplace_f32);
+cpu_unary_inplace_wrapper!(sqr_inplace_f64_cpu_wrapper,    sqr_inplace_f64);
+cpu_unary_inplace_wrapper!(sqr_inplace_bf16_cpu_wrapper,   sqr_inplace_bf16);
+cpu_unary_inplace_wrapper!(sqr_inplace_f16_cpu_wrapper,    sqr_inplace_f16);
+
+cpu_unary_inplace_wrapper!(sqrt_inplace_f32_cpu_wrapper,   sqrt_inplace_f32);
+cpu_unary_inplace_wrapper!(sqrt_inplace_f64_cpu_wrapper,   sqrt_inplace_f64);
+cpu_unary_inplace_wrapper!(sqrt_inplace_bf16_cpu_wrapper,  sqrt_inplace_bf16);
+cpu_unary_inplace_wrapper!(sqrt_inplace_f16_cpu_wrapper,   sqrt_inplace_f16);
+
+cpu_unary_inplace_wrapper!(rsqrt_inplace_f32_cpu_wrapper,  rsqrt_inplace_f32);
+cpu_unary_inplace_wrapper!(rsqrt_inplace_f64_cpu_wrapper,  rsqrt_inplace_f64);
+cpu_unary_inplace_wrapper!(rsqrt_inplace_bf16_cpu_wrapper, rsqrt_inplace_bf16);
+cpu_unary_inplace_wrapper!(rsqrt_inplace_f16_cpu_wrapper,  rsqrt_inplace_f16);
+
+cpu_unary_inplace_wrapper!(recip_inplace_f32_cpu_wrapper,  recip_inplace_f32);
+cpu_unary_inplace_wrapper!(recip_inplace_f64_cpu_wrapper,  recip_inplace_f64);
+cpu_unary_inplace_wrapper!(recip_inplace_bf16_cpu_wrapper, recip_inplace_bf16);
+cpu_unary_inplace_wrapper!(recip_inplace_f16_cpu_wrapper,  recip_inplace_f16);
+
+cpu_unary_inplace_wrapper!(exp_inplace_f32_cpu_wrapper,    exp_inplace_f32);
+cpu_unary_inplace_wrapper!(exp_inplace_f64_cpu_wrapper,    exp_inplace_f64);
+cpu_unary_inplace_wrapper!(exp_inplace_bf16_cpu_wrapper,   exp_inplace_bf16);
+cpu_unary_inplace_wrapper!(exp_inplace_f16_cpu_wrapper,    exp_inplace_f16);
+
+cpu_unary_inplace_wrapper!(log_inplace_f32_cpu_wrapper,    log_inplace_f32);
+cpu_unary_inplace_wrapper!(log_inplace_f64_cpu_wrapper,    log_inplace_f64);
+cpu_unary_inplace_wrapper!(log_inplace_bf16_cpu_wrapper,   log_inplace_bf16);
+cpu_unary_inplace_wrapper!(log_inplace_f16_cpu_wrapper,    log_inplace_f16);
+
+cpu_unary_inplace_wrapper!(sin_inplace_f32_cpu_wrapper,    sin_inplace_f32);
+cpu_unary_inplace_wrapper!(sin_inplace_f64_cpu_wrapper,    sin_inplace_f64);
+cpu_unary_inplace_wrapper!(sin_inplace_bf16_cpu_wrapper,   sin_inplace_bf16);
+cpu_unary_inplace_wrapper!(sin_inplace_f16_cpu_wrapper,    sin_inplace_f16);
+
+cpu_unary_inplace_wrapper!(cos_inplace_f32_cpu_wrapper,    cos_inplace_f32);
+cpu_unary_inplace_wrapper!(cos_inplace_f64_cpu_wrapper,    cos_inplace_f64);
+cpu_unary_inplace_wrapper!(cos_inplace_bf16_cpu_wrapper,   cos_inplace_bf16);
+cpu_unary_inplace_wrapper!(cos_inplace_f16_cpu_wrapper,    cos_inplace_f16);
+
+cpu_unary_inplace_wrapper!(sign_inplace_f32_cpu_wrapper,   sign_inplace_f32);
+cpu_unary_inplace_wrapper!(sign_inplace_f64_cpu_wrapper,   sign_inplace_f64);
+cpu_unary_inplace_wrapper!(sign_inplace_bf16_cpu_wrapper,  sign_inplace_bf16);
+cpu_unary_inplace_wrapper!(sign_inplace_f16_cpu_wrapper,   sign_inplace_f16);
+
+cpu_unary_inplace_wrapper!(floor_inplace_f32_cpu_wrapper,  floor_inplace_f32);
+cpu_unary_inplace_wrapper!(floor_inplace_f64_cpu_wrapper,  floor_inplace_f64);
+cpu_unary_inplace_wrapper!(floor_inplace_bf16_cpu_wrapper, floor_inplace_bf16);
+cpu_unary_inplace_wrapper!(floor_inplace_f16_cpu_wrapper,  floor_inplace_f16);
+
+cpu_unary_inplace_wrapper!(ceil_inplace_f32_cpu_wrapper,   ceil_inplace_f32);
+cpu_unary_inplace_wrapper!(ceil_inplace_f64_cpu_wrapper,   ceil_inplace_f64);
+cpu_unary_inplace_wrapper!(ceil_inplace_bf16_cpu_wrapper,  ceil_inplace_bf16);
+cpu_unary_inplace_wrapper!(ceil_inplace_f16_cpu_wrapper,   ceil_inplace_f16);
+
+cpu_unary_inplace_wrapper!(round_inplace_f32_cpu_wrapper,  round_inplace_f32);
+cpu_unary_inplace_wrapper!(round_inplace_f64_cpu_wrapper,  round_inplace_f64);
+cpu_unary_inplace_wrapper!(round_inplace_bf16_cpu_wrapper, round_inplace_bf16);
+cpu_unary_inplace_wrapper!(round_inplace_f16_cpu_wrapper,  round_inplace_f16);
+
+cpu_unary_inplace_wrapper!(erf_inplace_f32_cpu_wrapper,    erf_inplace_f32);
+cpu_unary_inplace_wrapper!(erf_inplace_f64_cpu_wrapper,    erf_inplace_f64);
+cpu_unary_inplace_wrapper!(erf_inplace_bf16_cpu_wrapper,   erf_inplace_bf16);
+cpu_unary_inplace_wrapper!(erf_inplace_f16_cpu_wrapper,    erf_inplace_f16);
+
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_f32_cpu_wrapper,  gelu_erf_inplace_f32);
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_f64_cpu_wrapper,  gelu_erf_inplace_f64);
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_bf16);
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_f16_cpu_wrapper,  gelu_erf_inplace_f16);
+
 /// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
 fn clamp_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
@@ -2898,57 +2981,66 @@ cpu_causal_conv1d_wrapper!(causal_conv1d_f64_cpu_wrapper,  fuel_cpu_backend::byt
 cpu_causal_conv1d_wrapper!(causal_conv1d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::causal_conv1d_bf16);
 cpu_causal_conv1d_wrapper!(causal_conv1d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::causal_conv1d_f16);
 
-/// Dispatch wrapper for `(SelectiveScan, [F32; 6], Cpu)`. Five inputs
-/// (u, delta, a, b, c) → one output (y). Geometry +
-/// `delta_softplus` flow through `OpParams::SelectiveScan`.
-fn selective_scan_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 5 {
-        return Err(Error::Msg(format!(
-            "selective_scan wrapper expects 5 inputs (u, delta, a, b, c), got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "selective_scan wrapper expects 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (batch, seqlen, dim, dstate, delta_softplus) = match params {
-        OpParams::SelectiveScan { batch, seqlen, dim, dstate, delta_softplus } => {
-            (*batch, *seqlen, *dim, *dstate, *delta_softplus)
-        }
-        other => {
-            return Err(Error::Msg(format!(
-                "selective_scan wrapper expects OpParams::SelectiveScan, got {other:?}",
-            ))
-            .bt());
+/// Per-dtype SelectiveScan dispatch wrapper. Five inputs (u, delta,
+/// a, b, c) → one output (y). Geometry + `delta_softplus` flow
+/// through `OpParams::SelectiveScan`. All six tensors share dtype `T`;
+/// the binding-table key is `[T; 6]`.
+macro_rules! cpu_selective_scan_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 5 {
+                return Err(Error::Msg(format!(
+                    "selective_scan wrapper expects 5 inputs (u, delta, a, b, c), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "selective_scan wrapper expects 1 output, got {}", outputs.len(),
+                ))
+                .bt());
+            }
+            let (batch, seqlen, dim, dstate, delta_softplus) = match params {
+                OpParams::SelectiveScan { batch, seqlen, dim, dstate, delta_softplus } => {
+                    (*batch, *seqlen, *dim, *dstate, *delta_softplus)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        "selective_scan wrapper expects OpParams::SelectiveScan, got {other:?}",
+                    ))
+                    .bt());
+                }
+            };
+            let u_guard = read_storage(&inputs[0])?;
+            let delta_guard = read_storage(&inputs[1])?;
+            let a_guard = read_storage(&inputs[2])?;
+            let b_guard = read_storage(&inputs[3])?;
+            let c_guard = read_storage(&inputs[4])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let u_cpu = cpu_input(&u_guard)?;
+            let delta_cpu = cpu_input(&delta_guard)?;
+            let a_cpu = cpu_input(&a_guard)?;
+            let b_cpu = cpu_input(&b_guard)?;
+            let c_cpu = cpu_input(&c_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
+                batch, seqlen, dim, dstate, delta_softplus,
+            )
         }
     };
-    let u_guard = read_storage(&inputs[0])?;
-    let delta_guard = read_storage(&inputs[1])?;
-    let a_guard = read_storage(&inputs[2])?;
-    let b_guard = read_storage(&inputs[3])?;
-    let c_guard = read_storage(&inputs[4])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let u_cpu = cpu_input(&u_guard)?;
-    let delta_cpu = cpu_input(&delta_guard)?;
-    let a_cpu = cpu_input(&a_guard)?;
-    let b_cpu = cpu_input(&b_guard)?;
-    let c_cpu = cpu_input(&c_guard)?;
-    let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::selective_scan_f32(
-        u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-        batch, seqlen, dim, dstate, delta_softplus,
-    )
 }
+
+cpu_selective_scan_wrapper!(selective_scan_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f32);
+cpu_selective_scan_wrapper!(selective_scan_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f64);
+cpu_selective_scan_wrapper!(selective_scan_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::selective_scan_bf16);
+cpu_selective_scan_wrapper!(selective_scan_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f16);
 
 /// Dispatch wrapper for `(SsdChunkScan, [F32; 6], Cpu)`. Five inputs
 /// (x, dt, a, b, c) → one output (y). Geometry + `chunk_size` flow
@@ -3750,13 +3842,16 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         cpu, causal_conv1d_f16_cpu_wrapper,
     );
 
-    // SelectiveScan: 5 inputs (u, delta, a, b, c) + 1 output, all F32.
-    table.register(
-        SelectiveScan,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        cpu,
-        selective_scan_f32_cpu_wrapper,
-    );
+    // SelectiveScan: 5 inputs (u, delta, a, b, c) + 1 output, uniform
+    // dtype T ∈ {F32, F64, BF16, F16}.
+    for (dt, w) in [
+        (DType::F32,  selective_scan_f32_cpu_wrapper  as KernelRef),
+        (DType::F64,  selective_scan_f64_cpu_wrapper),
+        (DType::BF16, selective_scan_bf16_cpu_wrapper),
+        (DType::F16,  selective_scan_f16_cpu_wrapper),
+    ] {
+        table.register(SelectiveScan, &[dt, dt, dt, dt, dt, dt], cpu, w);
+    }
 
     // SsdChunkScan: 5 inputs (x, dt, a, b, c) + 1 output, all F32.
     table.register(
@@ -3817,6 +3912,32 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GeluInplace,    &unary(f16_dt), cpu, gelu_inplace_f16_cpu_wrapper);
     table.register(TanhInplace,    &unary(f16_dt), cpu, tanh_inplace_f16_cpu_wrapper);
     table.register(SigmoidInplace, &unary(f16_dt), cpu, sigmoid_inplace_f16_cpu_wrapper);
+
+    // In-place unary op family expansion (2026-05-30) — 16 new ops
+    // × 4 dtypes = 64 new (OpKind, [T, T], Cpu) entries.
+    for (op, regs) in [
+        (NegInplace,    [neg_inplace_f32_cpu_wrapper,    neg_inplace_f64_cpu_wrapper,    neg_inplace_bf16_cpu_wrapper,    neg_inplace_f16_cpu_wrapper]),
+        (AbsInplace,    [abs_inplace_f32_cpu_wrapper,    abs_inplace_f64_cpu_wrapper,    abs_inplace_bf16_cpu_wrapper,    abs_inplace_f16_cpu_wrapper]),
+        (SqrInplace,    [sqr_inplace_f32_cpu_wrapper,    sqr_inplace_f64_cpu_wrapper,    sqr_inplace_bf16_cpu_wrapper,    sqr_inplace_f16_cpu_wrapper]),
+        (SqrtInplace,   [sqrt_inplace_f32_cpu_wrapper,   sqrt_inplace_f64_cpu_wrapper,   sqrt_inplace_bf16_cpu_wrapper,   sqrt_inplace_f16_cpu_wrapper]),
+        (RsqrtInplace,  [rsqrt_inplace_f32_cpu_wrapper,  rsqrt_inplace_f64_cpu_wrapper,  rsqrt_inplace_bf16_cpu_wrapper,  rsqrt_inplace_f16_cpu_wrapper]),
+        (RecipInplace,  [recip_inplace_f32_cpu_wrapper,  recip_inplace_f64_cpu_wrapper,  recip_inplace_bf16_cpu_wrapper,  recip_inplace_f16_cpu_wrapper]),
+        (ExpInplace,    [exp_inplace_f32_cpu_wrapper,    exp_inplace_f64_cpu_wrapper,    exp_inplace_bf16_cpu_wrapper,    exp_inplace_f16_cpu_wrapper]),
+        (LogInplace,    [log_inplace_f32_cpu_wrapper,    log_inplace_f64_cpu_wrapper,    log_inplace_bf16_cpu_wrapper,    log_inplace_f16_cpu_wrapper]),
+        (SinInplace,    [sin_inplace_f32_cpu_wrapper,    sin_inplace_f64_cpu_wrapper,    sin_inplace_bf16_cpu_wrapper,    sin_inplace_f16_cpu_wrapper]),
+        (CosInplace,    [cos_inplace_f32_cpu_wrapper,    cos_inplace_f64_cpu_wrapper,    cos_inplace_bf16_cpu_wrapper,    cos_inplace_f16_cpu_wrapper]),
+        (SignInplace,   [sign_inplace_f32_cpu_wrapper,   sign_inplace_f64_cpu_wrapper,   sign_inplace_bf16_cpu_wrapper,   sign_inplace_f16_cpu_wrapper]),
+        (FloorInplace,  [floor_inplace_f32_cpu_wrapper,  floor_inplace_f64_cpu_wrapper,  floor_inplace_bf16_cpu_wrapper,  floor_inplace_f16_cpu_wrapper]),
+        (CeilInplace,   [ceil_inplace_f32_cpu_wrapper,   ceil_inplace_f64_cpu_wrapper,   ceil_inplace_bf16_cpu_wrapper,   ceil_inplace_f16_cpu_wrapper]),
+        (RoundInplace,  [round_inplace_f32_cpu_wrapper,  round_inplace_f64_cpu_wrapper,  round_inplace_bf16_cpu_wrapper,  round_inplace_f16_cpu_wrapper]),
+        (ErfInplace,    [erf_inplace_f32_cpu_wrapper,    erf_inplace_f64_cpu_wrapper,    erf_inplace_bf16_cpu_wrapper,    erf_inplace_f16_cpu_wrapper]),
+        (GeluErfInplace,[gelu_erf_inplace_f32_cpu_wrapper, gelu_erf_inplace_f64_cpu_wrapper, gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_f16_cpu_wrapper]),
+    ] {
+        for (dt, wrapper) in [f32_dt, f64_dt, bf16_dt, f16_dt].into_iter().zip(regs.into_iter()) {
+            table.register(op, &unary(dt), cpu, wrapper);
+        }
+    }
+
     table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
     table.register(MaximumElementwise, &binary(f32_dt), cpu, maximum_elementwise_f32_cpu_wrapper);
@@ -5388,15 +5509,27 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost = cost_causal_conv1d_cpu,
         precision = CAUSAL_CONV1D_CPU_PRECISION);
 
-    // SELECTIVE_SCAN — six-tuple (u, delta, a, b, c, out), all F32.
-    // v1 covers Mamba-1's forward scan with 5 required inputs;
-    // optional d_skip / z / delta_bias and the last_state second
-    // output are mechanical follow-ups when a consumer needs them.
-    const SS_F32: &[DType] = &[
-        DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32,
-    ];
+    // SELECTIVE_SCAN — six-tuple (u, delta, a, b, c, out), 4 dtype
+    // variants. F64 accumulator regardless of T; F16/BF16 narrow on
+    // store; F32/F64 lossless.
+    const SS_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const SS_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const SS_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const SS_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
     register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F32,
         selective_scan_f32_cpu_wrapper,
+        cost = cost_selective_scan_cpu,
+        precision = SELECTIVE_SCAN_CPU_PRECISION);
+    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F64,
+        selective_scan_f64_cpu_wrapper,
+        cost = cost_selective_scan_cpu,
+        precision = SELECTIVE_SCAN_CPU_PRECISION);
+    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_BF16,
+        selective_scan_bf16_cpu_wrapper,
+        cost = cost_selective_scan_cpu,
+        precision = SELECTIVE_SCAN_CPU_PRECISION);
+    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F16,
+        selective_scan_f16_cpu_wrapper,
         cost = cost_selective_scan_cpu,
         precision = SELECTIVE_SCAN_CPU_PRECISION);
 

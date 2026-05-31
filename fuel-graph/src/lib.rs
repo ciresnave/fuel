@@ -3989,11 +3989,16 @@ impl Tensor {
                 && Arc::ptr_eq(&self.graph, &c.graph),
             "selective_scan: all tensors must live on the same graph",
         );
-        for (name, t) in [("u", self), ("delta", delta), ("a", a), ("b", b), ("c", c)] {
+        let dtype = self.dtype();
+        assert!(
+            matches!(dtype, DType::F32 | DType::F64 | DType::BF16 | DType::F16),
+            "selective_scan: u must be F32/F64/BF16/F16, got {dtype:?}",
+        );
+        for (name, t) in [("delta", delta), ("a", a), ("b", b), ("c", c)] {
             assert_eq!(
+                t.dtype(), dtype,
+                "selective_scan: {name} dtype {:?} must match u dtype {dtype:?}",
                 t.dtype(),
-                DType::F32,
-                "selective_scan v1: {name} must be F32, got {:?}", t.dtype(),
             );
         }
         let u_dims = self.shape();
@@ -4041,7 +4046,7 @@ impl Tensor {
             ),
             inputs: vec![self.id, delta.id, a.id, b.id, c.id],
             shape:  Shape::from_dims(&[batch, seqlen, dim]),
-            dtype:  DType::F32,
+            dtype,
         });
         Self {
             graph: self.graph.clone(),
