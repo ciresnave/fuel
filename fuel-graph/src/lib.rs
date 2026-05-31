@@ -280,6 +280,49 @@ pub enum Op {
     /// `Op::Sigmoid`. Not yet wired through autograd.
     SigmoidInplace,
 
+    // --- in-place elementwise unary, dtype expansion + op family
+    // expansion shipped 2026-05-30. Same `destructive_input() ->
+    // Some(0)` contract as the 5 above; backward emitters mirror
+    // the non-inplace cousin (chain-rule formulas relying on
+    // Phase 4a view-aware ordering for pre-mutation reads of x).
+    /// In-place Neg: `x = -x`. Same semantics as `Op::Neg`.
+    NegInplace,
+    /// In-place Abs: `x = |x|`. Same semantics as `Op::Abs`.
+    AbsInplace,
+    /// In-place Sqr: `x = x²`. Same semantics as `Op::Sqr`.
+    SqrInplace,
+    /// In-place Sqrt: `x = √x`. Same semantics as `Op::Sqrt`.
+    SqrtInplace,
+    /// In-place Rsqrt: `x = 1/√x`. Same semantics as `Op::Rsqrt`.
+    RsqrtInplace,
+    /// In-place Recip: `x = 1/x`. Same semantics as `Op::Recip`.
+    RecipInplace,
+    /// In-place Exp: `x = exp(x)`. Same semantics as `Op::Exp`.
+    ExpInplace,
+    /// In-place Log: `x = ln(x)`. Same semantics as `Op::Log`.
+    LogInplace,
+    /// In-place Sin: `x = sin(x)`. Same semantics as `Op::Sin`.
+    SinInplace,
+    /// In-place Cos: `x = cos(x)`. Same semantics as `Op::Cos`.
+    CosInplace,
+    /// In-place Sign: `x = sign(x)`. Same semantics as `Op::Sign`.
+    /// Backward drops gradient (mirrors `Op::Sign`).
+    SignInplace,
+    /// In-place Floor: `x = ⌊x⌋`. Same semantics as `Op::Floor`.
+    /// Backward drops gradient (mirrors `Op::Floor`).
+    FloorInplace,
+    /// In-place Ceil: `x = ⌈x⌉`. Same semantics as `Op::Ceil`.
+    /// Backward drops gradient (mirrors `Op::Ceil`).
+    CeilInplace,
+    /// In-place Round: `x = round(x)`. Same semantics as `Op::Round`.
+    /// Backward drops gradient (mirrors `Op::Round`).
+    RoundInplace,
+    /// In-place Erf: `x = erf(x)`. Same semantics as `Op::Erf`.
+    ErfInplace,
+    /// In-place exact-GeLU: `x = 0.5 · x · (1 + erf(x/√2))`. Same
+    /// semantics as `Op::GeluErf`.
+    GeluErfInplace,
+
     // --- element-wise comparison (output is U8 mask) ---
     /// Element-wise equality (`a == b`) producing a `U8` mask: `1`
     /// where the inputs are equal, `0` otherwise. Both operands must
@@ -800,7 +843,23 @@ impl Op {
             | Op::SiluInplace
             | Op::GeluInplace
             | Op::TanhInplace
-            | Op::SigmoidInplace => Some(0),
+            | Op::SigmoidInplace
+            | Op::NegInplace
+            | Op::AbsInplace
+            | Op::SqrInplace
+            | Op::SqrtInplace
+            | Op::RsqrtInplace
+            | Op::RecipInplace
+            | Op::ExpInplace
+            | Op::LogInplace
+            | Op::SinInplace
+            | Op::CosInplace
+            | Op::SignInplace
+            | Op::FloorInplace
+            | Op::CeilInplace
+            | Op::RoundInplace
+            | Op::ErfInplace
+            | Op::GeluErfInplace => Some(0),
             Op::Fused(id, _) if *id == crate::registry::FusedOps::INPLACE_AFFINE => Some(0),
             _ => None,
         }
@@ -903,6 +962,22 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::GeluInplace          => "GeluInplace",
         Op::TanhInplace          => "TanhInplace",
         Op::SigmoidInplace       => "SigmoidInplace",
+        Op::NegInplace           => "NegInplace",
+        Op::AbsInplace           => "AbsInplace",
+        Op::SqrInplace           => "SqrInplace",
+        Op::SqrtInplace          => "SqrtInplace",
+        Op::RsqrtInplace         => "RsqrtInplace",
+        Op::RecipInplace         => "RecipInplace",
+        Op::ExpInplace           => "ExpInplace",
+        Op::LogInplace           => "LogInplace",
+        Op::SinInplace           => "SinInplace",
+        Op::CosInplace           => "CosInplace",
+        Op::SignInplace          => "SignInplace",
+        Op::FloorInplace         => "FloorInplace",
+        Op::CeilInplace          => "CeilInplace",
+        Op::RoundInplace         => "RoundInplace",
+        Op::ErfInplace           => "ErfInplace",
+        Op::GeluErfInplace       => "GeluErfInplace",
         Op::Equal                => "Equal",
         Op::Ne                   => "Ne",
         Op::Lt                   => "Lt",
@@ -2704,6 +2779,103 @@ impl Tensor {
         self.unary_op(Op::SigmoidInplace)
     }
 
+    /// Append a `NegInplace` node — mutates `self`'s storage with
+    /// `-self`. See `Tensor::neg` for the functional variant.
+    pub fn neg_inplace(&self) -> Tensor {
+        self.unary_op(Op::NegInplace)
+    }
+
+    /// Append an `AbsInplace` node — mutates `self`'s storage with
+    /// `|self|`. See `Tensor::abs` for the functional variant.
+    pub fn abs_inplace(&self) -> Tensor {
+        self.unary_op(Op::AbsInplace)
+    }
+
+    /// Append a `SqrInplace` node — mutates `self`'s storage with
+    /// `self²`. See `Tensor::sqr` for the functional variant.
+    pub fn sqr_inplace(&self) -> Tensor {
+        self.unary_op(Op::SqrInplace)
+    }
+
+    /// Append a `SqrtInplace` node — mutates `self`'s storage with
+    /// `√self`. See `Tensor::sqrt` for the functional variant.
+    pub fn sqrt_inplace(&self) -> Tensor {
+        self.unary_op(Op::SqrtInplace)
+    }
+
+    /// Append a `RsqrtInplace` node — mutates `self`'s storage with
+    /// `1/√self`. See `Tensor::rsqrt` for the functional variant.
+    pub fn rsqrt_inplace(&self) -> Tensor {
+        self.unary_op(Op::RsqrtInplace)
+    }
+
+    /// Append a `RecipInplace` node — mutates `self`'s storage with
+    /// `1/self`. See `Tensor::recip` for the functional variant.
+    pub fn recip_inplace(&self) -> Tensor {
+        self.unary_op(Op::RecipInplace)
+    }
+
+    /// Append an `ExpInplace` node — mutates `self`'s storage with
+    /// `exp(self)`. See `Tensor::exp` for the functional variant.
+    pub fn exp_inplace(&self) -> Tensor {
+        self.unary_op(Op::ExpInplace)
+    }
+
+    /// Append a `LogInplace` node — mutates `self`'s storage with
+    /// `ln(self)`. See `Tensor::log` for the functional variant.
+    pub fn log_inplace(&self) -> Tensor {
+        self.unary_op(Op::LogInplace)
+    }
+
+    /// Append a `SinInplace` node — mutates `self`'s storage with
+    /// `sin(self)`. See `Tensor::sin` for the functional variant.
+    pub fn sin_inplace(&self) -> Tensor {
+        self.unary_op(Op::SinInplace)
+    }
+
+    /// Append a `CosInplace` node — mutates `self`'s storage with
+    /// `cos(self)`. See `Tensor::cos` for the functional variant.
+    pub fn cos_inplace(&self) -> Tensor {
+        self.unary_op(Op::CosInplace)
+    }
+
+    /// Append a `SignInplace` node — mutates `self`'s storage with
+    /// `sign(self)`. See `Tensor::sign` for the functional variant.
+    pub fn sign_inplace(&self) -> Tensor {
+        self.unary_op(Op::SignInplace)
+    }
+
+    /// Append a `FloorInplace` node — mutates `self`'s storage with
+    /// `⌊self⌋`. See `Tensor::floor` for the functional variant.
+    pub fn floor_inplace(&self) -> Tensor {
+        self.unary_op(Op::FloorInplace)
+    }
+
+    /// Append a `CeilInplace` node — mutates `self`'s storage with
+    /// `⌈self⌉`. See `Tensor::ceil` for the functional variant.
+    pub fn ceil_inplace(&self) -> Tensor {
+        self.unary_op(Op::CeilInplace)
+    }
+
+    /// Append a `RoundInplace` node — mutates `self`'s storage with
+    /// `round(self)`. See `Tensor::round` for the functional variant.
+    pub fn round_inplace(&self) -> Tensor {
+        self.unary_op(Op::RoundInplace)
+    }
+
+    /// Append an `ErfInplace` node — mutates `self`'s storage with
+    /// `erf(self)`. See `Tensor::erf` for the functional variant.
+    pub fn erf_inplace(&self) -> Tensor {
+        self.unary_op(Op::ErfInplace)
+    }
+
+    /// Append a `GeluErfInplace` node — mutates `self`'s storage
+    /// with the exact-GeLU formula. See `Tensor::gelu_erf` for the
+    /// functional variant.
+    pub fn gelu_erf_inplace(&self) -> Tensor {
+        self.unary_op(Op::GeluErfInplace)
+    }
+
     /// Append an `Op::Fused(INPLACE_AFFINE, ...)` node — mutates
     /// `self`'s storage with `self = mul · self + add`. Single-input
     /// fused op (no functional `Op::Affine` exists on
@@ -3517,22 +3689,19 @@ impl Tensor {
                 && Arc::ptr_eq(&self.graph, &bias.graph),
             "causal_conv1d: tensors must live on the same graph",
         );
-        assert_eq!(
-            self.dtype(),
-            DType::F32,
-            "causal_conv1d v1: x must be F32, got {:?}",
-            self.dtype(),
+        let dtype = self.dtype();
+        assert!(
+            matches!(dtype, DType::F32 | DType::F64 | DType::BF16 | DType::F16),
+            "causal_conv1d: x must be F32/F64/BF16/F16, got {dtype:?}",
         );
         assert_eq!(
-            weight.dtype(),
-            DType::F32,
-            "causal_conv1d v1: weight must be F32, got {:?}",
+            weight.dtype(), dtype,
+            "causal_conv1d: weight dtype {:?} must match x dtype {dtype:?}",
             weight.dtype(),
         );
         assert_eq!(
-            bias.dtype(),
-            DType::F32,
-            "causal_conv1d v1: bias must be F32, got {:?}",
+            bias.dtype(), dtype,
+            "causal_conv1d: bias dtype {:?} must match x dtype {dtype:?}",
             bias.dtype(),
         );
         let x_dims = self.shape();
@@ -3582,7 +3751,7 @@ impl Tensor {
             ),
             inputs: vec![self.id, weight.id, bias.id],
             shape:  Shape::from_dims(&[batch, channels, out_seq]),
-            dtype:  DType::F32,
+            dtype,
         });
         Self {
             graph: self.graph.clone(),
@@ -6981,6 +7150,155 @@ impl Tensor {
                          is currently inference-only (mirrors Op::Gelu's status)."
                     );
                 }
+                Op::NegInplace => {
+                    // Same backward as Op::Neg — grad_x = -upstream. No
+                    // dependency on x or y; Phase 4a ordering not needed.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(&graph_handle, Op::Neg, vec![up_id], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::AbsInplace => {
+                    // Same backward as Op::Abs — grad_x = sign(x) * upstream.
+                    // `Op::Sign(x)` reads x's pre-mutation bytes (Phase 4a
+                    // pins the in-place op after the Sign read).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let sign_x = push_node(&graph_handle, Op::Sign, vec![x], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, sign_x], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::SqrInplace => {
+                    // Same backward as Op::Sqr — grad_x = 2x * upstream,
+                    // expressed as `x + x` to avoid a scalar broadcast.
+                    // `x + x` reads pre-mutation bytes (Phase 4a).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let two_x = push_node(&graph_handle, Op::Add, vec![x, x], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, two_x], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::SqrtInplace => {
+                    // Same backward as Op::Sqrt — y = √x, grad_x = upstream/(2y).
+                    // Reads only the forward output `id`, which is post-mutation =
+                    // √x by definition; no pre-mutation x access needed.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let two_y = push_node(&graph_handle, Op::Add, vec![id, id], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Div, vec![up_id, two_y], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::RsqrtInplace => {
+                    // Same backward as Op::Rsqrt — y = x^(-1/2),
+                    // grad_x = -0.5 * upstream * y³. Reads forward output (id)
+                    // only — post-mutation = y by definition.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], x_shape.clone(), dtype);
+                    let y_cu = push_node(&graph_handle, Op::Mul, vec![id, y_sq], x_shape.clone(), dtype);
+                    let scaled = push_node(&graph_handle, Op::MulScalar(-0.5), vec![y_cu], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::RecipInplace => {
+                    // Same backward as Op::Recip — y = 1/x, grad_x = -upstream * y².
+                    // Reads forward output (id) only — post-mutation = 1/x.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let y_sq = push_node(&graph_handle, Op::Sqr, vec![id], x_shape.clone(), dtype);
+                    let up_y_sq = push_node(&graph_handle, Op::Mul, vec![up_id, y_sq], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Neg, vec![up_y_sq], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::ExpInplace => {
+                    // Same backward as Op::Exp — d(exp(x))/dx = exp(x) = y = id.
+                    // grad_x = upstream * y. Reads forward output (id) only.
+                    let x = inputs[0];
+                    let out_shape = node_shape(&graph_handle, id);
+                    let dtype = node_dtype(&graph_handle, id);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, id], out_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::LogInplace => {
+                    // Same backward as Op::Log — grad_x = upstream / x.
+                    // `Op::Div(up, x)` reads pre-mutation bytes of x (Phase 4a).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(&graph_handle, Op::Div, vec![up_id, x], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::SinInplace => {
+                    // Same backward as Op::Sin — grad_x = upstream * cos(x).
+                    // `Op::Cos(x)` reads pre-mutation x via Phase 4a ordering.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let cos_x = push_node(&graph_handle, Op::Cos, vec![x], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, cos_x], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::CosInplace => {
+                    // Same backward as Op::Cos — grad_x = -(upstream * sin(x)).
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let sin_x = push_node(&graph_handle, Op::Sin, vec![x], x_shape.clone(), dtype);
+                    let up_sin = push_node(&graph_handle, Op::Mul, vec![up_id, sin_x], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Neg, vec![up_sin], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::SignInplace
+                | Op::FloorInplace
+                | Op::CeilInplace
+                | Op::RoundInplace => {
+                    // Same backward as Op::{Sign, Floor, Ceil, Round} —
+                    // derivative is 0 almost everywhere; drop gradient
+                    // (no accumulation, mirroring Op::Step's pattern).
+                }
+                Op::ErfInplace => {
+                    // Same backward as Op::Erf — grad_x = upstream * (2/√π) * exp(-x²).
+                    // `Op::Sqr(x)` reads pre-mutation x via Phase 4a ordering.
+                    const TWO_OVER_SQRT_PI: f64 = 1.128_379_167_095_512_6_f64;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let x_sq = push_node(&graph_handle, Op::Sqr, vec![x], x_shape.clone(), dtype);
+                    let neg_x_sq = push_node(&graph_handle, Op::Neg, vec![x_sq], x_shape.clone(), dtype);
+                    let exp_neg = push_node(&graph_handle, Op::Exp, vec![neg_x_sq], x_shape.clone(), dtype);
+                    let scaled = push_node(&graph_handle, Op::MulScalar(TWO_OVER_SQRT_PI), vec![exp_neg], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::GeluErfInplace => {
+                    // Same backward as Op::GeluErf — exact-GELU derivative
+                    // is Φ(x) + x·φ(x). Both halves read pre-mutation x via
+                    // Phase 4a ordering. Identical 12-node chain to Op::GeluErf.
+                    const INV_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
+                    const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7_f64;
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let x_over_sqrt2 = push_node(&graph_handle, Op::MulScalar(INV_SQRT_2), vec![x], x_shape.clone(), dtype);
+                    let erf_arg = push_node(&graph_handle, Op::Erf, vec![x_over_sqrt2], x_shape.clone(), dtype);
+                    let plus_one = push_node(&graph_handle, Op::AddScalar(1.0), vec![erf_arg], x_shape.clone(), dtype);
+                    let cdf_term = push_node(&graph_handle, Op::MulScalar(0.5), vec![plus_one], x_shape.clone(), dtype);
+                    let x_sq = push_node(&graph_handle, Op::Sqr, vec![x], x_shape.clone(), dtype);
+                    let half_x_sq = push_node(&graph_handle, Op::MulScalar(0.5), vec![x_sq], x_shape.clone(), dtype);
+                    let neg_half = push_node(&graph_handle, Op::Neg, vec![half_x_sq], x_shape.clone(), dtype);
+                    let exp_term = push_node(&graph_handle, Op::Exp, vec![neg_half], x_shape.clone(), dtype);
+                    let phi = push_node(&graph_handle, Op::MulScalar(INV_SQRT_2PI), vec![exp_term], x_shape.clone(), dtype);
+                    let pdf_term = push_node(&graph_handle, Op::Mul, vec![x, phi], x_shape.clone(), dtype);
+                    let d_gelu = push_node(&graph_handle, Op::Add, vec![cdf_term, pdf_term], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, d_gelu], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
             }
         }
 
@@ -8717,6 +9035,22 @@ mod tests {
             Op::GeluInplace,
             Op::TanhInplace,
             Op::SigmoidInplace,
+            Op::NegInplace,
+            Op::AbsInplace,
+            Op::SqrInplace,
+            Op::SqrtInplace,
+            Op::RsqrtInplace,
+            Op::RecipInplace,
+            Op::ExpInplace,
+            Op::LogInplace,
+            Op::SinInplace,
+            Op::CosInplace,
+            Op::SignInplace,
+            Op::FloorInplace,
+            Op::CeilInplace,
+            Op::RoundInplace,
+            Op::ErfInplace,
+            Op::GeluErfInplace,
         ] {
             assert_eq!(
                 op.destructive_input(), Some(0),
@@ -8732,6 +9066,22 @@ mod tests {
         assert_eq!(Op::GeluInplace.short_name(), "GeluInplace");
         assert_eq!(Op::TanhInplace.short_name(), "TanhInplace");
         assert_eq!(Op::SigmoidInplace.short_name(), "SigmoidInplace");
+        assert_eq!(Op::NegInplace.short_name(), "NegInplace");
+        assert_eq!(Op::AbsInplace.short_name(), "AbsInplace");
+        assert_eq!(Op::SqrInplace.short_name(), "SqrInplace");
+        assert_eq!(Op::SqrtInplace.short_name(), "SqrtInplace");
+        assert_eq!(Op::RsqrtInplace.short_name(), "RsqrtInplace");
+        assert_eq!(Op::RecipInplace.short_name(), "RecipInplace");
+        assert_eq!(Op::ExpInplace.short_name(), "ExpInplace");
+        assert_eq!(Op::LogInplace.short_name(), "LogInplace");
+        assert_eq!(Op::SinInplace.short_name(), "SinInplace");
+        assert_eq!(Op::CosInplace.short_name(), "CosInplace");
+        assert_eq!(Op::SignInplace.short_name(), "SignInplace");
+        assert_eq!(Op::FloorInplace.short_name(), "FloorInplace");
+        assert_eq!(Op::CeilInplace.short_name(), "CeilInplace");
+        assert_eq!(Op::RoundInplace.short_name(), "RoundInplace");
+        assert_eq!(Op::ErfInplace.short_name(), "ErfInplace");
+        assert_eq!(Op::GeluErfInplace.short_name(), "GeluErfInplace");
     }
 
     #[test]
