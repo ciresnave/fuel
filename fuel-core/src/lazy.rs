@@ -2174,6 +2174,215 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.cast(dtype) }
     }
 
+    // ---- additional deferred-Phase-A items: indexing / multi-dim / RNG ----
+
+    /// Eager-API alias of [`Self::slice`] (PyTorch / Candle naming).
+    /// `narrow(dim, start, len)` is `slice(dim, start, len)` with the
+    /// same panic-on-OOB semantics — both produce a view of
+    /// `[start, start+len)` along `dim`.
+    pub fn narrow(&self, dim: usize, start: usize, len: usize) -> Self {
+        self.slice(dim, start, len)
+    }
+
+    /// Split into `chunks` views along `dim`. The split distributes the
+    /// `chunk_size = ceil(dim_size / chunks)` extra slot to the leading
+    /// chunks so every chunk's size differs by at most 1. If `dim_size
+    /// < chunks`, returns `dim_size` singleton chunks instead of
+    /// `chunks` chunks (matches eager / PyTorch).
+    pub fn chunk(&self, chunks: usize, dim: usize) -> std::result::Result<Vec<Self>, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        let rank = dims.len();
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "chunk: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
+        if chunks == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "chunk: chunks must be > 0".into(),
+            ).bt());
+        }
+        let size = dims[dim];
+        if size < chunks {
+            return Ok((0..size).map(|i| self.slice(dim, i, 1)).collect());
+        }
+        let base = size / chunks;
+        let extra = size % chunks;
+        let mut out = Vec::with_capacity(chunks);
+        let mut start = 0;
+        for i in 0..chunks {
+            let len = if i < extra { base + 1 } else { base };
+            out.push(self.slice(dim, start, len));
+            start += len;
+        }
+        Ok(out)
+    }
+
+    /// Sub-tensor at index `i` along dim 0. Equivalent to
+    /// `self.slice(0, i, 1).squeeze(0)`. Matches eager's [`crate::Tensor::get`].
+    pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.shape().dims().to_vec();
+        if dims.is_empty() {
+            return Ok(self.clone());
+        }
+        self.slice(0, i, 1).squeeze(0)
+    }
+
+    /// Sub-tensor at index along an arbitrary dim. Equivalent to
+    /// `self.slice(dim, index, 1).squeeze(dim)`. Matches eager's
+    /// [`crate::Tensor::get_on_dim`].
+    pub fn get_on_dim(&self, dim: usize, index: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let rank = self.shape().dims().len();
+        if dim >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "get_on_dim: dim {dim} out of bounds for rank {rank}",
+            )).bt());
+        }
+        self.slice(dim, index, 1).squeeze(dim)
+    }
+
+    /// Multi-dim sum: reduce over every dim in `dims`, squeezing each.
+    /// Reduces from the highest dim down so the lower dim indices stay
+    /// valid throughout the reduction.
+    pub fn sum_dims(&self, dims: &[usize]) -> Self {
+        let mut sorted: Vec<usize> = dims.to_vec();
+        sorted.sort_by(|a, b| b.cmp(a));
+        sorted.dedup();
+        let mut acc = self.clone();
+        for d in sorted {
+            acc = acc.sum_dim(d);
+        }
+        acc
+    }
+
+    /// Multi-dim mean: reduce over every dim in `dims`, squeezing each.
+    /// Reduces from the highest dim down.
+    pub fn mean_dims(&self, dims: &[usize]) -> Self {
+        let mut sorted: Vec<usize> = dims.to_vec();
+        sorted.sort_by(|a, b| b.cmp(a));
+        sorted.dedup();
+        let mut acc = self.clone();
+        for d in sorted {
+            acc = acc.mean_dim(d);
+        }
+        acc
+    }
+
+    /// Multi-dim sum with keepdim: every named dim becomes size 1
+    /// instead of being squeezed out. Reduce-order-invariant (every
+    /// keepdim preserves indices).
+    pub fn sum_dims_keepdim(&self, dims: &[usize]) -> Self {
+        let mut sorted: Vec<usize> = dims.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        let mut acc = self.clone();
+        for d in sorted {
+            acc = acc.sum_keepdim(d);
+        }
+        acc
+    }
+
+    /// Multi-dim mean with keepdim.
+    pub fn mean_dims_keepdim(&self, dims: &[usize]) -> Self {
+        let mut sorted: Vec<usize> = dims.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        let mut acc = self.clone();
+        for d in sorted {
+            acc = acc.mean_keepdim(d);
+        }
+        acc
+    }
+
+    /// Uniform random tensor in `[lo, up)` with shape/dtype/device matching `self`.
+    /// Backed by [`rand::thread_rng`].
+    pub fn rand_like(&self, lo: f64, up: f64) -> Self {
+        Self::rand(self.shape(), lo, up, self.dtype(), &Device::cpu())
+    }
+
+    /// Normal random tensor with shape/dtype/device matching `self`.
+    pub fn randn_like(&self, mean: f64, stdev: f64) -> Self {
+        Self::randn(self.shape(), mean, stdev, self.dtype(), &Device::cpu())
+    }
+
+    /// Uniform random tensor in `[lo, up)`. Static factory.
+    /// Supported dtypes: F32, F64, BF16, F16. F32 is the typical
+    /// initialization target.
+    pub fn rand(
+        shape: impl Into<Shape>,
+        lo: f64,
+        up: f64,
+        dtype: DType,
+        device: &Device,
+    ) -> Self {
+        use rand::Rng;
+        let shape = shape.into();
+        let n = shape.elem_count();
+        let mut rng = rand::rng();
+        match dtype {
+            DType::F32 => {
+                let data: Vec<f32> = (0..n).map(|_| rng.random_range(lo..up) as f32).collect();
+                Self::from_f32(data, shape, device)
+            }
+            DType::F64 => {
+                let data: Vec<f64> = (0..n).map(|_| rng.random_range(lo..up)).collect();
+                Self::from_f64(data, shape, device)
+            }
+            DType::BF16 => {
+                let data: Vec<half::bf16> = (0..n)
+                    .map(|_| half::bf16::from_f64(rng.random_range(lo..up)))
+                    .collect();
+                Self::from_bf16(data, shape, device)
+            }
+            DType::F16 => {
+                let data: Vec<half::f16> = (0..n)
+                    .map(|_| half::f16::from_f64(rng.random_range(lo..up)))
+                    .collect();
+                Self::from_f16(data, shape, device)
+            }
+            other => panic!("LazyTensor::rand: unsupported dtype {other:?}"),
+        }
+    }
+
+    /// Normal random tensor with given `mean` and `stdev`. Static factory.
+    /// Supported dtypes: F32, F64, BF16, F16.
+    pub fn randn(
+        shape: impl Into<Shape>,
+        mean: f64,
+        stdev: f64,
+        dtype: DType,
+        device: &Device,
+    ) -> Self {
+        use rand_distr::{Distribution, Normal};
+        let shape = shape.into();
+        let n = shape.elem_count();
+        let normal = Normal::new(mean, stdev).expect("randn: bad stdev");
+        let mut rng = rand::rng();
+        match dtype {
+            DType::F32 => {
+                let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
+                Self::from_f32(data, shape, device)
+            }
+            DType::F64 => {
+                let data: Vec<f64> = (0..n).map(|_| normal.sample(&mut rng)).collect();
+                Self::from_f64(data, shape, device)
+            }
+            DType::BF16 => {
+                let data: Vec<half::bf16> = (0..n)
+                    .map(|_| half::bf16::from_f64(normal.sample(&mut rng)))
+                    .collect();
+                Self::from_bf16(data, shape, device)
+            }
+            DType::F16 => {
+                let data: Vec<half::f16> = (0..n)
+                    .map(|_| half::f16::from_f64(normal.sample(&mut rng)))
+                    .collect();
+                Self::from_f16(data, shape, device)
+            }
+            other => panic!("LazyTensor::randn: unsupported dtype {other:?}"),
+        }
+    }
+
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
     /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
     ///
@@ -8699,5 +8908,137 @@ mod phase_a5_factory_tests {
         let x = LazyTensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu());
         let y = x.const_f32_like(vec![1.0, 2.0], vec![2]);
         assert!(LazyTensor::meshgrid(&[&x, &y], false).is_err());
+    }
+
+    // ---- additional deferred-Phase-A item tests ----
+
+    #[test]
+    fn narrow_is_slice_alias() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0], &[5]);
+        let a = t.narrow(0, 1, 3).realize_f32();
+        let b = t.slice(0, 1, 3).realize_f32();
+        assert_eq!(a, b);
+        assert_eq!(a, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn chunk_splits_evenly() {
+        let t = cpu_f32((1..=6).map(|i| i as f32).collect(), &[6]);
+        let parts = t.chunk(3, 0).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].realize_f32(), vec![1.0, 2.0]);
+        assert_eq!(parts[1].realize_f32(), vec![3.0, 4.0]);
+        assert_eq!(parts[2].realize_f32(), vec![5.0, 6.0]);
+    }
+
+    #[test]
+    fn chunk_distributes_remainder_to_leading() {
+        // size 7, 3 chunks → first 7%3=1 chunk gets the extra: sizes 3, 2, 2
+        let t = cpu_f32((1..=7).map(|i| i as f32).collect(), &[7]);
+        let parts = t.chunk(3, 0).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].realize_f32(), vec![1.0, 2.0, 3.0]);
+        assert_eq!(parts[1].realize_f32(), vec![4.0, 5.0]);
+        assert_eq!(parts[2].realize_f32(), vec![6.0, 7.0]);
+    }
+
+    #[test]
+    fn chunk_returns_singletons_when_size_less_than_chunks() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        let parts = t.chunk(5, 0).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].realize_f32(), vec![1.0]);
+        assert_eq!(parts[1].realize_f32(), vec![2.0]);
+    }
+
+    #[test]
+    fn get_at_first_dim() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let row1 = t.get(1).unwrap();
+        assert_eq!(row1.shape().dims(), &[2]);
+        assert_eq!(row1.realize_f32(), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn get_on_dim_arbitrary_axis() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+        let col0 = t.get_on_dim(1, 0).unwrap();
+        assert_eq!(col0.shape().dims(), &[3]);
+        assert_eq!(col0.realize_f32(), vec![1.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn sum_dims_multi_dim_reduces_to_smaller() {
+        // [2,3,4] sum over (0, 2) → [3]
+        let t = cpu_f32(vec![1.0; 24], &[2, 3, 4]);
+        let s = t.sum_dims(&[0, 2]);
+        assert_eq!(s.shape().dims(), &[3]);
+        // each element is 2*4 = 8 (sum across dim 0 = 2 elements, dim 2 = 4 elements)
+        assert_eq!(s.realize_f32(), vec![8.0; 3]);
+    }
+
+    #[test]
+    fn mean_dims_multi_dim() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let m = t.mean_dims(&[0, 1]);
+        assert_eq!(m.shape().dims(), &[] as &[usize]);
+        assert_eq!(m.realize_f32(), vec![2.5]);
+    }
+
+    #[test]
+    fn sum_dims_keepdim_preserves_rank() {
+        let t = cpu_f32(vec![1.0; 24], &[2, 3, 4]);
+        let s = t.sum_dims_keepdim(&[0, 2]);
+        assert_eq!(s.shape().dims(), &[1, 3, 1]);
+    }
+
+    #[test]
+    fn mean_dims_keepdim_preserves_rank() {
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let m = t.mean_dims_keepdim(&[0, 1]);
+        assert_eq!(m.shape().dims(), &[1, 1]);
+        assert_eq!(m.realize_f32(), vec![2.5]);
+    }
+
+    #[test]
+    fn rand_like_matches_shape_dtype() {
+        let t = cpu_f32(vec![0.0; 6], &[2, 3]);
+        let r = t.rand_like(-1.0, 1.0);
+        assert_eq!(r.shape().dims(), t.shape().dims());
+        assert_eq!(r.dtype(), t.dtype());
+        // Every sample must be in [-1, 1).
+        for v in r.realize_f32() {
+            assert!((-1.0..1.0).contains(&v), "sample {v} out of [-1, 1)");
+        }
+    }
+
+    #[test]
+    fn randn_like_matches_shape_dtype() {
+        let t = cpu_f32(vec![0.0; 4], &[4]);
+        let r = t.randn_like(0.0, 1.0);
+        assert_eq!(r.shape().dims(), &[4]);
+        assert_eq!(r.dtype(), DType::F32);
+        // Samples are random — just sanity-check they're finite.
+        for v in r.realize_f32() {
+            assert!(v.is_finite());
+        }
+    }
+
+    #[test]
+    fn static_rand_f32() {
+        let t = LazyTensor::rand(vec![100], 0.0, 1.0, DType::F32, &Device::cpu());
+        let v = t.realize_f32();
+        // Mean of uniform [0,1) should be ~0.5; tolerate sample noise.
+        let mean: f32 = v.iter().sum::<f32>() / v.len() as f32;
+        assert!((0.3..0.7).contains(&mean), "mean {mean} too far from 0.5");
+    }
+
+    #[test]
+    fn static_randn_f64() {
+        let t = LazyTensor::randn(vec![1000], 0.0, 1.0, DType::F64, &Device::cpu());
+        let v = t.realize_f64();
+        let mean: f64 = v.iter().sum::<f64>() / v.len() as f64;
+        // Normal(0,1) mean should be near 0; n=1000 gives stderr ~0.03.
+        assert!(mean.abs() < 0.2, "mean {mean} too far from 0");
     }
 }
