@@ -3405,6 +3405,77 @@ pub mod qmatmul {
 // Conv2D f32 — im2col + matmul, groups=1.
 // ===========================================================================
 
+pub mod flash_attn {
+    use super::*;
+
+    /// FlashAttention-shape multi-head attention forward, f32 only.
+    /// Naive single-pass kernel (NOT tiled). Supports GQA, causal,
+    /// scale, alibi; falls through to other backends on window_left /
+    /// window_right / softcap.
+    pub fn flash_attn_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() < 3 || inputs.len() > 4 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::flash_attn_f32: expected 3-4 inputs (q, k, v, [alibi]) + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
+            OpParams::FlashAttn {
+                b, hq, hkv, sq, sk, d,
+                softmax_scale, causal,
+                window_size_left, window_size_right, softcap,
+            } => (
+                *b, *hq, *hkv, *sq, *sk, *d,
+                *softmax_scale, *causal,
+                *window_size_left, *window_size_right, *softcap,
+            ),
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::flash_attn::flash_attn_f32: expected OpParams::FlashAttn, got {other:?}",
+                )).bt());
+            }
+        };
+        if wl.is_some() || wr.is_some() || softcap.is_some() {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::flash_attn_f32: window_left={wl:?}, window_right={wr:?}, softcap={softcap:?} \
+                 not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
+            )).bt());
+        }
+
+        let q_guard = read_storage(&inputs[0])?;
+        let k_guard = read_storage(&inputs[1])?;
+        let v_guard = read_storage(&inputs[2])?;
+        let alibi_guard = match inputs.get(3) {
+            Some(arc) => Some(read_storage(arc)?),
+            None => None,
+        };
+        let mut out_guard = write_storage(&outputs[0])?;
+        let q = vulkan_input(&q_guard)?;
+        let k = vulkan_input(&k_guard)?;
+        let v = vulkan_input(&v_guard)?;
+        let alibi = match &alibi_guard {
+            Some(g) => Some(vulkan_input(g)?),
+            None => None,
+        };
+        let backend = q.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::flash_attn::flash_attn_f32: q has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.flash_attn_f32_bytes(
+            q, k, v, alibi, out,
+            b, hq, hkv, sq, sk, d,
+            scale, causal,
+        )
+    }
+}
+
 pub mod conv2d {
     use super::*;
 
@@ -4319,6 +4390,26 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         conv2d::conv2d_f32,
         VULKAN_MATMUL_PRECISION,
     );
+    // ----- FlashAttn f32 (V.3 attention) — naive single-pass kernel
+    // (NOT tiled FA-2). Supports GQA, causal mask, softmax_scale,
+    // alibi. window_left/window_right/softcap bail at the wrapper
+    // for now. Both 3-input (q,k,v) and 4-input (q,k,v,alibi)
+    // binding shapes register. -----
+    table.register_with_precision(
+        OpKind::FlashAttn,
+        &[DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+    table.register_with_precision(
+        OpKind::FlashAttn,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        vk,
+        flash_attn::flash_attn_f32,
+        VULKAN_FLOAT_POINTWISE_PRECISION,
+    );
+
     // ----- Conv2D bf16 (V.3.I extended) — im2col_bf16 + cooperative-
     // matrix bf16 matmul (matmul_coop_bf16_bf16_bf16). Activations,
     // weights, and output all bf16. COOP-ONLY shape constraints:
