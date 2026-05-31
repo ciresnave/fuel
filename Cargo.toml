@@ -22,6 +22,7 @@ members = [
     "fuel-graph",
     "fuel-graph-cpu",
     "fuel-cuda-backend",
+    "fuel-dispatch",
     "fuel-graph-executor",
     "fuel-graph-router",
     "fuel-vulkan-backend",
@@ -54,6 +55,7 @@ default-members = [
     "fuel-core",
     "fuel-core-types",
     "fuel-cpu-backend",
+    "fuel-dispatch",
     "fuel-formats",
     "fuel-graph",
     "fuel-graph-cpu",
@@ -118,6 +120,7 @@ fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-graph-cpu = { path = "./fuel-graph-cpu", version = "0.10.2" }
 fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.2" }
+fuel-dispatch = { path = "./fuel-dispatch", version = "0.10.2" }
 fuel-graph-executor = { path = "./fuel-graph-executor", version = "0.10.2" }
 fuel-graph-router = { path = "./fuel-graph-router", version = "0.10.2" }
 fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }

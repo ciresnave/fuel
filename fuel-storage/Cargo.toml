@@ -22,11 +22,11 @@ thiserror = { workspace = true }
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 fuel-metal-backend = { workspace = true, optional = true }
 
-[dev-dependencies]
-# QMatMul tests construct Q4_0 weight blocks directly.
-fuel-quantized = { workspace = true }
-# Conv2D live-GPU tests compare against fuel-conv's CPU reference.
-fuel-conv = { workspace = true }
+# Dispatch infrastructure (KernelBindingTable, registration wrappers,
+# CompiledNode, PipelinedExecutor, ExecutionPlan, ...) moved to
+# fuel-dispatch 2026-05-31; the live-GPU integration tests that
+# exercised those wrappers moved with it. fuel-storage now has no
+# dev-dependencies beyond what the inline storage tests need.
 
 [features]
 default = []

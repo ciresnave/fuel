@@ -1,0 +1,39 @@
+[package]
+categories.workspace = true
+description = "Dispatch infrastructure for fuel: KernelBindingTable, per-backend registration wrappers, CompiledNode + compile_node, ExecutionPlan + compile_plan + resolve_kernel, FusedKernelRegistry, PipelinedExecutor. The layer that takes a graph and runs it against registered backends. Extracted from fuel-storage 2026-05-31."
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "fuel-dispatch"
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+fuel-core-types = { workspace = true }
+fuel-cpu-backend = { workspace = true }
+fuel-cuda-backend = { workspace = true, optional = true }
+fuel-graph = { workspace = true }
+fuel-storage = { workspace = true }
+fuel-vulkan-backend = { workspace = true, optional = true }
+bytemuck = { workspace = true }
+half = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+fuel-metal-backend = { workspace = true, optional = true }
+
+[dev-dependencies]
+# QMatMul tests construct Q4_0 weight blocks directly.
+fuel-quantized = { workspace = true }
+# Conv2D live-GPU tests compare against fuel-conv's CPU reference.
+fuel-conv = { workspace = true }
+
+[features]
+default = []
+# Per-backend dispatch wrappers. Feature flags propagate the same shape
+# fuel-storage used: each GPU backend's registration entry-point is
+# gated behind its feature.
+cuda = ["dep:fuel-cuda-backend", "fuel-storage/cuda"]
+vulkan = ["dep:fuel-vulkan-backend", "fuel-storage/vulkan"]
+metal = ["dep:fuel-metal-backend", "fuel-storage/metal"]
