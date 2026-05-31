@@ -21,9 +21,10 @@
 //! instance in Phase B.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use fuel_core_types::backend::{BackendCapabilities, TransferPath};
+use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
@@ -2234,6 +2235,24 @@ cpu_unary_inplace_wrapper!(gelu_inplace_f32_cpu_wrapper,    gelu_inplace_f32);
 cpu_unary_inplace_wrapper!(tanh_inplace_f32_cpu_wrapper,    tanh_inplace_f32);
 cpu_unary_inplace_wrapper!(sigmoid_inplace_f32_cpu_wrapper, sigmoid_inplace_f32);
 
+cpu_unary_inplace_wrapper!(relu_inplace_f64_cpu_wrapper,    relu_inplace_f64);
+cpu_unary_inplace_wrapper!(silu_inplace_f64_cpu_wrapper,    silu_inplace_f64);
+cpu_unary_inplace_wrapper!(gelu_inplace_f64_cpu_wrapper,    gelu_inplace_f64);
+cpu_unary_inplace_wrapper!(tanh_inplace_f64_cpu_wrapper,    tanh_inplace_f64);
+cpu_unary_inplace_wrapper!(sigmoid_inplace_f64_cpu_wrapper, sigmoid_inplace_f64);
+
+cpu_unary_inplace_wrapper!(relu_inplace_bf16_cpu_wrapper,    relu_inplace_bf16);
+cpu_unary_inplace_wrapper!(silu_inplace_bf16_cpu_wrapper,    silu_inplace_bf16);
+cpu_unary_inplace_wrapper!(gelu_inplace_bf16_cpu_wrapper,    gelu_inplace_bf16);
+cpu_unary_inplace_wrapper!(tanh_inplace_bf16_cpu_wrapper,    tanh_inplace_bf16);
+cpu_unary_inplace_wrapper!(sigmoid_inplace_bf16_cpu_wrapper, sigmoid_inplace_bf16);
+
+cpu_unary_inplace_wrapper!(relu_inplace_f16_cpu_wrapper,    relu_inplace_f16);
+cpu_unary_inplace_wrapper!(silu_inplace_f16_cpu_wrapper,    silu_inplace_f16);
+cpu_unary_inplace_wrapper!(gelu_inplace_f16_cpu_wrapper,    gelu_inplace_f16);
+cpu_unary_inplace_wrapper!(tanh_inplace_f16_cpu_wrapper,    tanh_inplace_f16);
+cpu_unary_inplace_wrapper!(sigmoid_inplace_f16_cpu_wrapper, sigmoid_inplace_f16);
+
 /// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
 fn clamp_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
@@ -2919,6 +2938,58 @@ fn selective_scan_f32_cpu_wrapper(
     fuel_cpu_backend::byte_kernels::selective_scan_f32(
         u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
         batch, seqlen, dim, dstate, delta_softplus,
+    )
+}
+
+/// Dispatch wrapper for `(SsdChunkScan, [F32; 6], Cpu)`. Five inputs
+/// (x, dt, a, b, c) → one output (y). Geometry + `chunk_size` flow
+/// through `OpParams::SsdChunkScan`.
+fn ssd_chunk_scan_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 5 {
+        return Err(Error::Msg(format!(
+            "ssd_chunk_scan wrapper expects 5 inputs (x, dt, a, b, c), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "ssd_chunk_scan wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (batch, seqlen, heads, head_dim, state_dim, chunk_size) = match params {
+        OpParams::SsdChunkScan {
+            batch, seqlen, heads, head_dim, state_dim, chunk_size,
+        } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size),
+        other => {
+            return Err(Error::Msg(format!(
+                "ssd_chunk_scan wrapper expects OpParams::SsdChunkScan, got {other:?}",
+            ))
+            .bt());
+        }
+    };
+    let x_guard = read_storage(&inputs[0])?;
+    let dt_guard = read_storage(&inputs[1])?;
+    let a_guard = read_storage(&inputs[2])?;
+    let b_guard = read_storage(&inputs[3])?;
+    let c_guard = read_storage(&inputs[4])?;
+    let mut out_guard = write_storage(&outputs[0])?;
+    let x_cpu = cpu_input(&x_guard)?;
+    let dt_cpu = cpu_input(&dt_guard)?;
+    let a_cpu = cpu_input(&a_guard)?;
+    let b_cpu = cpu_input(&b_guard)?;
+    let c_cpu = cpu_input(&c_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f32(
+        x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
+        batch, seqlen, heads, head_dim, state_dim, chunk_size,
     )
 }
 
@@ -3615,16 +3686,43 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         selective_scan_f32_cpu_wrapper,
     );
 
+    // SsdChunkScan: 5 inputs (x, dt, a, b, c) + 1 output, all F32.
+    table.register(
+        SsdChunkScan,
+        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
+        cpu,
+        ssd_chunk_scan_f32_cpu_wrapper,
+    );
+
     // In-place unary activations — Phase 3e of in-place ops. Same
     // `[T, T]` key shape as the non-inplace cousins (the natural
     // shape build_lookup_dtypes produces for a 1-input + 1-output
-    // node with matching dtypes). f32 starter set; bf16/f16/f64 land
-    // when consumers materialize.
+    // node with matching dtypes). Full 4-dtype coverage (f32/f64/bf16/
+    // f16); bf16+f16 route through the chassis's f32-pivot blanket
+    // impls so the numerics match the non-inplace cousins bit-for-bit.
     table.register(ReluInplace,    &unary(f32_dt), cpu, relu_inplace_f32_cpu_wrapper);
     table.register(SiluInplace,    &unary(f32_dt), cpu, silu_inplace_f32_cpu_wrapper);
     table.register(GeluInplace,    &unary(f32_dt), cpu, gelu_inplace_f32_cpu_wrapper);
     table.register(TanhInplace,    &unary(f32_dt), cpu, tanh_inplace_f32_cpu_wrapper);
     table.register(SigmoidInplace, &unary(f32_dt), cpu, sigmoid_inplace_f32_cpu_wrapper);
+
+    table.register(ReluInplace,    &unary(f64_dt), cpu, relu_inplace_f64_cpu_wrapper);
+    table.register(SiluInplace,    &unary(f64_dt), cpu, silu_inplace_f64_cpu_wrapper);
+    table.register(GeluInplace,    &unary(f64_dt), cpu, gelu_inplace_f64_cpu_wrapper);
+    table.register(TanhInplace,    &unary(f64_dt), cpu, tanh_inplace_f64_cpu_wrapper);
+    table.register(SigmoidInplace, &unary(f64_dt), cpu, sigmoid_inplace_f64_cpu_wrapper);
+
+    table.register(ReluInplace,    &unary(bf16_dt), cpu, relu_inplace_bf16_cpu_wrapper);
+    table.register(SiluInplace,    &unary(bf16_dt), cpu, silu_inplace_bf16_cpu_wrapper);
+    table.register(GeluInplace,    &unary(bf16_dt), cpu, gelu_inplace_bf16_cpu_wrapper);
+    table.register(TanhInplace,    &unary(bf16_dt), cpu, tanh_inplace_bf16_cpu_wrapper);
+    table.register(SigmoidInplace, &unary(bf16_dt), cpu, sigmoid_inplace_bf16_cpu_wrapper);
+
+    table.register(ReluInplace,    &unary(f16_dt), cpu, relu_inplace_f16_cpu_wrapper);
+    table.register(SiluInplace,    &unary(f16_dt), cpu, silu_inplace_f16_cpu_wrapper);
+    table.register(GeluInplace,    &unary(f16_dt), cpu, gelu_inplace_f16_cpu_wrapper);
+    table.register(TanhInplace,    &unary(f16_dt), cpu, tanh_inplace_f16_cpu_wrapper);
+    table.register(SigmoidInplace, &unary(f16_dt), cpu, sigmoid_inplace_f16_cpu_wrapper);
     table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
     table.register(MaximumElementwise, &binary(f32_dt), cpu, maximum_elementwise_f32_cpu_wrapper);
@@ -4404,6 +4502,35 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
 /// global.
 static GLOBAL_REGISTRY: OnceLock<RwLock<CapabilityRegistry>> = OnceLock::new();
 
+/// Process-wide topology generation counter. Bumped whenever the
+/// set of registered backends / loaded kernels changes — so a
+/// [`fuel_core::topology::SystemTopology`] snapshot built at
+/// generation N self-invalidates the next time a consumer asks for
+/// a fresh view and the counter is N+1 or greater. See the
+/// system-topology session prompt for the contract.
+///
+/// The two existing global-registry mutation sites
+/// ([`register_backend_capabilities`] and [`extend_global_bindings`])
+/// bump this counter unconditionally. Tests and a future device-loss
+/// detector hook in via [`bump_topology_generation`].
+static TOPOLOGY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Read the current topology generation. Used by SystemTopology's
+/// `current()` to decide whether its cached snapshot is still valid.
+pub fn topology_generation() -> u64 {
+    TOPOLOGY_GENERATION.load(Ordering::Acquire)
+}
+
+/// Bump the topology generation counter. Every component that can
+/// change the visible set of backends or devices should call this
+/// after the mutation lands so consumers see a self-healing
+/// `SystemTopology::current()` next call. Cheap (one atomic add);
+/// `Release` ordering pairs with the `Acquire` load in
+/// `topology_generation`.
+pub fn bump_topology_generation() {
+    TOPOLOGY_GENERATION.fetch_add(1, Ordering::Release);
+}
+
 /// Process-wide [`KernelBindingTable`]. Initialized on first access
 /// with the CPU dispatch wrappers from [`register_cpu_kernels`].
 /// Other backends extend it when they register.
@@ -4587,6 +4714,7 @@ fn default_cpu_caps() -> BackendCapabilities {
         required_alignment: 64,
         access_granularity_bits: 8,
         transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
+        storage_substrate: SubstrateClass::HostBytes,
     }
 }
 
@@ -4617,6 +4745,7 @@ pub fn register_backend_capabilities(caps: BackendCapabilities) {
         RwLock::new(r)
     });
     lock.write().unwrap().register(caps);
+    bump_topology_generation();
 }
 
 /// Read-lock the process-wide kernel-binding table. CPU dispatch
@@ -4664,6 +4793,7 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
         RwLock::new(t)
     });
     register(&mut lock.write().unwrap());
+    bump_topology_generation();
 }
 
 /// Phase 7.6 step 6 — register the always-built fused-op kernels into
@@ -4704,7 +4834,7 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost_inplace_affine_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
-        cost_selective_scan_cpu,
+        cost_selective_scan_cpu, cost_ssd_chunk_scan_cpu,
         ATTN_CPU_PRECISION, CAUSAL_CONV1D_CPU_PRECISION,
         CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
@@ -4713,6 +4843,7 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         POWI_BACKWARD_CPU_PRECISION,
         QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
         ROPE_CPU_PRECISION, SELECTIVE_SCAN_CPU_PRECISION,
+        SSD_CHUNK_SCAN_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
@@ -5157,6 +5288,16 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         selective_scan_f32_cpu_wrapper,
         cost = cost_selective_scan_cpu,
         precision = SELECTIVE_SCAN_CPU_PRECISION);
+
+    // SSD_CHUNK_SCAN — six-tuple (x, dt, a, b, c, out), all F32.
+    // v1 single-chunk only (chunk_size == seqlen).
+    const SCS_F32: &[DType] = &[
+        DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32,
+    ];
+    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F32,
+        ssd_chunk_scan_f32_cpu_wrapper,
+        cost = cost_ssd_chunk_scan_cpu,
+        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
 }
 
 #[cfg(test)]
@@ -5255,6 +5396,7 @@ mod tests {
             OpKind::FusedSoftmaxCrossEntropy,
             OpKind::CausalConv1d,
             OpKind::SelectiveScan,
+            OpKind::SsdChunkScan,
         ];
 
         // Populate the binding table the same way the production
@@ -5417,6 +5559,7 @@ mod tests {
             OpKind::FusedSoftmaxCrossEntropy,
             OpKind::CausalConv1d,
             OpKind::SelectiveScan,
+            OpKind::SsdChunkScan,
         ];
 
         let mut table = KernelBindingTable::new();
@@ -5499,6 +5642,7 @@ mod tests {
             required_alignment: 64,
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
+            storage_substrate: SubstrateClass::HostBytes,
         }
     }
 
@@ -5519,6 +5663,7 @@ mod tests {
                 (DeviceLocation::Cpu, TransferPath::DeviceCopy),
                 (DeviceLocation::Cuda { gpu_id: 0 }, TransferPath::SameDevice),
             ],
+            storage_substrate: SubstrateClass::CudaUntyped,
         }
     }
 
@@ -5887,5 +6032,92 @@ mod tests {
             "expected >=2 CUDA Neg F32 alternatives (PTX + baracuda); got {}",
             alts.len(),
         );
+    }
+
+    /// Picker-alternatives audit harness — enumerates the global
+    /// binding table at process start and prints every `(op, dtypes)`
+    /// key with `>1` registered alternative (either multi-backend or
+    /// multi-impl within one backend). `--ignored` because it's
+    /// diagnostic, not a regression check; it always passes and
+    /// produces output for the audit doc via `--nocapture`.
+    ///
+    /// Run: `cargo test -p fuel-storage --features cuda,vulkan \
+    ///     audit_multi_backend_coverage -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn audit_multi_backend_coverage() {
+        let b = global_bindings();
+
+        // Group by (op_kind, dtypes); each entry maps to the list of
+        // (backend, n_alts_within_backend). Iterates via iter_precision
+        // because that already exposes per-alternative tuples.
+        // OpKind/DType aren't Ord, so we use Vec-based group lookup.
+        let mut grouped: Vec<((OpKind, Vec<DType>), Vec<(BackendId, usize)>)> =
+            Vec::new();
+        for (op, dtypes, backend, _precision) in b.iter_precision() {
+            let key = (op, dtypes.to_vec());
+            if let Some((_, entry)) = grouped.iter_mut().find(|(k, _)| *k == key) {
+                if let Some(slot) = entry.iter_mut().find(|(be, _)| *be == backend) {
+                    slot.1 += 1;
+                } else {
+                    entry.push((backend, 1));
+                }
+            } else {
+                grouped.push((key, vec![(backend, 1)]));
+            }
+        }
+        // Sort by op debug-string, then dtype list, for stable output.
+        grouped.sort_by(|a, b| {
+            let oa = format!("{:?}", a.0.0);
+            let ob = format!("{:?}", b.0.0);
+            oa.cmp(&ob).then_with(|| {
+                let da = format!("{:?}", a.0.1);
+                let db = format!("{:?}", b.0.1);
+                da.cmp(&db)
+            })
+        });
+
+        let total_keys = grouped.len();
+        let mut multi_backend = 0;
+        let mut multi_impl_single_backend = 0;
+        let mut single_alt = 0;
+
+        println!("\n=== Picker-alternatives audit ===");
+        println!("Total unique (op, dtypes) keys: {total_keys}");
+        println!("Total alternatives (sum):       {}", b.len());
+        println!();
+        println!("Keys with >1 alternative (per Judge-picking working set):");
+        for ((op, dtypes), backends) in &grouped {
+            let total_alts: usize = backends.iter().map(|(_, n)| *n).sum();
+            if total_alts <= 1 {
+                single_alt += 1;
+                continue;
+            }
+            if backends.len() > 1 {
+                multi_backend += 1;
+            } else {
+                multi_impl_single_backend += 1;
+            }
+            let backend_summary: Vec<String> = backends
+                .iter()
+                .map(|(be, n)| {
+                    if *n == 1 {
+                        format!("{be:?}")
+                    } else {
+                        format!("{be:?}×{n}")
+                    }
+                })
+                .collect();
+            println!(
+                "  {op:?} {dtypes:?} → {} alts: [{}]",
+                total_alts,
+                backend_summary.join(", "),
+            );
+        }
+        println!();
+        println!("--- summary ---");
+        println!("Single-alternative keys (no pick to make): {single_alt}");
+        println!("Multi-backend keys (cross-backend pick):   {multi_backend}");
+        println!("Multi-impl single-backend keys:            {multi_impl_single_backend}");
     }
 }

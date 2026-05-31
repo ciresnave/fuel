@@ -727,6 +727,25 @@ impl LazyTensor {
         }
     }
 
+    /// Mamba-2's State-Space Duality chunked scan (forward). See
+    /// [`fuel_graph::Tensor::ssd_chunk_scan`] for the full shape
+    /// contract. v1 requires `chunk_size == seqlen` (single-chunk
+    /// only); multi-chunk is a follow-up.
+    pub fn ssd_chunk_scan(
+        &self,
+        dt: &Self,
+        a: &Self,
+        b: &Self,
+        c: &Self,
+        chunk_size: usize,
+    ) -> Self {
+        Self {
+            inner: self.inner.ssd_chunk_scan(
+                &dt.inner, &a.inner, &b.inner, &c.inner, chunk_size,
+            ),
+        }
+    }
+
     /// Mamba-1's selective state-space scan (forward). See
     /// [`fuel_graph::Tensor::selective_scan`] for the full shape
     /// contract. v1 covers 5 required inputs; optional inputs and

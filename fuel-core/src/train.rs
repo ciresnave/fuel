@@ -862,6 +862,49 @@ mod tests {
         assert_eq!(out_shape.dims(), &[2, 8, 64]);
     }
 
+    /// SsdChunkScan end-to-end: minimal degenerate case through the
+    /// dispatcher; verifies the full plumbing from builder → Op::Fused
+    /// → op_to_op_kind/op_to_op_params → wrapper → kernel.
+    #[test]
+    fn ssd_chunk_scan_basic_end_to_end() {
+        let device = crate::Device::cpu();
+        // [batch=1, seqlen=1, heads=1, head_dim=1]
+        let x = LazyTensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device);
+        let dt = x.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
+        let a = x.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1]));
+        let b = x.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let c = x.const_f32_like(vec![0.5_f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32();
+        assert_eq!(y.len(), 1);
+        assert!((y[0] - 3.0).abs() < 1e-5, "got {}", y[0]);
+    }
+
+    /// SsdChunkScan registry roundtrip + shape rule.
+    #[test]
+    fn ssd_chunk_scan_registry_entry_registered() {
+        let r = fuel_graph::registry::default_registry();
+        let e = r
+            .entry(fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN)
+            .expect("SSD_CHUNK_SCAN registered");
+        assert_eq!(e.name, "SsdChunkScan");
+        assert_eq!(
+            r.id_for_name("SsdChunkScan"),
+            Some(fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN),
+        );
+        // Shape rule: y matches x's shape.
+        let out_shape = (e.shape_rule)(
+            &[
+                Shape::from_dims(&[2, 16, 8, 64]),    // x: [batch, seqlen, heads, head_dim]
+                Shape::from_dims(&[2, 16, 8]),        // dt
+                Shape::from_dims(&[8]),               // a
+                Shape::from_dims(&[2, 16, 8, 128]),   // b: [batch, seqlen, heads, state_dim]
+                Shape::from_dims(&[2, 16, 8, 128]),   // c
+            ],
+            &fuel_graph::registry::FusedOpParams::SsdChunkScan { chunk_size: 16 },
+        );
+        assert_eq!(out_shape.dims(), &[2, 16, 8, 64]);
+    }
+
     /// Registry: the FusedSoftmaxCrossEntropy entry is wired into the
     /// default registry and reachable by id + name.
     #[test]

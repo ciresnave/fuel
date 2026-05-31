@@ -542,6 +542,37 @@ pub fn cost_softmax_last_dim_primitive_cpu(
     }
 }
 
+/// Cost for `SsdChunkScan` (binding-table form). FLOPs scale with
+/// `batch × seqlen × heads × head_dim × state_dim`. Conservative
+/// ~8 FLOPs per inner iteration (mul-mul-add for h update + mul-add
+/// for y accumulate, with exp amortized per outer (b, t, h)).
+pub fn cost_ssd_chunk_scan_primitive_cpu(
+    _shapes: &[Shape],
+    _dtypes: &[DType],
+    params: &OpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    let (batch, seqlen, heads, head_dim, state_dim) = match params {
+        OpParams::SsdChunkScan {
+            batch, seqlen, heads, head_dim, state_dim, ..
+        } => (
+            *batch as u64, *seqlen as u64, *heads as u64,
+            *head_dim as u64, *state_dim as u64,
+        ),
+        _ => return CostEstimate::default(),
+    };
+    let flops = batch * seqlen * heads * head_dim * state_dim * 8;
+    let bytes_moved = 2 * batch * seqlen * heads * head_dim * 4
+        + batch * seqlen * heads * 4
+        + 2 * batch * seqlen * heads * state_dim * 4
+        + heads * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
 /// Cost for `SelectiveScan` (binding-table form). FLOPs scale with
 /// `batch × seqlen × dim × dstate`. Conservative ~16 FLOPs per inner
 /// iteration (exp ≈ 10, plus the FMAs for h update and y accumulate).
@@ -807,6 +838,7 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         FusedSoftmaxCrossEntropy => cost_fused_softmax_cross_entropy_primitive_cpu,
         CausalConv1d => cost_causal_conv1d_primitive_cpu,
         SelectiveScan => cost_selective_scan_primitive_cpu,
+        SsdChunkScan => cost_ssd_chunk_scan_primitive_cpu,
         RmsNormLastDim | RmsNormLastDimBackward
         | LayerNormLastDim | LayerNormLastDimBackward
             => cost_norm_last_dim_primitive_cpu,
@@ -870,6 +902,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
+            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
         };
         let c = cost_elementwise_unary_cpu(
             &[in_shape, out_shape],
@@ -897,6 +930,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![],
+            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
         };
         let c = unknown_cost(&[], &[], &OpParams::None, &caps);
         assert_eq!(c, CostEstimate::default());

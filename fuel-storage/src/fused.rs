@@ -668,6 +668,61 @@ pub const SELECTIVE_SCAN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee 
             iteration order; same-hardware re-run bit-identical.",
 };
 
+/// Static cost model for `(SSD_CHUNK_SCAN, Cpu)` — Mamba-2's chunked
+/// SSD scan. FLOPs scale with
+/// `batch · seqlen · heads · head_dim · state_dim` (the inner
+/// quadruple-nested loop). Bandwidth reads x/dt/b/c per timestep +
+/// a once + writes y.
+///
+/// Shapes: `[x, dt, a, b, c]`. v1 single-chunk only.
+pub fn cost_ssd_chunk_scan_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    debug_assert_eq!(
+        shapes.len(), 5,
+        "SsdChunkScan cost: expected 5 input shapes (x, dt, a, b, c)",
+    );
+    let x_dims = shapes[0].dims();
+    let b_dims = shapes[3].dims();
+    if x_dims.len() != 4 || b_dims.len() != 4 {
+        return CostEstimate::default();
+    }
+    let batch = x_dims[0] as u64;
+    let seqlen = x_dims[1] as u64;
+    let heads = x_dims[2] as u64;
+    let head_dim = x_dims[3] as u64;
+    let state_dim = b_dims[3] as u64;
+    // ~8 FLOPs per (b, t, h, i, j) inner iteration: mul-mul-add for
+    // h-update + mul-add for y-accumulate, plus exp amortized per
+    // outer (b, t, h).
+    let per_iter_flops = 8;
+    let flops = batch * seqlen * heads * head_dim * state_dim * per_iter_flops;
+    let bytes_moved = 2 * batch * seqlen * heads * head_dim * 4
+        + batch * seqlen * heads * 4
+        + 2 * batch * seqlen * heads * state_dim * 4
+        + heads * 4;
+    CostEstimate {
+        flops,
+        bytes_moved,
+        kernel_overhead_ns: 50,
+    }
+}
+
+/// Precision guarantee for `(SSD_CHUNK_SCAN, Cpu, *)` — same shape
+/// as `SELECTIVE_SCAN_CPU_PRECISION`. v1 single-chunk only.
+pub const SSD_CHUNK_SCAN_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend SsdChunkScan: per-head state recurrence \
+            in F64 accumulator; narrow to F32 on y store; \
+            deterministic iteration order; same-hardware re-run \
+            bit-identical. v1 single-chunk only (chunk_size == seqlen).",
+};
+
 /// Static cost model for `(CONV2D, Cpu)` kernels — FLOP + bandwidth
 /// per architecture v1.0 §"Layer-1 cost model."
 ///
@@ -1666,16 +1721,17 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 19 registered fused ops covered.
+        // Sanity: we should see all 20 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
         // (autograd switched from emitting the primitive decomposition
         // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
         // (Phase 3 of the in-place ops infrastructure) +
         // FUSED_SOFTMAX_CROSS_ENTROPY + CAUSAL_CONV1D + SELECTIVE_SCAN
-        // (the CPU OpKind coverage plan's first three fused-op additions).
+        // + SSD_CHUNK_SCAN (the CPU OpKind coverage plan's Mamba-adjacent
+        // fused-op trio + FSCE).
         assert_eq!(
-            covered, 19,
-            "expected 19 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 20,
+            "expected 20 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 
@@ -1798,6 +1854,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![],
+            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
         };
         let params = FusedOpParams::Conv2D {
             stride:  (1, 1),
@@ -1825,6 +1882,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![],
+            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
         };
         let c = cost_fused_linear_cpu(
             &[a, b, bias],

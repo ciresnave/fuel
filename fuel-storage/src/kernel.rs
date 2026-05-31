@@ -584,6 +584,25 @@ pub enum OpParams {
         dstate:         usize,
         delta_softplus: bool,
     },
+
+    /// SsdChunkScan execution parameters. 5 inputs:
+    /// `x [batch, seqlen, heads, head_dim]`,
+    /// `dt [batch, seqlen, heads]`, `a [heads]`,
+    /// `b [batch, seqlen, heads, state_dim]`,
+    /// `c [batch, seqlen, heads, state_dim]`. Output `y` matches `x`'s
+    /// shape. All tensors share dtype.
+    ///
+    /// `chunk_size` is the SSD block size. v1 requires
+    /// `chunk_size == seqlen` (the kernel errors otherwise);
+    /// multi-chunk inter-block decay propagation is a follow-up.
+    SsdChunkScan {
+        batch:      usize,
+        seqlen:     usize,
+        heads:      usize,
+        head_dim:   usize,
+        state_dim:  usize,
+        chunk_size: usize,
+    },
 }
 
 // =============================================================================
@@ -955,6 +974,19 @@ impl KernelBindingTable {
             alts.iter()
                 .map(move |e| (*op, dtypes.as_slice(), *backend, e.cost))
         })
+    }
+
+    /// Iterate every registered `(op, dtypes, backend)` decision-point
+    /// key — one item per key, regardless of how many alternatives
+    /// share it. Consumed by `SystemTopology::build_at` to derive
+    /// which backends have kernels registered + which (op, dtype)
+    /// pairs each backend covers.
+    pub fn iter_keys(
+        &self,
+    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId)> {
+        self.bindings
+            .keys()
+            .map(|(op, dtypes, backend)| (*op, dtypes.as_slice(), *backend))
     }
 
     /// Look up the wrapper for `(op, dtypes, backend)`. Returns the

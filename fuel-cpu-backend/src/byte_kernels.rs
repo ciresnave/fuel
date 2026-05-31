@@ -2820,22 +2820,40 @@ pub fn affine_f32(
 // passes it as the sole buffer.
 
 macro_rules! unary_inplace_thunk {
-    ($name:ident, $T:ty, $Op:ident, $method:ident) => {
+    ($name:ident, $T:ty, $Op:ident) => {
         pub fn $name(out: &mut CpuStorageBytes) -> Result<()> {
             let view: &mut [$T] = out.as_slice_mut()?;
             for slot in view.iter_mut() {
-                *slot = <crate::chassis::unary::$Op as crate::chassis::unary::UnaryOpCore>::$method(*slot);
+                *slot = <crate::chassis::unary::$Op as crate::chassis::unary::UnaryOp<$T>>::apply(*slot);
             }
             Ok(())
         }
     };
 }
 
-unary_inplace_thunk!(relu_inplace_f32,    f32, Relu,     f32);
-unary_inplace_thunk!(silu_inplace_f32,    f32, Silu,     f32);
-unary_inplace_thunk!(gelu_inplace_f32,    f32, GeluTanh, f32);
-unary_inplace_thunk!(tanh_inplace_f32,    f32, Tanh,     f32);
-unary_inplace_thunk!(sigmoid_inplace_f32, f32, Sigmoid,  f32);
+unary_inplace_thunk!(relu_inplace_f32,    f32, Relu);
+unary_inplace_thunk!(silu_inplace_f32,    f32, Silu);
+unary_inplace_thunk!(gelu_inplace_f32,    f32, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_f32,    f32, Tanh);
+unary_inplace_thunk!(sigmoid_inplace_f32, f32, Sigmoid);
+
+unary_inplace_thunk!(relu_inplace_f64,    f64, Relu);
+unary_inplace_thunk!(silu_inplace_f64,    f64, Silu);
+unary_inplace_thunk!(gelu_inplace_f64,    f64, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_f64,    f64, Tanh);
+unary_inplace_thunk!(sigmoid_inplace_f64, f64, Sigmoid);
+
+unary_inplace_thunk!(relu_inplace_bf16,    half::bf16, Relu);
+unary_inplace_thunk!(silu_inplace_bf16,    half::bf16, Silu);
+unary_inplace_thunk!(gelu_inplace_bf16,    half::bf16, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_bf16,    half::bf16, Tanh);
+unary_inplace_thunk!(sigmoid_inplace_bf16, half::bf16, Sigmoid);
+
+unary_inplace_thunk!(relu_inplace_f16,    half::f16, Relu);
+unary_inplace_thunk!(silu_inplace_f16,    half::f16, Silu);
+unary_inplace_thunk!(gelu_inplace_f16,    half::f16, GeluTanh);
+unary_inplace_thunk!(tanh_inplace_f16,    half::f16, Tanh);
+unary_inplace_thunk!(sigmoid_inplace_f16, half::f16, Sigmoid);
 
 /// In-place affine: mutates `out[i] = mul * out[i] + add`. The
 /// caller passes `out` as both the input + output through the
@@ -5251,6 +5269,126 @@ pub fn selective_scan_f32(
                     y_acc += h_new * (c_view[c_row_off + j] as f64);
                 }
                 out_view[out_row_off + i] = y_acc as f32;
+            }
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
+// SsdChunkScan — Mamba-2's State-Space Duality chunked scan (forward)
+// =============================================================================
+//
+// v1 supports only the single-chunk case (chunk_size == seqlen) —
+// the chunked algorithm degenerates to a multi-head selective scan
+// in this regime. Multi-chunk with proper inter-chunk decay
+// propagation is a follow-up.
+//
+// Per-timestep recurrence (per (batch b, head h, head_dim i)):
+//
+//   d = dt[b,t,h] (scalar)
+//   a_h = a[h] (scalar log A)
+//   for j in 0..state_dim:
+//     h_state[b,h,i,j] = exp(d * a_h) * h_state[b,h,i,j]
+//                      + d * b[b,t,h,j] * x[b,t,h,i]
+//   y[b,t,h,i] = sum_j(h_state[b,h,i,j] * c[b,t,h,j])
+//
+// h_state is the per-head, per-head-dim recurrent state of shape
+// [batch, heads, head_dim, state_dim], allocated internally and
+// zero-initialized at the start of the scan.
+
+/// SsdChunkScan CPU kernel (F32, single-chunk v1). Output buffer
+/// size is `batch * seqlen * heads * head_dim * 4` bytes.
+///
+/// Returns Err when `chunk_size != seqlen` — the v1 single-chunk
+/// restriction. Multi-chunk requires inter-chunk decay propagation
+/// which isn't implemented here; a follow-up commit will lift the
+/// restriction.
+#[allow(clippy::too_many_arguments)]
+pub fn ssd_chunk_scan_f32(
+    x: &CpuStorageBytes,
+    dt: &CpuStorageBytes,
+    a: &CpuStorageBytes,
+    b: &CpuStorageBytes,
+    c: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    batch: usize,
+    seqlen: usize,
+    heads: usize,
+    head_dim: usize,
+    state_dim: usize,
+    chunk_size: usize,
+) -> Result<()> {
+    if chunk_size != seqlen {
+        return Err(Error::Msg(format!(
+            "ssd_chunk_scan_f32 v1: only single-chunk (chunk_size == seqlen) \
+             is supported; got chunk_size={chunk_size}, seqlen={seqlen}. \
+             Multi-chunk SSD with inter-chunk decay propagation is a follow-up.",
+        ))
+        .bt());
+    }
+    let elem = std::mem::size_of::<f32>();
+    let x_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(head_dim).saturating_mul(elem);
+    let dt_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(elem);
+    let a_need = heads.saturating_mul(elem);
+    let b_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(state_dim).saturating_mul(elem);
+    let c_need = b_need;
+    let out_need = x_need;
+    let check = |name: &str, got: usize, need: usize| -> Result<()> {
+        if got != need {
+            Err(Error::Msg(format!(
+                "ssd_chunk_scan_f32: {name} bytes={got}, expected {need}",
+            ))
+            .bt())
+        } else {
+            Ok(())
+        }
+    };
+    check("x",   x.len_bytes(),   x_need)?;
+    check("dt",  dt.len_bytes(),  dt_need)?;
+    check("a",   a.len_bytes(),   a_need)?;
+    check("b",   b.len_bytes(),   b_need)?;
+    check("c",   c.len_bytes(),   c_need)?;
+    check("out", out.len_bytes(), out_need)?;
+    if batch == 0 || seqlen == 0 || heads == 0 || head_dim == 0 || state_dim == 0 {
+        let out_view: &mut [f32] = out.as_slice_mut()?;
+        out_view.fill(0.0);
+        return Ok(());
+    }
+    let x_view: &[f32] = x.as_slice()?;
+    let dt_view: &[f32] = dt.as_slice()?;
+    let a_view: &[f32] = a.as_slice()?;
+    let b_view: &[f32] = b.as_slice()?;
+    let c_view: &[f32] = c.as_slice()?;
+    let out_view: &mut [f32] = out.as_slice_mut()?;
+
+    // Recurrent hidden state — [batch, heads, head_dim, state_dim],
+    // F64 accumulator for numerical headroom over the per-step
+    // exp/mul/add chain (matches SelectiveScan precedent).
+    let mut h = vec![0.0_f64; batch * heads * head_dim * state_dim];
+
+    for bi in 0..batch {
+        for t in 0..seqlen {
+            for hi in 0..heads {
+                let dt_val = dt_view[(bi * seqlen + t) * heads + hi] as f64;
+                let a_val = a_view[hi] as f64;
+                let exp_d_a = (dt_val * a_val).exp();
+                let x_off = ((bi * seqlen + t) * heads + hi) * head_dim;
+                let b_off = ((bi * seqlen + t) * heads + hi) * state_dim;
+                let c_off = b_off;
+                let out_off = x_off;
+                for i in 0..head_dim {
+                    let x_val = x_view[x_off + i] as f64;
+                    let h_off = ((bi * heads + hi) * head_dim + i) * state_dim;
+                    let mut y_acc: f64 = 0.0;
+                    for j in 0..state_dim {
+                        let b_val = b_view[b_off + j] as f64;
+                        let h_new = exp_d_a * h[h_off + j] + dt_val * b_val * x_val;
+                        h[h_off + j] = h_new;
+                        y_acc += h_new * (c_view[c_off + j] as f64);
+                    }
+                    out_view[out_off + i] = y_acc as f32;
+                }
             }
         }
     }
@@ -9366,5 +9504,166 @@ mod tests {
         // batch=2 but only 1-element inputs → error
         let r = selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 2, 1, 1, 1, false);
         assert!(r.is_err());
+    }
+
+    /// SsdChunkScan: minimal degenerate case — batch=heads=head_dim=
+    /// state_dim=1, seqlen=chunk_size=1. Same scale as SelectiveScan's
+    /// single-step test.
+    ///   d = dt[0,0,0] = 1.0
+    ///   a_h = a[0] = -1.0
+    ///   h[0,0,0,0] = exp(1*-1)*0 + 1*2*3 = 6.0   (b=2, x=3)
+    ///   y[0,0,0,0] = 6.0 * 0.5 = 3.0             (c=0.5)
+    #[test]
+    fn ssd_chunk_scan_f32_minimal() {
+        let x = CpuStorageBytes::from_slice(&[3.0_f32]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[2.0_f32]);
+        let c = CpuStorageBytes::from_slice(&[0.5_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
+            .expect("ssd_chunk_scan");
+        let result: &[f32] = out.as_slice().unwrap();
+        assert!((result[0] - 3.0).abs() < 1e-5, "got {}", result[0]);
+    }
+
+    /// SsdChunkScan: two timesteps verify state threading per head.
+    /// Same trick as SelectiveScan's two-step test with the extra
+    /// heads dimension fixed at 1.
+    #[test]
+    fn ssd_chunk_scan_f32_two_steps_state_threading() {
+        // [batch=1, seqlen=2, heads=1, head_dim=1]
+        let x = CpuStorageBytes::from_slice(&[3.0_f32, 3.0]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32, 1.0]);
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);
+        let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 2, 1, 1, 1, 2)
+            .expect("ssd_chunk_scan");
+        let result: &[f32] = out.as_slice().unwrap();
+        let h_step1 = (-1.0_f32).exp() * 6.0 + 6.0;
+        let y_step1 = h_step1 * 0.5;
+        assert!((result[0] - 3.0).abs() < 1e-5, "step 0: {}", result[0]);
+        assert!((result[1] - y_step1).abs() < 1e-5, "step 1: {} expected {y_step1}", result[1]);
+    }
+
+    /// SsdChunkScan: two heads with distinct per-head `a` values
+    /// verifies the per-head log-A is applied correctly to each head.
+    #[test]
+    fn ssd_chunk_scan_f32_two_heads_distinct_a() {
+        // [batch=1, seqlen=1, heads=2, head_dim=1]
+        let x = CpuStorageBytes::from_slice(&[3.0_f32, 5.0]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32, 1.0]);
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32, -2.0]);
+        let b = CpuStorageBytes::from_slice(&[2.0_f32, 4.0]);
+        let c = CpuStorageBytes::from_slice(&[0.5_f32, 1.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 2, 1, 1, 1)
+            .expect("ssd_chunk_scan");
+        let result: &[f32] = out.as_slice().unwrap();
+        // head 0: h = exp(-1)*0 + 1*2*3 = 6; y = 6 * 0.5 = 3
+        // head 1: h = exp(-2)*0 + 1*4*5 = 20; y = 20 * 1.0 = 20
+        assert!((result[0] - 3.0).abs() < 1e-5, "head 0: {}", result[0]);
+        assert!((result[1] - 20.0).abs() < 1e-5, "head 1: {}", result[1]);
+    }
+
+    /// SsdChunkScan: non-single-chunk request errors per the v1 limit.
+    #[test]
+    fn ssd_chunk_scan_f32_multi_chunk_errors() {
+        let x = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
+        let a = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
+        let c = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 4, 1, 1, 1, 2);
+        assert!(r.is_err());
+    }
+
+    /// SsdChunkScan: bad shapes error rather than panicking.
+    #[test]
+    fn ssd_chunk_scan_f32_bad_shapes_error() {
+        let x = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let a = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let c = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        // heads=2 but only 1-element a → byte count mismatch
+        let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 2, 1, 1, 1);
+        assert!(r.is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // In-place unary dtype expansion — one representative (op, dtype)
+    // pair per non-f32 dtype the chassis serves. All 20 (op × dtype)
+    // entries collapse onto the same `unary_inplace_thunk!` macro that
+    // delegates to `UnaryOp<T>::apply`, so a per-dtype smoke is
+    // sufficient at this layer (executor-level coverage lives in
+    // fuel-storage's `op_relu_inplace_cpu_mutates_target_storage`).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn relu_inplace_f64_round_trip() {
+        let mut out = CpuStorageBytes::from_slice(&[-1.0_f64, 0.0, 1.0, 2.0]);
+        relu_inplace_f64(&mut out).expect("relu inplace f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn silu_inplace_f64_matches_functional() {
+        let mut got = CpuStorageBytes::from_slice(&[1.0_f64, -2.0, 0.5]);
+        silu_inplace_f64(&mut got).expect("silu inplace f64");
+        let r = got.as_slice::<f64>().unwrap();
+        // SiLU(x) = x · sigmoid(x); compare against direct math.
+        for (i, &x) in [1.0_f64, -2.0, 0.5].iter().enumerate() {
+            let want = x / (1.0 + (-x).exp());
+            assert!((r[i] - want).abs() < 1e-12, "got {} want {}", r[i], want);
+        }
+    }
+
+    #[test]
+    fn relu_inplace_bf16_round_trip() {
+        use half::bf16;
+        let mut out = CpuStorageBytes::from_slice(&[
+            bf16::from_f32(-1.0), bf16::from_f32(0.0),
+            bf16::from_f32(1.0),  bf16::from_f32(2.0),
+        ]);
+        relu_inplace_bf16(&mut out).expect("relu inplace bf16");
+        let r = out.as_slice::<bf16>().unwrap();
+        assert_eq!(r[0], bf16::from_f32(0.0));
+        assert_eq!(r[1], bf16::from_f32(0.0));
+        assert_eq!(r[2], bf16::from_f32(1.0));
+        assert_eq!(r[3], bf16::from_f32(2.0));
+    }
+
+    #[test]
+    fn tanh_inplace_bf16_via_f32_pivot() {
+        use half::bf16;
+        let mut got = CpuStorageBytes::from_slice(&[
+            bf16::from_f32(0.0), bf16::from_f32(1.0), bf16::from_f32(-1.0),
+        ]);
+        tanh_inplace_bf16(&mut got).expect("tanh inplace bf16");
+        let r = got.as_slice::<bf16>().unwrap();
+        // bf16 round-trip through f32 loses a lot of precision; check
+        // each slot matches the expected bf16(tanh(f32(x))) bitwise.
+        for (i, &x) in [0.0_f32, 1.0, -1.0].iter().enumerate() {
+            assert_eq!(r[i], bf16::from_f32(x.tanh()));
+        }
+    }
+
+    #[test]
+    fn sigmoid_inplace_f16_via_f32_pivot() {
+        use half::f16;
+        let mut got = CpuStorageBytes::from_slice(&[
+            f16::from_f32(0.0), f16::from_f32(2.0), f16::from_f32(-2.0),
+        ]);
+        sigmoid_inplace_f16(&mut got).expect("sigmoid inplace f16");
+        let r = got.as_slice::<f16>().unwrap();
+        for (i, &x) in [0.0_f32, 2.0, -2.0].iter().enumerate() {
+            let want = f16::from_f32(1.0 / (1.0 + (-x).exp()));
+            assert_eq!(r[i], want);
+        }
     }
 }
