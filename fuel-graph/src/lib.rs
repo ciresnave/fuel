@@ -322,6 +322,14 @@ pub enum Op {
     /// In-place exact-GeLU: `x = 0.5 · x · (1 + erf(x/√2))`. Same
     /// semantics as `Op::GeluErf`.
     GeluErfInplace,
+    /// In-place clamp: `x = clamp(x, min, max)`. Same semantics as
+    /// `Op::Clamp`. Backward gates the upstream by `(x ≥ min) ∧
+    /// (x ≤ max)` (mirrors Op::Clamp).
+    ClampInplace { min: f64, max: f64 },
+    /// In-place integer-power: `x = x.powi(exp)`. Same semantics as
+    /// `Op::PowI`. Backward emits `exp · upstream · x.powi(exp-1)`
+    /// (mirrors Op::PowI).
+    PowIInplace(i32),
 
     // --- element-wise comparison (output is U8 mask) ---
     /// Element-wise equality (`a == b`) producing a `U8` mask: `1`
@@ -860,6 +868,7 @@ impl Op {
             | Op::RoundInplace
             | Op::ErfInplace
             | Op::GeluErfInplace => Some(0),
+            Op::ClampInplace { .. } | Op::PowIInplace(_) => Some(0),
             Op::Fused(id, _) if *id == crate::registry::FusedOps::INPLACE_AFFINE => Some(0),
             _ => None,
         }
@@ -978,6 +987,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::RoundInplace         => "RoundInplace",
         Op::ErfInplace           => "ErfInplace",
         Op::GeluErfInplace       => "GeluErfInplace",
+        Op::ClampInplace{..}     => "ClampInplace",
+        Op::PowIInplace(_)       => "PowIInplace",
         Op::Equal                => "Equal",
         Op::Ne                   => "Ne",
         Op::Lt                   => "Lt",
@@ -2876,6 +2887,20 @@ impl Tensor {
         self.unary_op(Op::GeluErfInplace)
     }
 
+    /// Append a `ClampInplace { min, max }` node — mutates `self`'s
+    /// storage with `clamp(self, min, max)`. See `Tensor::clamp` for
+    /// the functional variant.
+    pub fn clamp_inplace(&self, min: f64, max: f64) -> Tensor {
+        self.unary_op(Op::ClampInplace { min, max })
+    }
+
+    /// Append a `PowIInplace(exp)` node — mutates `self`'s storage
+    /// with `self.powi(exp)`. See `Tensor::powi` for the functional
+    /// variant.
+    pub fn powi_inplace(&self, exp: i32) -> Tensor {
+        self.unary_op(Op::PowIInplace(exp))
+    }
+
     /// Append an `Op::Fused(INPLACE_AFFINE, ...)` node — mutates
     /// `self`'s storage with `self = mul · self + add`. Single-input
     /// fused op (no functional `Op::Affine` exists on
@@ -3892,11 +3917,16 @@ impl Tensor {
                 && Arc::ptr_eq(&self.graph, &c.graph),
             "ssd_chunk_scan: all tensors must live on the same graph",
         );
-        for (name, t) in [("x", self), ("dt", dt), ("a", a), ("b", b), ("c", c)] {
+        let dtype = self.dtype();
+        assert!(
+            matches!(dtype, DType::F32 | DType::F64 | DType::BF16 | DType::F16),
+            "ssd_chunk_scan: x must be F32/F64/BF16/F16, got {dtype:?}",
+        );
+        for (name, t) in [("dt", dt), ("a", a), ("b", b), ("c", c)] {
             assert_eq!(
+                t.dtype(), dtype,
+                "ssd_chunk_scan: {name} dtype {:?} must match x dtype {dtype:?}",
                 t.dtype(),
-                DType::F32,
-                "ssd_chunk_scan v1: {name} must be F32, got {:?}", t.dtype(),
             );
         }
         let x_dims = self.shape();
@@ -3945,7 +3975,7 @@ impl Tensor {
             ),
             inputs: vec![self.id, dt.id, a.id, b.id, c.id],
             shape:  Shape::from_dims(&[batch, seqlen, heads, head_dim]),
-            dtype:  DType::F32,
+            dtype,
         });
         Self {
             graph: self.graph.clone(),
@@ -7281,6 +7311,41 @@ impl Tensor {
                     let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, scaled], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
+                Op::ClampInplace { min, max } => {
+                    // Same backward as Op::Clamp — indicator is 1 where
+                    // min ≤ x ≤ max, 0 elsewhere. Reads pre-mutation x via
+                    // Phase 4a ordering.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let min_shifted = push_node(&graph_handle, Op::AddScalar(-min), vec![x], x_shape.clone(), dtype);
+                    let lower_ok = push_node(&graph_handle, Op::Step, vec![min_shifted], x_shape.clone(), dtype);
+                    let neg_x = push_node(&graph_handle, Op::MulScalar(-1.0), vec![x], x_shape.clone(), dtype);
+                    let max_minus_x = push_node(&graph_handle, Op::AddScalar(max), vec![neg_x], x_shape.clone(), dtype);
+                    let upper_ok = push_node(&graph_handle, Op::Step, vec![max_minus_x], x_shape.clone(), dtype);
+                    let indicator = push_node(&graph_handle, Op::Mul, vec![lower_ok, upper_ok], x_shape.clone(), dtype);
+                    let grad_x = push_node(&graph_handle, Op::Mul, vec![up_id, indicator], x_shape, dtype);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::PowIInplace(n) => {
+                    // Same backward as Op::PowI — single fused
+                    // POWI_BACKWARD node `(x, upstream) → exp · x^(exp-1) ·
+                    // upstream`. Reads pre-mutation x via Phase 4a ordering.
+                    let x = inputs[0];
+                    let x_shape = node_shape(&graph_handle, x);
+                    let dtype = node_dtype(&graph_handle, x);
+                    let grad_x = push_node(
+                        &graph_handle,
+                        Op::Fused(
+                            crate::registry::FusedOps::POWI_BACKWARD,
+                            crate::registry::FusedOpParams::PowIBackward { exp: n },
+                        ),
+                        vec![x, up_id],
+                        x_shape,
+                        dtype,
+                    );
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
                 Op::GeluErfInplace => {
                     // Same backward as Op::GeluErf — exact-GELU derivative
                     // is Φ(x) + x·φ(x). Both halves read pre-mutation x via
@@ -9087,6 +9152,8 @@ mod tests {
         assert_eq!(Op::RoundInplace.short_name(), "RoundInplace");
         assert_eq!(Op::ErfInplace.short_name(), "ErfInplace");
         assert_eq!(Op::GeluErfInplace.short_name(), "GeluErfInplace");
+        assert_eq!(Op::ClampInplace { min: 0.0, max: 1.0 }.short_name(), "ClampInplace");
+        assert_eq!(Op::PowIInplace(3).short_name(), "PowIInplace");
     }
 
     #[test]

@@ -2984,6 +2984,83 @@ pub fn affine_inplace_f16(out: &mut CpuStorageBytes, mul: f64, add: f64) -> Resu
     Ok(())
 }
 
+// In-place clamp + powi — Phase 3e successor for the scalar-param
+// in-place op family (2026-05-30). Same shape contract as
+// `affine_inplace_*`: single buffer, scalar params come in via
+// `OpParams::Clamp` / `OpParams::PowI`.
+
+pub fn clamp_inplace_f32(out: &mut CpuStorageBytes, min: f32, max: f32) -> Result<()> {
+    if min > max {
+        return Err(Error::Msg(format!("clamp_inplace_f32: min ({min}) > max ({max})")).bt());
+    }
+    let view: &mut [f32] = out.as_slice_mut()?;
+    for slot in view.iter_mut() { *slot = slot.clamp(min, max); }
+    Ok(())
+}
+
+pub fn clamp_inplace_f64(out: &mut CpuStorageBytes, min: f64, max: f64) -> Result<()> {
+    if min > max {
+        return Err(Error::Msg(format!("clamp_inplace_f64: min ({min}) > max ({max})")).bt());
+    }
+    let view: &mut [f64] = out.as_slice_mut()?;
+    for slot in view.iter_mut() { *slot = slot.clamp(min, max); }
+    Ok(())
+}
+
+/// In-place clamp for bf16 — pivots through f32 like the non-inplace
+/// half-precision affine kernels.
+pub fn clamp_inplace_bf16(out: &mut CpuStorageBytes, min: f64, max: f64) -> Result<()> {
+    if min > max {
+        return Err(Error::Msg(format!("clamp_inplace_bf16: min ({min}) > max ({max})")).bt());
+    }
+    let view: &mut [half::bf16] = out.as_slice_mut()?;
+    let (min_f32, max_f32) = (min as f32, max as f32);
+    for slot in view.iter_mut() {
+        *slot = half::bf16::from_f32(slot.to_f32().clamp(min_f32, max_f32));
+    }
+    Ok(())
+}
+
+pub fn clamp_inplace_f16(out: &mut CpuStorageBytes, min: f64, max: f64) -> Result<()> {
+    if min > max {
+        return Err(Error::Msg(format!("clamp_inplace_f16: min ({min}) > max ({max})")).bt());
+    }
+    let view: &mut [half::f16] = out.as_slice_mut()?;
+    let (min_f32, max_f32) = (min as f32, max as f32);
+    for slot in view.iter_mut() {
+        *slot = half::f16::from_f32(slot.to_f32().clamp(min_f32, max_f32));
+    }
+    Ok(())
+}
+
+pub fn powi_inplace_f32(out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
+    let view: &mut [f32] = out.as_slice_mut()?;
+    for slot in view.iter_mut() { *slot = slot.powi(exp); }
+    Ok(())
+}
+
+pub fn powi_inplace_f64(out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
+    let view: &mut [f64] = out.as_slice_mut()?;
+    for slot in view.iter_mut() { *slot = slot.powi(exp); }
+    Ok(())
+}
+
+pub fn powi_inplace_bf16(out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
+    let view: &mut [half::bf16] = out.as_slice_mut()?;
+    for slot in view.iter_mut() {
+        *slot = half::bf16::from_f32(slot.to_f32().powi(exp));
+    }
+    Ok(())
+}
+
+pub fn powi_inplace_f16(out: &mut CpuStorageBytes, exp: i32) -> Result<()> {
+    let view: &mut [half::f16] = out.as_slice_mut()?;
+    for slot in view.iter_mut() {
+        *slot = half::f16::from_f32(slot.to_f32().powi(exp));
+    }
+    Ok(())
+}
+
 /// Element-wise clamp: `out[i] = clamp(input[i], min, max)`.
 pub fn clamp_f32(
     input: &CpuStorageBytes,
@@ -5510,100 +5587,132 @@ selective_scan_kernel!(selective_scan_f16, half::f16,
 /// SsdChunkScan CPU kernel (F32, single-chunk v1). Output buffer
 /// size is `batch * seqlen * heads * head_dim * 4` bytes.
 ///
-/// Returns Err when `chunk_size != seqlen` — the v1 single-chunk
-/// restriction. Multi-chunk requires inter-chunk decay propagation
-/// which isn't implemented here; a follow-up commit will lift the
-/// restriction.
-#[allow(clippy::too_many_arguments)]
-pub fn ssd_chunk_scan_f32(
-    x: &CpuStorageBytes,
-    dt: &CpuStorageBytes,
-    a: &CpuStorageBytes,
-    b: &CpuStorageBytes,
-    c: &CpuStorageBytes,
-    out: &mut CpuStorageBytes,
-    batch: usize,
-    seqlen: usize,
-    heads: usize,
-    head_dim: usize,
-    state_dim: usize,
-    chunk_size: usize,
+/// Shared shape-validation for the SsdChunkScan dtype variants.
+fn ssd_chunk_scan_check_shapes(
+    name: &str,
+    elem_bytes: usize,
+    x_bytes: usize,
+    dt_bytes: usize,
+    a_bytes: usize,
+    b_bytes: usize,
+    c_bytes: usize,
+    out_bytes: usize,
+    batch: usize, seqlen: usize, heads: usize,
+    head_dim: usize, state_dim: usize,
 ) -> Result<()> {
-    if chunk_size != seqlen {
-        return Err(Error::Msg(format!(
-            "ssd_chunk_scan_f32 v1: only single-chunk (chunk_size == seqlen) \
-             is supported; got chunk_size={chunk_size}, seqlen={seqlen}. \
-             Multi-chunk SSD with inter-chunk decay propagation is a follow-up.",
-        ))
-        .bt());
-    }
-    let elem = std::mem::size_of::<f32>();
-    let x_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(head_dim).saturating_mul(elem);
-    let dt_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(elem);
-    let a_need = heads.saturating_mul(elem);
-    let b_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(state_dim).saturating_mul(elem);
+    let x_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(head_dim).saturating_mul(elem_bytes);
+    let dt_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(elem_bytes);
+    let a_need = heads.saturating_mul(elem_bytes);
+    let b_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(state_dim).saturating_mul(elem_bytes);
     let c_need = b_need;
     let out_need = x_need;
-    let check = |name: &str, got: usize, need: usize| -> Result<()> {
+    let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
             Err(Error::Msg(format!(
-                "ssd_chunk_scan_f32: {name} bytes={got}, expected {need}",
+                "{name}: {name_arg} bytes={got}, expected {need}",
             ))
             .bt())
         } else {
             Ok(())
         }
     };
-    check("x",   x.len_bytes(),   x_need)?;
-    check("dt",  dt.len_bytes(),  dt_need)?;
-    check("a",   a.len_bytes(),   a_need)?;
-    check("b",   b.len_bytes(),   b_need)?;
-    check("c",   c.len_bytes(),   c_need)?;
-    check("out", out.len_bytes(), out_need)?;
-    if batch == 0 || seqlen == 0 || heads == 0 || head_dim == 0 || state_dim == 0 {
-        let out_view: &mut [f32] = out.as_slice_mut()?;
-        out_view.fill(0.0);
-        return Ok(());
-    }
-    let x_view: &[f32] = x.as_slice()?;
-    let dt_view: &[f32] = dt.as_slice()?;
-    let a_view: &[f32] = a.as_slice()?;
-    let b_view: &[f32] = b.as_slice()?;
-    let c_view: &[f32] = c.as_slice()?;
-    let out_view: &mut [f32] = out.as_slice_mut()?;
-
-    // Recurrent hidden state — [batch, heads, head_dim, state_dim],
-    // F64 accumulator for numerical headroom over the per-step
-    // exp/mul/add chain (matches SelectiveScan precedent).
-    let mut h = vec![0.0_f64; batch * heads * head_dim * state_dim];
-
-    for bi in 0..batch {
-        for t in 0..seqlen {
-            for hi in 0..heads {
-                let dt_val = dt_view[(bi * seqlen + t) * heads + hi] as f64;
-                let a_val = a_view[hi] as f64;
-                let exp_d_a = (dt_val * a_val).exp();
-                let x_off = ((bi * seqlen + t) * heads + hi) * head_dim;
-                let b_off = ((bi * seqlen + t) * heads + hi) * state_dim;
-                let c_off = b_off;
-                let out_off = x_off;
-                for i in 0..head_dim {
-                    let x_val = x_view[x_off + i] as f64;
-                    let h_off = ((bi * heads + hi) * head_dim + i) * state_dim;
-                    let mut y_acc: f64 = 0.0;
-                    for j in 0..state_dim {
-                        let b_val = b_view[b_off + j] as f64;
-                        let h_new = exp_d_a * h[h_off + j] + dt_val * b_val * x_val;
-                        h[h_off + j] = h_new;
-                        y_acc += h_new * (c_view[c_off + j] as f64);
-                    }
-                    out_view[out_off + i] = y_acc as f32;
-                }
-            }
-        }
-    }
+    check("x",   x_bytes,   x_need)?;
+    check("dt",  dt_bytes,  dt_need)?;
+    check("a",   a_bytes,   a_need)?;
+    check("b",   b_bytes,   b_need)?;
+    check("c",   c_bytes,   c_need)?;
+    check("out", out_bytes, out_need)?;
     Ok(())
 }
+
+/// SsdChunkScan kernel template. Same shape as SelectiveScan: F64
+/// hidden-state accumulator regardless of element type, narrow to T
+/// on output store. v1 single-chunk only.
+macro_rules! ssd_chunk_scan_kernel {
+    ($name:ident, $T:ty, $to_f64:expr, $from_f64:expr) => {
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name(
+            x: &CpuStorageBytes,
+            dt: &CpuStorageBytes,
+            a: &CpuStorageBytes,
+            b: &CpuStorageBytes,
+            c: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            batch: usize,
+            seqlen: usize,
+            heads: usize,
+            head_dim: usize,
+            state_dim: usize,
+            chunk_size: usize,
+        ) -> Result<()> {
+            if chunk_size != seqlen {
+                return Err(Error::Msg(format!(
+                    "{} v1: only single-chunk (chunk_size == seqlen) \
+                     is supported; got chunk_size={chunk_size}, seqlen={seqlen}. \
+                     Multi-chunk SSD with inter-chunk decay propagation is a follow-up.",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            ssd_chunk_scan_check_shapes(
+                stringify!($name),
+                std::mem::size_of::<$T>(),
+                x.len_bytes(), dt.len_bytes(), a.len_bytes(),
+                b.len_bytes(), c.len_bytes(), out.len_bytes(),
+                batch, seqlen, heads, head_dim, state_dim,
+            )?;
+            if batch == 0 || seqlen == 0 || heads == 0 || head_dim == 0 || state_dim == 0 {
+                let out_view: &mut [$T] = out.as_slice_mut()?;
+                out_view.fill(<$T>::default());
+                return Ok(());
+            }
+            let x_view: &[$T] = x.as_slice()?;
+            let dt_view: &[$T] = dt.as_slice()?;
+            let a_view: &[$T] = a.as_slice()?;
+            let b_view: &[$T] = b.as_slice()?;
+            let c_view: &[$T] = c.as_slice()?;
+            let out_view: &mut [$T] = out.as_slice_mut()?;
+
+            let mut h = vec![0.0_f64; batch * heads * head_dim * state_dim];
+
+            for bi in 0..batch {
+                for t in 0..seqlen {
+                    for hi in 0..heads {
+                        let dt_val = $to_f64(dt_view[(bi * seqlen + t) * heads + hi]);
+                        let a_val = $to_f64(a_view[hi]);
+                        let exp_d_a = (dt_val * a_val).exp();
+                        let x_off = ((bi * seqlen + t) * heads + hi) * head_dim;
+                        let b_off = ((bi * seqlen + t) * heads + hi) * state_dim;
+                        let c_off = b_off;
+                        let out_off = x_off;
+                        for i in 0..head_dim {
+                            let x_val = $to_f64(x_view[x_off + i]);
+                            let h_off = ((bi * heads + hi) * head_dim + i) * state_dim;
+                            let mut y_acc: f64 = 0.0;
+                            for j in 0..state_dim {
+                                let b_val = $to_f64(b_view[b_off + j]);
+                                let h_new = exp_d_a * h[h_off + j] + dt_val * b_val * x_val;
+                                h[h_off + j] = h_new;
+                                y_acc += h_new * $to_f64(c_view[c_off + j]);
+                            }
+                            out_view[out_off + i] = $from_f64(y_acc);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+ssd_chunk_scan_kernel!(ssd_chunk_scan_f32, f32, |v: f32| v as f64, |v: f64| v as f32);
+ssd_chunk_scan_kernel!(ssd_chunk_scan_f64, f64, |v: f64| v,         |v: f64| v);
+ssd_chunk_scan_kernel!(ssd_chunk_scan_bf16, half::bf16,
+    |v: half::bf16| v.to_f64(),
+    |v: f64| half::bf16::from_f32(v as f32));
+ssd_chunk_scan_kernel!(ssd_chunk_scan_f16, half::f16,
+    |v: half::f16| v.to_f64(),
+    |v: f64| half::f16::from_f32(v as f32));
 
 // =============================================================================
 // Nf4Matmul — bitsandbytes 4-bit NormalFloat quantized matmul
@@ -10183,6 +10292,51 @@ mod tests {
         // k=4 but block_size=3 — 4 % 3 != 0
         let r = nf4_matmul_f32(&activations, &w_packed, &absmax, &mut out, 1, 1, 1, 4, 3);
         assert!(r.is_err());
+    }
+
+    /// SsdChunkScan F64 sanity — mirrors the F32 minimal test.
+    #[test]
+    fn ssd_chunk_scan_f64_minimal() {
+        let x = CpuStorageBytes::from_slice(&[3.0_f64]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f64]);
+        let a = CpuStorageBytes::from_slice(&[-1.0_f64]);
+        let b = CpuStorageBytes::from_slice(&[2.0_f64]);
+        let c = CpuStorageBytes::from_slice(&[0.5_f64]);
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
+        ssd_chunk_scan_f64(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
+            .expect("ssd_chunk_scan_f64");
+        let r: &[f64] = out.as_slice().unwrap();
+        assert!((r[0] - 3.0).abs() < 1e-12);
+    }
+
+    /// SsdChunkScan BF16 sanity. Loose tolerance for 7-bit mantissa.
+    #[test]
+    fn ssd_chunk_scan_bf16_minimal() {
+        let x = CpuStorageBytes::from_slice(&[half::bf16::from_f32(3.0)]);
+        let dt = CpuStorageBytes::from_slice(&[half::bf16::from_f32(1.0)]);
+        let a = CpuStorageBytes::from_slice(&[half::bf16::from_f32(-1.0)]);
+        let b = CpuStorageBytes::from_slice(&[half::bf16::from_f32(2.0)]);
+        let c = CpuStorageBytes::from_slice(&[half::bf16::from_f32(0.5)]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        ssd_chunk_scan_bf16(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
+            .expect("ssd_chunk_scan_bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!((r[0].to_f32() - 3.0).abs() < 5e-2);
+    }
+
+    /// SsdChunkScan F16 sanity. 10-bit mantissa.
+    #[test]
+    fn ssd_chunk_scan_f16_minimal() {
+        let x = CpuStorageBytes::from_slice(&[half::f16::from_f32(3.0)]);
+        let dt = CpuStorageBytes::from_slice(&[half::f16::from_f32(1.0)]);
+        let a = CpuStorageBytes::from_slice(&[half::f16::from_f32(-1.0)]);
+        let b = CpuStorageBytes::from_slice(&[half::f16::from_f32(2.0)]);
+        let c = CpuStorageBytes::from_slice(&[half::f16::from_f32(0.5)]);
+        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        ssd_chunk_scan_f16(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
+            .expect("ssd_chunk_scan_f16");
+        let r: &[half::f16] = out.as_slice().unwrap();
+        assert!((r[0].to_f32() - 3.0).abs() < 1e-2);
     }
 
     /// SsdChunkScan: bad shapes error rather than panicking.

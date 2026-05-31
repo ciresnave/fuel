@@ -2202,6 +2202,117 @@ cpu_affine_inplace_wrapper!(inplace_affine_f64_cpu_wrapper, affine_inplace_f64, 
 cpu_affine_inplace_wrapper!(inplace_affine_bf16_cpu_wrapper, affine_inplace_bf16, f64, half);
 cpu_affine_inplace_wrapper!(inplace_affine_f16_cpu_wrapper,  affine_inplace_f16,  f64, half);
 
+/// Dispatch wrapper macro for in-place clamp on CPU. Same shape as
+/// `cpu_affine_inplace_wrapper!` (no inputs, target as outputs[0]),
+/// but pulls `(min, max)` from `OpParams::Clamp`.
+macro_rules! cpu_clamp_inplace_wrapper {
+    ($name:ident, $kernel:ident, $T:ty) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (min, max) = match params {
+                OpParams::Clamp { min, max } => (*min as $T, *max as $T),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($name), ": expected OpParams::Clamp, got {:?}"),
+                        other,
+                    ))
+                    .bt())
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            fuel_cpu_backend::byte_kernels::$kernel(out_cpu, min, max)
+        }
+    };
+    ($name:ident, $kernel:ident, $T:ty, half) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (min, max) = match params {
+                OpParams::Clamp { min, max } => (*min, *max),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($name), ": expected OpParams::Clamp, got {:?}"),
+                        other,
+                    ))
+                    .bt())
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            fuel_cpu_backend::byte_kernels::$kernel(out_cpu, min, max)
+        }
+    };
+}
+
+cpu_clamp_inplace_wrapper!(clamp_inplace_f32_cpu_wrapper,  clamp_inplace_f32,  f32);
+cpu_clamp_inplace_wrapper!(clamp_inplace_f64_cpu_wrapper,  clamp_inplace_f64,  f64);
+cpu_clamp_inplace_wrapper!(clamp_inplace_bf16_cpu_wrapper, clamp_inplace_bf16, f64, half);
+cpu_clamp_inplace_wrapper!(clamp_inplace_f16_cpu_wrapper,  clamp_inplace_f16,  f64, half);
+
+/// Dispatch wrapper macro for in-place powi on CPU. Pulls `exp` from
+/// `OpParams::PowI`.
+macro_rules! cpu_powi_inplace_wrapper {
+    ($name:ident, $kernel:ident) => {
+        fn $name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let exp = match params {
+                OpParams::PowI { exp } => *exp,
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($name), ": expected OpParams::PowI, got {:?}"),
+                        other,
+                    ))
+                    .bt())
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            fuel_cpu_backend::byte_kernels::$kernel(out_cpu, exp)
+        }
+    };
+}
+
+cpu_powi_inplace_wrapper!(powi_inplace_f32_cpu_wrapper,  powi_inplace_f32);
+cpu_powi_inplace_wrapper!(powi_inplace_f64_cpu_wrapper,  powi_inplace_f64);
+cpu_powi_inplace_wrapper!(powi_inplace_bf16_cpu_wrapper, powi_inplace_bf16);
+cpu_powi_inplace_wrapper!(powi_inplace_f16_cpu_wrapper,  powi_inplace_f16);
+
 /// Dispatch wrapper macro for in-place elementwise unary ops on CPU.
 /// Same shape as `cpu_affine_inplace_wrapper!` (inputs empty, target
 /// adopted as outputs[0] by the executor), but the kernel takes no
@@ -3042,57 +3153,66 @@ cpu_selective_scan_wrapper!(selective_scan_f64_cpu_wrapper,  fuel_cpu_backend::b
 cpu_selective_scan_wrapper!(selective_scan_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::selective_scan_bf16);
 cpu_selective_scan_wrapper!(selective_scan_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f16);
 
-/// Dispatch wrapper for `(SsdChunkScan, [F32; 6], Cpu)`. Five inputs
-/// (x, dt, a, b, c) → one output (y). Geometry + `chunk_size` flow
-/// through `OpParams::SsdChunkScan`.
-fn ssd_chunk_scan_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 5 {
-        return Err(Error::Msg(format!(
-            "ssd_chunk_scan wrapper expects 5 inputs (x, dt, a, b, c), got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "ssd_chunk_scan wrapper expects 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (batch, seqlen, heads, head_dim, state_dim, chunk_size) = match params {
-        OpParams::SsdChunkScan {
-            batch, seqlen, heads, head_dim, state_dim, chunk_size,
-        } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size),
-        other => {
-            return Err(Error::Msg(format!(
-                "ssd_chunk_scan wrapper expects OpParams::SsdChunkScan, got {other:?}",
-            ))
-            .bt());
+/// Per-dtype SsdChunkScan dispatch wrapper. Five inputs (x, dt, a,
+/// b, c) → one output (y). Geometry + `chunk_size` flow through
+/// `OpParams::SsdChunkScan`. All six tensors share dtype `T`; the
+/// binding-table key is `[T; 6]`.
+macro_rules! cpu_ssd_chunk_scan_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 5 {
+                return Err(Error::Msg(format!(
+                    "ssd_chunk_scan wrapper expects 5 inputs (x, dt, a, b, c), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "ssd_chunk_scan wrapper expects 1 output, got {}", outputs.len(),
+                ))
+                .bt());
+            }
+            let (batch, seqlen, heads, head_dim, state_dim, chunk_size) = match params {
+                OpParams::SsdChunkScan {
+                    batch, seqlen, heads, head_dim, state_dim, chunk_size,
+                } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "ssd_chunk_scan wrapper expects OpParams::SsdChunkScan, got {other:?}",
+                    ))
+                    .bt());
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let dt_guard = read_storage(&inputs[1])?;
+            let a_guard = read_storage(&inputs[2])?;
+            let b_guard = read_storage(&inputs[3])?;
+            let c_guard = read_storage(&inputs[4])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let dt_cpu = cpu_input(&dt_guard)?;
+            let a_cpu = cpu_input(&a_guard)?;
+            let b_cpu = cpu_input(&b_guard)?;
+            let c_cpu = cpu_input(&c_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
+                batch, seqlen, heads, head_dim, state_dim, chunk_size,
+            )
         }
     };
-    let x_guard = read_storage(&inputs[0])?;
-    let dt_guard = read_storage(&inputs[1])?;
-    let a_guard = read_storage(&inputs[2])?;
-    let b_guard = read_storage(&inputs[3])?;
-    let c_guard = read_storage(&inputs[4])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let x_cpu = cpu_input(&x_guard)?;
-    let dt_cpu = cpu_input(&dt_guard)?;
-    let a_cpu = cpu_input(&a_guard)?;
-    let b_cpu = cpu_input(&b_guard)?;
-    let c_cpu = cpu_input(&c_guard)?;
-    let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f32(
-        x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-        batch, seqlen, heads, head_dim, state_dim, chunk_size,
-    )
 }
+
+cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f32);
+cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f64);
+cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ssd_chunk_scan_bf16);
+cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f16);
 
 /// Per-dtype Nf4Matmul wrapper. Three inputs (activations, w_packed
 /// U8, absmax F32) → one output of the activations' dtype.
@@ -3853,13 +3973,16 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         table.register(SelectiveScan, &[dt, dt, dt, dt, dt, dt], cpu, w);
     }
 
-    // SsdChunkScan: 5 inputs (x, dt, a, b, c) + 1 output, all F32.
-    table.register(
-        SsdChunkScan,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        cpu,
-        ssd_chunk_scan_f32_cpu_wrapper,
-    );
+    // SsdChunkScan: 5 inputs (x, dt, a, b, c) + 1 output, uniform
+    // dtype T ∈ {F32, F64, BF16, F16}.
+    for (dt, w) in [
+        (DType::F32,  ssd_chunk_scan_f32_cpu_wrapper  as KernelRef),
+        (DType::F64,  ssd_chunk_scan_f64_cpu_wrapper),
+        (DType::BF16, ssd_chunk_scan_bf16_cpu_wrapper),
+        (DType::F16,  ssd_chunk_scan_f16_cpu_wrapper),
+    ] {
+        table.register(SsdChunkScan, &[dt, dt, dt, dt, dt, dt], cpu, w);
+    }
 
     // Nf4Matmul: 3 inputs (activations T, w_packed U8, absmax F32) + 1
     // output T, where T ∈ {F32, F16, BF16}. The binding-table key
@@ -5533,13 +5656,27 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost = cost_selective_scan_cpu,
         precision = SELECTIVE_SCAN_CPU_PRECISION);
 
-    // SSD_CHUNK_SCAN — six-tuple (x, dt, a, b, c, out), all F32.
-    // v1 single-chunk only (chunk_size == seqlen).
-    const SCS_F32: &[DType] = &[
-        DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32,
-    ];
+    // SSD_CHUNK_SCAN — six-tuple (x, dt, a, b, c, out), 4 dtype
+    // variants. v1 single-chunk only (chunk_size == seqlen). F64
+    // accumulator regardless of T; F16/BF16 narrow on store.
+    const SCS_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const SCS_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const SCS_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const SCS_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
     register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F32,
         ssd_chunk_scan_f32_cpu_wrapper,
+        cost = cost_ssd_chunk_scan_cpu,
+        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
+    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F64,
+        ssd_chunk_scan_f64_cpu_wrapper,
+        cost = cost_ssd_chunk_scan_cpu,
+        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
+    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_BF16,
+        ssd_chunk_scan_bf16_cpu_wrapper,
+        cost = cost_ssd_chunk_scan_cpu,
+        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
+    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F16,
+        ssd_chunk_scan_f16_cpu_wrapper,
         cost = cost_ssd_chunk_scan_cpu,
         precision = SSD_CHUNK_SCAN_CPU_PRECISION);
 
