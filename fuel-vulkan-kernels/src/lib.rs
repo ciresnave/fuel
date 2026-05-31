@@ -142,6 +142,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     ("matmul_coop_bf16_bf16_bf16",include_bytes!("../spv/matmul_coop_bf16_bf16_bf16.spv")),
     ("matmul_small_bf16_bf16_f32",include_bytes!("../spv/matmul_small_bf16_bf16_f32.spv")),
     ("matmul_small_bf16_bf16_bf16",include_bytes!("../spv/matmul_small_bf16_bf16_bf16.spv")),
+    ("matmul_small_f16_f16_f32",  include_bytes!("../spv/matmul_small_f16_f16_f32.spv")),
+    ("matmul_small_f16_f16_f16",  include_bytes!("../spv/matmul_small_f16_f16_f16.spv")),
     ("matmul_coop_f16_f16_f16",   include_bytes!("../spv/matmul_coop_f16_f16_f16.spv")),
     ("matvec",                    include_bytes!("../spv/matvec.spv")),
     ("matvec_bf16_b",             include_bytes!("../spv/matvec_bf16_b.spv")),
@@ -396,6 +398,11 @@ pub const MATMUL_SMALL_BF16_BF16_F32: &str = "matmul_small_bf16_bf16_f32";
 /// Small-shape bf16 × bf16 → bf16 fallback. Same as the →f32
 /// variant but with f32→bf16 downcast on the final store.
 pub const MATMUL_SMALL_BF16_BF16_BF16: &str = "matmul_small_bf16_bf16_bf16";
+/// Small-shape f16 × f16 → f32 fallback. f16 sibling of the bf16
+/// scalar-accumulator kernel.
+pub const MATMUL_SMALL_F16_F16_F32: &str = "matmul_small_f16_f16_f32";
+/// Small-shape f16 × f16 → f16 fallback (downcast store).
+pub const MATMUL_SMALL_F16_F16_F16: &str = "matmul_small_f16_f16_f16";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f16 (downcast
 /// store). Same staging pattern as the bf16→bf16 sibling but uses
 /// `float16BitsToUint16` to pack the f32 accumulator into f16 lanes.

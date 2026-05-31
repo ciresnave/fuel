@@ -247,6 +247,10 @@ pub struct Pipelines {
     pub matmul_small_bf16_bf16_f32_layout: PipelineLayout,
     pub matmul_small_bf16_bf16_bf16_pipeline: ComputePipeline,
     pub matmul_small_bf16_bf16_bf16_layout: PipelineLayout,
+    pub matmul_small_f16_f16_f32_pipeline: ComputePipeline,
+    pub matmul_small_f16_f16_f32_layout: PipelineLayout,
+    pub matmul_small_f16_f16_f16_pipeline: ComputePipeline,
+    pub matmul_small_f16_f16_f16_layout: PipelineLayout,
     pub matmul_coop_f16_f16_f16_pipeline: Option<ComputePipeline>,
     pub matmul_coop_f16_f16_f16_layout: Option<PipelineLayout>,
     pub softmax_pipeline: ComputePipeline,
@@ -683,6 +687,8 @@ impl Pipelines {
         };
         let matmul_small_bf16_bf16_f32_mod = registry.load_module(device, shaders::MATMUL_SMALL_BF16_BF16_F32)?;
         let matmul_small_bf16_bf16_bf16_mod = registry.load_module(device, shaders::MATMUL_SMALL_BF16_BF16_BF16)?;
+        let matmul_small_f16_f16_f32_mod = registry.load_module(device, shaders::MATMUL_SMALL_F16_F16_F32)?;
+        let matmul_small_f16_f16_f16_mod = registry.load_module(device, shaders::MATMUL_SMALL_F16_F16_F16)?;
         let matmul_coop_f16_f16_f16_mod = if has_coop_matrix {
             Some(registry.load_module(device, shaders::MATMUL_COOP_F16_F16_F16)?)
         } else {
@@ -862,6 +868,8 @@ impl Pipelines {
         } else { None };
         let matmul_small_bf16_bf16_f32_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_small_bf16_bf16_bf16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let matmul_small_f16_f16_f32_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let matmul_small_f16_f16_f16_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_coop_f16_f16_f16_layout = if has_coop_matrix {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else { None };
@@ -1045,6 +1053,12 @@ impl Pipelines {
         let matmul_small_bf16_bf16_bf16_pipeline = ComputePipeline::new(
             device, &matmul_small_bf16_bf16_bf16_layout, &matmul_small_bf16_bf16_bf16_mod, "main",
         )?;
+        let matmul_small_f16_f16_f32_pipeline = ComputePipeline::new(
+            device, &matmul_small_f16_f16_f32_layout, &matmul_small_f16_f16_f32_mod, "main",
+        )?;
+        let matmul_small_f16_f16_f16_pipeline = ComputePipeline::new(
+            device, &matmul_small_f16_f16_f16_layout, &matmul_small_f16_f16_f16_mod, "main",
+        )?;
         let matmul_coop_f16_f16_f16_pipeline = match (&matmul_coop_f16_f16_f16_mod, &matmul_coop_f16_f16_f16_layout) {
             (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
             _ => None,
@@ -1218,6 +1232,10 @@ impl Pipelines {
             matmul_small_bf16_bf16_f32_layout,
             matmul_small_bf16_bf16_bf16_pipeline,
             matmul_small_bf16_bf16_bf16_layout,
+            matmul_small_f16_f16_f32_pipeline,
+            matmul_small_f16_f16_f32_layout,
+            matmul_small_f16_f16_f16_pipeline,
+            matmul_small_f16_f16_f16_layout,
             matmul_coop_f16_f16_f16_pipeline,
             matmul_coop_f16_f16_f16_layout,
             softmax_pipeline, softmax_layout,

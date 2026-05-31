@@ -2750,18 +2750,28 @@ impl VulkanBackend {
         n: usize,
         k: usize,
     ) -> fuel_core_types::Result<()> {
-        self.matmul_half_half_half_coop_bytes(
-            "matmul_f16_f16_f16_bytes",
-            self.pipelines.matmul_coop_f16_f16_f16_pipeline.as_ref(),
-            self.pipelines.matmul_coop_f16_f16_f16_layout.as_ref(),
-            "matmul_coop_f16_f16_f16",
-            lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
-        )
+        if Self::matmul_coop_ok(m, n, k) && self.pipelines.matmul_coop_f16_f16_f16_pipeline.is_some() {
+            self.matmul_half_half_half_coop_bytes(
+                "matmul_f16_f16_f16_bytes",
+                self.pipelines.matmul_coop_f16_f16_f16_pipeline.as_ref(),
+                self.pipelines.matmul_coop_f16_f16_f16_layout.as_ref(),
+                "matmul_coop_f16_f16_f16",
+                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+            )
+        } else {
+            self.matmul_small_half_inner(
+                "matmul_f16_f16_f16_bytes (small)",
+                &self.pipelines.matmul_small_f16_f16_f16_pipeline,
+                &self.pipelines.matmul_small_f16_f16_f16_layout,
+                "matmul_small_f16_f16_f16",
+                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                2,
+            )
+        }
     }
 
-    /// MatMul f16 × f16 → f32 via cooperative-matrix tensor cores.
-    /// Same shape constraints as the bf16 sibling; native float16_t
-    /// inputs (no downcast).
+    /// MatMul f16 × f16 → f32. Routes coop or scalar fallback based
+    /// on shape — same routing predicate as the bf16 sibling.
     pub fn matmul_f16_f16_f32_bytes(
         &self,
         lhs: &VulkanStorageBytes,
@@ -2773,13 +2783,24 @@ impl VulkanBackend {
         n: usize,
         k: usize,
     ) -> fuel_core_types::Result<()> {
-        self.matmul_half_half_f32_coop_bytes(
-            "matmul_f16_f16_f32_bytes",
-            self.pipelines.matmul_coop_f16_f16_pipeline.as_ref(),
-            self.pipelines.matmul_coop_f16_f16_layout.as_ref(),
-            "matmul_coop_f16_f16",
-            lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
-        )
+        if Self::matmul_coop_ok(m, n, k) && self.pipelines.matmul_coop_f16_f16_pipeline.is_some() {
+            self.matmul_half_half_f32_coop_bytes(
+                "matmul_f16_f16_f32_bytes",
+                self.pipelines.matmul_coop_f16_f16_pipeline.as_ref(),
+                self.pipelines.matmul_coop_f16_f16_layout.as_ref(),
+                "matmul_coop_f16_f16",
+                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+            )
+        } else {
+            self.matmul_small_half_inner(
+                "matmul_f16_f16_f32_bytes (small)",
+                &self.pipelines.matmul_small_f16_f16_f32_pipeline,
+                &self.pipelines.matmul_small_f16_f16_f32_layout,
+                "matmul_small_f16_f16_f32",
+                lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, n, k,
+                4,
+            )
+        }
     }
 
     /// Shared body for `matmul_bf16_bf16_f32_bytes` and
