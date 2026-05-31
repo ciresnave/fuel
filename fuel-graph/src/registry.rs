@@ -223,9 +223,10 @@ pub enum FusedOpParams {
     /// Output: `y: [batch, seqlen, heads, head_dim]`.
     ///
     /// `chunk_size` is the SSD block size (typically 256 in Mamba-2).
-    /// v1 only supports `chunk_size == seqlen` (single-chunk case);
-    /// multi-chunk with proper inter-chunk decay propagation is a
-    /// follow-up. See the registry module for the rationale.
+    /// It controls GPU parallelism granularity but doesn't affect the
+    /// mathematical result — the CPU kernel runs a sequential scan
+    /// regardless. Any `chunk_size ∈ [1, seqlen]` that divides
+    /// `seqlen` is valid.
     SsdChunkScan { chunk_size: usize },
     /// Nf4Matmul — bitsandbytes-style 4-bit NormalFloat quantized
     /// matrix multiply. Three inputs:
@@ -849,10 +850,10 @@ impl FusedOps {
     /// SsdChunkScan — Mamba-2's State-Space Duality chunked scan
     /// (forward only). Five inputs `[x, dt, a, b, c]`; one output
     /// `y: [batch, seqlen, heads, head_dim]`. Carries
-    /// `chunk_size: usize` in [`FusedOpParams::SsdChunkScan`]. v1
-    /// supports only `chunk_size == seqlen` (single-chunk case
-    /// reduces to a per-head selective scan); multi-chunk with
-    /// inter-chunk decay propagation is a follow-up.
+    /// `chunk_size: usize` in [`FusedOpParams::SsdChunkScan`]
+    /// (parallelism granularity for the GPU path; the CPU kernel
+    /// runs sequential and any positive `chunk_size` dividing
+    /// `seqlen` produces the same mathematical answer).
     /// `BackwardKind::NotDifferentiable` for v1.
     pub const SSD_CHUNK_SCAN: FusedOpId = FusedOpId(20);
 

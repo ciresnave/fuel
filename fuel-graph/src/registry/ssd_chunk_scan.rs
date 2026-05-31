@@ -19,24 +19,21 @@
 //! Output: `y: [batch, seqlen, heads, head_dim]`. dtype matches input
 //! dtype (uniform F32 in v1).
 //!
-//! ## v1 scope: single-chunk only (`chunk_size == seqlen`)
+//! ## On `chunk_size` and CPU dispatch
 //!
-//! The full chunked SSD algorithm splits the sequence into
-//! non-overlapping blocks of `chunk_size` tokens, runs an intra-chunk
-//! per-token recurrence, and propagates state across chunks via a
-//! second recurrence over chunk-final states. fuel-transformers'
-//! [mamba2.rs:408-512](../../../fuel-transformers/src/models/llm/mamba2.rs#L408-L512)
-//! `ssd_chunked` is the textbook composition (~100 LOC of 6D
-//! broadcast + permute + cumsum + segsum).
+//! `chunk_size` is the SSD block size — a GPU parallelization knob
+//! that controls how many tokens are processed in parallel per
+//! block. The Mamba-2 chunked algorithm rearranges the sequential
+//! scan into block matrix ops (intra-chunk diagonal + inter-chunk
+//! decay propagation) that GPUs can execute in parallel, but the
+//! mathematical result is **identical** to a straight sequential
+//! scan over all `seqlen` tokens.
 //!
-//! When `chunk_size == seqlen`, the chunked algorithm degenerates to
-//! a single intra-chunk recurrence — structurally identical to
-//! [`super::selective_scan`] but with one extra leading dimension
-//! (heads) and a per-head scalar `a` instead of `a: [dim, dstate]`.
-//! v1's CPU kernel implements exactly this case; non-single-chunk
-//! requests return a clear error. The multi-chunk inter-chunk-decay
-//! algorithm is a follow-up — substantial enough to warrant its own
-//! commit.
+//! The CPU kernel runs the sequential scan directly (any
+//! `chunk_size ∈ [1, seqlen]` that divides seqlen produces the same
+//! answer). The GPU path (when wired) will use `chunk_size` for
+//! parallelism granularity. Validation: `chunk_size > 0` and
+//! `seqlen % chunk_size == 0`.
 //!
 //! ## v1 scope: y output only (no final_state)
 //!

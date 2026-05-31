@@ -592,9 +592,10 @@ pub enum OpParams {
     /// `c [batch, seqlen, heads, state_dim]`. Output `y` matches `x`'s
     /// shape. All tensors share dtype.
     ///
-    /// `chunk_size` is the SSD block size. v1 requires
-    /// `chunk_size == seqlen` (the kernel errors otherwise);
-    /// multi-chunk inter-block decay propagation is a follow-up.
+    /// `chunk_size` is the SSD block size (GPU-parallelism knob).
+    /// On CPU the kernel runs a sequential scan regardless;
+    /// validation requires `chunk_size > 0` and
+    /// `seqlen % chunk_size == 0`.
     SsdChunkScan {
         batch:      usize,
         seqlen:     usize,

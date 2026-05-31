@@ -5627,7 +5627,25 @@ fn ssd_chunk_scan_check_shapes(
 
 /// SsdChunkScan kernel template. Same shape as SelectiveScan: F64
 /// hidden-state accumulator regardless of element type, narrow to T
-/// on output store. v1 single-chunk only.
+/// on output store.
+///
+/// ## On `chunk_size` and CPU correctness
+///
+/// `chunk_size` is the SSD block size — a GPU parallelization knob
+/// that controls how many tokens are processed in parallel per
+/// block. The Mamba-2 chunked algorithm rearranges the sequential
+/// scan into block matrix ops (intra-chunk diagonal + inter-chunk
+/// decay propagation) that GPUs can execute in parallel, but the
+/// **mathematical result is identical** to a straight sequential
+/// scan over all `seqlen` tokens.
+///
+/// On CPU we're sequential anyway, so we run a single fused scan
+/// across the full sequence with hidden state `h` threaded across
+/// every timestep. `chunk_size` is accepted (validated as positive
+/// and dividing seqlen) but the inner-loop structure doesn't depend
+/// on it — it's there for ABI compat with the GPU path. Any
+/// `chunk_size ∈ [1, seqlen]` that divides seqlen produces the same
+/// answer.
 macro_rules! ssd_chunk_scan_kernel {
     ($name:ident, $T:ty, $to_f64:expr, $from_f64:expr) => {
         #[allow(clippy::too_many_arguments)]
@@ -5645,11 +5663,16 @@ macro_rules! ssd_chunk_scan_kernel {
             state_dim: usize,
             chunk_size: usize,
         ) -> Result<()> {
-            if chunk_size != seqlen {
+            if chunk_size == 0 {
                 return Err(Error::Msg(format!(
-                    "{} v1: only single-chunk (chunk_size == seqlen) \
-                     is supported; got chunk_size={chunk_size}, seqlen={seqlen}. \
-                     Multi-chunk SSD with inter-chunk decay propagation is a follow-up.",
+                    "{}: chunk_size must be positive, got 0",
+                    stringify!($name),
+                ))
+                .bt());
+            }
+            if seqlen != 0 && seqlen % chunk_size != 0 {
+                return Err(Error::Msg(format!(
+                    "{}: seqlen={seqlen} must be a multiple of chunk_size={chunk_size}",
                     stringify!($name),
                 ))
                 .bt());
@@ -10152,16 +10175,61 @@ mod tests {
         assert!((result[1] - 20.0).abs() < 1e-5, "head 1: {}", result[1]);
     }
 
-    /// SsdChunkScan: non-single-chunk request errors per the v1 limit.
+    /// SsdChunkScan: multi-chunk request (chunk_size < seqlen)
+    /// produces the same result as single-chunk. Mathematical
+    /// equivalence: the sequential scan answer doesn't depend on
+    /// chunk_size; it's a GPU-parallelism knob. Same numbers as
+    /// `ssd_chunk_scan_f32_two_steps_state_threading` but called
+    /// with `chunk_size = 1` (instead of 2) — must give identical
+    /// output.
     #[test]
-    fn ssd_chunk_scan_f32_multi_chunk_errors() {
+    fn ssd_chunk_scan_f32_chunk_size_is_invariant() {
+        let x = CpuStorageBytes::from_slice(&[3.0_f32, 3.0]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32, 1.0]);
+        let a = CpuStorageBytes::from_slice(&[-1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);
+        let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);
+        // chunk_size = 1 (two chunks of 1 token each)
+        let mut out_cs1 = CpuStorageBytes::from_zero_bytes(2 * 4);
+        ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out_cs1, 1, 2, 1, 1, 1, 1)
+            .expect("ssd_chunk_scan cs=1");
+        // chunk_size = 2 (single chunk of 2 tokens)
+        let mut out_cs2 = CpuStorageBytes::from_zero_bytes(2 * 4);
+        ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out_cs2, 1, 2, 1, 1, 1, 2)
+            .expect("ssd_chunk_scan cs=2");
+        let r1: &[f32] = out_cs1.as_slice().unwrap();
+        let r2: &[f32] = out_cs2.as_slice().unwrap();
+        assert_eq!(r1, r2, "chunk_size should not affect the math");
+        // Verify the expected value (same as two_steps_state_threading).
+        assert!((r1[0] - 3.0).abs() < 1e-5);
+        let h_step1 = (-1.0_f32).exp() * 6.0 + 6.0;
+        assert!((r1[1] - h_step1 * 0.5).abs() < 1e-5);
+    }
+
+    /// SsdChunkScan: chunk_size that doesn't divide seqlen errors.
+    #[test]
+    fn ssd_chunk_scan_f32_chunk_size_must_divide_seqlen() {
         let x = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
         let dt = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
         let a = CpuStorageBytes::from_slice(&[1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
         let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
-        let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 4, 1, 1, 1, 2);
+        // seqlen=4, chunk_size=3 → 4 % 3 != 0 → error
+        let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 4, 1, 1, 1, 3);
+        assert!(r.is_err());
+    }
+
+    /// SsdChunkScan: chunk_size = 0 errors.
+    #[test]
+    fn ssd_chunk_scan_f32_chunk_size_zero_errors() {
+        let x = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let dt = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let a = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let b = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let c = CpuStorageBytes::from_slice(&[1.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 0);
         assert!(r.is_err());
     }
 
