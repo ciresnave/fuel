@@ -139,6 +139,22 @@ pub enum OpKind {
     /// `[q, k, v, optional alibi_slopes]`. Geometry, softmax_scale,
     /// causal, window, softcap all flow through `OpParams::FlashAttn`.
     FlashAttn,
+    /// Backward of [`FlashAttn`]: produces dQ from `(q, k, v, do, [alibi])`.
+    /// Reuses [`OpParams::FlashAttn`] (same shape/geometry/causal flags
+    /// as the forward — the recompute pass needs every forward parameter).
+    /// Output shape == q shape. The dK and dV gradients are emitted as
+    /// separate [`FlashAttnBackwardK`] / [`FlashAttnBackwardV`] nodes
+    /// against the same inputs; CPU backends recompute the softmax
+    /// state independently per call. A 3-output fused variant would
+    /// share the recompute but needs multi-output infrastructure that
+    /// doesn't exist yet.
+    FlashAttnBackwardQ,
+    /// Backward of [`FlashAttn`]: produces dK. See [`FlashAttnBackwardQ`].
+    /// Output shape == k shape.
+    FlashAttnBackwardK,
+    /// Backward of [`FlashAttn`]: produces dV. See [`FlashAttnBackwardQ`].
+    /// Output shape == v shape.
+    FlashAttnBackwardV,
     /// Paged-cache scaled-dot-product attention. Inputs `[q, k_cache,
     /// v_cache, block_table, context_lens, optional alibi_slopes]`.
     /// Geometry + scale + softcap flow through `OpParams::PagedAttn`.
@@ -496,6 +512,9 @@ impl OpKind {
             OpKind::ReduceMaxTo       => "reduce_max_to",
             OpKind::FusedLinear       => "fused_linear",
             OpKind::FlashAttn         => "flash_attn",
+            OpKind::FlashAttnBackwardQ => "flash_attn_backward_q",
+            OpKind::FlashAttnBackwardK => "flash_attn_backward_k",
+            OpKind::FlashAttnBackwardV => "flash_attn_backward_v",
             OpKind::PagedAttn         => "paged_attn",
             OpKind::Affine            => "affine",
             OpKind::ClampElementwise  => "clamp",
