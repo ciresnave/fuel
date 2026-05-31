@@ -3520,6 +3520,59 @@ pub mod conv2d {
             x_shape, w_shape, stride, padding, groups,
         )
     }
+
+    /// Conv2D f16 — sibling of `conv2d_bf16`. Reuses the bf16 im2col
+    /// shader (2-byte shuffle is dtype-opaque) + matmul_coop_f16_f16_f16.
+    pub fn conv2d_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() < 2 || inputs.len() > 3 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::conv2d::conv2d_f16: expected 2-3 inputs + 1 output, got {} + {}",
+                inputs.len(), outputs.len(),
+            )).bt());
+        }
+        if inputs.len() == 3 {
+            return Err(Error::Msg(
+                "vulkan_dispatch::conv2d::conv2d_f16: bias-fused conv2d not supported \
+                 on Vulkan yet".to_string(),
+            ).bt());
+        }
+        let (x_shape, w_shape, stride, padding, dilation, groups) = match params {
+            OpParams::Conv2D { x_shape, w_shape, out_shape: _, stride, padding, dilation, groups } => {
+                (*x_shape, *w_shape, *stride, *padding, *dilation, *groups)
+            }
+            other => {
+                return Err(Error::Msg(format!(
+                    "vulkan_dispatch::conv2d::conv2d_f16: expected OpParams::Conv2D, got {other:?}",
+                )).bt());
+            }
+        };
+        if dilation != (1, 1) {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::conv2d::conv2d_f16: dilation {dilation:?} != (1,1) \
+                 not yet supported on Vulkan",
+            )).bt());
+        }
+        let in_guard = read_storage(&inputs[0])?;
+        let w_guard = read_storage(&inputs[1])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let input = vulkan_input(&in_guard)?;
+        let weight = vulkan_input(&w_guard)?;
+        let backend = input.backend().ok_or_else(|| {
+            Error::Msg(
+                "vulkan_dispatch::conv2d::conv2d_f16: input has no VulkanBackend handle.".to_string(),
+            ).bt()
+        })?;
+        let out = vulkan_output(&mut out_guard)?;
+        backend.conv2d_f16_bytes(
+            input, weight, out,
+            x_shape, w_shape, stride, padding, groups,
+        )
+    }
 }
 
 // ===========================================================================
@@ -4277,6 +4330,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         &[DType::BF16, DType::BF16, DType::BF16],
         vk,
         conv2d::conv2d_bf16,
+        VULKAN_MATMUL_TENSORCORE_PRECISION,
+    );
+    // ----- Conv2D f16 — sibling of bf16. Reuses the bf16 im2col
+    // shader (2-byte dtype-opaque shuffle) + matmul_coop_f16_f16_f16.
+    // Same shape constraints. -----
+    table.register_with_precision(
+        OpKind::Conv2D,
+        &[DType::F16, DType::F16, DType::F16],
+        vk,
+        conv2d::conv2d_f16,
         VULKAN_MATMUL_TENSORCORE_PRECISION,
     );
 

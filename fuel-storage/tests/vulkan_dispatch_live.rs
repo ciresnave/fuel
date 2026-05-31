@@ -8555,6 +8555,88 @@ fn vulkan_dispatch_conv2d_bf16() {
     eprintln!("conv2d bf16: max abs err = {max_abs:e}");
 }
 
+/// Conv2D f16 — same shape contract as the bf16 sibling.
+#[test]
+#[ignore]
+fn vulkan_dispatch_conv2d_f16() {
+    use fuel_conv::{ConvShape, conv2d_direct};
+    use half::f16;
+
+    let Some(backend) = backend_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+
+    let shape = ConvShape {
+        batch: 1, c_in: 3, c_out: 16,
+        h: 8, w: 8, k_h: 3, k_w: 3,
+        stride: (1, 1), padding: (1, 1), groups: 1,
+    };
+    shape.validate().unwrap();
+
+    let n_in = shape.batch * shape.c_in * shape.h * shape.w;
+    let n_w  = shape.c_out * shape.c_in * shape.k_h * shape.k_w;
+    let n_out = shape.output_len();
+
+    let input_f32: Vec<f32> = (0..n_in)
+        .map(|i| (i as f32 * 0.013).sin() * 0.5)
+        .collect();
+    let weight_f32: Vec<f32> = (0..n_w)
+        .map(|i| ((i as f32 + 1.0) * 0.027).cos() * 0.3)
+        .collect();
+
+    let input_f16: Vec<f16> = input_f32.iter().map(|&x| f16::from_f32(x)).collect();
+    let weight_f16: Vec<f16> = weight_f32.iter().map(|&x| f16::from_f32(x)).collect();
+    let input_q: Vec<f32> = input_f16.iter().map(|x| x.to_f32()).collect();
+    let weight_q: Vec<f32> = weight_f16.iter().map(|x| x.to_f32()).collect();
+
+    let mut cpu_out_f32 = vec![0.0_f32; n_out];
+    conv2d_direct(&input_q, &weight_q, None, &shape, &mut cpu_out_f32);
+    let cpu_ref: Vec<f32> = cpu_out_f32.iter().map(|&x| f16::from_f32(x).to_f32()).collect();
+
+    let in_storage  = upload_f16(&backend, &input_f16);
+    let w_storage   = upload_f16(&backend, &weight_f16);
+    let out_bytes_h = backend.alloc_bytes_handle(((n_out * 2 + 3) & !3) as usize).expect("alloc");
+    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F16);
+    let in_arc  = Arc::new(RwLock::new(in_storage));
+    let w_arc   = Arc::new(RwLock::new(w_storage));
+    let out_arc = Arc::new(RwLock::new(out_storage));
+
+    let kernel = table.lookup_alternatives(
+        OpKind::Conv2D,
+        &[DType::F16, DType::F16, DType::F16],
+        BackendId::Vulkan,
+    )[0].kernel;
+
+    let in_layout  = Layout::contiguous(Shape::from_dims(&[shape.batch, shape.c_in, shape.h, shape.w]));
+    let w_layout   = Layout::contiguous(Shape::from_dims(&[shape.c_out, shape.c_in, shape.k_h, shape.k_w]));
+    let out_layout = Layout::contiguous(Shape::from_dims(&[shape.batch, shape.c_out, shape.h_out(), shape.w_out()]));
+    kernel(
+        &[Arc::clone(&in_arc), Arc::clone(&w_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[in_layout, w_layout, out_layout],
+        &OpParams::Conv2D {
+            x_shape: [shape.batch, shape.c_in, shape.h, shape.w],
+            w_shape: [shape.c_out, shape.c_in, shape.k_h, shape.k_w],
+            out_shape: [shape.batch, shape.c_out, shape.h_out(), shape.w_out()],
+            stride: shape.stride,
+            padding: shape.padding,
+            dilation: (1, 1),
+            groups: 1,
+        },
+    ).expect("conv2d f16 dispatch");
+
+    let got = download_f16(&backend, &out_arc.read().unwrap());
+    let mut max_abs = 0.0_f32;
+    for (i, (g, r)) in got.iter().zip(cpu_ref.iter()).enumerate() {
+        let abs = (g.to_f32() - r).abs();
+        if abs > max_abs { max_abs = abs; }
+        // f16 has 10-bit mantissa (better than bf16's 7), so tolerance
+        // can be tighter. Still allow ~1 f16 ULP near output magnitude.
+        assert!(abs < 0.01, "conv2d f16[{i}]: got {} vs cpu_ref {r}, |diff| = {abs}", g.to_f32());
+    }
+    eprintln!("conv2d f16: max abs err = {max_abs:e}");
+}
+
 // ===========================================================================
 // Per-Vulkan-kernel PrecisionGuarantee + cost coverage lint
 // (Phase 7.6 step 9c follow-up, 2026-05-23)
