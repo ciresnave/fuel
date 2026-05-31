@@ -10492,4 +10492,68 @@ mod tests {
             assert_eq!(r[i], want);
         }
     }
+
+    // ---- Expanded in-place op family (2026-05-30) ----
+
+    #[test]
+    fn neg_inplace_f32_round_trip() {
+        let mut out = CpuStorageBytes::from_slice(&[1.0_f32, -2.0, 3.0, -4.0]);
+        neg_inplace_f32(&mut out).expect("neg inplace f32");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[-1.0, 2.0, -3.0, 4.0]);
+    }
+
+    #[test]
+    fn sqr_inplace_f64_round_trip() {
+        let mut out = CpuStorageBytes::from_slice(&[2.0_f64, -3.0, 4.0]);
+        sqr_inplace_f64(&mut out).expect("sqr inplace f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[4.0, 9.0, 16.0]);
+    }
+
+    #[test]
+    fn exp_inplace_bf16_via_f32_pivot() {
+        use half::bf16;
+        let mut out = CpuStorageBytes::from_slice(&[bf16::from_f32(0.0), bf16::from_f32(1.0)]);
+        exp_inplace_bf16(&mut out).expect("exp inplace bf16");
+        let r = out.as_slice::<bf16>().unwrap();
+        assert!((r[0].to_f32() - 1.0).abs() < 1e-2);
+        assert!((r[1].to_f32() - std::f32::consts::E).abs() < 1e-2);
+    }
+
+    #[test]
+    fn floor_inplace_f32_round_trip() {
+        let mut out = CpuStorageBytes::from_slice(&[1.7_f32, -2.3, 3.0]);
+        floor_inplace_f32(&mut out).expect("floor inplace f32");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, -3.0, 3.0]);
+    }
+
+    #[test]
+    fn clamp_inplace_f32_round_trip() {
+        let mut out = CpuStorageBytes::from_slice(&[-5.0_f32, 0.0, 5.0, 2.5]);
+        clamp_inplace_f32(&mut out, -1.0, 1.0).expect("clamp inplace f32");
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[-1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn clamp_inplace_f32_rejects_bad_bounds() {
+        let mut out = CpuStorageBytes::from_slice(&[1.0_f32]);
+        assert!(clamp_inplace_f32(&mut out, 2.0, 1.0).is_err(),
+            "min > max must error");
+    }
+
+    #[test]
+    fn powi_inplace_f64_round_trip() {
+        let mut out = CpuStorageBytes::from_slice(&[2.0_f64, -3.0, 4.0]);
+        powi_inplace_f64(&mut out, 3).expect("powi inplace f64");
+        assert_eq!(out.as_slice::<f64>().unwrap(), &[8.0, -27.0, 64.0]);
+    }
+
+    #[test]
+    fn powi_inplace_f16_via_f32_pivot() {
+        use half::f16;
+        let mut out = CpuStorageBytes::from_slice(&[f16::from_f32(2.0), f16::from_f32(3.0)]);
+        powi_inplace_f16(&mut out, 2).expect("powi inplace f16");
+        let r = out.as_slice::<f16>().unwrap();
+        assert_eq!(r[0], f16::from_f32(4.0));
+        assert_eq!(r[1], f16::from_f32(9.0));
+    }
 }

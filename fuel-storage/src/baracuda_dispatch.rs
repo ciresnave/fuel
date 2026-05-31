@@ -693,6 +693,98 @@ pub mod clamp {
 }
 
 // ===========================================================================
+// ClampInplace + PowIInplace — scalar-param in-place op family (B)
+// ===========================================================================
+//
+// Same shape contract as `affine_inplace_*`: the executor's
+// `WorkItemKind::InplaceKernel` arm passes the target as `outputs[0]`
+// with `inputs=[]`. The wrapper extracts `(min, max)` from
+// `OpParams::Clamp` or `exp` from `OpParams::PowI` and dispatches the
+// in-place baracuda function.
+
+macro_rules! cuda_clamp_inplace_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path, $scalar_ty:ty $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (min_f64, max_f64) = match params {
+                OpParams::Clamp { min, max } => (*min, *max),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Clamp, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            $baracuda_fn(out_cuda, min_f64 as $scalar_ty, max_f64 as $scalar_ty)
+        }
+    };
+}
+
+macro_rules! cuda_powi_inplace_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if !inputs.is_empty() || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let exp = match params {
+                OpParams::PowI { exp } => *exp,
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::PowI, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let mut out_guard = write_storage(&outputs[0])?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            $baracuda_fn(out_cuda, exp)
+        }
+    };
+}
+
+pub mod clamp_inplace {
+    use super::*;
+    use fuel_cuda_backend::baracuda::clamp as bk;
+
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f32,  bk::clamp_inplace_f32,  f32);
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f64,  bk::clamp_inplace_f64,  f64);
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f16,  bk::clamp_inplace_f16,  f32);
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_bf16, bk::clamp_inplace_bf16, f32);
+}
+
+pub mod powi_inplace {
+    use super::*;
+    use fuel_cuda_backend::baracuda::powi as bk;
+
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f32,  bk::powi_inplace_f32);
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f64,  bk::powi_inplace_f64);
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f16,  bk::powi_inplace_f16);
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_bf16, bk::powi_inplace_bf16);
+}
+
+// ===========================================================================
 // Concat — N-ary via N-1 chained baracuda concat2 calls
 // ===========================================================================
 //
@@ -1722,13 +1814,114 @@ pub mod unary {
 
     // In-place unary surface — Phase 3e of in-place ops infrastructure.
     // Reuses the same baracuda symbols but the wrapper passes the
-    // target's pointer for both x + y. f32 starter set; other dtypes
-    // land when consumers materialize.
+    // target's pointer for both x + y. Full 4-dtype coverage matches
+    // the non-inplace cousins above.
     cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f32,    bk::unary_inplace_relu_f32);
     cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f32,    bk::unary_inplace_silu_f32);
     cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f32,    bk::unary_inplace_gelu_f32);
     cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f32,    bk::unary_inplace_tanh_f32);
     cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f32, bk::unary_inplace_sigmoid_f32);
+
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f64,    bk::unary_inplace_relu_f64);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f64,    bk::unary_inplace_silu_f64);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f64,    bk::unary_inplace_gelu_f64);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f64,    bk::unary_inplace_tanh_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f64, bk::unary_inplace_sigmoid_f64);
+
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_bf16,    bk::unary_inplace_relu_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_bf16,    bk::unary_inplace_silu_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_bf16,    bk::unary_inplace_gelu_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_bf16,    bk::unary_inplace_tanh_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_bf16, bk::unary_inplace_sigmoid_bf16);
+
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f16,    bk::unary_inplace_relu_f16);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f16,    bk::unary_inplace_silu_f16);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f16,    bk::unary_inplace_gelu_f16);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f16,    bk::unary_inplace_tanh_f16);
+    cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f16, bk::unary_inplace_sigmoid_f16);
+
+    // In-place unary op family expansion (2026-05-30) — 16 new ops
+    // × 4 dtypes = 64 new wrappers. Each reuses the matching baracuda
+    // forward symbol with same-pointer dispatch.
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f32,  bk::unary_inplace_neg_f32);
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f64,  bk::unary_inplace_neg_f64);
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_bf16, bk::unary_inplace_neg_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f16,  bk::unary_inplace_neg_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f32,  bk::unary_inplace_abs_f32);
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f64,  bk::unary_inplace_abs_f64);
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_bf16, bk::unary_inplace_abs_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f16,  bk::unary_inplace_abs_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f32,  bk::unary_inplace_sqr_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f64,  bk::unary_inplace_sqr_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_bf16, bk::unary_inplace_sqr_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f16,  bk::unary_inplace_sqr_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f32,  bk::unary_inplace_sqrt_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f64,  bk::unary_inplace_sqrt_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_bf16, bk::unary_inplace_sqrt_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f16,  bk::unary_inplace_sqrt_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f32,  bk::unary_inplace_rsqrt_f32);
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f64,  bk::unary_inplace_rsqrt_f64);
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_bf16, bk::unary_inplace_rsqrt_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f16,  bk::unary_inplace_rsqrt_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f32,  bk::unary_inplace_recip_f32);
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f64,  bk::unary_inplace_recip_f64);
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_bf16, bk::unary_inplace_recip_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f16,  bk::unary_inplace_recip_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f32,  bk::unary_inplace_exp_f32);
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f64,  bk::unary_inplace_exp_f64);
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_bf16, bk::unary_inplace_exp_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f16,  bk::unary_inplace_exp_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f32,  bk::unary_inplace_log_f32);
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f64,  bk::unary_inplace_log_f64);
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_bf16, bk::unary_inplace_log_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f16,  bk::unary_inplace_log_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f32,  bk::unary_inplace_sin_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f64,  bk::unary_inplace_sin_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_bf16, bk::unary_inplace_sin_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f16,  bk::unary_inplace_sin_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f32,  bk::unary_inplace_cos_f32);
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f64,  bk::unary_inplace_cos_f64);
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_bf16, bk::unary_inplace_cos_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f16,  bk::unary_inplace_cos_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f32,  bk::unary_inplace_sign_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f64,  bk::unary_inplace_sign_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_bf16, bk::unary_inplace_sign_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f16,  bk::unary_inplace_sign_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f32,  bk::unary_inplace_floor_f32);
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f64,  bk::unary_inplace_floor_f64);
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_bf16, bk::unary_inplace_floor_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f16,  bk::unary_inplace_floor_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f32,  bk::unary_inplace_ceil_f32);
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f64,  bk::unary_inplace_ceil_f64);
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_bf16, bk::unary_inplace_ceil_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f16,  bk::unary_inplace_ceil_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f32,  bk::unary_inplace_round_f32);
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f64,  bk::unary_inplace_round_f64);
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_bf16, bk::unary_inplace_round_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f16,  bk::unary_inplace_round_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f32,  bk::unary_inplace_erf_f32);
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f64,  bk::unary_inplace_erf_f64);
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_bf16, bk::unary_inplace_erf_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f16,  bk::unary_inplace_erf_f16);
+
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f32,  bk::unary_inplace_gelu_erf_f32);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f64,  bk::unary_inplace_gelu_erf_f64);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_bf16, bk::unary_inplace_gelu_erf_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f16,  bk::unary_inplace_gelu_erf_f16);
 
     // f16
     cuda_unary_baracuda_wrapper!(neg_f16, bk::unary_neg_f16);
@@ -2085,13 +2278,73 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(InplaceAffine, &u(f32), cuda, affine::affine_inplace_f32);
     table.register(InplaceAffine, &u(f64), cuda, affine::affine_inplace_f64);
 
+    // ClampInplace + PowIInplace — scalar-param family. baracuda
+    // ships all 4 dtypes for both; ClampInplace uses the
+    // ternary_clamp_*_strided_run symbols with same-pointer dispatch
+    // (a == y) + 1-element broadcast bound buffers; PowIInplace uses
+    // the contig unary_powi_*_run symbols with same-pointer dispatch.
+    table.register(ClampInplace, &u(f32),  cuda, clamp_inplace::clamp_inplace_f32);
+    table.register(ClampInplace, &u(f64),  cuda, clamp_inplace::clamp_inplace_f64);
+    table.register(ClampInplace, &u(bf16), cuda, clamp_inplace::clamp_inplace_bf16);
+    table.register(ClampInplace, &u(f16),  cuda, clamp_inplace::clamp_inplace_f16);
+
+    table.register(PowIInplace, &u(f32),  cuda, powi_inplace::powi_inplace_f32);
+    table.register(PowIInplace, &u(f64),  cuda, powi_inplace::powi_inplace_f64);
+    table.register(PowIInplace, &u(bf16), cuda, powi_inplace::powi_inplace_bf16);
+    table.register(PowIInplace, &u(f16),  cuda, powi_inplace::powi_inplace_f16);
+
     // In-place unary activations — Phase 3e of in-place ops. Same
     // structural rules as InplaceAffine (no strided cap, contig-only).
+    // Full 4-dtype coverage (f32/f64/bf16/f16); baracuda exposes the
+    // matching `unary_*_run` symbol for every (kind, dtype) entry.
     table.register(ReluInplace,    &u(f32), cuda, unary::relu_inplace_f32);
     table.register(SiluInplace,    &u(f32), cuda, unary::silu_inplace_f32);
     table.register(GeluInplace,    &u(f32), cuda, unary::gelu_inplace_f32);
     table.register(TanhInplace,    &u(f32), cuda, unary::tanh_inplace_f32);
     table.register(SigmoidInplace, &u(f32), cuda, unary::sigmoid_inplace_f32);
+
+    table.register(ReluInplace,    &u(f64), cuda, unary::relu_inplace_f64);
+    table.register(SiluInplace,    &u(f64), cuda, unary::silu_inplace_f64);
+    table.register(GeluInplace,    &u(f64), cuda, unary::gelu_inplace_f64);
+    table.register(TanhInplace,    &u(f64), cuda, unary::tanh_inplace_f64);
+    table.register(SigmoidInplace, &u(f64), cuda, unary::sigmoid_inplace_f64);
+
+    table.register(ReluInplace,    &u(bf16), cuda, unary::relu_inplace_bf16);
+    table.register(SiluInplace,    &u(bf16), cuda, unary::silu_inplace_bf16);
+    table.register(GeluInplace,    &u(bf16), cuda, unary::gelu_inplace_bf16);
+    table.register(TanhInplace,    &u(bf16), cuda, unary::tanh_inplace_bf16);
+    table.register(SigmoidInplace, &u(bf16), cuda, unary::sigmoid_inplace_bf16);
+
+    table.register(ReluInplace,    &u(f16), cuda, unary::relu_inplace_f16);
+    table.register(SiluInplace,    &u(f16), cuda, unary::silu_inplace_f16);
+    table.register(GeluInplace,    &u(f16), cuda, unary::gelu_inplace_f16);
+    table.register(TanhInplace,    &u(f16), cuda, unary::tanh_inplace_f16);
+    table.register(SigmoidInplace, &u(f16), cuda, unary::sigmoid_inplace_f16);
+
+    // In-place unary op family expansion (2026-05-30) — 16 new ops
+    // × 4 dtypes = 64 new (OpKind, [T, T], Cuda) entries.
+    for (op, regs) in [
+        (NegInplace,     [unary::neg_inplace_f32,    unary::neg_inplace_f64,    unary::neg_inplace_bf16,    unary::neg_inplace_f16]),
+        (AbsInplace,     [unary::abs_inplace_f32,    unary::abs_inplace_f64,    unary::abs_inplace_bf16,    unary::abs_inplace_f16]),
+        (SqrInplace,     [unary::sqr_inplace_f32,    unary::sqr_inplace_f64,    unary::sqr_inplace_bf16,    unary::sqr_inplace_f16]),
+        (SqrtInplace,    [unary::sqrt_inplace_f32,   unary::sqrt_inplace_f64,   unary::sqrt_inplace_bf16,   unary::sqrt_inplace_f16]),
+        (RsqrtInplace,   [unary::rsqrt_inplace_f32,  unary::rsqrt_inplace_f64,  unary::rsqrt_inplace_bf16,  unary::rsqrt_inplace_f16]),
+        (RecipInplace,   [unary::recip_inplace_f32,  unary::recip_inplace_f64,  unary::recip_inplace_bf16,  unary::recip_inplace_f16]),
+        (ExpInplace,     [unary::exp_inplace_f32,    unary::exp_inplace_f64,    unary::exp_inplace_bf16,    unary::exp_inplace_f16]),
+        (LogInplace,     [unary::log_inplace_f32,    unary::log_inplace_f64,    unary::log_inplace_bf16,    unary::log_inplace_f16]),
+        (SinInplace,     [unary::sin_inplace_f32,    unary::sin_inplace_f64,    unary::sin_inplace_bf16,    unary::sin_inplace_f16]),
+        (CosInplace,     [unary::cos_inplace_f32,    unary::cos_inplace_f64,    unary::cos_inplace_bf16,    unary::cos_inplace_f16]),
+        (SignInplace,    [unary::sign_inplace_f32,   unary::sign_inplace_f64,   unary::sign_inplace_bf16,   unary::sign_inplace_f16]),
+        (FloorInplace,   [unary::floor_inplace_f32,  unary::floor_inplace_f64,  unary::floor_inplace_bf16,  unary::floor_inplace_f16]),
+        (CeilInplace,    [unary::ceil_inplace_f32,   unary::ceil_inplace_f64,   unary::ceil_inplace_bf16,   unary::ceil_inplace_f16]),
+        (RoundInplace,   [unary::round_inplace_f32,  unary::round_inplace_f64,  unary::round_inplace_bf16,  unary::round_inplace_f16]),
+        (ErfInplace,     [unary::erf_inplace_f32,    unary::erf_inplace_f64,    unary::erf_inplace_bf16,    unary::erf_inplace_f16]),
+        (GeluErfInplace, [unary::gelu_erf_inplace_f32, unary::gelu_erf_inplace_f64, unary::gelu_erf_inplace_bf16, unary::gelu_erf_inplace_f16]),
+    ] {
+        for (dt, wrapper) in [f32, f64, bf16, f16].into_iter().zip(regs.into_iter()) {
+            table.register(op, &u(dt), cuda, wrapper);
+        }
+    }
 
     // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
     // U32 collapses to baracuda i32 at the FFI level (bit-identical for

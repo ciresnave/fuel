@@ -285,3 +285,57 @@ powi_backward_kernel!(powi_backward_f32, f32, 4, "powi_backward_f32");
 powi_backward_kernel!(powi_backward_f64, f64, 8, "powi_backward_f64");
 powi_backward_kernel!(powi_backward_f16, f16, 2, "powi_backward_f16");
 powi_backward_kernel!(powi_backward_bf16, bf16, 2, "powi_backward_bf16");
+
+/// In-place PowI — reuses the contig forward symbol with same-pointer
+/// dispatch for x and y. Safe for elementwise param-unary (no
+/// cross-thread aliasing).
+fn powi_inplace_run(
+    target: &mut CudaStorageBytes,
+    exp: i32,
+    dtype_size_bytes: usize,
+    contig: PowiRun,
+    op_label: &'static str,
+) -> Result<()> {
+    let numel = (target.len_bytes() / dtype_size_bytes.max(1)) as i64;
+    if numel == 0 {
+        return Ok(());
+    }
+    let device = target.device().clone();
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let ptr_mut = target.buffer().as_raw().0 as *mut std::ffi::c_void;
+    let ptr_const = ptr_mut as *const std::ffi::c_void;
+    let p0 = exp as f32;
+    // SAFETY: same buffer for x + y is safe for elementwise param-unary
+    // kernels (no cross-thread aliasing); pointers / stream / scratch
+    // validated above.
+    let status = unsafe {
+        contig(
+            numel, ptr_const, ptr_mut, p0, 0.0_f32,
+            scratch.as_raw(), scratch.bytes(), stream,
+        )
+    };
+    check(status, op_label)?;
+    device.synchronize()?;
+    Ok(())
+}
+
+macro_rules! powi_inplace_kernel {
+    ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("In-place baracuda `", $op_label, "` kernel — mutates `target`.")]
+            pub fn $name(target: &mut CudaStorageBytes, exp: i32) -> Result<()> {
+                powi_inplace_run(
+                    target, exp, $dtype_size,
+                    sys::[<baracuda_kernels_unary_powi_ $sys_stem _run>],
+                    $op_label,
+                )
+            }
+        }
+    };
+}
+
+powi_inplace_kernel!(powi_inplace_f32,  f32,  4, "powi_inplace_f32");
+powi_inplace_kernel!(powi_inplace_f64,  f64,  8, "powi_inplace_f64");
+powi_inplace_kernel!(powi_inplace_f16,  f16,  2, "powi_inplace_f16");
+powi_inplace_kernel!(powi_inplace_bf16, bf16, 2, "powi_inplace_bf16");
