@@ -2339,28 +2339,30 @@ impl LazyTensor {
     /// Multi-dim sum: reduce over every dim in `dims`, squeezing each.
     /// Reduces from the highest dim down so the lower dim indices stay
     /// valid throughout the reduction.
-    pub fn sum_dims(&self, dims: &[usize]) -> Self {
-        let mut sorted: Vec<usize> = dims.to_vec();
+    pub fn sum_dims<D: Dims>(&self, dims: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.shape();
+        let mut sorted = dims.to_indexes(&shape, "sum_dims")?;
         sorted.sort_by(|a, b| b.cmp(a));
         sorted.dedup();
         let mut acc = self.clone();
         for d in sorted {
-            acc = acc.sum_dim(d).unwrap();
+            acc = acc.sum_dim(d)?;
         }
-        acc
+        Ok(acc)
     }
 
     /// Multi-dim mean: reduce over every dim in `dims`, squeezing each.
-    /// Reduces from the highest dim down.
-    pub fn mean_dims(&self, dims: &[usize]) -> Self {
-        let mut sorted: Vec<usize> = dims.to_vec();
+    /// Reduces from the highest dim down. Accepts any [`Dims`].
+    pub fn mean_dims<D: Dims>(&self, dims: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.shape();
+        let mut sorted = dims.to_indexes(&shape, "mean_dims")?;
         sorted.sort_by(|a, b| b.cmp(a));
         sorted.dedup();
         let mut acc = self.clone();
         for d in sorted {
-            acc = acc.mean_dim(d).unwrap();
+            acc = acc.mean_dim(d)?;
         }
-        acc
+        Ok(acc)
     }
 
     /// Multi-dim sum with keepdim: every named dim becomes size 1
@@ -9490,7 +9492,7 @@ mod phase_a5_factory_tests {
     fn sum_dims_multi_dim_reduces_to_smaller() {
         // [2,3,4] sum over (0, 2) → [3]
         let t = cpu_f32(vec![1.0; 24], &[2, 3, 4]);
-        let s = t.sum_dims(&[0, 2]);
+        let s = t.sum_dims([0, 2_usize]).unwrap();
         assert_eq!(s.shape().dims(), &[3]);
         // each element is 2*4 = 8 (sum across dim 0 = 2 elements, dim 2 = 4 elements)
         assert_eq!(s.realize_f32(), vec![8.0; 3]);
@@ -9499,7 +9501,7 @@ mod phase_a5_factory_tests {
     #[test]
     fn mean_dims_multi_dim() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let m = t.mean_dims(&[0, 1]);
+        let m = t.mean_dims([0, 1_usize]).unwrap();
         assert_eq!(m.shape().dims(), &[] as &[usize]);
         assert_eq!(m.realize_f32(), vec![2.5]);
     }
