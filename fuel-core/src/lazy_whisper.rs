@@ -327,7 +327,7 @@ impl WhisperModel {
 
         // Tied output projection: logits = x @ embed^T → [1, seq, vocab].
         // embed is [vocab, d] row-major; transpose to [d, vocab] and matmul.
-        let embed_t = embed.transpose();  // [d, vocab]
+        let embed_t = embed.transpose().unwrap();  // [d, vocab]
         Ok(x.matmul(&embed_t))
     }
 

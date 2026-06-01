@@ -32,7 +32,7 @@ fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
 fn composed_attention(q: &LazyTensor, k: &LazyTensor, v: &LazyTensor, scale: f32) -> LazyTensor {
     // Q: [B, H, Sq, D], K: [B, H, Sk, D], V: [B, H, Sk, D]
     // K^T (along last two dims): [B, H, D, Sk]
-    let kt = k.transpose();
+    let kt = k.transpose().unwrap();
     // Scores: Q · K^T = [B, H, Sq, Sk]
     let scores = q.matmul(&kt);
     // Scale
