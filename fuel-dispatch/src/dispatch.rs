@@ -3114,6 +3114,85 @@ cpu_causal_conv1d_wrapper!(causal_conv1d_f64_cpu_wrapper,  fuel_cpu_backend::byt
 cpu_causal_conv1d_wrapper!(causal_conv1d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::causal_conv1d_bf16);
 cpu_causal_conv1d_wrapper!(causal_conv1d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::causal_conv1d_f16);
 
+/// Per-dtype CausalConv1d CUDA dispatch wrapper. Same `[T, T, T, T]`
+/// binding-table key shape as the CPU wrapper; routes to baracuda's
+/// `causal_conv1d_*` (Phase 50, alpha.62) via the Fuel-prepad helper
+/// in `fuel-cuda-backend::baracuda::mamba`. The helper strips the
+/// `kernel - 1` leading zero-pad timesteps from baracuda's output via
+/// a single `cuMemcpy2D` D→D so the wrapper's output buffer matches
+/// the CPU kernel's `[batch, channels, seq_out]` shape bit-for-bit.
+#[cfg(feature = "cuda")]
+macro_rules! cuda_causal_conv1d_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "causal_conv1d cuda wrapper expects 3 inputs (x, weight, bias), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "causal_conv1d cuda wrapper expects 1 output, got {}", outputs.len(),
+                ))
+                .bt());
+            }
+            let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
+                OpParams::CausalConv1d {
+                    batch, channels, seq_in, seq_out, kernel, use_silu,
+                } => (*batch, *channels, *seq_in, *seq_out, *kernel, *use_silu),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "causal_conv1d cuda wrapper expects OpParams::CausalConv1d, got {other:?}",
+                    ))
+                    .bt());
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let w_guard = read_storage(&inputs[1])?;
+            let bias_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cuda    = cuda_input(&x_guard)?;
+            let w_cuda    = cuda_input(&w_guard)?;
+            let bias_cuda = cuda_input(&bias_guard)?;
+            let result = $kernel(
+                x_cuda, w_cuda, bias_cuda,
+                batch, channels, seq_in, seq_out, kernel, use_silu,
+            )?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+#[cfg(feature = "cuda")]
+cuda_causal_conv1d_wrapper!(
+    causal_conv1d_f32_cuda_wrapper,
+    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_f32
+);
+#[cfg(feature = "cuda")]
+cuda_causal_conv1d_wrapper!(
+    causal_conv1d_f64_cuda_wrapper,
+    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_f64
+);
+#[cfg(feature = "cuda")]
+cuda_causal_conv1d_wrapper!(
+    causal_conv1d_bf16_cuda_wrapper,
+    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_bf16
+);
+#[cfg(feature = "cuda")]
+cuda_causal_conv1d_wrapper!(
+    causal_conv1d_f16_cuda_wrapper,
+    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_f16
+);
+
 /// Per-dtype SelectiveScan dispatch wrapper. Five inputs (u, delta,
 /// a, b, c) → one output (y). Geometry + `delta_softplus` flow
 /// through `OpParams::SelectiveScan`. All six tensors share dtype `T`;
@@ -4966,6 +5045,19 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
     table.register(MatMul,             &binary(bf16_dt), cuda, matmul_bf16_cuda_wrapper);
     table.register(MatMul,             &binary(f16_dt), cuda, matmul_f16_cuda_wrapper);
+
+    // CausalConv1d: 3 inputs (x, weight, bias) + 1 output, uniform
+    // dtype T ∈ {F32, F64, BF16, F16}. Same `[T; 4]` key shape as the
+    // CPU registrations above. Routes through baracuda Phase 50's
+    // `causal_conv1d_*_run` via the Fuel-prepad helper.
+    for (dt, w) in [
+        (DType::F32,  causal_conv1d_f32_cuda_wrapper  as KernelRef),
+        (DType::F64,  causal_conv1d_f64_cuda_wrapper),
+        (DType::BF16, causal_conv1d_bf16_cuda_wrapper),
+        (DType::F16,  causal_conv1d_f16_cuda_wrapper),
+    ] {
+        table.register(CausalConv1d, &[dt, dt, dt, dt], cuda, w);
+    }
 
     // Op::Copy D2H — register at `(OpKind::Copy, [dt, dt], Cuda)` for
     // every dtype the byte-storage substrate supports. Source-backend

@@ -144,6 +144,184 @@ fn causal_conv1d_inner(
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
 
+// ──────── causal_conv1d FW with Fuel-IR pre-pad convention ────────
+//
+// Fuel's `Op::CausalConv1d` requires the caller to left-pad `x` with
+// `kernel - 1` zeros (matches the mamba2.rs prefill convention):
+//   x_fuel : [batch, channels, seq_in]   where seq_in = seq_out + kernel - 1
+//   y_fuel : [batch, channels, seq_out]
+//
+// baracuda's `causal_conv1d_*` takes a single `seqlen` for both input
+// and output, with internal zero-padding for the causal window's
+// out-of-bounds reads. Equivalently: input length == output length.
+//
+// To bridge the convention gap, we pass baracuda the pre-padded `x`
+// with `seqlen = seq_in` (its full length), receive a `seq_in`-long
+// output buffer, and discard the first `kernel - 1` timesteps per
+// (batch, channel) row via one `cuMemcpy2D` D→D — exactly the rows
+// whose convolution windows are dominated by the leading zero-pad.
+// The discarded fraction is `(kernel - 1) / seq_in`; for Mamba kernel
+// = 4 it's a fraction of a percent of the convolution work, so the
+// wasted compute is negligible relative to the cuBLAS-class kernel
+// dispatch overhead we'd add by hand-rolling a strip kernel.
+
+/// Strip the first `prepad_elems` elements from each of `rows` rows of
+/// a contiguous `[rows, src_cols]` byte buffer; return a fresh
+/// `[rows, src_cols - prepad_elems]` buffer. Single `cuMemcpy2D` D→D.
+fn strip_prepad_d2d(
+    src: &CudaStorageBytes,
+    rows: usize,
+    src_cols: usize,
+    prepad_elems: usize,
+    elem_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    use baracuda_cuda_sys::driver;
+    use baracuda_cuda_sys::types::{CUmemorytype, CUDA_MEMCPY2D};
+    use baracuda_cuda_sys::CUdeviceptr;
+
+    let device = src.device().clone();
+    let dst_cols = src_cols - prepad_elems;
+    let dst_bytes = rows
+        .saturating_mul(dst_cols)
+        .saturating_mul(elem_bytes);
+    if dst_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let dst_buf = device.alloc_zeros::<u8>(dst_bytes)?;
+    let src_pitch = src_cols * elem_bytes;
+    let dst_pitch = dst_cols * elem_bytes;
+    // Shift the source pointer by `prepad_elems * elem_bytes` so the
+    // first byte of each src row is the first non-padding element.
+    let src_dev = CUdeviceptr(src.buffer().as_raw().0 + (prepad_elems * elem_bytes) as u64);
+    let p = CUDA_MEMCPY2D {
+        src_memory_type: CUmemorytype::DEVICE,
+        src_device:      src_dev,
+        src_pitch,
+        dst_memory_type: CUmemorytype::DEVICE,
+        dst_device:      dst_buf.as_raw(),
+        dst_pitch,
+        width_in_bytes:  dst_pitch,
+        height:          rows,
+        ..Default::default()
+    };
+    let d = driver().map_err(|e| {
+        fuel_core_types::Error::Msg(format!("strip_prepad_d2d: driver(): {e:?}")).bt()
+    })?;
+    let cu = d.cu_memcpy_2d_async().map_err(|e| {
+        fuel_core_types::Error::Msg(format!("strip_prepad_d2d: cu_memcpy_2d_async: {e:?}")).bt()
+    })?;
+    let stream = device.stream().as_raw();
+    let status = unsafe { cu(&p, stream) };
+    if status.0 != 0 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "strip_prepad_d2d: cuMemcpy2DAsync failed: status={status:?}",
+        ))
+        .bt());
+    }
+    device.synchronize()?;
+    Ok(CudaStorageBytes::from_parts(Arc::new(dst_buf), device, dst_bytes))
+}
+
+/// Causal conv1d forward in Fuel-IR convention: pre-padded `x` shape
+/// `[batch, channels, seq_in]`, contiguous output `[batch, channels,
+/// seq_out]` where `seq_in == seq_out + kernel - 1`. Bias is required
+/// (matches the Fuel-IR builder gate).
+#[allow(clippy::too_many_arguments)]
+pub fn causal_conv1d_fuel_prepad_f32(
+    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
+    batch: usize, channels: usize,
+    seq_in: usize, seq_out: usize, kernel: usize,
+    use_silu: bool,
+) -> Result<CudaStorageBytes> {
+    causal_conv1d_fuel_prepad_inner(
+        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        std::mem::size_of::<f32>(),
+        causal_conv1d_f32, "causal_conv1d_fuel_prepad_f32",
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn causal_conv1d_fuel_prepad_f64(
+    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
+    batch: usize, channels: usize,
+    seq_in: usize, seq_out: usize, kernel: usize,
+    use_silu: bool,
+) -> Result<CudaStorageBytes> {
+    causal_conv1d_fuel_prepad_inner(
+        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        std::mem::size_of::<f64>(),
+        causal_conv1d_f64, "causal_conv1d_fuel_prepad_f64",
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn causal_conv1d_fuel_prepad_bf16(
+    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
+    batch: usize, channels: usize,
+    seq_in: usize, seq_out: usize, kernel: usize,
+    use_silu: bool,
+) -> Result<CudaStorageBytes> {
+    causal_conv1d_fuel_prepad_inner(
+        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        std::mem::size_of::<half::bf16>(),
+        causal_conv1d_bf16, "causal_conv1d_fuel_prepad_bf16",
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn causal_conv1d_fuel_prepad_f16(
+    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
+    batch: usize, channels: usize,
+    seq_in: usize, seq_out: usize, kernel: usize,
+    use_silu: bool,
+) -> Result<CudaStorageBytes> {
+    causal_conv1d_fuel_prepad_inner(
+        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        std::mem::size_of::<half::f16>(),
+        causal_conv1d_f16, "causal_conv1d_fuel_prepad_f16",
+    )
+}
+
+type CausalConv1dRawFw = fn(
+    &CudaStorageBytes, &CudaStorageBytes, Option<&CudaStorageBytes>,
+    usize, usize, usize, usize, bool,
+) -> Result<CudaStorageBytes>;
+
+#[allow(clippy::too_many_arguments)]
+fn causal_conv1d_fuel_prepad_inner(
+    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
+    batch: usize, channels: usize,
+    seq_in: usize, seq_out: usize, kernel: usize,
+    use_silu: bool,
+    elem_bytes: usize,
+    raw_fw: CausalConv1dRawFw,
+    op_label: &'static str,
+) -> Result<CudaStorageBytes> {
+    if seq_in != seq_out + kernel - 1 {
+        return Err(fuel_core_types::Error::Msg(format!(
+            "{op_label}: seq_in={seq_in} must equal seq_out={seq_out} + kernel-1={}",
+            kernel - 1,
+        ))
+        .bt());
+    }
+    // Call baracuda with seqlen == seq_in (pre-padded length). The
+    // first `kernel - 1` output timesteps per (batch, channel) row are
+    // convolutions of the leading zero-pad; the remaining `seq_out`
+    // timesteps match Fuel's CPU kernel exactly.
+    let raw_out = raw_fw(
+        x, weight, Some(bias),
+        batch, channels, seq_in, kernel, use_silu,
+    )?;
+    if kernel == 1 {
+        // No prepad — raw_out is already Fuel-shaped.
+        return Ok(raw_out);
+    }
+    strip_prepad_d2d(
+        &raw_out,
+        batch * channels,
+        seq_in,
+        kernel - 1,
+        elem_bytes,
+    )
+}
+
 /// Outputs from causal_conv1d backward: gradients matching the FW
 /// inputs `x`, `weight`, `bias`. All are owned `CudaStorageBytes`
 /// allocated by the wrapper.
