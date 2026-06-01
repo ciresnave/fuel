@@ -308,8 +308,8 @@ impl WhisperModel {
             Shape::from_dims(&[cfg.max_target_positions, d]),
         );
 
-        let tok = embed.index_select(0, &input_ids);  // [seq, d]
-        let pos = pos_emb.index_select(0, &position_ids);  // [seq, d]
+        let tok = embed.index_select(0, &input_ids).unwrap();  // [seq, d]
+        let pos = pos_emb.index_select(0, &position_ids).unwrap();  // [seq, d]
         let mut x = tok.add(&pos).reshape(Shape::from_dims(&[1, seq, d])).unwrap();
 
         for lw in &self.weights.decoder.layers {

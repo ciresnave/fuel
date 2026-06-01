@@ -162,8 +162,8 @@ impl SdTextEncoder {
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
         );
 
-        let w = token_emb.index_select(0, &input_ids);
-        let p = pos_emb.index_select(0, &position_ids);
+        let w = token_emb.index_select(0, &input_ids).unwrap();
+        let p = pos_emb.index_select(0, &position_ids).unwrap();
         let embeds = w.add(&p).reshape(Shape::from_dims(&[1, seq, h])).unwrap();
 
         let mut x = embeds;

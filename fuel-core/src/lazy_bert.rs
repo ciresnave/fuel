@@ -205,9 +205,9 @@ impl BertModel {
             Shape::from_dims(&[cfg.type_vocab_size, h]),
         );
         // Each lookup produces `[seq, h]`.
-        let w = word_emb.index_select(0, &input_ids);
-        let p = pos_emb.index_select(0, &position_ids);
-        let t = type_emb.index_select(0, &token_type_ids);
+        let w = word_emb.index_select(0, &input_ids).unwrap();
+        let p = pos_emb.index_select(0, &position_ids).unwrap();
+        let t = type_emb.index_select(0, &token_type_ids).unwrap();
         // Add the three embeddings, then prepend a batch dim: `[1, seq, h]`.
         let embeds = w.add(&p).add(&t).reshape(Shape::from_dims(&[1, seq, h])).unwrap();
         let embeds = layer_norm_affine(
