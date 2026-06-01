@@ -262,7 +262,7 @@ fn cbs(
         cw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in / groups, k, k]),
     );
-    let conv = x.conv2d(&w_t, None, (s, s), (p, p), groups);
+    let conv = x.conv2d(&w_t, None, (s, s), (p, p), groups).unwrap();
     let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out);
     affine.silu()
 }
@@ -406,7 +406,7 @@ fn raw_conv(
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c_out]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1)
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1).unwrap()
 }
 
 // ---- Detect head ----------------------------------------------------------

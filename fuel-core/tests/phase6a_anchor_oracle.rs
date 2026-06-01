@@ -54,7 +54,7 @@ fn dense_conv2d_cpu_matches_reference() {
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
     let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_sz]), &fuel_core::Device::cpu());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[cout, cin, k, k]));
-    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), 1);
+    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), 1).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
 }
 
@@ -69,7 +69,7 @@ fn depthwise_conv2d_cpu_matches_reference() {
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
     let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]), &fuel_core::Device::cpu());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
-    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c);
+    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
 }
 
@@ -85,7 +85,7 @@ fn conv_transpose2d_cpu_matches_reference() {
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
     let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_sz]), &fuel_core::Device::cpu());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[cin, cout, k, k]));
-    let y = x.conv_transpose2d(&weight, (2, 2), (1, 1), (1, 1), (1, 1), 1);
+    let y = x.conv_transpose2d(&weight, (2, 2), (1, 1), (1, 1), (1, 1), 1).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
 }
 
