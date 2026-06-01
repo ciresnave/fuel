@@ -219,13 +219,13 @@ impl ConvNextModel {
 
         // --- head: global avg pool + LN + Linear -------------------------
         let pooled = global_avg_pool_2d(&x, c, h, h);  // [1, C]
-        let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c]));
+        let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c])).unwrap();
         let normed = layer_norm_affine(
             &pooled3, &self.weights.head_ln_g, &self.weights.head_ln_b,
             cfg.layer_norm_eps, c, 1,
         );
         Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)
-            .reshape(Shape::from_dims(&[1, cfg.num_classes])))
+            .reshape(Shape::from_dims(&[1, cfg.num_classes])).unwrap())
     }
 }
 
@@ -246,7 +246,7 @@ fn convnext_block(
     // Move channels to the last dim so LayerNorm + MLP work on [1, H, W, C].
     let dw_nhwc = dw.permute(&[0, 2, 3, 1]);  // [1, H, W, C]
     // Flatten spatial for the LN + linear ops we already have: [1, H*W, C].
-    let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c]));
+    let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
     let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w);
     // MLP: C → 4C → C with GELU. Linear already wants [1, seq, C].
     let hidden = linear(&normed, &bw.fc1_w, Some(&bw.fc1_b), c, 4 * c, h * w).gelu();
@@ -254,12 +254,12 @@ fn convnext_block(
     // Layer-scale γ, per-channel.
     let gamma = projected
         .const_f32_like(bw.gamma.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, 1, c]))
+        .reshape(Shape::from_dims(&[1, 1, c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, h * w, c])).unwrap();
     let scaled = projected.mul(&gamma);
     // Back to channels-first: [1, H, W, C] → [1, C, H, W].
     let scaled_chw = scaled
-        .reshape(Shape::from_dims(&[1, h, w, c]))
+        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute(&[0, 3, 1, 2]);
     x.add(&scaled_chw)
 }
@@ -278,11 +278,11 @@ fn layer_norm_affine(
     let normed = x.layer_norm_last_dim(eps);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
@@ -300,10 +300,10 @@ fn layer_norm_channel_dim(
     w: usize,
 ) -> LazyTensor {
     let x_nhwc = x.permute(&[0, 2, 3, 1]);
-    let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]));
+    let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
     let normed = layer_norm_affine(&flat, gamma, beta, eps, c, h * w);
     normed
-        .reshape(Shape::from_dims(&[1, h, w, c]))
+        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute(&[0, 3, 1, 2])
 }
 
@@ -322,7 +322,7 @@ fn linear(
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f]))
+                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
@@ -363,12 +363,12 @@ fn conv2d_stride_eq_kernel(
     let w_out = w_sz / k;
     // Reshape [1, Cin, H, W] → [1, Cin, H/k, k, W/k, k]. Logical-only;
     // row-major layout stays the same.
-    let x6 = x.reshape(Shape::from_dims(&[1, cin, h_out, k, w_out, k]));
+    let x6 = x.reshape(Shape::from_dims(&[1, cin, h_out, k, w_out, k])).unwrap();
     // Permute to [1, H_out, W_out, Cin, k, k] so each spatial patch's
     // (Cin, k, k) block sits contiguously in the last three axes.
     let x_perm = x6.permute(&[0, 2, 4, 1, 3, 5]);
     // Flatten to [1, H_out*W_out, Cin*k*k].
-    let x_flat = x_perm.reshape(Shape::from_dims(&[1, h_out * w_out, cin * k * k]));
+    let x_flat = x_perm.reshape(Shape::from_dims(&[1, h_out * w_out, cin * k * k])).unwrap();
     // Kernel reshape: HF stores [Cout, Cin, k, k] row-major, which is
     // exactly [Cout, Cin*k*k] in the same ordering (Cin-major, then
     // k_row, then k_col) — matches what we just produced. Transpose
@@ -379,11 +379,11 @@ fn conv2d_stride_eq_kernel(
     // Add bias.
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
-        .reshape(Shape::from_dims(&[1, 1, cout]))
+        .reshape(Shape::from_dims(&[1, 1, cout])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout])).unwrap();
     let y = y.add(&bias);
     // Back to [1, Cout, H_out, W_out].
-    y.reshape(Shape::from_dims(&[1, h_out, w_out, cout]))
+    y.reshape(Shape::from_dims(&[1, h_out, w_out, cout])).unwrap()
         .permute(&[0, 3, 1, 2])
 }
 

@@ -164,7 +164,7 @@ impl SdTextEncoder {
 
         let w = token_emb.index_select(0, &input_ids);
         let p = pos_emb.index_select(0, &position_ids);
-        let embeds = w.add(&p).reshape(Shape::from_dims(&[1, seq, h]));
+        let embeds = w.add(&p).reshape(Shape::from_dims(&[1, seq, h])).unwrap();
 
         let mut x = embeds;
         for lw in &self.weights.layers {
@@ -193,13 +193,13 @@ fn encoder_layer(
     let v = linear(&x_ln, &lw.v_w, Some(&lw.v_b), h, h, seq);
 
     let q = q
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let k = k
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let v = v
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let k_t = k.permute(&[0, 1, 3, 2]);
     let scale = 1.0_f64 / (d_head as f64).sqrt();
@@ -213,14 +213,14 @@ fn encoder_layer(
     }
     let mask_t = scores
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
-        .reshape(Shape::from_dims(&[1, 1, seq, seq]))
+        .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t);
     let probs = scores.softmax_last_dim();
     let ctx = probs
         .matmul(&v)
         .permute(&[0, 2, 1, 3])
-        .reshape(Shape::from_dims(&[1, seq, h]));
+        .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq);
     let x = x.add(&attn_out);
 
@@ -264,11 +264,11 @@ fn layer_norm_affine(
     let normed = x.layer_norm_last_dim(eps);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
@@ -287,7 +287,7 @@ fn linear(
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f]))
+                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }

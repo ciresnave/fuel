@@ -565,13 +565,13 @@ pub mod loss {
         let max_r = logits.max_dim(rank - 1);
         let mut keepdim = dims.clone();
         keepdim[rank - 1] = 1;
-        let max_kd = max_r.reshape(Shape::from_dims(&keepdim));
+        let max_kd = max_r.reshape(Shape::from_dims(&keepdim)).unwrap();
         let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
         let shifted = logits.sub(&max_bcast);
         let expd = shifted.exp();
         let sum_exp = expd.sum_dim(rank - 1);
         let log_sum = sum_exp.log();
-        let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim));
+        let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim)).unwrap();
         let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
         let log_softmax = shifted.sub(&log_sum_bcast);
 
@@ -1140,7 +1140,7 @@ mod tests {
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, n_class]));
                 // logits = x @ W + b_broadcast
                 let logits_raw = x.matmul(w);
-                let b_b = b.reshape(Shape::from_dims(&[1, n_class]))
+                let b_b = b.reshape(Shape::from_dims(&[1, n_class])).unwrap()
                     .broadcast_to(Shape::from_dims(&[n, n_class])).unwrap();
                 let logits = logits_raw.add(&b_b);
                 super::loss::cross_entropy_with_logits(&logits, &y)
@@ -1197,7 +1197,7 @@ mod tests {
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, 1]));
                 let x_norm = x.rms_norm_last_dim(1e-6);
                 let logits = x_norm.matmul(w);
-                let b_b = b.reshape(Shape::from_dims(&[1, 1]))
+                let b_b = b.reshape(Shape::from_dims(&[1, 1])).unwrap()
                     .broadcast_to(Shape::from_dims(&[n, 1])).unwrap();
                 let pred = logits.add(&b_b);
                 super::loss::mse(&pred, &y)

@@ -261,7 +261,7 @@ impl WhisperModel {
                 Shape::from_dims(&[cfg.max_source_positions, d]),
             )
             .slice(0, 0, t_half)
-            .reshape(Shape::from_dims(&[1, t_half, d]))
+            .reshape(Shape::from_dims(&[1, t_half, d])).unwrap()
             .broadcast_to(Shape::from_dims(&[1, t_half, d])).unwrap();
         let mut x = x.add(&pos);
 
@@ -310,7 +310,7 @@ impl WhisperModel {
 
         let tok = embed.index_select(0, &input_ids);  // [seq, d]
         let pos = pos_emb.index_select(0, &position_ids);  // [seq, d]
-        let mut x = tok.add(&pos).reshape(Shape::from_dims(&[1, seq, d]));
+        let mut x = tok.add(&pos).reshape(Shape::from_dims(&[1, seq, d])).unwrap();
 
         for lw in &self.weights.decoder.layers {
             x = decoder_layer(&x, encoder_out, lw, cfg, seq);
@@ -395,11 +395,11 @@ fn layer_norm_affine(
     let normed = x.layer_norm_last_dim(eps);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
@@ -420,7 +420,7 @@ fn linear(
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f]))
+                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
@@ -482,7 +482,7 @@ fn conv1d_k3_s1_p1(
     // Add bias (broadcast [out_c] across [1, T, out_c]).
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
-        .reshape(Shape::from_dims(&[1, 1, out_c]))
+        .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, t, out_c])).unwrap();
     y.add(&bias).permute(&[0, 2, 1])  // back to [1, out_c, T]
 }
@@ -520,19 +520,19 @@ fn conv1d_k3_s2_p1(
     //   s2 = head_tail[:, :, :, 0]  (shifted even positions = 2, 4, …, T_in)
     let head_head = padded
         .slice(2, 0, 2 * t_out)
-        .reshape(Shape::from_dims(&[1, in_c, t_out, 2]));
+        .reshape(Shape::from_dims(&[1, in_c, t_out, 2])).unwrap();
     let s0 = head_head
         .slice(3, 0, 1)
-        .reshape(Shape::from_dims(&[1, in_c, t_out]));
+        .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let s1 = head_head
         .slice(3, 1, 1)
-        .reshape(Shape::from_dims(&[1, in_c, t_out]));
+        .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let head_tail = padded
         .slice(2, 2, 2 * t_out)
-        .reshape(Shape::from_dims(&[1, in_c, t_out, 2]));
+        .reshape(Shape::from_dims(&[1, in_c, t_out, 2])).unwrap();
     let s2 = head_tail
         .slice(3, 0, 1)
-        .reshape(Shape::from_dims(&[1, in_c, t_out]));
+        .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let stacked = s0.concat(&s1, 1).concat(&s2, 1);  // [1, 3*in_c, T_out]
     let stacked_tlast = stacked.permute(&[0, 2, 1]);  // [1, T_out, 3*in_c]
     // Same kernel reshuffle as the stride-1 case.
@@ -548,7 +548,7 @@ fn conv1d_k3_s2_p1(
     let y = stacked_tlast.matmul(&w_t);
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
-        .reshape(Shape::from_dims(&[1, 1, out_c]))
+        .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, t_out, out_c])).unwrap();
     y.add(&bias).permute(&[0, 2, 1])  // [1, out_c, T_out]
 }
@@ -582,13 +582,13 @@ fn multi_head_attn(
 
     // [1, seq, n_heads, d_head] → [1, n_heads, seq, d_head]
     let q = q
-        .reshape(Shape::from_dims(&[1, q_seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, q_seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let k = k
-        .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let v = v
-        .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
 
     let k_t = k.permute(&[0, 1, 3, 2]);  // [1, n_heads, d_head, kv_seq]
@@ -607,7 +607,7 @@ fn multi_head_attn(
         }
         let mask_t = scores
             .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))
-            .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq]))
+            .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq])).unwrap()
             .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq])).unwrap();
         scores = scores.add(&mask_t);
     }
@@ -616,7 +616,7 @@ fn multi_head_attn(
     let ctx = probs
         .matmul(&v)
         .permute(&[0, 2, 1, 3])
-        .reshape(Shape::from_dims(&[1, q_seq, d]));
+        .reshape(Shape::from_dims(&[1, q_seq, d])).unwrap();
     linear(&ctx, out_w, Some(out_b), d, d, q_seq)
 }
 

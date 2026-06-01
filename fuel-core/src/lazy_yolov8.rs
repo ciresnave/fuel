@@ -235,11 +235,11 @@ fn per_channel_affine(
 ) -> LazyTensor {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     let sh = x
         .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     x.mul(&s).add(&sh)
 }
@@ -387,10 +387,10 @@ fn sppf(
 /// 2× nearest-neighbor upsample along both spatial axes. `[1, C, H, W]`
 /// → `[1, C, 2H, 2W]`.
 fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
-    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]));
+    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
     let x6 = x6.concat(&x6, 3);
     let x6 = x6.concat(&x6, 5);
-    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w]))
+    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
 }
 
 /// Raw 1×1 or 3×3 conv with bias but **no BN and no activation**.
@@ -440,14 +440,14 @@ fn detect_branch(
 fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> LazyTensor {
     // Reshape [1, 4*R, N] → [1, 4, R, N] → [1, 4, N, R] (R last).
     let r = reg_max;
-    let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors]));
+    let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors])).unwrap();
     let y = y.permute(&[0, 1, 3, 2]);  // [1, 4, N, R]
     let probs = y.softmax_last_dim();
     // Bin weights [0..R] as a const tensor broadcast to [1, 4, N, R].
     let bins: Vec<f32> = (0..r).map(|i| i as f32).collect();
     let bins_t = reg_logits
         .const_f32_like(bins, Shape::from_dims(&[r]))
-        .reshape(Shape::from_dims(&[1, 1, 1, r]))
+        .reshape(Shape::from_dims(&[1, 1, 1, r])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r])).unwrap();
     let weighted = probs.mul(&bins_t);
     weighted.sum_dim(3)  // [1, 4, N]
@@ -554,7 +554,7 @@ impl YoloV8Model {
         // Flatten each (H, W) into N positions then concat along the
         // position axis.
         let flatten_positions = |t: &LazyTensor, c: usize, h: usize, w: usize| -> LazyTensor {
-            t.reshape(Shape::from_dims(&[1, c, h * w]))
+            t.reshape(Shape::from_dims(&[1, c, h * w])).unwrap()
         };
         let cls_s_f = flatten_positions(&cls_s, cfg.num_classes, h3, w3);
         let cls_m_f = flatten_positions(&cls_m, cfg.num_classes, h4, w4);

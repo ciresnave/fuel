@@ -603,10 +603,9 @@ impl LazyTensor {
     }
 
     /// Reshape to a new shape with matching element count.
-    pub fn reshape(&self, shape: impl Into<Shape>) -> Self {
-        Self {
-            inner: self.inner.reshape(shape),
-        }
+    /// Element-count mismatch surfaces as a typed error at build time.
+    pub fn reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_reshape(shape)? })
     }
 
     /// Drop the size-1 dimension at position `dim` (range `0..rank`).
@@ -1468,13 +1467,13 @@ mod tests {
 
         // Split heads: [1, seq, 8] → [1, seq, 2, 4] → [1, 2, seq, 4]
         let q_h = q
-            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head]))
+            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let k_h = k
-            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head]))
+            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let v_h = v
-            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head]))
+            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
             .permute(&[0, 2, 1, 3]);
 
         // RoPE on Q and K.
@@ -1490,7 +1489,7 @@ mod tests {
         // Merge heads + output projection.
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
-            .reshape(Shape::from_dims(&[1, seq, d_model]));
+            .reshape(Shape::from_dims(&[1, seq, d_model])).unwrap();
         let attn_out = merged.matmul(&w_o);
         let h = x.add(&attn_out);
 
@@ -1692,11 +1691,6 @@ impl LazyTensor {
         let shape = self.inner.shape();
         let axes = axes.to_indexes(&shape, "permute")?;
         Ok(Self { inner: self.inner.try_permute(&axes)? })
-    }
-
-    /// Result-returning sibling of [`Self::reshape`].
-    pub fn try_reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
-        Ok(Self { inner: self.inner.try_reshape(shape)? })
     }
 
     // ---- triangular masking (canonical attention masks) ----
@@ -1929,7 +1923,7 @@ impl LazyTensor {
         new_dims.extend_from_slice(&dims[..start_dim]);
         new_dims.push(merged);
         new_dims.extend_from_slice(&dims[end_dim + 1..]);
-        self.try_reshape(new_dims)
+        self.reshape(new_dims)
     }
 
     /// Flatten dims `[0, end_dim]` (inclusive) into one.
@@ -2684,11 +2678,11 @@ impl LazyTensor {
             let row_slice = padded.slice(2, ky, h_out * sh);
             // Reshape H dim of length `h_out · sh` into (h_out, sh),
             // then take dim 3 at offset 0 (the tap on the sh axis).
-            let row_reshaped = row_slice.try_reshape(vec![n, c, h_out, sh, w_total])?;
+            let row_reshaped = row_slice.reshape(vec![n, c, h_out, sh, w_total])?;
             let row_tap = row_reshaped.slice(3, 0, 1).squeeze(3)?;
             for kx in 0..kw {
                 let col_slice = row_tap.slice(3, kx, w_out * sw);
-                let col_reshaped = col_slice.try_reshape(vec![n, c, h_out, w_out, sw])?;
+                let col_reshaped = col_slice.reshape(vec![n, c, h_out, w_out, sw])?;
                 let win = col_reshaped.slice(4, 0, 1).squeeze(4)?;
                 acc = Some(match acc {
                     None => win,
@@ -2739,7 +2733,7 @@ impl LazyTensor {
         }
         let (n, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
         // [N, C, H, 1, W, 1]
-        let expanded = self.try_reshape(vec![n, c, h, 1, w, 1])?;
+        let expanded = self.reshape(vec![n, c, h, 1, w, 1])?;
         // Replicate along the new unit dims by concatenating scale copies.
         let h_expanded = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
             Some(match acc {
@@ -2753,7 +2747,7 @@ impl LazyTensor {
                 Some(a) => a.concat(&h_expanded, 5),
             })
         }).unwrap();
-        h_then_w.try_reshape(vec![n, c, h * scale, w * scale])
+        h_then_w.reshape(vec![n, c, h * scale, w * scale])
     }
 
     /// Nearest-neighbor upsample for 1-D signals `[N, C, T]` by integer
@@ -2778,14 +2772,14 @@ impl LazyTensor {
             return Ok(self.clone());
         }
         let (n, c, t) = (dims[0], dims[1], dims[2]);
-        let expanded = self.try_reshape(vec![n, c, t, 1])?;
+        let expanded = self.reshape(vec![n, c, t, 1])?;
         let replicated = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
             Some(match acc {
                 None => expanded.clone(),
                 Some(a) => a.concat(&expanded, 3),
             })
         }).unwrap();
-        replicated.try_reshape(vec![n, c, t * scale])
+        replicated.reshape(vec![n, c, t * scale])
     }
 
     /// 2-D nearest interpolation to an explicit target size. Equivalent
@@ -2914,7 +2908,7 @@ impl LazyTensor {
         for (idx, t) in ordered.iter().enumerate() {
             let mut shape = vec![1_usize; ordered.len()];
             shape[idx] = lens[idx];
-            let placed = t.try_reshape(shape)?;
+            let placed = t.reshape(shape)?;
             let mut repeats = lens.clone();
             repeats[idx] = 1;
             let grid = placed.repeat(repeats)?;
@@ -2938,7 +2932,7 @@ impl LazyTensor {
             let pad_count = target_rank - self_rank;
             let mut new_shape: Vec<usize> = vec![1; pad_count];
             new_shape.extend_from_slice(self.shape().dims());
-            self.try_reshape(new_shape)?
+            self.reshape(new_shape)?
         } else if self_rank > target_rank {
             return Err(fuel_core_types::Error::Msg(format!(
                 "repeat: repeats rank {target_rank} smaller than tensor rank {self_rank}",
@@ -3493,7 +3487,7 @@ impl LlamaModel {
         // [1, seq, dim] for the downstream attention code.
         let mut h = embed
             .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // Share RoPE cos/sin across all layers — see the matching
         // comment in `forward_with_cache`.
@@ -3561,7 +3555,7 @@ impl LlamaModel {
         );
         let mut h = embed
             .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_base, start_pos, seq, cfg.head_dim,
@@ -3610,14 +3604,14 @@ impl LlamaModel {
         // Split heads.
         // Q: [batch, seq, dim] → [batch, seq, n_heads, head_dim] → [batch, n_heads, seq, head_dim]
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         // K/V: [batch, seq, kv_dim] → [batch, seq, n_kv_heads, head_dim] → [batch, n_kv_heads, seq, head_dim]
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
 
         // RoPE on Q and K (applied per-head; V is NOT rotated). Uses
@@ -3656,7 +3650,7 @@ impl LlamaModel {
                     1,
                     seq,
                     cfg.head_dim,
-                ]))
+                ])).unwrap()
                 .broadcast_to(Shape::from_dims(&[
                     batch,
                     cfg.n_kv_heads,
@@ -3670,7 +3664,7 @@ impl LlamaModel {
                     cfg.n_heads,
                     seq,
                     cfg.head_dim,
-                ]))
+                ])).unwrap()
             };
             (expand(k_r), expand(v_h))
         };
@@ -3700,7 +3694,7 @@ impl LlamaModel {
         // Merge heads + output projection.
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         // First residual connection.
@@ -3765,13 +3759,13 @@ impl LlamaModel {
             layer.attn_v_bias.as_ref(), kv_dim);
 
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
 
         // RoPE uses caller-supplied cos/sin tables so that all 22+
@@ -3853,7 +3847,7 @@ impl LlamaModel {
 
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         let h1 = x.add(&attn_out);
@@ -3940,13 +3934,13 @@ impl LlamaModel {
             layer.attn_v_bias.as_ref(), kv_dim);
 
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
 
         let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
@@ -4001,7 +3995,7 @@ impl LlamaModel {
 
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         let h1 = x.add(&attn_out);
@@ -4092,7 +4086,7 @@ impl LlamaModel {
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // RoPE cos/sin tables shared across layers.
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
@@ -4149,7 +4143,7 @@ impl LlamaModel {
         let last_pos = seq - 1;
         let last_logits = logits
             .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]));
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
 
         // Realize through InferenceContext. The WriteSlice nodes
         // mutate the cache buffers as a side effect; downstream
@@ -5426,7 +5420,7 @@ impl LlamaModel {
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_base, cached_len, seq, cfg.head_dim,
@@ -5503,8 +5497,8 @@ impl LlamaModel {
         let last_pos = seq - 1;
         let last_logits = logits
             .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]));
-        let all_logits = logits.reshape(Shape::from_dims(&[seq * cfg.vocab_size]));
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
+        let all_logits = logits.reshape(Shape::from_dims(&[seq * cfg.vocab_size])).unwrap();
         let logits_root = if return_all_positions { &all_logits } else { &last_logits };
 
         // Roots: [logits, full_k_0..N, full_v_0..N]
@@ -5872,7 +5866,7 @@ impl Gemma2Model {
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap()
             .mul_scalar((cfg.dim as f64).sqrt());
 
         // Shared RoPE tables.
@@ -5955,13 +5949,13 @@ impl Gemma2Model {
 
         // Split heads.
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
 
         // RoPE.
@@ -5975,10 +5969,10 @@ impl Gemma2Model {
             assert_eq!(cfg.n_heads % cfg.n_kv_heads, 0);
             let n_rep = cfg.n_heads / cfg.n_kv_heads;
             let expand = |t: LazyTensor| -> LazyTensor {
-                t.reshape(Shape::from_dims(&[batch, cfg.n_kv_heads, 1, seq, cfg.head_dim]))
+                t.reshape(Shape::from_dims(&[batch, cfg.n_kv_heads, 1, seq, cfg.head_dim])).unwrap()
                     .broadcast_to(Shape::from_dims(&[batch, cfg.n_kv_heads, n_rep, seq, cfg.head_dim]))
                     .unwrap()
-                    .reshape(Shape::from_dims(&[batch, cfg.n_heads, seq, cfg.head_dim]))
+                    .reshape(Shape::from_dims(&[batch, cfg.n_heads, seq, cfg.head_dim])).unwrap()
             };
             (expand(k_r), expand(v_h))
         };
@@ -6018,7 +6012,7 @@ impl Gemma2Model {
         // Merge heads + output projection.
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
-            .reshape(Shape::from_dims(&[batch, seq, qk_dim]));
+            .reshape(Shape::from_dims(&[batch, seq, qk_dim])).unwrap();
         let attn_out = merged.matmul(&w_o);
 
         // Post-attention RmsNorm (Gemma has this; LLaMA does not).
@@ -6446,13 +6440,13 @@ impl PhiModel {
         // Split heads: [batch, seq, dim] → [batch, seq, n_heads, head_dim]
         //   → permute → [batch, n_heads, seq, head_dim]
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
             .permute(&[0, 2, 1, 3]);
 
         // Partial RoPE on Q and K: rotate the first `rotary_dim` entries
@@ -6497,7 +6491,7 @@ impl PhiModel {
         // Merge heads: [batch, n_heads, seq, head_dim] → [batch, seq, dim].
         let merged = attn_v
             .permute(&[0, 2, 1, 3])
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = apply_linear_with_bias(
             &merged, &layer.attn_dense, &layer.attn_dense_bias, cfg.dim, cfg.dim);
 
@@ -6541,7 +6535,7 @@ impl PhiModel {
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]));
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // RoPE tables are sized for `rotary_dim`, not the full head_dim —
         // partial RoPE rotates only the first `rotary_dim` entries.
@@ -6611,7 +6605,7 @@ impl PhiModel {
         let last_pos = seq - 1;
         let last_logits = logits
             .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]));
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
 
         let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
         roots.push(&last_logits);
@@ -7383,12 +7377,12 @@ mod generate_tests {
         let no_bias_logits = no_bias
             .forward(&tokens, 0).unwrap()
             .slice(1, tokens.len() - 1, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
         let with_bias_logits = with_bias
             .forward(&tokens, 0).unwrap()
             .slice(1, tokens.len() - 1, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
         for &v in &with_bias_logits {
             assert!(v.is_finite(), "with-bias logit is non-finite: {v}");
@@ -7432,7 +7426,7 @@ mod generate_tests {
             let last_pos = ref_tokens.len() - 1;
             let last = logits
                 .slice(1, last_pos, 1)
-                .reshape(Shape::from_dims(&[cfg.vocab_size]))
+                .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
                 .realize_f32();
             let next = last
                 .iter()
@@ -7580,7 +7574,7 @@ mod generate_tests {
             let last_pos = ref_tokens.len() - 1;
             let last = logits
                 .slice(1, last_pos, 1)
-                .reshape(Shape::from_dims(&[cfg.vocab_size]))
+                .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
                 .realize_f32();
             let next = last
                 .iter()
@@ -7754,7 +7748,7 @@ mod generate_tests {
         let last_pos = full.len() - 1;
         let expected = full_logits
             .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
 
         // New cached path: KvCache::with_capacity + forward_with_kv_context.
@@ -7835,7 +7829,7 @@ mod generate_tests {
         let last_pos = prompt.len() - 1;
         let expected = full_logits
             .slice(1, last_pos, 1)
-            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
 
         // New path, single prefill call.
@@ -8616,7 +8610,7 @@ mod llama_tests {
         // Take last-position slice and argmax over vocab dim, all
         // through the LazyTensor bridge API.
         let last = logits.slice(1, tokens.len() - 1, 1); // [1, 1, vocab]
-        let last_flat = last.reshape(Shape::from_dims(&[cfg.vocab_size]));
+        let last_flat = last.reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
         let predicted_ids = last_flat.argmax_dim(0_usize).unwrap().realize_u32();
         assert_eq!(predicted_ids.len(), 1);
         let pred = predicted_ids[0];
@@ -8843,8 +8837,8 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn try_reshape_errors_on_size_mismatch() {
         let t = cpu_f32(vec![1.0; 6], &[2, 3]);
-        assert!(t.try_reshape(vec![3, 2]).is_ok());
-        assert!(t.try_reshape(vec![2, 2]).is_err());
+        assert!(t.reshape(vec![3, 2]).is_ok());
+        assert!(t.reshape(vec![2, 2]).is_err());
     }
 
     #[test]
