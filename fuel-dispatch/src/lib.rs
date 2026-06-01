@@ -61,6 +61,7 @@ pub use ranker::{
     apply_filter_chain, composite_ns, compute_static_costs, default_chain,
     enumerate_candidates, enumerate_candidates_default, AlternativeFilter,
     AlternativeSet, BitStablePreferenceFilter, CapabilitiesLookup, Candidate,
-    CouplingAdjustment, FilterClass, FilterContext, PrecisionFloorFilter,
-    PrecisionRequirement, StridedInputPreferenceFilter, DEFAULT_MAX_N,
+    CouplingAdjustment, FilterClass, FilterContext, HashMapJudge, JudgeOracle,
+    PrecisionFloorFilter, PrecisionRequirement, StridedInputPreferenceFilter,
+    DEFAULT_MAX_N,
 };
