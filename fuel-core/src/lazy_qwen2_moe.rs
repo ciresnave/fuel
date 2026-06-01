@@ -142,7 +142,7 @@ impl Qwen2MoeModel {
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut x = embed
             .index_select(0, &input_ids)
-            .reshape(Shape::from_dims(&[1, seq, h]));
+            .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
 
         for lw in &self.weights.layers {
             x = decoder_layer(&x, lw, cfg, seq);
@@ -178,15 +178,15 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     let v = linear(x, &lw.v_w, Some(&lw.v_b), h, n_kv * d_head, seq);
 
     let q = q
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     // For Qwen1.5-MoE num_kv_heads == num_attention_heads, so no GQA
     // replication needed; but keep the rehape path general.
     let k = k
-        .reshape(Shape::from_dims(&[1, seq, n_kv, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_kv, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let v = v
-        .reshape(Shape::from_dims(&[1, seq, n_kv, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_kv, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
 
     // RoPE.
@@ -206,14 +206,14 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     }
     let mask_t = scores
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
-        .reshape(Shape::from_dims(&[1, 1, seq, seq]))
+        .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t);
     let probs = scores.softmax_last_dim();
     let ctx = probs
         .matmul(&v)
         .permute(&[0, 2, 1, 3])
-        .reshape(Shape::from_dims(&[1, seq, h]));
+        .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     linear(&ctx, &lw.o_w, None, h, h, seq)
 }
 
@@ -285,12 +285,12 @@ fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, 
     let ms = sq.mean_dim(2);  // [1, seq]
     let rstd = ms.add_scalar(eps).sqrt();
     let rstd_bc = rstd
-        .reshape(Shape::from_dims(&[1, seq, 1]))
+        .reshape(Shape::from_dims(&[1, seq, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let normed = x.div(&rstd_bc);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g)
 }
@@ -323,11 +323,11 @@ fn apply_rope(
     let n_heads = x_dims[1];
     let cos_t = x
         .const_f32_like(cos.to_vec(), Shape::from_dims(&[seq, d_head]))
-        .reshape(Shape::from_dims(&[1, 1, seq, d_head]))
+        .reshape(Shape::from_dims(&[1, 1, seq, d_head])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
     let sin_t = x
         .const_f32_like(sin.to_vec(), Shape::from_dims(&[seq, d_head]))
-        .reshape(Shape::from_dims(&[1, 1, seq, d_head]))
+        .reshape(Shape::from_dims(&[1, 1, seq, d_head])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
     let half = d_head / 2;
     let x1 = x.slice(3, 0, half);
@@ -352,7 +352,7 @@ fn linear(
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f]))
+                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }

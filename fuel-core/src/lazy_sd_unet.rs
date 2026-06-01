@@ -215,7 +215,7 @@ impl SdUnet {
         let x = LazyTensor::from_f32(latent.to_vec(), Shape::from_dims(&[1, c_in, h_lat, w_lat]), &crate::Device::cpu());
         let t_flat = x
             .const_f32_like(time_sin, Shape::from_dims(&[1, c_first]))
-            .reshape(Shape::from_dims(&[1, 1, c_first]));
+            .reshape(Shape::from_dims(&[1, 1, c_first])).unwrap();
         let t_emb = linear(&t_flat, &self.weights.time_mlp_1_w, Some(&self.weights.time_mlp_1_b), c_first, cfg.time_embed_dim, 1)
             .silu();
         let t_emb = linear(&t_emb, &self.weights.time_mlp_2_w, Some(&self.weights.time_mlp_2_b), cfg.time_embed_dim, cfg.time_embed_dim, 1);
@@ -313,7 +313,7 @@ fn u_resnet(
     let t = linear(&t, &rw.te_w, Some(&rw.te_b), cfg.time_embed_dim, c_out, 1);
     // t shape: [1, 1, c_out] → broadcast to [1, c_out, h, w] via reshape.
     let t_bc = t
-        .reshape(Shape::from_dims(&[1, c_out, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c_out, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c_out, h, w])).unwrap();
     let h1 = h1.add(&t_bc);
 
@@ -346,13 +346,13 @@ fn spatial_transformer(
     // Reshape [1, C, H, W] → [1, H·W, C] for the transformer blocks.
     let mut xf = x
         .permute(&[0, 2, 3, 1])
-        .reshape(Shape::from_dims(&[1, n, c]));
+        .reshape(Shape::from_dims(&[1, n, c])).unwrap();
     for tb in &sw.blocks {
         xf = transformer_block(&xf, tb, text_emb, cfg, c, n);
     }
     // Back to [1, C, H, W].
     let out = xf
-        .reshape(Shape::from_dims(&[1, h, w, c]))
+        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute(&[0, 3, 1, 2]);
     let out = conv2d_k1_s1_p0(&out, &sw.proj_out_w, &sw.proj_out_b, c, c, h, w);
     residual.add(&out)
@@ -413,13 +413,13 @@ fn multi_head_attn(
     d_head: usize,
 ) -> LazyTensor {
     let q = q
-        .reshape(Shape::from_dims(&[1, q_n, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, q_n, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);  // [1, H, Q, D]
     let k = k
-        .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let v = v
-        .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let k_t = k.permute(&[0, 1, 3, 2]);  // [1, H, D, KV]
     let scale = 1.0 / (d_head as f64).sqrt();
@@ -428,7 +428,7 @@ fn multi_head_attn(
     probs
         .matmul(&v)
         .permute(&[0, 2, 1, 3])
-        .reshape(Shape::from_dims(&[1, q_n, c]))
+        .reshape(Shape::from_dims(&[1, q_n, c])).unwrap()
 }
 
 // ---- Sinusoidal timestep embedding ----------------------------------------
@@ -465,11 +465,11 @@ fn layer_norm_affine(
     let normed = x.layer_norm_last_dim(eps);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
@@ -486,27 +486,27 @@ fn group_norm(
 ) -> LazyTensor {
     let cpg = c / groups;
     let m = cpg * h * w;
-    let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]));
+    let x_flat = x.reshape(Shape::from_dims(&[1, groups, m])).unwrap();
     let mean = x_flat.mean_dim(2);
     let mean_bc = mean
-        .reshape(Shape::from_dims(&[1, groups, 1]))
+        .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let centered = x_flat.sub(&mean_bc);
     let sq = centered.mul(&centered);
     let var = sq.mean_dim(2);
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
-        .reshape(Shape::from_dims(&[1, groups, 1]))
+        .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let normed = centered.div(&std_bc);
-    let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w]));
+    let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w])).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     normed_chw.mul(&g).add(&b)
 }
@@ -557,10 +557,10 @@ fn conv2d_k1_s1_p0(
 }
 
 fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
-    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]));
+    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
     let x6 = x6.concat(&x6, 3);
     let x6 = x6.concat(&x6, 5);
-    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w]))
+    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
 }
 
 fn linear(
@@ -577,7 +577,7 @@ fn linear(
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f]))
+                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }

@@ -209,7 +209,7 @@ impl BertModel {
         let p = pos_emb.index_select(0, &position_ids);
         let t = type_emb.index_select(0, &token_type_ids);
         // Add the three embeddings, then prepend a batch dim: `[1, seq, h]`.
-        let embeds = w.add(&p).add(&t).reshape(Shape::from_dims(&[1, seq, h]));
+        let embeds = w.add(&p).add(&t).reshape(Shape::from_dims(&[1, seq, h])).unwrap();
         let embeds = layer_norm_affine(
             &embeds,
             &self.weights.emb_ln_gamma,
@@ -250,12 +250,12 @@ fn layer_norm_affine(
     let normed = x.layer_norm_last_dim(eps);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
         .unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&[1, 1, hidden]))
+        .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
         .unwrap();
     normed.mul(&g).add(&b)
@@ -275,7 +275,7 @@ fn linear(
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-        .reshape(Shape::from_dims(&[1, 1, out_f]))
+        .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, out_f]))
         .unwrap();
     x.matmul(&w_t).add(&bias)
@@ -297,13 +297,13 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     // Reshape each to `[1, seq, n_heads, d_head]` and permute to
     // `[1, n_heads, seq, d_head]` for per-head attention.
     let q = q
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let k = k
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
     let v = v
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head]))
+        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
         .permute(&[0, 2, 1, 3]);
 
     // Attention scores: `q @ k^T` → `[1, n_heads, seq, seq]`. We transpose
@@ -320,7 +320,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     let ctx = probs
         .matmul(&v)
         .permute(&[0, 2, 1, 3])
-        .reshape(Shape::from_dims(&[1, seq, h]));
+        .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq);
 
     // Residual + LayerNorm (post-norm, BERT style).

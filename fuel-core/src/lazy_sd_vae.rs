@@ -246,7 +246,7 @@ fn vae_spatial_attention(
     // [1, C, H, W] → [1, H*W, C].
     let xf = x_norm
         .permute(&[0, 2, 3, 1])
-        .reshape(Shape::from_dims(&[1, n, c]));
+        .reshape(Shape::from_dims(&[1, n, c])).unwrap();
     let q = linear(&xf, &aw.q_w, Some(&aw.q_b), c, c, n);
     let k = linear(&xf, &aw.k_w, Some(&aw.k_b), c, c, n);
     let v = linear(&xf, &aw.v_w, Some(&aw.v_b), c, c, n);
@@ -260,7 +260,7 @@ fn vae_spatial_attention(
     let out = linear(&ctx, &aw.out_w, Some(&aw.out_b), c, c, n);
     // Reshape back to [1, C, H, W] and residual-add.
     let out_chw = out
-        .reshape(Shape::from_dims(&[1, h, w, c]))
+        .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute(&[0, 3, 1, 2]);
     x.add(&out_chw)
 }
@@ -288,28 +288,28 @@ fn group_norm(
     let m = cpg * h * w;  // elements per group
 
     // Reshape [1, C, H, W] → [1, groups, cpg*H*W].
-    let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]));
+    let x_flat = x.reshape(Shape::from_dims(&[1, groups, m])).unwrap();
     let mean = x_flat.mean_dim(2);  // [1, groups]
     let mean_bc = mean
-        .reshape(Shape::from_dims(&[1, groups, 1]))
+        .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let centered = x_flat.sub(&mean_bc);
     let sq = centered.mul(&centered);
     let var = sq.mean_dim(2);  // [1, groups]
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
-        .reshape(Shape::from_dims(&[1, groups, 1]))
+        .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let normed = centered.div(&std_bc);  // [1, groups, m]
     // Back to [1, C, H, W] and affine.
-    let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w]));
+    let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w])).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, c, 1, 1]))
+        .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     normed_chw.mul(&g).add(&b)
 }
@@ -353,13 +353,13 @@ fn conv2d_k1_s1_p0(
 /// axes.
 fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
     // Reshape to [1, C, H, 1, W, 1].
-    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]));
+    let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
     // Concat with self along dim 3 → [1, C, H, 2, W, 1].
     let x6 = x6.concat(&x6, 3);
     // Concat with self along dim 5 → [1, C, H, 2, W, 2].
     let x6 = x6.concat(&x6, 5);
     // Reshape to [1, C, 2H, 2W].
-    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w]))
+    x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
 }
 
 /// `y = x @ W + b`. `x`: `[1, seq, in_f]`, `W`: `[in_f, out_f]`.
@@ -377,7 +377,7 @@ fn linear(
         Some(b) => {
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
-                .reshape(Shape::from_dims(&[1, 1, out_f]))
+                .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
