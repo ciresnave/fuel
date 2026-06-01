@@ -1723,6 +1723,46 @@ fn write_slice_cpu_wrapper(
     )
 }
 
+/// Dispatch wrapper for `(WriteSliceRotating, *, Cpu)`. Same shape
+/// as `write_slice_cpu_wrapper` plus a second input carrying the
+/// dynamic position scalar.
+fn write_slice_rotating_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating wrapper expects 2 inputs (source, position) + 1 output (dest), \
+             got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (dest_shape, axis, modulus, ranges) = match params {
+        OpParams::WriteSliceRotating { dest_shape, axis, modulus, ranges } => {
+            (dest_shape, *axis, *modulus, ranges)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "write_slice_rotating wrapper expects OpParams::WriteSliceRotating, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let src_guard = read_storage(&inputs[0])?;
+    let src_cpu = cpu_input(&src_guard)?;
+    let pos_guard = read_storage(&inputs[1])?;
+    let pos_cpu = cpu_input(&pos_guard)?;
+    let mut dest_guard = write_storage(&outputs[0])?;
+    let dtype_size = dest_guard.dtype.size_in_bytes();
+    let dest_cpu = cpu_output(&mut dest_guard)?;
+    fuel_cpu_backend::byte_kernels::write_slice_rotating_cpu(
+        src_cpu, pos_cpu, dest_cpu, dest_shape, axis, modulus, ranges, dtype_size,
+    )
+}
+
 fn concat_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
@@ -4424,6 +4464,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(WriteSlice, &unary(f16_dt),  cpu, write_slice_cpu_wrapper);
     table.register(WriteSlice, &unary(u32_dt),  cpu, write_slice_cpu_wrapper);
     table.register(WriteSlice, &unary(u8_dt),   cpu, write_slice_cpu_wrapper);
+
+    // WriteSliceRotating — Phase C. Sliding-window KV cache writes.
+    // Same dtype surface as WriteSlice; the binding-table key is
+    // `[T_src, T_out]` (position scalar is a separate kernel input,
+    // not part of the lookup key — see PipelinedExecutor's
+    // WriteSliceRotating arm).
+    table.register(WriteSliceRotating, &unary(f32_dt),  cpu, write_slice_rotating_cpu_wrapper);
+    table.register(WriteSliceRotating, &unary(f64_dt),  cpu, write_slice_rotating_cpu_wrapper);
+    table.register(WriteSliceRotating, &unary(bf16_dt), cpu, write_slice_rotating_cpu_wrapper);
+    table.register(WriteSliceRotating, &unary(f16_dt),  cpu, write_slice_rotating_cpu_wrapper);
+    table.register(WriteSliceRotating, &unary(u32_dt),  cpu, write_slice_rotating_cpu_wrapper);
+    table.register(WriteSliceRotating, &unary(u8_dt),   cpu, write_slice_rotating_cpu_wrapper);
 
     // Triu / Tril share one byte-level kernel (dtype-agnostic).
     table.register(Triu, &unary(f32_dt),  cpu, triu_cpu_wrapper);

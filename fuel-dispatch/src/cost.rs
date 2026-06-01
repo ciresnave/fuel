@@ -901,6 +901,12 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         // a Layer-2 calibration concern.
         WriteSlice => cost_shape_op_cpu,
 
+        // Op::WriteSliceRotating — same shape as WriteSlice with a
+        // dynamic mod-`modulus` start on the rotating axis. Cost is
+        // dominated by the slab walk (bandwidth-bound); the wrap split
+        // is at most two contiguous memcpys.
+        WriteSliceRotating => cost_shape_op_cpu,
+
         // OpKind is `#[non_exhaustive]` — new variants get
         // [`unknown_cost`] until an explicit arm is added here.
         // The step-8 lint catches this immediately by asserting

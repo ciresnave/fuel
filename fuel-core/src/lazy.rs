@@ -1822,6 +1822,34 @@ impl LazyTensor {
         Ok(Self { inner })
     }
 
+    /// Append an [`fuel_graph::Op::WriteSliceRotating`] node — like
+    /// [`Self::write_slice`] but the `axis` axis wraps modulo
+    /// `modulus`. `position` is a rank-0 U32 tensor whose value (read
+    /// at realize time) is wrapped modulo `modulus` to determine the
+    /// dynamic write start on `axis`. `ranges[axis].0` is ignored
+    /// (the rotating-axis start is dynamic); the slab width
+    /// `ranges[axis].1 - ranges[axis].0` must equal `source`'s
+    /// `axis` dim and must not exceed `modulus`.
+    ///
+    /// Destructive on `self`: same scheduling as `write_slice`.
+    /// Backs sliding-window KV caches (Mistral / Phi-3 sliding-
+    /// window). Returns `Result`: rank / dtype / axis-bound /
+    /// modulus / range mismatches surface as typed errors at
+    /// build time.
+    pub fn write_slice_rotating(
+        &self,
+        source: &Self,
+        position: &Self,
+        axis: usize,
+        modulus: usize,
+        ranges: Vec<(usize, usize)>,
+    ) -> crate::Result<Self> {
+        let inner = self.inner.write_slice_rotating(
+            &source.inner, &position.inner, axis, modulus, ranges,
+        ).map_err(crate::Error::from)?;
+        Ok(Self { inner })
+    }
+
     /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
     /// `Tensor::conv2d` for the full shape contract: `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
