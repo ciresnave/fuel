@@ -262,7 +262,7 @@ impl WhisperModel {
             )
             .slice(0, 0, t_half)
             .reshape(Shape::from_dims(&[1, t_half, d]))
-            .broadcast_to(Shape::from_dims(&[1, t_half, d]));
+            .broadcast_to(Shape::from_dims(&[1, t_half, d])).unwrap();
         let mut x = x.add(&pos);
 
         // --- encoder layers ---------------------------------------------
@@ -396,11 +396,11 @@ fn layer_norm_affine(
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
 
@@ -421,7 +421,7 @@ fn linear(
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f]))
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f]));
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
         None => proj,
@@ -483,7 +483,7 @@ fn conv1d_k3_s1_p1(
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c]))
-        .broadcast_to(Shape::from_dims(&[1, t, out_c]));
+        .broadcast_to(Shape::from_dims(&[1, t, out_c])).unwrap();
     y.add(&bias).permute(&[0, 2, 1])  // back to [1, out_c, T]
 }
 
@@ -549,7 +549,7 @@ fn conv1d_k3_s2_p1(
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c]))
-        .broadcast_to(Shape::from_dims(&[1, t_out, out_c]));
+        .broadcast_to(Shape::from_dims(&[1, t_out, out_c])).unwrap();
     y.add(&bias).permute(&[0, 2, 1])  // [1, out_c, T_out]
 }
 
@@ -608,7 +608,7 @@ fn multi_head_attn(
         let mask_t = scores
             .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))
             .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq]))
-            .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq]));
+            .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq])).unwrap();
         scores = scores.add(&mask_t);
     }
 

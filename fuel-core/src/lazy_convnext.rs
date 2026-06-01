@@ -255,7 +255,7 @@ fn convnext_block(
     let gamma = projected
         .const_f32_like(bw.gamma.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, 1, c]))
-        .broadcast_to(Shape::from_dims(&[1, h * w, c]));
+        .broadcast_to(Shape::from_dims(&[1, h * w, c])).unwrap();
     let scaled = projected.mul(&gamma);
     // Back to channels-first: [1, H, W, C] → [1, C, H, W].
     let scaled_chw = scaled
@@ -279,11 +279,11 @@ fn layer_norm_affine(
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
 
@@ -323,7 +323,7 @@ fn linear(
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f]))
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f]));
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
         None => proj,
@@ -380,7 +380,7 @@ fn conv2d_stride_eq_kernel(
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
         .reshape(Shape::from_dims(&[1, 1, cout]))
-        .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout]));
+        .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout])).unwrap();
     let y = y.add(&bias);
     // Back to [1, Cout, H_out, W_out].
     y.reshape(Shape::from_dims(&[1, h_out, w_out, cout]))
