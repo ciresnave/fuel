@@ -72,6 +72,7 @@ pub mod lazy;
 pub mod lazy_bert;
 pub mod lazy_kv_cache;
 pub mod lazy_convnext;
+pub mod lazy_gemma;
 pub mod lazy_mistral;
 pub mod lazy_qwen2;
 pub mod lazy_qwen2_moe;
