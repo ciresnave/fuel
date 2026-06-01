@@ -1118,40 +1118,25 @@ impl LazyTensor {
 
     // ---- dtype ----
 
-    /// Cast to a different dtype.
-    pub fn cast(&self, dtype: DType) -> Self {
-        Self {
-            inner: self.inner.cast(dtype),
+    /// Convert to a different dtype. Same-dtype is a fast-path no-op
+    /// (returns a clone) rather than emitting a redundant graph node.
+    ///
+    /// The name follows the eager-API convention: users shouldn't need
+    /// to care whether the underlying bytes are reinterpreted (e.g.
+    /// integer widening) or transcoded (e.g. f32 → bf16). Build-time
+    /// validation is currently minimal — Cast itself is unfailing in
+    /// `fuel_graph`; the Result return is reserved for future
+    /// kernel-registry checks (Phase A.8c-extension).
+    pub fn to_dtype(&self, dtype: DType) -> std::result::Result<Self, fuel_core_types::Error> {
+        if self.inner.dtype() == dtype {
+            return Ok(self.clone());
         }
-    }
-
-    /// Eager-API alias of [`Self::cast`]. The naming difference between
-    /// eager `to_dtype` and lazy `cast` was a Phase 7.5 carry-over;
-    /// both names point at the same underlying op now.
-    pub fn to_dtype(&self, dtype: DType) -> Self {
-        self.cast(dtype)
+        Ok(Self {
+            inner: self.inner.cast(dtype),
+        })
     }
 
     /// Result-returning sibling of [`Self::cast`] / [`Self::to_dtype`].
-    /// Validates the target dtype is supported by the cast op
-    /// registered for `self`'s source dtype. Returns the cast tensor
-    /// or a typed error rather than panicking at realize time on an
-    /// unsupported pair.
-    ///
-    /// Note: the actual cast registration matrix is checked at realize
-    /// time; this method's error path only validates trivial cases
-    /// today (target dtype not a registered DType variant). Future
-    /// extension: query the kernel registry up front.
-    pub fn try_cast(&self, dtype: DType) -> std::result::Result<Self, fuel_core_types::Error> {
-        Ok(self.cast(dtype))
-    }
-
-    /// Eager-API alias of [`Self::cast`] that returns Result. Matches
-    /// eager's [`crate::Tensor::to_dtype`] signature.
-    pub fn try_to_dtype(&self, dtype: DType) -> std::result::Result<Self, fuel_core_types::Error> {
-        self.try_cast(dtype)
-    }
-
     /// Detach this tensor from autograd. On lazy, autograd is structural
     /// (every graph edge participates in backward unless explicitly cut
     /// by a non-differentiable op), so there's no per-tensor toggle —
@@ -1395,7 +1380,7 @@ mod tests {
     #[test]
     fn cast_switches_dtype_through_wrapper() {
         let x = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
-        let y = x.cast(DType::F64);
+        let y = x.to_dtype(DType::F64).unwrap();
         assert_eq!(y.dtype(), DType::F64);
         assert_eq!(y.shape().dims(), &[3]);
     }
@@ -2784,11 +2769,11 @@ impl LazyTensor {
             data[i * n + i] = 1.0;
         }
         let base = Self::from_f32(data, vec![n, n], device);
-        if dtype == DType::F32 { base } else { base.cast(dtype) }
+        if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
-    /// Lower-triangular ones matrix `[n, n]`. `tril2(n).cast(dtype)` is the
-    /// causal-attention-mask building block.
+    /// Lower-triangular ones matrix `[n, n]`. `tril2(n).to_dtype(dtype)` is
+    /// the causal-attention-mask building block.
     pub fn tril2(n: usize, dtype: DType, device: &Device) -> Self {
         let mut data = vec![0.0_f32; n * n];
         for i in 0..n {
@@ -2797,7 +2782,7 @@ impl LazyTensor {
             }
         }
         let base = Self::from_f32(data, vec![n, n], device);
-        if dtype == DType::F32 { base } else { base.cast(dtype) }
+        if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
     /// Upper-triangular ones matrix `[n, n]`.
@@ -2809,7 +2794,7 @@ impl LazyTensor {
             }
         }
         let base = Self::from_f32(data, vec![n, n], device);
-        if dtype == DType::F32 { base } else { base.cast(dtype) }
+        if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
     // ---- additional deferred-Phase-A items: indexing / multi-dim / RNG ----
@@ -10408,19 +10393,18 @@ mod phase_a5_factory_tests {
     }
 
     #[test]
-    fn to_dtype_is_cast_alias() {
+    fn to_dtype_switches_dtype() {
         let t = cpu_f32(vec![1.0, 2.0], &[2]);
-        let a = t.cast(DType::F64);
-        let b = t.to_dtype(DType::F64);
-        assert_eq!(a.dtype(), b.dtype());
-        assert_eq!(a.realize_f64(), b.realize_f64());
+        let b = t.to_dtype(DType::F64).unwrap();
+        assert_eq!(b.dtype(), DType::F64);
+        assert_eq!(b.realize_f64(), vec![1.0, 2.0]);
     }
 
     #[test]
-    fn try_cast_and_try_to_dtype_round_trip() {
+    fn to_dtype_same_dtype_is_noop() {
         let t = cpu_f32(vec![1.0_f32], &[1]);
-        assert!(t.try_cast(DType::F64).is_ok());
-        assert!(t.try_to_dtype(DType::F64).is_ok());
+        let b = t.to_dtype(DType::F32).unwrap();
+        assert_eq!(b.dtype(), DType::F32);
     }
 
     #[test]
