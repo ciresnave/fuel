@@ -859,7 +859,6 @@ mod tests {
             ],
             &fuel_graph::registry::FusedOpParams::SelectiveScan {
                 delta_softplus: false,
-                return_state: false,
             },
         );
         assert_eq!(out_shape.dims(), &[2, 8, 64]);
@@ -905,7 +904,6 @@ mod tests {
             ],
             &fuel_graph::registry::FusedOpParams::SsdChunkScan {
                 chunk_size: 16,
-                return_state: false,
             },
         );
         assert_eq!(out_shape.dims(), &[2, 16, 8, 64]);

@@ -48,7 +48,9 @@ pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
 use fuel_core_types::{DType, Result};
+use fuel_core_types::storage::OutputView;
 use fuel_cpu_backend::CpuStorageBytes;
+use std::sync::Arc;
 
 /// Closed enum over backend storage variants. The `Cpu` variant
 /// holds [`CpuStorageBytes`] from `fuel-cpu-backend`. GPU variants
@@ -69,6 +71,13 @@ pub enum BackendStorage {
 /// Layout (shape + strides + start_offset) lives separately on the
 /// consuming `Tensor` — `Storage` owns only the bytes and which
 /// device/dtype they represent.
+///
+/// Optionally carries a `bundle` side-table describing how the inner
+/// byte buffer is partitioned into multiple logically independent
+/// outputs. Set by multi-output op authors via
+/// [`Storage::with_bundle`] / [`Storage::new_bundled`]; consumed by
+/// `Op::View` / `Op::ViewOwned` at realize time. See
+/// [`OutputView`](fuel_core_types::storage::OutputView).
 #[derive(Debug)]
 pub struct Storage {
     /// Backend variant + the bytes themselves.
@@ -76,6 +85,12 @@ pub struct Storage {
     /// How to interpret the bytes. Storage's `len_bytes` is the byte
     /// count; the element count is `len_bytes / dtype.size_in_bytes()`.
     pub dtype: DType,
+    /// `None` for single-output storage (today's default). `Some(_)`
+    /// for multi-output bundles: a shared Arc'd slice of per-slot
+    /// [`OutputView`] entries, one per logical output. `Op::View`
+    /// nodes share this Arc so the bundle stays alive as long as any
+    /// view holds a reference.
+    pub bundle: Option<Arc<[OutputView]>>,
 }
 
 /// Feature-aware match over `BackendStorage` variants. Used wherever
@@ -112,9 +127,80 @@ impl BackendStorage {
 
 impl Storage {
     /// Build a Storage from an already-allocated backend variant
-    /// plus its dtype tag.
+    /// plus its dtype tag. Single-output (no bundle metadata); use
+    /// [`Self::with_bundle`] / [`Self::new_bundled`] for the
+    /// multi-output case.
     pub fn new(inner: BackendStorage, dtype: DType) -> Self {
-        Self { inner, dtype }
+        Self { inner, dtype, bundle: None }
+    }
+
+    /// Build a Storage from a backend variant + dtype tag + bundle
+    /// side-table in one shot. Validates that the bundle is
+    /// non-empty and that slot 0's dtype matches the storage's
+    /// primary dtype (the bundled-storage invariant: slot 0 IS the
+    /// primary).
+    pub fn new_bundled(
+        inner:  BackendStorage,
+        dtype:  DType,
+        bundle: Arc<[OutputView]>,
+    ) -> Result<Self> {
+        Self::validate_bundle(dtype, &bundle)?;
+        Ok(Self { inner, dtype, bundle: Some(bundle) })
+    }
+
+    /// Attach a bundle side-table to an existing single-output
+    /// Storage. Same validation as [`Self::new_bundled`]; panics in
+    /// debug mode if a bundle is already attached (re-bundling is a
+    /// contract bug).
+    pub fn with_bundle(mut self, bundle: Arc<[OutputView]>) -> Result<Self> {
+        debug_assert!(
+            self.bundle.is_none(),
+            "Storage::with_bundle: bundle already attached",
+        );
+        Self::validate_bundle(self.dtype, &bundle)?;
+        self.bundle = Some(bundle);
+        Ok(self)
+    }
+
+    fn validate_bundle(
+        primary_dtype: DType,
+        bundle:        &Arc<[OutputView]>,
+    ) -> Result<()> {
+        if bundle.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "Storage::with_bundle: bundle slice must be non-empty".into(),
+            ).bt());
+        }
+        let slot0 = &bundle[0];
+        if slot0.dtype != primary_dtype {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "Storage::with_bundle: slot 0 dtype {:?} must match \
+                 Storage's primary dtype {:?}",
+                slot0.dtype, primary_dtype,
+            )).bt());
+        }
+        Ok(())
+    }
+
+    /// Whether this storage carries multi-output bundle metadata.
+    pub fn is_bundled(&self) -> bool {
+        self.bundle.is_some()
+    }
+
+    /// Number of logical output slots. `1` for single-output;
+    /// `bundle.len()` for bundled.
+    pub fn slot_count(&self) -> usize {
+        self.bundle.as_ref().map_or(1, |b| b.len())
+    }
+
+    /// Borrow the bundle slice, or `None` for single-output storage.
+    pub fn bundle(&self) -> Option<&[OutputView]> {
+        self.bundle.as_deref()
+    }
+
+    /// Per-slot view; `None` for out-of-range or single-output.
+    pub fn slot_view(&self, idx: usize) -> Option<&OutputView> {
+        self.bundle.as_deref().and_then(|b| b.get(idx))
     }
 
     /// The `DType` tag attached to these bytes.

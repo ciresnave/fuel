@@ -27,6 +27,7 @@
 //! - Step 5: drop the per-fused-op `Op` variants once nothing emits them.
 
 use crate::{Graph, NodeId};
+use fuel_core_types::storage::OutputViewSpec;
 use fuel_core_types::{DType, Shape};
 use std::collections::HashMap;
 
@@ -98,9 +99,39 @@ pub struct FusedOpEntry {
     /// Backward identity for this fused op.
     pub backward: BackwardKind,
     /// Output shape rule, computed from input shapes and params.
+    /// For a multi-output op, this must return slot 0's shape (which
+    /// is also the primary `Node::shape` of the producer).
     pub shape_rule: fn(&[Shape], &FusedOpParams) -> Shape,
     /// Output dtype rule, computed from input dtypes and params.
+    /// For a multi-output op, this must return slot 0's dtype (which
+    /// is also the primary `Node::dtype` of the producer).
     pub dtype_rule: fn(&[DType], &FusedOpParams) -> DType,
+    /// Multi-output authoring contract (Option C, Session 2).
+    ///
+    /// `None` for single-output ops (the default) — the op produces
+    /// one logical output whose shape/dtype come from `shape_rule`
+    /// and `dtype_rule`, and the realized storage is a plain
+    /// non-bundled [`fuel_core_types::Storage`].
+    ///
+    /// `Some(fn)` for multi-output ops: returns the per-slot specs
+    /// from input shapes + dtypes + params. The Graph and the realized
+    /// storage allocator both consume the same Vec — `set_output_views`
+    /// on `Graph::push` and `allocate_bundled_storage` at realization
+    /// time — so the slot count and per-slot shapes/dtypes are a
+    /// single source of truth.
+    ///
+    /// Contract for multi-output ops:
+    /// - `output_views(...)[0].dtype` MUST equal `dtype_rule(...)`.
+    /// - `output_views(...)[0].shape` MUST equal `shape_rule(...)`.
+    /// - The returned Vec must be non-empty; a "multi-output op" with
+    ///   one slot is just a single-output op (drop `output_views`).
+    ///
+    /// `Graph::push_fused` (the multi-output-aware emit path that
+    /// Session 2 introduces) checks these at graph-build time. The
+    /// raw `Graph::push` + `Graph::set_output_views` route preserves
+    /// the same invariants via `set_output_views`'s validation pass.
+    pub output_views:
+        Option<fn(&[Shape], &[DType], &FusedOpParams) -> Vec<OutputViewSpec>>,
 }
 
 /// Categorical bucket for a fused op. Drives telemetry grouping and
@@ -228,7 +259,7 @@ pub enum FusedOpParams {
     /// mathematical result — the CPU kernel runs a sequential scan
     /// regardless. Any `chunk_size ∈ [1, seqlen]` that divides
     /// `seqlen` is valid.
-    SsdChunkScan { chunk_size: usize, return_state: bool },
+    SsdChunkScan { chunk_size: usize },
     /// Nf4Matmul — bitsandbytes-style 4-bit NormalFloat quantized
     /// matrix multiply. Three inputs:
     /// - `activations`: `[..., M, K]`
@@ -272,12 +303,12 @@ pub enum FusedOpParams {
     /// full Mamba algorithm are NOT exposed in v1 — they're
     /// mechanical extensions when a consumer needs them.
     ///
-    /// `return_state` switches the output. When false (default),
-    /// returns `y: [batch, seqlen, dim]` — the scanned sequence.
-    /// When true, returns `last_state: [batch, dim, dstate]` — the
-    /// final h-state after the scan, used by callers that need to
-    /// resume autoregressive inference from a prefill snapshot.
-    SelectiveScan { delta_softplus: bool, return_state: bool },
+    /// Multi-output Option C (item 3, 2026-06-01): the op now always
+    /// produces a bundled output with two slots — slot 0 `y` (the
+    /// scanned sequence) and slot 1 `last_state` (the final
+    /// h-state). Consumers project via `Op::View` / `Op::ViewOwned`.
+    /// The earlier `return_state: bool` flag retired here.
+    SelectiveScan { delta_softplus: bool },
     /// CausalConv1d — depthwise 1-D convolution with causal masking
     /// (left-pad-only) + optional fused SiLU. Three inputs:
     /// - `x`: `[batch, channels, seq + (kernel - 1)]` — caller pre-pads
@@ -502,15 +533,15 @@ impl FusedOpParams {
                 bits: Vec::new(),
                 ints: vec![*use_silu as i64],
             },
-            FusedOpParams::SelectiveScan { delta_softplus, return_state } => FusedOpParamsKey {
+            FusedOpParams::SelectiveScan { delta_softplus } => FusedOpParamsKey {
                 tag: 19,
                 bits: Vec::new(),
-                ints: vec![*delta_softplus as i64, *return_state as i64],
+                ints: vec![*delta_softplus as i64],
             },
-            FusedOpParams::SsdChunkScan { chunk_size, return_state } => FusedOpParamsKey {
+            FusedOpParams::SsdChunkScan { chunk_size } => FusedOpParamsKey {
                 tag: 20,
                 bits: Vec::new(),
-                ints: vec![*chunk_size as i64, *return_state as i64],
+                ints: vec![*chunk_size as i64],
             },
             FusedOpParams::Nf4Matmul { block_size } => FusedOpParamsKey {
                 tag: 21,
@@ -768,6 +799,7 @@ fn placeholder_entry() -> FusedOpEntry {
         backward: BackwardKind::NotDifferentiable,
         shape_rule: |_shapes, _params| Shape::from_dims(&[]),
         dtype_rule: |_dtypes, _params| DType::F32,
+        output_views: None,
     }
 }
 
@@ -1005,6 +1037,7 @@ mod tests {
             backward: BackwardKind::NotDifferentiable,
             shape_rule: dummy_shape,
             dtype_rule: dummy_dtype,
+            output_views: None,
         });
 
         assert_eq!(r.len(), 1);

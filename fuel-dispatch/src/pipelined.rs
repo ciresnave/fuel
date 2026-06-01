@@ -47,7 +47,8 @@ use fuel_graph::{Graph, Node, NodeId, Op};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
-use crate::kernel::{KernelBindingTable, OpParams};
+use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
+use crate::plan::ExecutionPlan;
 use fuel_storage::Storage;
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
@@ -195,6 +196,30 @@ enum WorkItemKind {
         /// stored explicitly so the executor doesn't re-derive it.
         target_idx: usize,
     },
+    /// `Op::View { slot }` — multi-output projection (Option C,
+    /// Session 4). The output's Storage Arc IS the producer's Arc;
+    /// the WorkItem's `output_layout` was prepared by
+    /// [`fuel_graph::Tensor::view`] with the slot's `byte_offset`
+    /// baked into `Layout::start_offset` so downstream kernels reading
+    /// the producer's bytes as `slot_dtype` elements land on the
+    /// slot's first byte. Structurally identical to [`Self::ViewOf`]
+    /// at execute time — kept distinct so error messages and
+    /// telemetry have a clean dispatch point.
+    SlotView {
+        producer: NodeId,
+    },
+    /// `Op::ViewOwned { slot }` — multi-output projection with an
+    /// independent destination buffer. At realize time, allocate a
+    /// fresh contiguous Storage of the slot's `(shape, dtype)` on
+    /// the producer's device, then memcpy
+    /// `producer.bytes[slot.byte_offset .. slot.byte_offset + slot.len_bytes]`
+    /// into the new storage. Session 4 ships the CPU path; non-CPU
+    /// backends return a typed error until their copy-with-offset
+    /// hooks land in the followup session.
+    SlotOwn {
+        producer: NodeId,
+        slot:     u32,
+    },
 }
 
 /// One unit of work emitted by the compiler thread to the executor
@@ -226,6 +251,14 @@ struct WorkItem {
     /// target set. Snapshot of `node.op.destructive_input()` at
     /// compile time.
     destructive_input: Option<usize>,
+    /// Multi-output bundle metadata (Option C, item 3). `Some(_)`
+    /// when the node was declared multi-output via
+    /// `Graph::set_output_views`; the Kernel arm allocates one
+    /// contiguous output Storage sized to fit every slot's bytes,
+    /// then attaches the bundle via `Storage::with_bundle` so
+    /// downstream `Op::View`/`Op::ViewOwned` nodes resolve
+    /// correctly.
+    output_bundle: Option<Arc<[fuel_core_types::storage::OutputView]>>,
 }
 
 /// Merge the graph's side-effect roots into the caller's requested
@@ -368,7 +401,7 @@ impl PipelinedExecutor {
         // Compiler thread: read graph nodes, resolve kernels,
         // push WorkItems. On error, push the error and bail.
         let compiler = thread::spawn(move || {
-            compiler_thread_body(graph_for_compiler, order_for_compiler, tx);
+            compiler_thread_body(graph_for_compiler, order_for_compiler, None, tx);
         });
 
         // Executor on this thread: consume WorkItems, gather
@@ -470,7 +503,7 @@ impl PipelinedExecutor {
         let order_for_compiler = order.clone();
 
         let compiler = thread::spawn(move || {
-            compiler_thread_body(graph_for_compiler, order_for_compiler, tx);
+            compiler_thread_body(graph_for_compiler, order_for_compiler, None, tx);
         });
 
         let mut cache: StorageCache = inputs;
@@ -523,6 +556,7 @@ impl PipelinedExecutor {
 fn compiler_thread_body(
     graph: Arc<RwLock<Graph>>,
     order: Vec<NodeId>,
+    plan: Option<Arc<ExecutionPlan>>,
     tx: Sender<Result<WorkItem>>,
 ) {
     let bindings = global_bindings();
@@ -542,8 +576,9 @@ fn compiler_thread_body(
     // in the same realize call.
     let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
 
+    let plan_ref: Option<&ExecutionPlan> = plan.as_deref();
     for id in order {
-        let item = compile_one(&g, id, &mut layout_cache, &bindings);
+        let item = compile_one(&g, id, &mut layout_cache, &bindings, plan_ref);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
             return;
@@ -552,6 +587,51 @@ fn compiler_thread_body(
             return;
         }
     }
+}
+
+/// Resolve the [`CompiledNode`] for a kernel-bearing graph node,
+/// preferring the optimizer ranker's pick (if `plan` carries an
+/// `AlternativeSet` whose winner is set) and falling back to the
+/// legacy first-registered [`compile_node`] path otherwise.
+///
+/// Phase 4.1 of the picker-work arc — the wire from
+/// `compile_plan`'s output to the executor's dispatch. Plan absent
+/// or no entry for the node ⇒ behavior is byte-identical to the
+/// pre-4.1 first-registered path.
+///
+/// `op_params` always comes from the executor's
+/// `op_to_op_params(graph, node, layout_cache)`. The candidate's
+/// `Candidate::op_params` is a plan-time placeholder
+/// (`OpParams::None`; see `candidate_default_op_params` in
+/// `crate::plan`) because the live OpParams shape — reduce dims,
+/// conv geometry, etc. — derives from the graph node + its
+/// resolved input layouts at execute time. The plan owns
+/// `(kernel, caps, backend)`; the executor owns op-params
+/// derivation.
+fn resolve_compiled(
+    id: NodeId,
+    op_kind: OpKind,
+    dtypes: &[DType],
+    target_backend: BackendId,
+    op_params: OpParams,
+    bindings: &KernelBindingTable,
+    plan: Option<&ExecutionPlan>,
+) -> Result<CompiledNode> {
+    if let Some(p) = plan {
+        if let Some(set) = p.alternatives(id) {
+            if let Some(winner) = set.winner() {
+                return Ok(CompiledNode {
+                    op: op_kind,
+                    dtypes: KernelDTypes::from_slice(dtypes),
+                    backend: winner.backend,
+                    kernel: winner.kernel,
+                    caps: winner.caps,
+                    op_params,
+                });
+            }
+        }
+    }
+    compile_node(op_kind, dtypes, target_backend, op_params, bindings)
 }
 
 /// Resolve one node into a `WorkItem` and update `layout_cache`
@@ -573,6 +653,7 @@ fn compile_one(
     id: NodeId,
     layout_cache: &mut HashMap<NodeId, Layout>,
     bindings: &KernelBindingTable,
+    plan: Option<&ExecutionPlan>,
 ) -> Result<WorkItem> {
     let node = graph.node(id);
     let elem_count = node.shape.elem_count();
@@ -595,6 +676,7 @@ fn compile_one(
             compiled: None,
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -632,6 +714,72 @@ fn compile_one(
             compiled: None,
             output_layout,
             destructive_input,
+            output_bundle: None,
+        });
+    }
+
+    // Op::View — multi-output projection (Option C, Session 4).
+    // Structurally identical to a metadata-only view op at realize
+    // time: clone the producer's Storage Arc into the View's cache
+    // slot. The graph's layout side-table, populated by
+    // `Tensor::view`, already carries the slot's effective layout
+    // (slot.byte_offset baked into start_offset in slot-dtype-element
+    // units).
+    if let Op::View { .. } = node.op {
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::View expects 1 input (the producer), got {}",
+                inputs.len(),
+            )).bt());
+        }
+        let output_layout = graph.layout(id);
+        layout_cache.insert(id, output_layout.clone());
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs: inputs.clone(),
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::SlotView { producer: inputs[0] },
+            compiled: None,
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
+
+    // Op::ViewOwned — copies the slot's bytes into a fresh
+    // contiguous Storage at realize time. Output layout is
+    // contiguous starting at offset 0 (the memcpy produced an
+    // independent buffer).
+    if let Op::ViewOwned { slot } = node.op {
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::ViewOwned expects 1 input (the producer), got {}",
+                inputs.len(),
+            )).bt());
+        }
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs: inputs.clone(),
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::SlotOwn { producer: inputs[0], slot },
+            compiled: None,
+            output_layout,
+            destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -667,6 +815,7 @@ fn compile_one(
             compiled: None,
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -720,6 +869,7 @@ fn compile_one(
                 compiled: Some(compiled),
                 output_layout,
                 destructive_input,
+                output_bundle: None,
             });
         }
     }
@@ -765,6 +915,7 @@ fn compile_one(
             compiled: Some(compiled),
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -803,6 +954,7 @@ fn compile_one(
             compiled: None,
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -838,6 +990,7 @@ fn compile_one(
             compiled: None,
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -888,6 +1041,7 @@ fn compile_one(
             compiled: Some(compiled),
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -929,6 +1083,7 @@ fn compile_one(
             compiled: None,
             output_layout,
             destructive_input,
+            output_bundle: None,
         });
     }
 
@@ -958,6 +1113,12 @@ fn compile_one(
     let compiled = compile_node(op_kind, &dtypes, target_backend, op_params, bindings)?;
     let output_layout = Layout::contiguous(node.shape.clone());
     layout_cache.insert(id, output_layout.clone());
+    // Multi-output: snapshot the producer's bundle metadata. When
+    // `Some(_)`, the Kernel arm allocates a single Storage sized to
+    // fit every slot and attaches the bundle via
+    // `Storage::with_bundle` so downstream Op::View/Op::ViewOwned
+    // resolve correctly.
+    let output_bundle = graph.output_views_arc(id);
     Ok(WorkItem {
         node_id: id,
         inputs,
@@ -968,6 +1129,7 @@ fn compile_one(
         compiled: Some(compiled),
         output_layout,
         destructive_input,
+        output_bundle,
     })
 }
 
@@ -1216,6 +1378,11 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::GeluErfInplace     => Some(OpKind::GeluErfInplace),
         Op::ClampInplace { .. } => Some(OpKind::ClampInplace),
         Op::PowIInplace(_)      => Some(OpKind::PowIInplace),
+        // In-place binary variants (Add/Sub/Mul/Div/MaskedFill) and
+        // their OpKind siblings are tracked by a parallel session and
+        // toggle in and out of the Op enum as that work progresses.
+        // No multi-output arm references them; nothing to map here in
+        // the current HEAD.
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::INPLACE_AFFINE => {
             Some(OpKind::InplaceAffine)
         }
@@ -1939,6 +2106,8 @@ fn op_to_op_params(
             let fill_bytes = scalar_to_bytes(*value);
             OpParams::MaskedFill { fill_bytes }
         }
+        // Op::MaskedFillInplace tracked by the parallel in-place
+        // binary family session — not in HEAD's Op enum right now.
         Op::PadBackward { in_shape, padding, mode } => {
             // Single input is the upstream gradient; output is the
             // input gradient (shape == `in_shape`).
@@ -2601,6 +2770,134 @@ fn execute_work_item(
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }
+        WorkItemKind::SlotView { producer } => {
+            // Op::View — multi-output projection. Same realization
+            // shape as ViewOf: clone the producer's Storage Arc into
+            // the View's cache slot. The WorkItem's output_layout was
+            // computed at graph-build time by `Tensor::view`, with
+            // the slot's byte_offset baked into start_offset (in
+            // slot-dtype-element units). Downstream kernels reading
+            // the producer's bytes as the slot's dtype starting at
+            // that offset see the slot's typed window.
+            let producer_arc = cache.get(producer).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: Op::View producer {:?} of {:?} not realized",
+                    producer, item.node_id,
+                ))
+                .bt()
+            })?;
+            cache.insert(item.node_id, producer_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::SlotOwn { producer, slot } => {
+            // Op::ViewOwned — allocate a fresh Storage of the slot's
+            // (shape, dtype) on the producer's device and copy the
+            // slot's bytes in. Per-backend fast paths:
+            //   - CPU:    direct &[u8]→&mut[u8] memcpy via CpuStorageBytes
+            //   - CUDA:   D2D via CudaStorageBytes::slot_copy_to_new
+            //             (cuMemcpyDtoDAsync with offset src pointer)
+            //   - Vulkan: vkCmdCopyBuffer via
+            //             VulkanBackend::slot_copy_to_new_handle
+            //             (srcOffset/dstOffset/size)
+            // For backends without a copy-with-offset hook we fall
+            // back to a host round-trip (`to_host_buffer_dyn` →
+            // slice → `storage_from_host_buffer_owned_dyn`), which
+            // works but is wasteful.
+            let producer_arc = cache.get(producer).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: Op::ViewOwned producer {:?} of {:?} not realized",
+                    producer, item.node_id,
+                ))
+                .bt()
+            })?;
+            let new_storage = {
+                let guard = producer_arc.read()
+                    .map_err(|_| poisoned("ViewOwned producer storage"))?;
+                let bundle = guard.bundle().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "Op::ViewOwned: producer {:?} has no bundle side-table \
+                         — the multi-output authoring contract requires \
+                         Storage::with_bundle / new_bundled at allocation \
+                         time. Node {:?} slot {} cannot resolve its source.",
+                        producer, item.node_id, slot,
+                    )).bt()
+                })?;
+                let sv = bundle.get(*slot as usize).cloned().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "Op::ViewOwned: slot {} out of range for producer {:?} \
+                         (bundle has {} slots)",
+                        slot, producer, bundle.len(),
+                    )).bt()
+                })?;
+                use fuel_storage::BackendStorage;
+                match &guard.inner {
+                    BackendStorage::Cpu(cpu_bytes) => {
+                        let src_bytes = cpu_bytes.bytes();
+                        let end = sv.byte_offset + sv.len_bytes();
+                        if end > src_bytes.len() {
+                            return Err(Error::Msg(format!(
+                                "Op::ViewOwned: slot {} byte range [{}..{}) \
+                                 exceeds producer's CPU byte length {}",
+                                slot, sv.byte_offset, end, src_bytes.len(),
+                            )).bt());
+                        }
+                        let owned = fuel_cpu_backend::CpuStorageBytes::from_bytes(
+                            &src_bytes[sv.byte_offset..end],
+                        );
+                        fuel_storage::Storage::new(
+                            BackendStorage::Cpu(owned),
+                            sv.dtype,
+                        )
+                    }
+                    #[cfg(feature = "cuda")]
+                    BackendStorage::Cuda(cuda_bytes) => {
+                        let dst = cuda_bytes.slot_copy_to_new(
+                            sv.byte_offset, sv.len_bytes(),
+                        )?;
+                        fuel_storage::Storage::new(
+                            BackendStorage::Cuda(dst),
+                            sv.dtype,
+                        )
+                    }
+                    #[cfg(feature = "vulkan")]
+                    BackendStorage::Vulkan(vk_bytes) => {
+                        let backend = vk_bytes.backend().ok_or_else(|| {
+                            Error::Msg(format!(
+                                "Op::ViewOwned: producer {:?} is on Vulkan but \
+                                 its storage has no VulkanBackend handle. \
+                                 Storages flowing through the pipelined executor \
+                                 must be constructed via alloc_bytes_handle / \
+                                 upload_bytes_handle so the bundle's slot extraction \
+                                 path can reach the backend.",
+                                producer,
+                            )).bt()
+                        })?;
+                        let dst = backend.slot_copy_to_new_handle(
+                            vk_bytes, sv.byte_offset, sv.len_bytes(),
+                        )?;
+                        fuel_storage::Storage::new(
+                            BackendStorage::Vulkan(dst),
+                            sv.dtype,
+                        )
+                    }
+                    #[allow(unreachable_patterns)]
+                    _ => {
+                        return Err(Error::Msg(format!(
+                            "Op::ViewOwned: producer {:?} is on a backend \
+                             without a slot-copy-with-offset hook \
+                             (CPU + CUDA + Vulkan wired). Add a per-backend \
+                             `slot_copy_to_new`-equivalent and extend the \
+                             match arm.",
+                            producer,
+                        )).bt());
+                    }
+                }
+            };
+            cache.insert(item.node_id, Arc::new(RwLock::new(new_storage)));
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
         WorkItemKind::WriteSlice { dest, source } => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
                 Error::Msg(format!(
@@ -2872,6 +3169,44 @@ fn execute_work_item(
                 ))
                 .bt()
             })?;
+            // Multi-output Option C guard: Op::Copy on a bundled
+            // producer would silently drop the bundle metadata on
+            // the destination, and the auto-contiguize step below
+            // would treat the bundle as a flat slot-0-shaped buffer
+            // and corrupt non-primary slots. Until the per-backend
+            // whole-bundle-Copy hook lands, point callers at the
+            // supported per-slot path:
+            // Op::View → Op::Copy → Op::ViewOwned.
+            //
+            // Exception: when the immediate input is an Op::View
+            // projection (its layout's byte extent is strictly less
+            // than the bundle's total bytes), the View has already
+            // narrowed the slab. auto-contiguize walks the View's
+            // layout and produces a flat slot-shaped buffer that's
+            // correctly sized — no data loss, no slot corruption.
+            // The guard only fires when the Copy targets the bundle
+            // root directly.
+            {
+                let guard = src_arc.read().map_err(|_| poisoned("Copy source storage"))?;
+                if guard.is_bundled() {
+                    let layout_bytes_for_guard = layout_cache
+                        .get(&src_id)
+                        .map(|l| l.shape().elem_count() * guard.dtype.size_in_bytes())
+                        .unwrap_or(usize::MAX);
+                    let bundle_bytes = guard.inner.len_bytes();
+                    let is_whole_bundle = layout_bytes_for_guard >= bundle_bytes;
+                    if is_whole_bundle {
+                        return Err(Error::Msg(format!(
+                            "PipelinedExecutor: Op::Copy on a bundled producer \
+                             ({:?}) is not yet supported (Option C followup). \
+                             Use Op::View → Op::Copy → Op::ViewOwned for \
+                             per-slot cross-device moves, or wait for the \
+                             per-backend whole-bundle-Copy hook.",
+                            src_id,
+                        )).bt());
+                    }
+                }
+            }
             let src_layout = layout_cache.get(&src_id).cloned().ok_or_else(|| {
                 Error::Msg(format!(
                     "PipelinedExecutor: Copy input {:?} of {:?} has no cached layout",
@@ -3115,8 +3450,26 @@ fn execute_work_item(
             // ConstAdopt, never via Kernel), and an input on the
             // target backend carries its own device. This avoids
             // threading a device handle through `realize`.
+            //
+            // Multi-output (Option C, item 3): when the WorkItem
+            // carries an `output_bundle`, size the allocation to
+            // span every slot's bytes (primary-dtype-element count
+            // rounded up from the bundle's total byte span) and
+            // attach the bundle metadata after allocation.
+            let (alloc_elem_count, bundle_to_attach) = match &item.output_bundle {
+                Some(bundle) => {
+                    let dtype_bytes = item.dtype.size_in_bytes().max(1);
+                    let total_bytes = bundle.iter().fold(0usize, |acc, s| {
+                        let end = s.byte_offset.saturating_add(s.len_bytes());
+                        acc.max(end)
+                    });
+                    let elems = total_bytes.div_ceil(dtype_bytes);
+                    (elems, Some(Arc::clone(bundle)))
+                }
+                None => (item.elem_count, None),
+            };
             let output = match item.target_backend {
-                BackendId::Cpu => fuel_storage::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
+                BackendId::Cpu => fuel_storage::alloc_cpu_zeroed(item.dtype, alloc_elem_count)?,
                 #[cfg(feature = "cuda")]
                 BackendId::Cuda => {
                     let first_in = input_arcs.first().ok_or_else(|| {
@@ -3141,7 +3494,7 @@ fn execute_work_item(
                             .bt());
                         }
                     };
-                    let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+                    let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
                     let cuda_bytes =
                         fuel_cuda_backend::CudaStorageBytes::alloc(cuda_in.device(), n_bytes)?;
                     fuel_storage::Storage::new(fuel_storage::BackendStorage::Cuda(cuda_bytes), item.dtype)
@@ -3189,7 +3542,7 @@ fn execute_work_item(
                         ))
                         .bt()
                     })?;
-                    let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+                    let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
                     let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
                     fuel_storage::Storage::new(fuel_storage::BackendStorage::Vulkan(vk_bytes), item.dtype)
                 }
@@ -3201,6 +3554,14 @@ fn execute_work_item(
                     ))
                     .bt());
                 }
+            };
+            // Attach bundle metadata when this is a multi-output op.
+            // The kernel sees the allocated bytes; the bundle lives
+            // at the Storage wrapper level so downstream Op::View /
+            // Op::ViewOwned can resolve their slot windows.
+            let output = match bundle_to_attach {
+                Some(bundle) => output.with_bundle(bundle)?,
+                None => output,
             };
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
 
@@ -3253,13 +3614,42 @@ fn execute_work_item(
                 ))
                 .bt());
             }
-            // Kernel sees inputs=[] and outputs=[target_arc]. The
-            // wrapper acquires outputs[0]'s write lock and mutates
-            // through its bytes_mut(). Layout vector matches:
-            // [output_layout] only.
-            let input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::new();
+            // Kernel sees inputs=[non-target IR inputs in order] and
+            // outputs=[target_arc]. For unary in-place (1 IR input at
+            // target_idx=0) the input vec is empty, matching the
+            // original Phase 3e contract. For binary in-place
+            // (target_idx=0, 2 IR inputs) the wrapper sees the
+            // non-destructive RHS as `inputs[0]`. The wrapper acquires
+            // outputs[0]'s write lock and mutates through its
+            // bytes_mut(). Layout vector contains the kernel's
+            // inputs+outputs layouts in that order.
+            let mut input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::new();
+            let mut kernel_layouts: Vec<Layout> = Vec::new();
+            for (i, &input_id) in item.inputs.iter().enumerate() {
+                if i == *target_idx {
+                    continue;
+                }
+                let arc = cache.get(&input_id).cloned().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "PipelinedExecutor: InplaceKernel non-target input {:?} of {:?} \
+                         not realized",
+                        input_id, item.node_id,
+                    ))
+                    .bt()
+                })?;
+                let lay = layout_cache.get(&input_id).cloned().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "PipelinedExecutor: InplaceKernel non-target input {:?} of {:?} \
+                         has no cached layout",
+                        input_id, item.node_id,
+                    ))
+                    .bt()
+                })?;
+                input_arcs.push(arc);
+                kernel_layouts.push(lay);
+            }
             let mut output_arcs = vec![target_arc.clone()];
-            let kernel_layouts = vec![target_layout.clone()];
+            kernel_layouts.push(target_layout.clone());
             execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             // Adopt the target Arc at this node's slot. The realize
             // loop's destructive_input cleanup evicts the target's own
@@ -7497,7 +7887,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, release_id, &mut layout_cache, &bindings)
+        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, None)
             .expect("compile_one Op::Release");
         assert!(matches!(item.kind, WorkItemKind::ReleaseMarker));
         assert_eq!(item.destructive_input, Some(0));
@@ -7921,5 +8311,99 @@ mod tests {
             got, &[2.0_f32, -2.0, 6.0, -4.0],
             "Add must read pre-mutation x via the inserted safety copy"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Item 3 end-to-end: SelectiveScan through the bundled-output
+    // PipelinedExecutor path. The producer allocates bundled
+    // (y_bytes + last_state_bytes), the kernel writes both slots,
+    // and the bundled-tuple builder returns each via Op::View.
+    // ------------------------------------------------------------------
+
+    fn cpu_const_f32(
+        graph: &Arc<RwLock<Graph>>,
+        cache: &mut StorageCache,
+        data:  &[f32],
+        dims:  &[usize],
+    ) -> NodeId {
+        let id = {
+            let mut g = graph.write().unwrap();
+            g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape:  Shape::from_dims(dims),
+                dtype:  DType::F32,
+            })
+        };
+        cache.insert(
+            id,
+            Arc::new(RwLock::new(fuel_storage::from_slice_cpu(data))),
+        );
+        id
+    }
+
+    /// `selective_scan_bundled` realizes both `y` and `last_state` in
+    /// a single `realize_many` pass; the Views project the same
+    /// producer's bundled Storage Arc and the numerics match the
+    /// hand-computed single-step kernel test (b=1,s=1,d=1,k=1).
+    #[test]
+    fn pipelined_realize_selective_scan_bundled_produces_y_and_last_state() {
+        let graph: Arc<RwLock<Graph>> = Arc::new(RwLock::new(Graph::new()));
+        let mut cache = StorageCache::new();
+
+        let u_id     = cpu_const_f32(&graph, &mut cache, &[3.0], &[1, 1, 1]);
+        let delta_id = cpu_const_f32(&graph, &mut cache, &[1.0], &[1, 1, 1]);
+        let a_id     = cpu_const_f32(&graph, &mut cache, &[-1.0], &[1, 1]);
+        let b_id     = cpu_const_f32(&graph, &mut cache, &[2.0], &[1, 1, 1]);
+        let c_id     = cpu_const_f32(&graph, &mut cache, &[0.5], &[1, 1, 1]);
+
+        let (y_id, last_state_id) = {
+            let u_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), u_id);
+            let delta_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), delta_id);
+            let a_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), a_id);
+            let b_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), b_id);
+            let c_t     = fuel_graph::Tensor::from_existing(Arc::clone(&graph), c_id);
+            let (y, last_state) = u_t
+                .selective_scan_bundled(&delta_t, &a_t, &b_t, &c_t, /* delta_softplus */ false)
+                .expect("selective_scan_bundled");
+            (y.id(), last_state.id())
+        };
+        // Set target_backend on the producer (View nodes inherit it).
+        {
+            let mut g = graph.write().unwrap();
+            let producer = g.node(y_id).inputs[0];
+            g.set_target_backend(producer, BackendId::Cpu);
+        }
+
+        let outputs = PipelinedExecutor::realize_many(
+            Arc::clone(&graph), &[y_id, last_state_id], cache,
+        ).expect("realize_many");
+        let (y_arc, y_layout) = outputs[0].clone();
+        let (last_state_arc, last_state_layout) = outputs[1].clone();
+
+        // Both Views project the same bundled producer Storage Arc.
+        assert!(
+            Arc::ptr_eq(&y_arc, &last_state_arc),
+            "y and last_state Views project the SAME bundled producer Storage",
+        );
+
+        // Hand-computed numerics (single-step recurrence):
+        // h[0,0,0] = exp(1.0 * -1.0) * 0 + 1.0 * 2.0 * 3.0 = 6.0
+        // y[0,0,0] = h * c = 6.0 * 0.5 = 3.0
+        // last_state[0,0,0] = h = 6.0
+        let guard = y_arc.read().unwrap();
+        let fuel_storage::BackendStorage::Cpu(c_bytes) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = c_bytes.as_slice().expect("f32 cast");
+        assert_eq!(y_layout.start_offset(), 0);
+        let y_value = typed[y_layout.start_offset()];
+        assert!((y_value - 3.0).abs() < 1e-5, "y expected 3.0 got {y_value}");
+        assert_eq!(
+            last_state_layout.start_offset(), 1,
+            "slot 1 byte_offset 4 / sizeof(f32) = 1",
+        );
+        let ls_value = typed[last_state_layout.start_offset()];
+        assert!((ls_value - 6.0).abs() < 1e-5, "last_state expected 6.0 got {ls_value}");
     }
 }

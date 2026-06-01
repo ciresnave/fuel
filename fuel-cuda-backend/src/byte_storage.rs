@@ -131,6 +131,66 @@ impl CudaStorageBytes {
         })
     }
 
+    /// Multi-output Option C: extract one bundle slot as a fresh
+    /// standalone `CudaStorageBytes`. The destination has its own
+    /// `Arc<DeviceBuffer<u8>>` — independent of the source bundle's
+    /// Arc — so the bundle can drop once every other View of it has
+    /// also dropped. Used by `Op::ViewOwned` on CUDA-resident
+    /// bundled producers.
+    ///
+    /// `byte_offset + len_bytes` must be ≤ `self.len_bytes`.
+    pub fn slot_copy_to_new(
+        &self,
+        byte_offset: usize,
+        len_bytes:   usize,
+    ) -> Result<Self> {
+        let end = byte_offset.checked_add(len_bytes).ok_or_else(|| {
+            fuel_core_types::Error::Msg(format!(
+                "CudaStorageBytes::slot_copy_to_new: byte_offset {byte_offset} \
+                 + len_bytes {len_bytes} overflows",
+            ))
+            .bt()
+        })?;
+        if end > self.len_bytes {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "CudaStorageBytes::slot_copy_to_new: slot byte range \
+                 [{byte_offset}..{end}) exceeds source byte length {}",
+                self.len_bytes,
+            ))
+            .bt());
+        }
+        // Allocate a raw uninit DeviceBuffer first so we can get a
+        // DeviceSliceMut for the destination — the Arc<DeviceBuffer>
+        // shape on CudaStorageBytes blocks `view_as_mut` because
+        // mutable view requires `&mut DeviceBuffer`. We do the D2D
+        // before wrapping in the Arc.
+        //
+        // SAFETY: the immediately-following memcpy_dtod fully
+        // initializes `len_bytes` bytes. Empty-slot fast path falls
+        // through to the zero-init alloc below.
+        if len_bytes == 0 {
+            return Self::alloc(&self.device, 0);
+        }
+        let mut dst_buffer: DeviceBuffer<u8> =
+            unsafe { self.device.alloc::<u8>(len_bytes) }?;
+        {
+            let src_view = self.buffer.view_as::<u8>();
+            let src_slice = src_view.slice(byte_offset..byte_offset + len_bytes);
+            let mut dst_view = dst_buffer.view_as_mut::<u8>();
+            let mut dst_slice = dst_view.slice_mut(0..len_bytes);
+            self.device.memcpy_dtod(&src_slice, &mut dst_slice)?;
+        }
+        // Sync so consumers see the bytes through subsequent
+        // metadata-only Arc reads. Mirrors `write_from_host` / the
+        // existing `to_cpu_bytes` synchronize semantics.
+        self.device.synchronize()?;
+        Ok(Self {
+            buffer: Arc::new(dst_buffer),
+            device: self.device.clone(),
+            len_bytes,
+        })
+    }
+
     /// Bridge-retirement Phase 3b: H2D into an already-allocated
     /// CUDA buffer. Pairs with [`Self::alloc_uninit`] for the
     /// `Op::Alloc → Op::Copy { target: Cuda }` H2D pattern — the

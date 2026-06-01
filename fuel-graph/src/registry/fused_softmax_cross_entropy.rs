@@ -75,6 +75,7 @@ pub fn entry() -> FusedOpEntry {
         backward:   BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
+        output_views: None,
     }
 }
 

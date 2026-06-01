@@ -66,30 +66,83 @@ use crate::registry::{
     PatternMatch, SubgraphPattern,
 };
 use crate::{Graph, NodeId};
-use fuel_core_types::{DType, Shape};
+use fuel_core_types::storage::OutputViewSpec;
+use fuel_core_types::{DType, Layout, Shape};
 
-/// Metadata-side registry entry for SsdChunkScan.
+/// Metadata-side registry entry for SsdChunkScan. Multi-output (item
+/// 3 consumer migration, 2026-06-01): slot 0 = `y`, slot 1 =
+/// `last_state`. Mirrors `selective_scan::entry`.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
-        id:         FusedOps::SSD_CHUNK_SCAN,
-        name:       "SsdChunkScan",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id:           FusedOps::SSD_CHUNK_SCAN,
+        name:         "SsdChunkScan",
+        family:       FusedOpFamily::Forward,
+        pattern:      SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward:     BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
+        output_views: Some(output_views),
     }
 }
 
-/// Output shape rule: `y: [batch, seqlen, heads, head_dim]` — same
-/// as `x`'s shape (input 0).
+/// Output shape rule. Reports slot 0 (`y: [batch, seqlen, heads,
+/// head_dim]`) — slot 1 (`last_state`) is exposed via `output_views`
+/// and reached through `Op::View { slot: 1 }`.
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
         input_shapes.len(), 5,
         "SsdChunkScan takes 5 inputs (x, dt, a, b, c)",
     );
     input_shapes[0].clone()
+}
+
+/// Multi-output authoring fn. Returns two slot specs:
+/// - slot 0 = `y: [batch, seqlen, heads, head_dim]`, same dtype as `x`.
+/// - slot 1 = `last_state: [batch, heads, head_dim, state_dim]`,
+///   same dtype as `x`.
+fn output_views(
+    input_shapes: &[Shape],
+    input_dtypes: &[DType],
+    _params:      &FusedOpParams,
+) -> Vec<OutputViewSpec> {
+    debug_assert_eq!(
+        input_shapes.len(), 5,
+        "SsdChunkScan output_views: takes 5 inputs (x, dt, a, b, c)",
+    );
+    debug_assert_eq!(
+        input_dtypes.len(), 5,
+        "SsdChunkScan output_views: takes 5 input dtypes",
+    );
+    let x_dims = input_shapes[0].dims();
+    let b_dims = input_shapes[3].dims();
+    debug_assert!(
+        x_dims.len() == 4 && b_dims.len() == 4,
+        "SsdChunkScan output_views: x rank=4, b rank=4 expected",
+    );
+    let batch     = x_dims[0];
+    let seqlen    = x_dims[1];
+    let heads     = x_dims[2];
+    let head_dim  = x_dims[3];
+    let state_dim = b_dims[3];
+    let dtype     = input_dtypes[0];
+    let y_shape = Shape::from_dims(&[batch, seqlen, heads, head_dim]);
+    let last_state_shape =
+        Shape::from_dims(&[batch, heads, head_dim, state_dim]);
+    vec![
+        OutputViewSpec {
+            dtype,
+            shape:  y_shape.clone(),
+            layout: Layout::contiguous(y_shape),
+            name:   Some("y"),
+        },
+        OutputViewSpec {
+            dtype,
+            shape:  last_state_shape.clone(),
+            layout: Layout::contiguous(last_state_shape),
+            name:   Some("last_state"),
+        },
+    ]
 }
 
 /// Dtype rule: output matches `x`'s dtype (input 0).

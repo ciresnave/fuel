@@ -917,8 +917,9 @@ impl LazyTensor {
 
     /// Mamba-1's selective state-space scan (forward). See
     /// [`fuel_graph::Tensor::selective_scan`] for the full shape
-    /// contract. v1 covers 5 required inputs; optional inputs and
-    /// `last_state` output are mechanical follow-ups.
+    /// contract. Returns just `y` — for the bundled `(y, last_state)`
+    /// form needed by autoregressive resumption use
+    /// [`Self::selective_scan_bundled`].
     pub fn selective_scan(
         &self,
         delta: &Self,
@@ -932,6 +933,44 @@ impl LazyTensor {
                 &delta.inner, &a.inner, &b.inner, &c.inner, delta_softplus,
             ),
         }
+    }
+
+    /// Multi-output Mamba-1 SSM scan: returns `(y, last_state)`. `y`
+    /// matches the single-output [`Self::selective_scan`] result;
+    /// `last_state` is the final hidden state `[batch, dim, dstate]`
+    /// used by autoregressive callers to resume from a prefill
+    /// snapshot. Both LazyTensors are `Op::View` projections of the
+    /// same bundled producer Storage — realizing them in the same
+    /// pass shares the bundle.
+    pub fn selective_scan_bundled(
+        &self,
+        delta: &Self,
+        a: &Self,
+        b: &Self,
+        c: &Self,
+        delta_softplus: bool,
+    ) -> std::result::Result<(Self, Self), fuel_core_types::Error> {
+        let (y, last_state) = self.inner.selective_scan_bundled(
+            &delta.inner, &a.inner, &b.inner, &c.inner, delta_softplus,
+        )?;
+        Ok((Self { inner: y }, Self { inner: last_state }))
+    }
+
+    /// Multi-output Mamba-2 SSD scan: returns `(y, last_state)`.
+    /// Mirrors [`Self::selective_scan_bundled`]. `last_state` has
+    /// shape `[batch, heads, head_dim, state_dim]`.
+    pub fn ssd_chunk_scan_bundled(
+        &self,
+        dt: &Self,
+        a: &Self,
+        b: &Self,
+        c: &Self,
+        chunk_size: usize,
+    ) -> std::result::Result<(Self, Self), fuel_core_types::Error> {
+        let (y, last_state) = self.inner.ssd_chunk_scan_bundled(
+            &dt.inner, &a.inner, &b.inner, &c.inner, chunk_size,
+        )?;
+        Ok((Self { inner: y }, Self { inner: last_state }))
     }
 
     /// Depthwise 1-D causal convolution + bias + optional fused SiLU

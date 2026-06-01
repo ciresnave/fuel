@@ -3218,10 +3218,10 @@ macro_rules! cpu_selective_scan_wrapper {
                 ))
                 .bt());
             }
-            let (batch, seqlen, dim, dstate, delta_softplus, return_state) = match params {
+            let (batch, seqlen, dim, dstate, delta_softplus) = match params {
                 OpParams::SelectiveScan {
-                    batch, seqlen, dim, dstate, delta_softplus, return_state,
-                } => (*batch, *seqlen, *dim, *dstate, *delta_softplus, *return_state),
+                    batch, seqlen, dim, dstate, delta_softplus,
+                } => (*batch, *seqlen, *dim, *dstate, *delta_softplus),
                 other => {
                     return Err(Error::Msg(format!(
                         "selective_scan wrapper expects OpParams::SelectiveScan, got {other:?}",
@@ -3243,7 +3243,7 @@ macro_rules! cpu_selective_scan_wrapper {
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
                 u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-                batch, seqlen, dim, dstate, delta_softplus, return_state,
+                batch, seqlen, dim, dstate, delta_softplus,
             )
         }
     };
@@ -3279,10 +3279,10 @@ macro_rules! cpu_ssd_chunk_scan_wrapper {
                 ))
                 .bt());
             }
-            let (batch, seqlen, heads, head_dim, state_dim, chunk_size, return_state) = match params {
+            let (batch, seqlen, heads, head_dim, state_dim, chunk_size) = match params {
                 OpParams::SsdChunkScan {
-                    batch, seqlen, heads, head_dim, state_dim, chunk_size, return_state,
-                } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size, *return_state),
+                    batch, seqlen, heads, head_dim, state_dim, chunk_size,
+                } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size),
                 other => {
                     return Err(Error::Msg(format!(
                         "ssd_chunk_scan wrapper expects OpParams::SsdChunkScan, got {other:?}",
@@ -3304,7 +3304,7 @@ macro_rules! cpu_ssd_chunk_scan_wrapper {
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
                 x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-                batch, seqlen, heads, head_dim, state_dim, chunk_size, return_state,
+                batch, seqlen, heads, head_dim, state_dim, chunk_size,
             )
         }
     };

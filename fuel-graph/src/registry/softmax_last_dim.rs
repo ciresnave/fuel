@@ -39,6 +39,7 @@ pub fn entry() -> FusedOpEntry {
         backward:   BackwardKind::Fused(FusedOps::SOFTMAX_LAST_DIM_BACKWARD),
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
+        output_views: None,
     }
 }
 

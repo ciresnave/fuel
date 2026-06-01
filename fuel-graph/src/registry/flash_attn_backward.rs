@@ -34,6 +34,7 @@ pub fn entry_q() -> FusedOpEntry {
         backward:   BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_q,
         dtype_rule,
+        output_views: None,
     }
 }
 
@@ -48,6 +49,7 @@ pub fn entry_k() -> FusedOpEntry {
         backward:   BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_k,
         dtype_rule,
+        output_views: None,
     }
 }
 
@@ -62,6 +64,7 @@ pub fn entry_v() -> FusedOpEntry {
         backward:   BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_v,
         dtype_rule,
+        output_views: None,
     }
 }
 
