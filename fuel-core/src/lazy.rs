@@ -4857,6 +4857,19 @@ fn apply_affine_rms_norm(
     normalized.broadcast_mul(&gain_t).unwrap()
 }
 
+/// Public re-export of [`apply_affine_rms_norm`] for sibling lazy
+/// modules (`lazy_mistral`, future Phase D LLM ports). The visibility
+/// bump is the only reason this wrapper exists — keep helpers
+/// crate-private otherwise.
+pub fn apply_affine_rms_norm_pub(
+    x: &LazyTensor,
+    gain: &Arc<[f32]>,
+    dim: usize,
+    eps: f64,
+) -> LazyTensor {
+    apply_affine_rms_norm(x, gain, dim, eps)
+}
+
 // ---- HuggingFace Hub and safetensors weight loading ----------------------
 
 /// Load a tensor by name from a `MmapedSafetensors` as a flat
