@@ -56,7 +56,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
 
     // Path A: lazy Op::FlashAttn → realize → CPU executor → reference dispatch
-    let fa_out = q.flash_attn(&k, &v, None, scale, false, None, None, None);
+    let fa_out = q.flash_attn(&k, &v, None, scale, false, None, None, None).unwrap();
     let fa = fa_out.realize_f32();
 
     // Path B: explicit matmul+softmax composition.
@@ -91,7 +91,7 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
     let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
-    let fa_out = q.flash_attn(&k, &v, None, scale, true, None, None, None).realize_f32();
+    let fa_out = q.flash_attn(&k, &v, None, scale, true, None, None, None).unwrap().realize_f32();
 
     // Direct call to the reference for a known-correct comparison point.
     use fuel_reference_backend::attention::{attention_naive, AttentionParams};
