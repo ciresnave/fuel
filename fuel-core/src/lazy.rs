@@ -588,11 +588,11 @@ impl LazyTensor {
         }
     }
 
-    /// Transpose the last two dims (any rank ≥ 2).
-    pub fn transpose(&self) -> Self {
-        Self {
-            inner: self.inner.transpose(),
-        }
+    /// Transpose the last two dims. Returns a typed error on rank < 2
+    /// rather than panicking — build-time validation surfaces a useful
+    /// diagnostic.
+    pub fn transpose(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_transpose()? })
     }
 
     /// Permute axes by the given ordering.
@@ -1482,7 +1482,7 @@ mod tests {
         let k_r = k_h.rope(10000.0, 0);
 
         // Scaled dot-product attention.
-        let k_t = k_r.transpose();
+        let k_t = k_r.transpose().unwrap();
         let scores = q_r.matmul(&k_t);
         let attn = scores.softmax_last_dim();
         let attn_v = attn.matmul(&v_h);
@@ -1694,11 +1694,6 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.try_permute(&axes)? })
     }
 
-    /// Result-returning sibling of [`Self::transpose`].
-    pub fn try_transpose(&self) -> std::result::Result<Self, fuel_core_types::Error> {
-        Ok(Self { inner: self.inner.try_transpose()? })
-    }
-
     /// Result-returning sibling of [`Self::reshape`].
     pub fn try_reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
         Ok(Self { inner: self.inner.try_reshape(shape)? })
@@ -1877,13 +1872,13 @@ impl LazyTensor {
     /// no-arg [`Self::transpose`] would produce. Alias for the eager
     /// `transpose_last_two`.
     pub fn transpose_last_two(&self) -> std::result::Result<Self, fuel_core_types::Error> {
-        self.try_transpose()
+        self.transpose()
     }
 
     /// Eager-API alias of [`Self::transpose_last_two`]. Matches PyTorch's
     /// `.t()` short form and the existing eager [`Tensor::t`] method.
     pub fn t(&self) -> std::result::Result<Self, fuel_core_types::Error> {
-        self.try_transpose()
+        self.transpose()
     }
 
     /// Two-argument transpose: swap dims `dim1` and `dim2`, leaving the
@@ -3684,7 +3679,7 @@ impl LlamaModel {
         // trained with a strict lower-triangular mask — without it,
         // each prefill token's hidden state is contaminated by future
         // tokens, and the model produces garbage.
-        let k_t = k_r.transpose();
+        let k_t = k_r.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t);
         let mut mask_data = vec![0.0_f32; seq * seq];
@@ -3825,7 +3820,7 @@ impl LlamaModel {
         // [batch, n_heads, ...] so the matmul batch dims match exactly
         // and n_rep stays 1.
 
-        let k_t = full_k.transpose();
+        let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t);
 
@@ -3982,7 +3977,7 @@ impl LlamaModel {
         let full_v = v_full_buffer.slice(2, 0, total_seq);
 
         // Attention path — identical to apply_layer_with_cache from here.
-        let k_t = full_k.transpose();
+        let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t);
 
@@ -5989,7 +5984,7 @@ impl Gemma2Model {
         };
 
         // Attention with query_pre_attn_scalar and optional softcapping.
-        let k_t = k_r.transpose();
+        let k_t = k_r.transpose().unwrap();
         let scale = 1.0 / cfg.query_pre_attn_scalar.sqrt();
         let scores = q_r.matmul(&k_t);
         let scores_scaled = scores.mul_scalar(scale);
@@ -6482,7 +6477,7 @@ impl PhiModel {
         let cache_full_v = full_v.clone();
 
         // Attention: Q @ K^T, scale, mask, softmax, @ V.
-        let k_t = full_k.transpose();
+        let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t);
         // Causal mask.
@@ -8865,9 +8860,8 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn try_transpose_requires_rank_two_plus() {
         let scalar = cpu_f32(vec![1.0], &[1]);
-        // rank-1 is fine on most platforms because transpose() of last two
-        // dims degenerates, but the try_* sibling at minimum exists.
-        let _ = scalar.try_transpose();
+        // rank-1: transpose surfaces a typed error at build time.
+        let _ = scalar.transpose();
     }
 
     #[test]

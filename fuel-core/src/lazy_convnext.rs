@@ -374,7 +374,7 @@ fn conv2d_stride_eq_kernel(
     // k_row, then k_col) — matches what we just produced. Transpose
     // to [Cin*k*k, Cout] for matmul.
     let w_2d = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin * k * k]));
-    let w_t = w_2d.transpose();  // [Cin*k*k, Cout]
+    let w_t = w_2d.transpose().unwrap();  // [Cin*k*k, Cout]
     let y = x_flat.matmul(&w_t);  // [1, H_out*W_out, Cout]
     // Add bias.
     let bias = x
