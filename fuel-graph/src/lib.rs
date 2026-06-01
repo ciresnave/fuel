@@ -4097,11 +4097,14 @@ impl Tensor {
     }
 
     /// Append a `FusedSoftmaxCrossEntropy` node. Two inputs:
-    /// - `self` (logits): `[..., V]` F32
+    /// - `self` (logits): `[..., V]` F32 / F64 / BF16 / F16
     /// - `targets`: `[...]` I64 (class indices; matches PyTorch /
     ///   baracuda convention)
     ///
-    /// Output dtype is always F32; output shape depends on `reduction`:
+    /// Output dtype is always F32 (the FSCE declared dtype — losses
+    /// accumulate in F64 and narrow to F32, matching PyTorch and the
+    /// baracuda kernel) regardless of the logits dtype. Output shape
+    /// depends on `reduction`:
     /// - `Reduction::Mean` / `Reduction::Sum` → scalar `[]`
     /// - `Reduction::None` → same as `targets.shape`
     ///
@@ -4122,10 +4125,12 @@ impl Tensor {
             Arc::ptr_eq(&self.graph, &targets.graph),
             "fused_softmax_cross_entropy: tensors must live on the same graph",
         );
-        assert_eq!(
-            self.dtype(),
-            DType::F32,
-            "fused_softmax_cross_entropy v1: logits must be F32, got {:?}",
+        assert!(
+            matches!(
+                self.dtype(),
+                DType::F32 | DType::F64 | DType::BF16 | DType::F16,
+            ),
+            "fused_softmax_cross_entropy: logits must be F32/F64/BF16/F16, got {:?}",
             self.dtype(),
         );
         assert_eq!(

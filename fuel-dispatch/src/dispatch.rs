@@ -2981,59 +2981,81 @@ cpu_fused_linear_wrapper!(fused_linear_f64_cpu_wrapper,  fuel_cpu_backend::byte_
 cpu_fused_linear_wrapper!(fused_linear_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::fused_linear_bf16);
 cpu_fused_linear_wrapper!(fused_linear_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f16);
 
-/// Dispatch wrapper for `(FusedSoftmaxCrossEntropy, [F32, I64, F32], Cpu)`.
-/// Two inputs (logits, targets), one F32 output. Translates the
-/// `Reduction` enum from the FusedOpParams payload (which lives on the
-/// graph node) to the kernel's `u8` tag — the kernel intentionally
-/// stays free of fuel-graph dependencies.
-fn fused_softmax_cross_entropy_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 2 {
-        return Err(Error::Msg(format!(
-            "fused_softmax_cross_entropy wrapper expects 2 inputs (logits, targets), got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "fused_softmax_cross_entropy wrapper expects 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (n_rows, vocab, reduction, ignore_index) = match params {
-        OpParams::FusedSoftmaxCrossEntropy {
-            n_rows, vocab, reduction, ignore_index,
-        } => (*n_rows, *vocab, *reduction, *ignore_index),
-        other => {
-            return Err(Error::Msg(format!(
-                "fused_softmax_cross_entropy wrapper expects \
-                 OpParams::FusedSoftmaxCrossEntropy, got {other:?}",
-            ))
-            .bt());
+/// Per-dtype FusedSoftmaxCrossEntropy dispatch wrapper. Two inputs
+/// (logits T, targets I64) → one F32 output (the FSCE declared dtype,
+/// regardless of logits dtype — losses accumulate in f64, narrow to
+/// f32). Translates the `Reduction` enum from the FusedOpParams
+/// payload (which lives on the graph node) to the kernel's `u8` tag —
+/// the kernel intentionally stays free of fuel-graph dependencies.
+macro_rules! cpu_fused_softmax_cross_entropy_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "fused_softmax_cross_entropy wrapper expects 2 inputs (logits, targets), got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "fused_softmax_cross_entropy wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let (n_rows, vocab, reduction, ignore_index) = match params {
+                OpParams::FusedSoftmaxCrossEntropy {
+                    n_rows, vocab, reduction, ignore_index,
+                } => (*n_rows, *vocab, *reduction, *ignore_index),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "fused_softmax_cross_entropy wrapper expects \
+                         OpParams::FusedSoftmaxCrossEntropy, got {other:?}",
+                    ))
+                    .bt());
+                }
+            };
+            let reduction_tag = match reduction {
+                fuel_graph::registry::Reduction::Mean => fuel_cpu_backend::byte_kernels::REDUCTION_MEAN,
+                fuel_graph::registry::Reduction::Sum  => fuel_cpu_backend::byte_kernels::REDUCTION_SUM,
+                fuel_graph::registry::Reduction::None => fuel_cpu_backend::byte_kernels::REDUCTION_NONE,
+            };
+            let logits_guard = read_storage(&inputs[0])?;
+            let targets_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let logits_cpu = cpu_input(&logits_guard)?;
+            let targets_cpu = cpu_input(&targets_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(
+                logits_cpu, targets_cpu, out_cpu,
+                n_rows, vocab, reduction_tag, ignore_index,
+            )
         }
     };
-    let reduction_tag = match reduction {
-        fuel_graph::registry::Reduction::Mean => fuel_cpu_backend::byte_kernels::REDUCTION_MEAN,
-        fuel_graph::registry::Reduction::Sum  => fuel_cpu_backend::byte_kernels::REDUCTION_SUM,
-        fuel_graph::registry::Reduction::None => fuel_cpu_backend::byte_kernels::REDUCTION_NONE,
-    };
-    let logits_guard = read_storage(&inputs[0])?;
-    let targets_guard = read_storage(&inputs[1])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let logits_cpu = cpu_input(&logits_guard)?;
-    let targets_cpu = cpu_input(&targets_guard)?;
-    let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::fused_softmax_cross_entropy_f32(
-        logits_cpu, targets_cpu, out_cpu,
-        n_rows, vocab, reduction_tag, ignore_index,
-    )
 }
+
+cpu_fused_softmax_cross_entropy_wrapper!(
+    fused_softmax_cross_entropy_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_softmax_cross_entropy_f32
+);
+cpu_fused_softmax_cross_entropy_wrapper!(
+    fused_softmax_cross_entropy_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_softmax_cross_entropy_f64
+);
+cpu_fused_softmax_cross_entropy_wrapper!(
+    fused_softmax_cross_entropy_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_softmax_cross_entropy_bf16
+);
+cpu_fused_softmax_cross_entropy_wrapper!(
+    fused_softmax_cross_entropy_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_softmax_cross_entropy_f16
+);
 
 /// Per-dtype CausalConv1d dispatch wrapper. Three inputs (x, weight,
 /// bias) → one output. Geometry + `use_silu` flow through
@@ -4058,15 +4080,23 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PowIInplace, &unary(bf16_dt), cpu, powi_inplace_bf16_cpu_wrapper);
     table.register(PowIInplace, &unary(f16_dt),  cpu, powi_inplace_f16_cpu_wrapper);
 
-    // FusedSoftmaxCrossEntropy: 2 inputs (logits F32, targets I64) →
-    // 1 output (F32). The lookup key `[F32, I64, F32]` matches what
-    // `build_lookup_dtypes` produces for this node shape.
-    table.register(
-        FusedSoftmaxCrossEntropy,
-        &[DType::F32, DType::I64, DType::F32],
-        cpu,
-        fused_softmax_cross_entropy_f32_cpu_wrapper,
-    );
+    // FusedSoftmaxCrossEntropy: 2 inputs (logits T, targets I64) →
+    // 1 output (F32, the FSCE declared dtype regardless of logits T).
+    // The lookup key `[T, I64, F32]` matches what `build_lookup_dtypes`
+    // produces for this node shape. T ∈ {F32, F64, BF16, F16}.
+    for (logits_dt, w) in [
+        (DType::F32,  fused_softmax_cross_entropy_f32_cpu_wrapper  as KernelRef),
+        (DType::F64,  fused_softmax_cross_entropy_f64_cpu_wrapper),
+        (DType::BF16, fused_softmax_cross_entropy_bf16_cpu_wrapper),
+        (DType::F16,  fused_softmax_cross_entropy_f16_cpu_wrapper),
+    ] {
+        table.register(
+            FusedSoftmaxCrossEntropy,
+            &[logits_dt, DType::I64, DType::F32],
+            cpu,
+            w,
+        );
+    }
 
     // CausalConv1d: 3 inputs (x, weight, bias) + 1 output, uniform
     // dtype T ∈ {F32, F64, BF16, F16}.
@@ -5724,12 +5754,30 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost = cost_inplace_affine_cpu,
         precision = INPLACE_AFFINE_CPU_PRECISION);
 
-    // FUSED_SOFTMAX_CROSS_ENTROPY — three inputs (logits F32, targets
-    // I64, out F32). v1 ships F32-logits only; F16 / BF16 / F64
-    // siblings can follow the same pattern when called for.
-    const FSCE_F32: &[DType] = &[DType::F32, DType::I64, DType::F32];
+    // FUSED_SOFTMAX_CROSS_ENTROPY — three-tuple (logits T, targets
+    // I64, out F32). T ∈ {F32, F64, BF16, F16}; output dtype stays
+    // F32 across all variants (the FSCE declared dtype — losses
+    // accumulate in F64 and narrow to F32). The cost model + precision
+    // guarantee are shared: per-row work is dtype-agnostic and the F64
+    // accumulator gives the same precision contract for every T.
+    const FSCE_F32:  &[DType] = &[DType::F32,  DType::I64, DType::F32];
+    const FSCE_F64:  &[DType] = &[DType::F64,  DType::I64, DType::F32];
+    const FSCE_BF16: &[DType] = &[DType::BF16, DType::I64, DType::F32];
+    const FSCE_F16:  &[DType] = &[DType::F16,  DType::I64, DType::F32];
     register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F32,
         fused_softmax_cross_entropy_f32_cpu_wrapper,
+        cost = cost_fused_softmax_cross_entropy_cpu,
+        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
+    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F64,
+        fused_softmax_cross_entropy_f64_cpu_wrapper,
+        cost = cost_fused_softmax_cross_entropy_cpu,
+        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
+    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_BF16,
+        fused_softmax_cross_entropy_bf16_cpu_wrapper,
+        cost = cost_fused_softmax_cross_entropy_cpu,
+        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
+    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F16,
+        fused_softmax_cross_entropy_f16_cpu_wrapper,
         cost = cost_fused_softmax_cross_entropy_cpu,
         precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
 
