@@ -209,7 +209,7 @@ impl BertModel {
         let p = pos_emb.index_select(0, &position_ids).unwrap();
         let t = type_emb.index_select(0, &token_type_ids).unwrap();
         // Add the three embeddings, then prepend a batch dim: `[1, seq, h]`.
-        let embeds = w.add(&p).add(&t).reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let embeds = w.add(&p).unwrap().add(&t).unwrap().reshape(Shape::from_dims(&[1, seq, h])).unwrap();
         let embeds = layer_norm_affine(
             &embeds,
             &self.weights.emb_ln_gamma,
@@ -258,7 +258,7 @@ fn layer_norm_affine(
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))
         .unwrap();
-    normed.mul(&g).add(&b)
+    normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
 /// `y = x @ W + b` where `W` is `[in_features, out_features]` and `b` is
@@ -278,7 +278,7 @@ fn linear(
         .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, out_f]))
         .unwrap();
-    x.matmul(&w_t).unwrap().add(&bias)
+    x.matmul(&w_t).unwrap().add(&bias).unwrap()
 }
 
 /// One full BERT transformer block: multi-head self-attention → add+norm →
@@ -324,7 +324,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq);
 
     // Residual + LayerNorm (post-norm, BERT style).
-    let x = x.add(&attn_out);
+    let x = x.add(&attn_out).unwrap();
     let x = layer_norm_affine(&x, &lw.attn_ln_gamma, &lw.attn_ln_beta, cfg.layer_norm_eps, h, seq);
 
     // --- FFN ---------------------------------------------------------------
@@ -333,7 +333,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     let ffn_out = linear(&mid, &lw.ffn_out_w, &lw.ffn_out_b, h_ff, h, seq);
 
     // Residual + LayerNorm.
-    let x = x.add(&ffn_out);
+    let x = x.add(&ffn_out).unwrap();
     layer_norm_affine(&x, &lw.ffn_ln_gamma, &lw.ffn_ln_beta, cfg.layer_norm_eps, h, seq)
 }
 

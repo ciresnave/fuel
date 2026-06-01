@@ -689,12 +689,12 @@ fn apply_binary(
     b: &crate::lazy::LazyTensor,
 ) -> crate::lazy::LazyTensor {
     match op {
-        OpKind::AddElementwise     => a.add(b),
-        OpKind::SubElementwise     => a.sub(b),
-        OpKind::MulElementwise     => a.mul(b),
-        OpKind::DivElementwise     => a.div(b),
-        OpKind::MaximumElementwise => a.maximum(b),
-        OpKind::MinimumElementwise => a.minimum(b),
+        OpKind::AddElementwise     => a.add(b).unwrap(),
+        OpKind::SubElementwise     => a.sub(b).unwrap(),
+        OpKind::MulElementwise     => a.mul(b).unwrap(),
+        OpKind::DivElementwise     => a.div(b).unwrap(),
+        OpKind::MaximumElementwise => a.maximum(b).unwrap(),
+        OpKind::MinimumElementwise => a.minimum(b).unwrap(),
         // Pow/Rem return Result; expect() in Judge's measurement
         // path is fine — inputs are constructed locally here, so a
         // shape/dtype mismatch is a programming bug in the test

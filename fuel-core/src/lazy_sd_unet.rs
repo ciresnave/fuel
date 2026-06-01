@@ -315,7 +315,7 @@ fn u_resnet(
     let t_bc = t
         .reshape(Shape::from_dims(&[1, c_out, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c_out, h, w])).unwrap();
-    let h1 = h1.add(&t_bc);
+    let h1 = h1.add(&t_bc).unwrap();
 
     let h2 = group_norm(&h1, &rw.n2_g, &rw.n2_b, cfg.norm_num_groups, cfg.norm_eps, c_out, h, w);
     let h2 = h2.silu();
@@ -325,7 +325,7 @@ fn u_resnet(
         (Some(sw), Some(sb)) => conv2d_k1_s1_p0(x, sw, sb, c_in, c_out, h, w),
         _ => x.clone(),
     };
-    shortcut.add(&h2)
+    shortcut.add(&h2).unwrap()
 }
 
 // ---- Spatial Transformer ---------------------------------------------------
@@ -355,7 +355,7 @@ fn spatial_transformer(
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute([0, 3, 1, 2_usize]).unwrap();
     let out = conv2d_k1_s1_p0(&out, &sw.proj_out_w, &sw.proj_out_b, c, c, h, w);
-    residual.add(&out)
+    residual.add(&out).unwrap()
 }
 
 /// One transformer block: self-attn → cross-attn → GEGLU FFN.
@@ -379,7 +379,7 @@ fn transformer_block(
     let v = linear(&x_ln, &tb.attn1_v_w, None, c, c, n);
     let attn = multi_head_attn(&q, &k, &v, c, n, n, n_heads, head_dim);
     let attn = linear(&attn, &tb.attn1_out_w, Some(&tb.attn1_out_b), c, c, n);
-    let x = x.add(&attn);
+    let x = x.add(&attn).unwrap();
 
     // --- cross-attn (pre-LN, no bias on q/k/v, bias on out) -------
     let x_ln = layer_norm_affine(&x, &tb.n2_g, &tb.n2_b, 1e-5, c, n);
@@ -388,7 +388,7 @@ fn transformer_block(
     let v = linear(text_emb, &tb.attn2_v_w, None, cross_dim, c, 77);
     let attn = multi_head_attn(&q, &k, &v, c, n, 77, n_heads, head_dim);
     let attn = linear(&attn, &tb.attn2_out_w, Some(&tb.attn2_out_b), c, c, n);
-    let x = x.add(&attn);
+    let x = x.add(&attn).unwrap();
 
     // --- GEGLU FFN (pre-LN) ---------------------------------------
     let x_ln = layer_norm_affine(&x, &tb.n3_g, &tb.n3_b, 1e-5, c, n);
@@ -397,9 +397,9 @@ fn transformer_block(
     let half = 4 * c;
     let xv = mid.slice(2, 0, half).unwrap();
     let gate = mid.slice(2, half, half).unwrap();
-    let gated = xv.mul(&gate.gelu());
+    let gated = xv.mul(&gate.gelu()).unwrap();
     let ffn_out = linear(&gated, &tb.ff_out_w, Some(&tb.ff_out_b), 4 * c, c, n);
-    x.add(&ffn_out)
+    x.add(&ffn_out).unwrap()
 }
 
 fn multi_head_attn(
@@ -471,7 +471,7 @@ fn layer_norm_affine(
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).add(&b)
+    normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
 fn group_norm(
@@ -491,14 +491,14 @@ fn group_norm(
     let mean_bc = mean
         .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
-    let centered = x_flat.sub(&mean_bc);
-    let sq = centered.mul(&centered);
+    let centered = x_flat.sub(&mean_bc).unwrap();
+    let sq = centered.mul(&centered).unwrap();
     let var = sq.mean_dim(2).unwrap();
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
         .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
-    let normed = centered.div(&std_bc);
+    let normed = centered.div(&std_bc).unwrap();
     let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w])).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
@@ -508,7 +508,7 @@ fn group_norm(
         .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
-    normed_chw.mul(&g).add(&b)
+    normed_chw.mul(&g).unwrap().add(&b).unwrap()
 }
 
 /// 3×3 conv, stride 1, padding 1. Dispatches to the native `Op::Conv2D`.
@@ -579,7 +579,7 @@ fn linear(
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias)
+            proj.add(&bias).unwrap()
         }
         None => proj,
     }

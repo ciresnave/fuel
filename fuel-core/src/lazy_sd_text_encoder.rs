@@ -164,7 +164,7 @@ impl SdTextEncoder {
 
         let w = token_emb.index_select(0, &input_ids).unwrap();
         let p = pos_emb.index_select(0, &position_ids).unwrap();
-        let embeds = w.add(&p).reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let embeds = w.add(&p).unwrap().reshape(Shape::from_dims(&[1, seq, h])).unwrap();
 
         let mut x = embeds;
         for lw in &self.weights.layers {
@@ -215,14 +215,14 @@ fn encoder_layer(
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
         .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
-    scores = scores.add(&mask_t);
+    scores = scores.add(&mask_t).unwrap();
     let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq);
-    let x = x.add(&attn_out);
+    let x = x.add(&attn_out).unwrap();
 
     // --- MLP with QuickGELU ---------
     let x_ln = layer_norm_affine(&x, &lw.ln2_g, &lw.ln2_b, cfg.layer_norm_eps, h, seq);
@@ -230,7 +230,7 @@ fn encoder_layer(
     let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), h, h_ff, seq);
     let mid = quick_gelu(&mid);
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, h, seq);
-    x.add(&ffn)
+    x.add(&ffn).unwrap()
 }
 
 /// QuickGELU: `x * sigmoid(1.702 * x)`. CLIP's approximation to GELU;
@@ -248,8 +248,8 @@ fn quick_gelu(x: &LazyTensor) -> LazyTensor {
     let ones = x
         .const_f32_like(vec![1.0_f32; 1], Shape::from_dims(&[1]))
         .broadcast_to(one_plus.shape()).unwrap();
-    let sig = ones.div(&one_plus);
-    x.mul(&sig)
+    let sig = ones.div(&one_plus).unwrap();
+    x.mul(&sig).unwrap()
 }
 
 /// `y = LayerNorm(x) * gamma + beta`. Same pattern as BERT / Whisper.
@@ -270,7 +270,7 @@ fn layer_norm_affine(
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).add(&b)
+    normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
 fn linear(
@@ -289,7 +289,7 @@ fn linear(
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias)
+            proj.add(&bias).unwrap()
         }
         None => proj,
     }
