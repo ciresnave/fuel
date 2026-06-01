@@ -1612,6 +1612,10 @@ impl LazyTensor {
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
     /// `bias` is optional and must be `[Cout]` when provided. Returns
     /// a rank-4 lazy tensor `[N, Cout, Hout, Wout]`.
+    ///
+    /// Rank / channel / `groups` / stride mismatches surface as typed
+    /// errors at build time rather than panicking inside the inner
+    /// `fuel_graph` call.
     pub fn conv2d(
         &self,
         weight: &Self,
@@ -1619,8 +1623,63 @@ impl LazyTensor {
         stride: (usize, usize),
         padding: (usize, usize),
         groups: usize,
-    ) -> Self {
-        Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if groups < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: groups must be >= 1, got {groups}",
+            )).bt());
+        }
+        let x_shape = self.inner.shape();
+        let x_dims = x_shape.dims();
+        let w_shape = weight.inner.shape();
+        let w_dims = w_shape.dims();
+        if x_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
+            )).bt());
+        }
+        if w_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: weight must be rank 4 [Cout, Cin/groups, Kh, Kw], got {w_dims:?}",
+            )).bt());
+        }
+        let (cin, h_in, w_in) = (x_dims[1], x_dims[2], x_dims[3]);
+        let (cout, cin_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
+        if cin != cin_per_g * groups {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: x has {cin} in-channels but weight expects {} ({cin_per_g}*{groups})",
+                cin_per_g * groups,
+            )).bt());
+        }
+        if cout % groups != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: Cout={cout} must be divisible by groups={groups}",
+            )).bt());
+        }
+        if let Some(b) = bias {
+            let b_shape = b.inner.shape();
+            let b_dims = b_shape.dims();
+            if b_dims != [cout] {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "conv2d: bias shape {b_dims:?} must match [Cout={cout}]",
+                )).bt());
+            }
+        }
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+        if stride_h < 1 || stride_w < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: stride must be >= 1, got ({stride_h}, {stride_w})",
+            )).bt());
+        }
+        let h_padded = h_in + 2 * pad_h;
+        let w_padded = w_in + 2 * pad_w;
+        if h_padded < kh || w_padded < kw {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv2d: padded input ({h_padded}x{w_padded}) smaller than kernel ({kh}x{kw})",
+            )).bt());
+        }
+        Ok(Self {
             inner: self.inner.conv2d(
                 &weight.inner,
                 bias.map(|b| &b.inner),
@@ -1628,7 +1687,7 @@ impl LazyTensor {
                 padding,
                 groups,
             ),
-        }
+        })
     }
 
     /// Append a [`fuel_graph::Op::FlashAttn`] node. `self` is `q`
@@ -1686,6 +1745,10 @@ impl LazyTensor {
     /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4
     /// lazy tensor `[N, Cout, Hout, Wout]`.
+    ///
+    /// Rank / channel / `groups` / stride / dilation mismatches surface
+    /// as typed errors at build time rather than panicking inside the
+    /// inner `fuel_graph` call.
     pub fn conv_transpose2d(
         &self,
         weight: &Self,
@@ -1694,13 +1757,66 @@ impl LazyTensor {
         output_padding: (usize, usize),
         dilation: (usize, usize),
         groups: usize,
-    ) -> Self {
-        Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if groups < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: groups must be >= 1, got {groups}",
+            )).bt());
+        }
+        let x_shape = self.inner.shape();
+        let x_dims = x_shape.dims();
+        let w_shape = weight.inner.shape();
+        let w_dims = w_shape.dims();
+        if x_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
+            )).bt());
+        }
+        if w_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: weight must be rank 4 [Cin, Cout/groups, Kh, Kw], got {w_dims:?}",
+            )).bt());
+        }
+        let (cin, h_in, w_in) = (x_dims[1], x_dims[2], x_dims[3]);
+        let (cin_w, cout_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
+        if cin != cin_w {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: x has {cin} in-channels but weight has {cin_w}",
+            )).bt());
+        }
+        if cin % groups != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: Cin={cin} must be divisible by groups={groups}",
+            )).bt());
+        }
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+        let (out_pad_h, out_pad_w) = output_padding;
+        let (dil_h, dil_w) = dilation;
+        if stride_h < 1 || stride_w < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: stride must be >= 1, got ({stride_h}, {stride_w})",
+            )).bt());
+        }
+        if dil_h < 1 || dil_w < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: dilation must be >= 1, got ({dil_h}, {dil_w})",
+            )).bt());
+        }
+        let h_out = h_in.saturating_sub(1) * stride_h + dil_h * (kh - 1) + out_pad_h + 1;
+        let w_out = w_in.saturating_sub(1) * stride_w + dil_w * (kw - 1) + out_pad_w + 1;
+        if h_out <= 2 * pad_h || w_out <= 2 * pad_w {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose2d: padding ({pad_h}x{pad_w}) is larger than the produced output dims ({h_out}x{w_out})",
+            )).bt());
+        }
+        let _ = cout_per_g;
+        Ok(Self {
             inner: self.inner.conv_transpose2d(
                 &weight.inner,
                 stride, padding, output_padding, dilation, groups,
             ),
-        }
+        })
     }
 }
 
@@ -2574,7 +2690,7 @@ impl LazyTensor {
         // Add a unit H dim at index 2 → [N, Cin, 1, T] and [Cout, Cin/g, 1, K].
         let x_4d = self.unsqueeze(2_usize)?;
         let w_4d = weight.unsqueeze(2_usize)?;
-        let out_4d = x_4d.conv2d(&w_4d, bias, (1, stride), (0, padding), groups);
+        let out_4d = x_4d.conv2d(&w_4d, bias, (1, stride), (0, padding), groups)?;
         out_4d.squeeze(2)
     }
 
@@ -2630,7 +2746,7 @@ impl LazyTensor {
             vec![inv; c * kh * kw],
             Shape::from_dims(&[c, 1, kh, kw]),
         );
-        Ok(self.conv2d(&weight, None, stride, padding, c))
+        self.conv2d(&weight, None, stride, padding, c)
     }
 
     /// Eager-API parity for `avg_pool2d_with_stride`. Same shape as

@@ -404,7 +404,7 @@ fn conv2d_depthwise_k7_s1_p3(
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c)
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c).unwrap()
 }
 
 // ---- Safetensors loader ----------------------------------------------------

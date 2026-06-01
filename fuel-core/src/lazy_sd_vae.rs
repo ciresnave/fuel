@@ -328,7 +328,7 @@ fn conv2d_k3_s1_p1(
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1).unwrap()
 }
 
 /// 1×1 conv, stride 1, padding 0. Input `[1, Cin, H, W]`, kernel
@@ -345,7 +345,7 @@ fn conv2d_k1_s1_p0(
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
-    x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
+    x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1).unwrap()
 }
 
 /// 2× nearest-neighbor upsample along both spatial axes. `[1, C, H, W]`
