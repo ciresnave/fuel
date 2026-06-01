@@ -911,19 +911,65 @@ impl LazyTensor {
     }
 
     /// Apply rotary position embeddings. See [`fuel_graph::Tensor::rope`].
-    pub fn rope(&self, base: f64, start_pos: usize) -> Self {
-        Self {
-            inner: self.inner.rope(base, start_pos),
+    /// Rank < 2 surfaces as a typed error at build time.
+    pub fn rope(&self, base: f64, start_pos: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dims = shape.dims();
+        if dims.len() < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope: input must have rank >= 2, got {dims:?}",
+            )).bt());
         }
+        Ok(Self {
+            inner: self.inner.rope(base, start_pos),
+        })
     }
 
     /// Apply RoPE using caller-supplied `cos` and `sin` tables so they
     /// can be shared across many layers. See
     /// [`fuel_graph::Tensor::rope_with_tables`].
-    pub fn rope_with_tables(&self, cos: &Self, sin: &Self) -> Self {
-        Self {
-            inner: self.inner.rope_with_tables(&cos.inner, &sin.inner),
+    ///
+    /// Rank / dtype / table-shape mismatches surface as typed errors
+    /// at build time rather than panicking inside `fuel_graph`.
+    pub fn rope_with_tables(&self, cos: &Self, sin: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        if self.inner.dtype() != fuel_core_types::DType::F32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope: only f32 is supported today, got {:?} (cast explicitly for other dtypes)",
+                self.inner.dtype(),
+            )).bt());
         }
+        let in_shape = self.inner.shape();
+        let dims = in_shape.dims();
+        let rank = dims.len();
+        if rank < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope: input must have rank >= 2, got {dims:?}",
+            )).bt());
+        }
+        let seq = dims[rank - 2];
+        let d = dims[rank - 1];
+        if !d.is_multiple_of(2) {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope: feature dim {d} must be even",
+            )).bt());
+        }
+        let cos_shape = cos.inner.shape();
+        let cos_dims = cos_shape.dims();
+        if cos_dims != [seq, d] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope_with_tables: cos shape {cos_dims:?} does not match [seq, d] = [{seq}, {d}]",
+            )).bt());
+        }
+        let sin_shape = sin.inner.shape();
+        let sin_dims = sin_shape.dims();
+        if sin_dims != [seq, d] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope_with_tables: sin shape {sin_dims:?} does not match [seq, d] = [{seq}, {d}]",
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.rope_with_tables(&cos.inner, &sin.inner),
+        })
     }
 
     // ---- indexing ----
@@ -1214,7 +1260,7 @@ mod tests {
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
         );
-        let y = x.rope(10000.0, 0);
+        let y = x.rope(10000.0, 0).unwrap();
         assert_eq!(y.shape().dims(), &[2, 4]);
         assert_eq!(y.dtype(), DType::F32);
     }
@@ -1541,8 +1587,8 @@ mod tests {
             .permute([0, 2, 1, 3_usize]).unwrap();
 
         // RoPE on Q and K.
-        let q_r = q_h.rope(10000.0, 0);
-        let k_r = k_h.rope(10000.0, 0);
+        let q_r = q_h.rope(10000.0, 0).unwrap();
+        let k_r = k_h.rope(10000.0, 0).unwrap();
 
         // Scaled dot-product attention.
         let k_t = k_r.transpose().unwrap();
@@ -3952,8 +3998,8 @@ impl LlamaModel {
         // RoPE on Q and K (applied per-head; V is NOT rotated). Uses
         // caller-supplied cos/sin so all layers share a single pair
         // of const nodes.
-        let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
-        let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
         // If GQA (n_kv_heads < n_heads), replicate each KV head
         // `n_heads / n_kv_heads` times along the head dim so Q and K/V
@@ -4108,8 +4154,8 @@ impl LlamaModel {
         // rather than each rebuilding their own. The caller computes
         // the tables for `(rope_base, cached_len, seq, head_dim)` once
         // before dispatching any layer.
-        let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
-        let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
         // Keys/values to persist to the external cache — the pre-concat,
         // pre-GQA-expansion variants, exactly matching the cache layout.
@@ -4278,8 +4324,8 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute([0, 2, 1, 3_usize]).unwrap();
 
-        let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
-        let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
         // Write fresh K/V slabs into the pre-allocated cache buffers
         // via Op::WriteSlice. Source slab shape is
@@ -6294,8 +6340,8 @@ impl Gemma2Model {
             .permute([0, 2, 1, 3_usize]).unwrap();
 
         // RoPE.
-        let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
-        let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
+        let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
+        let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
         // GQA expansion.
         let (k_r, v_h) = if cfg.n_kv_heads == cfg.n_heads {
@@ -7557,13 +7603,13 @@ fn partial_rope(
     head_dim: usize,
 ) -> LazyTensor {
     if rotary_dim == head_dim {
-        return x.rope_with_tables(cos, sin);
+        return x.rope_with_tables(cos, sin).unwrap();
     }
     let rank = x.dims().len();
     let last = rank - 1;
     let x_rot = x.slice(last, 0, rotary_dim).unwrap();
     let x_pass = x.slice(last, rotary_dim, head_dim - rotary_dim).unwrap();
-    let x_rot_rotated = x_rot.rope_with_tables(cos, sin);
+    let x_rot_rotated = x_rot.rope_with_tables(cos, sin).unwrap();
     x_rot_rotated.concat(&x_pass, last).unwrap()
 }
 
