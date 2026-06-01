@@ -203,10 +203,11 @@ fn baracuda_is_sole_affine_source() {
 
 // ---- In-place affine — Phase 3d of in-place ops infrastructure ----
 //
-// baracuda alpha.60 exposes `affine_inplace_{f32,f64}_run` only; no
-// bf16/f16/integer variants today. The wrappers' signature differs
-// from the non-inplace `cuda_affine_baracuda_wrapper!` — `inputs` is
-// empty and `outputs[0]` is the target (the executor's
+// alpha.61 added bf16 + f16 in-place affine in response to Fuel's
+// 2026-05-30 ask (docs/baracuda-ask-inplace-ops-2026-05-30.md
+// Item 1); alpha.62 brought integer dtypes too. The wrappers'
+// signature differs from the non-inplace `cuda_affine_baracuda_wrapper!`
+// — `inputs` is empty and `outputs[0]` is the target (the executor's
 // `WorkItemKind::InplaceKernel` arm enforces this). Tests mirror the
 // `op_inplace_affine_cpu_mutates_target_storage` lib test but on
 // CUDA.
@@ -277,4 +278,53 @@ fn baracuda_affine_inplace_f64() {
     );
     let got: &[f64] = bytemuck::cast_slice(&out);
     assert_eq!(got, &[2.5_f64, 4.5, 6.5, 8.5]);
+}
+
+#[test]
+#[ignore]
+fn baracuda_affine_inplace_bf16() {
+    use half::bf16;
+    let Some(_dev) = dev_or_skip() else { return };
+    let table = dual_table();
+    let input: Vec<bf16> = vec![bf16::from_f32(1.0), bf16::from_f32(2.0),
+                                bf16::from_f32(3.0), bf16::from_f32(4.0)];
+    let out = run_affine_inplace(
+        &table,
+        DType::BF16,
+        fuel_dispatch::baracuda_dispatch::affine::affine_inplace_bf16,
+        &input,
+        2.0,
+        0.5,
+    );
+    let got: &[bf16] = bytemuck::cast_slice(&out);
+    // bf16 has ~3 decimal digits of precision; use coarse tolerance.
+    let want = [2.5_f32, 4.5, 6.5, 8.5];
+    for (i, &w) in want.iter().enumerate() {
+        assert!((got[i].to_f32() - w).abs() < 0.05,
+            "slot {i}: got {} want {w}", got[i].to_f32());
+    }
+}
+
+#[test]
+#[ignore]
+fn baracuda_affine_inplace_f16() {
+    use half::f16;
+    let Some(_dev) = dev_or_skip() else { return };
+    let table = dual_table();
+    let input: Vec<f16> = vec![f16::from_f32(1.0), f16::from_f32(2.0),
+                               f16::from_f32(3.0), f16::from_f32(4.0)];
+    let out = run_affine_inplace(
+        &table,
+        DType::F16,
+        fuel_dispatch::baracuda_dispatch::affine::affine_inplace_f16,
+        &input,
+        2.0,
+        0.5,
+    );
+    let got: &[f16] = bytemuck::cast_slice(&out);
+    let want = [2.5_f32, 4.5, 6.5, 8.5];
+    for (i, &w) in want.iter().enumerate() {
+        assert!((got[i].to_f32() - w).abs() < 0.01,
+            "slot {i}: got {} want {w}", got[i].to_f32());
+    }
 }

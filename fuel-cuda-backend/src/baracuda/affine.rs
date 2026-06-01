@@ -197,12 +197,12 @@ affine_kernel!(
     1, "affine_u8"
 );
 
-/// In-place affine on CUDA via baracuda alpha.60's
-/// `baracuda_kernels_affine_inplace_{f32,f64}_run`. Single-pointer
-/// ABI: `y = mul * y + offset`. baracuda only ships f32 + f64
-/// in-place variants today — bf16/f16 callers must compose via the
-/// non-inplace `affine_*` cousin (Cast → Affine → Cast) or wait for
-/// baracuda to add the variants.
+/// In-place affine on CUDA via baracuda's
+/// `baracuda_kernels_affine_inplace_*_run`. Single-pointer ABI:
+/// `y = mul * y + offset`. As of alpha.62 all 4 FP dtypes ship
+/// (f32, f64, bf16, f16); the half-precision variants pivot scalars
+/// through f32 at the FFI boundary (matching the forward
+/// `affine_{bf16,f16}_run` convention).
 ///
 /// No strided in-place variant exists in baracuda. The executor's
 /// `WorkItemKind::InplaceKernel` arm rejects strided targets up front
@@ -253,4 +253,17 @@ affine_inplace_kernel!(
     affine_inplace_f64, f64,
     baracuda_kernels_affine_inplace_f64_run,
     8, "affine_inplace_f64"
+);
+// alpha.61 added bf16 + f16 in response to Fuel's ask
+// (docs/baracuda-ask-inplace-ops-2026-05-30.md Item 1). Scalars
+// pivot through f32; storage stays at the half-precision dtype.
+affine_inplace_kernel!(
+    affine_inplace_bf16, f32,
+    baracuda_kernels_affine_inplace_bf16_run,
+    2, "affine_inplace_bf16"
+);
+affine_inplace_kernel!(
+    affine_inplace_f16, f32,
+    baracuda_kernels_affine_inplace_f16_run,
+    2, "affine_inplace_f16"
 );

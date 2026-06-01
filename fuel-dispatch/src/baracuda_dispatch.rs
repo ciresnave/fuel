@@ -1415,9 +1415,10 @@ pub mod affine {
     // mutate through `bytes_mut()` (via `cuda_output` which returns
     // `&mut CudaStorageBytes`).
     //
-    // baracuda only ships f32 + f64 in-place variants today; bf16/f16
-    // in-place affine compose via Cast → Affine → Cast or wait for
-    // baracuda to add the variants.
+    // alpha.62 ships all 4 FP dtypes (f32/f64/bf16/f16); the
+    // half-precision variants pivot scalars through f32 at the FFI
+    // boundary. Closes the only known in-place ops gap from the
+    // 2026-05-30 baracuda ask (Item 1).
     macro_rules! cuda_affine_inplace_baracuda_wrapper {
         ($wrapper_name:ident, $baracuda_fn:path, $scalar_cast:expr $(,)?) => {
             pub fn $wrapper_name(
@@ -1456,6 +1457,10 @@ pub mod affine {
         affine_inplace_f32, bk::affine_inplace_f32, |v: f64| v as f32);
     cuda_affine_inplace_baracuda_wrapper!(
         affine_inplace_f64, bk::affine_inplace_f64, |v: f64| v);
+    cuda_affine_inplace_baracuda_wrapper!(
+        affine_inplace_bf16, bk::affine_inplace_bf16, |v: f64| v as f32);
+    cuda_affine_inplace_baracuda_wrapper!(
+        affine_inplace_f16, bk::affine_inplace_f16, |v: f64| v as f32);
 }
 
 // ===========================================================================
@@ -2271,12 +2276,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(Affine, &u(DType::U8),  cuda, affine::affine_u8,  strided);
 
     // In-place affine — Phase 3d of in-place ops infrastructure.
-    // baracuda only ships f32 + f64 in-place variants today. No
-    // strided variant: the executor rejects strided in-place targets
-    // up front, so we register without the `strided` cap (default
-    // KernelCaps).
-    table.register(InplaceAffine, &u(f32), cuda, affine::affine_inplace_f32);
-    table.register(InplaceAffine, &u(f64), cuda, affine::affine_inplace_f64);
+    // alpha.62 ships all 4 FP dtypes (added bf16/f16 in alpha.61 per
+    // Fuel's ask). No strided variant: the executor rejects strided
+    // in-place targets up front, so we register without the `strided`
+    // cap (default KernelCaps).
+    table.register(InplaceAffine, &u(f32),  cuda, affine::affine_inplace_f32);
+    table.register(InplaceAffine, &u(f64),  cuda, affine::affine_inplace_f64);
+    table.register(InplaceAffine, &u(bf16), cuda, affine::affine_inplace_bf16);
+    table.register(InplaceAffine, &u(f16),  cuda, affine::affine_inplace_f16);
 
     // ClampInplace + PowIInplace — scalar-param family. baracuda
     // ships all 4 dtypes for both; ClampInplace uses the
