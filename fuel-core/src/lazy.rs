@@ -974,19 +974,54 @@ impl LazyTensor {
 
     // ---- indexing ----
 
-    /// Pick slices along `dim` using a 1-D U32 index tensor.
-    pub fn index_select(&self, dim: usize, indices: &Self) -> Self {
-        Self {
-            inner: self.inner.index_select(dim, &indices.inner),
+    /// Pick slices along `dim` using a 1-D U32 index tensor. Accepts
+    /// any [`Dim`]. Dim bounds / index dtype / index rank mismatches
+    /// surface as typed errors at build time.
+    pub fn index_select<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "index_select")?;
+        if indices.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_select: index tensor must be U32, got {:?}",
+                indices.inner.dtype(),
+            )).bt());
         }
+        let idx_shape = indices.inner.shape();
+        let idx_dims = idx_shape.dims();
+        if idx_dims.len() != 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_select: index tensor must be rank 1, got {idx_dims:?}",
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.index_select(dim, &indices.inner),
+        })
     }
 
     /// N-D gather along `dim` using a U32 index tensor with the same
-    /// shape as the output.
-    pub fn gather(&self, dim: usize, indices: &Self) -> Self {
-        Self {
-            inner: self.inner.gather(dim, &indices.inner),
+    /// rank as `self`; output shape equals the index shape. Accepts
+    /// any [`Dim`]. Dim bounds / index dtype / rank mismatches surface
+    /// as typed errors at build time.
+    pub fn gather<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "gather")?;
+        if indices.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "gather: index tensor must be U32, got {:?}",
+                indices.inner.dtype(),
+            )).bt());
         }
+        let data_rank = shape.dims().len();
+        let idx_shape = indices.inner.shape();
+        let idx_rank = idx_shape.dims().len();
+        if data_rank != idx_rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "gather: data and index must have the same rank, got {data_rank} vs {idx_rank}",
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.gather(dim, &indices.inner),
+        })
     }
 
     // ---- dtype ----
@@ -1277,7 +1312,7 @@ mod tests {
     fn indexing_builds_correct_output_shape() {
         let data = LazyTensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu());
         let idx = data.const_u32_like(vec![0, 2, 1], Shape::from_dims(&[3]));
-        let out = data.index_select(0, &idx);
+        let out = data.index_select(0, &idx).unwrap();
         assert_eq!(out.shape().dims(), &[3, 4]);
     }
 
@@ -2117,15 +2152,75 @@ impl LazyTensor {
 
     /// `self + scatter(indices, src, dim=dim)` — accumulate `src` rows
     /// at positions named by `indices` along `dim`. `indices` is rank-1
-    /// U32 with length equal to `src.dims()[dim]`.
-    pub fn index_add(&self, dim: usize, indices: &Self, src: &Self) -> Self {
-        Self { inner: self.inner.index_add(dim, &indices.inner, &src.inner) }
+    /// U32 with length equal to `src.dims()[dim]`. Accepts any [`Dim`].
+    /// Dim bounds / index dtype / shape / dtype-parity mismatches
+    /// surface as typed errors at build time.
+    pub fn index_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "index_add")?;
+        if indices.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_add: index must be U32, got {:?}", indices.inner.dtype(),
+            )).bt());
+        }
+        if self.inner.dtype() != src.inner.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_add: base and src dtypes must match, got {:?} vs {:?}",
+                self.inner.dtype(), src.inner.dtype(),
+            )).bt());
+        }
+        let base_dims = shape.dims();
+        let src_shape = src.inner.shape();
+        let src_dims = src_shape.dims();
+        if base_dims.len() != src_dims.len() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_add: base and src must have the same rank, got {} vs {}",
+                base_dims.len(), src_dims.len(),
+            )).bt());
+        }
+        let idx_shape = indices.inner.shape();
+        let idx_dims = idx_shape.dims();
+        if idx_dims.len() != 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_add: index must be rank 1, got {idx_dims:?}",
+            )).bt());
+        }
+        if src_dims[dim] != idx_dims[0] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "index_add: src dim {dim} ({}) must match index length ({})",
+                src_dims[dim], idx_dims[0],
+            )).bt());
+        }
+        Ok(Self { inner: self.inner.index_add(dim, &indices.inner, &src.inner) })
     }
 
     /// Functional inverse of [`Self::gather`]. Accumulates `src` into
     /// `self` at positions given by `indices` (substituted at `dim`).
-    pub fn scatter_add(&self, dim: usize, indices: &Self, src: &Self) -> Self {
-        Self { inner: self.inner.scatter_add(dim, &indices.inner, &src.inner) }
+    /// Accepts any [`Dim`]. Dim bounds / index dtype / shape / dtype-
+    /// parity mismatches surface as typed errors at build time.
+    pub fn scatter_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "scatter_add")?;
+        if indices.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "scatter_add: index must be U32, got {:?}", indices.inner.dtype(),
+            )).bt());
+        }
+        if self.inner.dtype() != src.inner.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "scatter_add: base and src dtypes must match, got {:?} vs {:?}",
+                self.inner.dtype(), src.inner.dtype(),
+            )).bt());
+        }
+        let idx_shape = indices.inner.shape();
+        let src_shape = src.inner.shape();
+        if idx_shape.dims() != src_shape.dims() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "scatter_add: index and src must have the same shape, got {:?} vs {:?}",
+                idx_shape.dims(), src_shape.dims(),
+            )).bt());
+        }
+        Ok(Self { inner: self.inner.scatter_add(dim, &indices.inner, &src.inner) })
     }
 
     // ---- in-place activations (Phase 4-5 infrastructure, now surfaced) ----
@@ -3867,7 +3962,7 @@ impl LlamaModel {
         // index_select(0, token_ids) produces [seq, dim]. Reshape to
         // [1, seq, dim] for the downstream attention code.
         let mut h = embed
-            .index_select(0, &token_ids)
+            .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // Share RoPE cos/sin across all layers — see the matching
@@ -3935,7 +4030,7 @@ impl LlamaModel {
             Shape::from_dims(&[seq]),
         );
         let mut h = embed
-            .index_select(0, &token_ids)
+            .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
@@ -4466,7 +4561,7 @@ impl LlamaModel {
         );
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
-            .index_select(0, &token_ids)
+            .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // RoPE cos/sin tables shared across layers.
@@ -5800,7 +5895,7 @@ impl LlamaModel {
         let token_ids =
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
-            .index_select(0, &token_ids)
+            .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
@@ -6246,7 +6341,7 @@ impl Gemma2Model {
         let token_ids =
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
-            .index_select(0, &token_ids)
+            .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap()
             .mul_scalar((cfg.dim as f64).sqrt());
 
@@ -6915,7 +7010,7 @@ impl PhiModel {
         );
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
-            .index_select(0, &token_ids)
+            .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // RoPE tables are sized for `rotary_dim`, not the full head_dim —
@@ -9292,7 +9387,7 @@ mod phase_a1_wrapper_tests {
         let base = cpu_f32(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
         let src = base.const_f32_like(vec![10.0, 20.0, 30.0, 40.0], vec![2, 2]);
         let indices = base.const_u32_like(vec![0_u32, 0_u32], vec![2]);
-        let out = base.index_add(0, &indices, &src);
+        let out = base.index_add(0, &indices, &src).unwrap();
         assert_eq!(out.shape().dims(), &[2, 2]);
         // both src rows added to row 0; row 1 unchanged
         let v = out.realize_f32();
@@ -9307,7 +9402,7 @@ mod phase_a1_wrapper_tests {
         let base = cpu_f32(vec![0.0, 0.0, 0.0, 0.0], &[2, 2]);
         let src = base.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
         let indices = base.const_u32_like(vec![0_u32, 1_u32, 1_u32, 0_u32], vec![2, 2]);
-        let out = base.scatter_add(0, &indices, &src);
+        let out = base.scatter_add(0, &indices, &src).unwrap();
         assert_eq!(out.shape().dims(), &[2, 2]);
     }
 

@@ -141,7 +141,7 @@ impl Qwen2MoeModel {
         );
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut x = embed
-            .index_select(0, &input_ids)
+            .index_select(0, &input_ids).unwrap()
             .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
 
         for lw in &self.weights.layers {
