@@ -112,6 +112,16 @@ enum WorkItemKind {
         dest: NodeId,
         source: NodeId,
     },
+    /// `Op::WriteSliceRotating` — like `WriteSlice` but the rotating
+    /// axis wraps modulo `modulus`. Carries `dest`/`source`/`position`
+    /// NodeIds; the kernel reads the U32 position from `position`'s
+    /// storage and splits the write across the ring boundary if
+    /// `position % modulus + slab_len > modulus`.
+    WriteSliceRotating {
+        dest: NodeId,
+        source: NodeId,
+        position: NodeId,
+    },
     /// `Op::Copy { target }` — produce a fresh Storage on
     /// `target_location`, copying bytes from `inputs[0]`'s residency.
     ///
@@ -827,7 +837,7 @@ fn compile_one(
     // structural ops (WriteSlice / ZeroFill / Release / Move) which
     // have their own dedicated WorkItemKind arms above this one.
     if !matches!(node.op,
-        Op::WriteSlice { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
+        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
     ) {
         if let Some(target_idx) = node.op.destructive_input() {
             if inputs.len() <= target_idx {
@@ -912,6 +922,49 @@ fn compile_one(
             dtype: node.dtype,
             target_backend,
             kind: WorkItemKind::WriteSlice { dest: inputs[0], source: inputs[1] },
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
+
+    if matches!(node.op, Op::WriteSliceRotating { .. }) {
+        // WriteSliceRotating: same shape as WriteSlice but with a
+        // third input (position scalar). Dispatch through the
+        // binding table at `OpKind::WriteSliceRotating`; the
+        // executor's arm reads the position from `position`'s
+        // storage and the kernel splits across the ring boundary.
+        if inputs.len() != 3 {
+            return Err(Error::Msg(format!(
+                "Op::WriteSliceRotating expects 3 inputs (destination, source, position), got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: WriteSliceRotating node {:?} has no target_backend set",
+                id
+            ))
+            .bt()
+        })?;
+        let op_params = op_to_op_params(graph, node, layout_cache)?;
+        let dtypes = build_lookup_dtypes(graph, node);
+        let compiled = compile_node(
+            OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings,
+        )?;
+        let output_layout = graph.layout(inputs[0]);
+        layout_cache.insert(id, output_layout.clone());
+        return Ok(WorkItem {
+            node_id: id,
+            inputs: inputs.clone(),
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::WriteSliceRotating {
+                dest: inputs[0], source: inputs[1], position: inputs[2],
+            },
             compiled: Some(compiled),
             output_layout,
             destructive_input,
@@ -1165,6 +1218,17 @@ pub(crate) fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
             .unwrap_or(node.dtype);
         return vec![src_dt, node.dtype];
     }
+    if matches!(node.op, Op::WriteSliceRotating { .. }) {
+        // Same canonicalization as WriteSlice: dest = output slot;
+        // position (inputs[2]) is read by the kernel via the
+        // position-input parameter, not the binding-table key.
+        let src_dt = node
+            .inputs
+            .get(1)
+            .map(|&id| graph.node(id).dtype)
+            .unwrap_or(node.dtype);
+        return vec![src_dt, node.dtype];
+    }
     let mut dts: Vec<DType> = node
         .inputs
         .iter()
@@ -1343,6 +1407,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
             Some(OpKind::QMatMul)
         }
         Op::WriteSlice { .. } => Some(OpKind::WriteSlice),
+        Op::WriteSliceRotating { .. } => Some(OpKind::WriteSliceRotating),
         // Phase 2 of bridge-retirement (post-9c): Op::Copy dispatches
         // through the binding table at OpKind::Copy. The BackendId
         // axis encodes the source backend (the kernel runs there —
@@ -2724,6 +2789,48 @@ fn op_to_op_params(
                 ranges: ranges.clone(),
             }
         }
+        Op::WriteSliceRotating { axis, modulus, ranges } => {
+            // inputs[0] = destination, inputs[1] = source slab,
+            // inputs[2] = dynamic position scalar (U32). The builder
+            // already validated rank / dtype / shape parity; the
+            // exec-time check below mirrors WriteSlice for the
+            // structural invariants the executor depends on.
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceRotating expects 3 inputs (destination, source, position), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let dest_dims = node.shape.dims().to_vec();
+            if ranges.len() != dest_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceRotating: ranges.len() ({}) must equal destination rank ({})",
+                    ranges.len(), dest_dims.len(),
+                ))
+                .bt());
+            }
+            if *axis >= dest_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceRotating: axis {axis} out of bounds for rank {}",
+                    dest_dims.len(),
+                ))
+                .bt());
+            }
+            if *modulus == 0 || *modulus > dest_dims[*axis] {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceRotating: modulus {modulus} invalid for dest_shape[{axis}] = {}",
+                    dest_dims[*axis],
+                ))
+                .bt());
+            }
+            OpParams::WriteSliceRotating {
+                dest_shape: dest_dims,
+                axis: *axis,
+                modulus: *modulus,
+                ranges: ranges.clone(),
+            }
+        }
         _ => OpParams::None,
     })
 }
@@ -2984,6 +3091,98 @@ fn execute_work_item(
             // realize loop's destructive_input cleanup evicts the
             // dest's own NodeId from the cache afterward — downstream
             // readers go through this node's NodeId.
+            cache.insert(item.node_id, dest_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::WriteSliceRotating { dest, source, position } => {
+            // Same shape as WriteSlice but with a position input.
+            // Kernel sees `[source, position]` as inputs; `dest` is the
+            // pre-allocated output buffer (in-place adoption).
+            let compiled = item.compiled.as_ref().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceRotating work item {:?} has no compiled node",
+                    item.node_id,
+                ))
+                .bt()
+            })?;
+            let dest_arc = cache.get(dest).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceRotating destination {:?} of {:?} not realized",
+                    dest, item.node_id,
+                ))
+                .bt()
+            })?;
+            let source_arc = cache.get(source).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceRotating source {:?} of {:?} not realized",
+                    source, item.node_id,
+                ))
+                .bt()
+            })?;
+            let position_arc = cache.get(position).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceRotating position {:?} of {:?} not realized",
+                    position, item.node_id,
+                ))
+                .bt()
+            })?;
+            let dest_layout = layout_cache.get(dest).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceRotating destination {:?} of {:?} has no cached layout",
+                    dest, item.node_id,
+                ))
+                .bt()
+            })?;
+            let source_layout = layout_cache.get(source).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceRotating source {:?} of {:?} has no cached layout",
+                    source, item.node_id,
+                ))
+                .bt()
+            })?;
+            // v1: destination contiguous + zero offset (same as WriteSlice).
+            if !dest_layout.is_contiguous() || dest_layout.start_offset() != 0 {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceRotating (v1): destination {:?} must be \
+                     contiguous + zero-offset; got Layout {:?}",
+                    dest, dest_layout,
+                ))
+                .bt());
+            }
+            let source_arc_contig = {
+                let s_dtype = source_arc
+                    .read()
+                    .map_err(|_| poisoned("WriteSliceRotating source storage"))?
+                    .dtype;
+                let s_len_bytes = source_arc
+                    .read()
+                    .map_err(|_| poisoned("WriteSliceRotating source storage"))?
+                    .inner
+                    .len_bytes();
+                let layout_bytes =
+                    source_layout.shape().elem_count() * s_dtype.size_in_bytes();
+                let bytes_match_shape = s_len_bytes == layout_bytes;
+                let already_contig = source_layout.is_contiguous()
+                    && source_layout.start_offset() == 0
+                    && bytes_match_shape;
+                if already_contig {
+                    source_arc
+                } else {
+                    auto_contiguize(&source_arc, &source_layout)?
+                }
+            };
+            let source_layout_kernel =
+                fuel_core_types::Layout::contiguous(source_layout.shape().clone());
+            let position_layout = fuel_core_types::Layout::contiguous(
+                fuel_core_types::Shape::from_dims(&[]),
+            );
+            let input_arcs = vec![source_arc_contig, position_arc];
+            let mut output_arcs = vec![dest_arc.clone()];
+            let kernel_layouts = vec![
+                source_layout_kernel, position_layout, dest_layout.clone(),
+            ];
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())

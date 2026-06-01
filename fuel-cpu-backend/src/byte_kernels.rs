@@ -8401,6 +8401,164 @@ pub fn write_slice_cpu(
     Ok(())
 }
 
+// =============================================================================
+// WriteSliceRotating — Phase C (sliding-window KV caches)
+// =============================================================================
+
+/// In-place ring-buffer scatter write: copy `source`'s bytes into a
+/// slab of `dest` where the `axis` axis wraps modulo `modulus`. The
+/// dynamic write start on `axis` comes from `position_bytes` (the
+/// first `u32` is read host-side). On other axes, `ranges` defines
+/// the slab the same way as [`write_slice_cpu`].
+///
+/// With `wrapped_start = (position % modulus)` and
+/// `slab_axis_len = ranges[axis].1 - ranges[axis].0`, the kernel
+/// writes rows whose `axis` coord is
+/// `(wrapped_start + r) % modulus` for `r in 0..slab_axis_len`.
+/// When `wrapped_start + slab_axis_len > modulus` the write splits
+/// across the ring boundary; both halves are issued as separate
+/// `write_slice_cpu` calls.
+///
+/// **v1 constraint**: `axis == 0` (the rotating axis must be the
+/// leading dim). This makes the source-side byte split a trivial
+/// prefix/suffix on the source buffer. Mistral / Phi-3 sliding-
+/// window caches store per-layer K/V as `[seq, n_kv_heads, head_dim]`
+/// with seq as axis 0, so this constraint is fine. Strided multi-
+/// axis splits are a follow-up if needed.
+#[allow(clippy::too_many_arguments)]
+pub fn write_slice_rotating_cpu(
+    source: &CpuStorageBytes,
+    position_bytes: &CpuStorageBytes,
+    dest: &mut CpuStorageBytes,
+    dest_shape: &[usize],
+    axis: usize,
+    modulus: usize,
+    ranges: &[(usize, usize)],
+    dtype_size: usize,
+) -> Result<()> {
+    if dtype_size == 0 {
+        return Err(Error::Msg("write_slice_rotating_cpu: dtype_size must be > 0".to_string()).bt());
+    }
+    let rank = dest_shape.len();
+    if rank == 0 {
+        return Err(Error::Msg(
+            "write_slice_rotating_cpu: dest rank must be >= 1".to_string(),
+        )
+        .bt());
+    }
+    if ranges.len() != rank {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu: ranges.len() ({}) != dest rank ({rank})",
+            ranges.len(),
+        ))
+        .bt());
+    }
+    if axis >= rank {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu: axis {axis} out of bounds for rank {rank}",
+        ))
+        .bt());
+    }
+    if modulus == 0 || modulus > dest_shape[axis] {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu: modulus {modulus} invalid for dest_shape[{axis}] = {}",
+            dest_shape[axis],
+        ))
+        .bt());
+    }
+    if axis != 0 {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu (v1): rotating axis must be 0; got {axis}. \
+             Strided multi-axis splits land in a follow-up slice.",
+        ))
+        .bt());
+    }
+    if position_bytes.len_bytes() < 4 {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu: position storage has {} bytes, need >= 4",
+            position_bytes.len_bytes(),
+        ))
+        .bt());
+    }
+    let pos_buf = position_bytes.bytes();
+    let position = u32::from_ne_bytes([pos_buf[0], pos_buf[1], pos_buf[2], pos_buf[3]]) as usize;
+    let wrapped_start = position % modulus;
+
+    let mut slab_shape: Vec<usize> = Vec::with_capacity(rank);
+    for (i, &(start, end)) in ranges.iter().enumerate() {
+        if end < start {
+            return Err(Error::Msg(format!(
+                "write_slice_rotating_cpu: ranges[{i}] = ({start}, {end}) has end < start",
+            ))
+            .bt());
+        }
+        let slab = end - start;
+        if i == axis {
+            if slab > modulus {
+                return Err(Error::Msg(format!(
+                    "write_slice_rotating_cpu: rotating-axis slab {slab} > modulus {modulus}",
+                ))
+                .bt());
+            }
+        } else if end > dest_shape[i] {
+            return Err(Error::Msg(format!(
+                "write_slice_rotating_cpu: ranges[{i}] = ({start}, {end}) > dest_shape[{i}] = {}",
+                dest_shape[i],
+            ))
+            .bt());
+        }
+        slab_shape.push(slab);
+    }
+    let slab_elems: usize = slab_shape.iter().copied().product();
+    if slab_elems == 0 {
+        return Ok(());
+    }
+    let dest_elems: usize = dest_shape.iter().copied().product();
+    let dest_bytes_needed = dest_elems.saturating_mul(dtype_size);
+    if dest.len_bytes() != dest_bytes_needed {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu: dest bytes ({}) != dest_shape {:?} * dtype_size {dtype_size}",
+            dest.len_bytes(), dest_shape,
+        ))
+        .bt());
+    }
+    let source_bytes_needed = slab_elems.saturating_mul(dtype_size);
+    if source.len_bytes() != source_bytes_needed {
+        return Err(Error::Msg(format!(
+            "write_slice_rotating_cpu: source bytes ({}) != slab {:?} * dtype_size {dtype_size}",
+            source.len_bytes(), slab_shape,
+        ))
+        .bt());
+    }
+    // Split the write across the ring boundary on the rotating axis.
+    let slab_axis_len = slab_shape[axis];
+    let first_len = slab_axis_len.min(modulus - wrapped_start);
+    let second_len = slab_axis_len - first_len;
+    // With axis==0, source bytes are `[first_len rows][second_len rows]`
+    // (row-major), each row being `inner_per_row_bytes`.
+    let inner_per_row_elems: usize = slab_shape[1..].iter().copied().product();
+    let inner_per_row_bytes = inner_per_row_elems * dtype_size;
+    let src_buf = source.bytes();
+    if first_len > 0 {
+        let mut sub_ranges = ranges.to_vec();
+        sub_ranges[axis] = (wrapped_start, wrapped_start + first_len);
+        let first_bytes_len = first_len * inner_per_row_bytes;
+        let src_first = CpuStorageBytes::from_bytes(&src_buf[..first_bytes_len]);
+        write_slice_cpu(&src_first, dest, dest_shape, &sub_ranges, dtype_size)?;
+    }
+    if second_len > 0 {
+        let mut sub_ranges = ranges.to_vec();
+        sub_ranges[axis] = (0, second_len);
+        let first_bytes_len = first_len * inner_per_row_bytes;
+        let second_bytes_len = second_len * inner_per_row_bytes;
+        let src_second = CpuStorageBytes::from_bytes(
+            &src_buf[first_bytes_len..first_bytes_len + second_bytes_len],
+        );
+        write_slice_cpu(&src_second, dest, dest_shape, &sub_ranges, dtype_size)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10210,6 +10368,112 @@ mod tests {
         ).expect("write_slice");
         let r: &[f64] = dest.as_slice().unwrap();
         assert_eq!(r, &[0.0, 0.0, 1.5, 2.5, 0.0, 0.0]);
+    }
+
+    // ---- write_slice_rotating_cpu (Phase C) --------------------------------
+
+    /// Sliding-window write before the wrap: position < modulus and
+    /// `wrapped_start + slab < modulus` so no boundary split.
+    #[test]
+    fn write_slice_rotating_cpu_within_window() {
+        // modulus = 4, dest [4, 2] (axis 0 rotates), write a 1-row slab
+        // at position 1 — should land at row 1 only.
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 8]);
+        let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]);
+        let position = CpuStorageBytes::from_slice(&[1_u32]);
+        write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[4, 2], /* axis */ 0, /* modulus */ 4,
+            &[(0, 1), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating");
+        let r: &[f32] = dest.as_slice().unwrap();
+        assert_eq!(r, &[0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// Sliding-window write past modulus: position == modulus wraps to 0.
+    #[test]
+    fn write_slice_rotating_cpu_wraps_position() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 8]);
+        let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]);
+        let position = CpuStorageBytes::from_slice(&[4_u32]); // == modulus
+        write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[4, 2], 0, 4,
+            &[(0, 1), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating");
+        let r: &[f32] = dest.as_slice().unwrap();
+        // position 4 % 4 = 0 → writes to row 0.
+        assert_eq!(r, &[7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// Boundary split: position == 3, slab = 2 rows, modulus = 4.
+    /// First row at index 3, second wraps to index 0.
+    #[test]
+    fn write_slice_rotating_cpu_splits_across_boundary() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 8]);
+        let source = CpuStorageBytes::from_slice(&[10.0_f32, 11.0, 20.0, 21.0]);
+        let position = CpuStorageBytes::from_slice(&[3_u32]);
+        write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[4, 2], 0, 4,
+            &[(0, 2), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating");
+        let r: &[f32] = dest.as_slice().unwrap();
+        // row 3 = (10, 11), row 0 = (20, 21).
+        assert_eq!(r, &[20.0, 21.0, 0.0, 0.0, 0.0, 0.0, 10.0, 11.0]);
+    }
+
+    /// modulus less than dest_shape[axis]: ring lives in a leading
+    /// prefix of the destination. Rows past `modulus` should never be
+    /// written.
+    #[test]
+    fn write_slice_rotating_cpu_modulus_smaller_than_dest() {
+        // dest [6, 2], modulus = 4 → only rows 0..4 participate.
+        // position 5 % 4 = 1, slab 1 row → writes row 1.
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 12]);
+        let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]);
+        let position = CpuStorageBytes::from_slice(&[5_u32]);
+        write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[6, 2], 0, 4,
+            &[(0, 1), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating");
+        let r: &[f32] = dest.as_slice().unwrap();
+        assert_eq!(r, &[0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// v1 constraint: non-zero rotating axis errors cleanly.
+    #[test]
+    fn write_slice_rotating_cpu_rejects_non_leading_axis() {
+        let mut dest = CpuStorageBytes::from_zero_bytes(16);
+        let source = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
+        let position = CpuStorageBytes::from_slice(&[0_u32]);
+        let r = write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[2, 4], /* axis */ 1, 4,
+            &[(0, 2), (0, 4)],
+            std::mem::size_of::<f32>(),
+        );
+        assert!(r.is_err());
+    }
+
+    /// Slab width > modulus must error (can't overfill the ring).
+    #[test]
+    fn write_slice_rotating_cpu_rejects_slab_larger_than_modulus() {
+        let mut dest = CpuStorageBytes::from_zero_bytes(16);
+        let source = CpuStorageBytes::from_slice(&[1.0_f32; 10]);
+        let position = CpuStorageBytes::from_slice(&[0_u32]);
+        let r = write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[4, 2], 0, /* modulus */ 4,
+            &[(0, 5), (0, 2)], // slab on axis 0 is 5, > modulus 4
+            std::mem::size_of::<f32>(),
+        );
+        assert!(r.is_err());
     }
 
     // ---- F8E4M3 casts -------------------------------------------------------

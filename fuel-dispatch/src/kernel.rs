@@ -561,6 +561,23 @@ pub enum OpParams {
         ranges: Vec<(usize, usize)>,
     },
 
+    /// In-place ring-buffer scatter write parameters. Like
+    /// `WriteSlice` except `axis` wraps modulo `modulus`; the
+    /// dynamic start on that axis is read from an extra input (rank-0
+    /// U32). On the rotating axis, `ranges[axis].0` is ignored
+    /// (dynamic) and `ranges[axis].1 - ranges[axis].0` is the slab
+    /// width (must equal the source dim on that axis, and must not
+    /// exceed `modulus`).
+    ///
+    /// Phase C: backs `Op::WriteSliceRotating` for sliding-window
+    /// KV caches.
+    WriteSliceRotating {
+        dest_shape: Vec<usize>,
+        axis: usize,
+        modulus: usize,
+        ranges: Vec<(usize, usize)>,
+    },
+
     /// FusedSoftmaxCrossEntropy execution parameters. Inputs:
     /// `logits [n_rows, vocab]` (F32, flattened from the original
     /// `[..., V]` shape) and `targets [n_rows]` (I64). The kernel

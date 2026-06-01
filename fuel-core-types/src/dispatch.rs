@@ -355,6 +355,14 @@ pub enum OpKind {
     /// contract and [`OpParams::WriteSlice`](super::dispatch::OpKind)
     /// for the kernel-side params.
     WriteSlice,
+    /// In-place ring-buffer scatter write: copies source's bytes into
+    /// destination at a slab that wraps modulo `modulus` on the
+    /// rotating axis. The write position comes from a dynamic input
+    /// (rank-0 U32). Backs sliding-window KV caches (Mistral /
+    /// Phi-3 sliding-window / sliding-window Qwen). See
+    /// [`Op::WriteSliceRotating`](fuel_graph::Op::WriteSliceRotating)
+    /// for the IR contract.
+    WriteSliceRotating,
     /// Cross-device copy: produce a fresh tensor on the target
     /// device, copying bytes from the input's residency. Backs
     /// [`Op::Copy`](fuel_graph::Op::Copy) for the bridge-retirement
@@ -566,6 +574,7 @@ impl OpKind {
             OpKind::ArgMinDim         => "argmin_dim",
             OpKind::QMatMul           => "qmatmul",
             OpKind::WriteSlice        => "write_slice",
+            OpKind::WriteSliceRotating => "write_slice_rotating",
             OpKind::Copy              => "copy",
             OpKind::ReluInplace       => "relu_inplace",
             OpKind::SiluInplace       => "silu_inplace",
