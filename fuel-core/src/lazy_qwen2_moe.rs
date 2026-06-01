@@ -179,22 +179,22 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
 
     let q = q
         .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     // For Qwen1.5-MoE num_kv_heads == num_attention_heads, so no GQA
     // replication needed; but keep the rehape path general.
     let k = k
         .reshape(Shape::from_dims(&[1, seq, n_kv, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     let v = v
         .reshape(Shape::from_dims(&[1, seq, n_kv, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
 
     // RoPE.
     let (cos, sin) = rope_tables(cfg.rope_theta, seq, d_head);
     let q = apply_rope(&q, &cos, &sin, seq, d_head);
     let k = apply_rope(&k, &cos, &sin, seq, d_head);
 
-    let k_t = k.permute(&[0, 1, 3, 2]);
+    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
     let scale = 1.0_f64 / (d_head as f64).sqrt();
     let mut scores = q.matmul(&k_t).mul_scalar(scale);
     // causal mask
@@ -212,7 +212,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     let probs = scores.softmax_last_dim();
     let ctx = probs
         .matmul(&v)
-        .permute(&[0, 2, 1, 3])
+        .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     linear(&ctx, &lw.o_w, None, h, h, seq)
 }

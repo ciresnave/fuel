@@ -345,7 +345,7 @@ fn spatial_transformer(
     let x = conv2d_k1_s1_p0(&x, &sw.proj_in_w, &sw.proj_in_b, c, c, h, w);
     // Reshape [1, C, H, W] → [1, H·W, C] for the transformer blocks.
     let mut xf = x
-        .permute(&[0, 2, 3, 1])
+        .permute([0, 2, 3, 1_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, n, c])).unwrap();
     for tb in &sw.blocks {
         xf = transformer_block(&xf, tb, text_emb, cfg, c, n);
@@ -353,7 +353,7 @@ fn spatial_transformer(
     // Back to [1, C, H, W].
     let out = xf
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute(&[0, 3, 1, 2]);
+        .permute([0, 3, 1, 2_usize]).unwrap();
     let out = conv2d_k1_s1_p0(&out, &sw.proj_out_w, &sw.proj_out_b, c, c, h, w);
     residual.add(&out)
 }
@@ -414,20 +414,20 @@ fn multi_head_attn(
 ) -> LazyTensor {
     let q = q
         .reshape(Shape::from_dims(&[1, q_n, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);  // [1, H, Q, D]
+        .permute([0, 2, 1, 3_usize]).unwrap();  // [1, H, Q, D]
     let k = k
         .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     let v = v
         .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
-    let k_t = k.permute(&[0, 1, 3, 2]);  // [1, H, D, KV]
+        .permute([0, 2, 1, 3_usize]).unwrap();
+    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, H, D, KV]
     let scale = 1.0 / (d_head as f64).sqrt();
     let scores = q.matmul(&k_t).mul_scalar(scale);  // [1, H, Q, KV]
     let probs = scores.softmax_last_dim();
     probs
         .matmul(&v)
-        .permute(&[0, 2, 1, 3])
+        .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, q_n, c])).unwrap()
 }
 

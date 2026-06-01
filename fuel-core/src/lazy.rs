@@ -595,11 +595,13 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.try_transpose()? })
     }
 
-    /// Permute axes by the given ordering.
-    pub fn permute(&self, axes: &[usize]) -> Self {
-        Self {
-            inner: self.inner.permute(axes),
-        }
+    /// Permute axes by the given ordering. Accepts any [`Dims`]
+    /// implementer — `(0, 2, 1)`, `[0, 2, 1]`, `&[0, 2, 1]`, etc.
+    /// Validates rank match + dim bounds + duplicate check at build time.
+    pub fn permute<D: Dims>(&self, axes: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let axes = axes.to_indexes(&shape, "permute")?;
+        Ok(Self { inner: self.inner.try_permute(&axes)? })
     }
 
     /// Reshape to a new shape with matching element count.
@@ -1303,7 +1305,7 @@ mod tests {
             Shape::from_dims(&[1, 2, 3, 4]),
             &Device::cpu(),
         );
-        let y = x.permute(&[0, 2, 1, 3]);
+        let y = x.permute([0, 2, 1, 3_usize]).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda = y.realize_f32_cuda(&exe);
@@ -1468,13 +1470,13 @@ mod tests {
         // Split heads: [1, seq, 8] → [1, seq, 2, 4] → [1, 2, seq, 4]
         let q_h = q
             .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let k_h = k
             .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let v_h = v
             .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
 
         // RoPE on Q and K.
         let q_r = q_h.rope(10000.0, 0);
@@ -1488,7 +1490,7 @@ mod tests {
 
         // Merge heads + output projection.
         let merged = attn_v
-            .permute(&[0, 2, 1, 3])
+            .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[1, seq, d_model])).unwrap();
         let attn_out = merged.matmul(&w_o);
         let h = x.add(&attn_out);
@@ -1682,15 +1684,6 @@ impl LazyTensor {
         let shape = self.inner.shape();
         let dim = dim.to_index_plus_one(&shape, "unsqueeze")?;
         Ok(Self { inner: self.inner.try_unsqueeze(dim)? })
-    }
-
-    /// Result-returning sibling of [`Self::permute`]. Accepts any
-    /// [`Dims`] implementer — `(0, 2, 1)`, `[0, 2, 1]`, `&[0, 2, 1]`,
-    /// `Vec<usize>`, even single `D::Minus1` for the last axis.
-    pub fn try_permute<D: Dims>(&self, axes: D) -> std::result::Result<Self, fuel_core_types::Error> {
-        let shape = self.inner.shape();
-        let axes = axes.to_indexes(&shape, "permute")?;
-        Ok(Self { inner: self.inner.try_permute(&axes)? })
     }
 
     // ---- triangular masking (canonical attention masks) ----
@@ -1893,7 +1886,7 @@ impl LazyTensor {
         let rank = shape.dims().len();
         let mut axes: Vec<usize> = (0..rank).collect();
         axes.swap(dim1, dim2);
-        self.try_permute(axes.as_slice())
+        self.permute(axes.as_slice())
     }
 
     /// Collapse dims `[start_dim, end_dim]` (inclusive) into a single
@@ -3605,14 +3598,14 @@ impl LlamaModel {
         // Q: [batch, seq, dim] → [batch, seq, n_heads, head_dim] → [batch, n_heads, seq, head_dim]
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         // K/V: [batch, seq, kv_dim] → [batch, seq, n_kv_heads, head_dim] → [batch, n_kv_heads, seq, head_dim]
         let k_h = k
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let v_h = v
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
 
         // RoPE on Q and K (applied per-head; V is NOT rotated). Uses
         // caller-supplied cos/sin so all layers share a single pair
@@ -3693,7 +3686,7 @@ impl LlamaModel {
 
         // Merge heads + output projection.
         let merged = attn_v
-            .permute(&[0, 2, 1, 3])
+            .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
@@ -3760,13 +3753,13 @@ impl LlamaModel {
 
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let k_h = k
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let v_h = v
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
 
         // RoPE uses caller-supplied cos/sin tables so that all 22+
         // layers in a forward pass share a single pair of const nodes
@@ -3846,7 +3839,7 @@ impl LlamaModel {
         let attn_v = attn.matmul(&full_v);
 
         let merged = attn_v
-            .permute(&[0, 2, 1, 3])
+            .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
@@ -3935,13 +3928,13 @@ impl LlamaModel {
 
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let k_h = k
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let v_h = v
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
 
         let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
         let k_r = k_h.rope_with_tables(rope_cos, rope_sin);
@@ -3994,7 +3987,7 @@ impl LlamaModel {
         let attn_v = attn.matmul(&full_v);
 
         let merged = attn_v
-            .permute(&[0, 2, 1, 3])
+            .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
@@ -5950,13 +5943,13 @@ impl Gemma2Model {
         // Split heads.
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let k_h = k
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let v_h = v
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
 
         // RoPE.
         let q_r = q_h.rope_with_tables(rope_cos, rope_sin);
@@ -6011,7 +6004,7 @@ impl Gemma2Model {
 
         // Merge heads + output projection.
         let merged = attn_v
-            .permute(&[0, 2, 1, 3])
+            .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, qk_dim])).unwrap();
         let attn_out = merged.matmul(&w_o);
 
@@ -6441,13 +6434,13 @@ impl PhiModel {
         //   → permute → [batch, n_heads, seq, head_dim]
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let k_h = k
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
         let v_h = v
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute(&[0, 2, 1, 3]);
+            .permute([0, 2, 1, 3_usize]).unwrap();
 
         // Partial RoPE on Q and K: rotate the first `rotary_dim` entries
         // of head_dim, leave the rest unchanged.
@@ -6490,7 +6483,7 @@ impl PhiModel {
 
         // Merge heads: [batch, n_heads, seq, head_dim] → [batch, seq, dim].
         let merged = attn_v
-            .permute(&[0, 2, 1, 3])
+            .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = apply_linear_with_bias(
             &merged, &layer.attn_dense, &layer.attn_dense_bias, cfg.dim, cfg.dim);
@@ -8845,10 +8838,10 @@ mod phase_a1_wrapper_tests {
     fn try_permute_validates_axes() {
         let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
         // The Dims trait accepts tuples, owned arrays, and slices.
-        assert!(t.try_permute((2_usize, 0_usize, 1_usize)).is_ok());
-        assert!(t.try_permute([2_usize, 0, 1]).is_ok());
-        assert!(t.try_permute([0_usize, 1]).is_err());     // wrong rank
-        assert!(t.try_permute([0_usize, 0, 1]).is_err()); // dup axis
+        assert!(t.permute((2_usize, 0_usize, 1_usize)).is_ok());
+        assert!(t.permute([2_usize, 0, 1]).is_ok());
+        assert!(t.permute([0_usize, 1]).is_err());     // wrong rank
+        assert!(t.permute([0_usize, 0, 1]).is_err()); // dup axis
     }
 
     #[test]
@@ -9874,7 +9867,7 @@ mod phase_a5_factory_tests {
     fn try_permute_accepts_tuple_syntax() {
         let t = cpu_f32(vec![0.0; 24], &[2, 3, 4]);
         // Eager-style tuple permute now works on lazy.
-        let out = t.try_permute((2_usize, 0_usize, 1_usize)).unwrap();
+        let out = t.permute((2_usize, 0_usize, 1_usize)).unwrap();
         assert_eq!(out.shape().dims(), &[4, 2, 3]);
     }
 

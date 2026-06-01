@@ -441,7 +441,7 @@ fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> Lazy
     // Reshape [1, 4*R, N] → [1, 4, R, N] → [1, 4, N, R] (R last).
     let r = reg_max;
     let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors])).unwrap();
-    let y = y.permute(&[0, 1, 3, 2]);  // [1, 4, N, R]
+    let y = y.permute([0, 1, 3, 2_usize]).unwrap();  // [1, 4, N, R]
     let probs = y.softmax_last_dim();
     // Bin weights [0..R] as a const tensor broadcast to [1, 4, N, R].
     let bins: Vec<f32> = (0..r).map(|i| i as f32).collect();

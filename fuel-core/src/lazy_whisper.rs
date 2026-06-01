@@ -254,7 +254,7 @@ impl WhisperModel {
         .gelu();
 
         // --- transpose to [1, T/2, d] and add positional ------------------
-        let x = x.permute(&[0, 2, 1]);  // [1, T/2, d]
+        let x = x.permute([0, 2, 1_usize]).unwrap();  // [1, T/2, d]
         let pos = x
             .const_f32_like(
                 self.weights.encoder.positional.clone(),
@@ -462,7 +462,7 @@ fn conv1d_k3_s1_p1(
     // Concat along channel axis: [1, 3*in_c, T].
     let stacked = s0.concat(&s1, 1).concat(&s2, 1);
     // Move channels-last for matmul: [1, T, 3*in_c].
-    let stacked_tlast = stacked.permute(&[0, 2, 1]);
+    let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();
     // Kernel in storage order [out_c, in_c, 3]. We want
     // `[3*in_c, out_c]` where the 3*in_c axis is laid out in the same
     // order as the channel-stack above (k=0 block, k=1 block, k=2 block).
@@ -484,7 +484,7 @@ fn conv1d_k3_s1_p1(
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, t, out_c])).unwrap();
-    y.add(&bias).permute(&[0, 2, 1])  // back to [1, out_c, T]
+    y.add(&bias).permute([0, 2, 1_usize]).unwrap()  // back to [1, out_c, T]
 }
 
 /// Conv1d with kernel_size=3, stride=2, padding=1, on `x: [1, in_c, T]`
@@ -534,7 +534,7 @@ fn conv1d_k3_s2_p1(
         .slice(3, 0, 1)
         .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let stacked = s0.concat(&s1, 1).concat(&s2, 1);  // [1, 3*in_c, T_out]
-    let stacked_tlast = stacked.permute(&[0, 2, 1]);  // [1, T_out, 3*in_c]
+    let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();  // [1, T_out, 3*in_c]
     // Same kernel reshuffle as the stride-1 case.
     let mut w_out = vec![0.0_f32; 3 * in_c * out_c];
     for o in 0..out_c {
@@ -550,7 +550,7 @@ fn conv1d_k3_s2_p1(
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, t_out, out_c])).unwrap();
-    y.add(&bias).permute(&[0, 2, 1])  // [1, out_c, T_out]
+    y.add(&bias).permute([0, 2, 1_usize]).unwrap()  // [1, out_c, T_out]
 }
 
 /// Multi-head self-attention + output projection. Shared between the
@@ -583,15 +583,15 @@ fn multi_head_attn(
     // [1, seq, n_heads, d_head] → [1, n_heads, seq, d_head]
     let q = q
         .reshape(Shape::from_dims(&[1, q_seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     let k = k
         .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     let v = v
         .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
 
-    let k_t = k.permute(&[0, 1, 3, 2]);  // [1, n_heads, d_head, kv_seq]
+    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, n_heads, d_head, kv_seq]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
     let mut scores = q.matmul(&k_t).mul_scalar(scale);  // [1, n_heads, q_seq, kv_seq]
 
@@ -615,7 +615,7 @@ fn multi_head_attn(
     let probs = scores.softmax_last_dim();
     let ctx = probs
         .matmul(&v)
-        .permute(&[0, 2, 1, 3])
+        .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, q_seq, d])).unwrap();
     linear(&ctx, out_w, Some(out_b), d, d, q_seq)
 }

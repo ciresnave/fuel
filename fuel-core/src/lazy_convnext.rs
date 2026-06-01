@@ -244,7 +244,7 @@ fn convnext_block(
     // DWConv: [1, C, H, W] → [1, C, H, W], still channels-first.
     let dw = conv2d_depthwise_k7_s1_p3(x, &bw.dw_w, &bw.dw_b, c, h, w);
     // Move channels to the last dim so LayerNorm + MLP work on [1, H, W, C].
-    let dw_nhwc = dw.permute(&[0, 2, 3, 1]);  // [1, H, W, C]
+    let dw_nhwc = dw.permute([0, 2, 3, 1_usize]).unwrap();  // [1, H, W, C]
     // Flatten spatial for the LN + linear ops we already have: [1, H*W, C].
     let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
     let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w);
@@ -260,7 +260,7 @@ fn convnext_block(
     // Back to channels-first: [1, H, W, C] → [1, C, H, W].
     let scaled_chw = scaled
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute(&[0, 3, 1, 2]);
+        .permute([0, 3, 1, 2_usize]).unwrap();
     x.add(&scaled_chw)
 }
 
@@ -299,12 +299,12 @@ fn layer_norm_channel_dim(
     h: usize,
     w: usize,
 ) -> LazyTensor {
-    let x_nhwc = x.permute(&[0, 2, 3, 1]);
+    let x_nhwc = x.permute([0, 2, 3, 1_usize]).unwrap();
     let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
     let normed = layer_norm_affine(&flat, gamma, beta, eps, c, h * w);
     normed
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute(&[0, 3, 1, 2])
+        .permute([0, 3, 1, 2_usize]).unwrap()
 }
 
 /// `y = x @ W + b`. `x` shape `[1, seq, in_f]`, W stored `[in_f, out_f]`.
@@ -366,7 +366,7 @@ fn conv2d_stride_eq_kernel(
     let x6 = x.reshape(Shape::from_dims(&[1, cin, h_out, k, w_out, k])).unwrap();
     // Permute to [1, H_out, W_out, Cin, k, k] so each spatial patch's
     // (Cin, k, k) block sits contiguously in the last three axes.
-    let x_perm = x6.permute(&[0, 2, 4, 1, 3, 5]);
+    let x_perm = x6.permute([0, 2, 4, 1, 3, 5_usize]).unwrap();
     // Flatten to [1, H_out*W_out, Cin*k*k].
     let x_flat = x_perm.reshape(Shape::from_dims(&[1, h_out * w_out, cin * k * k])).unwrap();
     // Kernel reshape: HF stores [Cout, Cin, k, k] row-major, which is
@@ -384,7 +384,7 @@ fn conv2d_stride_eq_kernel(
     let y = y.add(&bias);
     // Back to [1, Cout, H_out, W_out].
     y.reshape(Shape::from_dims(&[1, h_out, w_out, cout])).unwrap()
-        .permute(&[0, 3, 1, 2])
+        .permute([0, 3, 1, 2_usize]).unwrap()
 }
 
 /// Depthwise Conv2d, kernel=7, stride=1, padding=3. Weight shape

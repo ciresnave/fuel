@@ -245,7 +245,7 @@ fn vae_spatial_attention(
     let x_norm = group_norm(x, &aw.gn_g, &aw.gn_b, cfg.norm_num_groups, cfg.norm_eps, c, h, w);
     // [1, C, H, W] → [1, H*W, C].
     let xf = x_norm
-        .permute(&[0, 2, 3, 1])
+        .permute([0, 2, 3, 1_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, n, c])).unwrap();
     let q = linear(&xf, &aw.q_w, Some(&aw.q_b), c, c, n);
     let k = linear(&xf, &aw.k_w, Some(&aw.k_b), c, c, n);
@@ -253,7 +253,7 @@ fn vae_spatial_attention(
     // scores = q @ k^T / sqrt(C).
     // Shapes: q, k, v are [1, n, c]; reshape to [1, 1, n, c] for the
     // matmul pattern we already use, or stay 3D via transpose + matmul.
-    let k_t = k.permute(&[0, 2, 1]);  // [1, C, N]
+    let k_t = k.permute([0, 2, 1_usize]).unwrap();  // [1, C, N]
     let scores = q.matmul(&k_t).mul_scalar(1.0 / (c as f64).sqrt());  // [1, N, N]
     let probs = scores.softmax_last_dim();
     let ctx = probs.matmul(&v);  // [1, N, C]
@@ -261,7 +261,7 @@ fn vae_spatial_attention(
     // Reshape back to [1, C, H, W] and residual-add.
     let out_chw = out
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
-        .permute(&[0, 3, 1, 2]);
+        .permute([0, 3, 1, 2_usize]).unwrap();
     x.add(&out_chw)
 }
 
