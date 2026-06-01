@@ -1174,6 +1174,170 @@ pub mod write_slice {
 }
 
 // ===========================================================================
+// WriteSliceRotating — sliding-window KV cache writes (Phase C)
+// ===========================================================================
+//
+// Mirrors the CUDA strategy in `baracuda_dispatch::write_slice_rotating`:
+//   1. D2H the U32 position scalar (4 bytes) via
+//      `VulkanBackend::download_bytes`.
+//   2. Compute `wrapped_start = position % modulus`.
+//   3. Split into up to two contiguous chunks across the ring
+//      boundary.
+//   4. Per chunk, extract the source prefix/suffix as a fresh
+//      `VulkanStorageBytes` via `VulkanBackend::slot_copy_to_new_handle`
+//      (vkCmdCopyBuffer-backed D2D), then reuse the existing
+//      `VulkanBackend::write_slice_bytes` Slang kernels.
+//
+// v1 constraint: rotating axis must be axis 0 (matches Mistral /
+// Phi-3 sliding-window K/V layout). Same v1 constraint as CPU + CUDA.
+
+pub mod write_slice_rotating {
+    use super::*;
+
+    macro_rules! vk_write_slice_rotating_wrapper {
+        ($name:ident, $byte_width:expr $(,)?) => {
+            pub fn $name(
+                inputs: &[Arc<RwLock<Storage>>],
+                outputs: &mut [Arc<RwLock<Storage>>],
+                _layouts: &[Layout],
+                params: &OpParams,
+            ) -> Result<()> {
+                if inputs.len() != 2 || outputs.len() != 1 {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::write_slice_rotating::{}: expected 2 inputs \
+                         (source, position) + 1 output (dest), got {} + {}",
+                        stringify!($name), inputs.len(), outputs.len(),
+                    )).bt());
+                }
+                let (dest_shape, axis, modulus, ranges) = match params {
+                    OpParams::WriteSliceRotating { dest_shape, axis, modulus, ranges } => {
+                        (dest_shape, *axis, *modulus, ranges)
+                    }
+                    other => {
+                        return Err(Error::Msg(format!(
+                            "vulkan_dispatch::write_slice_rotating::{}: expected \
+                             OpParams::WriteSliceRotating, got {:?}",
+                            stringify!($name), other,
+                        )).bt());
+                    }
+                };
+                if axis != 0 {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::write_slice_rotating::{} (v1): rotating axis must be 0; got {}. \
+                         Strided multi-axis splits land in a follow-up slice.",
+                        stringify!($name), axis,
+                    )).bt());
+                }
+                let rank = dest_shape.len();
+                if ranges.len() != rank {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::write_slice_rotating::{}: ranges.len() {} != dest rank {}",
+                        stringify!($name), ranges.len(), rank,
+                    )).bt());
+                }
+
+                // Position is rank-0 U32, stored on the same device as
+                // the source. Grab a backend handle from the position
+                // storage so we can do the D2H + per-chunk D2D.
+                let pos_guard = read_storage(&inputs[1])?;
+                let pos_vk = vulkan_input(&pos_guard)?;
+                let backend = pos_vk.backend().ok_or_else(|| {
+                    Error::Msg(format!(
+                        "vulkan_dispatch::write_slice_rotating::{}: position storage has no \
+                         VulkanBackend handle",
+                        stringify!($name),
+                    )).bt()
+                })?;
+                let pos_bytes = backend.download_bytes(pos_vk)?;
+                if pos_bytes.len() < 4 {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::write_slice_rotating::{}: position storage has {} bytes, need >= 4",
+                        stringify!($name), pos_bytes.len(),
+                    )).bt());
+                }
+                let position = u32::from_ne_bytes([
+                    pos_bytes[0], pos_bytes[1], pos_bytes[2], pos_bytes[3],
+                ]) as usize;
+                let wrapped_start = position % modulus;
+
+                // Derive slab_shape from ranges.
+                let mut slab_shape: Vec<usize> = Vec::with_capacity(rank);
+                for (i, &(start, end)) in ranges.iter().enumerate() {
+                    if end < start {
+                        return Err(Error::Msg(format!(
+                            "vulkan_dispatch::write_slice_rotating::{}: ranges[{}] = ({}, {}) has end < start",
+                            stringify!($name), i, start, end,
+                        )).bt());
+                    }
+                    let slab = end - start;
+                    if i == axis && slab > modulus {
+                        return Err(Error::Msg(format!(
+                            "vulkan_dispatch::write_slice_rotating::{}: rotating-axis slab {} > modulus {}",
+                            stringify!($name), slab, modulus,
+                        )).bt());
+                    }
+                    slab_shape.push(slab);
+                }
+                let slab_axis_len = slab_shape[axis];
+                let slab_elems: usize = slab_shape.iter().copied().product();
+                if slab_elems == 0 {
+                    return Ok(());
+                }
+
+                let first_len = slab_axis_len.min(modulus - wrapped_start);
+                let second_len = slab_axis_len - first_len;
+
+                let inner_per_row_elems: usize = slab_shape[1..].iter().copied().product();
+                let inner_per_row_bytes = inner_per_row_elems * $byte_width;
+
+                let src_guard = read_storage(&inputs[0])?;
+                let src_vk = vulkan_input(&src_guard)?;
+
+                if first_len > 0 {
+                    let first_bytes_len = first_len * inner_per_row_bytes;
+                    let src_first = backend.slot_copy_to_new_handle(src_vk, 0, first_bytes_len)?;
+                    let mut sub_source_shape = slab_shape.clone();
+                    sub_source_shape[axis] = first_len;
+                    let mut sub_range_start: Vec<usize> = ranges.iter().map(|r| r.0).collect();
+                    sub_range_start[axis] = wrapped_start;
+
+                    let mut out_guard = write_storage(&outputs[0])?;
+                    let dst_vk = vulkan_output(&mut out_guard)?;
+                    backend.write_slice_bytes(
+                        $byte_width, &src_first, dst_vk,
+                        dest_shape, &sub_source_shape, &sub_range_start,
+                    )?;
+                }
+                if second_len > 0 {
+                    let first_bytes_len = first_len * inner_per_row_bytes;
+                    let second_bytes_len = second_len * inner_per_row_bytes;
+                    let src_second = backend.slot_copy_to_new_handle(
+                        src_vk, first_bytes_len, second_bytes_len,
+                    )?;
+                    let mut sub_source_shape = slab_shape.clone();
+                    sub_source_shape[axis] = second_len;
+                    let mut sub_range_start: Vec<usize> = ranges.iter().map(|r| r.0).collect();
+                    sub_range_start[axis] = 0;
+
+                    let mut out_guard = write_storage(&outputs[0])?;
+                    let dst_vk = vulkan_output(&mut out_guard)?;
+                    backend.write_slice_bytes(
+                        $byte_width, &src_second, dst_vk,
+                        dest_shape, &sub_source_shape, &sub_range_start,
+                    )?;
+                }
+                Ok(())
+            }
+        };
+    }
+
+    vk_write_slice_rotating_wrapper!(write_slice_rotating_b1, 1);
+    vk_write_slice_rotating_wrapper!(write_slice_rotating_b2, 2);
+    vk_write_slice_rotating_wrapper!(write_slice_rotating_b4, 4);
+    vk_write_slice_rotating_wrapper!(write_slice_rotating_b8, 8);
+}
+
+// ===========================================================================
 // Cast — f32↔f16, f32↔bf16 (V.3.B)
 // ===========================================================================
 //
@@ -4553,6 +4717,20 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::WriteSlice, &u(DType::I64),  vk, write_slice::write_slice_b8, VULKAN_BYTE_LEVEL_PRECISION);
     table.register_with_precision(OpKind::WriteSlice, &u(DType::U8),   vk, write_slice::write_slice_b1, VULKAN_BYTE_LEVEL_PRECISION);
     table.register_with_precision(OpKind::WriteSlice, &u(DType::I8),   vk, write_slice::write_slice_b1, VULKAN_BYTE_LEVEL_PRECISION);
+
+    // ----- WriteSliceRotating (Phase C) — sliding-window KV writes.
+    // Same byte-width-dispatched surface as WriteSlice; the wrapper
+    // handles position D2H + ring-boundary split before delegating
+    // to baracuda's write_slice_bytes path through VulkanBackend.
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(f32),         vk, write_slice_rotating::write_slice_rotating_b4, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::I32),  vk, write_slice_rotating::write_slice_rotating_b4, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::U32),  vk, write_slice_rotating::write_slice_rotating_b4, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(f16),         vk, write_slice_rotating::write_slice_rotating_b2, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(bf16_d),      vk, write_slice_rotating::write_slice_rotating_b2, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::F64),  vk, write_slice_rotating::write_slice_rotating_b8, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::I64),  vk, write_slice_rotating::write_slice_rotating_b8, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::U8),   vk, write_slice_rotating::write_slice_rotating_b1, VULKAN_BYTE_LEVEL_PRECISION);
+    table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::I8),   vk, write_slice_rotating::write_slice_rotating_b1, VULKAN_BYTE_LEVEL_PRECISION);
 
     // ----- Binary bf16 (V.3.E.3+4) — u32-packed math via Slang.
     // STRIDE-AWARE: binary_bf16.slang mirrors binary.slang's
