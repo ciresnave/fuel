@@ -288,9 +288,9 @@ fn max_pool_s1_composed(
     let padded = pad_hw_zeros(x, c, h, w, p);
     let mut acc: Option<LazyTensor> = None;
     for ky in 0..k {
-        let row = padded.slice(2, ky, h);
+        let row = padded.slice(2, ky, h).unwrap();
         for kx in 0..k {
-            let win = row.slice(3, kx, w);
+            let win = row.slice(3, kx, w).unwrap();
             acc = Some(match acc {
                 None => win,
                 Some(a) => a.maximum(&win),
@@ -346,8 +346,8 @@ fn c2f(
     let c = cw.c_inner;  // = c_out / 2 in the standard YOLOv8 config
     let expanded = cbs(x, &cw.cv1, c_in, 2 * c, 1, 1, 0, 1, h, w);
     // Split into halves along channel axis.
-    let a = expanded.slice(1, 0, c);
-    let b = expanded.slice(1, c, c);
+    let a = expanded.slice(1, 0, c).unwrap();
+    let b = expanded.slice(1, c, c).unwrap();
     // Run bottlenecks on `b`, accumulating each output.
     let mut parts: Vec<LazyTensor> = vec![a, b.clone()];
     let mut cur = b;

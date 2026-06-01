@@ -333,7 +333,7 @@ fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Resul
         _ => {
             // Custom / Vulkan: try the general CPU→device path
             let buf = make_cpu();
-            Ok(Storage(device.inner.storage_from_host_buffer_owned_dyn(buf)?))
+            Ok(Storage::from_dyn(device.inner.storage_from_host_buffer_owned_dyn(buf)?))
         }
     }
 }

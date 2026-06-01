@@ -242,7 +242,7 @@ fn moe_block(
         let expert_out = swiglu_mlp(x, &ew.gate_w, &ew.up_w, &ew.down_w, h, moe_int, seq);
         // Slice router_weights to get the column for this expert: [1, seq, 1].
         let w_col = router_weights
-            .slice(2, ei, 1);  // [1, seq, 1]
+            .slice(2, ei, 1).unwrap();  // [1, seq, 1]
         let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
         let gated = expert_out.mul(&w_bc);
         routed_sum = Some(match routed_sum {
@@ -330,8 +330,8 @@ fn apply_rope(
         .reshape(Shape::from_dims(&[1, 1, seq, d_head])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
     let half = d_head / 2;
-    let x1 = x.slice(3, 0, half);
-    let x2 = x.slice(3, half, half);
+    let x1 = x.slice(3, 0, half).unwrap();
+    let x2 = x.slice(3, half, half).unwrap();
     // rotate_half: concat(-x2, x1) along dim 3.
     let neg_x2 = x2.neg();
     let rotated = neg_x2.concat(&x1, 3);

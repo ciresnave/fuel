@@ -630,10 +630,18 @@ impl LazyTensor {
     }
 
     /// Slice (narrow) along `dim`: take elements `[start, start+len)`.
-    pub fn slice(&self, dim: usize, start: usize, len: usize) -> Self {
-        Self {
-            inner: self.inner.slice(dim, start, len),
+    /// Bad `dim` / out-of-range slice surfaces as a typed error at build
+    /// time. Accepts any [`Dim`].
+    pub fn slice<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "slice")?;
+        let dim_size = shape.dims()[dim];
+        if start.saturating_add(len) > dim_size {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "slice: start={start} + len={len} exceeds dim {dim} size {dim_size}",
+            )).bt());
         }
+        Ok(Self { inner: self.inner.slice(dim, start, len) })
     }
 
     /// Concatenate two tensors along `dim`.
@@ -1398,7 +1406,7 @@ mod tests {
         let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), &Device::cpu());
         let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
         let cat = a.concat(&b, 1); // [2, 4]
-        let sliced = cat.slice(1, 1, 2); // [2, 2]
+        let sliced = cat.slice(1, 1, 2).unwrap(); // [2, 2]
         let cpu = sliced.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda = sliced.realize_f32_cuda(&exe);
@@ -2242,10 +2250,10 @@ impl LazyTensor {
     // ---- additional deferred-Phase-A items: indexing / multi-dim / RNG ----
 
     /// Eager-API alias of [`Self::slice`] (PyTorch / Candle naming).
-    /// `narrow(dim, start, len)` is `slice(dim, start, len)` with the
-    /// same panic-on-OOB semantics — both produce a view of
-    /// `[start, start+len)` along `dim`.
-    pub fn narrow(&self, dim: usize, start: usize, len: usize) -> Self {
+    /// `narrow(dim, start, len)` is `slice(dim, start, len)` —
+    /// produces a view of `[start, start+len)` along `dim`. Bad input
+    /// surfaces as a typed error at build time. Accepts any [`Dim`].
+    pub fn narrow<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_core_types::Error> {
         self.slice(dim, start, len)
     }
 
@@ -2265,7 +2273,7 @@ impl LazyTensor {
         let dims = shape.dims();
         let size = dims[dim];
         if size < chunks {
-            return Ok((0..size).map(|i| self.slice(dim, i, 1)).collect());
+            return Ok((0..size).map(|i| self.slice(dim, i, 1).unwrap()).collect());
         }
         let base = size / chunks;
         let extra = size % chunks;
@@ -2273,29 +2281,29 @@ impl LazyTensor {
         let mut start = 0;
         for i in 0..chunks {
             let len = if i < extra { base + 1 } else { base };
-            out.push(self.slice(dim, start, len));
+            out.push(self.slice(dim, start, len).unwrap());
             start += len;
         }
         Ok(out)
     }
 
     /// Sub-tensor at index `i` along dim 0. Equivalent to
-    /// `self.slice(0, i, 1).squeeze(0)`. Matches eager's [`crate::Tensor::get`].
+    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's [`crate::Tensor::get`].
     pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_core_types::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.is_empty() {
             return Ok(self.clone());
         }
-        self.slice(0, i, 1).squeeze(0)
+        self.slice(0, i, 1).unwrap().squeeze(0)
     }
 
     /// Sub-tensor at index along an arbitrary dim. Equivalent to
-    /// `self.slice(dim, index, 1).squeeze(dim)`. Matches eager's
+    /// `self.slice(dim, index, 1).unwrap().squeeze(dim)`. Matches eager's
     /// [`crate::Tensor::get_on_dim`]. Accepts any [`Dim`].
     pub fn get_on_dim<D: Dim>(&self, dim: D, index: usize) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "get_on_dim")?;
-        self.slice(dim, index, 1).squeeze(dim)
+        self.slice(dim, index, 1).unwrap().squeeze(dim)
     }
 
     /// Multi-dim sum: reduce over every dim in `dims`, squeezing each.
@@ -2668,15 +2676,15 @@ impl LazyTensor {
             // Slice H starting at ky, length h_out · sh, then reshape
             // to [N, C, h_out, sh, w_total] and slice the sh-dim at 0
             // (we'll handle stride > 1 by reshape).
-            let row_slice = padded.slice(2, ky, h_out * sh);
+            let row_slice = padded.slice(2, ky, h_out * sh).unwrap();
             // Reshape H dim of length `h_out · sh` into (h_out, sh),
             // then take dim 3 at offset 0 (the tap on the sh axis).
             let row_reshaped = row_slice.reshape(vec![n, c, h_out, sh, w_total])?;
-            let row_tap = row_reshaped.slice(3, 0, 1).squeeze(3)?;
+            let row_tap = row_reshaped.slice(3, 0, 1).unwrap().squeeze(3)?;
             for kx in 0..kw {
-                let col_slice = row_tap.slice(3, kx, w_out * sw);
+                let col_slice = row_tap.slice(3, kx, w_out * sw).unwrap();
                 let col_reshaped = col_slice.reshape(vec![n, c, h_out, w_out, sw])?;
-                let win = col_reshaped.slice(4, 0, 1).squeeze(4)?;
+                let win = col_reshaped.slice(4, 0, 1).unwrap().squeeze(4)?;
                 acc = Some(match acc {
                     None => win,
                     Some(a) => a.maximum(&win),
@@ -3960,8 +3968,8 @@ impl LlamaModel {
         // `[..., 0..total_seq, ...]` along axis 2. This is what
         // attention reads; bytes past `total_seq` in the cache buffer
         // are stale / zero and excluded by the slice.
-        let full_k = k_full_buffer.slice(2, 0, total_seq);
-        let full_v = v_full_buffer.slice(2, 0, total_seq);
+        let full_k = k_full_buffer.slice(2, 0, total_seq).unwrap();
+        let full_v = v_full_buffer.slice(2, 0, total_seq).unwrap();
 
         // Attention path — identical to apply_layer_with_cache from here.
         let k_t = full_k.transpose().unwrap();
@@ -4135,7 +4143,7 @@ impl LlamaModel {
         let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
         let last_pos = seq - 1;
         let last_logits = logits
-            .slice(1, last_pos, 1)
+            .slice(1, last_pos, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
 
         // Realize through InferenceContext. The WriteSlice nodes
@@ -5489,7 +5497,7 @@ impl LlamaModel {
         // otherwise slice to the last position for decode/prefill.
         let last_pos = seq - 1;
         let last_logits = logits
-            .slice(1, last_pos, 1)
+            .slice(1, last_pos, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
         let all_logits = logits.reshape(Shape::from_dims(&[seq * cfg.vocab_size])).unwrap();
         let logits_root = if return_all_positions { &all_logits } else { &last_logits };
@@ -6423,9 +6431,9 @@ impl PhiModel {
                 let combined = apply_linear_with_bias(
                     &x_norm, qkv, qkv_bias, cfg.dim, 3 * cfg.dim);
                 let last = combined.rank() - 1;
-                let q_out = combined.slice(last, 0, cfg.dim);
-                let k_out = combined.slice(last, cfg.dim, cfg.dim);
-                let v_out = combined.slice(last, 2 * cfg.dim, cfg.dim);
+                let q_out = combined.slice(last, 0, cfg.dim).unwrap();
+                let k_out = combined.slice(last, cfg.dim, cfg.dim).unwrap();
+                let v_out = combined.slice(last, 2 * cfg.dim, cfg.dim).unwrap();
                 (q_out, k_out, v_out)
             }
         };
@@ -6597,7 +6605,7 @@ impl PhiModel {
 
         let last_pos = seq - 1;
         let last_logits = logits
-            .slice(1, last_pos, 1)
+            .slice(1, last_pos, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
 
         let mut roots: Vec<&LazyTensor> = Vec::with_capacity(1 + 2 * cfg.n_layers);
@@ -7219,8 +7227,8 @@ fn partial_rope(
     }
     let rank = x.dims().len();
     let last = rank - 1;
-    let x_rot = x.slice(last, 0, rotary_dim);
-    let x_pass = x.slice(last, rotary_dim, head_dim - rotary_dim);
+    let x_rot = x.slice(last, 0, rotary_dim).unwrap();
+    let x_pass = x.slice(last, rotary_dim, head_dim - rotary_dim).unwrap();
     let x_rot_rotated = x_rot.rope_with_tables(cos, sin);
     x_rot_rotated.concat(&x_pass, last)
 }
@@ -7369,12 +7377,12 @@ mod generate_tests {
         };
         let no_bias_logits = no_bias
             .forward(&tokens, 0).unwrap()
-            .slice(1, tokens.len() - 1, 1)
+            .slice(1, tokens.len() - 1, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
         let with_bias_logits = with_bias
             .forward(&tokens, 0).unwrap()
-            .slice(1, tokens.len() - 1, 1)
+            .slice(1, tokens.len() - 1, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
         for &v in &with_bias_logits {
@@ -7418,7 +7426,7 @@ mod generate_tests {
             let logits = model.forward(&ref_tokens, 0).unwrap();
             let last_pos = ref_tokens.len() - 1;
             let last = logits
-                .slice(1, last_pos, 1)
+                .slice(1, last_pos, 1).unwrap()
                 .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
                 .realize_f32();
             let next = last
@@ -7566,7 +7574,7 @@ mod generate_tests {
             let logits = model.forward(&ref_tokens, 0).unwrap();
             let last_pos = ref_tokens.len() - 1;
             let last = logits
-                .slice(1, last_pos, 1)
+                .slice(1, last_pos, 1).unwrap()
                 .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
                 .realize_f32();
             let next = last
@@ -7740,7 +7748,7 @@ mod generate_tests {
         let full_logits = model.forward(&full, 0).unwrap();
         let last_pos = full.len() - 1;
         let expected = full_logits
-            .slice(1, last_pos, 1)
+            .slice(1, last_pos, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
 
@@ -7821,7 +7829,7 @@ mod generate_tests {
         let full_logits = model.forward(&prompt, 0).unwrap();
         let last_pos = prompt.len() - 1;
         let expected = full_logits
-            .slice(1, last_pos, 1)
+            .slice(1, last_pos, 1).unwrap()
             .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
             .realize_f32();
 
@@ -8602,7 +8610,7 @@ mod llama_tests {
         let logits = model.forward(&tokens, 0).unwrap();
         // Take last-position slice and argmax over vocab dim, all
         // through the LazyTensor bridge API.
-        let last = logits.slice(1, tokens.len() - 1, 1); // [1, 1, vocab]
+        let last = logits.slice(1, tokens.len() - 1, 1).unwrap(); // [1, 1, vocab]
         let last_flat = last.reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
         let predicted_ids = last_flat.argmax_dim(0_usize).unwrap().realize_u32();
         assert_eq!(predicted_ids.len(), 1);
@@ -9396,8 +9404,8 @@ mod phase_a5_factory_tests {
     #[test]
     fn narrow_is_slice_alias() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0], &[5]);
-        let a = t.narrow(0, 1, 3).realize_f32();
-        let b = t.slice(0, 1, 3).realize_f32();
+        let a = t.narrow(0, 1, 3).unwrap().realize_f32();
+        let b = t.slice(0, 1, 3).unwrap().realize_f32();
         assert_eq!(a, b);
         assert_eq!(a, vec![2.0, 3.0, 4.0]);
     }
