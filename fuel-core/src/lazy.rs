@@ -4870,6 +4870,19 @@ pub fn apply_affine_rms_norm_pub(
     apply_affine_rms_norm(x, gain, dim, eps)
 }
 
+/// Public re-export of `apply_affine_layer_norm` (defined further
+/// down in this file) so sibling lazy modules can reuse it without
+/// duplicating the gain/bias broadcasts.
+pub fn apply_affine_layer_norm_pub(
+    x: &LazyTensor,
+    gain: &Arc<[f32]>,
+    bias: &Arc<[f32]>,
+    dim: usize,
+    eps: f64,
+) -> LazyTensor {
+    apply_affine_layer_norm(x, gain, bias, dim, eps)
+}
+
 // ---- HuggingFace Hub and safetensors weight loading ----------------------
 
 /// Load a tensor by name from a `MmapedSafetensors` as a flat
