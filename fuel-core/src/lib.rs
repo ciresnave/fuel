@@ -74,6 +74,7 @@ pub mod lazy_kv_cache;
 pub mod lazy_convnext;
 pub mod lazy_gemma;
 pub mod lazy_mistral;
+pub mod lazy_phi3;
 pub mod lazy_qwen2;
 pub mod lazy_qwen2_moe;
 pub mod lazy_sd_text_encoder;
