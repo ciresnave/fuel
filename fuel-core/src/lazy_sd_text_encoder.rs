@@ -216,7 +216,7 @@ fn encoder_layer(
         .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t);
-    let probs = scores.softmax_last_dim();
+    let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
@@ -261,7 +261,7 @@ fn layer_norm_affine(
     hidden: usize,
     seq: usize,
 ) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps);
+    let normed = x.layer_norm_last_dim(eps).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()

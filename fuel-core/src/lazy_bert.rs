@@ -247,7 +247,7 @@ fn layer_norm_affine(
     hidden: usize,
     seq: usize,
 ) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps);
+    let normed = x.layer_norm_last_dim(eps).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
@@ -313,7 +313,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     let scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
 
     // Bidirectional softmax — no causal mask.
-    let probs = scores.softmax_last_dim();
+    let probs = scores.softmax_last_dim().unwrap();
 
     // Attention output: `[1, n_heads, seq, d_head]`, permute + reshape back
     // to `[1, seq, h]`.

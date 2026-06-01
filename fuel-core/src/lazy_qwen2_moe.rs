@@ -209,7 +209,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
         .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t);
-    let probs = scores.softmax_last_dim();
+    let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
@@ -232,7 +232,7 @@ fn moe_block(
     // Router: [1, seq, h] → gate.matmul → [1, seq, E].
     let gate = x.const_f32_like(lw.gate_w.clone(), Shape::from_dims(&[h, e]));
     let router_logits = x.matmul(&gate).unwrap();
-    let router_weights = router_logits.softmax_last_dim();  // [1, seq, E]
+    let router_weights = router_logits.softmax_last_dim().unwrap();  // [1, seq, E]
 
     // Each expert's SwiGLU output, weighted by its per-token gate weight.
     // Accumulate into `routed_sum` : [1, seq, h].

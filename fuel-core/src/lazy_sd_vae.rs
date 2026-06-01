@@ -255,7 +255,7 @@ fn vae_spatial_attention(
     // matmul pattern we already use, or stay 3D via transpose + matmul.
     let k_t = k.permute([0, 2, 1_usize]).unwrap();  // [1, C, N]
     let scores = q.matmul(&k_t).unwrap().mul_scalar(1.0 / (c as f64).sqrt());  // [1, N, N]
-    let probs = scores.softmax_last_dim();
+    let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs.matmul(&v).unwrap();  // [1, N, C]
     let out = linear(&ctx, &aw.out_w, Some(&aw.out_b), c, c, n);
     // Reshape back to [1, C, H, W] and residual-add.

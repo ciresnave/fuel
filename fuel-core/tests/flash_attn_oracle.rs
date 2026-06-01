@@ -38,7 +38,7 @@ fn composed_attention(q: &LazyTensor, k: &LazyTensor, v: &LazyTensor, scale: f32
     // Scale
     let scaled = scores.mul_scalar(scale as f64);
     // Softmax along last dim (Sk)
-    let attn = scaled.softmax_last_dim();
+    let attn = scaled.softmax_last_dim().unwrap();
     // Attn · V = [B, H, Sq, D]
     attn.matmul(v).unwrap()
 }
