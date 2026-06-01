@@ -423,10 +423,10 @@ fn multi_head_attn(
         .permute([0, 2, 1, 3_usize]).unwrap();
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, H, D, KV]
     let scale = 1.0 / (d_head as f64).sqrt();
-    let scores = q.matmul(&k_t).mul_scalar(scale);  // [1, H, Q, KV]
+    let scores = q.matmul(&k_t).unwrap().mul_scalar(scale);  // [1, H, Q, KV]
     let probs = scores.softmax_last_dim();
     probs
-        .matmul(&v)
+        .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, q_n, c])).unwrap()
 }
@@ -572,7 +572,7 @@ fn linear(
     seq: usize,
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t);
+    let proj = x.matmul(&w_t).unwrap();
     match b {
         Some(b) => {
             let bias = x

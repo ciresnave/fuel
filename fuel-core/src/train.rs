@@ -1139,7 +1139,7 @@ mod tests {
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, n_feat]));
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, n_class]));
                 // logits = x @ W + b_broadcast
-                let logits_raw = x.matmul(w);
+                let logits_raw = x.matmul(w).unwrap();
                 let b_b = b.reshape(Shape::from_dims(&[1, n_class])).unwrap()
                     .broadcast_to(Shape::from_dims(&[n, n_class])).unwrap();
                 let logits = logits_raw.add(&b_b);
@@ -1196,7 +1196,7 @@ mod tests {
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, d]));
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, 1]));
                 let x_norm = x.rms_norm_last_dim(1e-6);
-                let logits = x_norm.matmul(w);
+                let logits = x_norm.matmul(w).unwrap();
                 let b_b = b.reshape(Shape::from_dims(&[1, 1])).unwrap()
                     .broadcast_to(Shape::from_dims(&[n, 1])).unwrap();
                 let pred = logits.add(&b_b);

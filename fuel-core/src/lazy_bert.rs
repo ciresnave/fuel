@@ -278,7 +278,7 @@ fn linear(
         .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, out_f]))
         .unwrap();
-    x.matmul(&w_t).add(&bias)
+    x.matmul(&w_t).unwrap().add(&bias)
 }
 
 /// One full BERT transformer block: multi-head self-attention → add+norm →
@@ -310,7 +310,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     // the last two dims of k to build k^T.
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let scores = q.matmul(&k_t).mul_scalar(scale);
+    let scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
 
     // Bidirectional softmax — no causal mask.
     let probs = scores.softmax_last_dim();
@@ -318,7 +318,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     // Attention output: `[1, n_heads, seq, d_head]`, permute + reshape back
     // to `[1, seq, h]`.
     let ctx = probs
-        .matmul(&v)
+        .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq);

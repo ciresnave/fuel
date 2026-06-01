@@ -254,9 +254,9 @@ fn vae_spatial_attention(
     // Shapes: q, k, v are [1, n, c]; reshape to [1, 1, n, c] for the
     // matmul pattern we already use, or stay 3D via transpose + matmul.
     let k_t = k.permute([0, 2, 1_usize]).unwrap();  // [1, C, N]
-    let scores = q.matmul(&k_t).mul_scalar(1.0 / (c as f64).sqrt());  // [1, N, N]
+    let scores = q.matmul(&k_t).unwrap().mul_scalar(1.0 / (c as f64).sqrt());  // [1, N, N]
     let probs = scores.softmax_last_dim();
-    let ctx = probs.matmul(&v);  // [1, N, C]
+    let ctx = probs.matmul(&v).unwrap();  // [1, N, C]
     let out = linear(&ctx, &aw.out_w, Some(&aw.out_b), c, c, n);
     // Reshape back to [1, C, H, W] and residual-add.
     let out_chw = out
@@ -372,7 +372,7 @@ fn linear(
     seq: usize,
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t);
+    let proj = x.matmul(&w_t).unwrap();
     match b {
         Some(b) => {
             let bias = x

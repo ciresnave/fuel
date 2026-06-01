@@ -566,10 +566,24 @@ impl LazyTensor {
     // ---- linear algebra & shape ----
 
     /// N-D batched matrix multiply with automatic rank-2 broadcasting.
-    pub fn matmul(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.matmul(&other.inner),
+    /// Shape incompatibility (rank < 2 or contracting-dim mismatch)
+    /// surfaces as a typed error at build time.
+    pub fn matmul(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let a_dims = self.inner.shape().dims().to_vec();
+        let b_dims = other.inner.shape().dims().to_vec();
+        if a_dims.len() < 2 || b_dims.len() < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "matmul: both operands must be rank >= 2, got lhs={a_dims:?} rhs={b_dims:?}",
+            )).bt());
         }
+        let a_k = a_dims[a_dims.len() - 1];
+        let b_k = b_dims[b_dims.len() - 2];
+        if a_k != b_k {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "matmul: contracting dim mismatch lhs[..., M, {a_k}] vs rhs[..., {b_k}, N]",
+            )).bt());
+        }
+        Ok(Self { inner: self.inner.matmul(&other.inner) })
     }
 
     /// Quantized matmul: `C = self @ dequant(W_Q)`. See
@@ -1162,7 +1176,7 @@ mod tests {
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
             Shape::from_dims(&[3, 3]),
         );
-        let y = x.rms_norm_last_dim(1e-6).matmul(&w).relu();
+        let y = x.rms_norm_last_dim(1e-6).matmul(&w).unwrap().relu();
         assert_eq!(y.shape().dims(), &[2, 3]);
         assert_eq!(y.dtype(), DType::F32);
     }
@@ -1222,7 +1236,7 @@ mod tests {
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
         );
-        let c = a.matmul(&b);
+        let c = a.matmul(&b).unwrap();
         assert_eq!(c.shape().dims(), &[2, 2]);
         assert_eq!(c.realize_f32(), vec![58.0, 64.0, 139.0, 154.0]);
     }
@@ -1240,7 +1254,7 @@ mod tests {
         let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
         let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu());
         let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
-        let c = a.matmul(&b);
+        let c = a.matmul(&b).unwrap();
         let fast = c.realize_f32();
         let reference = c.realize_f32_reference();
         assert_eq!(fast.len(), reference.len());
@@ -1283,7 +1297,7 @@ mod tests {
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
         );
-        let c = a.matmul(&b);
+        let c = a.matmul(&b).unwrap();
         let cpu = c.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda = c.realize_f32_cuda(&exe);
@@ -1310,7 +1324,7 @@ mod tests {
             (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
             Shape::from_dims(&[4, 2]),
         );
-        let y = x.matmul(&w);
+        let y = x.matmul(&w).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda = y.realize_f32_cuda(&exe);
@@ -1486,9 +1500,9 @@ mod tests {
 
         // RmsNorm → Q/K/V projection (auto-broadcasting matmul).
         let x_norm = x.rms_norm_last_dim(1e-6);
-        let q = x_norm.matmul(&w_q);
-        let k = x_norm.matmul(&w_k);
-        let v = x_norm.matmul(&w_v);
+        let q = x_norm.matmul(&w_q).unwrap();
+        let k = x_norm.matmul(&w_k).unwrap();
+        let v = x_norm.matmul(&w_v).unwrap();
 
         // Split heads: [1, seq, 8] → [1, seq, 2, 4] → [1, 2, seq, 4]
         let q_h = q
@@ -1507,15 +1521,15 @@ mod tests {
 
         // Scaled dot-product attention.
         let k_t = k_r.transpose().unwrap();
-        let scores = q_r.matmul(&k_t);
+        let scores = q_r.matmul(&k_t).unwrap();
         let attn = scores.softmax_last_dim();
-        let attn_v = attn.matmul(&v_h);
+        let attn_v = attn.matmul(&v_h).unwrap();
 
         // Merge heads + output projection.
         let merged = attn_v
             .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[1, seq, d_model])).unwrap();
-        let attn_out = merged.matmul(&w_o);
+        let attn_out = merged.matmul(&w_o).unwrap();
         let h = x.add(&attn_out);
 
         // Realize end-to-end through the bridge.
@@ -2122,7 +2136,7 @@ impl LazyTensor {
         }
         // unsqueeze rhs to [n,1], matmul -> [m,1], squeeze trailing dim.
         let rhs_col = rhs.unsqueeze(1_usize)?;
-        let prod = self.matmul(&rhs_col);
+        let prod = self.matmul(&rhs_col).unwrap();
         prod.squeeze(1_usize)
     }
 
@@ -2135,7 +2149,7 @@ impl LazyTensor {
     /// Broadcast-aware matmul. Lazy's [`Self::matmul`] already accepts
     /// broadcast-compatible operands; this method is exposed for
     /// signature compatibility with eager's `Tensor::broadcast_matmul`.
-    pub fn broadcast_matmul(&self, rhs: &Self) -> Self {
+    pub fn broadcast_matmul(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
         self.matmul(rhs)
     }
 
@@ -3313,7 +3327,7 @@ impl WeightStorage {
         match self {
             Self::F32(_) | Self::BF16(_) => {
                 let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]));
-                x.matmul(&w)
+                x.matmul(&w).unwrap()
             }
             Self::Q4_0 { in_features: expected_in, out_features: expected_out, .. } => {
                 assert_eq!(
@@ -3350,7 +3364,7 @@ impl WeightStorage {
                 let scale = *alpha as f64 / *rank as f64;
                 // x: [*, in] → @A [*, rank] → @B [*, out] → scale → add base.
                 let lora_path = LazyTensor {
-                    inner: x.matmul(&a_t).matmul(&b_t).inner.mul_scalar(scale),
+                    inner: x.matmul(&a_t).unwrap().matmul(&b_t).unwrap().inner.mul_scalar(scale),
                 };
                 base_out.add(&lora_path)
             }
@@ -3691,7 +3705,7 @@ impl LlamaModel {
         // tokens, and the model produces garbage.
         let k_t = k_r.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
-        let scores = q_r.matmul(&k_t);
+        let scores = q_r.matmul(&k_t).unwrap();
         let mut mask_data = vec![0.0_f32; seq * seq];
         for q in 0..seq {
             for k in (q + 1)..seq {
@@ -3705,7 +3719,7 @@ impl LlamaModel {
         };
         let scores_masked = scores_scaled.broadcast_add(&mask);
         let attn = scores_masked.softmax_last_dim();
-        let attn_v = attn.matmul(&v_h);
+        let attn_v = attn.matmul(&v_h).unwrap();
 
         // Merge heads + output projection.
         let merged = attn_v
@@ -3832,7 +3846,7 @@ impl LlamaModel {
 
         let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
-        let scores = q_r.matmul(&k_t);
+        let scores = q_r.matmul(&k_t).unwrap();
 
         // Additive causal mask. The query at position `q` (fresh-index
         // 0..seq) lives at absolute position `cached_len + q`, and may
@@ -3859,7 +3873,7 @@ impl LlamaModel {
         };
         let scores_masked = scores_scaled.broadcast_add(&mask);
         let attn = scores_masked.softmax_last_dim();
-        let attn_v = attn.matmul(&full_v);
+        let attn_v = attn.matmul(&full_v).unwrap();
 
         let merged = attn_v
             .permute([0, 2, 1, 3_usize]).unwrap()
@@ -3989,7 +4003,7 @@ impl LlamaModel {
         // Attention path — identical to apply_layer_with_cache from here.
         let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
-        let scores = q_r.matmul(&k_t);
+        let scores = q_r.matmul(&k_t).unwrap();
 
         let mut mask_data = vec![0.0_f32; seq * total_seq];
         for q_idx in 0..seq {
@@ -4007,7 +4021,7 @@ impl LlamaModel {
         };
         let scores_masked = scores_scaled.broadcast_add(&mask);
         let attn = scores_masked.softmax_last_dim();
-        let attn_v = attn.matmul(&full_v);
+        let attn_v = attn.matmul(&full_v).unwrap();
 
         let merged = attn_v
             .permute([0, 2, 1, 3_usize]).unwrap()
@@ -5925,7 +5939,7 @@ impl Gemma2Model {
             w_out_data,
             Shape::from_dims(&[cfg.dim, cfg.vocab_size]),
         );
-        let logits = h_norm.matmul(&w_out);
+        let logits = h_norm.matmul(&w_out).unwrap();
 
         // Final logit softcapping.
         Ok(match cfg.final_logit_softcapping {
@@ -5959,9 +5973,9 @@ impl Gemma2Model {
         let w_k = x.const_f32_like(layer.attn_k.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
         let w_v = x.const_f32_like(layer.attn_v.clone(), Shape::from_dims(&[cfg.dim, kv_dim]));
         let w_o = x.const_f32_like(layer.attn_o.clone(), Shape::from_dims(&[qk_dim, cfg.dim]));
-        let q = x_norm.matmul(&w_q);
-        let k = x_norm.matmul(&w_k);
-        let v = x_norm.matmul(&w_v);
+        let q = x_norm.matmul(&w_q).unwrap();
+        let k = x_norm.matmul(&w_k).unwrap();
+        let v = x_norm.matmul(&w_v).unwrap();
 
         // Split heads.
         let q_h = q
@@ -5996,7 +6010,7 @@ impl Gemma2Model {
         // Attention with query_pre_attn_scalar and optional softcapping.
         let k_t = k_r.transpose().unwrap();
         let scale = 1.0 / cfg.query_pre_attn_scalar.sqrt();
-        let scores = q_r.matmul(&k_t);
+        let scores = q_r.matmul(&k_t).unwrap();
         let scores_scaled = scores.mul_scalar(scale);
 
         // Attention logit softcapping.
@@ -6023,13 +6037,13 @@ impl Gemma2Model {
         let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
         let scores_masked = scores_capped.broadcast_add(&mask);
         let attn = scores_masked.softmax_last_dim();
-        let attn_v = attn.matmul(&v_h);
+        let attn_v = attn.matmul(&v_h).unwrap();
 
         // Merge heads + output projection.
         let merged = attn_v
             .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, qk_dim])).unwrap();
-        let attn_out = merged.matmul(&w_o);
+        let attn_out = merged.matmul(&w_o).unwrap();
 
         // Post-attention RmsNorm (Gemma has this; LLaMA does not).
         let attn_out_norm = apply_gemma_rms_norm(
@@ -6054,10 +6068,10 @@ impl Gemma2Model {
         let w_gate = x.const_f32_like(layer.ffn_gate.clone(), Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
         let w_up = x.const_f32_like(layer.ffn_up.clone(), Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
         let w_down = x.const_f32_like(layer.ffn_down.clone(), Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
-        let gate = h1_norm.matmul(&w_gate);
-        let up = h1_norm.matmul(&w_up);
+        let gate = h1_norm.matmul(&w_gate).unwrap();
+        let up = h1_norm.matmul(&w_up).unwrap();
         let geglu = gate.gelu().mul(&up);
-        let ffn_out = geglu.matmul(&w_down);
+        let ffn_out = geglu.matmul(&w_down).unwrap();
 
         // Post-FFN RmsNorm.
         let ffn_out_norm = apply_gemma_rms_norm(
@@ -6489,7 +6503,7 @@ impl PhiModel {
         // Attention: Q @ K^T, scale, mask, softmax, @ V.
         let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
-        let scores = q_r.matmul(&k_t);
+        let scores = q_r.matmul(&k_t).unwrap();
         // Causal mask.
         let mut mask_data = vec![0.0_f32; seq * total_seq];
         for q in 0..seq {
@@ -6502,7 +6516,7 @@ impl PhiModel {
         let scores_scaled = LazyTensor { inner: scores.inner.mul_scalar(scale) };
         let scores_masked = scores_scaled.broadcast_add(&mask);
         let attn = scores_masked.softmax_last_dim();
-        let attn_v = attn.matmul(&full_v);
+        let attn_v = attn.matmul(&full_v).unwrap();
 
         // Merge heads: [batch, n_heads, seq, head_dim] → [batch, seq, dim].
         let merged = attn_v
@@ -9292,7 +9306,7 @@ mod phase_a4_composite_tests {
     fn broadcast_matmul_passes_through_to_matmul() {
         let a = cpu_f32(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
         let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
-        let out = a.broadcast_matmul(&b);
+        let out = a.broadcast_matmul(&b).unwrap();
         assert_eq!(out.realize_f32(), vec![5.0, 6.0, 7.0, 8.0]);
     }
 }
