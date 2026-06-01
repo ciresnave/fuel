@@ -482,7 +482,7 @@ impl YoloV8Model {
     /// Run the full forward pass on a `[1, 3, H, W]` RGB image
     /// (pixel values typically 0..1). Returns the raw detection
     /// tensors pre-NMS.
-    pub fn forward(&self, image: &[f32]) -> YoloV8RawOutput {
+    pub fn forward(&self, image: &[f32]) -> crate::Result<YoloV8RawOutput> {
         let cfg = &self.config;
         let isize = cfg.image_size;
         assert_eq!(image.len(), 3 * isize * isize, "forward: image wrong length");
@@ -583,12 +583,12 @@ impl YoloV8Model {
             }
         }
 
-        YoloV8RawOutput {
+        Ok(YoloV8RawOutput {
             cls_logits: cls_cat,
             reg_dists,
             strides,
             grid_xy,
-        }
+        })
     }
 }
 
@@ -794,7 +794,7 @@ mod tests {
         let model = YoloV8Model { config: cfg.clone(), weights };
 
         let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
-        let raw = model.forward(&image);
+        let raw = model.forward(&image).unwrap();
 
         let cls = raw.cls_logits.realize_f32();
         let reg = raw.reg_dists.realize_f32();

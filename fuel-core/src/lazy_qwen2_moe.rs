@@ -127,7 +127,7 @@ impl Qwen2MoeModel {
     /// Run a forward pass on a single sequence of token IDs. Returns
     /// `[1, seq, vocab_size]` logits. No KV cache — this is the
     /// "prefill from scratch" path.
-    pub fn forward(&self, tokens: &[u32]) -> LazyTensor {
+    pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let seq = tokens.len();
@@ -150,7 +150,7 @@ impl Qwen2MoeModel {
 
         let x = rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq);
         let lm = x.const_f32_like(self.weights.lm_head.clone(), Shape::from_dims(&[h, cfg.vocab_size]));
-        x.matmul(&lm)
+        Ok(x.matmul(&lm))
     }
 }
 
@@ -422,7 +422,7 @@ mod tests {
         };
         let model = Qwen2MoeModel { config: cfg.clone(), weights };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
-        let logits = model.forward(&tokens);
+        let logits = model.forward(&tokens).unwrap();
         let flat = logits.realize_f32();
         assert_eq!(flat.len(), 1 * tokens.len() * cfg.vocab_size);
         assert!(flat.iter().all(|v| v.is_finite()));

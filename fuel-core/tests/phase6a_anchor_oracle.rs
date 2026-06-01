@@ -138,7 +138,7 @@ fn llama_2layer_cpu_matches_reference() {
     let weights = tiny_llama_weights(&cfg);
     let model = LlamaModel { config: cfg.clone(), weights };
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
-    let logits: LazyTensor = model.forward(&tokens, 0);
+    let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
     // Tighter tolerance than the CUDA equivalent (5e-3) since both
     // sides are CPU; only gemm-vs-textbook drift to absorb.
     assert_cpu_oracle(&logits, 5e-4, 5e-4);
@@ -150,6 +150,6 @@ fn convnext_cpu_matches_reference() {
     let weights = fuel_core::lazy_convnext::zero_weights(&cfg);
     let model = ConvNextModel { weights, config: cfg.clone() };
     let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
-    let logits = model.forward(&image);
+    let logits = model.forward(&image).unwrap();
     assert_cpu_oracle(&logits, 1e-4, 1e-4);
 }

@@ -138,7 +138,7 @@ impl SdTextEncoder {
     /// common source of cryptic mismatches downstream.
     ///
     /// Returns `[1, seq, hidden_size]` hidden states.
-    pub fn forward(&self, tokens: &[u32]) -> LazyTensor {
+    pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         assert_eq!(
             tokens.len(), cfg.max_position_embeddings,
@@ -170,7 +170,7 @@ impl SdTextEncoder {
         for lw in &self.weights.layers {
             x = encoder_layer(&x, lw, cfg, seq);
         }
-        layer_norm_affine(&x, &self.weights.final_ln_g, &self.weights.final_ln_b, cfg.layer_norm_eps, h, seq)
+        Ok(layer_norm_affine(&x, &self.weights.final_ln_g, &self.weights.final_ln_b, cfg.layer_norm_eps, h, seq))
     }
 }
 
@@ -571,7 +571,7 @@ mod tests {
         };
         let model = SdTextEncoder { config: cfg.clone(), weights };
         let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
-        let hidden = model.forward(&tokens);
+        let hidden = model.forward(&tokens).unwrap();
         let flat = hidden.realize_f32();
         assert_eq!(flat.len(), cfg.max_position_embeddings * h);
         assert!(flat.iter().all(|v| v.is_finite()));

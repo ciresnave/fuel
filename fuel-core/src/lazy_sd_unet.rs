@@ -203,7 +203,7 @@ impl SdUnet {
         text_emb: &[f32],
         h_lat: usize,
         w_lat: usize,
-    ) -> LazyTensor {
+    ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let c_in = cfg.in_channels;
         assert_eq!(latent.len(), c_in * h_lat * w_lat);
@@ -287,8 +287,8 @@ impl SdUnet {
         let x = group_norm(&x, &self.weights.conv_norm_out_g, &self.weights.conv_norm_out_b,
             cfg.norm_num_groups, cfg.norm_eps, c_first, h, w);
         let x = x.silu();
-        conv2d_k3_s1_p1(&x, &self.weights.conv_out_w, &self.weights.conv_out_b,
-            c_first, cfg.out_channels, h, w)
+        Ok(conv2d_k3_s1_p1(&x, &self.weights.conv_out_w, &self.weights.conv_out_b,
+            c_first, cfg.out_channels, h, w))
     }
 }
 
