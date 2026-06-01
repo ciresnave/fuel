@@ -562,14 +562,14 @@ pub mod loss {
         //   shifted = logits - max_r              shape [..., C]
         //   log_sum = log(sum_dim(exp(shifted), last))  shape [..., 1]
         //   log_softmax = shifted - log_sum       shape [..., C]
-        let max_r = logits.max_dim(rank - 1);
+        let max_r = logits.max_dim(rank - 1).unwrap();
         let mut keepdim = dims.clone();
         keepdim[rank - 1] = 1;
         let max_kd = max_r.reshape(Shape::from_dims(&keepdim)).unwrap();
         let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
         let shifted = logits.sub(&max_bcast);
         let expd = shifted.exp();
-        let sum_exp = expd.sum_dim(rank - 1);
+        let sum_exp = expd.sum_dim(rank - 1).unwrap();
         let log_sum = sum_exp.log();
         let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim)).unwrap();
         let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
@@ -579,7 +579,7 @@ pub mod loss {
         let per_elem = target_one_hot.mul(&log_softmax);
         // Loss per-sample = -sum over class dim. Then mean over the
         // outer (batch) dims for a scalar loss.
-        let neg_per_sample = per_elem.sum_dim(rank - 1).mul_scalar(-1.0);
+        let neg_per_sample = per_elem.sum_dim(rank - 1).unwrap().mul_scalar(-1.0);
         let total = neg_per_sample.sum_all();
         total.mul_scalar(1.0 / n_outer as f64)
     }

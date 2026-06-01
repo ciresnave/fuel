@@ -450,7 +450,7 @@ fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> Lazy
         .reshape(Shape::from_dims(&[1, 1, 1, r])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r])).unwrap();
     let weighted = probs.mul(&bins_t);
-    weighted.sum_dim(3)  // [1, 4, N]
+    weighted.sum_dim(3).unwrap()  // [1, 4, N]
 }
 
 /// Result of a YOLOv8 forward pass, pre-NMS.

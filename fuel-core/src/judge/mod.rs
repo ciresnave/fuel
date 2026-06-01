@@ -634,10 +634,10 @@ fn apply_reduction(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::Lazy
     // rank-1 `[rows]`.
     let last_dim = a.rank() - 1;
     match op {
-        OpKind::SumReduce  => a.sum_dim(last_dim),
-        OpKind::MaxReduce  => a.max_dim(last_dim),
-        OpKind::MinReduce  => a.min_dim(last_dim),
-        OpKind::MeanReduce => a.mean_dim(last_dim),
+        OpKind::SumReduce  => a.sum_dim(last_dim).unwrap(),
+        OpKind::MaxReduce  => a.max_dim(last_dim).unwrap(),
+        OpKind::MinReduce  => a.min_dim(last_dim).unwrap(),
+        OpKind::MeanReduce => a.mean_dim(last_dim).unwrap(),
         _ => unreachable!("apply_reduction called on non-reduction OpKind {op:?}"),
     }
 }

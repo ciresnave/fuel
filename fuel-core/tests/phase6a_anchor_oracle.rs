@@ -39,7 +39,7 @@ fn single_matmul_cpu_matches_reference() {
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
     let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
-    let c = a.matmul(&b);
+    let c = a.matmul(&b).unwrap();
     assert_cpu_oracle(&c, 1e-4, 1e-4);
 }
 

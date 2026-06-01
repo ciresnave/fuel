@@ -732,25 +732,26 @@ impl LazyTensor {
         Self { inner: self.inner.min_all() }
     }
 
-    /// Sum along a single dimension (dim removed from output).
-    pub fn sum_dim(&self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.sum_dim(dim),
-        }
+    /// Sum along a single dimension (dim removed from output). Bad
+    /// `dim` surfaces as a typed error at build time. Accepts any [`Dim`].
+    pub fn sum_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "sum_dim")?;
+        Ok(Self { inner: self.inner.sum_dim(dim) })
     }
 
     /// Max along a single dimension (dim removed from output).
-    pub fn max_dim(&self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.max_dim(dim),
-        }
+    pub fn max_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "max_dim")?;
+        Ok(Self { inner: self.inner.max_dim(dim) })
     }
 
     /// Min along a single dimension (dim removed from output).
-    pub fn min_dim(&self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.min_dim(dim),
-        }
+    pub fn min_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "min_dim")?;
+        Ok(Self { inner: self.inner.min_dim(dim) })
     }
 
     /// Element-wise clamp to `[min, max]`.
@@ -759,10 +760,10 @@ impl LazyTensor {
     }
 
     /// Mean along a single dimension.
-    pub fn mean_dim(&self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.mean_dim(dim),
-        }
+    pub fn mean_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "mean_dim")?;
+        Ok(Self { inner: self.inner.mean_dim(dim) })
     }
 
     /// Sum-reduce to a smaller broadcast-compatible shape. Inverse of
@@ -2023,21 +2024,21 @@ impl LazyTensor {
     pub fn sum_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "sum_keepdim")?;
-        self.sum_dim(dim).unsqueeze(dim)
+        self.sum_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Mean along `dim`, keeping the reduced dim as size 1.
     pub fn mean_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "mean_keepdim")?;
-        self.mean_dim(dim).unsqueeze(dim)
+        self.mean_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Max along `dim`, keeping the reduced dim as size 1.
     pub fn max_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "max_keepdim")?;
-        self.max_dim(dim).unsqueeze(dim)
+        self.max_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Min along `dim`, keeping the reduced dim as size 1.
@@ -2047,7 +2048,7 @@ impl LazyTensor {
         // sum_dim/mean_dim/max_dim/min_dim return Self today (A.8b.9 will
         // flip them to Result); chain through `.unsqueeze(dim)?` which now
         // owns the build-time dim validation.
-        self.min_dim(dim).unsqueeze(dim)
+        self.min_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Unbiased sample variance along `dim`, keeping the reduced dim as
@@ -2344,7 +2345,7 @@ impl LazyTensor {
         sorted.dedup();
         let mut acc = self.clone();
         for d in sorted {
-            acc = acc.sum_dim(d);
+            acc = acc.sum_dim(d).unwrap();
         }
         acc
     }
@@ -2357,7 +2358,7 @@ impl LazyTensor {
         sorted.dedup();
         let mut acc = self.clone();
         for d in sorted {
-            acc = acc.mean_dim(d);
+            acc = acc.mean_dim(d).unwrap();
         }
         acc
     }
