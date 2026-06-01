@@ -191,6 +191,74 @@ impl CudaStorageBytes {
         })
     }
 
+    /// Extract `outer_count` strided tiles into a fresh contiguous
+    /// `CudaStorageBytes`. Tile `t` lives at
+    /// `t * stride_bytes + offset_in_outer .. + chunk_row_bytes` in
+    /// the source. Result is `outer_count` tiles packed back-to-back
+    /// in the new buffer.
+    ///
+    /// Used by `Op::WriteSliceRotating` to gather one half of a
+    /// ring-boundary split when the rotating axis is not the leading
+    /// dim — for axis 0 the byte split is a prefix/suffix and
+    /// [`Self::slot_copy_to_new`] is enough. Implementation does one
+    /// `memcpy_dtod` per outer tile; for typical KV-cache shapes
+    /// (outer_count ≤ ~4) the launch overhead is small.
+    pub fn extract_strided_to_new(
+        &self,
+        outer_count:     usize,
+        stride_bytes:    usize,
+        offset_in_outer: usize,
+        chunk_row_bytes: usize,
+    ) -> Result<Self> {
+        let dest_total = outer_count
+            .checked_mul(chunk_row_bytes)
+            .ok_or_else(|| {
+                fuel_core_types::Error::Msg(
+                    "extract_strided_to_new: outer_count * chunk_row_bytes overflows".into(),
+                ).bt()
+            })?;
+        if dest_total == 0 {
+            return Self::alloc(&self.device, 0);
+        }
+        // Per-tile end must fit inside the source.
+        if outer_count > 0 {
+            let last_tile_end = (outer_count - 1)
+                .checked_mul(stride_bytes)
+                .and_then(|x| x.checked_add(offset_in_outer))
+                .and_then(|x| x.checked_add(chunk_row_bytes))
+                .ok_or_else(|| {
+                    fuel_core_types::Error::Msg(
+                        "extract_strided_to_new: tile span overflow".into(),
+                    ).bt()
+                })?;
+            if last_tile_end > self.len_bytes {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "extract_strided_to_new: last tile end {last_tile_end} > src bytes {}",
+                    self.len_bytes,
+                )).bt());
+            }
+        }
+        let mut dst_buffer: DeviceBuffer<u8> =
+            unsafe { self.device.alloc::<u8>(dest_total) }?;
+        {
+            let src_view = self.buffer.view_as::<u8>();
+            let mut dst_view = dst_buffer.view_as_mut::<u8>();
+            for t in 0..outer_count {
+                let src_off = t * stride_bytes + offset_in_outer;
+                let dst_off = t * chunk_row_bytes;
+                let src_slice = src_view.slice(src_off..src_off + chunk_row_bytes);
+                let mut dst_slice = dst_view.slice_mut(dst_off..dst_off + chunk_row_bytes);
+                self.device.memcpy_dtod(&src_slice, &mut dst_slice)?;
+            }
+        }
+        self.device.synchronize()?;
+        Ok(Self {
+            buffer: Arc::new(dst_buffer),
+            device: self.device.clone(),
+            len_bytes: dest_total,
+        })
+    }
+
     /// Bridge-retirement Phase 3b: H2D into an already-allocated
     /// CUDA buffer. Pairs with [`Self::alloc_uninit`] for the
     /// `Op::Alloc → Op::Copy { target: Cuda }` H2D pattern — the

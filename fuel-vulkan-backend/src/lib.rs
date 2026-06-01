@@ -597,6 +597,103 @@ impl VulkanBackend {
         ))
     }
 
+    /// Extract `outer_count` strided tiles into a fresh contiguous
+    /// `VulkanStorageBytes`. Tile `t` lives at
+    /// `t * stride_bytes + offset_in_outer .. + chunk_row_bytes` in
+    /// the source. Result is `outer_count` tiles packed back-to-back.
+    ///
+    /// All copies batch into a single `vkCmdCopyBuffer` with one
+    /// `BufferCopy` region per tile — one command-buffer submit total,
+    /// not `outer_count` of them.
+    ///
+    /// Used by `Op::WriteSliceRotating` to gather one half of a
+    /// ring-boundary split when the rotating axis is not the leading
+    /// dim. For axis 0 the byte split is a prefix/suffix and
+    /// [`Self::slot_copy_to_new_handle`] is enough.
+    pub fn extract_strided_to_new_handle(
+        self: &std::sync::Arc<Self>,
+        src:             &VulkanStorageBytes,
+        outer_count:     usize,
+        stride_bytes:    usize,
+        offset_in_outer: usize,
+        chunk_row_bytes: usize,
+    ) -> fuel_core_types::Result<VulkanStorageBytes> {
+        let dest_total = outer_count
+            .checked_mul(chunk_row_bytes)
+            .ok_or_else(|| {
+                fuel_core_types::Error::Msg(
+                    "extract_strided_to_new_handle: outer_count * chunk_row_bytes overflows".into(),
+                ).bt()
+            })?;
+        if dest_total == 0 {
+            let mut s = self.alloc_bytes(0)?;
+            s.backend = Some(std::sync::Arc::clone(self));
+            return Ok(s);
+        }
+        if outer_count > 0 {
+            let last_tile_end = (outer_count - 1)
+                .checked_mul(stride_bytes)
+                .and_then(|x| x.checked_add(offset_in_outer))
+                .and_then(|x| x.checked_add(chunk_row_bytes))
+                .ok_or_else(|| {
+                    fuel_core_types::Error::Msg(
+                        "extract_strided_to_new_handle: tile span overflow".into(),
+                    ).bt()
+                })?;
+            if last_tile_end > src.len_bytes() {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "extract_strided_to_new_handle: last tile end {last_tile_end} > src bytes {}",
+                    src.len_bytes(),
+                )).bt());
+            }
+        }
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "extract_strided_to_new_handle: source storage is host-evicted; \
+                 fault back before extracting".into(),
+            ).bt()
+        })?;
+        let size = dest_total as u64;
+        let (dst_buf, dst_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC
+                        | BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        let regions: Vec<BufferCopy> = (0..outer_count)
+            .map(|t| BufferCopy {
+                src_offset: (t * stride_bytes + offset_in_outer) as u64,
+                dst_offset: (t * chunk_row_bytes) as u64,
+                size:       chunk_row_bytes as u64,
+            })
+            .collect();
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(src_buf, &dst_buf, &regions);
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        Ok(VulkanStorageBytes::from_device_with_backend(
+            std::sync::Arc::new(VulkanBuffer {
+                buffer:       Some(dst_buf),
+                allocation:   Some(dst_alloc),
+                byte_size:    size,
+                recycle_pool: Some(self.buffer_pool.clone()),
+            }),
+            dest_total,
+            std::sync::Arc::clone(self),
+        ))
+    }
+
     /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` bytes of
     /// device-local storage and wraps them in a fresh
     /// `VulkanStorageBytes`. No initialization — caller is responsible
