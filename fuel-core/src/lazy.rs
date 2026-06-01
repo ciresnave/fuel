@@ -1694,6 +1694,10 @@ impl LazyTensor {
     /// of shape `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]`
     /// with `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional)
     /// is `[Hq]`. Returns the attention output, shape `[B, Hq, Sq, D]`.
+    ///
+    /// Rank / batch / GQA-divisibility / head-dim mismatches surface
+    /// as typed errors at build time rather than panicking inside the
+    /// inner `fuel_graph` call.
     #[allow(clippy::too_many_arguments)]
     pub fn flash_attn(
         &self,
@@ -1705,20 +1709,82 @@ impl LazyTensor {
         window_size_left: Option<usize>,
         window_size_right: Option<usize>,
         softcap: Option<f32>,
-    ) -> Self {
-        Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let q_shape = self.inner.shape();
+        let q_dims = q_shape.dims();
+        let k_shape = k.inner.shape();
+        let k_dims = k_shape.dims();
+        let v_shape = v.inner.shape();
+        let v_dims = v_shape.dims();
+        if q_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}",
+            )).bt());
+        }
+        if k_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: k must be rank 4 [B, Hkv, Sk, D], got {k_dims:?}",
+            )).bt());
+        }
+        if v_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: v must be rank 4 [B, Hkv, Sk, D], got {v_dims:?}",
+            )).bt());
+        }
+        let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
+        let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
+        if b != bk || b != bv {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: B mismatch q={b} k={bk} v={bv}",
+            )).bt());
+        }
+        if hkv != hkv_v {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: Hkv mismatch k={hkv} vs v={hkv_v}",
+            )).bt());
+        }
+        if sk != sk_v {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: Sk mismatch k={sk} vs v={sk_v}",
+            )).bt());
+        }
+        if d != dk || d != dv {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: head_dim mismatch q={d} k={dk} v={dv}",
+            )).bt());
+        }
+        if hkv == 0 || hq % hkv != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "flash_attn: Hq={hq} must be a positive multiple of Hkv={hkv}",
+            )).bt());
+        }
+        if let Some(a) = alibi_slopes {
+            let a_shape = a.inner.shape();
+            let a_dims = a_shape.dims();
+            if a_dims != [hq] {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "flash_attn: alibi_slopes must be [Hq={hq}], got {a_dims:?}",
+                )).bt());
+            }
+        }
+        Ok(Self {
             inner: self.inner.flash_attn(
                 &k.inner, &v.inner,
                 alibi_slopes.map(|t| &t.inner),
                 softmax_scale, causal, window_size_left, window_size_right, softcap,
             ),
-        }
+        })
     }
 
     /// Append a [`fuel_graph::Op::PagedAttn`] node. `self` is the Q
     /// tensor `[B, Hq, Sq, D]`. `k_cache` / `v_cache` are paged caches
     /// `[num_blocks, block_size, Hkv, D]`. `block_table` is `[B,
     /// max_blocks]` u32; `context_lens` is `[B]` u32.
+    ///
+    /// Rank / batch / GQA-divisibility / block-size / dtype mismatches
+    /// surface as typed errors at build time rather than panicking
+    /// inside the inner `fuel_graph` call.
     #[allow(clippy::too_many_arguments)]
     pub fn paged_attn(
         &self,
@@ -1730,15 +1796,111 @@ impl LazyTensor {
         softmax_scale: f32,
         block_size: usize,
         softcap: Option<f32>,
-    ) -> Self {
-        Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if block_size < 1 {
+            return Err(fuel_core_types::Error::Msg(
+                "paged_attn: block_size must be >= 1".into(),
+            ).bt());
+        }
+        let q_shape = self.inner.shape();
+        let q_dims = q_shape.dims();
+        let kc_shape = k_cache.inner.shape();
+        let kc_dims = kc_shape.dims();
+        let vc_shape = v_cache.inner.shape();
+        let vc_dims = vc_shape.dims();
+        let bt_shape = block_table.inner.shape();
+        let bt_dims = bt_shape.dims();
+        let cl_shape = context_lens.inner.shape();
+        let cl_dims = cl_shape.dims();
+        if q_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}",
+            )).bt());
+        }
+        if kc_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: k_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {kc_dims:?}",
+            )).bt());
+        }
+        if vc_dims.len() != 4 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: v_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {vc_dims:?}",
+            )).bt());
+        }
+        if bt_dims.len() != 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: block_table must be rank 2 [B, max_blocks], got {bt_dims:?}",
+            )).bt());
+        }
+        if cl_dims.len() != 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: context_lens must be rank 1 [B], got {cl_dims:?}",
+            )).bt());
+        }
+        let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        if kc_dims[1] != block_size {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: k_cache block dim {} != block_size {block_size}", kc_dims[1],
+            )).bt());
+        }
+        if vc_dims[1] != block_size {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: v_cache block dim {} != block_size {block_size}", vc_dims[1],
+            )).bt());
+        }
+        let hkv = kc_dims[2];
+        if vc_dims[2] != hkv {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: Hkv mismatch k_cache={hkv} vs v_cache={}", vc_dims[2],
+            )).bt());
+        }
+        if kc_dims[3] != d || vc_dims[3] != d {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: D mismatch q={d} k={} v={}", kc_dims[3], vc_dims[3],
+            )).bt());
+        }
+        if hkv == 0 || hq % hkv != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: Hq={hq} must be a positive multiple of Hkv={hkv}",
+            )).bt());
+        }
+        if bt_dims[0] != b {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: block_table batch dim {} != B={b}", bt_dims[0],
+            )).bt());
+        }
+        if cl_dims[0] != b {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: context_lens len {} != B={b}", cl_dims[0],
+            )).bt());
+        }
+        if block_table.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: block_table must be U32, got {:?}", block_table.inner.dtype(),
+            )).bt());
+        }
+        if context_lens.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "paged_attn: context_lens must be U32, got {:?}", context_lens.inner.dtype(),
+            )).bt());
+        }
+        if let Some(a) = alibi_slopes {
+            let a_shape = a.inner.shape();
+            let a_dims = a_shape.dims();
+            if a_dims != [hq] {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "paged_attn: alibi_slopes must be [Hq={hq}], got {a_dims:?}",
+                )).bt());
+            }
+        }
+        Ok(Self {
             inner: self.inner.paged_attn(
                 &k_cache.inner, &v_cache.inner,
                 &block_table.inner, &context_lens.inner,
                 alibi_slopes.map(|t| &t.inner),
                 softmax_scale, block_size, softcap,
             ),
-        }
+        })
     }
 
     /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
