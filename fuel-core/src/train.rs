@@ -1195,7 +1195,7 @@ mod tests {
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, d]));
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[n, 1]));
-                let x_norm = x.rms_norm_last_dim(1e-6);
+                let x_norm = x.rms_norm_last_dim(1e-6).unwrap();
                 let logits = x_norm.matmul(w).unwrap();
                 let b_b = b.reshape(Shape::from_dims(&[1, 1])).unwrap()
                     .broadcast_to(Shape::from_dims(&[n, 1])).unwrap();

@@ -424,7 +424,7 @@ fn multi_head_attn(
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, H, D, KV]
     let scale = 1.0 / (d_head as f64).sqrt();
     let scores = q.matmul(&k_t).unwrap().mul_scalar(scale);  // [1, H, Q, KV]
-    let probs = scores.softmax_last_dim();
+    let probs = scores.softmax_last_dim().unwrap();
     probs
         .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
@@ -462,7 +462,7 @@ fn layer_norm_affine(
     hidden: usize,
     seq: usize,
 ) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps);
+    let normed = x.layer_norm_last_dim(eps).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()

@@ -781,11 +781,19 @@ impl LazyTensor {
 
     // ---- compositions ----
 
-    /// Softmax along the last dim.
-    pub fn softmax_last_dim(&self) -> Self {
-        Self {
-            inner: self.inner.softmax_last_dim(),
+    /// Softmax along the last dim. Rank-0 input surfaces as a typed
+    /// error at build time rather than panicking inside `fuel_graph`.
+    pub fn softmax_last_dim(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dims = shape.dims();
+        if dims.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "softmax_last_dim: input must be rank >= 1, got scalar".into(),
+            ).bt());
         }
+        Ok(Self {
+            inner: self.inner.softmax_last_dim(),
+        })
     }
 
     /// bitsandbytes-style 4-bit NormalFloat quantized matrix
@@ -872,18 +880,34 @@ impl LazyTensor {
         }
     }
 
-    /// LayerNorm along the last dim with the given epsilon.
-    pub fn layer_norm_last_dim(&self, eps: f64) -> Self {
-        Self {
-            inner: self.inner.layer_norm_last_dim(eps),
+    /// LayerNorm along the last dim with the given epsilon. Rank-0
+    /// or zero-last-dim input surfaces as a typed error at build time.
+    pub fn layer_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dims = shape.dims();
+        if dims.is_empty() || *dims.last().unwrap() == 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "layer_norm_last_dim: input must have non-zero last dim, got {dims:?}",
+            )).bt());
         }
+        Ok(Self {
+            inner: self.inner.layer_norm_last_dim(eps),
+        })
     }
 
-    /// RmsNorm along the last dim (LLaMA's normalization).
-    pub fn rms_norm_last_dim(&self, eps: f64) -> Self {
-        Self {
-            inner: self.inner.rms_norm_last_dim(eps),
+    /// RmsNorm along the last dim (LLaMA's normalization). Rank-0 or
+    /// zero-last-dim input surfaces as a typed error at build time.
+    pub fn rms_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dims = shape.dims();
+        if dims.is_empty() || *dims.last().unwrap() == 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rms_norm_last_dim: input must have non-zero last dim, got {dims:?}",
+            )).bt());
         }
+        Ok(Self {
+            inner: self.inner.rms_norm_last_dim(eps),
+        })
     }
 
     /// Apply rotary position embeddings. See [`fuel_graph::Tensor::rope`].
@@ -1177,7 +1201,7 @@ mod tests {
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
             Shape::from_dims(&[3, 3]),
         );
-        let y = x.rms_norm_last_dim(1e-6).matmul(&w).unwrap().relu();
+        let y = x.rms_norm_last_dim(1e-6).unwrap().matmul(&w).unwrap().relu();
         assert_eq!(y.shape().dims(), &[2, 3]);
         assert_eq!(y.dtype(), DType::F32);
     }
@@ -1358,7 +1382,7 @@ mod tests {
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
         );
-        let y = x.softmax_last_dim();
+        let y = x.softmax_last_dim().unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda = y.realize_f32_cuda(&exe);
@@ -1397,7 +1421,7 @@ mod tests {
             Shape::from_dims(&[n, last]),
             &Device::cpu(),
         );
-        let y = x.softmax_last_dim();
+        let y = x.softmax_last_dim().unwrap();
 
         // CPU baseline: fused SoftmaxLastDim through the standard
         // realize_f32 path (no rule-registry pipeline involved).
@@ -1451,7 +1475,7 @@ mod tests {
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
         );
-        let y = x.rms_norm_last_dim(1e-5);
+        let y = x.rms_norm_last_dim(1e-5).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda = y.realize_f32_cuda(&exe);
@@ -1500,7 +1524,7 @@ mod tests {
             x.const_f32_like(identity_matrix(d_model), Shape::from_dims(&[d_model, d_model]));
 
         // RmsNorm → Q/K/V projection (auto-broadcasting matmul).
-        let x_norm = x.rms_norm_last_dim(1e-6);
+        let x_norm = x.rms_norm_last_dim(1e-6).unwrap();
         let q = x_norm.matmul(&w_q).unwrap();
         let k = x_norm.matmul(&w_k).unwrap();
         let v = x_norm.matmul(&w_v).unwrap();
@@ -1523,7 +1547,7 @@ mod tests {
         // Scaled dot-product attention.
         let k_t = k_r.transpose().unwrap();
         let scores = q_r.matmul(&k_t).unwrap();
-        let attn = scores.softmax_last_dim();
+        let attn = scores.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&v_h).unwrap();
 
         // Merge heads + output projection.
@@ -3999,7 +4023,7 @@ impl LlamaModel {
             inner: scores.inner.mul_scalar(scale),
         };
         let scores_masked = scores_scaled.broadcast_add(&mask);
-        let attn = scores_masked.softmax_last_dim();
+        let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&v_h).unwrap();
 
         // Merge heads + output projection.
@@ -4153,7 +4177,7 @@ impl LlamaModel {
             inner: scores.inner.mul_scalar(scale),
         };
         let scores_masked = scores_scaled.broadcast_add(&mask);
-        let attn = scores_masked.softmax_last_dim();
+        let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
         let merged = attn_v
@@ -4301,7 +4325,7 @@ impl LlamaModel {
             inner: scores.inner.mul_scalar(scale),
         };
         let scores_masked = scores_scaled.broadcast_add(&mask);
-        let attn = scores_masked.softmax_last_dim();
+        let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
         let merged = attn_v
@@ -4546,7 +4570,7 @@ fn apply_affine_rms_norm(
     eps: f64,
 ) -> LazyTensor {
     assert_eq!(gain.len(), dim, "apply_affine_rms_norm: gain length must equal dim");
-    let normalized = x.rms_norm_last_dim(eps);
+    let normalized = x.rms_norm_last_dim(eps).unwrap();
     let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
     normalized.broadcast_mul(&gain_t)
 }
@@ -6149,7 +6173,7 @@ fn apply_gemma_rms_norm(
     dim: usize,
     eps: f64,
 ) -> LazyTensor {
-    let normalized = x.rms_norm_last_dim(eps);
+    let normalized = x.rms_norm_last_dim(eps).unwrap();
     let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
     let gain_plus_one = gain_t.add_scalar(1.0);
     normalized.broadcast_mul(&gain_plus_one)
@@ -6317,7 +6341,7 @@ impl Gemma2Model {
         }
         let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
         let scores_masked = scores_capped.broadcast_add(&mask);
-        let attn = scores_masked.softmax_last_dim();
+        let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&v_h).unwrap();
 
         // Merge heads + output projection.
@@ -6672,7 +6696,7 @@ fn apply_affine_layer_norm(
 ) -> LazyTensor {
     assert_eq!(gain.len(), dim, "apply_affine_layer_norm: gain length must equal dim");
     assert_eq!(bias.len(), dim, "apply_affine_layer_norm: bias length must equal dim");
-    let normalized = x.layer_norm_last_dim(eps);
+    let normalized = x.layer_norm_last_dim(eps).unwrap();
     let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
     let bias_t = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[dim]));
     normalized.broadcast_mul(&gain_t).broadcast_add(&bias_t)
@@ -6796,7 +6820,7 @@ impl PhiModel {
         let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, total_seq]));
         let scores_scaled = LazyTensor { inner: scores.inner.mul_scalar(scale) };
         let scores_masked = scores_scaled.broadcast_add(&mask);
-        let attn = scores_masked.softmax_last_dim();
+        let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
         // Merge heads: [batch, n_heads, seq, head_dim] → [batch, seq, dim].
