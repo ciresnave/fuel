@@ -8466,13 +8466,6 @@ pub fn write_slice_rotating_cpu(
         ))
         .bt());
     }
-    if axis != 0 {
-        return Err(Error::Msg(format!(
-            "write_slice_rotating_cpu (v1): rotating axis must be 0; got {axis}. \
-             Strided multi-axis splits land in a follow-up slice.",
-        ))
-        .bt());
-    }
     if position_bytes.len_bytes() < 4 {
         return Err(Error::Msg(format!(
             "write_slice_rotating_cpu: position storage has {} bytes, need >= 4",
@@ -8534,29 +8527,69 @@ pub fn write_slice_rotating_cpu(
     let slab_axis_len = slab_shape[axis];
     let first_len = slab_axis_len.min(modulus - wrapped_start);
     let second_len = slab_axis_len - first_len;
-    // With axis==0, source bytes are `[first_len rows][second_len rows]`
-    // (row-major), each row being `inner_per_row_bytes`.
-    let inner_per_row_elems: usize = slab_shape[1..].iter().copied().product();
-    let inner_per_row_bytes = inner_per_row_elems * dtype_size;
+
+    // Decompose the slab into outer/axis/inner tiles for the strided
+    // source extract. With slab_shape = `[d0, …, slab_axis_len, …, dn]`
+    // and `axis = K`:
+    //   outer_count   = product of slab dims before axis K
+    //   inner_per_row = product of slab dims after axis K
+    //
+    // The source bytes are `outer_count × slab_axis_len × inner_per_row × dtype_size`
+    // in row-major order, so each "row" along axis K is a contiguous
+    // run of `inner_per_row * dtype_size` bytes, and each outer-tuple
+    // is a contiguous run of `slab_axis_len * inner_per_row * dtype_size`
+    // bytes. For axis == 0 this reduces to a flat byte prefix/suffix
+    // (outer_count == 1).
+    let outer_count: usize = slab_shape[..axis].iter().copied().product();
+    let inner_per_row: usize = slab_shape[axis + 1..].iter().copied().product();
+    let row_bytes = inner_per_row * dtype_size;
+    let stride_bytes = slab_axis_len * row_bytes;
     let src_buf = source.bytes();
+
     if first_len > 0 {
         let mut sub_ranges = ranges.to_vec();
         sub_ranges[axis] = (wrapped_start, wrapped_start + first_len);
-        let first_bytes_len = first_len * inner_per_row_bytes;
-        let src_first = CpuStorageBytes::from_bytes(&src_buf[..first_bytes_len]);
+        let first_chunk_row_bytes = first_len * row_bytes;
+        let src_first =
+            extract_strided_chunk(src_buf, outer_count, stride_bytes, 0, first_chunk_row_bytes);
         write_slice_cpu(&src_first, dest, dest_shape, &sub_ranges, dtype_size)?;
     }
     if second_len > 0 {
         let mut sub_ranges = ranges.to_vec();
         sub_ranges[axis] = (0, second_len);
-        let first_bytes_len = first_len * inner_per_row_bytes;
-        let second_bytes_len = second_len * inner_per_row_bytes;
-        let src_second = CpuStorageBytes::from_bytes(
-            &src_buf[first_bytes_len..first_bytes_len + second_bytes_len],
+        let second_chunk_row_bytes = second_len * row_bytes;
+        // The second chunk starts at `first_len * row_bytes` into each
+        // outer tuple.
+        let chunk_offset_in_outer = first_len * row_bytes;
+        let src_second = extract_strided_chunk(
+            src_buf, outer_count, stride_bytes, chunk_offset_in_outer, second_chunk_row_bytes,
         );
         write_slice_cpu(&src_second, dest, dest_shape, &sub_ranges, dtype_size)?;
     }
     Ok(())
+}
+
+/// Extract `outer_count` tiles of `chunk_row_bytes` from `src` into a
+/// fresh contiguous CPU storage. Tile `t` is at byte range
+/// `t * stride_bytes + offset_in_outer .. + chunk_row_bytes`. Used by
+/// `write_slice_rotating_cpu` to gather the source chunk corresponding
+/// to one half of a ring-boundary split for any rotating axis.
+fn extract_strided_chunk(
+    src: &[u8],
+    outer_count: usize,
+    stride_bytes: usize,
+    offset_in_outer: usize,
+    chunk_row_bytes: usize,
+) -> CpuStorageBytes {
+    let total = outer_count * chunk_row_bytes;
+    let mut buf = vec![0_u8; total];
+    for t in 0..outer_count {
+        let src_off = t * stride_bytes + offset_in_outer;
+        let dst_off = t * chunk_row_bytes;
+        buf[dst_off..dst_off + chunk_row_bytes]
+            .copy_from_slice(&src[src_off..src_off + chunk_row_bytes]);
+    }
+    CpuStorageBytes::from_bytes(&buf)
 }
 
 #[cfg(test)]
@@ -10446,19 +10479,86 @@ mod tests {
         assert_eq!(r, &[0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
-    /// v1 constraint: non-zero rotating axis errors cleanly.
+    /// Rotating axis == 1 (the inner-of-rank-2 dim). dest `[2, 4]`,
+    /// modulus 4, slab `[2, 1]` at position 1 → writes column 1 of
+    /// both rows.
     #[test]
-    fn write_slice_rotating_cpu_rejects_non_leading_axis() {
-        let mut dest = CpuStorageBytes::from_zero_bytes(16);
-        let source = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
-        let position = CpuStorageBytes::from_slice(&[0_u32]);
-        let r = write_slice_rotating_cpu(
+    fn write_slice_rotating_cpu_inner_axis_within_window() {
+        // dest layout (row-major): [r0c0 r0c1 r0c2 r0c3 r1c0 r1c1 r1c2 r1c3]
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 8]);
+        let source = CpuStorageBytes::from_slice(&[7.0_f32, 8.0]); // 2 rows × 1 col
+        let position = CpuStorageBytes::from_slice(&[1_u32]);
+        write_slice_rotating_cpu(
             &source, &position, &mut dest,
-            &[2, 4], /* axis */ 1, 4,
-            &[(0, 2), (0, 4)],
+            &[2, 4], /* axis */ 1, /* modulus */ 4,
+            &[(0, 2), (0, 1)],
             std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating axis 1");
+        let r: &[f32] = dest.as_slice().unwrap();
+        // wrapped_start = 1 % 4 = 1 on axis 1 → writes column 1.
+        assert_eq!(r, &[0.0, 7.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0]);
+    }
+
+    /// Boundary split on axis 1: position 3, slab `[2, 2]`, modulus 4.
+    /// First column lands at index 3, second wraps to index 0 (per row).
+    #[test]
+    fn write_slice_rotating_cpu_inner_axis_splits_across_boundary() {
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 8]);
+        // source `[2, 2]` row-major: row0 = (10, 20), row1 = (30, 40).
+        let source = CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0, 40.0]);
+        let position = CpuStorageBytes::from_slice(&[3_u32]);
+        write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[2, 4], 1, 4,
+            &[(0, 2), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating axis 1 boundary split");
+        let r: &[f32] = dest.as_slice().unwrap();
+        // wrapped_start = 3 on axis 1. row0 col 3 = 10, row0 col 0 (wrap) = 20.
+        // row1 col 3 = 30, row1 col 0 (wrap) = 40.
+        assert_eq!(r, &[20.0, 0.0, 0.0, 10.0, 40.0, 0.0, 0.0, 30.0]);
+    }
+
+    /// Middle-axis split (axis 1 of rank-3 dest). dest `[2, 4, 2]`,
+    /// modulus 4 on axis 1, slab `[2, 2, 2]` at position 3. Each
+    /// outer index (axis 0) gets a strided gather.
+    #[test]
+    fn write_slice_rotating_cpu_middle_axis_splits() {
+        // dest shape [2, 4, 2] → 16 elems zero-initialized.
+        let mut dest = CpuStorageBytes::from_slice(&[0.0_f32; 16]);
+        // source shape [2, 2, 2] = 8 elems, distinguishable values
+        let source = CpuStorageBytes::from_slice(&[
+            1.0_f32, 2.0,  // outer 0 axis 0
+            3.0, 4.0,      // outer 0 axis 1
+            10.0, 20.0,    // outer 1 axis 0
+            30.0, 40.0,    // outer 1 axis 1
+        ]);
+        let position = CpuStorageBytes::from_slice(&[3_u32]);
+        write_slice_rotating_cpu(
+            &source, &position, &mut dest,
+            &[2, 4, 2], /* axis */ 1, /* modulus */ 4,
+            &[(0, 2), (0, 2), (0, 2)],
+            std::mem::size_of::<f32>(),
+        ).expect("write_slice_rotating middle-axis split");
+        let r: &[f32] = dest.as_slice().unwrap();
+        // wrapped_start = 3. On axis 1: chunk0 (rows in src axis-1 [0..1]) →
+        // dest axis-1 [3..4]; chunk1 (rows in src axis-1 [1..2]) → dest axis-1 [0..1].
+        // For outer=0: dest[0,0,:] = (3.0, 4.0) (chunk1), dest[0,3,:] = (1.0, 2.0) (chunk0)
+        // For outer=1: dest[1,0,:] = (30.0, 40.0), dest[1,3,:] = (10.0, 20.0)
+        // dest layout: outer × 4 axis-1 rows × 2 inner cols, row-major.
+        assert_eq!(
+            r,
+            &[
+                3.0, 4.0,    // dest[0,0]
+                0.0, 0.0,    // dest[0,1]
+                0.0, 0.0,    // dest[0,2]
+                1.0, 2.0,    // dest[0,3]
+                30.0, 40.0,  // dest[1,0]
+                0.0, 0.0,    // dest[1,1]
+                0.0, 0.0,    // dest[1,2]
+                10.0, 20.0,  // dest[1,3]
+            ],
         );
-        assert!(r.is_err());
     }
 
     /// Slab width > modulus must error (can't overfill the ring).

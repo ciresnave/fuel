@@ -988,12 +988,6 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
                     )).bt());
                 }
             };
-            if axis != 0 {
-                return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), " (v1): rotating axis must be 0; got {axis}. Strided multi-axis splits land in a follow-up slice."),
-                    axis = axis,
-                )).bt());
-            }
             let rank = dest_shape.len();
             if ranges.len() != rank {
                 return Err(Error::Msg(format!(
@@ -1043,19 +1037,22 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
             let first_len = slab_axis_len.min(modulus - wrapped_start);
             let second_len = slab_axis_len - first_len;
 
-            // Byte size per row of the source (everything past axis 0).
-            let inner_per_row_elems: usize = slab_shape[1..].iter().copied().product();
-            let inner_per_row_bytes = inner_per_row_elems * $dtype_size;
+            // Outer/axis/inner decomposition for strided source extract.
+            // For axis 0, outer_count is 1 and the strided extract
+            // reduces to a single contiguous copy.
+            let outer_count: usize = slab_shape[..axis].iter().copied().product();
+            let inner_per_row: usize = slab_shape[axis + 1..].iter().copied().product();
+            let row_bytes = inner_per_row * $dtype_size;
+            let stride_bytes = slab_axis_len * row_bytes;
 
             let src_guard = read_storage(&inputs[0])?;
             let src_cuda = cuda_input(&src_guard)?;
 
-            // Run up to two chunks. Each chunk extracts a fresh
-            // CudaStorageBytes (D2D copy of the relevant source bytes)
-            // and issues baracuda's write_slice kernel.
             if first_len > 0 {
-                let first_bytes_len = first_len * inner_per_row_bytes;
-                let src_first = src_cuda.slot_copy_to_new(0, first_bytes_len)?;
+                let chunk_row_bytes = first_len * row_bytes;
+                let src_first = src_cuda.extract_strided_to_new(
+                    outer_count, stride_bytes, /* offset_in_outer */ 0, chunk_row_bytes,
+                )?;
                 let mut sub_source_shape = slab_shape.clone();
                 sub_source_shape[axis] = first_len;
                 let mut sub_range_start: Vec<usize> = ranges.iter().map(|r| r.0).collect();
@@ -1066,9 +1063,11 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
                 $baracuda_fn(dest_cuda, &src_first, dest_shape, &sub_source_shape, &sub_range_start)?;
             }
             if second_len > 0 {
-                let first_bytes_len = first_len * inner_per_row_bytes;
-                let second_bytes_len = second_len * inner_per_row_bytes;
-                let src_second = src_cuda.slot_copy_to_new(first_bytes_len, second_bytes_len)?;
+                let chunk_row_bytes = second_len * row_bytes;
+                let offset_in_outer = first_len * row_bytes;
+                let src_second = src_cuda.extract_strided_to_new(
+                    outer_count, stride_bytes, offset_in_outer, chunk_row_bytes,
+                )?;
                 let mut sub_source_shape = slab_shape.clone();
                 sub_source_shape[axis] = second_len;
                 let mut sub_range_start: Vec<usize> = ranges.iter().map(|r| r.0).collect();
