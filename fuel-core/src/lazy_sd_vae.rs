@@ -355,9 +355,9 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTens
     // Reshape to [1, C, H, 1, W, 1].
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
     // Concat with self along dim 3 → [1, C, H, 2, W, 1].
-    let x6 = x6.concat(&x6, 3);
+    let x6 = x6.concat(&x6, 3).unwrap();
     // Concat with self along dim 5 → [1, C, H, 2, W, 2].
-    let x6 = x6.concat(&x6, 5);
+    let x6 = x6.concat(&x6, 5).unwrap();
     // Reshape to [1, C, 2H, 2W].
     x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
 }

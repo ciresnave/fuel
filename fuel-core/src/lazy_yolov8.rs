@@ -308,13 +308,13 @@ fn pad_hw_zeros(x: &LazyTensor, c: usize, h: usize, w: usize, p: usize) -> LazyT
         vec![0.0_f32; c * h * p],
         Shape::from_dims(&[1, c, h, p]),
     );
-    let x_wpad = z_w.concat(x, 3).concat(&z_w, 3);
+    let x_wpad = z_w.concat(x, 3).unwrap().concat(&z_w, 3).unwrap();
     let w_p = w + 2 * p;
     let z_h = x.const_f32_like(
         vec![0.0_f32; c * p * w_p],
         Shape::from_dims(&[1, c, p, w_p]),
     );
-    z_h.concat(&x_wpad, 2).concat(&z_h, 2)
+    z_h.concat(&x_wpad, 2).unwrap().concat(&z_h, 2).unwrap()
 }
 
 /// YOLOv8 Bottleneck: `cv1(x) = cv(k=3) then cv(k=3)`; if
@@ -358,7 +358,7 @@ fn c2f(
     // Concat along channel axis: (2+n)*c channels.
     let mut stacked = parts[0].clone();
     for p in &parts[1..] {
-        stacked = stacked.concat(p, 1);
+        stacked = stacked.concat(p, 1).unwrap();
     }
     let merged_c = (2 + cw.bottlenecks.len()) * c;
     cbs(&stacked, &cw.cv2, merged_c, c_out, 1, 1, 0, 1, h, w)
@@ -380,7 +380,7 @@ fn sppf(
     let y1 = max_pool_s1_composed(&y0, c_mid, h, w, 5, 2);
     let y2 = max_pool_s1_composed(&y1, c_mid, h, w, 5, 2);
     let y3 = max_pool_s1_composed(&y2, c_mid, h, w, 5, 2);
-    let cat = y0.concat(&y1, 1).concat(&y2, 1).concat(&y3, 1);
+    let cat = y0.concat(&y1, 1).unwrap().concat(&y2, 1).unwrap().concat(&y3, 1).unwrap();
     cbs(&cat, &sw.cv2, 4 * c_mid, c_out, 1, 1, 0, 1, h, w)
 }
 
@@ -388,8 +388,8 @@ fn sppf(
 /// → `[1, C, 2H, 2W]`.
 fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
-    let x6 = x6.concat(&x6, 3);
-    let x6 = x6.concat(&x6, 5);
+    let x6 = x6.concat(&x6, 3).unwrap();
+    let x6 = x6.concat(&x6, 5).unwrap();
     x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
 }
 
@@ -512,14 +512,14 @@ impl YoloV8Model {
 
         // --- Neck: top-down (P5 -> P4 -> P3) ---
         let up_p5 = upsample_nearest_2x(&p5, cfg.ch[4], h5, w5);  // [1, ch[4], h4, w4]
-        let cat_p4 = up_p5.concat(&p4, 1);                         // [1, ch[4]+ch[3], h4, w4]
+        let cat_p4 = up_p5.concat(&p4, 1).unwrap();                         // [1, ch[4]+ch[3], h4, w4]
         let n_up_p4 = c2f(
             &cat_p4, &self.weights.neck_up_p4,
             cfg.ch[4] + cfg.ch[3], cfg.ch[3], h4, w4,
         );
 
         let up_p4 = upsample_nearest_2x(&n_up_p4, cfg.ch[3], h4, w4);
-        let cat_p3 = up_p4.concat(&p3, 1);                         // [1, ch[3]+ch[2], h3, w3]
+        let cat_p3 = up_p4.concat(&p3, 1).unwrap();                         // [1, ch[3]+ch[2], h3, w3]
         let n_up_p3 = c2f(
             &cat_p3, &self.weights.neck_up_p3,
             cfg.ch[3] + cfg.ch[2], cfg.ch[2], h3, w3,
@@ -530,7 +530,7 @@ impl YoloV8Model {
             &n_up_p3, &self.weights.neck_down_p4,
             cfg.ch[2], cfg.ch[2], 3, 2, 1, 1, h4, w4,
         );
-        let cat_d_p4 = down_p4.concat(&n_up_p4, 1);                // [1, ch[2]+ch[3], h4, w4]
+        let cat_d_p4 = down_p4.concat(&n_up_p4, 1).unwrap();                // [1, ch[2]+ch[3], h4, w4]
         let n_out_p4 = c2f(
             &cat_d_p4, &self.weights.neck_out_p4,
             cfg.ch[2] + cfg.ch[3], cfg.ch[3], h4, w4,
@@ -540,7 +540,7 @@ impl YoloV8Model {
             &n_out_p4, &self.weights.neck_down_p5,
             cfg.ch[3], cfg.ch[3], 3, 2, 1, 1, h5, w5,
         );
-        let cat_d_p5 = down_p5.concat(&p5, 1);                     // [1, ch[3]+ch[4], h5, w5]
+        let cat_d_p5 = down_p5.concat(&p5, 1).unwrap();                     // [1, ch[3]+ch[4], h5, w5]
         let n_out_p5 = c2f(
             &cat_d_p5, &self.weights.neck_out_p5,
             cfg.ch[3] + cfg.ch[4], cfg.ch[4], h5, w5,
@@ -559,13 +559,13 @@ impl YoloV8Model {
         let cls_s_f = flatten_positions(&cls_s, cfg.num_classes, h3, w3);
         let cls_m_f = flatten_positions(&cls_m, cfg.num_classes, h4, w4);
         let cls_l_f = flatten_positions(&cls_l, cfg.num_classes, h5, w5);
-        let cls_cat = cls_s_f.concat(&cls_m_f, 2).concat(&cls_l_f, 2);  // [1, nc, N]
+        let cls_cat = cls_s_f.concat(&cls_m_f, 2).unwrap().concat(&cls_l_f, 2).unwrap();  // [1, nc, N]
 
         let reg_ch = 4 * cfg.reg_max;
         let reg_s_f = flatten_positions(&reg_s, reg_ch, h3, w3);
         let reg_m_f = flatten_positions(&reg_m, reg_ch, h4, w4);
         let reg_l_f = flatten_positions(&reg_l, reg_ch, h5, w5);
-        let reg_cat = reg_s_f.concat(&reg_m_f, 2).concat(&reg_l_f, 2);  // [1, 4*R, N]
+        let reg_cat = reg_s_f.concat(&reg_m_f, 2).unwrap().concat(&reg_l_f, 2).unwrap();  // [1, 4*R, N]
 
         let n_total = h3 * w3 + h4 * w4 + h5 * w5;
         let reg_dists = dfl_decode(&reg_cat, cfg.reg_max, n_total);     // [1, 4, N]
