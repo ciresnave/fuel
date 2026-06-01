@@ -1579,6 +1579,188 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
     inserted
 }
 
+/// Walk every multi-output producer in the graph and promote some of
+/// its `Op::View` consumers to `Op::ViewOwned` when slot lifetimes
+/// are sufficiently asymmetric that keeping the whole bundle alive
+/// for the longest-lived slot is wasteful.
+///
+/// v1 heuristic (Option C, Session 2): for each multi-output producer
+/// P, compute the per-slot "last use" position in topo order (the
+/// max position over each slot's Views and their transitive
+/// consumers). Slots whose last use is strictly later than at least
+/// one other slot's last use get all their Views promoted to
+/// `Op::ViewOwned`. The remaining short-lived slots stay as
+/// `Op::View` so the bundle drops naturally when their last consumer
+/// finishes.
+///
+/// Concrete example: SelectiveScan's `y` (slot 0) consumed at the
+/// next layer; `last_state` (slot 1) retained across a barrier into
+/// the next autoregressive step. `last_state`'s last use is much
+/// later → it gets promoted to `ViewOwned`, the bundle drops once
+/// `y`'s consumer finishes, and `last_state`'s standalone copy
+/// survives across the gap.
+///
+/// Implementation: builds a consumer index over the topo order,
+/// computes `last_use[N] = max(pos[N], last_use[consumers])` by
+/// reverse-iterating, then per producer makes a per-slot rollup
+/// and rewrites edges from the promoted Views to fresh
+/// `Op::ViewOwned` nodes. Returns the number of promotions made.
+/// Idempotent on already-promoted Views (an `Op::ViewOwned` is a
+/// fixpoint).
+///
+/// **Where this plugs in:** today the multi-output infra has no
+/// production consumer (Session 2 ships the authoring contract and
+/// this pass; consumers light up in the
+/// `selective-scan-ssd-chunk-multi-output-followup` session). The
+/// pass is a no-op on graphs without any `Op::View` consumers of a
+/// multi-output producer — the common case until consumers migrate.
+/// Long-term it likely runs after the ranker/picker pass and before
+/// `compile_plan`; placement is the picker session's call.
+pub fn promote_views_for_liveness(
+    graph:  &mut crate::Graph,
+    roots:  &[NodeId],
+) -> usize {
+    use crate::Op;
+
+    let order = topo_order_multi(graph, roots);
+    if order.is_empty() {
+        return 0;
+    }
+    let pos: HashMap<NodeId, usize> = order.iter().enumerate()
+        .map(|(i, &n)| (n, i))
+        .collect();
+
+    // Forward consumer index: producer NodeId → list of consumer NodeIds.
+    let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for &nid in &order {
+        for &input in &graph.node(nid).inputs {
+            consumers.entry(input).or_default().push(nid);
+        }
+    }
+
+    // `last_use[N]`: max topo position of any node downstream from N
+    // (including N itself). Computed by reverse-iterating the topo
+    // order and propagating each node's position back to its inputs.
+    let mut last_use: HashMap<NodeId, usize> = HashMap::with_capacity(order.len());
+    for &nid in order.iter().rev() {
+        let mut lu = pos[&nid];
+        if let Some(downstream) = consumers.get(&nid) {
+            for &c in downstream {
+                if let Some(&cl) = last_use.get(&c) {
+                    if cl > lu { lu = cl; }
+                }
+            }
+        }
+        last_use.insert(nid, lu);
+    }
+
+    // Find every multi-output producer that has any View / ViewOwned
+    // consumers in this graph. Per producer: bucket the Views by slot
+    // and compute the per-slot last-use position.
+    struct ViewEntry {
+        view_id: NodeId,
+        slot:    u32,
+        is_owned: bool,
+    }
+    let mut by_producer: HashMap<NodeId, Vec<ViewEntry>> = HashMap::new();
+    for &nid in &order {
+        let node = graph.node(nid);
+        let (slot, is_owned) = match node.op {
+            Op::View      { slot } => (slot, false),
+            Op::ViewOwned { slot } => (slot, true),
+            _ => continue,
+        };
+        // View / ViewOwned have a single input (the producer).
+        let Some(&producer) = node.inputs.first() else { continue };
+        // Only meaningful if producer was declared multi-output;
+        // otherwise it's an authoring bug that the Tensor::view
+        // builder already rejected. Defensive skip.
+        if !graph.is_multi_output(producer) { continue }
+        by_producer
+            .entry(producer)
+            .or_default()
+            .push(ViewEntry { view_id: nid, slot, is_owned });
+    }
+
+    // For each producer, decide which slots get promoted and collect
+    // the per-View promotions. Defer the actual graph mutations to a
+    // second pass so we can iterate the analysis with `&Graph`.
+    struct Promotion {
+        view_id:    NodeId,
+        slot:       u32,
+        view_shape: crate::Shape,
+        view_dtype: DType,
+        // Consumers of `view_id` at analysis time — every edge gets
+        // rewired to the new ViewOwned node.
+        view_consumers: Vec<NodeId>,
+    }
+    let mut promotions: Vec<Promotion> = Vec::new();
+    for (_producer, views) in &by_producer {
+        // Per-slot last use rollup.
+        let mut slot_last_use: HashMap<u32, usize> = HashMap::new();
+        for v in views {
+            let lu = last_use[&v.view_id];
+            slot_last_use
+                .entry(v.slot)
+                .and_modify(|cur| { if lu > *cur { *cur = lu; } })
+                .or_insert(lu);
+        }
+        // If every slot in this producer has the same last_use, the
+        // bundle's natural drop position is fine — no promotions.
+        let min_lu = match slot_last_use.values().copied().min() {
+            Some(v) => v,
+            None    => continue,
+        };
+        for v in views {
+            if v.is_owned {
+                // Already owned — nothing to do (idempotent).
+                continue;
+            }
+            let lu = slot_last_use[&v.slot];
+            if lu <= min_lu {
+                // This slot is among the shortest-lived → stays View.
+                continue;
+            }
+            let v_node = graph.node(v.view_id);
+            promotions.push(Promotion {
+                view_id:        v.view_id,
+                slot:           v.slot,
+                view_shape:     v_node.shape.clone(),
+                view_dtype:     v_node.dtype,
+                view_consumers: consumers.get(&v.view_id).cloned().unwrap_or_default(),
+            });
+        }
+    }
+
+    // Apply mutations: each promoted Op::View becomes a fresh
+    // Op::ViewOwned that consumers point at instead. The old Op::View
+    // node stays in the arena (no in-place op mutation) but is
+    // unreachable from the roots — execution_plan + topo skip it
+    // naturally. This mirrors the insert_safety_copies pattern of
+    // "add new nodes + rewrite_input" rather than mutating ops in
+    // place.
+    let count = promotions.len();
+    for p in promotions {
+        let producer = graph.node(p.view_id).inputs[0];
+        let owned_id = graph.push(crate::Node {
+            op:     Op::ViewOwned { slot: p.slot },
+            inputs: vec![producer],
+            shape:  p.view_shape,
+            dtype:  p.view_dtype,
+        });
+        // Inherit target_backend from the original View when set, so
+        // the executor can look up ViewOwned's wrapper without a
+        // re-resolution pass.
+        if let Some(backend) = graph.target_backend(p.view_id) {
+            graph.set_target_backend(owned_id, backend);
+        }
+        for consumer in p.view_consumers {
+            graph.rewrite_input(consumer, p.view_id, owned_id);
+        }
+    }
+    count
+}
+
 /// Build an execution plan that respects both data-flow edges (via
 /// [`topo_order_multi`]) and ordering edges (via [`derive_ordering`]).
 /// Returns a `Vec<NodeId>` in an order the executor can walk linearly,
@@ -1744,6 +1926,156 @@ pub fn insert_evict_reload(
     }
 
     (cpu_copy_id, release_id, reload_id)
+}
+
+// ===========================================================================
+// Phase 2.1 — cross-device `Op::Copy` insertion
+// ===========================================================================
+//
+// When the picker (or a user pin) commits a kernel-bearing node to a
+// `DeviceLocation` that doesn't share a storage substrate with one of
+// its inputs' resident `DeviceLocation`, the data needs to actually
+// move. Today the executor reacts to this lazily via
+// `pipelined_bridge`'s realize-root splicing for the FINAL output;
+// nothing handles cross-device edges INSIDE the graph.
+//
+// `insert_cross_device_copies` is the pre-execute pass that handles
+// internal cross-device edges. Architecture v1.0 §04 names the
+// optimizer as the owner of transfer-op insertion — this is that
+// owner.
+//
+// The pass deliberately doesn't decide placements itself — callers
+// (the optimizer ranker / picker) commit to placements first, then
+// hand the pass `(graph, placement_for_node, shares_storage)` and
+// it materializes the implied transfers. Same pattern as the
+// JudgeOracle / CapabilitiesLookup callbacks in
+// `fuel-dispatch::ranker`: keep `fuel-graph` ignorant of how
+// placements / topology are derived; the closure is the seam.
+
+/// Insert `Op::Copy { target }` nodes on every edge where the
+/// consumer's intended `DeviceLocation` doesn't share a storage
+/// substrate with the producer's. Returns a remap of original
+/// `NodeId`s to their post-rewrite equivalents (most NodeIds map to
+/// themselves; only consumers of cross-device edges acquire new
+/// inputs in-place via `rewrite_input`).
+///
+/// # Arguments
+///
+/// - `graph` — the graph to rewrite, mutably. New `Op::Copy` nodes
+///   are appended via `Graph::push`; consumer edges are rewired via
+///   the internal `rewrite_input` helper.
+/// - `roots` — the realize roots the caller cares about. The pass
+///   walks `topo_order_multi(roots)` and considers every node it
+///   visits.
+/// - `placement_for` — `Fn(NodeId) -> Option<DeviceLocation>`.
+///   Returns the picker's committed placement for the node, or
+///   `None` if the node has no placement (view ops, structural ops,
+///   user-unpinned ops in a single-backend realize). When either
+///   the producer or consumer has no placement, the pass leaves
+///   the edge alone — the executor falls back to its existing
+///   handling (auto_contiguize or the realize-root splice).
+/// - `shares_storage` — `Fn(DeviceLocation, DeviceLocation) -> bool`.
+///   The topology query. Typical implementation is
+///   `SystemTopology::shares_storage((b1, dev1), (b2, dev2))` after
+///   the caller resolves backends to devices; we pass just the
+///   `DeviceLocation` pair here because the substrate question is
+///   device-level (`Cpu` shares with `Cpu`, `Cuda{0}` shares with
+///   `Cuda{0}` but not `Cuda{1}`, etc.). Same-device queries should
+///   return `true`.
+///
+/// # Returns
+///
+/// The number of `Op::Copy` nodes inserted. Useful for diagnostics
+/// + the metric the optimizer reports when deciding whether to
+/// pursue alternative placements that minimize transfers.
+///
+/// # Idempotence
+///
+/// The pass is idempotent — re-running on an already-rewritten
+/// graph adds zero new copies (the inserted `Op::Copy` nodes
+/// carry `placement` matching the consumer's, so subsequent
+/// passes see same-device edges from `Op::Copy` to consumer).
+///
+/// # CSE on inserted copies
+///
+/// When two consumers share an input AND both need to bring it to
+/// the same target device, the pass deduplicates: one `Op::Copy`
+/// node serves both consumers. This matches the existing CSE
+/// pattern in `optimize_to_fixpoint`.
+pub fn insert_cross_device_copies<P, S>(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    placement_for: P,
+    shares_storage: S,
+) -> usize
+where
+    P: Fn(NodeId) -> Option<DeviceLocation>,
+    S: Fn(DeviceLocation, DeviceLocation) -> bool,
+{
+    let order = topo_order_multi(graph, roots);
+    // CSE on inserted copies: `(producer, target_device) → Op::Copy NodeId`.
+    let mut copy_cache: HashMap<(NodeId, DeviceLocation), NodeId> = HashMap::new();
+    let mut inserted = 0usize;
+
+    // Two passes: first compute the rewires we want, then apply
+    // them. Splitting avoids borrow issues with graph mutation
+    // mid-iteration and keeps the iteration order stable.
+    let mut rewires: Vec<(NodeId, NodeId, NodeId)> = Vec::new();
+
+    for &consumer_id in &order {
+        let consumer_placement = match placement_for(consumer_id) {
+            Some(p) => p,
+            None => continue,
+        };
+        // Skip ops that are themselves transfers — `Op::Copy` /
+        // `Op::Move` exist precisely TO bridge devices; inserting
+        // another copy on their input would be infinite-regress.
+        let consumer_op = &graph.node(consumer_id).op;
+        if matches!(consumer_op, Op::Copy { .. } | Op::Move { .. }) {
+            continue;
+        }
+
+        // Snapshot inputs so we don't reborrow during the loop.
+        let inputs: Vec<NodeId> = graph.node(consumer_id).inputs.clone();
+        for producer_id in inputs {
+            let producer_placement = match placement_for(producer_id) {
+                Some(p) => p,
+                None => continue,
+            };
+            if shares_storage(producer_placement, consumer_placement) {
+                continue;
+            }
+
+            let copy_id = match copy_cache.get(&(producer_id, consumer_placement)) {
+                Some(&id) => id,
+                None => {
+                    let producer = graph.node(producer_id);
+                    let shape = producer.shape.clone();
+                    let dtype = producer.dtype;
+                    let id = graph.push(Node {
+                        op: Op::Copy { target: consumer_placement },
+                        inputs: vec![producer_id],
+                        shape,
+                        dtype,
+                    });
+                    // The inserted copy itself sits on the
+                    // consumer's device — its output is what the
+                    // consumer reads.
+                    graph.set_placement(id, consumer_placement);
+                    copy_cache.insert((producer_id, consumer_placement), id);
+                    inserted += 1;
+                    id
+                }
+            };
+            rewires.push((consumer_id, producer_id, copy_id));
+        }
+    }
+
+    for (consumer, old_input, new_input) in rewires {
+        graph.rewrite_input(consumer, old_input, new_input);
+    }
+
+    inserted
 }
 
 #[cfg(test)]
@@ -2825,5 +3157,288 @@ mod tests {
         let new_roots = registry.optimize_to_fixpoint(&graph, &[xc.id()]);
         assert_eq!(new_roots, vec![xc.id()]);
         assert_eq!(graph.read().unwrap().len(), pre_len);
+    }
+
+    // ===== Phase 2.1: insert_cross_device_copies tests =====
+
+    use std::collections::HashMap as StdHashMap;
+
+    fn add_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
+        g.push(Node {
+            op,
+            inputs,
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        })
+    }
+
+    /// Snapshot every node's `Graph::placement` into an external
+    /// map. Needed because `&mut Graph` and `|id| g.placement(id)`
+    /// closure can't co-exist (overlapping borrows). The closure-
+    /// based oracle is the production shape (the picker hands in a
+    /// `Fn(NodeId) -> Option<DeviceLocation>` derived from its own
+    /// commit map); tests just precompute the snapshot from the
+    /// graph.
+    fn snapshot_placements(g: &Graph) -> StdHashMap<NodeId, DeviceLocation> {
+        let mut m = StdHashMap::new();
+        for id in 0..g.len() {
+            let nid = NodeId(id);
+            if let Some(loc) = g.placement(nid) {
+                m.insert(nid, loc);
+            }
+        }
+        m
+    }
+
+    fn build_two_node_graph_with_placements(
+        a: DeviceLocation,
+        b: DeviceLocation,
+    ) -> (Graph, NodeId, NodeId) {
+        let mut g = Graph::new();
+        let n1 = add_node(&mut g, Op::Const, vec![]);
+        let n2 = add_node(&mut g, Op::Neg, vec![n1]);
+        g.set_placement(n1, a);
+        g.set_placement(n2, b);
+        (g, n1, n2)
+    }
+
+    fn shares_storage_cpu_devices_only(
+        a: DeviceLocation,
+        b: DeviceLocation,
+    ) -> bool {
+        // Test stub topology: CPU shares with CPU only (the AOCL/MKL/
+        // portable-CPU substrate story). CUDA shares with same-gpu_id
+        // CUDA. Vulkan shares with same-gpu_id Vulkan. Cross device
+        // is never shared.
+        match (a, b) {
+            (DeviceLocation::Cpu, DeviceLocation::Cpu) => true,
+            (DeviceLocation::Cuda { gpu_id: x }, DeviceLocation::Cuda { gpu_id: y }) => x == y,
+            (DeviceLocation::Vulkan { gpu_id: x }, DeviceLocation::Vulkan { gpu_id: y }) => x == y,
+            (DeviceLocation::Metal { gpu_id: x }, DeviceLocation::Metal { gpu_id: y }) => x == y,
+            _ => false,
+        }
+    }
+
+    /// No cross-device edges → no copies inserted.
+    #[test]
+    fn insert_copies_noop_when_all_same_device() {
+        let (mut g, _n1, n2) = build_two_node_graph_with_placements(
+            DeviceLocation::Cpu,
+            DeviceLocation::Cpu,
+        );
+        let pre_len = g.len();
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 0, "same-device edge → no copy needed");
+        assert_eq!(g.len(), pre_len, "graph unchanged");
+    }
+
+    /// Cross-device edge (CPU → CUDA) → one `Op::Copy { target: Cuda }`
+    /// inserted; consumer's input rewired to point at it.
+    #[test]
+    fn insert_copies_cuda_consumer_of_cpu_input() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let (mut g, n1, n2) = build_two_node_graph_with_placements(
+            DeviceLocation::Cpu, cuda,
+        );
+        let pre_len = g.len();
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 1);
+        assert_eq!(g.len(), pre_len + 1, "one new Op::Copy node appended");
+        // Consumer's input now points at the new Op::Copy (not n1).
+        let consumer_inputs = &g.node(n2).inputs;
+        assert_eq!(consumer_inputs.len(), 1);
+        let copy_id = consumer_inputs[0];
+        assert_ne!(copy_id, n1, "consumer's input was rewired");
+        let copy_node = g.node(copy_id);
+        assert!(
+            matches!(copy_node.op, Op::Copy { target } if target == cuda),
+            "rewired input is Op::Copy targeting CUDA; got {:?}",
+            copy_node.op,
+        );
+        assert_eq!(copy_node.inputs, vec![n1], "Op::Copy reads from n1");
+        assert_eq!(g.placement(copy_id), Some(cuda), "Op::Copy lands on CUDA");
+    }
+
+    /// Two consumers share an input AND both need it on the same target
+    /// device → ONE Op::Copy serves both (CSE on inserted copies).
+    #[test]
+    fn insert_copies_dedupes_when_two_consumers_share_input_and_target() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut g = Graph::new();
+        let cpu_src = add_node(&mut g, Op::Const, vec![]);
+        g.set_placement(cpu_src, DeviceLocation::Cpu);
+        let cuda_a = add_node(&mut g, Op::Neg, vec![cpu_src]);
+        let cuda_b = add_node(&mut g, Op::Sqr, vec![cpu_src]);
+        g.set_placement(cuda_a, cuda);
+        g.set_placement(cuda_b, cuda);
+
+        let pre_len = g.len();
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[cuda_a, cuda_b],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 1, "CSE — one Op::Copy serves both consumers");
+        assert_eq!(g.len(), pre_len + 1);
+        // Both consumers point at the SAME Op::Copy node.
+        let a_input = g.node(cuda_a).inputs[0];
+        let b_input = g.node(cuda_b).inputs[0];
+        assert_eq!(a_input, b_input, "both consumers share the rewired input");
+    }
+
+    /// Two consumers share an input but want it on DIFFERENT target
+    /// devices → TWO distinct Op::Copy nodes inserted.
+    #[test]
+    fn insert_copies_does_not_dedupe_across_distinct_targets() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let vulkan = DeviceLocation::Vulkan { gpu_id: 0 };
+        let mut g = Graph::new();
+        let cpu_src = add_node(&mut g, Op::Const, vec![]);
+        g.set_placement(cpu_src, DeviceLocation::Cpu);
+        let cuda_c = add_node(&mut g, Op::Neg, vec![cpu_src]);
+        let vk_c = add_node(&mut g, Op::Sqr, vec![cpu_src]);
+        g.set_placement(cuda_c, cuda);
+        g.set_placement(vk_c, vulkan);
+
+        let placements = snapshot_placements(&g);
+
+        let inserted = insert_cross_device_copies(
+            &mut g, &[cuda_c, vk_c],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 2, "distinct targets → distinct copies");
+        let cuda_input = g.node(cuda_c).inputs[0];
+        let vk_input = g.node(vk_c).inputs[0];
+        assert_ne!(cuda_input, vk_input);
+    }
+
+    /// Producer with no placement → pass leaves the edge alone (the
+    /// executor handles via fallback). Same for consumer with no
+    /// placement.
+    #[test]
+    fn insert_copies_skips_when_placement_absent() {
+        let mut g = Graph::new();
+        let n1 = add_node(&mut g, Op::Const, vec![]);
+        let n2 = add_node(&mut g, Op::Neg, vec![n1]);
+        // Only consumer has placement; producer doesn't.
+        g.set_placement(n2, DeviceLocation::Cuda { gpu_id: 0 });
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 0, "producer with no placement → skip");
+    }
+
+    /// `Op::Copy` and `Op::Move` are themselves transfers — the pass
+    /// must not try to insert ANOTHER copy on their inputs (would
+    /// infinite-regress).
+    #[test]
+    fn insert_copies_skips_transfer_ops_themselves() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut g = Graph::new();
+        let cpu_src = add_node(&mut g, Op::Const, vec![]);
+        g.set_placement(cpu_src, DeviceLocation::Cpu);
+        // A user-authored Op::Copy from CPU to CUDA. Should not be
+        // re-wrapped.
+        let copy = g.push(Node {
+            op: Op::Copy { target: cuda },
+            inputs: vec![cpu_src],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        g.set_placement(copy, cuda);
+
+        let pre_len = g.len();
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[copy],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 0, "the existing Op::Copy is not re-wrapped");
+        assert_eq!(g.len(), pre_len);
+    }
+
+    /// Pass is idempotent — re-running on a graph already rewritten
+    /// adds zero new copies. Phase 2.1 variant.
+    #[test]
+    fn insert_cross_device_copies_idempotent() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let (mut g, _n1, n2) = build_two_node_graph_with_placements(
+            DeviceLocation::Cpu, cuda,
+        );
+        let placements_before = snapshot_placements(&g);
+        let first = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements_before.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        let placements_after = snapshot_placements(&g);
+        let second = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements_after.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(first, 1);
+        assert_eq!(second, 0, "re-run sees inserted-Copy as on-target; no new copies");
+    }
+
+    /// Cross-GPU edge (CUDA gpu_id 0 → CUDA gpu_id 1) → copy inserted
+    /// (devices don't share storage even though both are CUDA).
+    #[test]
+    fn insert_copies_across_gpu_ids_within_one_backend() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let cuda1 = DeviceLocation::Cuda { gpu_id: 1 };
+        let (mut g, _n1, n2) = build_two_node_graph_with_placements(cuda0, cuda1);
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 1, "cross-gpu_id is cross-device too");
+        let copy_id = g.node(n2).inputs[0];
+        let copy_node = g.node(copy_id);
+        assert!(matches!(copy_node.op, Op::Copy { target } if target == cuda1));
+    }
+
+    /// Per-node `placement_for` can be backed by an external map, not
+    /// just `Graph::placement`. Smoke test of the closure shape.
+    #[test]
+    fn insert_copies_takes_external_placement_oracle() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let (mut g, n1, n2) = build_two_node_graph_with_placements(
+            DeviceLocation::Cpu, cuda,
+        );
+        // Clear graph-side placements; back the oracle with an
+        // external map instead.
+        let mut external: StdHashMap<NodeId, DeviceLocation> = StdHashMap::new();
+        external.insert(n1, DeviceLocation::Cpu);
+        external.insert(n2, cuda);
+        // Strip graph-side placements so we PROVE the closure is the
+        // authoritative source.
+        // (No public setter to clear; instead override by leaving
+        // graph.placement untouched and using only the external map.)
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| external.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+        );
+        assert_eq!(inserted, 1);
     }
 }
