@@ -256,12 +256,12 @@ fn convnext_block(
         .const_f32_like(bw.gamma.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, 1, c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let scaled = projected.mul(&gamma);
+    let scaled = projected.mul(&gamma).unwrap();
     // Back to channels-first: [1, H, W, C] → [1, C, H, W].
     let scaled_chw = scaled
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute([0, 3, 1, 2_usize]).unwrap();
-    x.add(&scaled_chw)
+    x.add(&scaled_chw).unwrap()
 }
 
 // ---- Primitives ----------------------------------------------------------
@@ -284,7 +284,7 @@ fn layer_norm_affine(
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).add(&b)
+    normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
 /// LayerNorm with affine on a `[1, C, H, W]` tensor, normalizing over
@@ -324,7 +324,7 @@ fn linear(
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias)
+            proj.add(&bias).unwrap()
         }
         None => proj,
     }
@@ -381,7 +381,7 @@ fn conv2d_stride_eq_kernel(
         .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
         .reshape(Shape::from_dims(&[1, 1, cout])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout])).unwrap();
-    let y = y.add(&bias);
+    let y = y.add(&bias).unwrap();
     // Back to [1, Cout, H_out, W_out].
     y.reshape(Shape::from_dims(&[1, h_out, w_out, cout])).unwrap()
         .permute([0, 3, 1, 2_usize]).unwrap()

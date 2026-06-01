@@ -263,7 +263,7 @@ impl WhisperModel {
             .slice(0, 0, t_half).unwrap()
             .reshape(Shape::from_dims(&[1, t_half, d])).unwrap()
             .broadcast_to(Shape::from_dims(&[1, t_half, d])).unwrap();
-        let mut x = x.add(&pos);
+        let mut x = x.add(&pos).unwrap();
 
         // --- encoder layers ---------------------------------------------
         for lw in &self.weights.encoder.layers {
@@ -310,7 +310,7 @@ impl WhisperModel {
 
         let tok = embed.index_select(0, &input_ids).unwrap();  // [seq, d]
         let pos = pos_emb.index_select(0, &position_ids).unwrap();  // [seq, d]
-        let mut x = tok.add(&pos).reshape(Shape::from_dims(&[1, seq, d])).unwrap();
+        let mut x = tok.add(&pos).unwrap().reshape(Shape::from_dims(&[1, seq, d])).unwrap();
 
         for lw in &self.weights.decoder.layers {
             x = decoder_layer(&x, encoder_out, lw, cfg, seq);
@@ -401,7 +401,7 @@ fn layer_norm_affine(
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g).add(&b)
+    normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
 /// `y = x @ W + b`. `x` is `[1, seq, in_f]`, `W` is `[in_f, out_f]` (the
@@ -422,7 +422,7 @@ fn linear(
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias)
+            proj.add(&bias).unwrap()
         }
         None => proj,
     }
@@ -484,7 +484,7 @@ fn conv1d_k3_s1_p1(
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, t, out_c])).unwrap();
-    y.add(&bias).permute([0, 2, 1_usize]).unwrap()  // back to [1, out_c, T]
+    y.add(&bias).unwrap().permute([0, 2, 1_usize]).unwrap()  // back to [1, out_c, T]
 }
 
 /// Conv1d with kernel_size=3, stride=2, padding=1, on `x: [1, in_c, T]`
@@ -550,7 +550,7 @@ fn conv1d_k3_s2_p1(
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, t_out, out_c])).unwrap();
-    y.add(&bias).permute([0, 2, 1_usize]).unwrap()  // [1, out_c, T_out]
+    y.add(&bias).unwrap().permute([0, 2, 1_usize]).unwrap()  // [1, out_c, T_out]
 }
 
 /// Multi-head self-attention + output projection. Shared between the
@@ -609,7 +609,7 @@ fn multi_head_attn(
             .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))
             .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq])).unwrap()
             .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq])).unwrap();
-        scores = scores.add(&mask_t);
+        scores = scores.add(&mask_t).unwrap();
     }
 
     let probs = scores.softmax_last_dim().unwrap();
@@ -638,13 +638,13 @@ fn encoder_layer(
         &lw.q_w, &lw.q_b, &lw.k_w, &lw.v_w, &lw.v_b, &lw.out_w, &lw.out_b,
         d, n_heads, d_head, seq, seq, false,
     );
-    let x = x.add(&attn);
+    let x = x.add(&attn).unwrap();
 
     let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, seq);
     let h_ff = cfg.encoder_ffn_dim;
     let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq).gelu();
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, seq);
-    x.add(&ffn)
+    x.add(&ffn).unwrap()
 }
 
 /// One pre-LN decoder block: causal self-attn + cross-attn + FFN.
@@ -668,7 +668,7 @@ fn decoder_layer(
         &lw.self_out_w, &lw.self_out_b,
         d, n_heads, d_head, q_seq, kv_seq_self, true,
     );
-    let x = x.add(&self_attn);
+    let x = x.add(&self_attn).unwrap();
 
     // --- cross-attn ---------------
     let x_ln = layer_norm_affine(&x, &lw.cross_ln_g, &lw.cross_ln_b, 1e-5, d, q_seq);
@@ -685,14 +685,14 @@ fn decoder_layer(
         &lw.cross_out_w, &lw.cross_out_b,
         d, n_heads, d_head, q_seq, kv_seq_cross, false,
     );
-    let x = x.add(&cross);
+    let x = x.add(&cross).unwrap();
 
     // --- FFN ----------------------
     let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, q_seq);
     let h_ff = cfg.decoder_ffn_dim;
     let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq).gelu();
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, q_seq);
-    x.add(&ffn)
+    x.add(&ffn).unwrap()
 }
 
 // ---- Safetensors loader ----------------------------------------------------

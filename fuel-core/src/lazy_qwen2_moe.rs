@@ -159,12 +159,12 @@ fn decoder_layer(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig
     // Attention sublayer
     let x_ln = rms_norm_affine(x, &lw.input_ln, cfg.rms_norm_eps, h, seq);
     let attn = qwen2_attn(&x_ln, lw, cfg, seq);
-    let x = x.add(&attn);
+    let x = x.add(&attn).unwrap();
 
     // MoE sublayer
     let x_ln = rms_norm_affine(&x, &lw.post_attn_ln, cfg.rms_norm_eps, h, seq);
     let moe = moe_block(&x_ln, lw, cfg, seq);
-    x.add(&moe)
+    x.add(&moe).unwrap()
 }
 
 fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> LazyTensor {
@@ -208,7 +208,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
         .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
-    scores = scores.add(&mask_t);
+    scores = scores.add(&mask_t).unwrap();
     let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
@@ -244,9 +244,9 @@ fn moe_block(
         let w_col = router_weights
             .slice(2, ei, 1).unwrap();  // [1, seq, 1]
         let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
-        let gated = expert_out.mul(&w_bc);
+        let gated = expert_out.mul(&w_bc).unwrap();
         routed_sum = Some(match routed_sum {
-            Some(s) => s.add(&gated),
+            Some(s) => s.add(&gated).unwrap(),
             None => gated,
         });
     }
@@ -259,9 +259,9 @@ fn moe_block(
     let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]));
     let sg = x.matmul(&sg_w).unwrap().sigmoid();  // [1, seq, 1]
     let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
-    let shared_gated = shared_out.mul(&sg_bc);
+    let shared_gated = shared_out.mul(&sg_bc).unwrap();
 
-    routed.add(&shared_gated)
+    routed.add(&shared_gated).unwrap()
 }
 
 fn swiglu_mlp(
@@ -275,24 +275,24 @@ fn swiglu_mlp(
 ) -> LazyTensor {
     let g = linear(x, gate_w, None, h, h_ff, seq).silu();
     let u = linear(x, up_w, None, h, h_ff, seq);
-    let gated = g.mul(&u);
+    let gated = g.mul(&u).unwrap();
     linear(&gated, down_w, None, h_ff, h, seq)
 }
 
 fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, seq: usize) -> LazyTensor {
     // RMS norm: x * rsqrt(mean(x^2) + eps) * gamma
-    let sq = x.mul(x);
+    let sq = x.mul(x).unwrap();
     let ms = sq.mean_dim(2).unwrap();  // [1, seq]
     let rstd = ms.add_scalar(eps).sqrt();
     let rstd_bc = rstd
         .reshape(Shape::from_dims(&[1, seq, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    let normed = x.div(&rstd_bc);
+    let normed = x.div(&rstd_bc).unwrap();
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
-    normed.mul(&g)
+    normed.mul(&g).unwrap()
 }
 
 fn rope_tables(theta: f64, seq: usize, d_head: usize) -> (Vec<f32>, Vec<f32>) {
@@ -335,7 +335,7 @@ fn apply_rope(
     // rotate_half: concat(-x2, x1) along dim 3.
     let neg_x2 = x2.neg();
     let rotated = neg_x2.concat(&x1, 3).unwrap();
-    x.mul(&cos_t).add(&rotated.mul(&sin_t))
+    x.mul(&cos_t).unwrap().add(&rotated.mul(&sin_t).unwrap()).unwrap()
 }
 
 fn linear(
@@ -354,7 +354,7 @@ fn linear(
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias)
+            proj.add(&bias).unwrap()
         }
         None => proj,
     }

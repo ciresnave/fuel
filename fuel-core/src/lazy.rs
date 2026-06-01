@@ -233,100 +233,89 @@ impl LazyTensor {
 
     // ---- arithmetic (element-wise, strict shape) ----
 
-    /// Element-wise addition. Shapes must match.
-    pub fn add(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.add(&other.inner),
-        }
+    /// Element-wise addition. Shapes and dtypes must match — mismatches
+    /// surface as typed errors at build time.
+    pub fn add(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("add", other)?;
+        Ok(Self { inner: self.inner.add(&other.inner) })
     }
 
     /// Element-wise subtraction.
-    pub fn sub(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.sub(&other.inner),
-        }
+    pub fn sub(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("sub", other)?;
+        Ok(Self { inner: self.inner.sub(&other.inner) })
     }
 
     /// Element-wise multiplication.
-    pub fn mul(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.mul(&other.inner),
-        }
+    pub fn mul(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("mul", other)?;
+        Ok(Self { inner: self.inner.mul(&other.inner) })
     }
 
     /// Element-wise division.
-    pub fn div(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.div(&other.inner),
-        }
+    pub fn div(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("div", other)?;
+        Ok(Self { inner: self.inner.div(&other.inner) })
     }
 
     /// Element-wise maximum.
-    pub fn maximum(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.maximum(&other.inner),
-        }
+    pub fn maximum(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("maximum", other)?;
+        Ok(Self { inner: self.inner.maximum(&other.inner) })
     }
 
     /// Element-wise minimum.
-    pub fn minimum(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.minimum(&other.inner),
-        }
+    pub fn minimum(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("minimum", other)?;
+        Ok(Self { inner: self.inner.minimum(&other.inner) })
     }
 
     /// Element-wise equality (`self == other`) producing a `U8` mask:
     /// `1` where equal, `0` otherwise. Both operands must share dtype
     /// and shape. NaN follows IEEE-754 (`NaN == NaN` is false). The
     /// resulting tensor's dtype is `DType::U8`. Non-differentiable.
-    pub fn eq(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.eq(&other.inner),
-        }
+    pub fn eq(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("eq", other)?;
+        Ok(Self { inner: self.inner.eq(&other.inner) })
     }
 
     /// Element-wise inequality (`self != other`) producing a `U8`
     /// mask. NaN follows IEEE-754 (`NaN != NaN` is true → `1`).
     /// Non-differentiable.
-    pub fn ne(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.ne(&other.inner),
-        }
+    pub fn ne(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("ne", other)?;
+        Ok(Self { inner: self.inner.ne(&other.inner) })
     }
 
     /// Element-wise strictly-less (`self < other`) producing a `U8`
     /// mask. NaN-on-either-side is `0` (IEEE-754 unordered).
     /// Non-differentiable.
-    pub fn lt(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.lt(&other.inner),
-        }
+    pub fn lt(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("lt", other)?;
+        Ok(Self { inner: self.inner.lt(&other.inner) })
     }
 
     /// Element-wise less-or-equal (`self <= other`) producing a `U8`
     /// mask. NaN-on-either-side is `0`. Non-differentiable.
-    pub fn le(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.le(&other.inner),
-        }
+    pub fn le(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("le", other)?;
+        Ok(Self { inner: self.inner.le(&other.inner) })
     }
 
     /// Element-wise strictly-greater (`self > other`) producing a
     /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
-    pub fn gt(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.gt(&other.inner),
-        }
+    pub fn gt(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("gt", other)?;
+        Ok(Self { inner: self.inner.gt(&other.inner) })
     }
 
     /// Element-wise greater-or-equal (`self >= other`) producing a
     /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
     /// Final variant of the comparison family (`eq` / `ne` / `lt` /
     /// `le` / `gt` / `ge`).
-    pub fn ge(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.ge(&other.inner),
-        }
+    pub fn ge(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_strict_binary("ge", other)?;
+        Ok(Self { inner: self.inner.ge(&other.inner) })
     }
 
     /// Ternary select (typically used to consume a comparison-op
@@ -336,40 +325,101 @@ impl LazyTensor {
     /// shape matches `self`.
     ///
     /// Differentiable through `a` and `b` only.
-    pub fn where_cond(&self, a: &Self, b: &Self) -> Self {
-        Self {
-            inner: self.inner.where_cond(&a.inner, &b.inner),
+    pub fn where_cond(&self, a: &Self, b: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        if self.inner.dtype() != fuel_core_types::DType::U8 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "where_cond: cond mask must be U8, got {:?}", self.inner.dtype(),
+            )).bt());
         }
+        if a.inner.dtype() != b.inner.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "where_cond: branches must share dtype, got a={:?} b={:?}",
+                a.inner.dtype(), b.inner.dtype(),
+            )).bt());
+        }
+        let cond_dims = self.inner.shape();
+        let a_dims = a.inner.shape();
+        let b_dims = b.inner.shape();
+        if a_dims.dims() != cond_dims.dims() || b_dims.dims() != cond_dims.dims() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "where_cond: shapes must match cond, got cond={:?} a={:?} b={:?}",
+                cond_dims.dims(), a_dims.dims(), b_dims.dims(),
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.where_cond(&a.inner, &b.inner),
+        })
     }
 
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.
-    pub fn broadcast_add(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.broadcast_add(&other.inner),
-        }
+    pub fn broadcast_add(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_broadcast_binary("broadcast_add", other)?;
+        Ok(Self { inner: self.inner.broadcast_add(&other.inner) })
     }
 
     /// Element-wise subtraction with auto-broadcasting.
-    pub fn broadcast_sub(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.broadcast_sub(&other.inner),
-        }
+    pub fn broadcast_sub(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_broadcast_binary("broadcast_sub", other)?;
+        Ok(Self { inner: self.inner.broadcast_sub(&other.inner) })
     }
 
     /// Element-wise multiplication with auto-broadcasting.
-    pub fn broadcast_mul(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.broadcast_mul(&other.inner),
-        }
+    pub fn broadcast_mul(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_broadcast_binary("broadcast_mul", other)?;
+        Ok(Self { inner: self.inner.broadcast_mul(&other.inner) })
     }
 
     /// Element-wise division with auto-broadcasting.
-    pub fn broadcast_div(&self, other: &Self) -> Self {
-        Self {
-            inner: self.inner.broadcast_div(&other.inner),
+    pub fn broadcast_div(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.check_broadcast_binary("broadcast_div", other)?;
+        Ok(Self { inner: self.inner.broadcast_div(&other.inner) })
+    }
+
+    fn check_strict_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_core_types::Error> {
+        if self.inner.dtype() != other.inner.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{name}: dtype mismatch lhs={:?} rhs={:?}",
+                self.inner.dtype(), other.inner.dtype(),
+            )).bt());
         }
+        let a_shape = self.inner.shape();
+        let b_shape = other.inner.shape();
+        if a_shape.dims() != b_shape.dims() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{name}: shape mismatch lhs={:?} rhs={:?}",
+                a_shape.dims(), b_shape.dims(),
+            )).bt());
+        }
+        Ok(())
+    }
+
+    fn check_broadcast_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_core_types::Error> {
+        if self.inner.dtype() != other.inner.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "{name}: dtype mismatch lhs={:?} rhs={:?}",
+                self.inner.dtype(), other.inner.dtype(),
+            )).bt());
+        }
+        let a_shape = self.inner.shape();
+        let b_shape = other.inner.shape();
+        let a_dims = a_shape.dims();
+        let b_dims = b_shape.dims();
+        // Standard NumPy-style broadcast compatibility: from the right,
+        // each pair of dims must be equal, or one of them must be 1.
+        let rank = a_dims.len().max(b_dims.len());
+        for i in 0..rank {
+            let ad = a_dims.get(a_dims.len().wrapping_sub(1 + i)).copied().unwrap_or(1);
+            let bd = b_dims.get(b_dims.len().wrapping_sub(1 + i)).copied().unwrap_or(1);
+            if ad != bd && ad != 1 && bd != 1 {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "{name}: shapes {:?} and {:?} are not broadcast-compatible",
+                    a_dims, b_dims,
+                )).bt());
+            }
+        }
+        Ok(())
     }
 
     // ---- unary ----
@@ -1299,7 +1349,7 @@ mod tests {
     fn add_builds_add_node_in_underlying_graph() {
         let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
-        let c = a.add(&b);
+        let c = a.add(&b).unwrap();
         assert_eq!(c.shape().dims(), &[3]);
         // All three tensors share one underlying graph (by Arc cloning
         // via const_f32_like / add).
@@ -1367,7 +1417,7 @@ mod tests {
         // b = [4, 5, 6] should yield [5, 14, 27].
         let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
-        let c = a.add(&b).mul(&a);
+        let c = a.add(&b).unwrap().mul(&a).unwrap();
         let result = c.realize_f32();
         assert_eq!(result, vec![5.0, 14.0, 27.0]);
     }
@@ -1426,7 +1476,7 @@ mod tests {
     fn cuda_executor_matches_cpu_on_add_mul() {
         let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
-        let c = a.add(&b).mul(&a);
+        let c = a.add(&b).unwrap().mul(&a).unwrap();
         let cpu_result = c.realize_f32();
         let executor = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda_result = c.realize_f32_cuda(&executor);
@@ -1611,7 +1661,7 @@ mod tests {
     #[test]
     fn realize_f64_through_bridge() {
         let a = LazyTensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu());
-        let b = a.mul(&a);
+        let b = a.mul(&a).unwrap();
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
     }
 
@@ -1678,7 +1728,7 @@ mod tests {
             .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[1, seq, d_model])).unwrap();
         let attn_out = merged.matmul(&w_o).unwrap();
-        let h = x.add(&attn_out);
+        let h = x.add(&attn_out).unwrap();
 
         // Realize end-to-end through the bridge.
         let result = h.realize_f32();
@@ -2546,7 +2596,7 @@ impl LazyTensor {
         let dims = shape.dims();
         let n = dims[dim];
         let mean = self.mean_keepdim(dim)?;
-        let deviation = self.broadcast_sub(&mean);
+        let deviation = self.broadcast_sub(&mean).unwrap();
         let squares = deviation.sqr();
         // sum_keepdim then divide by (n-1); leaves the reduced dim as 1.
         let summed = squares.sum_keepdim(dim)?;
@@ -2587,8 +2637,8 @@ impl LazyTensor {
         let neg_branch = self.exp().affine(alpha, -alpha);
         // Mask: self > 0. Build a zero on the same graph.
         let zero = self.const_f32_like(vec![0.0; self.elem_count()], self.shape());
-        let mask = self.gt(&zero);
-        mask.where_cond(self, &neg_branch)
+        let mask = self.gt(&zero).unwrap();
+        mask.where_cond(self, &neg_branch).unwrap()
     }
 
     /// Inner product of two rank-1 tensors. Composite of `mul` +
@@ -2606,7 +2656,7 @@ impl LazyTensor {
                 "dot: length mismatch lhs={} rhs={}", a[0], b[0],
             )).bt());
         }
-        Ok(self.mul(rhs).sum_all())
+        Ok(self.mul(rhs).unwrap().sum_all())
     }
 
     /// Matrix × vector: `[m, n] · [n] -> [m]`. No broadcasting. Composite
@@ -3204,7 +3254,7 @@ impl LazyTensor {
                 let win = col_reshaped.slice(4, 0, 1).unwrap().squeeze(4)?;
                 acc = Some(match acc {
                     None => win,
-                    Some(a) => a.maximum(&win),
+                    Some(a) => a.maximum(&win).unwrap(),
                 });
             }
         }
@@ -3854,7 +3904,7 @@ impl WeightStorage {
                 let lora_path = LazyTensor {
                     inner: x.matmul(&a_t).unwrap().matmul(&b_t).unwrap().inner.mul_scalar(scale),
                 };
-                base_out.add(&lora_path)
+                base_out.add(&lora_path).unwrap()
             }
         }
     }
@@ -4205,7 +4255,7 @@ impl LlamaModel {
         let scores_scaled = LazyTensor {
             inner: scores.inner.mul_scalar(scale),
         };
-        let scores_masked = scores_scaled.broadcast_add(&mask);
+        let scores_masked = scores_scaled.broadcast_add(&mask).unwrap();
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&v_h).unwrap();
 
@@ -4216,7 +4266,7 @@ impl LlamaModel {
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
         // First residual connection.
-        let h1 = x.add(&attn_out);
+        let h1 = x.add(&attn_out).unwrap();
 
         // Pre-FFN RmsNorm with affine gain.
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
@@ -4224,11 +4274,11 @@ impl LlamaModel {
         // SwiGLU FFN (routes through apply_linear → qmatmul for Q4_0).
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let swiglu = gate.silu().mul(&up);
+        let swiglu = gate.silu().mul(&up).unwrap();
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
 
         // Second residual connection.
-        h1.add(&ffn_out)
+        h1.add(&ffn_out).unwrap()
     }
 
     /// Variant of [`apply_layer`] that also exposes the fresh K and V
@@ -4359,7 +4409,7 @@ impl LlamaModel {
         let scores_scaled = LazyTensor {
             inner: scores.inner.mul_scalar(scale),
         };
-        let scores_masked = scores_scaled.broadcast_add(&mask);
+        let scores_masked = scores_scaled.broadcast_add(&mask).unwrap();
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
@@ -4368,16 +4418,16 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
-        let h1 = x.add(&attn_out);
+        let h1 = x.add(&attn_out).unwrap();
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let swiglu = gate.silu().mul(&up);
+        let swiglu = gate.silu().mul(&up).unwrap();
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
 
         LayerOutput {
-            h: h1.add(&ffn_out),
+            h: h1.add(&ffn_out).unwrap(),
             fresh_k,
             fresh_v,
             full_k: cache_full_k,
@@ -4507,7 +4557,7 @@ impl LlamaModel {
         let scores_scaled = LazyTensor {
             inner: scores.inner.mul_scalar(scale),
         };
-        let scores_masked = scores_scaled.broadcast_add(&mask);
+        let scores_masked = scores_scaled.broadcast_add(&mask).unwrap();
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
@@ -4516,15 +4566,15 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
-        let h1 = x.add(&attn_out);
+        let h1 = x.add(&attn_out).unwrap();
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
         let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim);
-        let swiglu = gate.silu().mul(&up);
+        let swiglu = gate.silu().mul(&up).unwrap();
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim);
 
-        Ok(h1.add(&ffn_out))
+        Ok(h1.add(&ffn_out).unwrap())
     }
 
     /// Forward pass using pre-allocated KV-cache buffers and
@@ -4735,7 +4785,7 @@ fn apply_optional_bias(
                 b.len(),
             );
             let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[last_dim]));
-            x.broadcast_add(&b_t)
+            x.broadcast_add(&b_t).unwrap()
         }
     }
 }
@@ -4755,7 +4805,7 @@ fn apply_affine_rms_norm(
     assert_eq!(gain.len(), dim, "apply_affine_rms_norm: gain length must equal dim");
     let normalized = x.rms_norm_last_dim(eps).unwrap();
     let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
-    normalized.broadcast_mul(&gain_t)
+    normalized.broadcast_mul(&gain_t).unwrap()
 }
 
 // ---- HuggingFace Hub and safetensors weight loading ----------------------
@@ -6359,7 +6409,7 @@ fn apply_gemma_rms_norm(
     let normalized = x.rms_norm_last_dim(eps).unwrap();
     let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
     let gain_plus_one = gain_t.add_scalar(1.0);
-    normalized.broadcast_mul(&gain_plus_one)
+    normalized.broadcast_mul(&gain_plus_one).unwrap()
 }
 
 /// Softcapping: `tanh(x / cap) * cap`. Bounds values to `[-cap, cap]`.
@@ -6523,7 +6573,7 @@ impl Gemma2Model {
             }
         }
         let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
-        let scores_masked = scores_capped.broadcast_add(&mask);
+        let scores_masked = scores_capped.broadcast_add(&mask).unwrap();
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&v_h).unwrap();
 
@@ -6542,7 +6592,7 @@ impl Gemma2Model {
         );
 
         // First residual.
-        let h1 = x.add(&attn_out_norm);
+        let h1 = x.add(&attn_out_norm).unwrap();
 
         // Pre-FFN RmsNorm.
         let h1_norm = apply_gemma_rms_norm(
@@ -6558,7 +6608,7 @@ impl Gemma2Model {
         let w_down = x.const_f32_like(layer.ffn_down.clone(), Shape::from_dims(&[cfg.ffn_dim, cfg.dim]));
         let gate = h1_norm.matmul(&w_gate).unwrap();
         let up = h1_norm.matmul(&w_up).unwrap();
-        let geglu = gate.gelu().mul(&up);
+        let geglu = gate.gelu().mul(&up).unwrap();
         let ffn_out = geglu.matmul(&w_down).unwrap();
 
         // Post-FFN RmsNorm.
@@ -6570,7 +6620,7 @@ impl Gemma2Model {
         );
 
         // Second residual.
-        h1.add(&ffn_out_norm)
+        h1.add(&ffn_out_norm).unwrap()
     }
 }
 
@@ -6882,7 +6932,7 @@ fn apply_affine_layer_norm(
     let normalized = x.layer_norm_last_dim(eps).unwrap();
     let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
     let bias_t = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[dim]));
-    normalized.broadcast_mul(&gain_t).broadcast_add(&bias_t)
+    normalized.broadcast_mul(&gain_t).unwrap().broadcast_add(&bias_t).unwrap()
 }
 
 /// Apply `x @ W + b` where `W` is a `WeightStorage` projection and
@@ -6897,7 +6947,7 @@ fn apply_linear_with_bias(
 ) -> LazyTensor {
     let y = w.apply_linear(x, in_features, out_features);
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[out_features]));
-    y.broadcast_add(&b_t)
+    y.broadcast_add(&b_t).unwrap()
 }
 
 impl PhiModel {
@@ -7002,7 +7052,7 @@ impl PhiModel {
         }
         let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, total_seq]));
         let scores_scaled = LazyTensor { inner: scores.inner.mul_scalar(scale) };
-        let scores_masked = scores_scaled.broadcast_add(&mask);
+        let scores_masked = scores_scaled.broadcast_add(&mask).unwrap();
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
@@ -7021,7 +7071,7 @@ impl PhiModel {
             &gelu_out, &layer.mlp_fc2, &layer.mlp_fc2_bias, cfg.ffn_dim, cfg.dim);
 
         // Parallel residual: x + attn_out + mlp_out.
-        let h = x.add(&attn_out).add(&mlp_out);
+        let h = x.add(&attn_out).unwrap().add(&mlp_out).unwrap();
 
         LayerOutput {
             h,
@@ -7115,7 +7165,7 @@ impl PhiModel {
             Some(b) => {
                 let b_t = h_norm.const_f32_like(
                     Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
-                logits_no_bias.broadcast_add(&b_t)
+                logits_no_bias.broadcast_add(&b_t).unwrap()
             }
             None => logits_no_bias,
         };
@@ -9419,7 +9469,7 @@ mod phase_a1_wrapper_tests {
         // Comparison ops produce U8 masks directly — no F32→U8 cast needed.
         let probe = t.const_f32_like(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2]);
         let threshold = t.const_f32_like(vec![0.5; 4], vec![2, 2]);
-        let mask = probe.gt(&threshold); // [0, 1, 1, 0] as U8
+        let mask = probe.gt(&threshold).unwrap(); // [0, 1, 1, 0] as U8
         let out = t.masked_fill(&mask, fuel_core_types::Scalar::F32(-9.0)).unwrap();
         assert_eq!(out.realize_f32(), vec![1.0, -9.0, -9.0, 4.0]);
     }

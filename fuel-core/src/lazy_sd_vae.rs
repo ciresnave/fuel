@@ -224,7 +224,7 @@ fn resnet(
         (Some(w_s), Some(b_s)) => conv2d_k1_s1_p0(x, w_s, b_s, c_in, c_out, h, w),
         _ => x.clone(),
     };
-    shortcut.add(&h2)
+    shortcut.add(&h2).unwrap()
 }
 
 // ---- VAE spatial attention ------------------------------------------------
@@ -262,7 +262,7 @@ fn vae_spatial_attention(
     let out_chw = out
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute([0, 3, 1, 2_usize]).unwrap();
-    x.add(&out_chw)
+    x.add(&out_chw).unwrap()
 }
 
 // ---- Primitives -----------------------------------------------------------
@@ -293,14 +293,14 @@ fn group_norm(
     let mean_bc = mean
         .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
-    let centered = x_flat.sub(&mean_bc);
-    let sq = centered.mul(&centered);
+    let centered = x_flat.sub(&mean_bc).unwrap();
+    let sq = centered.mul(&centered).unwrap();
     let var = sq.mean_dim(2).unwrap();  // [1, groups]
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
         .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
-    let normed = centered.div(&std_bc);  // [1, groups, m]
+    let normed = centered.div(&std_bc).unwrap();  // [1, groups, m]
     // Back to [1, C, H, W] and affine.
     let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w])).unwrap();
     let g = x
@@ -311,7 +311,7 @@ fn group_norm(
         .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
-    normed_chw.mul(&g).add(&b)
+    normed_chw.mul(&g).unwrap().add(&b).unwrap()
 }
 
 /// General 3×3 conv, stride 1, padding 1. Input `[1, Cin, H, W]`,
@@ -379,7 +379,7 @@ fn linear(
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f])).unwrap()
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
-            proj.add(&bias)
+            proj.add(&bias).unwrap()
         }
         None => proj,
     }

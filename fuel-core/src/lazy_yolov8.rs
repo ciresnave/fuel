@@ -241,7 +241,7 @@ fn per_channel_affine(
         .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
-    x.mul(&s).add(&sh)
+    x.mul(&s).unwrap().add(&sh).unwrap()
 }
 
 /// Conv+BN+SiLU. Computes `y = silu(conv2d(x, w) * scale + shift)`
@@ -293,7 +293,7 @@ fn max_pool_s1_composed(
             let win = row.slice(3, kx, w).unwrap();
             acc = Some(match acc {
                 None => win,
-                Some(a) => a.maximum(&win),
+                Some(a) => a.maximum(&win).unwrap(),
             });
         }
     }
@@ -328,7 +328,7 @@ fn bottleneck(
 ) -> LazyTensor {
     let y = cbs(x, &bw.cv1, c, c, 3, 1, 1, 1, h, w);
     let y = cbs(&y, &bw.cv2, c, c, 3, 1, 1, 1, h, w);
-    if bw.add_residual { x.add(&y) } else { y }
+    if bw.add_residual { x.add(&y).unwrap() } else { y }
 }
 
 /// C2f block. `cv1` expands to `2c`, splits along the channel axis
@@ -449,7 +449,7 @@ fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> Lazy
         .const_f32_like(bins, Shape::from_dims(&[r]))
         .reshape(Shape::from_dims(&[1, 1, 1, r])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r])).unwrap();
-    let weighted = probs.mul(&bins_t);
+    let weighted = probs.mul(&bins_t).unwrap();
     weighted.sum_dim(3).unwrap()  // [1, 4, N]
 }
 
