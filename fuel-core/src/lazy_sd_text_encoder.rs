@@ -203,7 +203,7 @@ fn encoder_layer(
         .permute([0, 2, 1, 3_usize]).unwrap();
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t).mul_scalar(scale);
+    let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
     // Causal mask: -inf above the diagonal.
     let mut mask = vec![0.0_f32; seq * seq];
     for i in 0..seq {
@@ -218,7 +218,7 @@ fn encoder_layer(
     scores = scores.add(&mask_t);
     let probs = scores.softmax_last_dim();
     let ctx = probs
-        .matmul(&v)
+        .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq);
@@ -282,7 +282,7 @@ fn linear(
     seq: usize,
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t);
+    let proj = x.matmul(&w_t).unwrap();
     match b {
         Some(b) => {
             let bias = x

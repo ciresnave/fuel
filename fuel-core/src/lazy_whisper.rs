@@ -328,7 +328,7 @@ impl WhisperModel {
         // Tied output projection: logits = x @ embed^T → [1, seq, vocab].
         // embed is [vocab, d] row-major; transpose to [d, vocab] and matmul.
         let embed_t = embed.transpose().unwrap();  // [d, vocab]
-        Ok(x.matmul(&embed_t))
+        Ok(x.matmul(&embed_t).unwrap())
     }
 
     /// Greedy decode for `max_new_tokens` steps starting from
@@ -415,7 +415,7 @@ fn linear(
     seq: usize,
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t);
+    let proj = x.matmul(&w_t).unwrap();
     match b {
         Some(b) => {
             let bias = x
@@ -478,7 +478,7 @@ fn conv1d_k3_s1_p1(
         }
     }
     let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
-    let y = stacked_tlast.matmul(&w_t);  // [1, T, out_c]
+    let y = stacked_tlast.matmul(&w_t).unwrap();  // [1, T, out_c]
     // Add bias (broadcast [out_c] across [1, T, out_c]).
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
@@ -545,7 +545,7 @@ fn conv1d_k3_s2_p1(
         }
     }
     let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
-    let y = stacked_tlast.matmul(&w_t);
+    let y = stacked_tlast.matmul(&w_t).unwrap();
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
         .reshape(Shape::from_dims(&[1, 1, out_c])).unwrap()
@@ -593,7 +593,7 @@ fn multi_head_attn(
 
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, n_heads, d_head, kv_seq]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t).mul_scalar(scale);  // [1, n_heads, q_seq, kv_seq]
+    let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);  // [1, n_heads, q_seq, kv_seq]
 
     if causal {
         // Additive lower-triangular mask: -inf above diagonal.
@@ -614,7 +614,7 @@ fn multi_head_attn(
 
     let probs = scores.softmax_last_dim();
     let ctx = probs
-        .matmul(&v)
+        .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, q_seq, d])).unwrap();
     linear(&ctx, out_w, Some(out_b), d, d, q_seq)

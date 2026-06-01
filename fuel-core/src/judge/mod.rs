@@ -500,7 +500,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
             let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &crate::Device::cpu());
             let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
-            a.matmul(&b)
+            a.matmul(&b).unwrap()
         }
         (op, OpSize::Elementwise(n)) if is_binary_elementwise(op) => {
             let (a_data, b_data) = binary_inputs(op, n);

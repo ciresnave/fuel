@@ -150,7 +150,7 @@ impl Qwen2MoeModel {
 
         let x = rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq);
         let lm = x.const_f32_like(self.weights.lm_head.clone(), Shape::from_dims(&[h, cfg.vocab_size]));
-        Ok(x.matmul(&lm))
+        Ok(x.matmul(&lm).unwrap())
     }
 }
 
@@ -196,7 +196,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
 
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
     let scale = 1.0_f64 / (d_head as f64).sqrt();
-    let mut scores = q.matmul(&k_t).mul_scalar(scale);
+    let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
     // causal mask
     let mut mask = vec![0.0_f32; seq * seq];
     for i in 0..seq {
@@ -211,7 +211,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     scores = scores.add(&mask_t);
     let probs = scores.softmax_last_dim();
     let ctx = probs
-        .matmul(&v)
+        .matmul(&v).unwrap()
         .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     linear(&ctx, &lw.o_w, None, h, h, seq)
@@ -231,7 +231,7 @@ fn moe_block(
 
     // Router: [1, seq, h] → gate.matmul → [1, seq, E].
     let gate = x.const_f32_like(lw.gate_w.clone(), Shape::from_dims(&[h, e]));
-    let router_logits = x.matmul(&gate);
+    let router_logits = x.matmul(&gate).unwrap();
     let router_weights = router_logits.softmax_last_dim();  // [1, seq, E]
 
     // Each expert's SwiGLU output, weighted by its per-token gate weight.
@@ -257,7 +257,7 @@ fn moe_block(
     let shared_out = swiglu_mlp(x, &lw.shared_gate_w, &lw.shared_up_w, &lw.shared_down_w, h, shared_int, seq);
     // Shared expert gate: Linear(h → 1), then sigmoid.
     let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]));
-    let sg = x.matmul(&sg_w).sigmoid();  // [1, seq, 1]
+    let sg = x.matmul(&sg_w).unwrap().sigmoid();  // [1, seq, 1]
     let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
     let shared_gated = shared_out.mul(&sg_bc);
 
@@ -347,7 +347,7 @@ fn linear(
     seq: usize,
 ) -> LazyTensor {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
-    let proj = x.matmul(&w_t);
+    let proj = x.matmul(&w_t).unwrap();
     match b {
         Some(b) => {
             let bias = x
