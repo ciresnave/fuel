@@ -319,7 +319,8 @@ fn apply_rope(
     seq: usize,
     d_head: usize,
 ) -> LazyTensor {
-    let x_dims = x.dims();
+    let x_shape = x.shape();
+    let x_dims = x_shape.dims();
     let n_heads = x_dims[1];
     let cos_t = x
         .const_f32_like(cos.to_vec(), Shape::from_dims(&[seq, d_head]))

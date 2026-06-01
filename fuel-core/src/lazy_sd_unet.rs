@@ -269,7 +269,7 @@ impl SdUnet {
             for ri in 0..(cfg.layers_per_block + 1) {
                 let skip = skips.pop().expect("up: skip underflow");
                 x = x.concat(&skip, 1).unwrap();  // channel-axis concat
-                let in_c = x.dims()[1];
+                let in_c = x.shape().dims()[1];
                 x = u_resnet(&x, &bw.resnets[ri], &t_emb, cfg, in_c, c_out_block, h, w);
                 if !bw.attentions.is_empty() {
                     x = spatial_transformer(&x, &bw.attentions[ri], &te, cfg, c_out_block, h, w);

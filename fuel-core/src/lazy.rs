@@ -206,12 +206,6 @@ impl LazyTensor {
         self.inner.shape().dims().len()
     }
 
-    /// The tensor's shape as a `&[usize]`. Convenience for callers who
-    /// want to read dims without borrowing the shape.
-    pub fn dims(&self) -> Vec<usize> {
-        self.inner.shape().dims().to_vec()
-    }
-
     /// Total element count.
     pub fn elem_count(&self) -> usize {
         self.inner.shape().elem_count()
@@ -4132,7 +4126,8 @@ impl LlamaModel {
         rope_sin: &LazyTensor,
     ) -> LazyTensor {
         let cfg = &self.config;
-        let dims = x.dims();
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
@@ -4291,7 +4286,8 @@ impl LlamaModel {
         rope_sin: &LazyTensor,
     ) -> LayerOutput {
         let cfg = &self.config;
-        let dims = x.dims();
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
@@ -4467,7 +4463,8 @@ impl LlamaModel {
         rope_sin: &LazyTensor,
     ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
-        let dims = x.dims();
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
@@ -6481,7 +6478,8 @@ impl Gemma2Model {
         rope_sin: &LazyTensor,
     ) -> LazyTensor {
         let cfg = &self.config;
-        let dims = x.dims();
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
         let qk_dim = cfg.n_heads * cfg.head_dim;
@@ -6956,7 +6954,8 @@ impl PhiModel {
         rope_sin: &LazyTensor,
     ) -> LayerOutput {
         let cfg = &self.config;
-        let dims = x.dims();
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_heads * cfg.head_dim;  // no GQA in Phi-2
@@ -7777,7 +7776,7 @@ fn partial_rope(
     if rotary_dim == head_dim {
         return x.rope_with_tables(cos, sin).unwrap();
     }
-    let rank = x.dims().len();
+    let rank = x.shape().dims().len();
     let last = rank - 1;
     let x_rot = x.slice(last, 0, rotary_dim).unwrap();
     let x_pass = x.slice(last, rotary_dim, head_dim - rotary_dim).unwrap();
