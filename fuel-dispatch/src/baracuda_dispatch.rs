@@ -945,6 +945,156 @@ pub mod write_slice {
 }
 
 // ===========================================================================
+// WriteSliceRotating — sliding-window KV cache writes (Phase C)
+// ===========================================================================
+//
+// The pipelined executor wires `inputs=[source, position]` +
+// `outputs=[dest_arc]`. The wrapper:
+//   1. D2H-reads the U32 position scalar (4 bytes).
+//   2. Computes `wrapped_start = position % modulus`.
+//   3. Splits the write into at most two contiguous chunks across
+//      the ring boundary.
+//   4. Slices the source via `CudaStorageBytes::slot_copy_to_new`
+//      for each chunk and reuses baracuda's existing
+//      `write_slice_b{1,2,4,8,16}` kernel for the actual mutation.
+//
+// v1 constraint: rotating axis must be axis 0 (the leading dim).
+// This makes the source-side byte split a simple prefix/suffix —
+// matching Mistral / Phi-3 sliding-window K/V layout
+// `[seq, n_kv_heads, head_dim]` where seq is the leading axis.
+
+macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path, $dtype_size:expr) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 2 inputs (source, position) + 1 output (dest), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (dest_shape, axis, modulus, ranges) = match params {
+                OpParams::WriteSliceRotating { dest_shape, axis, modulus, ranges } => {
+                    (dest_shape, *axis, *modulus, ranges)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::WriteSliceRotating, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            if axis != 0 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), " (v1): rotating axis must be 0; got {axis}. Strided multi-axis splits land in a follow-up slice."),
+                    axis = axis,
+                )).bt());
+            }
+            let rank = dest_shape.len();
+            if ranges.len() != rank {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": ranges.len() {} != dest rank {}"),
+                    ranges.len(), rank,
+                )).bt());
+            }
+
+            // D2H the 4-byte position scalar.
+            let pos_guard = read_storage(&inputs[1])?;
+            let pos_cuda = cuda_input(&pos_guard)?;
+            let pos_bytes = pos_cuda.to_cpu_bytes()?;
+            if pos_bytes.len() < 4 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": position storage has {} bytes, need >= 4"),
+                    pos_bytes.len(),
+                )).bt());
+            }
+            let position = u32::from_ne_bytes([pos_bytes[0], pos_bytes[1], pos_bytes[2], pos_bytes[3]]) as usize;
+            let wrapped_start = position % modulus;
+
+            // Derive slab_shape from ranges; v1 forces axis=0 so the
+            // source byte split is a prefix/suffix.
+            let mut slab_shape: Vec<usize> = Vec::with_capacity(rank);
+            for (i, &(start, end)) in ranges.iter().enumerate() {
+                if end < start {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": ranges[{i}] = ({start}, {end}) has end < start"),
+                        i = i, start = start, end = end,
+                    )).bt());
+                }
+                let slab = end - start;
+                if i == axis && slab > modulus {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": rotating-axis slab {slab} > modulus {modulus}"),
+                        slab = slab, modulus = modulus,
+                    )).bt());
+                }
+                slab_shape.push(slab);
+            }
+            let slab_axis_len = slab_shape[axis];
+            let slab_elems: usize = slab_shape.iter().copied().product();
+            if slab_elems == 0 {
+                return Ok(());
+            }
+
+            let first_len = slab_axis_len.min(modulus - wrapped_start);
+            let second_len = slab_axis_len - first_len;
+
+            // Byte size per row of the source (everything past axis 0).
+            let inner_per_row_elems: usize = slab_shape[1..].iter().copied().product();
+            let inner_per_row_bytes = inner_per_row_elems * $dtype_size;
+
+            let src_guard = read_storage(&inputs[0])?;
+            let src_cuda = cuda_input(&src_guard)?;
+
+            // Run up to two chunks. Each chunk extracts a fresh
+            // CudaStorageBytes (D2D copy of the relevant source bytes)
+            // and issues baracuda's write_slice kernel.
+            if first_len > 0 {
+                let first_bytes_len = first_len * inner_per_row_bytes;
+                let src_first = src_cuda.slot_copy_to_new(0, first_bytes_len)?;
+                let mut sub_source_shape = slab_shape.clone();
+                sub_source_shape[axis] = first_len;
+                let mut sub_range_start: Vec<usize> = ranges.iter().map(|r| r.0).collect();
+                sub_range_start[axis] = wrapped_start;
+
+                let mut out_guard = write_storage(&outputs[0])?;
+                let dest_cuda = cuda_output(&mut out_guard)?;
+                $baracuda_fn(dest_cuda, &src_first, dest_shape, &sub_source_shape, &sub_range_start)?;
+            }
+            if second_len > 0 {
+                let first_bytes_len = first_len * inner_per_row_bytes;
+                let second_bytes_len = second_len * inner_per_row_bytes;
+                let src_second = src_cuda.slot_copy_to_new(first_bytes_len, second_bytes_len)?;
+                let mut sub_source_shape = slab_shape.clone();
+                sub_source_shape[axis] = second_len;
+                let mut sub_range_start: Vec<usize> = ranges.iter().map(|r| r.0).collect();
+                sub_range_start[axis] = 0;
+
+                let mut out_guard = write_storage(&outputs[0])?;
+                let dest_cuda = cuda_output(&mut out_guard)?;
+                $baracuda_fn(dest_cuda, &src_second, dest_shape, &sub_source_shape, &sub_range_start)?;
+            }
+            Ok(())
+        }
+    };
+}
+
+pub mod write_slice_rotating {
+    use super::*;
+    use fuel_cuda_backend::baracuda::write_slice as bk;
+
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b1,  bk::write_slice_b1,   1);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b2,  bk::write_slice_b2,   2);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b4,  bk::write_slice_b4,   4);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b8,  bk::write_slice_b8,   8);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b16, bk::write_slice_b16, 16);
+}
+
+// ===========================================================================
 // Triu / Tril — upper / lower triangular mask (Phase 7.6 step 9c E.3.2.4)
 // ===========================================================================
 //
@@ -2201,6 +2351,20 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(WriteSlice, &u(DType::U32),cuda, write_slice::write_slice_b4);
     table.register(WriteSlice, &u(DType::U8), cuda, write_slice::write_slice_b1);
     table.register(WriteSlice, &u(DType::I8), cuda, write_slice::write_slice_b1);
+
+    // WriteSliceRotating — Phase C sliding-window KV writes. Same
+    // byte-width-dispatched surface as WriteSlice; the wrapper handles
+    // the position D2H + ring-boundary split before delegating to
+    // baracuda's write_slice kernels.
+    table.register(WriteSliceRotating, &u(f32),       cuda, write_slice_rotating::write_slice_rotating_b4);
+    table.register(WriteSliceRotating, &u(f64),       cuda, write_slice_rotating::write_slice_rotating_b8);
+    table.register(WriteSliceRotating, &u(f16),       cuda, write_slice_rotating::write_slice_rotating_b2);
+    table.register(WriteSliceRotating, &u(bf16),      cuda, write_slice_rotating::write_slice_rotating_b2);
+    table.register(WriteSliceRotating, &u(DType::I32),cuda, write_slice_rotating::write_slice_rotating_b4);
+    table.register(WriteSliceRotating, &u(DType::I64),cuda, write_slice_rotating::write_slice_rotating_b8);
+    table.register(WriteSliceRotating, &u(DType::U32),cuda, write_slice_rotating::write_slice_rotating_b4);
+    table.register(WriteSliceRotating, &u(DType::U8), cuda, write_slice_rotating::write_slice_rotating_b1);
+    table.register(WriteSliceRotating, &u(DType::I8), cuda, write_slice_rotating::write_slice_rotating_b1);
 
     // ----- Triu / Tril — triangular masks (alpha.29).
     // 7 dtypes per direction in baracuda; Fuel registers the
