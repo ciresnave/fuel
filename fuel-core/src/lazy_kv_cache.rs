@@ -184,6 +184,91 @@ impl LazyKvCache {
         Ok(self)
     }
 
+    /// Append `k_new` / `v_new` for layer `layer` at the dynamic
+    /// `position % max_seq_len`, wrapping around when the cache is
+    /// full. Backs Mistral / Phi-3 sliding-window attention where the
+    /// cache is a fixed-size ring of the most recent `max_seq_len`
+    /// tokens.
+    ///
+    /// **Consumes `self`** and returns the updated cache, mirroring
+    /// [`Self::append`]'s functional shape.
+    ///
+    /// Differences from [`Self::append`]:
+    ///   - Takes `position` (a rank-0 `U32` [`LazyTensor`]) as the
+    ///     logical write start. The kernel applies `position %
+    ///     max_seq_len` so positions past the window wrap to slot 0.
+    ///   - Never errors on capacity overflow — that's the whole point.
+    ///   - Emits [`fuel_graph::Op::WriteSliceRotating`] instead of
+    ///     [`fuel_graph::Op::WriteSlice`].
+    ///
+    /// `seqlen_new` (the rotating-axis dim of `k_new`/`v_new`) must
+    /// be ≤ `max_seq_len`. Per-step calls usually pass `seqlen_new ==
+    /// 1` (one token's K/V) plus `position` = step counter; prefill
+    /// can append more at once.
+    ///
+    /// The cache's `current_seq_len` advances by `seqlen_new` and
+    /// saturates at `max_seq_len` — `k(layer)` / `v(layer)` then
+    /// return the full window (in rotated order). For attention, the
+    /// caller typically reads through `k_buffer_full` / `v_buffer_full`
+    /// and applies the sliding-window mask.
+    pub fn append_rotating(
+        mut self,
+        layer: usize,
+        k_new: &LazyTensor,
+        v_new: &LazyTensor,
+        position: &LazyTensor,
+    ) -> crate::Result<Self> {
+        if layer >= self.layers.len() {
+            crate::bail!(
+                "LazyKvCache::append_rotating: layer {layer} out of bounds (n_layers={})",
+                self.layers.len(),
+            );
+        }
+        let k_dims = k_new.shape().dims().to_vec();
+        let v_dims = v_new.shape().dims().to_vec();
+        if k_dims.len() != 3 || v_dims.len() != 3 {
+            crate::bail!(
+                "LazyKvCache::append_rotating: k_new/v_new must be rank 3, got k={k_dims:?} v={v_dims:?}",
+            );
+        }
+        if k_dims != v_dims {
+            crate::bail!(
+                "LazyKvCache::append_rotating: k_new shape {k_dims:?} != v_new shape {v_dims:?}",
+            );
+        }
+        let seqlen_new = k_dims[0];
+        if k_dims[1] != self.n_kv_heads || k_dims[2] != self.head_dim {
+            crate::bail!(
+                "LazyKvCache::append_rotating: k_new shape {k_dims:?} doesn't match cache geometry \
+                 [n_kv_heads={}, head_dim={}]",
+                self.n_kv_heads, self.head_dim,
+            );
+        }
+        if seqlen_new > self.max_seq_len {
+            crate::bail!(
+                "LazyKvCache::append_rotating: seqlen_new ({seqlen_new}) exceeds window \
+                 max_seq_len ({})",
+                self.max_seq_len,
+            );
+        }
+        // ranges[axis].0 is ignored by the executor (dynamic start);
+        // ranges[axis].1 must equal seqlen_new for the slab width.
+        let ranges = vec![
+            (0, seqlen_new),
+            (0, self.n_kv_heads),
+            (0, self.head_dim),
+        ];
+        let (k_buffer, v_buffer) = self.layers[layer].clone();
+        let new_k = k_buffer.write_slice_rotating(
+            k_new, position, /* axis */ 0, /* modulus */ self.max_seq_len, ranges.clone(),
+        )?;
+        let new_v = v_buffer.write_slice_rotating(
+            v_new, position, 0, self.max_seq_len, ranges,
+        )?;
+        self.layers[layer] = (new_k, new_v);
+        Ok(self)
+    }
+
     /// Advance `current_seq_len` by `n` positions. Call this after the
     /// last layer's [`Self::append`] in each generation step.
     ///
@@ -372,5 +457,74 @@ mod tests {
         let cache = LazyKvCache::new(&anchor, 1, 5, 1, 2, DType::F32);
         let buf = cache.k_buffer_full(0);
         assert_eq!(buf.shape().dims(), &[5, 1, 2]);
+    }
+
+    // ---- append_rotating (Phase C) -----------------------------------------
+
+    /// Mistral-style 4-step sliding-window decode. Window 3, head_dim 2;
+    /// step 3 must overwrite slot 0.
+    #[test]
+    fn append_rotating_mistral_style_decode_loop() {
+        let anchor = cpu_f32(vec![0.0], &[1]);
+        // n_layers=1, max_seq_len=3 (the window), n_kv_heads=1, head_dim=2.
+        let mut cache = LazyKvCache::new(&anchor, 1, 3, 1, 2, DType::F32);
+        let tokens = [
+            (vec![1.0_f32, 1.1], vec![10.0_f32, 10.1]),
+            (vec![2.0_f32, 2.1], vec![20.0_f32, 20.1]),
+            (vec![3.0_f32, 3.1], vec![30.0_f32, 30.1]),
+            (vec![4.0_f32, 4.1], vec![40.0_f32, 40.1]),
+        ];
+        for (step, (k_token, v_token)) in tokens.iter().enumerate() {
+            let k_new = anchor.const_f32_like(k_token.clone(), vec![1, 1, 2]);
+            let v_new = anchor.const_f32_like(v_token.clone(), vec![1, 1, 2]);
+            let position = anchor.const_u32_like(vec![step as u32], Shape::from_dims(&[]));
+            cache = cache.append_rotating(0, &k_new, &v_new, &position).unwrap();
+        }
+        let k = cache.k_buffer_full(0).realize_f32();
+        // After 4 writes with window 3:
+        //   step 0 → row 0 = token0 K = (1.0, 1.1)
+        //   step 1 → row 1 = token1 K = (2.0, 2.1)
+        //   step 2 → row 2 = token2 K = (3.0, 3.1)
+        //   step 3 → row 0 (wraps) = token3 K = (4.0, 4.1)
+        assert_eq!(k, vec![4.0, 4.1, 2.0, 2.1, 3.0, 3.1]);
+        let v = cache.v_buffer_full(0).realize_f32();
+        assert_eq!(v, vec![40.0, 40.1, 20.0, 20.1, 30.0, 30.1]);
+    }
+
+    /// Within-window append: position 0 lands at slot 0; the K/V slice
+    /// matches the appended token exactly.
+    #[test]
+    fn append_rotating_position_zero_within_window() {
+        let anchor = cpu_f32(vec![0.0], &[1]);
+        let cache = LazyKvCache::new(&anchor, 1, 4, 1, 2, DType::F32);
+        let k = anchor.const_f32_like(vec![7.0_f32, 8.0], vec![1, 1, 2]);
+        let v = anchor.const_f32_like(vec![70.0_f32, 80.0], vec![1, 1, 2]);
+        let position = anchor.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+        let cache = cache.append_rotating(0, &k, &v, &position).unwrap();
+        let buf = cache.k_buffer_full(0).realize_f32();
+        assert_eq!(buf, vec![7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// Layer out of bounds errors at build time.
+    #[test]
+    fn append_rotating_rejects_oob_layer() {
+        let anchor = cpu_f32(vec![0.0], &[1]);
+        let cache = LazyKvCache::new(&anchor, 2, 4, 1, 2, DType::F32);
+        let k = anchor.const_f32_like(vec![1.0_f32, 2.0], vec![1, 1, 2]);
+        let v = anchor.const_f32_like(vec![3.0_f32, 4.0], vec![1, 1, 2]);
+        let position = anchor.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+        assert!(cache.append_rotating(99, &k, &v, &position).is_err());
+    }
+
+    /// seqlen_new > max_seq_len errors (can't overfill a window in one go).
+    #[test]
+    fn append_rotating_rejects_seqlen_over_window() {
+        let anchor = cpu_f32(vec![0.0], &[1]);
+        let cache = LazyKvCache::new(&anchor, 1, 3, 1, 2, DType::F32);
+        // Append 4 tokens at once but window is 3 — must error.
+        let k = anchor.const_f32_like(vec![1.0_f32; 8], vec![4, 1, 2]);
+        let v = anchor.const_f32_like(vec![2.0_f32; 8], vec![4, 1, 2]);
+        let position = anchor.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+        assert!(cache.append_rotating(0, &k, &v, &position).is_err());
     }
 }
