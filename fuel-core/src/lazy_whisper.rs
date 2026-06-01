@@ -673,7 +673,8 @@ fn decoder_layer(
     // --- cross-attn ---------------
     let x_ln = layer_norm_affine(&x, &lw.cross_ln_g, &lw.cross_ln_b, 1e-5, d, q_seq);
     // encoder_out has shape [1, T_enc, d]. Use it as the K and V source.
-    let enc_dims = encoder_out.dims();
+    let enc_shape = encoder_out.shape();
+    let enc_dims = enc_shape.dims();
     assert_eq!(
         enc_dims.len(), 3,
         "encoder_out must be [1, T, d]; got {enc_dims:?}"
