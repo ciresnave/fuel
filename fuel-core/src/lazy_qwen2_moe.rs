@@ -282,7 +282,7 @@ fn swiglu_mlp(
 fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, seq: usize) -> LazyTensor {
     // RMS norm: x * rsqrt(mean(x^2) + eps) * gamma
     let sq = x.mul(x);
-    let ms = sq.mean_dim(2);  // [1, seq]
+    let ms = sq.mean_dim(2).unwrap();  // [1, seq]
     let rstd = ms.add_scalar(eps).sqrt();
     let rstd_bc = rstd
         .reshape(Shape::from_dims(&[1, seq, 1])).unwrap()

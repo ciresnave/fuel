@@ -487,13 +487,13 @@ fn group_norm(
     let cpg = c / groups;
     let m = cpg * h * w;
     let x_flat = x.reshape(Shape::from_dims(&[1, groups, m])).unwrap();
-    let mean = x_flat.mean_dim(2);
+    let mean = x_flat.mean_dim(2).unwrap();
     let mean_bc = mean
         .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let centered = x_flat.sub(&mean_bc);
     let sq = centered.mul(&centered);
-    let var = sq.mean_dim(2);
+    let var = sq.mean_dim(2).unwrap();
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
         .reshape(Shape::from_dims(&[1, groups, 1])).unwrap()
