@@ -175,7 +175,7 @@ impl ConvNextModel {
     /// Forward pass on a single ImageNet-normalized `[1, 3, 224, 224]`
     /// image (flattened row-major). Returns logits shape `[1,
     /// num_classes]`.
-    pub fn forward(&self, image: &[f32]) -> LazyTensor {
+    pub fn forward(&self, image: &[f32]) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let cin = cfg.in_channels;
         let s = cfg.image_size;
@@ -224,8 +224,8 @@ impl ConvNextModel {
             &pooled3, &self.weights.head_ln_g, &self.weights.head_ln_b,
             cfg.layer_norm_eps, c, 1,
         );
-        linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)
-            .reshape(Shape::from_dims(&[1, cfg.num_classes]))
+        Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)
+            .reshape(Shape::from_dims(&[1, cfg.num_classes])))
     }
 }
 
@@ -677,7 +677,7 @@ mod tests {
         let cfg = tiny_cfg();
         let model = ConvNextModel { weights: zero_weights(&cfg), config: cfg.clone() };
         let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
-        let logits = model.forward(&image);
+        let logits = model.forward(&image).unwrap();
         let flat = logits.realize_f32();
         assert_eq!(flat.len(), cfg.num_classes);
         assert!(flat.iter().all(|v| v.is_finite()));

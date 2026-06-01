@@ -167,7 +167,7 @@ impl BertModel {
     /// is conventionally `[CLS]` and the final positional encoding is
     /// applied left-to-right from position 0; callers wanting `[CLS] …
     /// [SEP]` structure produce those IDs via the tokenizer.
-    pub fn forward(&self, token_ids: &[u32]) -> LazyTensor {
+    pub fn forward(&self, token_ids: &[u32]) -> crate::Result<LazyTensor> {
         assert!(!token_ids.is_empty(), "BertModel::forward: empty input");
         let seq = token_ids.len();
         let cfg = &self.config;
@@ -224,7 +224,7 @@ impl BertModel {
         for lw in &self.weights.layers {
             x = encoder_layer(&x, lw, cfg, seq);
         }
-        x
+        Ok(x)
     }
 }
 
@@ -768,7 +768,7 @@ mod tests {
         };
         let model = BertModel { config: cfg.clone(), weights };
         let ids: Vec<u32> = (0..8).collect();
-        let hidden = model.forward(&ids);
+        let hidden = model.forward(&ids).unwrap();
         let out = hidden.realize_f32();
         // `realize_f32` returns the flattened row-major `[1, 8, h]` output.
         assert_eq!(out.len(), 1 * ids.len() * h);

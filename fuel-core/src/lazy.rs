@@ -3484,7 +3484,7 @@ impl LlamaModel {
     /// internally; it recomputes the full attention each call. Adding
     /// a KV cache is orthogonal plumbing that doesn't change the graph
     /// structure.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> LazyTensor {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -3531,7 +3531,7 @@ impl LlamaModel {
             cfg.norm_eps,
         );
         // Output projection to vocab logits (routes through qmatmul for Q4_0).
-        weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
+        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size))
     }
 
     /// Like [`forward`] but returns the hidden state AFTER the final
@@ -3556,7 +3556,7 @@ impl LlamaModel {
         tokens: &[u32],
         start_pos: usize,
         anchor: &LazyTensor,
-    ) -> LazyTensor {
+    ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -3585,7 +3585,7 @@ impl LlamaModel {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin);
         }
 
-        apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps)
+        Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
     }
 
     fn apply_layer(
@@ -5866,7 +5866,7 @@ fn softcap(x: &LazyTensor, cap: f64) -> LazyTensor {
 }
 
 impl Gemma2Model {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> LazyTensor {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -5928,10 +5928,10 @@ impl Gemma2Model {
         let logits = h_norm.matmul(&w_out);
 
         // Final logit softcapping.
-        match cfg.final_logit_softcapping {
+        Ok(match cfg.final_logit_softcapping {
             Some(cap) if cap > 0.0 => softcap(&logits, cap),
             _ => logits,
-        }
+        })
     }
 
     fn apply_layer(
@@ -7390,12 +7390,12 @@ mod generate_tests {
             weights: make_tiny_weights_with_qkv_bias(&cfg),
         };
         let no_bias_logits = no_bias
-            .forward(&tokens, 0)
+            .forward(&tokens, 0).unwrap()
             .slice(1, tokens.len() - 1, 1)
             .reshape(Shape::from_dims(&[cfg.vocab_size]))
             .realize_f32();
         let with_bias_logits = with_bias
-            .forward(&tokens, 0)
+            .forward(&tokens, 0).unwrap()
             .slice(1, tokens.len() - 1, 1)
             .reshape(Shape::from_dims(&[cfg.vocab_size]))
             .realize_f32();
@@ -7437,7 +7437,7 @@ mod generate_tests {
         // Non-cached reference loop.
         let mut ref_tokens = prompt.to_vec();
         for _ in 0..max_new {
-            let logits = model.forward(&ref_tokens, 0);
+            let logits = model.forward(&ref_tokens, 0).unwrap();
             let last_pos = ref_tokens.len() - 1;
             let last = logits
                 .slice(1, last_pos, 1)
@@ -7585,7 +7585,7 @@ mod generate_tests {
         // Reference: non-cached greedy loop.
         let mut ref_tokens = prompt.to_vec();
         for _ in 0..max_new {
-            let logits = model.forward(&ref_tokens, 0);
+            let logits = model.forward(&ref_tokens, 0).unwrap();
             let last_pos = ref_tokens.len() - 1;
             let last = logits
                 .slice(1, last_pos, 1)
@@ -7759,7 +7759,7 @@ mod generate_tests {
         let full = [prompt[0], prompt[1], prompt[2], next_token];
 
         // Non-cached reference: full forward over all 4 tokens.
-        let full_logits = model.forward(&full, 0);
+        let full_logits = model.forward(&full, 0).unwrap();
         let last_pos = full.len() - 1;
         let expected = full_logits
             .slice(1, last_pos, 1)
@@ -7840,7 +7840,7 @@ mod generate_tests {
         let prompt = [1_u32, 2, 3, 4];
 
         // Non-cached reference.
-        let full_logits = model.forward(&prompt, 0);
+        let full_logits = model.forward(&prompt, 0).unwrap();
         let last_pos = prompt.len() - 1;
         let expected = full_logits
             .slice(1, last_pos, 1)
@@ -8357,7 +8357,7 @@ mod gqa_tests {
         let model = LlamaModel { config: cfg.clone(), weights };
 
         let tokens = vec![0_u32, 1, 2];
-        let logits = model.forward(&tokens, 0);
+        let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
         let realized = logits.realize_f32();
         for &v in &realized {
@@ -8382,7 +8382,7 @@ mod gqa_tests {
         let weights = make_tiny_weights(&cfg);
         let model = LlamaModel { config: cfg.clone(), weights };
         let tokens = vec![1_u32, 3];
-        let logits = model.forward(&tokens, 0).realize_f32();
+        let logits = model.forward(&tokens, 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 1 * 2 * cfg.vocab_size);
         for &v in &logits {
             assert!(v.is_finite());
@@ -8529,7 +8529,7 @@ mod llama_tests {
         let model = LlamaModel { config: cfg.clone(), weights };
 
         let tokens: Vec<u32> = vec![5, 12, 0, 7];
-        let logits = model.forward(&tokens, 0);
+        let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 4, cfg.vocab_size]);
     }
 
@@ -8552,7 +8552,7 @@ mod llama_tests {
         let model = LlamaModel { config: cfg.clone(), weights };
 
         let tokens = vec![1_u32, 2, 3];
-        let logits = model.forward(&tokens, 0);
+        let logits = model.forward(&tokens, 0).unwrap();
         let logits_vec = logits.realize_f32();
         assert_eq!(logits_vec.len(), 1 * 3 * cfg.vocab_size);
         for &v in &logits_vec {
@@ -8591,8 +8591,8 @@ mod llama_tests {
         let model = LlamaModel { config: cfg.clone(), weights };
 
         let tokens = vec![2_u32, 4];
-        let l0 = model.forward(&tokens, 0).realize_f32();
-        let l10 = model.forward(&tokens, 10).realize_f32();
+        let l0 = model.forward(&tokens, 0).unwrap().realize_f32();
+        let l10 = model.forward(&tokens, 10).unwrap().realize_f32();
         // Relative-position invariance: the two should match exactly.
         assert_eq!(
             l0, l10,
@@ -8621,7 +8621,7 @@ mod llama_tests {
         let model = LlamaModel { config: cfg.clone(), weights };
 
         let tokens = vec![3_u32, 1, 4, 1, 5];
-        let logits = model.forward(&tokens, 0);
+        let logits = model.forward(&tokens, 0).unwrap();
         // Take last-position slice and argmax over vocab dim, all
         // through the LazyTensor bridge API.
         let last = logits.slice(1, tokens.len() - 1, 1); // [1, 1, vocab]
@@ -8698,7 +8698,7 @@ mod gemma2_tests {
             config:  cfg.clone(),
             weights: make_tiny_gemma2_weights(&cfg),
         };
-        let logits = model.forward(&[1, 2, 3], 0);
+        let logits = model.forward(&[1, 2, 3], 0).unwrap();
         let v = logits.realize_f32();
         assert_eq!(v.len(), 1 * 3 * cfg.vocab_size);
         for &x in &v {
@@ -8713,7 +8713,7 @@ mod gemma2_tests {
             config:  cfg.clone(),
             weights: make_tiny_gemma2_weights(&cfg),
         };
-        let logits = model.forward(&[1, 2, 3], 0);
+        let logits = model.forward(&[1, 2, 3], 0).unwrap();
         let v = logits.realize_f32();
         let cap = cfg.final_logit_softcapping.unwrap() as f32;
         for &x in &v {

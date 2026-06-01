@@ -217,7 +217,7 @@ impl WhisperModel {
     /// `mel` is a flat row-major `[1, num_mel_bins, T]` spectrogram —
     /// typically `[1, 80, 3000]` for 30 s of 16 kHz audio. The function
     /// validates shape-vs-config at entry.
-    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> LazyTensor {
+    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let n_mel = cfg.num_mel_bins;
@@ -271,21 +271,21 @@ impl WhisperModel {
         }
 
         // --- final LN ---------------------------------------------------
-        layer_norm_affine(
+        Ok(layer_norm_affine(
             &x,
             &self.weights.encoder.final_ln_g,
             &self.weights.encoder.final_ln_b,
             1e-5,
             d,
             t_half,
-        )
+        ))
     }
 
     /// Run the decoder for a given token prefix, attending into a
     /// precomputed encoder context. Returns logits of shape
     /// `[1, seq, vocab_size]` — the caller slices the last row to pick
     /// the next token.
-    pub fn forward_decoder(&self, tokens: &[u32], encoder_out: &LazyTensor) -> LazyTensor {
+    pub fn forward_decoder(&self, tokens: &[u32], encoder_out: &LazyTensor) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
@@ -328,7 +328,7 @@ impl WhisperModel {
         // Tied output projection: logits = x @ embed^T → [1, seq, vocab].
         // embed is [vocab, d] row-major; transpose to [d, vocab] and matmul.
         let embed_t = embed.transpose();  // [d, vocab]
-        x.matmul(&embed_t)
+        Ok(x.matmul(&embed_t))
     }
 
     /// Greedy decode for `max_new_tokens` steps starting from
@@ -348,7 +348,7 @@ impl WhisperModel {
         max_new_tokens: usize,
     ) -> crate::Result<Vec<u32>> {
         let mel_time = mel.len() / self.config.num_mel_bins;
-        let encoder_out = self.forward_encoder(mel, mel_time).realize_f32();
+        let encoder_out = self.forward_encoder(mel, mel_time)?.realize_f32();
         // Re-materialize the encoder output into a fresh LazyTensor for
         // each decode step. Cheap vs rerunning the encoder.
         let t_half = mel_time / 2;
@@ -358,7 +358,7 @@ impl WhisperModel {
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         for _ in 0..max_new_tokens {
             let encoder_t = LazyTensor::from_f32(encoder_out.clone(), enc_shape.clone(), &crate::Device::cpu());
-            let logits = self.forward_decoder(&tokens, &encoder_t);
+            let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
             // logits shape is [1, seq, vocab]. Pick the last row.
             let vocab = self.config.vocab_size;
@@ -1066,7 +1066,7 @@ mod tests {
         let model = WhisperModel { config: cfg.clone(), weights };
         // mel_time = 32 → T/2 = 16 = max_source_positions.
         let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
-        let enc = model.forward_encoder(&mel, 32);
+        let enc = model.forward_encoder(&mel, 32).unwrap();
         let flat = enc.realize_f32();
         assert_eq!(flat.len(), 1 * 16 * cfg.d_model);
         assert!(flat.iter().all(|v| v.is_finite()));
@@ -1082,9 +1082,9 @@ mod tests {
         let weights = zero_weights(&cfg);
         let model = WhisperModel { config: cfg.clone(), weights };
         let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
-        let enc = model.forward_encoder(&mel, 32);
+        let enc = model.forward_encoder(&mel, 32).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
-        let logits = model.forward_decoder(&tokens, &enc);
+        let logits = model.forward_decoder(&tokens, &enc).unwrap();
         let flat = logits.realize_f32();
         assert_eq!(flat.len(), 1 * tokens.len() * cfg.vocab_size);
         assert!(flat.iter().all(|v| v.is_finite()));
