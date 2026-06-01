@@ -30,11 +30,12 @@
 //! sortable scalar.
 
 use fuel_core_types::backend::BackendCapabilities;
-use fuel_core_types::dispatch::OpKind;
+use fuel_core_types::dispatch::{OpKind, SizeClass};
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Shape};
 
 use super::alternative_set::AlternativeSet;
+use super::judge::JudgeOracle;
 use crate::fused::CostEstimate;
 use crate::kernel::{KernelBindingTable, OpParams};
 
@@ -69,14 +70,30 @@ pub type CapabilitiesLookup<'a> = dyn Fn(BackendId) -> Option<&'a BackendCapabil
 /// For each candidate, looks up the binding-table entry that
 /// produced it (matched by `kernel` function pointer identity) and
 /// invokes the entry's `CostFn(shapes, dtypes, op_params, caps)`
-/// to compute the cost. Candidates whose backend has no
+/// to compute the Layer-1 cost. Candidates whose backend has no
 /// capabilities entry, or whose kernel pointer is no longer
 /// findable (defensive — the table shouldn't change between
 /// enumeration and costing within one plan), retain the default
 /// zero-cost.
 ///
+/// When `judge` is `Some`, runs the Layer-2 refinement after
+/// Layer-1: for each candidate, queries the oracle for a measured
+/// latency at this (op, dtype, size_class, backend) cell. If the
+/// measurement exists, **replaces** the Layer-1 estimate with a
+/// Layer-2-equivalent: zero FLOPs + zero bytes + `kernel_overhead_ns
+/// = saturating_cast(latency_ns)`. The composite scoring then
+/// returns that latency directly. Cells without measurements keep
+/// the Layer-1 estimate (silent fallback — no measurement is NOT
+/// the same as "this kernel is fast").
+///
+/// The size_class is derived from `shapes[0]`'s element count via
+/// [`SizeClass::from_elem_count`]. Matches the Judge profiler's
+/// bucketing convention. If `shapes` is empty (truly nullary op),
+/// `SizeClass(0)` is used as a defensive default.
+///
 /// The caller supplies `shapes` (input operand shapes for the
-/// decision point) and the capabilities lookup closure.
+/// decision point), the capabilities lookup closure, and optional
+/// judge oracle.
 pub fn compute_static_costs(
     set: &mut AlternativeSet,
     op_kind: OpKind,
@@ -84,13 +101,10 @@ pub fn compute_static_costs(
     shapes: &[Shape],
     bindings: &KernelBindingTable,
     capabilities_for: &CapabilitiesLookup<'_>,
+    judge: Option<&dyn JudgeOracle>,
 ) {
-    // SmallVec doesn't expose mutable iteration through a public
-    // `as_mut_slice`; we use indexed access.
+    // Layer-1: static cost via the binding-table's CostFn.
     for i in 0..set.len() {
-        // Identity match on the kernel fn pointer + backend tells
-        // us which BindingEntry we came from. Cheap (<10 entries
-        // per key in practice).
         let (kernel_ptr, backend, op_params) = {
             let c = &set.alternatives()[i];
             (c.kernel as *const () as usize, c.backend, c.op_params.clone())
@@ -106,6 +120,48 @@ pub fn compute_static_costs(
         };
         let cost = (entry.cost)(shapes, dtypes, &op_params, caps);
         set.set_static_cost(i, cost);
+    }
+
+    // Layer-2 refinement: if the Judge has data for this cell,
+    // replace the Layer-1 estimate with a latency-equivalent shape
+    // so composite_ns returns the measurement.
+    let Some(judge) = judge else {
+        return;
+    };
+    // Pick the principal dtype — by convention the first input's
+    // dtype, which matches the Judge profiler's keying. For
+    // mixed-dtype ops (Cast etc.) this picks the source dtype;
+    // future refinement could thread the destination as a separate
+    // axis if a measurable wins/losses pattern emerges.
+    let principal_dtype = match dtypes.first() {
+        Some(&dt) => dt,
+        None => return,
+    };
+    let size_class = shapes
+        .first()
+        .map(|s| SizeClass::from_elem_count(s.elem_count()))
+        .unwrap_or(SizeClass(0));
+    for i in 0..set.len() {
+        let backend = set.alternatives()[i].backend;
+        let Some(latency_ns) = judge
+            .measured_latency_ns(op_kind, principal_dtype, size_class, backend)
+        else {
+            continue;
+        };
+        // Convert latency to a CostEstimate that composite_ns will
+        // return as-is. Saturate u64 → u32 for kernel_overhead_ns;
+        // anything above u32::MAX ns (~4.3 seconds) is in
+        // practice a degenerate case we still want correctly
+        // ordered.
+        let overhead = latency_ns.min(u32::MAX as u64) as u32;
+        set.set_static_cost(
+            i,
+            CostEstimate {
+                flops: 0,
+                bytes_moved: 0,
+                kernel_overhead_ns: overhead,
+            },
+        );
     }
 }
 
@@ -290,6 +346,7 @@ mod tests {
             &[Shape::from(vec![4])],
             &bindings,
             &lookup_fn,
+            None,
         );
 
         assert_eq!(set.alternatives()[0].static_cost.flops, 500);
@@ -322,6 +379,7 @@ mod tests {
             &[Shape::from(vec![4])],
             &bindings,
             &empty_lookup,
+            None,
         );
         assert_eq!(set.alternatives()[0].static_cost, CostEstimate::default());
     }
@@ -356,7 +414,236 @@ mod tests {
             &[Shape::from(vec![4])],
             &bindings,
             &|b| lookup.get(&b),
+            None,
         );
         assert_eq!(set.alternatives()[0].static_cost, CostEstimate::default());
+    }
+
+    // ===== Phase 3: Layer-2 refinement via JudgeOracle =====
+
+    #[test]
+    fn judge_refinement_replaces_layer1_with_measured_latency() {
+        use crate::ranker::judge::HashMapJudge;
+
+        // Layer 1 says this kernel is 1000 ns; Judge measured 250 ns.
+        // After refinement composite_ns should report the measurement.
+        fn layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full(
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            layer1,
+        );
+
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+            DEFAULT_MAX_N,
+        );
+        let cpu_caps = caps_for_test(BackendId::Cpu);
+        let lookup: HashMap<BackendId, BackendCapabilities> =
+            [(BackendId::Cpu, cpu_caps)].into_iter().collect();
+        let shapes = [Shape::from(vec![4])];
+        let sc = SizeClass::from_elem_count(4);
+
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 250);
+
+        compute_static_costs(
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &shapes,
+            &bindings,
+            &|b| lookup.get(&b),
+            Some(&judge),
+        );
+
+        let c = &set.alternatives()[0];
+        assert_eq!(c.static_cost.flops, 0, "Layer-2 zeroes FLOPs");
+        assert_eq!(c.static_cost.bytes_moved, 0, "Layer-2 zeroes bytes");
+        assert_eq!(c.static_cost.kernel_overhead_ns, 250, "Layer-2 stamps latency");
+        assert_eq!(composite_ns(&c.static_cost), 250, "composite returns measurement");
+    }
+
+    #[test]
+    fn judge_missing_measurement_leaves_layer1_intact() {
+        // Cell isn't in the Judge map → Layer-1 estimate stays.
+        fn layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 1000, bytes_moved: 4000, kernel_overhead_ns: 50 }
+        }
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full(
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            layer1,
+        );
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+            DEFAULT_MAX_N,
+        );
+        let cpu_caps = caps_for_test(BackendId::Cpu);
+        let lookup: HashMap<BackendId, BackendCapabilities> =
+            [(BackendId::Cpu, cpu_caps)].into_iter().collect();
+        let empty_judge = crate::ranker::judge::HashMapJudge::new();
+        compute_static_costs(
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![4])],
+            &bindings,
+            &|b| lookup.get(&b),
+            Some(&empty_judge),
+        );
+        let c = &set.alternatives()[0];
+        assert_eq!(c.static_cost.flops, 1000, "Layer-1 FLOPs survive");
+        assert_eq!(c.static_cost.bytes_moved, 4000);
+        assert_eq!(c.static_cost.kernel_overhead_ns, 50);
+    }
+
+    #[test]
+    fn judge_refinement_per_backend_can_flip_winner() {
+        // Two backends. Layer-1 says CPU cheap, Aocl expensive.
+        // Judge measured opposite: Aocl 100ns, CPU 500ns.
+        // After refinement + rank, Aocl wins.
+        fn cpu_layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 100, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        fn aocl_layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full(
+            OpKind::AddElementwise, &dtypes, BackendId::Cpu, noop_a,
+            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cpu_layer1,
+        );
+        bindings.register_full(
+            OpKind::AddElementwise, &dtypes, BackendId::Aocl, noop_b,
+            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            aocl_layer1,
+        );
+        let mut set = AlternativeSet::from_candidates(
+            vec![
+                Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
+                Candidate { backend: BackendId::Aocl, ..candidate_with_cost(noop_b, CostEstimate::default()) },
+            ],
+            DEFAULT_MAX_N,
+        );
+        let lookup: HashMap<BackendId, BackendCapabilities> = [
+            (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
+            (BackendId::Aocl, caps_for_test(BackendId::Aocl)),
+        ].into_iter().collect();
+        let sc = SizeClass::from_elem_count(4);
+        let mut judge = crate::ranker::judge::HashMapJudge::new();
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 500);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Aocl, 100);
+
+        compute_static_costs(
+            &mut set, OpKind::AddElementwise, &dtypes,
+            &[Shape::from(vec![4])], &bindings, &|b| lookup.get(&b), Some(&judge),
+        );
+        set.rank_by_composite_cost();
+        assert_eq!(
+            set.winner().unwrap().backend,
+            BackendId::Aocl,
+            "Layer-2 measurement reverses Layer-1 verdict",
+        );
+    }
+
+    #[test]
+    fn judge_partial_coverage_mixes_layer1_and_layer2() {
+        // Two backends. Judge measured ONE of them; the other keeps
+        // Layer-1. Ranking has to handle the mixed-shape cost.
+        fn cheap(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 50, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        fn expensive(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 10_000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full(
+            OpKind::AddElementwise, &dtypes, BackendId::Cpu, noop_a,
+            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, cheap,
+        );
+        bindings.register_full(
+            OpKind::AddElementwise, &dtypes, BackendId::Aocl, noop_b,
+            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, expensive,
+        );
+        let mut set = AlternativeSet::from_candidates(
+            vec![
+                Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
+                Candidate { backend: BackendId::Aocl, ..candidate_with_cost(noop_b, CostEstimate::default()) },
+            ],
+            DEFAULT_MAX_N,
+        );
+        let lookup: HashMap<BackendId, BackendCapabilities> = [
+            (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
+            (BackendId::Aocl, caps_for_test(BackendId::Aocl)),
+        ].into_iter().collect();
+        let sc = SizeClass::from_elem_count(4);
+        let mut judge = crate::ranker::judge::HashMapJudge::new();
+        // Only measure Aocl (Judge said it's 20ns — way better than
+        // Layer-1's 10000-FLOP estimate).
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Aocl, 20);
+
+        compute_static_costs(
+            &mut set, OpKind::AddElementwise, &dtypes,
+            &[Shape::from(vec![4])], &bindings, &|b| lookup.get(&b), Some(&judge),
+        );
+        set.rank_by_composite_cost();
+        // CPU = Layer-1 cost = 50 ns; Aocl = Layer-2 = 20 ns → Aocl wins.
+        assert_eq!(
+            set.winner().unwrap().backend, BackendId::Aocl,
+            "partial Judge coverage still influences ranking",
+        );
+    }
+
+    #[test]
+    fn judge_saturates_above_u32_max_ns() {
+        fn layer1(_: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities) -> CostEstimate {
+            CostEstimate { flops: 1, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full(
+            OpKind::AddElementwise, &dtypes, BackendId::Cpu, noop_a,
+            KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, layer1,
+        );
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+            DEFAULT_MAX_N,
+        );
+        let lookup: HashMap<BackendId, BackendCapabilities> =
+            [(BackendId::Cpu, caps_for_test(BackendId::Cpu))].into_iter().collect();
+        let mut judge = crate::ranker::judge::HashMapJudge::new();
+        // Latency exceeds u32::MAX ns (~4.3 s).
+        judge.insert(
+            OpKind::AddElementwise, DType::F32,
+            SizeClass::from_elem_count(4), BackendId::Cpu,
+            u64::MAX,
+        );
+        compute_static_costs(
+            &mut set, OpKind::AddElementwise, &dtypes,
+            &[Shape::from(vec![4])], &bindings, &|b| lookup.get(&b), Some(&judge),
+        );
+        assert_eq!(
+            set.alternatives()[0].static_cost.kernel_overhead_ns,
+            u32::MAX,
+            "u64 → u32 saturating cast pins at u32::MAX",
+        );
     }
 }

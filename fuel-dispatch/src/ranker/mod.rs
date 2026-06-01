@@ -41,6 +41,7 @@ pub mod cost;
 pub mod enumerate;
 pub mod filter;
 pub mod filters;
+pub mod judge;
 
 pub use alternative_set::{AlternativeSet, DEFAULT_MAX_N};
 pub use candidate::{Candidate, CouplingAdjustment};
@@ -52,3 +53,4 @@ pub use filters::{
     default_chain, BitStablePreferenceFilter, PrecisionFloorFilter, PrecisionRequirement,
     StridedInputPreferenceFilter,
 };
+pub use judge::{HashMapJudge, JudgeOracle};

@@ -37,8 +37,8 @@ use crate::kernel::KernelBindingTable;
 use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 use crate::ranker::{
     apply_filter_chain, compute_static_costs, default_chain, enumerate_candidates,
-    AlternativeSet, CapabilitiesLookup, FilterContext, PrecisionRequirement,
-    DEFAULT_MAX_N,
+    AlternativeSet, CapabilitiesLookup, FilterContext, JudgeOracle,
+    PrecisionRequirement, DEFAULT_MAX_N,
 };
 
 /// Per-realize execution plan. Built by [`compile_plan`].
@@ -143,6 +143,12 @@ pub struct PlanOptions<'env> {
     /// Capabilities lookup. Required when `populate_costs` is
     /// true.
     pub capabilities_for: Option<&'env CapabilitiesLookup<'env>>,
+    /// Optional Phase 3 Layer-2 oracle. When `Some` AND
+    /// `populate_costs` is true, the cost composer refines each
+    /// candidate's Layer-1 estimate with the Judge's measured
+    /// latency at that cell. Candidates the oracle hasn't measured
+    /// keep the Layer-1 estimate (silent fallback — absence ≠ zero).
+    pub judge: Option<&'env dyn JudgeOracle>,
 }
 
 impl Default for PlanOptions<'_> {
@@ -153,6 +159,7 @@ impl Default for PlanOptions<'_> {
             populate_costs: true,
             placements_for_device: None,
             capabilities_for: None,
+            judge: None,
         }
     }
 }
@@ -197,6 +204,14 @@ impl<'env> PlanOptions<'env> {
     /// is true.
     pub fn with_capabilities_for(mut self, f: &'env CapabilitiesLookup<'env>) -> Self {
         self.capabilities_for = Some(f);
+        self
+    }
+
+    /// Attach a Layer-2 Judge oracle. When set, `compile_plan`'s
+    /// cost composer refines Layer-1 estimates with measured
+    /// latencies per [`JudgeOracle::measured_latency_ns`].
+    pub fn with_judge(mut self, judge: &'env dyn JudgeOracle) -> Self {
+        self.judge = Some(judge);
         self
     }
 }
@@ -313,6 +328,7 @@ pub fn compile_plan(
                     &input_shapes,
                     bindings_table,
                     caps_for,
+                    options.judge,
                 );
                 set.rank_by_composite_cost();
             }
@@ -739,6 +755,70 @@ mod tests {
             alts.winner().unwrap().backend,
             BackendId::Aocl,
             "cheaper static cost wins after ranking",
+        );
+    }
+
+    #[test]
+    fn compile_plan_judge_layer2_can_flip_layer1_winner() {
+        // Layer-1 says CPU is cheap, Aocl is expensive.
+        // Layer-2 (Judge) measured the opposite: Aocl 20 ns, CPU 5000 ns.
+        // After compile_plan's cost composition + rank, Aocl wins.
+        use crate::ranker::HashMapJudge;
+        use fuel_core_types::dispatch::SizeClass;
+
+        fn cpu_layer1(
+            _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        ) -> crate::fused::CostEstimate {
+            crate::fused::CostEstimate { flops: 10, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        fn aocl_layer1(
+            _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        ) -> crate::fused::CostEstimate {
+            crate::fused::CostEstimate { flops: 100_000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        }
+        let mut table = KernelBindingTable::new();
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu, noop_kernel, KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, cpu_layer1,
+        );
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Aocl, noop_kernel_b, KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, aocl_layer1,
+        );
+
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu, BackendId::Aocl]
+            } else { vec![] }
+        };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+
+        // Each input is shape [3] (per build_add_graph); the
+        // first-input-shape rule gives elem_count 3.
+        let sc = SizeClass::from_elem_count(3);
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 5_000);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Aocl, 20);
+
+        let opts = PlanOptions::new()
+            .with_placements_for_device(&placements_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_judge(&judge);
+
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let alts = plan.alternatives(add_id).unwrap();
+        assert_eq!(alts.len(), 2);
+        assert_eq!(
+            alts.winner().unwrap().backend,
+            BackendId::Aocl,
+            "Layer-2 measurement reverses Layer-1 verdict via compile_plan",
         );
     }
 
