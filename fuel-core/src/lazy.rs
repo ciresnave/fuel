@@ -590,16 +590,58 @@ impl LazyTensor {
     /// [`fuel_graph::Tensor::qmatmul`] for details. The weight bytes
     /// tensor must be a flat U32 const holding the raw Q-block byte
     /// stream (length = n_bytes / 4).
+    ///
+    /// Dtype / rank / k / block-alignment / byte-count mismatches
+    /// surface as typed errors at build time rather than panicking
+    /// inside the inner `fuel_graph` call.
     pub fn qmatmul(
         &self,
         weight_bytes: &Self,
         quant_type: fuel_graph::QuantType,
         k: usize,
         n: usize,
-    ) -> Self {
-        Self {
-            inner: self.inner.qmatmul(&weight_bytes.inner, quant_type, k, n),
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if self.inner.dtype() != fuel_core_types::DType::F32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "qmatmul: activations must be F32, got {:?}", self.inner.dtype(),
+            )).bt());
         }
+        if weight_bytes.inner.dtype() != fuel_core_types::DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "qmatmul: weight_bytes must be U32 (raw block bytes reinterpreted), got {:?}",
+                weight_bytes.inner.dtype(),
+            )).bt());
+        }
+        let a_shape = self.inner.shape();
+        let a_dims = a_shape.dims();
+        if a_dims.len() < 2 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "qmatmul: activations must be rank >= 2, got {a_dims:?}",
+            )).bt());
+        }
+        if a_dims[a_dims.len() - 1] != k {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "qmatmul: last dim of activations ({}) must equal k ({k})",
+                a_dims[a_dims.len() - 1],
+            )).bt());
+        }
+        let block_size = quant_type.elements_per_block();
+        if k % block_size != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "qmatmul: k={k} must be a multiple of {quant_type:?}'s block size ({block_size})",
+            )).bt());
+        }
+        let expected_bytes = n * (k / block_size) * quant_type.bytes_per_block();
+        let expected_u32_elems = expected_bytes / 4;
+        let actual_elems = weight_bytes.inner.shape().elem_count();
+        if actual_elems != expected_u32_elems {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "qmatmul: weight_bytes has {actual_elems} u32 elements, expected {expected_u32_elems} for N={n}, K={k}, {quant_type:?}",
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.qmatmul(&weight_bytes.inner, quant_type, k, n),
+        })
     }
 
     /// Transpose the last two dims. Returns a typed error on rank < 2
@@ -3788,7 +3830,7 @@ impl WeightStorage {
                 );
                 // const_like for Q4_0 emits a flat U32 tensor.
                 let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]));
-                x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features)
+                x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features).unwrap()
             }
             Self::WithLoRA {
                 base, lora_a, lora_b, rank, alpha,
