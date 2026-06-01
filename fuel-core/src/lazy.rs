@@ -658,11 +658,12 @@ impl LazyTensor {
     }
 
     /// Argmax along a dim, returning a U32 tensor with the reduced
-    /// dim removed. Non-differentiable.
-    pub fn argmax_dim(&self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.argmax_dim(dim),
-        }
+    /// dim removed. Non-differentiable. Bad `dim` surfaces as a typed
+    /// error at build time. Accepts any [`Dim`].
+    pub fn argmax_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "argmax_dim")?;
+        Ok(Self { inner: self.inner.argmax_dim(dim) })
     }
 
     /// Realize as a `u32` (index) `Vec`.
@@ -1731,9 +1732,12 @@ impl LazyTensor {
     }
 
     /// Argmin along `dim`, returning a U32 tensor with the reduced dim
-    /// removed. Non-differentiable.
-    pub fn argmin_dim(&self, dim: usize) -> Self {
-        Self { inner: self.inner.argmin_dim(dim) }
+    /// removed. Non-differentiable. Bad `dim` surfaces as a typed
+    /// error at build time. Accepts any [`Dim`].
+    pub fn argmin_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "argmin_dim")?;
+        Ok(Self { inner: self.inner.argmin_dim(dim) })
     }
 
     // ---- masking / scatter ----
@@ -8622,7 +8626,7 @@ mod llama_tests {
         // through the LazyTensor bridge API.
         let last = logits.slice(1, tokens.len() - 1, 1); // [1, 1, vocab]
         let last_flat = last.reshape(Shape::from_dims(&[cfg.vocab_size]));
-        let predicted_ids = last_flat.argmax_dim(0).realize_u32();
+        let predicted_ids = last_flat.argmax_dim(0_usize).unwrap().realize_u32();
         assert_eq!(predicted_ids.len(), 1);
         let pred = predicted_ids[0];
         assert!(
@@ -8901,7 +8905,7 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn argmin_dim_drops_reduced_axis() {
         let t = cpu_f32(vec![3.0, 1.0, 2.0, 0.5, 5.0, 4.0], &[2, 3]);
-        let out = t.argmin_dim(1);
+        let out = t.argmin_dim(1_usize).unwrap();
         assert_eq!(out.shape().dims(), &[2]);
         assert_eq!(out.dtype(), DType::U32);
         assert_eq!(out.realize_u32(), vec![1, 0]);
