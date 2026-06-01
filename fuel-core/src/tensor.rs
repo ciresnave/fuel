@@ -4089,7 +4089,7 @@ impl Tensor {
             // peer transfer optimisation can be added later via DynBackendStorage.
             let host_buf = self.storage()?.read().unwrap().to_cpu_storage()?;
             let storage =
-                Storage(device.inner.storage_from_host_buffer_owned_dyn(host_buf)?);
+                Storage::from_dyn(device.inner.storage_from_host_buffer_owned_dyn(host_buf)?);
             let op = BackpropOp::new1(self, Op::ToDevice);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),

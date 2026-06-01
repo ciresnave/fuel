@@ -199,12 +199,12 @@ impl LazyKvCache {
     /// Slice K-buffer for `layer` to `[0..current_seq_len]` along dim 0.
     /// Returns the slice on the same graph as the cache.
     pub fn k(&self, layer: usize) -> LazyTensor {
-        self.layers[layer].0.slice(0, 0, self.current_seq_len.max(1))
+        self.layers[layer].0.slice(0_usize, 0, self.current_seq_len.max(1)).unwrap()
     }
 
     /// Slice V-buffer for `layer` to `[0..current_seq_len]` along dim 0.
     pub fn v(&self, layer: usize) -> LazyTensor {
-        self.layers[layer].1.slice(0, 0, self.current_seq_len.max(1))
+        self.layers[layer].1.slice(0_usize, 0, self.current_seq_len.max(1)).unwrap()
     }
 
     /// Underlying full-capacity K-buffer (rank 3, `[max_seq, n_kv_heads,

@@ -260,7 +260,7 @@ impl WhisperModel {
                 self.weights.encoder.positional.clone(),
                 Shape::from_dims(&[cfg.max_source_positions, d]),
             )
-            .slice(0, 0, t_half)
+            .slice(0, 0, t_half).unwrap()
             .reshape(Shape::from_dims(&[1, t_half, d])).unwrap()
             .broadcast_to(Shape::from_dims(&[1, t_half, d])).unwrap();
         let mut x = x.add(&pos);
@@ -456,9 +456,9 @@ fn conv1d_k3_s1_p1(
     // Pad T axis to T+2.
     let padded = pad_t_axis_one_each_side(x, in_c, t);
     // Three stride-1 windows along the time axis, each of length T.
-    let s0 = padded.slice(2, 0, t);
-    let s1 = padded.slice(2, 1, t);
-    let s2 = padded.slice(2, 2, t);
+    let s0 = padded.slice(2, 0, t).unwrap();
+    let s1 = padded.slice(2, 1, t).unwrap();
+    let s2 = padded.slice(2, 2, t).unwrap();
     // Concat along channel axis: [1, 3*in_c, T].
     let stacked = s0.concat(&s1, 1).concat(&s2, 1);
     // Move channels-last for matmul: [1, T, 3*in_c].
@@ -513,25 +513,25 @@ fn conv1d_k3_s2_p1(
     //   k=2: 2t+2 → 2, 4, ..., T_in
     //
     // Express each via a contiguous slice + reshape + dim-3 slice:
-    //   head_head = padded.slice(2, 0, 2*T_out).reshape([1, C, T_out, 2])
+    //   head_head = padded.slice(2, 0, 2*T_out).unwrap().reshape([1, C, T_out, 2])
     //   s0 = head_head[:, :, :, 0]  (even positions)
     //   s1 = head_head[:, :, :, 1]  (odd positions)
-    //   head_tail = padded.slice(2, 2, 2*T_out).reshape([1, C, T_out, 2])
+    //   head_tail = padded.slice(2, 2, 2*T_out).unwrap().reshape([1, C, T_out, 2])
     //   s2 = head_tail[:, :, :, 0]  (shifted even positions = 2, 4, …, T_in)
     let head_head = padded
-        .slice(2, 0, 2 * t_out)
+        .slice(2, 0, 2 * t_out).unwrap()
         .reshape(Shape::from_dims(&[1, in_c, t_out, 2])).unwrap();
     let s0 = head_head
-        .slice(3, 0, 1)
+        .slice(3, 0, 1).unwrap()
         .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let s1 = head_head
-        .slice(3, 1, 1)
+        .slice(3, 1, 1).unwrap()
         .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let head_tail = padded
-        .slice(2, 2, 2 * t_out)
+        .slice(2, 2, 2 * t_out).unwrap()
         .reshape(Shape::from_dims(&[1, in_c, t_out, 2])).unwrap();
     let s2 = head_tail
-        .slice(3, 0, 1)
+        .slice(3, 0, 1).unwrap()
         .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
     let stacked = s0.concat(&s1, 1).concat(&s2, 1);  // [1, 3*in_c, T_out]
     let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();  // [1, T_out, 3*in_c]

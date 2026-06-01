@@ -395,8 +395,8 @@ fn transformer_block(
     let mid = linear(&x_ln, &tb.ff_in_w, Some(&tb.ff_in_b), c, 2 * 4 * c, n);
     // GEGLU: split mid along last dim into [x, gate], compute x * gelu(gate).
     let half = 4 * c;
-    let xv = mid.slice(2, 0, half);
-    let gate = mid.slice(2, half, half);
+    let xv = mid.slice(2, 0, half).unwrap();
+    let gate = mid.slice(2, half, half).unwrap();
     let gated = xv.mul(&gate.gelu());
     let ffn_out = linear(&gated, &tb.ff_out_w, Some(&tb.ff_out_b), 4 * c, c, n);
     x.add(&ffn_out)
