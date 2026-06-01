@@ -644,11 +644,26 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.slice(dim, start, len) })
     }
 
-    /// Concatenate two tensors along `dim`.
-    pub fn concat(&self, other: &Self, dim: usize) -> Self {
-        Self {
-            inner: self.inner.concat(&other.inner, dim),
+    /// Concatenate two tensors along `dim`. Shape mismatch or bad `dim`
+    /// surfaces as a typed error at build time. Accepts any [`Dim`].
+    pub fn concat<D: Dim>(&self, other: &Self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "concat")?;
+        let self_dims = shape.dims().to_vec();
+        let other_dims = other.inner.shape().dims().to_vec();
+        if self_dims.len() != other_dims.len() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "concat: rank mismatch lhs={self_dims:?} rhs={other_dims:?}",
+            )).bt());
         }
+        for (i, (&a, &b)) in self_dims.iter().zip(other_dims.iter()).enumerate() {
+            if i != dim && a != b {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "concat: dim {i} mismatch lhs={a} rhs={b} (concat dim is {dim})",
+                )).bt());
+            }
+        }
+        Ok(Self { inner: self.inner.concat(&other.inner, dim) })
     }
 
     /// Add a scalar to every element.
@@ -1405,7 +1420,7 @@ mod tests {
     fn cuda_executor_matches_cpu_on_concat_slice() {
         let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), &Device::cpu());
         let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
-        let cat = a.concat(&b, 1); // [2, 4]
+        let cat = a.concat(&b, 1).unwrap(); // [2, 4]
         let sliced = cat.slice(1, 1, 2).unwrap(); // [2, 2]
         let cpu = sliced.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -1977,7 +1992,7 @@ impl LazyTensor {
         let mut acc = first;
         for t in iter {
             let u = t.unsqueeze(dim)?;
-            acc = acc.concat(&u, dim);
+            acc = acc.concat(&u, dim)?;
         }
         Ok(acc)
     }
@@ -2739,13 +2754,13 @@ impl LazyTensor {
         let h_expanded = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
             Some(match acc {
                 None => expanded.clone(),
-                Some(a) => a.concat(&expanded, 3),
+                Some(a) => a.concat(&expanded, 3).unwrap(),
             })
         }).unwrap();
         let h_then_w = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
             Some(match acc {
                 None => h_expanded.clone(),
-                Some(a) => a.concat(&h_expanded, 5),
+                Some(a) => a.concat(&h_expanded, 5).unwrap(),
             })
         }).unwrap();
         h_then_w.reshape(vec![n, c, h * scale, w * scale])
@@ -2777,7 +2792,7 @@ impl LazyTensor {
         let replicated = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
             Some(match acc {
                 None => expanded.clone(),
-                Some(a) => a.concat(&expanded, 3),
+                Some(a) => a.concat(&expanded, 3).unwrap(),
             })
         }).unwrap();
         replicated.reshape(vec![n, c, t * scale])
@@ -2953,7 +2968,7 @@ impl LazyTensor {
             // n copies concatenated along `axis`.
             let base = work.clone();
             for _ in 1..n {
-                work = work.concat(&base, axis);
+                work = work.concat(&base, axis)?;
             }
         }
         Ok(work)
@@ -3791,7 +3806,7 @@ impl LlamaModel {
                 Shape::from_dims(&[batch, cfg.n_kv_heads, cached_len, cfg.head_dim]);
             let cached_k = x.const_f32_like(layer_cache.k.clone(), cached_shape.clone());
             let cached_v = x.const_f32_like(layer_cache.v.clone(), cached_shape);
-            (cached_k.concat(&fresh_k, 2), cached_v.concat(&fresh_v, 2))
+            (cached_k.concat(&fresh_k, 2).unwrap(), cached_v.concat(&fresh_v, 2).unwrap())
         } else {
             (fresh_k.clone(), fresh_v.clone())
         };
@@ -6464,7 +6479,7 @@ impl PhiModel {
             let cached_shape = Shape::from_dims(&[batch, cfg.n_heads, cached_len, cfg.head_dim]);
             let cached_k = x.const_f32_like(layer_cache.k.clone(), cached_shape.clone());
             let cached_v = x.const_f32_like(layer_cache.v.clone(), cached_shape);
-            (cached_k.concat(&fresh_k, 2), cached_v.concat(&fresh_v, 2))
+            (cached_k.concat(&fresh_k, 2).unwrap(), cached_v.concat(&fresh_v, 2).unwrap())
         } else {
             (fresh_k.clone(), fresh_v.clone())
         };
@@ -7230,7 +7245,7 @@ fn partial_rope(
     let x_rot = x.slice(last, 0, rotary_dim).unwrap();
     let x_pass = x.slice(last, rotary_dim, head_dim - rotary_dim).unwrap();
     let x_rot_rotated = x_rot.rope_with_tables(cos, sin);
-    x_rot_rotated.concat(&x_pass, last)
+    x_rot_rotated.concat(&x_pass, last).unwrap()
 }
 
 #[cfg(test)]

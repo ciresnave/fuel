@@ -268,7 +268,7 @@ impl SdUnet {
             let c_out_block = cfg.block_out_channels[cfg.block_out_channels.len() - 1 - bi];
             for ri in 0..(cfg.layers_per_block + 1) {
                 let skip = skips.pop().expect("up: skip underflow");
-                x = x.concat(&skip, 1);  // channel-axis concat
+                x = x.concat(&skip, 1).unwrap();  // channel-axis concat
                 let in_c = x.dims()[1];
                 x = u_resnet(&x, &bw.resnets[ri], &t_emb, cfg, in_c, c_out_block, h, w);
                 if !bw.attentions.is_empty() {
@@ -558,8 +558,8 @@ fn conv2d_k1_s1_p0(
 
 fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> LazyTensor {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1])).unwrap();
-    let x6 = x6.concat(&x6, 3);
-    let x6 = x6.concat(&x6, 5);
+    let x6 = x6.concat(&x6, 3).unwrap();
+    let x6 = x6.concat(&x6, 5).unwrap();
     x6.reshape(Shape::from_dims(&[1, c, 2 * h, 2 * w])).unwrap()
 }
 

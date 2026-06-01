@@ -334,7 +334,7 @@ fn apply_rope(
     let x2 = x.slice(3, half, half).unwrap();
     // rotate_half: concat(-x2, x1) along dim 3.
     let neg_x2 = x2.neg();
-    let rotated = neg_x2.concat(&x1, 3);
+    let rotated = neg_x2.concat(&x1, 3).unwrap();
     x.mul(&cos_t).add(&rotated.mul(&sin_t))
 }
 

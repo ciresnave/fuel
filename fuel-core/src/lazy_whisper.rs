@@ -433,7 +433,7 @@ fn linear(
 /// native `Pad` op is needed since we only use this one padding.
 fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> LazyTensor {
     let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]));
-    zeros.concat(x, 2).concat(&zeros, 2)  // [1, c, t+2]
+    zeros.concat(x, 2).unwrap().concat(&zeros, 2).unwrap()  // [1, c, t+2]
 }
 
 /// Conv1d with kernel_size=3, stride=1, padding=1, on `x: [1, in_c, T]`
@@ -460,7 +460,7 @@ fn conv1d_k3_s1_p1(
     let s1 = padded.slice(2, 1, t).unwrap();
     let s2 = padded.slice(2, 2, t).unwrap();
     // Concat along channel axis: [1, 3*in_c, T].
-    let stacked = s0.concat(&s1, 1).concat(&s2, 1);
+    let stacked = s0.concat(&s1, 1).unwrap().concat(&s2, 1).unwrap();
     // Move channels-last for matmul: [1, T, 3*in_c].
     let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();
     // Kernel in storage order [out_c, in_c, 3]. We want
@@ -533,7 +533,7 @@ fn conv1d_k3_s2_p1(
     let s2 = head_tail
         .slice(3, 0, 1).unwrap()
         .reshape(Shape::from_dims(&[1, in_c, t_out])).unwrap();
-    let stacked = s0.concat(&s1, 1).concat(&s2, 1);  // [1, 3*in_c, T_out]
+    let stacked = s0.concat(&s1, 1).unwrap().concat(&s2, 1).unwrap();  // [1, 3*in_c, T_out]
     let stacked_tlast = stacked.permute([0, 2, 1_usize]).unwrap();  // [1, T_out, 3*in_c]
     // Same kernel reshuffle as the stride-1 case.
     let mut w_out = vec![0.0_f32; 3 * in_c * out_c];
