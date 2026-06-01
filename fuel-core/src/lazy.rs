@@ -1674,16 +1674,12 @@ impl LazyTensor {
 // ============================================================================
 
 impl LazyTensor {
-    // ---- shape ops: unsqueeze and Result-returning siblings ----
+    // ---- shape ops: unsqueeze (Result + Dim) + Result-returning siblings ----
 
-    /// Append a size-1 dimension at position `dim`. Inverse of [`Self::squeeze`].
-    pub fn unsqueeze(&self, dim: usize) -> Self {
-        Self { inner: self.inner.unsqueeze(dim) }
-    }
-
-    /// Result-returning sibling of [`Self::unsqueeze`]. Accepts any
-    /// [`Dim`] (`usize`, `D::Minus1`, etc.).
-    pub fn try_unsqueeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    /// Append a size-1 dimension at position `dim`. Inverse of
+    /// [`Self::squeeze`]. Accepts any [`Dim`] (`usize`, `D::Minus1`,
+    /// etc.). Bad `dim` surfaces as a typed error at build time.
+    pub fn unsqueeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index_plus_one(&shape, "unsqueeze")?;
         Ok(Self { inner: self.inner.try_unsqueeze(dim)? })
@@ -1989,10 +1985,10 @@ impl LazyTensor {
         }
         // unsqueeze every input at the new dim, then concat.
         let mut iter = args.iter();
-        let first = iter.next().unwrap().try_unsqueeze(dim)?;
+        let first = iter.next().unwrap().unsqueeze(dim)?;
         let mut acc = first;
         for t in iter {
-            let u = t.try_unsqueeze(dim)?;
+            let u = t.unsqueeze(dim)?;
             acc = acc.concat(&u, dim);
         }
         Ok(acc)
@@ -2005,23 +2001,35 @@ impl LazyTensor {
     // back into a single op when it's profitable; until then, the cost
     // is one extra view-only node.
 
-    /// Sum along `dim`, keeping the reduced dim as size 1.
-    pub fn sum_keepdim(&self, dim: usize) -> Self {
+    /// Sum along `dim`, keeping the reduced dim as size 1. Accepts any
+    /// [`Dim`]. Returns Result because of the cascade from [`Self::unsqueeze`].
+    pub fn sum_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.shape();
+        let dim = dim.to_index(&shape, "sum_keepdim")?;
         self.sum_dim(dim).unsqueeze(dim)
     }
 
     /// Mean along `dim`, keeping the reduced dim as size 1.
-    pub fn mean_keepdim(&self, dim: usize) -> Self {
+    pub fn mean_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.shape();
+        let dim = dim.to_index(&shape, "mean_keepdim")?;
         self.mean_dim(dim).unsqueeze(dim)
     }
 
     /// Max along `dim`, keeping the reduced dim as size 1.
-    pub fn max_keepdim(&self, dim: usize) -> Self {
+    pub fn max_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.shape();
+        let dim = dim.to_index(&shape, "max_keepdim")?;
         self.max_dim(dim).unsqueeze(dim)
     }
 
     /// Min along `dim`, keeping the reduced dim as size 1.
-    pub fn min_keepdim(&self, dim: usize) -> Self {
+    pub fn min_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.shape();
+        let dim = dim.to_index(&shape, "min_keepdim")?;
+        // sum_dim/mean_dim/max_dim/min_dim return Self today (A.8b.9 will
+        // flip them to Result); chain through `.unsqueeze(dim)?` which now
+        // owns the build-time dim validation.
         self.min_dim(dim).unsqueeze(dim)
     }
 
@@ -2034,11 +2042,11 @@ impl LazyTensor {
         let dim = dim.to_index(&shape, "var_keepdim")?;
         let dims = shape.dims();
         let n = dims[dim];
-        let mean = self.mean_keepdim(dim);
+        let mean = self.mean_keepdim(dim)?;
         let deviation = self.broadcast_sub(&mean);
         let squares = deviation.sqr();
         // sum_keepdim then divide by (n-1); leaves the reduced dim as 1.
-        let summed = squares.sum_keepdim(dim);
+        let summed = squares.sum_keepdim(dim)?;
         let divisor = (n.saturating_sub(1)) as f64;
         Ok(summed.mul_scalar(1.0 / divisor))
     }
@@ -2110,9 +2118,9 @@ impl LazyTensor {
             )).bt());
         }
         // unsqueeze rhs to [n,1], matmul -> [m,1], squeeze trailing dim.
-        let rhs_col = rhs.try_unsqueeze(1)?;
+        let rhs_col = rhs.unsqueeze(1_usize)?;
         let prod = self.matmul(&rhs_col);
-        prod.squeeze(1)
+        prod.squeeze(1_usize)
     }
 
     /// Alias of [`Self::mv`] with a more descriptive name. Matches
@@ -2339,28 +2347,29 @@ impl LazyTensor {
 
     /// Multi-dim sum with keepdim: every named dim becomes size 1
     /// instead of being squeezed out. Reduce-order-invariant (every
-    /// keepdim preserves indices).
-    pub fn sum_dims_keepdim(&self, dims: &[usize]) -> Self {
+    /// keepdim preserves indices). Returns Result because of cascade
+    /// from [`Self::sum_keepdim`].
+    pub fn sum_dims_keepdim(&self, dims: &[usize]) -> std::result::Result<Self, fuel_core_types::Error> {
         let mut sorted: Vec<usize> = dims.to_vec();
         sorted.sort();
         sorted.dedup();
         let mut acc = self.clone();
         for d in sorted {
-            acc = acc.sum_keepdim(d);
+            acc = acc.sum_keepdim(d)?;
         }
-        acc
+        Ok(acc)
     }
 
     /// Multi-dim mean with keepdim.
-    pub fn mean_dims_keepdim(&self, dims: &[usize]) -> Self {
+    pub fn mean_dims_keepdim(&self, dims: &[usize]) -> std::result::Result<Self, fuel_core_types::Error> {
         let mut sorted: Vec<usize> = dims.to_vec();
         sorted.sort();
         sorted.dedup();
         let mut acc = self.clone();
         for d in sorted {
-            acc = acc.mean_keepdim(d);
+            acc = acc.mean_keepdim(d)?;
         }
-        acc
+        Ok(acc)
     }
 
     /// Uniform random tensor in `[lo, up)` with shape/dtype/device matching `self`.
@@ -2543,8 +2552,8 @@ impl LazyTensor {
             ).bt());
         }
         // Add a unit H dim at index 2 → [N, Cin, 1, T] and [Cout, Cin/g, 1, K].
-        let x_4d = self.unsqueeze(2);
-        let w_4d = weight.unsqueeze(2);
+        let x_4d = self.unsqueeze(2_usize)?;
+        let w_4d = weight.unsqueeze(2_usize)?;
         let out_4d = x_4d.conv2d(&w_4d, bias, (1, stride), (0, padding), groups);
         out_4d.squeeze(2)
     }
@@ -8822,18 +8831,18 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn unsqueeze_adds_size_one_dim() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let out = t.unsqueeze(0);
+        let out = t.unsqueeze(0_usize).unwrap();
         assert_eq!(out.shape().dims(), &[1, 2, 2]);
         assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
-    fn try_unsqueeze_errors_out_of_bounds() {
+    fn unsqueeze_errors_out_of_bounds() {
         let t = cpu_f32(vec![1.0, 2.0], &[2]);
         // rank=1, so dim<=1 is valid; dim=2 must error.
-        assert!(t.try_unsqueeze(0).is_ok());
-        assert!(t.try_unsqueeze(1).is_ok());
-        assert!(t.try_unsqueeze(2).is_err());
+        assert!(t.unsqueeze(0_usize).is_ok());
+        assert!(t.unsqueeze(1_usize).is_ok());
+        assert!(t.unsqueeze(2_usize).is_err());
     }
 
     #[test]
@@ -9131,7 +9140,7 @@ mod phase_a3_keepdim_tests {
     #[test]
     fn sum_keepdim_preserves_dim_as_one() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let out = t.sum_keepdim(1);
+        let out = t.sum_keepdim(1_usize).unwrap();
         assert_eq!(out.shape().dims(), &[2, 1]);
         assert_eq!(out.realize_f32(), vec![3.0, 7.0]);
     }
@@ -9139,7 +9148,7 @@ mod phase_a3_keepdim_tests {
     #[test]
     fn mean_keepdim_preserves_dim_as_one() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let out = t.mean_keepdim(0);
+        let out = t.mean_keepdim(0_usize).unwrap();
         assert_eq!(out.shape().dims(), &[1, 2]);
         assert_eq!(out.realize_f32(), vec![2.0, 3.0]);
     }
@@ -9147,7 +9156,7 @@ mod phase_a3_keepdim_tests {
     #[test]
     fn max_keepdim_preserves_dim_as_one() {
         let t = cpu_f32(vec![1.0, 3.0, 2.0, 4.0], &[2, 2]);
-        let out = t.max_keepdim(1);
+        let out = t.max_keepdim(1_usize).unwrap();
         assert_eq!(out.shape().dims(), &[2, 1]);
         assert_eq!(out.realize_f32(), vec![3.0, 4.0]);
     }
@@ -9155,7 +9164,7 @@ mod phase_a3_keepdim_tests {
     #[test]
     fn min_keepdim_preserves_dim_as_one() {
         let t = cpu_f32(vec![1.0, 3.0, 2.0, 4.0], &[2, 2]);
-        let out = t.min_keepdim(1);
+        let out = t.min_keepdim(1_usize).unwrap();
         assert_eq!(out.shape().dims(), &[2, 1]);
         assert_eq!(out.realize_f32(), vec![1.0, 2.0]);
     }
@@ -9479,14 +9488,14 @@ mod phase_a5_factory_tests {
     #[test]
     fn sum_dims_keepdim_preserves_rank() {
         let t = cpu_f32(vec![1.0; 24], &[2, 3, 4]);
-        let s = t.sum_dims_keepdim(&[0, 2]);
+        let s = t.sum_dims_keepdim(&[0, 2]).unwrap();
         assert_eq!(s.shape().dims(), &[1, 3, 1]);
     }
 
     #[test]
     fn mean_dims_keepdim_preserves_rank() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let m = t.mean_dims_keepdim(&[0, 1]);
+        let m = t.mean_dims_keepdim(&[0, 1]).unwrap();
         assert_eq!(m.shape().dims(), &[1, 1]);
         assert_eq!(m.realize_f32(), vec![2.5]);
     }
@@ -9895,11 +9904,11 @@ mod phase_a5_factory_tests {
     }
 
     #[test]
-    fn try_unsqueeze_accepts_dim_trait() {
+    fn unsqueeze_accepts_dim_trait() {
         use fuel_core_types::D;
         let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
         // Append a new last dim via D::Minus1 (rank-aware negative indexing).
-        let out = t.try_unsqueeze(D::Minus1).unwrap();
+        let out = t.unsqueeze(D::Minus1).unwrap();
         // The position D::Minus1 in to_index_plus_one is "the very end"
         // → output rank 2 with the new dim trailing.
         assert_eq!(out.shape().dims().len(), 2);
