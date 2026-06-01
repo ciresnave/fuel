@@ -194,14 +194,14 @@ fn encoder_layer(
 
     let q = q
         .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     let k = k
         .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
     let v = v
         .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute(&[0, 2, 1, 3]);
-    let k_t = k.permute(&[0, 1, 3, 2]);
+        .permute([0, 2, 1, 3_usize]).unwrap();
+    let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
     let scale = 1.0_f64 / (d_head as f64).sqrt();
     let mut scores = q.matmul(&k_t).mul_scalar(scale);
     // Causal mask: -inf above the diagonal.
@@ -219,7 +219,7 @@ fn encoder_layer(
     let probs = scores.softmax_last_dim();
     let ctx = probs
         .matmul(&v)
-        .permute(&[0, 2, 1, 3])
+        .permute([0, 2, 1, 3_usize]).unwrap()
         .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
     let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq);
     let x = x.add(&attn_out);
