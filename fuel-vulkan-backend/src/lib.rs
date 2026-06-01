@@ -515,6 +515,88 @@ impl VulkanBackend {
         Ok(s)
     }
 
+    /// Multi-output Option C: extract one bundle slot as a fresh
+    /// standalone `VulkanStorageBytes`. The destination has its own
+    /// `Arc<VulkanBuffer>` — independent of the source bundle's Arc.
+    /// Used by `Op::ViewOwned` on Vulkan-resident bundled producers.
+    ///
+    /// One-shot `vkCmdCopyBuffer` from
+    /// `(src.buffer(), src_offset = byte_offset)` to
+    /// `(dst.buffer(), dst_offset = 0)` with `size = len_bytes`.
+    /// `byte_offset + len_bytes` must be ≤ `src.len_bytes()`.
+    pub fn slot_copy_to_new_handle(
+        self: &std::sync::Arc<Self>,
+        src:          &VulkanStorageBytes,
+        byte_offset:  usize,
+        len_bytes:    usize,
+    ) -> fuel_core_types::Result<VulkanStorageBytes> {
+        let end = byte_offset.checked_add(len_bytes).ok_or_else(|| {
+            fuel_core_types::Error::Msg(format!(
+                "slot_copy_to_new_handle: byte_offset {byte_offset} \
+                 + len_bytes {len_bytes} overflows",
+            )).bt()
+        })?;
+        if end > src.len_bytes() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "slot_copy_to_new_handle: slot byte range \
+                 [{byte_offset}..{end}) exceeds source byte length {}",
+                src.len_bytes(),
+            )).bt());
+        }
+        // Fast path for empty slots — no command-buffer round-trip.
+        if len_bytes == 0 {
+            let mut s = self.alloc_bytes(0)?;
+            s.backend = Some(std::sync::Arc::clone(self));
+            return Ok(s);
+        }
+        let src_buf = src.buffer_opt().ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "slot_copy_to_new_handle: source storage is host-evicted; \
+                 fault back before extracting a slot".into(),
+            ).bt()
+        })?;
+        let size = len_bytes as u64;
+        let (dst_buf, dst_alloc) = self
+            .allocator
+            .create_buffer(
+                BufferCreateInfo {
+                    size,
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC
+                        | BufferUsage::TRANSFER_DST,
+                },
+                AllocationCreateInfo {
+                    usage: AllocationUsage::DeviceLocal,
+                    ..Default::default()
+                },
+            )
+            .map_err(vk_err)?;
+        self.queue
+            .one_shot(&self.device, self.queue_family, |cmd| {
+                cmd.copy_buffer(
+                    src_buf,
+                    &dst_buf,
+                    &[BufferCopy {
+                        src_offset: byte_offset as u64,
+                        dst_offset: 0,
+                        size,
+                    }],
+                );
+                Ok(())
+            })
+            .map_err(vk_err)?;
+        Ok(VulkanStorageBytes::from_device_with_backend(
+            std::sync::Arc::new(VulkanBuffer {
+                buffer:       Some(dst_buf),
+                allocation:   Some(dst_alloc),
+                byte_size:    size,
+                recycle_pool: Some(self.buffer_pool.clone()),
+            }),
+            len_bytes,
+            std::sync::Arc::clone(self),
+        ))
+    }
+
     /// Phase 7.5 A4 substrate alloc. Allocates `byte_count` bytes of
     /// device-local storage and wraps them in a fresh
     /// `VulkanStorageBytes`. No initialization — caller is responsible

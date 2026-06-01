@@ -741,6 +741,22 @@ pub enum Op {
     /// Destructive on `inputs[0]`. Scheduler must pin `Op::Release`
     /// to run after every other reader of its input via
     /// [`opt::derive_ordering`].
+    ///
+    /// **Multi-output bundles** (Option C, Session 3): when
+    /// `inputs[0]` is a multi-output producer (its Storage carries a
+    /// [`fuel_core_types::storage::OutputView`] bundle), the bundle
+    /// is the single eviction unit — the Release evicts the whole
+    /// bundle, not a single slot. [`opt::collect_alias_set`] treats
+    /// every `Op::View` of the producer as part of the producer's
+    /// alias set, so `derive_ordering` pins Release after every
+    /// reader of every View; the bundle drops only when the LAST
+    /// View consumer finishes. Op::ViewOwned consumers may run
+    /// freely after Release: their forward memcpy ran before the
+    /// Release fires (data-dep edge), and the resulting standalone
+    /// Storage is independent of the producer's bundle. Per-slot
+    /// eviction (releasing one slot's bytes while another stays
+    /// live) is intentionally a follow-up — v1 keeps the bundle as
+    /// a single unit.
     Release,
 
     /// Transfer the input tensor to `target` device, destroying the
@@ -783,6 +799,42 @@ pub enum Op {
     /// (`InferenceContext` + `KvCache`). Non-differentiable; backward
     /// panics — KV-cache writes are forward-only.
     WriteSlice { ranges: Vec<(usize, usize)> },
+
+    /// Like [`Op::WriteSlice`] but the `axis` axis wraps modulo
+    /// `modulus`. The dynamic write position comes through `inputs[2]`
+    /// (rank-0 U32); at realize time the kernel computes
+    /// `start = position % modulus` and writes `inputs[1]` into
+    /// `inputs[0]` at the wrapped offset, splitting across the
+    /// boundary if `start + write_len > modulus`.
+    ///
+    /// Inputs:
+    /// - `inputs[0]`: destination tensor (the rotating buffer). Shape
+    ///   on `axis` is the full storage extent — typically equal to
+    ///   `modulus`.
+    /// - `inputs[1]`: source slice. Shape on non-rotating axes is the
+    ///   slab in `ranges`; shape on `axis` is the write length.
+    /// - `inputs[2]`: dynamic write position, rank-0 `U32`. Wrapped
+    ///   modulo `modulus` inside the kernel — callers pass the
+    ///   monotonic logical position (token index, etc.).
+    ///
+    /// `ranges` describes the destination slab on every axis. For the
+    /// rotating axis `axis`, `ranges[axis].0` is ignored (start is
+    /// dynamic) and `ranges[axis].1 - ranges[axis].0` must equal
+    /// `inputs[1].dims()[axis]` (the write length). For other axes
+    /// the same shape contract as `Op::WriteSlice` applies.
+    ///
+    /// Output is a marker that adopts `inputs[0]`'s Storage Arc and
+    /// Layout, post-write. Destructive on `inputs[0]`; scheduled like
+    /// `Op::WriteSlice`.
+    ///
+    /// Phase C of the eager-Tensor retirement program. Backs
+    /// sliding-window KV caches (Mistral / Phi-3 sliding-window /
+    /// sliding-window Qwen). Non-differentiable; backward panics.
+    WriteSliceRotating {
+        axis: usize,
+        modulus: usize,
+        ranges: Vec<(usize, usize)>,
+    },
 
     /// Allocate a fresh, zero-initialized Storage of the node's shape +
     /// dtype on `target`. Zero inputs — `Op::Alloc` is a *source* op
@@ -835,6 +887,77 @@ pub enum Op {
     /// Step 3 of Phase 7.6 migrates SoftmaxLastDim through this arm
     /// as the proof of concept.
     Fused(FusedOpId, FusedOpParams),
+
+    /// Project one logical output out of a multi-output producer node.
+    /// The producer's realized [`Storage`] carries a
+    /// [`fuel_core_types::storage::OutputView`] side-table; this op
+    /// reads slot `slot` of that side-table and exposes its
+    /// dtype/shape/layout as the View node's output.
+    ///
+    /// Single input (the multi-output producer). Output shares the
+    /// producer's `Arc<RwLock<Storage>>` — zero bytes copied. The
+    /// bundle stays alive as long as any View consumer (or the
+    /// original producer handle) holds a clone.
+    ///
+    /// At graph-build time, the View's shape + dtype + layout come
+    /// from the producer's slot specs recorded via
+    /// [`Graph::set_output_views`]; building a `View { slot }` over a
+    /// producer that hasn't declared slot specs is a typed error
+    /// surfaced by the View-emitting builder helper. The bundle's
+    /// per-slot dtype is independent of the producer node's own
+    /// `Node::dtype` (which is the bundle's primary/slot-0 dtype).
+    ///
+    /// Backward (see `fuel-graph::grad`): the per-slot upstream
+    /// gradient is scattered into a zero-filled bundle of the
+    /// producer's overall byte shape; the producer's own backward
+    /// rule then sees a "bundle gradient" as its upstream. Until a
+    /// real multi-output op author exists (Session 2), the backward
+    /// rule emits an [`Op::Const`] zero of the producer's primary
+    /// shape — the scatter-into-slot primitive lands alongside the
+    /// first differentiable multi-output op.
+    View { slot: u32 },
+
+    /// Like [`Op::View`], but copies the slot's bytes into a fresh
+    /// standalone Storage. Costs one allocation + one slot-sized
+    /// memcpy; the producer's bundle Arc can drop as soon as every
+    /// outstanding `Op::View` over the same producer also drops.
+    ///
+    /// The planner promotes a `View` to `ViewOwned` when a slot's
+    /// liveness substantially outlasts the rest of the bundle (the
+    /// classic case: Mamba's `last_state` slot retained across an
+    /// autoregressive step while `y` is consumed immediately). v1
+    /// emits the same dispatch shape as `Op::Copy` — backend-side it's
+    /// `Copy` with byte offset + length pulled from the slot spec.
+    ///
+    /// Same shape/dtype/layout inference path as `View`; same backward
+    /// shape too (the forward already paid the copy).
+    ViewOwned { slot: u32 },
+
+    /// Multi-output autograd primitive (Option C, item 4). Takes two
+    /// inputs:
+    ///   - `inputs[0]`: a bundled tensor (typically a zero-bundle)
+    ///   - `inputs[1]`: the slot's gradient
+    ///
+    /// Produces a new bundled tensor identical to `inputs[0]` except
+    /// that slot `slot`'s byte range is overlaid by `inputs[1]`'s
+    /// bytes. The output is alias-free with respect to `inputs[0]`
+    /// (a fresh Storage with the new bytes) so multiple
+    /// `ScatterIntoSlot` operations on the same `bundle_zero` chain
+    /// sequentially without aliasing pitfalls.
+    ///
+    /// Emitted by `Op::View` / `Op::ViewOwned` backward rules: each
+    /// View consumer scatters its upstream gradient into a fresh
+    /// zero-bundle, then the producer's backward receives the
+    /// composed bundle gradient as its upstream.
+    ///
+    /// **Status**: IR-level primitive only in this session. No CPU
+    /// kernel registration yet — the production multi-output ops
+    /// (SelectiveScan, SsdChunkScan) are `BackwardKind::NotDifferentiable`,
+    /// so the autograd never reaches a `ScatterIntoSlot` realization.
+    /// When the first differentiable multi-output op materializes (the
+    /// Mamba training session), it lights up the kernel side along
+    /// with its own backward.
+    ScatterIntoSlot { slot: u32 },
 }
 
 impl Op {
@@ -845,7 +968,7 @@ impl Op {
     /// via ordering edges derived by [`opt::derive_ordering`].
     pub fn destructive_input(&self) -> Option<usize> {
         match self {
-            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::ZeroFill => Some(0),
+            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::ZeroFill => Some(0),
             // In-place unary ops mutate input 0.
             Op::ReluInplace
             | Op::SiluInplace
@@ -1052,6 +1175,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
         Op::WriteSlice{..}       => "WriteSlice",
+        Op::WriteSliceRotating{..} => "WriteSliceRotating",
         Op::Alloc{..}            => "Alloc",
         Op::ZeroFill             => "ZeroFill",
         // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
@@ -1059,6 +1183,9 @@ fn op_short_name(op: &Op) -> &'static str {
         // share one short name. Distinguishing in error messages is
         // future work — `id` is in the Debug repr.
         Op::Fused(_, _)          => "Fused",
+        Op::View{..}             => "View",
+        Op::ViewOwned{..}        => "ViewOwned",
+        Op::ScatterIntoSlot{..}  => "ScatterIntoSlot",
     }
 }
 
@@ -1146,6 +1273,21 @@ pub struct Graph {
     /// `shape()` must equal `nodes[id].shape` — Layout adds
     /// strides + offset; the visible shape is identical.
     layouts: HashMap<NodeId, Layout>,
+    /// Per-node multi-output side-table. Populated only for nodes
+    /// whose op produces a bundled [`Storage`] with N>1 logical
+    /// outputs (Session 1 of the multi-output-nodes design — see
+    /// [`OutputView`](fuel_core_types::storage::OutputView)). `Op::View`
+    /// and `Op::ViewOwned` builders read this side-table to derive
+    /// their own output shape/dtype/layout from the producer's
+    /// declared slot specs.
+    ///
+    /// Coherence rule: when present, slot 0's `dtype` must equal the
+    /// producer node's `Node::dtype` (which the multi-output op's
+    /// allocator also uses as the inner backend storage's dtype).
+    /// The producer's `Node::shape` reflects slot 0's logical shape
+    /// for back-compat with single-output infrastructure; non-primary
+    /// slots may have unrelated shapes and dtypes.
+    node_output_views: HashMap<NodeId, Arc<[fuel_core_types::storage::OutputView]>>,
 }
 
 impl Graph {
@@ -1158,6 +1300,7 @@ impl Graph {
             storage_map: HashMap::new(),
             target_backends: HashMap::new(),
             layouts: HashMap::new(),
+            node_output_views: HashMap::new(),
         }
     }
 
@@ -1245,6 +1388,109 @@ impl Graph {
     /// Mostly for tests and diagnostics.
     pub fn explicit_layout_count(&self) -> usize {
         self.layouts.len()
+    }
+
+    // -------------------------------------------------------------------
+    // Multi-output side-table (Op::View / Op::ViewOwned)
+    // -------------------------------------------------------------------
+
+    /// Borrow the per-slot output-view specs for `id`, if it's been
+    /// declared as a multi-output producer. Returns `None` for
+    /// single-output nodes (the common case).
+    ///
+    /// `Op::View` and `Op::ViewOwned` builders read this to derive
+    /// the slot's shape/dtype/layout at graph-build time.
+    pub fn output_views(
+        &self,
+        id: NodeId,
+    ) -> Option<&[fuel_core_types::storage::OutputView]> {
+        self.node_output_views.get(&id).map(|a| a.as_ref())
+    }
+
+    /// Clone the `Arc` handle to `id`'s per-slot output-view specs.
+    /// Used by the realization path to attach the same bundle metadata
+    /// to the realized [`Storage`] without copying the slice.
+    pub fn output_views_arc(
+        &self,
+        id: NodeId,
+    ) -> Option<Arc<[fuel_core_types::storage::OutputView]>> {
+        self.node_output_views.get(&id).cloned()
+    }
+
+    /// Declare `id` as a multi-output producer with the given per-slot
+    /// specs. Validates at graph-build time:
+    /// 1. `id` is in bounds.
+    /// 2. `views` is non-empty (a "multi-output" node with zero slots
+    ///    is a contract bug — use single-output if there's nothing to
+    ///    project).
+    /// 3. Slot 0's dtype equals `nodes[id].dtype` (the bundle's
+    ///    primary dtype convention).
+    /// 4. Slot 0's shape equals `nodes[id].shape` (slot 0 is the
+    ///    "primary" slot whose shape the single-output infrastructure
+    ///    already sees).
+    /// 5. Each slot's `layout.shape()` equals the slot's `shape`
+    ///    (Layout adds strides/offset; the visible shape is identical).
+    ///
+    /// Idempotent on (id, views). Replacing an existing declaration
+    /// asserts the new specs are byte-identical to the old in debug
+    /// builds; in release the last write wins (matches the layouts
+    /// side-table pattern).
+    pub fn set_output_views(
+        &mut self,
+        id:    NodeId,
+        views: Arc<[fuel_core_types::storage::OutputView]>,
+    ) -> Result<(), fuel_core_types::Error> {
+        if id.0 >= self.nodes.len() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "set_output_views: NodeId({}) out of bounds (len={})",
+                id.0, self.nodes.len(),
+            )).bt());
+        }
+        if views.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "set_output_views: slot list must be non-empty"
+                    .into(),
+            ).bt());
+        }
+        let node = &self.nodes[id.0];
+        let slot0 = &views[0];
+        if slot0.dtype != node.dtype {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "set_output_views: slot 0 dtype {:?} disagrees with \
+                 Node::dtype {:?} on Node#{} (slot 0 is the primary; \
+                 dtypes must match)",
+                slot0.dtype, node.dtype, id.0,
+            )).bt());
+        }
+        if slot0.shape != node.shape {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "set_output_views: slot 0 shape {:?} disagrees with \
+                 Node::shape {:?} on Node#{} (slot 0 is the primary)",
+                slot0.shape, node.shape, id.0,
+            )).bt());
+        }
+        for (i, v) in views.iter().enumerate() {
+            if v.layout.shape() != &v.shape {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "set_output_views: slot {i} layout.shape() = {:?} \
+                     disagrees with declared slot shape {:?}",
+                    v.layout.shape(), v.shape,
+                )).bt());
+            }
+        }
+        self.node_output_views.insert(id, views);
+        Ok(())
+    }
+
+    /// Whether `id` has been declared as a multi-output producer.
+    pub fn is_multi_output(&self, id: NodeId) -> bool {
+        self.node_output_views.contains_key(&id)
+    }
+
+    /// Number of nodes declared as multi-output producers. Mostly for
+    /// tests and diagnostics.
+    pub fn multi_output_count(&self) -> usize {
+        self.node_output_views.len()
     }
 
     /// Look up the realized storage for a node, if any has been
@@ -1577,6 +1823,119 @@ impl Tensor {
         Tensor { graph: Arc::clone(&self.graph), id }
     }
 
+    /// Project one logical output out of a multi-output producer node.
+    ///
+    /// `self` must have been declared as a multi-output producer via
+    /// [`Graph::set_output_views`] (Session 2's authoring contract will
+    /// drive this for real fused ops; Session 1 tests drive it
+    /// directly). The View's output shape, dtype, and layout come from
+    /// `output_views(self.id)[slot]`. Zero bytes are moved at
+    /// realization time — the View shares the producer's bundled
+    /// `Arc<RwLock<Storage>>` and exposes the slot's typed window.
+    ///
+    /// **Returns `Result`**: the producer must have declared its slot
+    /// specs; `slot` must be in range. Errors at graph-build time
+    /// (per the `validate-at-graph-build-time` rule); the executor
+    /// never sees a malformed View node.
+    pub fn view(
+        &self,
+        slot: u32,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let mut graph_w = self.graph.write().unwrap();
+        let (slot_shape, slot_dtype, slot_byte_offset, slot_layout) = {
+            let views = graph_w.output_views(self.id).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "Tensor::view: Node#{} is not a multi-output \
+                     producer (no output_views registered)",
+                    self.id.0,
+                )).bt()
+            })?;
+            let idx = slot as usize;
+            let v = views.get(idx).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "Tensor::view: slot {idx} out of range \
+                     (producer has {} slots)",
+                    views.len(),
+                )).bt()
+            })?;
+            (v.shape.clone(), v.dtype, v.byte_offset, v.layout.clone())
+        };
+        let id = graph_w.push(Node {
+            op:     Op::View { slot },
+            inputs: vec![self.id],
+            shape:  slot_shape.clone(),
+            dtype:  slot_dtype,
+        });
+        // Compose the slot's intrinsic layout (which carries
+        // slot-relative strides + start_offset) with the slot's
+        // byte_offset inside the bundle. The result is the layout a
+        // downstream kernel sees when treating the producer's bundle
+        // bytes as `slot_dtype` elements: start_offset is in slot-
+        // dtype-element units; bundle byte_offset is divided by the
+        // dtype's size_in_bytes to land at the slot's first byte. The
+        // bundled allocator (`compose_bundle`) aligns each slot's
+        // byte_offset to its dtype size — so the division is exact.
+        let dtype_bytes = slot_dtype.size_in_bytes().max(1);
+        let extra_offset = slot_byte_offset / dtype_bytes;
+        let effective_layout = if extra_offset == 0 {
+            slot_layout
+        } else {
+            Layout::new(
+                slot_layout.shape().clone(),
+                slot_layout.stride().to_vec().into_iter().collect(),
+                slot_layout.start_offset() + extra_offset,
+            )
+        };
+        // The side-table is set whenever the effective layout differs
+        // from `Layout::contiguous(slot_shape)` — i.e. whenever the
+        // slot has a strided layout OR a non-zero composed offset
+        // (slot 1+ in any bundle).
+        if effective_layout != Layout::contiguous(slot_shape) {
+            graph_w.set_layout(id, effective_layout);
+        }
+        drop(graph_w);
+        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+    }
+
+    /// Owned variant of [`Self::view`] — the slot's bytes are copied
+    /// into a fresh contiguous Storage at realization time, so the
+    /// producer's bundle Arc can drop independently. Output layout
+    /// is always contiguous.
+    ///
+    /// Same validation as `view`; same error surface.
+    pub fn view_owned(
+        &self,
+        slot: u32,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let mut graph_w = self.graph.write().unwrap();
+        let (slot_shape, slot_dtype) = {
+            let views = graph_w.output_views(self.id).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "Tensor::view_owned: Node#{} is not a multi-output \
+                     producer (no output_views registered)",
+                    self.id.0,
+                )).bt()
+            })?;
+            let idx = slot as usize;
+            let v = views.get(idx).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "Tensor::view_owned: slot {idx} out of range \
+                     (producer has {} slots)",
+                    views.len(),
+                )).bt()
+            })?;
+            (v.shape.clone(), v.dtype)
+        };
+        let id = graph_w.push(Node {
+            op:     Op::ViewOwned { slot },
+            inputs: vec![self.id],
+            shape:  slot_shape,
+            dtype:  slot_dtype,
+        });
+        drop(graph_w);
+        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+    }
+
     /// Append an `Op::WriteSlice` node — copies `source`'s bytes into
     /// `self` at the rectangular slab defined by `ranges`. Per-axis,
     /// `ranges[i] = (start, end)` is the half-open destination range;
@@ -1647,6 +2006,141 @@ impl Tensor {
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::WriteSlice { ranges },
             inputs: vec![self.id, source.id],
+            shape:  dest_shape,
+            dtype,
+        });
+        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+    }
+
+    /// Append an [`Op::WriteSliceRotating`] node — copies `source`'s
+    /// bytes into `self` at the rectangular slab defined by `ranges`,
+    /// with the `axis` axis wrapping modulo `modulus`. The dynamic
+    /// write position comes through `position` (a rank-0 `U32`
+    /// tensor); the kernel computes `start = position % modulus` and
+    /// splits the write across the ring boundary if needed.
+    ///
+    /// `ranges[axis].0` is ignored (the rotating-axis start is
+    /// dynamic). `ranges[axis].1 - ranges[axis].0` is the write
+    /// length on the rotating axis and must equal `source.dims()[axis]`.
+    /// On every other axis the same shape contract as `write_slice`
+    /// applies.
+    ///
+    /// Destructive on `self`; scheduled like `write_slice`. Backward
+    /// panics — sliding-window KV-cache writes are forward-only.
+    ///
+    /// **Returns `Result`**: rank/dtype/axis-bound/modulus/range
+    /// mismatches surface as a typed error at build time.
+    pub fn write_slice_rotating(
+        &self,
+        source: &Tensor,
+        position: &Tensor,
+        axis: usize,
+        modulus: usize,
+        ranges: Vec<(usize, usize)>,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let dest_shape = self.shape();
+        let dest_dims = dest_shape.dims();
+        let src_shape = source.shape();
+        let src_dims = src_shape.dims();
+        let rank = dest_dims.len();
+        if ranges.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: ranges.len() ({}) must equal destination rank ({rank})",
+                ranges.len(),
+            )).bt());
+        }
+        if src_dims.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: source rank ({}) must equal destination rank ({rank})",
+                src_dims.len(),
+            )).bt());
+        }
+        if axis >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: axis {axis} out of bounds for rank {rank}",
+            )).bt());
+        }
+        if modulus == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "write_slice_rotating: modulus must be >= 1".into(),
+            ).bt());
+        }
+        if modulus > dest_dims[axis] {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: modulus ({modulus}) must not exceed destination dim {axis} ({})",
+                dest_dims[axis],
+            )).bt());
+        }
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            if end < start {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice_rotating: ranges[{i}] = ({start}, {end}) has end < start"
+                )).bt());
+            }
+            let slab = end - start;
+            if i == axis {
+                if slab == 0 {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_rotating: ranges[axis={axis}] slab is 0",
+                    )).bt());
+                }
+                if slab > modulus {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_rotating: rotating-axis write length ({slab}) > modulus ({modulus})",
+                    )).bt());
+                }
+                if src_dims[i] != slab {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_rotating: source dim {i} ({}) must equal slab width ({slab})",
+                        src_dims[i],
+                    )).bt());
+                }
+                // ranges[axis].1 itself isn't bounded by dest_dims[axis] —
+                // the kernel wraps the start, so the logical end is meaningless.
+                // We still require .1 <= modulus to make the slab description
+                // self-consistent inside the window.
+                if end > modulus {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_rotating: ranges[axis={axis}].end ({end}) > modulus ({modulus})",
+                    )).bt());
+                }
+            } else {
+                if end > dest_dims[i] {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_rotating: ranges[{i}].end ({end}) > destination dim {i} ({})",
+                        dest_dims[i],
+                    )).bt());
+                }
+                if src_dims[i] != slab {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_rotating: source dim {i} ({}) must equal slab width ({slab})",
+                        src_dims[i],
+                    )).bt());
+                }
+            }
+        }
+        if self.dtype() != source.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: dtype mismatch — destination {:?} vs source {:?}",
+                self.dtype(), source.dtype(),
+            )).bt());
+        }
+        if position.dtype() != DType::U32 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: position must be U32, got {:?}",
+                position.dtype(),
+            )).bt());
+        }
+        if !position.shape().dims().is_empty() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_rotating: position must be rank-0 scalar, got {:?}",
+                position.shape().dims(),
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::WriteSliceRotating { axis, modulus, ranges },
+            inputs: vec![self.id, source.id, position.id],
             shape:  dest_shape,
             dtype,
         });
@@ -3903,7 +4397,10 @@ impl Tensor {
     /// FusedOpParams::SsdChunkScan { chunk_size })`. No primitive
     /// decomposition; backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
-    pub fn ssd_chunk_scan(
+    /// Internal: build the bundled SsdChunkScan producer node and
+    /// return its NodeId. Callers project per-slot via
+    /// [`Tensor::view`] / [`Tensor::view_owned`].
+    fn ssd_chunk_scan_producer(
         &self,
         dt: &Tensor,
         a: &Tensor,
@@ -3969,25 +4466,55 @@ impl Tensor {
             c_dims, &[batch, seqlen, heads, state_dim][..],
             "ssd_chunk_scan: c {c_dims:?} must match b shape",
         );
-        let id = self.graph.write().unwrap().push(Node {
+        let params = crate::registry::FusedOpParams::SsdChunkScan { chunk_size };
+        let input_shapes = [
+            Shape::from_dims(x_dims),
+            Shape::from_dims(dt_dims),
+            Shape::from_dims(a_dims),
+            Shape::from_dims(b_dims),
+            Shape::from_dims(c_dims),
+        ];
+        let input_dtypes = [dtype, dtype, dtype, dtype, dtype];
+        let entry = crate::registry::default_registry()
+            .entry(crate::registry::FusedOps::SSD_CHUNK_SCAN)
+            .expect("SSD_CHUNK_SCAN registered");
+        let specs = (entry.output_views.expect("multi-output"))(
+            &input_shapes, &input_dtypes, &params,
+        );
+        let (_total_bytes, views) = fuel_core_types::storage::compose_bundle(&specs)
+            .expect("SsdChunkScan compose_bundle");
+        let mut g = self.graph.write().unwrap();
+        let id = g.push(Node {
             op:     Op::Fused(
                 crate::registry::FusedOps::SSD_CHUNK_SCAN,
-                crate::registry::FusedOpParams::SsdChunkScan {
-                    chunk_size,
-                    // Default: no second state output. The future
-                    // builder that exposes resume-from-snapshot will
-                    // be a sibling `ssd_chunk_scan_with_state(...)`.
-                    return_state: false,
-                },
+                params,
             ),
             inputs: vec![self.id, dt.id, a.id, b.id, c.id],
             shape:  Shape::from_dims(&[batch, seqlen, heads, head_dim]),
             dtype,
         });
+        g.set_output_views(id, Arc::from(views.into_boxed_slice()))
+            .expect("SsdChunkScan set_output_views");
+        drop(g);
         Self {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Single-output SsdChunkScan: returns the `y` slot of the
+    /// bundled producer (View(0)). See
+    /// [`Self::ssd_chunk_scan_bundled`] for the multi-output variant.
+    pub fn ssd_chunk_scan(
+        &self,
+        dt: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        c: &Tensor,
+        chunk_size: usize,
+    ) -> Tensor {
+        let producer = self.ssd_chunk_scan_producer(dt, a, b, c, chunk_size);
+        producer.view(0).expect("SsdChunkScan view(0) must succeed (just registered slots)")
     }
 
     /// Append a `SelectiveScan` node — Mamba-1's selective
@@ -4011,7 +4538,10 @@ impl Tensor {
     /// primitive decomposition exists (the scan is a sequential
     /// recurrence); backends without a native kernel fall through to
     /// the executor's cpu_fallback path.
-    pub fn selective_scan(
+    /// Internal: build the bundled SelectiveScan producer node and
+    /// return its NodeId (wrapped in a `Tensor`). Callers project
+    /// per-slot via [`Tensor::view`] / [`Tensor::view_owned`].
+    fn selective_scan_producer(
         &self,
         delta: &Tensor,
         a: &Tensor,
@@ -4076,24 +4606,96 @@ impl Tensor {
             c_dims, &[batch, seqlen, dstate][..],
             "selective_scan: c {c_dims:?} must be [batch={batch}, seqlen={seqlen}, dstate={dstate}]",
         );
-        let id = self.graph.write().unwrap().push(Node {
+        let params = crate::registry::FusedOpParams::SelectiveScan {
+            delta_softplus,
+        };
+        let input_shapes = [
+            Shape::from_dims(u_dims),
+            Shape::from_dims(delta_dims),
+            Shape::from_dims(a_dims),
+            Shape::from_dims(b_dims),
+            Shape::from_dims(c_dims),
+        ];
+        let input_dtypes = [dtype, dtype, dtype, dtype, dtype];
+        let entry = crate::registry::default_registry()
+            .entry(crate::registry::FusedOps::SELECTIVE_SCAN)
+            .expect("SELECTIVE_SCAN registered");
+        let specs = (entry.output_views.expect("multi-output"))(
+            &input_shapes, &input_dtypes, &params,
+        );
+        let (_total_bytes, views) = fuel_core_types::storage::compose_bundle(&specs)
+            .expect("SelectiveScan compose_bundle");
+        let mut g = self.graph.write().unwrap();
+        let id = g.push(Node {
             op:     Op::Fused(
                 crate::registry::FusedOps::SELECTIVE_SCAN,
-                crate::registry::FusedOpParams::SelectiveScan {
-                    delta_softplus,
-                    // Default: no second state output (matches the
-                    // builder's pre-`return_state` semantics).
-                    return_state: false,
-                },
+                params,
             ),
             inputs: vec![self.id, delta.id, a.id, b.id, c.id],
             shape:  Shape::from_dims(&[batch, seqlen, dim]),
             dtype,
         });
+        g.set_output_views(id, Arc::from(views.into_boxed_slice()))
+            .expect("SelectiveScan set_output_views");
+        drop(g);
         Self {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Single-output SelectiveScan: returns the `y` slot of the
+    /// bundled producer, with the View(0) projection emitted so
+    /// callers can downstream-realize / copy / etc. transparently.
+    /// See [`Self::selective_scan_bundled`] for the multi-output
+    /// variant that also exposes `last_state` for autoregressive
+    /// resumption.
+    pub fn selective_scan(
+        &self,
+        delta: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        c: &Tensor,
+        delta_softplus: bool,
+    ) -> Tensor {
+        let producer = self.selective_scan_producer(delta, a, b, c, delta_softplus);
+        producer.view(0).expect("SelectiveScan view(0) must succeed (just registered slots)")
+    }
+
+    /// Multi-output variant of [`Self::selective_scan`]. Returns
+    /// `(y, last_state)` — both Op::View tensors projected from the
+    /// shared bundled producer. `y` matches the existing
+    /// single-output `selective_scan` shape; `last_state` is the
+    /// final hidden state `[batch, dim, dstate]` for autoregressive
+    /// resumption.
+    pub fn selective_scan_bundled(
+        &self,
+        delta: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        c: &Tensor,
+        delta_softplus: bool,
+    ) -> std::result::Result<(Tensor, Tensor), fuel_core_types::Error> {
+        let producer = self.selective_scan_producer(delta, a, b, c, delta_softplus);
+        let y = producer.view(0)?;
+        let last_state = producer.view(1)?;
+        Ok((y, last_state))
+    }
+
+    /// Multi-output variant of [`Self::ssd_chunk_scan`]. Returns
+    /// `(y, last_state)`.
+    pub fn ssd_chunk_scan_bundled(
+        &self,
+        dt: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        c: &Tensor,
+        chunk_size: usize,
+    ) -> std::result::Result<(Tensor, Tensor), fuel_core_types::Error> {
+        let producer = self.ssd_chunk_scan_producer(dt, a, b, c, chunk_size);
+        let y = producer.view(0)?;
+        let last_state = producer.view(1)?;
+        Ok((y, last_state))
     }
 
     /// Append a `FusedSoftmaxCrossEntropy` node. Two inputs:
@@ -6752,6 +7354,17 @@ impl Tensor {
                          Use Gather + IndexAdd if you need a differentiable scatter."
                     );
                 }
+                Op::WriteSliceRotating { .. } => {
+                    // Same forward-only contract as WriteSlice — the
+                    // ring buffer's bytes are mutated in place at a
+                    // dynamic offset. Sliding-window KV caches don't
+                    // need a gradient path; a differentiable scatter
+                    // is expressible as Gather + IndexAdd in forward.
+                    panic!(
+                        "Tensor::backward: Op::WriteSliceRotating is non-differentiable. \
+                         Use Gather + IndexAdd if you need a differentiable scatter."
+                    );
+                }
                 // Phase 7.6 step 5 (2026-05-11): the legacy
                 // `Op::Conv2D { stride, padding, groups }` backward
                 // arm has been dropped together with the variant;
@@ -7185,6 +7798,64 @@ impl Tensor {
                     // a constant tensor; gradient w.r.t. it is
                     // meaningless. Like Op::Const / Op::Alloc, no
                     // gradient propagates back.
+                }
+                Op::ScatterIntoSlot { .. } => {
+                    // Item 4 IR-only scaffold — the backward graph
+                    // emits this op as the producer's gradient
+                    // assembler, but `ScatterIntoSlot` itself has no
+                    // backward (it's a structural op composing
+                    // already-differentiated slot gradients). No
+                    // gradient propagates back; matches the
+                    // Op::Const / Op::Alloc / Op::ZeroFill treatment.
+                }
+                Op::View { slot } | Op::ViewOwned { slot } => {
+                    // Multi-output projection — item 4 backward
+                    // composition (Option C, 2026-06-01).
+                    //
+                    // Forward (Op::View): shares the producer's
+                    // bundled Storage Arc and exposes one slot's
+                    // typed window. Forward (Op::ViewOwned): memcpys
+                    // the slot's bytes into a fresh Storage.
+                    //
+                    // Backward: scatter the upstream gradient into
+                    // the slot's byte range of a fresh zero-bundle of
+                    // the producer's primary shape, then accumulate
+                    // that partial-bundle gradient as the producer's
+                    // input gradient. Multiple View consumers of the
+                    // same producer accumulate via the standard
+                    // sum-of-partials path:
+                    //   bundle_grad =
+                    //     ScatterIntoSlot{0}(0, g_y)  +
+                    //     ScatterIntoSlot{1}(0, g_state) + ...
+                    //
+                    // **Status (item 4)**: IR-level wiring only —
+                    // emits the scatter chain in the backward graph,
+                    // but no Op::ScatterIntoSlot kernel is registered.
+                    // The production multi-output producers
+                    // (SelectiveScan, SsdChunkScan) are
+                    // `BackwardKind::NotDifferentiable`, so autograd
+                    // panics at the producer before this scatter is
+                    // realized. When a differentiable multi-output op
+                    // materializes (Mamba training, FSCE loss+grad
+                    // fused), it lights up the ScatterIntoSlot CPU
+                    // kernel + tests alongside its own backward.
+                    let producer = inputs[0];
+                    let producer_shape = node_shape(&graph_handle, producer);
+                    let producer_dtype = node_dtype(&graph_handle, producer);
+                    let zero = build_filled_const(
+                        &graph_handle,
+                        producer_shape.clone(),
+                        producer_dtype,
+                        0.0,
+                    );
+                    let scattered = push_node(
+                        &graph_handle,
+                        Op::ScatterIntoSlot { slot },
+                        vec![zero, up_id],
+                        producer_shape,
+                        producer_dtype,
+                    );
+                    accumulate_grad(&mut upstream, producer, scattered, &graph_handle);
                 }
                 Op::ReluInplace => {
                     // Same backward as Op::Relu — d(relu(x))/dx = step(x).
@@ -9492,5 +10163,1250 @@ mod tests {
         let deps = ord.deps_of(y_b_id);
         assert_eq!(deps.len(), 1, "in-place unary should have one ordering dep");
         assert_eq!(deps[0], y_a.id(), "in-place unary must run after the non-destructive reader");
+    }
+
+    // ------------------------------------------------------------------
+    // Multi-output nodes (Option C, Session 1)
+    // ------------------------------------------------------------------
+
+    use fuel_core_types::storage::{OutputView, Storage as CoreStorage};
+
+    /// Build a real CPU `Storage` of `n` F32 zeros so `Storage`-level
+    /// tests can attach + read bundle metadata against a live backend
+    /// allocator. The dtype is fixed at F32 because every existing
+    /// `OutputView` test below uses F32 for slot 0; bundle dtype is
+    /// validated at `with_bundle` time against this primary dtype.
+    fn cpu_f32_storage(n: usize) -> CoreStorage {
+        let dev = cpu_dev();
+        let buf = fuel_core_types::HostBuffer::F32(vec![0.0_f32; n]);
+        let inner = dev
+            .storage_from_host_buffer_owned_dyn(buf)
+            .expect("test fixture: F32 storage_from_host_buffer_owned_dyn failed");
+        CoreStorage::from_dyn(inner)
+    }
+
+    /// Build a 2-slot bundle: slot 0 `[2, 3]` F32 `y`-shape, slot 1
+    /// `[2, 4]` F32 `last_state`-shape. Returns the views and the
+    /// total element count (used to size the backing CPU buffer so
+    /// slot 1's byte range stays inside the bundle's bytes).
+    fn two_slot_views() -> (Vec<OutputView>, usize) {
+        let s0 = Shape::from_dims(&[2, 3]);
+        let s1 = Shape::from_dims(&[2, 4]);
+        let v0 = OutputView {
+            byte_offset:  0,
+            len_elements: s0.elem_count(),
+            dtype:        DType::F32,
+            shape:        s0.clone(),
+            layout:       Layout::contiguous(s0),
+            name:         Some("y"),
+        };
+        let v1 = OutputView {
+            byte_offset:  v0.len_bytes(),
+            len_elements: s1.elem_count(),
+            dtype:        DType::F32,
+            shape:        s1.clone(),
+            layout:       Layout::contiguous(s1),
+            name:         Some("last_state"),
+        };
+        let total = v0.len_elements + v1.len_elements;
+        (vec![v0, v1], total)
+    }
+
+    /// `Storage::is_bundled` is false by default; `slot_count` is 1;
+    /// `bundle` / `bundle_arc` / `slot_view` / `slot_dtype` all return
+    /// `None` for the non-multi-output case.
+    #[test]
+    fn storage_single_output_defaults() {
+        let s = cpu_f32_storage(8);
+        assert!(!s.is_bundled());
+        assert_eq!(s.slot_count(), 1);
+        assert!(s.bundle().is_none());
+        assert!(s.bundle_arc().is_none());
+        assert!(s.slot_view(0).is_none());
+        assert_eq!(s.slot_dtype(0), None);
+        assert_eq!(s.primary_dtype(), DType::F32);
+        assert_eq!(s.dtype(), DType::F32);
+    }
+
+    /// `Storage::with_bundle` attaches the side-table and per-slot
+    /// lookups report the declared shape/dtype.
+    #[test]
+    fn storage_with_bundle_attaches_views() {
+        let (views, total) = two_slot_views();
+        let s = cpu_f32_storage(total)
+            .with_bundle(views.clone().into())
+            .expect("with_bundle should accept matching slot-0 dtype");
+        assert!(s.is_bundled());
+        assert_eq!(s.slot_count(), 2);
+        let slot0 = s.slot_view(0).unwrap();
+        assert_eq!(slot0.shape, Shape::from_dims(&[2, 3]));
+        assert_eq!(slot0.dtype, DType::F32);
+        assert_eq!(slot0.byte_offset, 0);
+        assert_eq!(slot0.name, Some("y"));
+        let slot1 = s.slot_view(1).unwrap();
+        assert_eq!(slot1.shape, Shape::from_dims(&[2, 4]));
+        assert_eq!(slot1.byte_offset, 24); // 6 F32s = 24 bytes
+        assert_eq!(slot1.name, Some("last_state"));
+        // Out-of-range slot reads `None`, doesn't panic.
+        assert!(s.slot_view(2).is_none());
+        assert_eq!(s.slot_dtype(2), None);
+    }
+
+    /// `Storage::with_bundle` rejects an empty bundle slice (a
+    /// zero-slot bundle is a contract bug — use a single-output
+    /// Storage if there's nothing to project).
+    #[test]
+    fn storage_with_bundle_rejects_empty() {
+        let s = cpu_f32_storage(1);
+        let empty: Arc<[OutputView]> = Arc::from(Vec::<OutputView>::new().into_boxed_slice());
+        let err = s.with_bundle(empty).err()
+            .expect("empty bundle slice must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("non-empty"), "error message: {msg}");
+    }
+
+    /// `Storage::with_bundle` rejects slot 0 dtype that disagrees with
+    /// the inner backend dtype — the bundle invariant "slot 0 dtype ==
+    /// primary_dtype()" must hold.
+    #[test]
+    fn storage_with_bundle_rejects_dtype_mismatch() {
+        let s = cpu_f32_storage(8);
+        let bad = OutputView {
+            byte_offset:  0,
+            len_elements: 4,
+            dtype:        DType::F64,
+            shape:        Shape::from_dims(&[2, 2]),
+            layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
+            name:         None,
+        };
+        let err = s.with_bundle(Arc::from(vec![bad].into_boxed_slice())).err()
+            .expect("slot 0 dtype mismatch must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("dtype"), "error message: {msg}");
+    }
+
+    /// `Graph::output_views` is `None` for ordinary single-output
+    /// nodes; `multi_output_count` is 0.
+    #[test]
+    fn graph_output_views_defaults() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op:     Op::Const,
+            inputs: vec![],
+            shape:  Shape::from_dims(&[2, 3]),
+            dtype:  DType::F32,
+        });
+        assert!(g.output_views(id).is_none());
+        assert!(!g.is_multi_output(id));
+        assert_eq!(g.multi_output_count(), 0);
+    }
+
+    /// `Graph::set_output_views` round-trips: read returns what was
+    /// written; `is_multi_output` flips.
+    #[test]
+    fn graph_set_output_views_roundtrip() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op:     Op::Const,
+            inputs: vec![],
+            shape:  Shape::from_dims(&[2, 3]),
+            dtype:  DType::F32,
+        });
+        let (views, _) = two_slot_views();
+        g.set_output_views(id, views.clone().into())
+            .expect("valid 2-slot specs");
+        assert!(g.is_multi_output(id));
+        assert_eq!(g.multi_output_count(), 1);
+        let read = g.output_views(id).expect("entry present");
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[1].shape, Shape::from_dims(&[2, 4]));
+    }
+
+    /// `Graph::set_output_views` rejects slot 0 dtype/shape that
+    /// disagree with the producer node's primary shape/dtype.
+    #[test]
+    fn graph_set_output_views_validates_primary() {
+        let mut g = Graph::new();
+        let id = g.push(Node {
+            op:     Op::Const,
+            inputs: vec![],
+            shape:  Shape::from_dims(&[2, 3]),
+            dtype:  DType::F32,
+        });
+        // dtype mismatch on slot 0
+        let bad_dtype = OutputView {
+            byte_offset:  0,
+            len_elements: 6,
+            dtype:        DType::F64,
+            shape:        Shape::from_dims(&[2, 3]),
+            layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
+            name:         None,
+        };
+        let err = g.set_output_views(id, vec![bad_dtype].into()).err()
+            .expect("primary dtype mismatch must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("dtype"), "error message: {msg}");
+        // shape mismatch on slot 0
+        let bad_shape = OutputView {
+            byte_offset:  0,
+            len_elements: 4,
+            dtype:        DType::F32,
+            shape:        Shape::from_dims(&[2, 2]),
+            layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
+            name:         None,
+        };
+        let err = g.set_output_views(id, vec![bad_shape].into()).err()
+            .expect("primary shape mismatch must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("shape"), "error message: {msg}");
+    }
+
+    /// `Tensor::view(slot)` against a producer that hasn't been
+    /// declared multi-output returns Err — fails fast at build time.
+    #[test]
+    fn tensor_view_on_non_multi_output_errors() {
+        let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let id = graph.write().unwrap().push(Node {
+            op:     Op::Const,
+            inputs: vec![],
+            shape:  Shape::from_dims(&[2, 3]),
+            dtype:  DType::F32,
+        });
+        let producer = Tensor::from_existing(Arc::clone(&graph), id);
+        let err = producer.view(0).err()
+            .expect("view on non-multi-output producer must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("multi-output"), "error message: {msg}");
+    }
+
+    /// `Tensor::view(slot)` with slot OOB returns Err.
+    #[test]
+    fn tensor_view_oob_slot_errors() {
+        let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let producer_id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape:  Shape::from_dims(&[2, 3]),
+                dtype:  DType::F32,
+            });
+            let (views, _) = two_slot_views();
+            g.set_output_views(id, views.into())
+                .expect("valid 2-slot specs");
+            id
+        };
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let err = producer.view(2).err()
+            .expect("slot 2 of a 2-slot producer must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("out of range"), "error message: {msg}");
+    }
+
+    /// `Tensor::view(slot)` produces a tensor whose shape/dtype match
+    /// the slot spec; producer's primary shape stays as slot 0's. The
+    /// View node holds the producer in `inputs[0]`.
+    #[test]
+    fn tensor_view_shape_dtype_from_slot() {
+        let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let producer_id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape:  Shape::from_dims(&[2, 3]),
+                dtype:  DType::F32,
+            });
+            let (views, _) = two_slot_views();
+            g.set_output_views(id, views.into())
+                .expect("valid 2-slot specs");
+            id
+        };
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v0 = producer.view(0).expect("slot 0 view");
+        assert_eq!(v0.shape(), Shape::from_dims(&[2, 3]));
+        assert_eq!(v0.dtype(), DType::F32);
+        let v1 = producer.view(1).expect("slot 1 view");
+        assert_eq!(v1.shape(), Shape::from_dims(&[2, 4]));
+        assert_eq!(v1.dtype(), DType::F32);
+        // View node carries the producer in inputs[0] and the slot
+        // index in the Op variant — verify the Graph state directly.
+        let g = graph.read().unwrap();
+        let v1_node = g.node(v1.id());
+        assert_eq!(v1_node.inputs, vec![producer_id]);
+        assert!(matches!(v1_node.op, Op::View { slot: 1 }));
+        // Slot 0 starts at byte_offset 0 + contiguous → layout
+        // matches Layout::contiguous(slot0.shape) → no side-table
+        // entry (the contiguous fallback covers it).
+        assert!(!g.has_explicit_layout(v0.id()));
+        // Slot 1 starts at byte_offset 24 (= 6 F32 elements past
+        // slot 0). Session 4 bakes that into the layout's
+        // start_offset so a downstream kernel reading the producer's
+        // bytes as F32 elements lands on slot 1's first byte. Side-
+        // table entry is mandatory.
+        assert!(g.has_explicit_layout(v1.id()));
+        let l1 = g.layout(v1.id());
+        assert_eq!(l1.start_offset(), 6, "slot 1 byte_offset 24 / 4 = 6 F32 elements");
+        assert_eq!(l1.shape(), &Shape::from_dims(&[2, 4]));
+    }
+
+    /// `Tensor::view(slot)` over a slot whose layout is non-contiguous
+    /// (strided) populates the Graph's layout side-table with the
+    /// slot's layout — so downstream consumers see the strided view.
+    #[test]
+    fn tensor_view_propagates_non_contiguous_slot_layout() {
+        let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let strided_shape = Shape::from_dims(&[2, 3]);
+        let strided_layout = Layout::contiguous(strided_shape.clone())
+            .transpose(0, 1)
+            .expect("transpose [2,3] -> [3,2]");
+        // Slot 0 = primary (contiguous, matches producer's Node shape).
+        let s0 = OutputView {
+            byte_offset:  0,
+            len_elements: strided_shape.elem_count(),
+            dtype:        DType::F32,
+            shape:        strided_shape.clone(),
+            layout:       Layout::contiguous(strided_shape.clone()),
+            name:         Some("primary"),
+        };
+        // Slot 1 = strided projection. Same byte range as slot 0; the
+        // shape after transpose is [3, 2]; layout's start offset stays
+        // within the slot.
+        let s1 = OutputView {
+            byte_offset:  0,
+            len_elements: strided_shape.elem_count(),
+            dtype:        DType::F32,
+            shape:        Shape::from_dims(&[3, 2]),
+            layout:       strided_layout.clone(),
+            name:         Some("strided_view"),
+        };
+        let producer_id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape:  strided_shape.clone(),
+                dtype:  DType::F32,
+            });
+            g.set_output_views(id, vec![s0, s1].into())
+                .expect("valid 2-slot strided spec");
+            id
+        };
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v1 = producer.view(1).expect("strided slot view");
+        let g = graph.read().unwrap();
+        assert!(
+            g.has_explicit_layout(v1.id()),
+            "strided slot must populate Graph::layouts side-table",
+        );
+        let read_layout = g.layout(v1.id());
+        assert_eq!(read_layout.shape(), strided_layout.shape());
+        assert_eq!(read_layout.stride(), strided_layout.stride());
+    }
+
+    /// `Tensor::view_owned(slot)` produces the same shape/dtype as
+    /// `Tensor::view(slot)` but its output layout is ALWAYS contiguous
+    /// — the forward memcpy produces a fresh standalone buffer, so
+    /// the slot's (possibly strided) layout is not propagated.
+    #[test]
+    fn tensor_view_owned_layout_is_contiguous() {
+        let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let strided_shape = Shape::from_dims(&[2, 3]);
+        let strided_layout = Layout::contiguous(strided_shape.clone())
+            .transpose(0, 1)
+            .expect("transpose [2,3] -> [3,2]");
+        let s0 = OutputView {
+            byte_offset:  0,
+            len_elements: strided_shape.elem_count(),
+            dtype:        DType::F32,
+            shape:        strided_shape.clone(),
+            layout:       Layout::contiguous(strided_shape.clone()),
+            name:         None,
+        };
+        let s1 = OutputView {
+            byte_offset:  0,
+            len_elements: strided_shape.elem_count(),
+            dtype:        DType::F32,
+            shape:        Shape::from_dims(&[3, 2]),
+            layout:       strided_layout,
+            name:         None,
+        };
+        let producer_id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape:  strided_shape,
+                dtype:  DType::F32,
+            });
+            g.set_output_views(id, vec![s0, s1].into())
+                .expect("valid 2-slot specs");
+            id
+        };
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v1 = producer.view_owned(1).expect("ViewOwned slot 1");
+        assert_eq!(v1.shape(), Shape::from_dims(&[3, 2]));
+        assert_eq!(v1.dtype(), DType::F32);
+        let g = graph.read().unwrap();
+        // ViewOwned is a fresh allocation — no explicit layout entry,
+        // contiguous layout falls through.
+        assert!(!g.has_explicit_layout(v1.id()));
+        let owned_node = g.node(v1.id());
+        assert!(matches!(owned_node.op, Op::ViewOwned { slot: 1 }));
+    }
+
+    // ------------------------------------------------------------------
+    // Session 2: bundled allocator + FusedOpEntry::output_views +
+    // View-vs-ViewOwned planner pass. The tests use the bundled
+    // storage allocator and a synthetic 2-output FusedOp entry — no
+    // real fused-op author migrates in Session 2; the
+    // selective-scan-ssd-chunk-multi-output-followup session lights
+    // up the first real consumer.
+    // ------------------------------------------------------------------
+
+    use fuel_core_types::storage::{
+        allocate_bundled_storage, OutputViewSpec,
+    };
+
+    /// `allocate_bundled_storage` allocates one Storage on the device,
+    /// attaches the bundle, and slot lookups report the spec-derived
+    /// byte_offsets.
+    #[test]
+    fn allocate_bundled_storage_two_slot_roundtrip() {
+        let dev = cpu_dev();
+        let specs = vec![
+            OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[2, 3])),
+            OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[2, 4])),
+        ];
+        let s = allocate_bundled_storage(dev.as_ref(), &specs)
+            .expect("two-slot F32 alloc succeeds");
+        assert!(s.is_bundled());
+        assert_eq!(s.slot_count(), 2);
+        assert_eq!(s.primary_dtype(), DType::F32);
+        let v0 = s.slot_view(0).unwrap();
+        let v1 = s.slot_view(1).unwrap();
+        assert_eq!(v0.byte_offset, 0);
+        assert_eq!(v0.shape, Shape::from_dims(&[2, 3]));
+        assert_eq!(v1.byte_offset, 24);
+        assert_eq!(v1.shape, Shape::from_dims(&[2, 4]));
+    }
+
+    /// `allocate_bundled_storage` handles mixed F32 + F64 slots — slot
+    /// 0 is primary (F32), slot 1's bytes are aligned to its F64
+    /// boundary, and the underlying allocation has enough flat F32
+    /// elements to cover the total bundle bytes.
+    #[test]
+    fn allocate_bundled_storage_mixed_dtype() {
+        let dev = cpu_dev();
+        let specs = vec![
+            OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[6])),
+            OutputViewSpec::contiguous(DType::F64, Shape::from_dims(&[3])),
+        ];
+        let s = allocate_bundled_storage(dev.as_ref(), &specs)
+            .expect("mixed-dtype alloc succeeds");
+        assert_eq!(s.primary_dtype(), DType::F32);
+        let v0 = s.slot_view(0).unwrap();
+        let v1 = s.slot_view(1).unwrap();
+        assert_eq!(v0.dtype, DType::F32);
+        assert_eq!(v1.dtype, DType::F64);
+        assert_eq!(v0.byte_offset, 0);
+        // F32[6] = 24 bytes; 24 is already multiple of 8, so v1
+        // starts at 24 without further padding.
+        assert_eq!(v1.byte_offset, 24);
+    }
+
+    /// `allocate_bundled_storage` propagates compose_bundle errors —
+    /// an empty spec list errors out before touching the device.
+    #[test]
+    fn allocate_bundled_storage_rejects_empty() {
+        let dev = cpu_dev();
+        let err = allocate_bundled_storage(dev.as_ref(), &[]).err()
+            .expect("empty specs error");
+        assert!(format!("{err}").contains("non-empty"));
+    }
+
+    /// The two SelectiveScan / SsdChunkScan migrations from item 3
+    /// (2026-06-01) are the first `default_registry` entries to
+    /// declare `output_views`. Any new multi-output op author should
+    /// extend the expected set here.
+    #[test]
+    fn default_registry_multi_output_entries() {
+        let reg = crate::registry::default_registry();
+        let mut multi_out_names: Vec<&'static str> = reg
+            .entries_iter()
+            .filter(|e| e.output_views.is_some())
+            .map(|e| e.name)
+            .collect();
+        multi_out_names.sort();
+        assert_eq!(
+            multi_out_names,
+            vec!["SelectiveScan", "SsdChunkScan"],
+            "the multi-output registry set should match the item-3 \
+             migrations (SelectiveScan + SsdChunkScan); add new \
+             multi-output ops to this list as they migrate",
+        );
+    }
+
+    /// Authoring-contract invariant: for every multi-output entry in
+    /// the process-wide registry, `shape_rule(inputs)` MUST equal
+    /// `output_views(inputs)[0].shape` and `dtype_rule(inputs)` MUST
+    /// equal `output_views(inputs)[0].dtype`. Slot 0 is the primary
+    /// and the bundled-allocation contract assumes the producer's
+    /// `Node.shape`/`Node.dtype` reflect it.
+    #[test]
+    fn multi_output_entries_slot_0_matches_primary_rules() {
+        use crate::registry::FusedOpParams;
+        let reg = crate::registry::default_registry();
+
+        // Each multi-output entry needs a representative input batch
+        // (shapes + dtypes + params) that satisfies its
+        // shape_rule/dtype_rule preconditions. The check below runs
+        // once per entry using these fixtures.
+        struct Fixture {
+            shapes: Vec<Shape>,
+            dtypes: Vec<DType>,
+            params: FusedOpParams,
+        }
+        fn selective_scan_fixture() -> Fixture {
+            Fixture {
+                shapes: vec![
+                    Shape::from_dims(&[2, 4, 8]),  // u: [batch, seqlen, dim]
+                    Shape::from_dims(&[2, 4, 8]),  // delta: same
+                    Shape::from_dims(&[8, 16]),    // a: [dim, dstate]
+                    Shape::from_dims(&[2, 4, 16]), // b: [batch, seqlen, dstate]
+                    Shape::from_dims(&[2, 4, 16]), // c: same
+                ],
+                dtypes: vec![DType::F32; 5],
+                params: FusedOpParams::SelectiveScan { delta_softplus: false },
+            }
+        }
+        fn ssd_chunk_scan_fixture() -> Fixture {
+            Fixture {
+                shapes: vec![
+                    Shape::from_dims(&[2, 4, 3, 8]),  // x: [batch, seqlen, heads, head_dim]
+                    Shape::from_dims(&[2, 4, 3]),     // dt: [batch, seqlen, heads]
+                    Shape::from_dims(&[3]),           // a: [heads]
+                    Shape::from_dims(&[2, 4, 3, 16]), // b: [batch, seqlen, heads, state_dim]
+                    Shape::from_dims(&[2, 4, 3, 16]), // c: same
+                ],
+                dtypes: vec![DType::F32; 5],
+                params: FusedOpParams::SsdChunkScan { chunk_size: 4 },
+            }
+        }
+
+        for entry in reg.entries_iter().filter(|e| e.output_views.is_some()) {
+            let fx = match entry.name {
+                "SelectiveScan" => selective_scan_fixture(),
+                "SsdChunkScan"  => ssd_chunk_scan_fixture(),
+                other => panic!(
+                    "multi_output_entries_slot_0_matches_primary_rules: \
+                     no fixture for new multi-output entry {other:?}. \
+                     Add one to this test as you register a new op.",
+                ),
+            };
+            let primary_shape = (entry.shape_rule)(&fx.shapes, &fx.params);
+            let primary_dtype = (entry.dtype_rule)(&fx.dtypes, &fx.params);
+            let specs = entry.output_views.unwrap()(
+                &fx.shapes, &fx.dtypes, &fx.params,
+            );
+            assert!(
+                !specs.is_empty(),
+                "{}: output_views returned empty Vec (multi-output ops \
+                 must have ≥ 1 slot)",
+                entry.name,
+            );
+            assert_eq!(
+                specs[0].shape, primary_shape,
+                "{}: output_views[0].shape {:?} must equal shape_rule \
+                 {:?} (slot 0 is the primary; Node::shape reflects it)",
+                entry.name, specs[0].shape, primary_shape,
+            );
+            assert_eq!(
+                specs[0].dtype, primary_dtype,
+                "{}: output_views[0].dtype {:?} must equal dtype_rule \
+                 {:?} (slot 0 is the primary; Node::dtype reflects it)",
+                entry.name, specs[0].dtype, primary_dtype,
+            );
+            // Layout-shape coherence: each slot's layout shape must
+            // equal its declared shape (the same invariant
+            // set_output_views enforces at graph-build time).
+            for (i, spec) in specs.iter().enumerate() {
+                assert_eq!(
+                    spec.layout.shape(), &spec.shape,
+                    "{}: slot {i} layout.shape() {:?} disagrees with \
+                     declared spec.shape {:?}",
+                    entry.name, spec.layout.shape(), spec.shape,
+                );
+            }
+        }
+    }
+
+    /// Build a synthetic multi-output `FusedOpEntry` to exercise the
+    /// authoring contract end-to-end without polluting the production
+    /// registry. The output_views fn returns a 2-slot spec list whose
+    /// slot 0 matches shape_rule / dtype_rule (the primary).
+    fn synthetic_two_output_entry() -> crate::registry::FusedOpEntry {
+        fn shape(_: &[Shape], _: &crate::registry::FusedOpParams) -> Shape {
+            Shape::from_dims(&[2, 3])
+        }
+        fn dtype(_: &[DType], _: &crate::registry::FusedOpParams) -> DType {
+            DType::F32
+        }
+        fn ovs(
+            _: &[Shape],
+            _: &[DType],
+            _: &crate::registry::FusedOpParams,
+        ) -> Vec<OutputViewSpec> {
+            vec![
+                OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[2, 3])),
+                OutputViewSpec::contiguous(DType::F32, Shape::from_dims(&[2, 4])),
+            ]
+        }
+        crate::registry::FusedOpEntry {
+            id:           crate::registry::FusedOps::SOFTMAX_LAST_DIM, // any id; not registered
+            name:         "<synthetic-2-output>",
+            family:       crate::registry::FusedOpFamily::Forward,
+            pattern:      crate::registry::SubgraphPattern::Callable(|_g, _id| None),
+            decompose:    |_g, id, _p| id,
+            backward:     crate::registry::BackwardKind::NotDifferentiable,
+            shape_rule:   shape,
+            dtype_rule:   dtype,
+            output_views: Some(ovs),
+        }
+    }
+
+    /// The synthetic entry's `output_views` matches the
+    /// `shape_rule`/`dtype_rule` contract on slot 0.
+    #[test]
+    fn synthetic_entry_output_views_matches_primary_contract() {
+        let entry = synthetic_two_output_entry();
+        let ovs_fn = entry.output_views.expect("synthetic entry is multi-output");
+        let specs = ovs_fn(&[], &[], &crate::registry::FusedOpParams::SoftmaxLastDim);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].dtype, (entry.dtype_rule)(&[], &crate::registry::FusedOpParams::SoftmaxLastDim));
+        assert_eq!(specs[0].shape, (entry.shape_rule)(&[], &crate::registry::FusedOpParams::SoftmaxLastDim));
+    }
+
+    /// Build a producer Const node and declare it multi-output via
+    /// `Graph::set_output_views`. Returns the producer's NodeId and a
+    /// SharedGraph handle.
+    fn multi_output_producer(slots: Vec<OutputView>) -> (SharedGraph, NodeId) {
+        let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
+        let id = {
+            let mut g = graph.write().unwrap();
+            let id = g.push(Node {
+                op:     Op::Const,
+                inputs: vec![],
+                shape:  slots[0].shape.clone(),
+                dtype:  slots[0].dtype,
+            });
+            g.set_output_views(id, slots.into()).expect("valid synthetic specs");
+            id
+        };
+        (graph, id)
+    }
+
+    /// Two slots, both consumed at the same topo depth → planner does
+    /// nothing (symmetric lifetimes, bundle drops naturally).
+    #[test]
+    fn promote_views_symmetric_lifetimes_is_noop() {
+        let slot_specs = vec![
+            OutputView {
+                byte_offset:  0,
+                len_elements: 6,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 3]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name:         Some("y"),
+            },
+            OutputView {
+                byte_offset:  24,
+                len_elements: 8,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 4]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 4])),
+                name:         Some("state"),
+            },
+        ];
+        let (graph, producer_id) = multi_output_producer(slot_specs);
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        // Each slot has exactly one View, consumed at the same depth
+        // (a no-op Relu downstream of each).
+        let v0 = producer.view(0).expect("slot 0 view");
+        let v1 = producer.view(1).expect("slot 1 view");
+        let (v0_id, v0_shape, v0_dtype) = (v0.id(), v0.shape(), v0.dtype());
+        let (v1_id, v1_shape, v1_dtype) = (v1.id(), v1.shape(), v1.dtype());
+        let roots = {
+            let mut g = graph.write().unwrap();
+            let r0 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v0_id],
+                shape:  v0_shape,
+                dtype:  v0_dtype,
+            });
+            let r1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v1_id],
+                shape:  v1_shape,
+                dtype:  v1_dtype,
+            });
+            vec![r0, r1]
+        };
+        let promotions = {
+            let mut g = graph.write().unwrap();
+            crate::opt::promote_views_for_liveness(&mut g, &roots)
+        };
+        assert_eq!(promotions, 0, "symmetric lifetimes shouldn't promote anything");
+    }
+
+    /// Asymmetric lifetimes: slot 0 consumed early, slot 1 consumed
+    /// late → planner promotes slot 1's View to ViewOwned.
+    #[test]
+    fn promote_views_asymmetric_promotes_long_lived_slot() {
+        let slot_specs = vec![
+            OutputView {
+                byte_offset:  0,
+                len_elements: 6,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 3]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name:         Some("y"),
+            },
+            OutputView {
+                byte_offset:  24,
+                len_elements: 6,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 3]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name:         Some("state"),
+            },
+        ];
+        let (graph, producer_id) = multi_output_producer(slot_specs);
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v_y = producer.view(0).expect("slot 0 view");
+        let v_state = producer.view(1).expect("slot 1 view");
+        // Slot 0 ("y") consumed at depth 1 (single Relu).
+        // Slot 1 ("state") consumed at a much deeper chain — Relu →
+        // Relu → Relu. Topo positions push state's last-use later
+        // than y's, triggering promotion of state's View.
+        let (v_y_id, v_y_shape, v_y_dtype) = (v_y.id(), v_y.shape(), v_y.dtype());
+        let (v_state_id, v_state_shape, v_state_dtype) = (v_state.id(), v_state.shape(), v_state.dtype());
+        let roots = {
+            let mut g = graph.write().unwrap();
+            let y_relu = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v_y_id],
+                shape:  v_y_shape,
+                dtype:  v_y_dtype,
+            });
+            let s1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v_state_id],
+                shape:  v_state_shape.clone(),
+                dtype:  v_state_dtype,
+            });
+            let s2 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![s1],
+                shape:  v_state_shape.clone(),
+                dtype:  v_state_dtype,
+            });
+            let s3 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![s2],
+                shape:  v_state_shape,
+                dtype:  v_state_dtype,
+            });
+            vec![y_relu, s3]
+        };
+        let promotions = {
+            let mut g = graph.write().unwrap();
+            crate::opt::promote_views_for_liveness(&mut g, &roots)
+        };
+        assert_eq!(promotions, 1, "exactly the long-lived slot 1 View should promote");
+        // Slot 1's consumer (the first Relu in the long chain) now
+        // reads a fresh Op::ViewOwned node, not the old Op::View.
+        let g = graph.read().unwrap();
+        // Find the new ViewOwned node — it was pushed AFTER the
+        // existing nodes, so it's the last node in the arena. Its op
+        // must be Op::ViewOwned { slot: 1 } and its input must be the
+        // producer.
+        let last_id = NodeId(g.len() - 1);
+        let last_node = g.node(last_id);
+        assert!(matches!(last_node.op, Op::ViewOwned { slot: 1 }));
+        assert_eq!(last_node.inputs, vec![producer_id]);
+        // The slot 0 View is untouched — still Op::View.
+        let v_y_node = g.node(v_y_id);
+        assert!(matches!(v_y_node.op, Op::View { slot: 0 }));
+        // The old slot 1 View stays in the arena (orphaned). No
+        // consumer points at it anymore.
+        let v_state_node = g.node(v_state_id);
+        assert!(matches!(v_state_node.op, Op::View { slot: 1 }));
+    }
+
+    /// Running the pass twice on the same graph promotes nothing on
+    /// the second call — `Op::ViewOwned` is a fixpoint (skipped by
+    /// the planner because `is_owned` is true).
+    #[test]
+    fn promote_views_idempotent() {
+        let slot_specs = vec![
+            OutputView {
+                byte_offset:  0,
+                len_elements: 4,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 2]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
+                name:         None,
+            },
+            OutputView {
+                byte_offset:  16,
+                len_elements: 4,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 2]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
+                name:         None,
+            },
+        ];
+        let (graph, producer_id) = multi_output_producer(slot_specs);
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v_y = producer.view(0).expect("slot 0 view");
+        let v_state = producer.view(1).expect("slot 1 view");
+        let (v_y_id, v_y_shape, v_y_dtype) = (v_y.id(), v_y.shape(), v_y.dtype());
+        let (v_state_id, v_state_shape, v_state_dtype) = (v_state.id(), v_state.shape(), v_state.dtype());
+        let roots = {
+            let mut g = graph.write().unwrap();
+            let y_r = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v_y_id],
+                shape:  v_y_shape,
+                dtype:  v_y_dtype,
+            });
+            let s1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v_state_id],
+                shape:  v_state_shape.clone(),
+                dtype:  v_state_dtype,
+            });
+            let s2 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![s1],
+                shape:  v_state_shape,
+                dtype:  v_state_dtype,
+            });
+            vec![y_r, s2]
+        };
+        let first = {
+            let mut g = graph.write().unwrap();
+            crate::opt::promote_views_for_liveness(&mut g, &roots)
+        };
+        let second = {
+            let mut g = graph.write().unwrap();
+            crate::opt::promote_views_for_liveness(&mut g, &roots)
+        };
+        assert_eq!(first, 1, "first call promotes the long-lived slot");
+        assert_eq!(second, 0, "second call is idempotent — no further promotions");
+    }
+
+    /// Graph with no multi-output producers: pass returns 0 and
+    /// touches nothing.
+    #[test]
+    fn promote_views_noop_on_graph_without_multi_output() {
+        let mut g = Graph::new();
+        let a = g.push(Node {
+            op:     Op::Const,
+            inputs: vec![],
+            shape:  Shape::from_dims(&[2, 3]),
+            dtype:  DType::F32,
+        });
+        let r = g.push(Node {
+            op:     Op::Relu,
+            inputs: vec![a],
+            shape:  Shape::from_dims(&[2, 3]),
+            dtype:  DType::F32,
+        });
+        let n_before = g.len();
+        let promotions = crate::opt::promote_views_for_liveness(&mut g, &[r]);
+        assert_eq!(promotions, 0);
+        assert_eq!(g.len(), n_before, "no node should have been added");
+    }
+
+    // ------------------------------------------------------------------
+    // Session 3: scheduler / destructive-cleanup integration —
+    // bundle-aware liveness. A destructive op on a multi-output
+    // producer (or any of its Views) must run after every reader of
+    // every other View, because all Views share the bundle's storage
+    // Arc. Op::ViewOwned is excluded — it forks a fresh standalone
+    // Storage at execute time.
+    // ------------------------------------------------------------------
+
+    /// Helper: build two contiguous slot specs for a producer of
+    /// `Node::shape = [2, 3] F32`. Slot 0 is the primary (matches the
+    /// producer's Node::shape/dtype, required by set_output_views);
+    /// slot 1 carries a sibling shape that doesn't collide with the
+    /// primary.
+    fn two_slot_views_2x3_and_2x4() -> Vec<OutputView> {
+        vec![
+            OutputView {
+                byte_offset:  0,
+                len_elements: 6,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 3]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name:         Some("y"),
+            },
+            OutputView {
+                byte_offset:  24,
+                len_elements: 8,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 4]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 4])),
+                name:         Some("state"),
+            },
+        ]
+    }
+
+    /// Op::Release targeting a multi-output producer pins after every
+    /// consumer of any View of that producer. Without bundle-aware
+    /// aliasing the Views' downstream Relu nodes would be missed and
+    /// could race the Release.
+    #[test]
+    fn derive_ordering_release_of_bundled_producer_pins_after_view_consumers() {
+        let (graph, producer_id) = multi_output_producer(two_slot_views_2x3_and_2x4());
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v0 = producer.view(0).expect("slot 0 view");
+        let v1 = producer.view(1).expect("slot 1 view");
+        let (v0_id, v0_shape, v0_dtype) = (v0.id(), v0.shape(), v0.dtype());
+        let (v1_id, v1_shape, v1_dtype) = (v1.id(), v1.shape(), v1.dtype());
+        let (r0, r1, release_id) = {
+            let mut g = graph.write().unwrap();
+            let r0 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v0_id],
+                shape:  v0_shape,
+                dtype:  v0_dtype,
+            });
+            let r1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v1_id],
+                shape:  v1_shape,
+                dtype:  v1_dtype,
+            });
+            let release = g.push(Node {
+                op:     Op::Release,
+                inputs: vec![producer_id],
+                shape:  Shape::from_dims(&[0]),
+                dtype:  DType::F32,
+            });
+            (r0, r1, release)
+        };
+        let ord = crate::opt::derive_ordering(
+            &graph.read().unwrap(),
+            &[r0, r1, release_id],
+        );
+        let deps = ord.deps_of(release_id);
+        let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
+        assert!(
+            dep_set.contains(&r0),
+            "Release must run after the slot-0 View's consumer (r0)",
+        );
+        assert!(
+            dep_set.contains(&r1),
+            "Release must run after the slot-1 View's consumer (r1) — \
+             both Views share the bundle Arc",
+        );
+    }
+
+    /// Destructive op targeting one of a bundle's Op::View nodes
+    /// pins after every sibling View's consumers too — every View
+    /// of the producer shares the bundle's Arc, so writing through
+    /// one of them clobbers the bytes the others read.
+    #[test]
+    fn derive_ordering_destructive_on_view_pins_sibling_view_consumers() {
+        let (graph, producer_id) = multi_output_producer(two_slot_views_2x3_and_2x4());
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v0 = producer.view(0).expect("slot 0 view");
+        let v1 = producer.view(1).expect("slot 1 view");
+        let (v0_id, _v0_shape, _v0_dtype) = (v0.id(), v0.shape(), v0.dtype());
+        let (v1_id, v1_shape, v1_dtype) = (v1.id(), v1.shape(), v1.dtype());
+        // Destructive op (Release) targets v0 directly — its
+        // alias set must reach v1's consumer via the producer-sibling
+        // hop in collect_alias_set.
+        let (r1, release_id) = {
+            let mut g = graph.write().unwrap();
+            let r1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v1_id],
+                shape:  v1_shape,
+                dtype:  v1_dtype,
+            });
+            let release = g.push(Node {
+                op:     Op::Release,
+                inputs: vec![v0_id],
+                shape:  Shape::from_dims(&[0]),
+                dtype:  DType::F32,
+            });
+            (r1, release)
+        };
+        let ord = crate::opt::derive_ordering(
+            &graph.read().unwrap(),
+            &[r1, release_id],
+        );
+        let deps = ord.deps_of(release_id);
+        let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
+        assert!(
+            dep_set.contains(&r1),
+            "Release targeting slot-0 View must pin after sibling slot-1 \
+             View's consumer (r1) — both share the bundle's storage Arc",
+        );
+    }
+
+    /// Op::ViewOwned does NOT extend the alias set: its forward
+    /// memcpy produces an independent Storage. derive_ordering must
+    /// still pin Release after the ViewOwned itself (via the standard
+    /// data-dependency: ViewOwned consumes the producer), but
+    /// downstream consumers of the ViewOwned are NOT in the alias
+    /// set's reader sweep — they read independent bytes and may run
+    /// freely after the Release.
+    #[test]
+    fn derive_ordering_view_owned_is_not_alias_extending() {
+        let (graph, producer_id) = multi_output_producer(two_slot_views_2x3_and_2x4());
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        // Slot 0 → View (shared Arc); slot 1 → ViewOwned (independent).
+        let v_view = producer.view(0).expect("slot 0 view");
+        let v_owned = producer.view_owned(1).expect("slot 1 viewowned");
+        let (v_view_id, _, _) = (v_view.id(), v_view.shape(), v_view.dtype());
+        let (v_owned_id, v_owned_shape, v_owned_dtype)
+            = (v_owned.id(), v_owned.shape(), v_owned.dtype());
+        let (consumer_of_owned, release_id) = {
+            let mut g = graph.write().unwrap();
+            let consumer = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v_owned_id],
+                shape:  v_owned_shape,
+                dtype:  v_owned_dtype,
+            });
+            let release = g.push(Node {
+                op:     Op::Release,
+                inputs: vec![producer_id],
+                shape:  Shape::from_dims(&[0]),
+                dtype:  DType::F32,
+            });
+            (consumer, release)
+        };
+        let ord = crate::opt::derive_ordering(
+            &graph.read().unwrap(),
+            &[consumer_of_owned, release_id],
+        );
+        let deps = ord.deps_of(release_id);
+        let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
+        // Release MUST wait for ViewOwned to run (ViewOwned reads
+        // the producer's bytes during its memcpy).
+        assert!(
+            dep_set.contains(&v_owned_id),
+            "Release must pin after ViewOwned — ViewOwned reads the \
+             producer's bundle during its memcpy phase",
+        );
+        // Release must NOT depend on the ViewOwned's downstream
+        // consumer — that consumer reads ViewOwned's independent
+        // bytes, not the producer's bundle.
+        assert!(
+            !dep_set.contains(&consumer_of_owned),
+            "Release must NOT pin after consumers of ViewOwned — \
+             ViewOwned forks a fresh Storage; its consumers don't \
+             read the producer's bundle",
+        );
+        // Op::View's consumers stay reached via the alias chain; here
+        // there are none (v_view has no consumer), so v_view itself
+        // is the only alias-set entry beyond the producer.
+        let _ = v_view_id;
+    }
+
+    /// Long-tail bundle-aware schedule: a producer with three Views,
+    /// each consumed by a chain of different depth, and a destructive
+    /// Release on the producer. The Release must end up after every
+    /// terminal consumer of every chain — bundle-as-single-eviction-
+    /// unit semantics fall out of derive_ordering's alias-set walk
+    /// reaching each chain's leaf via the producer-then-View hop.
+    #[test]
+    fn derive_ordering_bundle_release_pins_after_all_chains() {
+        // Build a 3-slot bundle. Slot 0 primary [2,3] F32 satisfies
+        // the producer's Node::shape/dtype constraint; slots 1 + 2
+        // add sibling shapes.
+        let slot_specs = vec![
+            OutputView {
+                byte_offset:  0,
+                len_elements: 6,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 3]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 3])),
+                name:         Some("a"),
+            },
+            OutputView {
+                byte_offset:  24,
+                len_elements: 4,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 2]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 2])),
+                name:         Some("b"),
+            },
+            OutputView {
+                byte_offset:  40,
+                len_elements: 8,
+                dtype:        DType::F32,
+                shape:        Shape::from_dims(&[2, 4]),
+                layout:       Layout::contiguous(Shape::from_dims(&[2, 4])),
+                name:         Some("c"),
+            },
+        ];
+        let (graph, producer_id) = multi_output_producer(slot_specs);
+        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let v0 = producer.view(0).unwrap();
+        let v1 = producer.view(1).unwrap();
+        let v2 = producer.view(2).unwrap();
+        let (v0_id, v0_shape, v0_dtype) = (v0.id(), v0.shape(), v0.dtype());
+        let (v1_id, v1_shape, v1_dtype) = (v1.id(), v1.shape(), v1.dtype());
+        let (v2_id, v2_shape, v2_dtype) = (v2.id(), v2.shape(), v2.dtype());
+        let (leaf_a, leaf_b, leaf_c, release_id) = {
+            let mut g = graph.write().unwrap();
+            let leaf_a = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v0_id],
+                shape:  v0_shape,
+                dtype:  v0_dtype,
+            });
+            let b1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v1_id],
+                shape:  v1_shape.clone(),
+                dtype:  v1_dtype,
+            });
+            let leaf_b = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![b1],
+                shape:  v1_shape,
+                dtype:  v1_dtype,
+            });
+            let c1 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![v2_id],
+                shape:  v2_shape.clone(),
+                dtype:  v2_dtype,
+            });
+            let c2 = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![c1],
+                shape:  v2_shape.clone(),
+                dtype:  v2_dtype,
+            });
+            let leaf_c = g.push(Node {
+                op:     Op::Relu,
+                inputs: vec![c2],
+                shape:  v2_shape,
+                dtype:  v2_dtype,
+            });
+            let release = g.push(Node {
+                op:     Op::Release,
+                inputs: vec![producer_id],
+                shape:  Shape::from_dims(&[0]),
+                dtype:  DType::F32,
+            });
+            (leaf_a, leaf_b, leaf_c, release)
+        };
+        let ord = crate::opt::derive_ordering(
+            &graph.read().unwrap(),
+            &[leaf_a, leaf_b, leaf_c, release_id],
+        );
+        let deps = ord.deps_of(release_id);
+        let dep_set: std::collections::HashSet<NodeId> = deps.iter().copied().collect();
+        // The direct readers of any View are the FIRST relu in each
+        // chain — those are the nodes that read the bundle's bytes.
+        // Every consumer further down reads its predecessor's
+        // standalone output Storage, so they aren't in the alias-set
+        // reader sweep. Verify the Release pins on the direct
+        // readers — sufficient for bundle-single-eviction safety
+        // because the chains are themselves data-dep ordered after
+        // their direct readers.
+        assert!(
+            dep_set.contains(&leaf_a),
+            "single-Relu chain a: leaf is the direct reader",
+        );
+        // For the b/c chains, the direct readers are the first Relus
+        // (b1 / c1), not the leaves. The Release must include those.
+        // Find them by walking inputs from leaves.
+        let g = graph.read().unwrap();
+        let b1 = g.node(leaf_b).inputs[0];
+        let (c2, c1) = {
+            let c2 = g.node(leaf_c).inputs[0];
+            let c1 = g.node(c2).inputs[0];
+            (c2, c1)
+        };
+        let _ = c2;
+        assert!(
+            dep_set.contains(&b1),
+            "two-Relu chain b: first Relu is the direct bundle reader",
+        );
+        assert!(
+            dep_set.contains(&c1),
+            "three-Relu chain c: first Relu is the direct bundle reader",
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Item 4 — Op::View / Op::ViewOwned autograd emits Op::ScatterIntoSlot
+    // ------------------------------------------------------------------
+
+    /// The View's backward arm pushes an `Op::ScatterIntoSlot { slot }`
+    /// node into the gradient graph as the producer's input gradient.
+    /// Synthetic test: build a 2-slot producer + Op::View(slot 1) +
+    /// a Relu downstream + invoke Tensor::backward + walk the produced
+    /// gradient graph and assert a ScatterIntoSlot was emitted.
+    #[test]
+    fn op_view_backward_emits_scatter_into_slot() {
+        let producer_t = Tensor::from_f32(
+            vec![0.0_f32; 6],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let graph: SharedGraph = Arc::clone(producer_t.graph());
+        let producer_id = producer_t.id();
+        let view_id = {
+            let mut g = graph.write().unwrap();
+            let specs = two_slot_views_2x3_and_2x4();
+            g.set_output_views(producer_id, specs.into()).expect("output_views");
+            drop(g);
+            let v1 = producer_t.view(1).expect("slot 1 view");
+            v1.id()
+        };
+        // Build a tiny tape-tracked loss = sum(relu(v1)).
+        let v1_tensor = Tensor::from_existing(Arc::clone(&graph), view_id);
+        let relu_t = v1_tensor.relu();
+        let loss_t = relu_t.sum_all();
+
+        // Take backward — exercises the View's backward arm.
+        let grads = loss_t.backward();
+
+        // The producer's input gradient should be reachable via a
+        // chain that includes an Op::ScatterIntoSlot { slot: 1 } node.
+        let producer_tensor = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let grad_for_producer = grads
+            .get(&producer_tensor)
+            .expect("producer has an accumulated gradient");
+        let grad_id = grad_for_producer.id();
+        let g = graph.read().unwrap();
+        let scatter_present = matches!(g.node(grad_id).op, Op::ScatterIntoSlot { slot: 1 })
+            || {
+                // Walk one hop back through `Op::Add` accumulations
+                // if any.
+                let n = g.node(grad_id);
+                n.inputs.iter().any(|inp| matches!(
+                    g.node(*inp).op, Op::ScatterIntoSlot { slot: 1 }
+                ))
+            };
+        assert!(
+            scatter_present,
+            "View(slot=1) backward must emit an Op::ScatterIntoSlot {{ slot: 1 }} \
+             into the gradient graph; got grad node op = {:?}",
+            g.node(grad_id).op,
+        );
     }
 }

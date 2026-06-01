@@ -746,6 +746,16 @@ fn eval_node(
                  fuel-graph-cpu path should never see it.",
             );
         }
+        Op::WriteSliceRotating { .. } => {
+            // Same pipelined-only contract as WriteSlice — sliding-window
+            // KV cache writes (Mistral / Phi-3 sliding-window) need a
+            // pre-allocated ring buffer.
+            unreachable!(
+                "fuel-graph-cpu eval_node: Op::WriteSliceRotating is a \
+                 pipelined-executor-only op (sliding-window KV cache writes); \
+                 the eager fuel-graph-cpu path should never see it.",
+            );
+        }
         Op::Alloc { .. } => {
             // Phase 3a of bridge-retirement (post-9c): zero-init device
             // allocation through the PipelinedExecutor's
@@ -799,6 +809,22 @@ fn eval_node(
                 "fuel-graph-cpu eval_node: in-place ops {:?} are not yet \
                  wired through the eager path (Phase 3 of the in-place \
                  ops infrastructure). Use the non-inplace variant.",
+                op,
+            );
+        }
+        Op::View { .. } | Op::ViewOwned { .. } | Op::ScatterIntoSlot { .. } => {
+            // Multi-output projection + autograd scaffold (Option C).
+            // The eager CPU path doesn't realize these — production
+            // multi-output flows through PipelinedExecutor's bundle-
+            // aware path. Item 4's ScatterIntoSlot is IR-only today;
+            // no kernel ships until a differentiable multi-output op
+            // materializes.
+            unreachable!(
+                "fuel-graph-cpu eval_node: multi-output / scatter-into-slot \
+                 op {:?} is not wired through the eager path. Use the \
+                 pipelined executor for multi-output realization; \
+                 ScatterIntoSlot is an IR scaffold for autograd \
+                 composition (no realization yet).",
                 op,
             );
         }

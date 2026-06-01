@@ -1385,6 +1385,19 @@ pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
 /// `roots`. Result: `nid` → list of other readers of `nid`'s
 /// destroyed input.
 ///
+/// **Bundle-aware aliasing** (Option C, Session 3): the alias-set
+/// computation treats `Op::View { slot }` as alias-extending — every
+/// View of a multi-output producer shares the bundle's storage Arc, so
+/// a destructive op on the producer (or on any sibling View) must
+/// run after every reader of every other View of the same producer.
+/// `Op::ViewOwned` is NOT alias-extending: after its forward memcpy,
+/// the ViewOwned's output is an independent Storage; it is still
+/// pinned-after destructive ops on the producer via the regular
+/// data-dependency edge (`inputs[0] == producer`), which falls out
+/// of the standard reader analysis below without needing the
+/// alias-set extension. See [`collect_alias_set`] for the full
+/// alias-extension rule.
+///
 /// O(V + E). Does not mutate the graph.
 pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges {
     let order = topo_order_multi(graph, roots);
@@ -1430,29 +1443,70 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
     OrderingEdges(ordering)
 }
 
-/// Collect the alias set of `root`: `root` itself plus every view-op
-/// node transitively derived from `root`. View-op nodes share their
-/// input's Storage Arc at realize time (the executor wraps the source's
-/// Arc with a fresh Layout for view ops — never allocates a copy), so a
-/// destructive op on `root`'s Storage clobbers bytes that every
-/// alias-set member's consumers might be reading.
+/// Collect the alias set of `root`: every node whose realized Storage
+/// is the same `Arc<RwLock<Storage>>` as `root`'s.
 ///
-/// Implementation: walk `order` once forward. A node enters the alias
-/// set iff it's `root` or its `Op::is_view_op()` returns true AND its
-/// (single) input is already in the alias set. Linear in `order.len()`.
+/// Two families of alias-extending op share the input's Storage Arc
+/// at realize time:
+///
+/// 1. **Single-input view ops** ([`Op::is_view_op`]): the executor
+///    wraps the source's Arc with a fresh Layout — no copy. Examples:
+///    `Op::Transpose`, `Op::Permute`, `Op::Slice`, `Op::Unsqueeze`,
+///    `Op::Squeeze`, `Op::BroadcastTo`, `Op::Flip`.
+/// 2. **Multi-output projection** (`Op::View { slot }`): the
+///    realized View clones the producer's bundled storage Arc and
+///    exposes one slot's window — bytes are shared, the bundle's Arc
+///    refcount tracks the consumer's lifetime (Session 1 of the
+///    multi-output Option C design — see
+///    [`fuel_core_types::storage::OutputView`]).
+///
+/// `Op::ViewOwned` is explicitly NOT alias-extending: at execution
+/// time it allocates a fresh standalone Storage and memcpys the
+/// slot's bytes in. After the memcpy runs, no Arc handle on the
+/// producer's bundle remains in the ViewOwned's chain. ViewOwned is
+/// still pinned-after destructive readers via the regular
+/// data-dependency edge (its `inputs[0]` is the producer), which the
+/// caller already accounts for outside this function.
+///
+/// **Sibling-bundle rule**: when `root` is itself an `Op::View`,
+/// every other `Op::View` of the same producer shares the same
+/// bundle Arc. To capture them, the function pre-seeds the producer
+/// into the alias set so the forward walk picks up siblings the same
+/// way it picks up downstream `is_view_op` derivatives.
+///
+/// Implementation: O(|order|) forward walk after a constant-time
+/// pre-seed. A node enters the alias set iff its op is in the
+/// alias-extending union AND its `inputs[0]` is already in the set.
 fn collect_alias_set(
     graph: &crate::Graph,
     root: NodeId,
     _consumers: &HashMap<NodeId, Vec<NodeId>>,
     order: &[NodeId],
 ) -> std::collections::HashSet<NodeId> {
+    use crate::Op;
+
     let mut alias: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
     alias.insert(root);
+
+    // Sibling-bundle pre-seed: if root is an Op::View of producer P,
+    // every other Op::View of P shares the same bundle Arc. Add P
+    // here so the forward walk reaches sibling Views via their
+    // `inputs[0] == P` membership in the alias set.
+    if let Op::View { .. } = graph.node(root).op {
+        if let Some(&producer) = graph.node(root).inputs.first() {
+            alias.insert(producer);
+        }
+    }
+
     for &nid in order {
         if alias.contains(&nid) { continue }
         let node = graph.node(nid);
-        if !node.op.is_view_op() { continue }
-        // View ops are rank-1 in input count; check the (sole) input.
+        // Op::View shares the producer's bundle Arc — it extends the
+        // alias set even though it isn't an `is_view_op` in the
+        // narrower single-storage-strided-view sense.
+        let extends_alias = node.op.is_view_op()
+            || matches!(node.op, Op::View { .. });
+        if !extends_alias { continue }
         if let Some(&inp) = node.inputs.first() {
             if alias.contains(&inp) {
                 alias.insert(nid);
@@ -1626,10 +1680,6 @@ pub fn promote_views_for_liveness(
     if order.is_empty() {
         return 0;
     }
-    let pos: HashMap<NodeId, usize> = order.iter().enumerate()
-        .map(|(i, &n)| (n, i))
-        .collect();
-
     // Forward consumer index: producer NodeId → list of consumer NodeIds.
     let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     for &nid in &order {
@@ -1638,12 +1688,29 @@ pub fn promote_views_for_liveness(
         }
     }
 
-    // `last_use[N]`: max topo position of any node downstream from N
-    // (including N itself). Computed by reverse-iterating the topo
-    // order and propagating each node's position back to its inputs.
+    // `depth[N]`: longest-input-chain length feeding into N. Two
+    // sibling consumers in the same conceptual layer get the same
+    // depth, so the lifetime comparison below treats them symmetrically
+    // even when topo *position* puts them in different slots of the
+    // walk (which depends on roots[] order and traversal direction —
+    // unstable for our purposes).
+    let mut depth: HashMap<NodeId, usize> = HashMap::with_capacity(order.len());
+    for &nid in &order {
+        let mut d = 0usize;
+        for &inp in &graph.node(nid).inputs {
+            if let Some(&di) = depth.get(&inp) {
+                if di + 1 > d { d = di + 1; }
+            }
+        }
+        depth.insert(nid, d);
+    }
+
+    // `last_use[N]`: max downstream depth reachable from N (including
+    // N itself). Computed by reverse-iterating the topo order and
+    // propagating each node's depth back to its inputs.
     let mut last_use: HashMap<NodeId, usize> = HashMap::with_capacity(order.len());
     for &nid in order.iter().rev() {
-        let mut lu = pos[&nid];
+        let mut lu = depth[&nid];
         if let Some(downstream) = consumers.get(&nid) {
             for &c in downstream {
                 if let Some(&cl) = last_use.get(&c) {

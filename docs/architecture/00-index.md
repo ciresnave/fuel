@@ -23,6 +23,7 @@
 | 09 | [non-goals](09-non-goals.md) | What fuel deliberately doesn't try to be |
 | 10 | [decisions-log](10-decisions-log.md) | Material architectural changes over time |
 | 11 | [persistence](11-persistence.md) | Optimization-cache and tolerance-recipe sibling artifacts; format, invalidation, mmap |
+| 12 | [multi-output](12-multi-output.md) | Option-C bundled storage + `Op::View`/`Op::ViewOwned`/`Op::ScatterIntoSlot`; multi-output authoring contract |
 
 ---
 

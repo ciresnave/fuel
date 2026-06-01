@@ -5483,9 +5483,8 @@ causal_conv1d_half_kernel!(causal_conv1d_f16,  half::f16);
 // Algorithmic complexity: O(batch · seqlen · dim · dstate) FMAs.
 
 /// Shared shape-validation for the SelectiveScan dtype variants.
-/// `return_state` switches the expected `out_bytes`: false →
-/// `batch · seqlen · dim · elem_bytes` (y), true →
-/// `batch · dim · dstate · elem_bytes` (last_state).
+/// Multi-output (Option C, 2026-06-01): the output buffer is always
+/// the bundled `[y_bytes ; last_state_bytes]` concatenation.
 fn selective_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -5496,18 +5495,17 @@ fn selective_scan_check_shapes(
     c_bytes: usize,
     out_bytes: usize,
     batch: usize, seqlen: usize, dim: usize, dstate: usize,
-    return_state: bool,
 ) -> Result<()> {
     let u_need = batch.saturating_mul(seqlen).saturating_mul(dim).saturating_mul(elem_bytes);
     let delta_need = u_need;
     let a_need = dim.saturating_mul(dstate).saturating_mul(elem_bytes);
     let b_need = batch.saturating_mul(seqlen).saturating_mul(dstate).saturating_mul(elem_bytes);
     let c_need = b_need;
-    let out_need = if return_state {
-        batch.saturating_mul(dim).saturating_mul(dstate).saturating_mul(elem_bytes)
-    } else {
-        u_need
-    };
+    let last_state_need = batch
+        .saturating_mul(dim)
+        .saturating_mul(dstate)
+        .saturating_mul(elem_bytes);
+    let out_need = u_need.saturating_add(last_state_need);
     let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
             Err(Error::Msg(format!(
@@ -5535,12 +5533,11 @@ fn selective_scan_check_shapes(
 /// without losing the F64 accumulator precision.
 macro_rules! selective_scan_kernel {
     ($name:ident, $T:ty, $to_f64:expr, $from_f64:expr) => {
-        /// SelectiveScan CPU kernel. `return_state` switches the
-        /// output: false → `y [batch, seqlen, dim]` (the scanned
-        /// sequence); true → `last_state [batch, dim, dstate]`
-        /// (the final h-state). When `return_state` is true the
-        /// inner-loop y accumulator is skipped (no need to compute
-        /// it just to throw away).
+        /// SelectiveScan CPU kernel (multi-output, Option C). The
+        /// `out` buffer is the bundled `[y_bytes ; last_state_bytes]`
+        /// concatenation: slot 0 = `y [batch, seqlen, dim]` followed
+        /// by slot 1 = `last_state [batch, dim, dstate]`, both in
+        /// the same `T` dtype.
         #[allow(clippy::too_many_arguments)]
         pub fn $name(
             u: &CpuStorageBytes,
@@ -5554,14 +5551,13 @@ macro_rules! selective_scan_kernel {
             dim: usize,
             dstate: usize,
             delta_softplus: bool,
-            return_state: bool,
         ) -> Result<()> {
             selective_scan_check_shapes(
                 stringify!($name),
                 std::mem::size_of::<$T>(),
                 u.len_bytes(), delta.len_bytes(), a.len_bytes(),
                 b.len_bytes(), c.len_bytes(), out.len_bytes(),
-                batch, seqlen, dim, dstate, return_state,
+                batch, seqlen, dim, dstate,
             )?;
             if batch == 0 || seqlen == 0 || dim == 0 || dstate == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -5575,6 +5571,13 @@ macro_rules! selective_scan_kernel {
             let c_view: &[$T] = c.as_slice()?;
             let out_view: &mut [$T] = out.as_slice_mut()?;
 
+            // Bundled output: slot 0 = y [batch, seqlen, dim],
+            // slot 1 = last_state [batch, dim, dstate], same dtype.
+            let y_elems = batch * seqlen * dim;
+            let last_state_elems = batch * dim * dstate;
+            debug_assert_eq!(out_view.len(), y_elems + last_state_elems);
+            let (y_out, last_state_out) = out_view.split_at_mut(y_elems);
+
             // Recurrent hidden state — F64 accumulator regardless of T.
             // Layout: [batch][dim][dstate].
             let mut h = vec![0.0_f64; batch * dim * dstate];
@@ -5585,7 +5588,7 @@ macro_rules! selective_scan_kernel {
                     let delta_row_off = u_row_off;
                     let b_row_off = (bi * seqlen + t) * dstate;
                     let c_row_off = b_row_off;
-                    let out_row_off = u_row_off;
+                    let y_row_off = u_row_off;
                     for i in 0..dim {
                         let raw_d = $to_f64(delta_view[delta_row_off + i]);
                         let d = if delta_softplus {
@@ -5605,22 +5608,16 @@ macro_rules! selective_scan_kernel {
                             let b_val = $to_f64(b_view[b_row_off + j]);
                             let h_new = (d * a_val).exp() * h[h_off + j] + d * b_val * u_val;
                             h[h_off + j] = h_new;
-                            if !return_state {
-                                y_acc += h_new * $to_f64(c_view[c_row_off + j]);
-                            }
+                            y_acc += h_new * $to_f64(c_view[c_row_off + j]);
                         }
-                        if !return_state {
-                            out_view[out_row_off + i] = $from_f64(y_acc);
-                        }
+                        y_out[y_row_off + i] = $from_f64(y_acc);
                     }
                 }
             }
-            if return_state {
-                // h is [batch, dim, dstate] F64; copy to out as T.
-                debug_assert_eq!(out_view.len(), batch * dim * dstate);
-                for (slot, &h_val) in out_view.iter_mut().zip(h.iter()) {
-                    *slot = $from_f64(h_val);
-                }
+            // Narrow the final hidden state into slot 1.
+            debug_assert_eq!(last_state_out.len(), h.len());
+            for (slot, &h_val) in last_state_out.iter_mut().zip(h.iter()) {
+                *slot = $from_f64(h_val);
             }
             Ok(())
         }
@@ -5658,13 +5655,9 @@ selective_scan_kernel!(selective_scan_f16, half::f16,
 // [batch, heads, head_dim, state_dim], allocated internally and
 // zero-initialized at the start of the scan.
 
-/// SsdChunkScan CPU kernel (F32, single-chunk v1). Output buffer
-/// size is `batch * seqlen * heads * head_dim * 4` bytes.
-///
 /// Shared shape-validation for the SsdChunkScan dtype variants.
-/// `return_state` switches the expected `out_bytes`: false →
-/// `batch · seqlen · heads · head_dim · elem_bytes` (y), true →
-/// `batch · heads · head_dim · state_dim · elem_bytes` (last_state).
+/// Multi-output (Option C, 2026-06-01): the output buffer is the
+/// bundled `[y_bytes ; last_state_bytes]` concatenation.
 fn ssd_chunk_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -5676,18 +5669,18 @@ fn ssd_chunk_scan_check_shapes(
     out_bytes: usize,
     batch: usize, seqlen: usize, heads: usize,
     head_dim: usize, state_dim: usize,
-    return_state: bool,
 ) -> Result<()> {
     let x_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(head_dim).saturating_mul(elem_bytes);
     let dt_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(elem_bytes);
     let a_need = heads.saturating_mul(elem_bytes);
     let b_need = batch.saturating_mul(seqlen).saturating_mul(heads).saturating_mul(state_dim).saturating_mul(elem_bytes);
     let c_need = b_need;
-    let out_need = if return_state {
-        batch.saturating_mul(heads).saturating_mul(head_dim).saturating_mul(state_dim).saturating_mul(elem_bytes)
-    } else {
-        x_need
-    };
+    let last_state_need = batch
+        .saturating_mul(heads)
+        .saturating_mul(head_dim)
+        .saturating_mul(state_dim)
+        .saturating_mul(elem_bytes);
+    let out_need = x_need.saturating_add(last_state_need);
     let check = |name_arg: &str, got: usize, need: usize| -> Result<()> {
         if got != need {
             Err(Error::Msg(format!(
@@ -5730,6 +5723,11 @@ fn ssd_chunk_scan_check_shapes(
 /// answer.
 macro_rules! ssd_chunk_scan_kernel {
     ($name:ident, $T:ty, $to_f64:expr, $from_f64:expr) => {
+        /// SsdChunkScan CPU kernel (multi-output, Option C). The
+        /// `out` buffer is the bundled `[y_bytes ; last_state_bytes]`
+        /// concatenation: slot 0 = `y [batch, seqlen, heads,
+        /// head_dim]` followed by slot 1 = `last_state [batch,
+        /// heads, head_dim, state_dim]`, both in the same `T` dtype.
         #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
@@ -5744,7 +5742,6 @@ macro_rules! ssd_chunk_scan_kernel {
             head_dim: usize,
             state_dim: usize,
             chunk_size: usize,
-            return_state: bool,
         ) -> Result<()> {
             if chunk_size == 0 {
                 return Err(Error::Msg(format!(
@@ -5766,7 +5763,6 @@ macro_rules! ssd_chunk_scan_kernel {
                 x.len_bytes(), dt.len_bytes(), a.len_bytes(),
                 b.len_bytes(), c.len_bytes(), out.len_bytes(),
                 batch, seqlen, heads, head_dim, state_dim,
-                return_state,
             )?;
             if batch == 0 || seqlen == 0 || heads == 0 || head_dim == 0 || state_dim == 0 {
                 let out_view: &mut [$T] = out.as_slice_mut()?;
@@ -5780,6 +5776,12 @@ macro_rules! ssd_chunk_scan_kernel {
             let c_view: &[$T] = c.as_slice()?;
             let out_view: &mut [$T] = out.as_slice_mut()?;
 
+            // Bundled output split: slot 0 = y, slot 1 = last_state.
+            let y_elems = batch * seqlen * heads * head_dim;
+            let last_state_elems = batch * heads * head_dim * state_dim;
+            debug_assert_eq!(out_view.len(), y_elems + last_state_elems);
+            let (y_out, last_state_out) = out_view.split_at_mut(y_elems);
+
             let mut h = vec![0.0_f64; batch * heads * head_dim * state_dim];
 
             for bi in 0..batch {
@@ -5791,7 +5793,7 @@ macro_rules! ssd_chunk_scan_kernel {
                         let x_off = ((bi * seqlen + t) * heads + hi) * head_dim;
                         let b_off = ((bi * seqlen + t) * heads + hi) * state_dim;
                         let c_off = b_off;
-                        let out_off = x_off;
+                        let y_off = x_off;
                         for i in 0..head_dim {
                             let x_val = $to_f64(x_view[x_off + i]);
                             let h_off = ((bi * heads + hi) * head_dim + i) * state_dim;
@@ -5802,10 +5804,15 @@ macro_rules! ssd_chunk_scan_kernel {
                                 h[h_off + j] = h_new;
                                 y_acc += h_new * $to_f64(c_view[c_off + j]);
                             }
-                            out_view[out_off + i] = $from_f64(y_acc);
+                            y_out[y_off + i] = $from_f64(y_acc);
                         }
                     }
                 }
+            }
+            // Narrow the final hidden state into slot 1.
+            debug_assert_eq!(last_state_out.len(), h.len());
+            for (slot, &h_val) in last_state_out.iter_mut().zip(h.iter()) {
+                *slot = $from_f64(h_val);
             }
             Ok(())
         }
@@ -10720,7 +10727,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f32]);    // [1, 1] — note: exp(-1) used below
         let b = CpuStorageBytes::from_slice(&[2.0_f32]);     // [1, 1, 1]
         let c = CpuStorageBytes::from_slice(&[0.5_f32]);     // [1, 1, 1]
-        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
         selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
             .expect("selective_scan");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10739,7 +10746,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f32]);          // [1, 1]
         let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);     // [1, 2, 1]
         let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);     // [1, 2, 1]
-        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        let mut out = CpuStorageBytes::from_zero_bytes(12);
         selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 2, 1, 1, false)
             .expect("selective_scan");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10760,7 +10767,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[0.0_f32]);       // exp(0.693 * 0) = 1
         let b = CpuStorageBytes::from_slice(&[1.0_f32]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32]);
-        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
         selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, true)
             .expect("selective_scan");
         // d = softplus(0) = ln 2
@@ -10779,7 +10786,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f64]);
         let b = CpuStorageBytes::from_slice(&[2.0_f64]);
         let c = CpuStorageBytes::from_slice(&[0.5_f64]);
-        let mut out = CpuStorageBytes::from_zero_bytes(8);
+        let mut out = CpuStorageBytes::from_zero_bytes(16);
         selective_scan_f64(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
             .expect("selective_scan_f64");
         let r: &[f64] = out.as_slice().unwrap();
@@ -10796,7 +10803,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[half::bf16::from_f32(-1.0)]);
         let b = CpuStorageBytes::from_slice(&[half::bf16::from_f32(2.0)]);
         let c = CpuStorageBytes::from_slice(&[half::bf16::from_f32(0.5)]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
         selective_scan_bf16(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
             .expect("selective_scan_bf16");
         let r: &[half::bf16] = out.as_slice().unwrap();
@@ -10811,7 +10818,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[half::f16::from_f32(-1.0)]);
         let b = CpuStorageBytes::from_slice(&[half::f16::from_f32(2.0)]);
         let c = CpuStorageBytes::from_slice(&[half::f16::from_f32(0.5)]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
         selective_scan_f16(&u, &delta, &a, &b, &c, &mut out, 1, 1, 1, 1, false)
             .expect("selective_scan_f16");
         let r: &[half::f16] = out.as_slice().unwrap();
@@ -10826,7 +10833,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[1.0_f32]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32]);
-        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let mut out = CpuStorageBytes::from_zero_bytes(16);
         // batch=2 but only 1-element inputs → error
         let r = selective_scan_f32(&u, &delta, &a, &b, &c, &mut out, 2, 1, 1, 1, false);
         assert!(r.is_err());
@@ -10846,7 +10853,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[2.0_f32]);
         let c = CpuStorageBytes::from_slice(&[0.5_f32]);
-        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
         ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
             .expect("ssd_chunk_scan");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10864,7 +10871,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);
         let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        let mut out = CpuStorageBytes::from_zero_bytes(12);
         ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 2, 1, 1, 1, 2)
             .expect("ssd_chunk_scan");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10884,7 +10891,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f32, -2.0]);
         let b = CpuStorageBytes::from_slice(&[2.0_f32, 4.0]);
         let c = CpuStorageBytes::from_slice(&[0.5_f32, 1.0]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
+        let mut out = CpuStorageBytes::from_zero_bytes(16);
         ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 2, 1, 1, 1)
             .expect("ssd_chunk_scan");
         let result: &[f32] = out.as_slice().unwrap();
@@ -10909,11 +10916,11 @@ mod tests {
         let b = CpuStorageBytes::from_slice(&[2.0_f32, 2.0]);
         let c = CpuStorageBytes::from_slice(&[0.5_f32, 0.5]);
         // chunk_size = 1 (two chunks of 1 token each)
-        let mut out_cs1 = CpuStorageBytes::from_zero_bytes(2 * 4);
+        let mut out_cs1 = CpuStorageBytes::from_zero_bytes(12);
         ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out_cs1, 1, 2, 1, 1, 1, 1)
             .expect("ssd_chunk_scan cs=1");
         // chunk_size = 2 (single chunk of 2 tokens)
-        let mut out_cs2 = CpuStorageBytes::from_zero_bytes(2 * 4);
+        let mut out_cs2 = CpuStorageBytes::from_zero_bytes(12);
         ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out_cs2, 1, 2, 1, 1, 1, 2)
             .expect("ssd_chunk_scan cs=2");
         let r1: &[f32] = out_cs1.as_slice().unwrap();
@@ -10933,7 +10940,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32; 4]);
-        let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+        let mut out = CpuStorageBytes::from_zero_bytes(20);
         // seqlen=4, chunk_size=3 → 4 % 3 != 0 → error
         let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 4, 1, 1, 1, 3);
         assert!(r.is_err());
@@ -10947,7 +10954,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[1.0_f32]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32]);
-        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let mut out = CpuStorageBytes::from_zero_bytes(8);
         let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 0);
         assert!(r.is_err());
     }
@@ -11089,7 +11096,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[-1.0_f64]);
         let b = CpuStorageBytes::from_slice(&[2.0_f64]);
         let c = CpuStorageBytes::from_slice(&[0.5_f64]);
-        let mut out = CpuStorageBytes::from_zero_bytes(8);
+        let mut out = CpuStorageBytes::from_zero_bytes(16);
         ssd_chunk_scan_f64(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
             .expect("ssd_chunk_scan_f64");
         let r: &[f64] = out.as_slice().unwrap();
@@ -11104,7 +11111,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[half::bf16::from_f32(-1.0)]);
         let b = CpuStorageBytes::from_slice(&[half::bf16::from_f32(2.0)]);
         let c = CpuStorageBytes::from_slice(&[half::bf16::from_f32(0.5)]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
         ssd_chunk_scan_bf16(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
             .expect("ssd_chunk_scan_bf16");
         let r: &[half::bf16] = out.as_slice().unwrap();
@@ -11119,7 +11126,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[half::f16::from_f32(-1.0)]);
         let b = CpuStorageBytes::from_slice(&[half::f16::from_f32(2.0)]);
         let c = CpuStorageBytes::from_slice(&[half::f16::from_f32(0.5)]);
-        let mut out = CpuStorageBytes::from_zero_bytes(2);
+        let mut out = CpuStorageBytes::from_zero_bytes(4);
         ssd_chunk_scan_f16(&x, &dt, &a, &b, &c, &mut out, 1, 1, 1, 1, 1, 1)
             .expect("ssd_chunk_scan_f16");
         let r: &[half::f16] = out.as_slice().unwrap();
@@ -11134,7 +11141,7 @@ mod tests {
         let a = CpuStorageBytes::from_slice(&[1.0_f32]);
         let b = CpuStorageBytes::from_slice(&[1.0_f32]);
         let c = CpuStorageBytes::from_slice(&[1.0_f32]);
-        let mut out = CpuStorageBytes::from_zero_bytes(4);
+        let mut out = CpuStorageBytes::from_zero_bytes(16);
         // heads=2 but only 1-element a → byte count mismatch
         let r = ssd_chunk_scan_f32(&x, &dt, &a, &b, &c, &mut out, 1, 1, 2, 1, 1, 1);
         assert!(r.is_err());

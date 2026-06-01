@@ -47,6 +47,7 @@ pub fn entry() -> FusedOpEntry {
         backward:   BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
+        output_views: None,
     }
 }
 

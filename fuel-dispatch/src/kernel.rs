@@ -118,6 +118,36 @@ use fuel_storage::Storage;
 /// kernel is called. Kernels write into the pre-allocated bytes;
 /// they never allocate.
 ///
+/// ## Multi-output kernels (Option C, Session 5)
+///
+/// Multi-output ops (e.g. SelectiveScan returning `(y, last_state)`)
+/// emit ONE `KernelRef`. The contract:
+///
+/// - `outputs.len() == 1`. The single `Arc<RwLock<Storage>>` is the
+///   producer's *bundled* Storage — its `bundle()` returns
+///   `Some(&[OutputView; N])` describing each logical slot's
+///   `dtype`/`shape`/`layout`/`byte_offset` inside the bundle's
+///   underlying byte buffer.
+/// - The kernel writes each logical output into its slot's byte
+///   range by acquiring a single write lock on the output and
+///   striding by the slot's `byte_offset`. The bundle metadata is
+///   the authoritative per-slot spec — `outputs[0].read().unwrap()
+///   .bundle().expect("bundled storage").get(slot_idx)` is the
+///   canonical access path.
+/// - Per-slot dtype tags do NOT travel through the kernel's
+///   `KernelDTypes` key (which describes inputs + the bundle's
+///   primary dtype only); the bundle metadata IS the per-slot
+///   dispatch info.
+/// - The bundle is pre-allocated by the executor via
+///   `allocate_bundled_storage(device, &output_views_spec)` (see
+///   `fuel_core_types::storage::allocate_bundled_storage`). Kernels
+///   never allocate; they only fill bytes.
+///
+/// Consumers of multi-output producers are NOT multi-output kernels —
+/// they're `Op::View` (zero-copy slot projection) or `Op::ViewOwned`
+/// (independent slot buffer), which the executor handles directly
+/// without invoking a kernel.
+///
 /// **Production-correct**: kernels return `Result`, never panic.
 pub type KernelRef = fn(
     inputs: &[Arc<RwLock<Storage>>],

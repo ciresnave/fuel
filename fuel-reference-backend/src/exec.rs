@@ -824,6 +824,17 @@ pub fn eval_node_with_op(
                  reference-backend tests should not invoke it.",
             );
         }
+        Op::WriteSliceRotating { .. } => {
+            // Same pipelined-only contract as WriteSlice: sliding-
+            // window KV cache writes need a pre-allocated destination
+            // buffer that the reference backend can't model. If a
+            // test surfaces WriteSliceRotating here, it's mis-targeted.
+            unreachable!(
+                "fuel-reference-backend eval_node: Op::WriteSliceRotating is \
+                 a pipelined-executor-only op (sliding-window KV cache writes); \
+                 reference-backend tests should not invoke it.",
+            );
+        }
         Op::Alloc { .. } => {
             // Phase 3a of bridge-retirement (post-9c): zero-init
             // device allocation through the PipelinedExecutor's
@@ -883,6 +894,41 @@ pub fn eval_node_with_op(
                  have no functional reference. Use the non-inplace \
                  variant (Op::Relu / Op::Silu / etc.) for ref comparison.",
                 op,
+            );
+        }
+        Op::View { .. } | Op::ViewOwned { .. } => {
+            // Multi-output projection (Option C, Session 1). The
+            // reference backend has no notion of a bundled producer
+            // Storage — every multi-output candidate today
+            // (SelectiveScan, SsdChunkScan, FlashAttn backward) is
+            // executed via a separate functional oracle path or its
+            // own decomposition, not through the reference backend.
+            // Reaching this arm would mean someone routed a real
+            // multi-output graph through the reference oracle, which
+            // is not the intended path. Session 2's first
+            // differentiable multi-output op will need a reference
+            // implementation alongside it.
+            unreachable!(
+                "fuel-reference-backend eval_node: multi-output projection \
+                 op {:?} has no reference implementation yet. The first \
+                 differentiable multi-output op (Session 2 of \
+                 docs/session-prompts/multi-output-nodes-option-c.md) will \
+                 land its reference path alongside the kernel.",
+                op,
+            );
+        }
+        Op::ScatterIntoSlot { .. } => {
+            // Item 4 IR-only scaffold (Option C autograd). The
+            // reference backend has no realization path for this op
+            // — the production multi-output producers are
+            // NotDifferentiable, so a backward graph carrying
+            // ScatterIntoSlot is never routed through the oracle.
+            // Lights up alongside the first differentiable
+            // multi-output op.
+            unreachable!(
+                "fuel-reference-backend eval_node: Op::ScatterIntoSlot \
+                 is an IR-only autograd scaffold today; no reference \
+                 path until a differentiable multi-output op lands.",
             );
         }
     }

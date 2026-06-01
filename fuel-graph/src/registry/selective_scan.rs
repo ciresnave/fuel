@@ -75,31 +75,93 @@ use crate::registry::{
     PatternMatch, SubgraphPattern,
 };
 use crate::{Graph, NodeId};
-use fuel_core_types::{DType, Shape};
+use fuel_core_types::storage::OutputViewSpec;
+use fuel_core_types::{DType, Layout, Shape};
 
-/// Metadata-side registry entry for SelectiveScan.
+/// Metadata-side registry entry for SelectiveScan. Multi-output (item
+/// 3 consumer migration, 2026-06-01): slot 0 = `y`, slot 1 =
+/// `last_state`. The `shape_rule` and `dtype_rule` report slot 0
+/// (the primary, per the multi-output invariant); `output_views`
+/// reports both slots' specs for the bundled allocator.
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
-        id:         FusedOps::SELECTIVE_SCAN,
-        name:       "SelectiveScan",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id:           FusedOps::SELECTIVE_SCAN,
+        name:         "SelectiveScan",
+        family:       FusedOpFamily::Forward,
+        pattern:      SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward:     BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
+        output_views: Some(output_views),
     }
 }
 
-/// Output shape rule: `y: [batch, seqlen, dim]` — same as `u`'s shape
-/// (input 0). The recurrence preserves the input's leading dims; the
-/// state is consumed internally.
+/// Output shape rule. Reports slot 0 (`y: [batch, seqlen, dim]`) —
+/// the multi-output invariant requires `shape_rule` to equal
+/// `output_views()[0].shape`. Slot 1 (`last_state`) is exposed via
+/// `output_views` and reached through `Op::View { slot: 1 }`.
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
         input_shapes.len(), 5,
         "SelectiveScan takes 5 inputs (u, delta, a, b, c)",
     );
     input_shapes[0].clone()
+}
+
+/// Multi-output authoring fn. Returns two slot specs:
+/// - slot 0 = `y: [batch, seqlen, dim]`, same dtype as `u`.
+/// - slot 1 = `last_state: [batch, dim, dstate]`, same dtype as `u`.
+///
+/// `batch`, `seqlen`, `dim` come from `u` (input 0); `dstate` comes
+/// from `a` (input 2)'s second dim. Both slots are contiguous with
+/// the default row-major layout — the bundled allocator computes
+/// byte offsets via `compose_bundle`.
+///
+/// v1 keeps slot 1's dtype equal to slot 0's input dtype (matches the
+/// kernel's `$T`-narrows-from-F64 contract). A future refinement
+/// could pin slot 1 to F32 always, but that would force mixed-dtype
+/// bundles for BF16/F16 callers and need a kernel-side split.
+fn output_views(
+    input_shapes: &[Shape],
+    input_dtypes: &[DType],
+    _params:      &FusedOpParams,
+) -> Vec<OutputViewSpec> {
+    debug_assert_eq!(
+        input_shapes.len(), 5,
+        "SelectiveScan output_views: takes 5 inputs (u, delta, a, b, c)",
+    );
+    debug_assert_eq!(
+        input_dtypes.len(), 5,
+        "SelectiveScan output_views: takes 5 input dtypes",
+    );
+    let u_dims = input_shapes[0].dims();
+    let a_dims = input_shapes[2].dims();
+    debug_assert!(
+        u_dims.len() == 3 && a_dims.len() == 2,
+        "SelectiveScan output_views: u rank=3, a rank=2 expected",
+    );
+    let batch  = u_dims[0];
+    let seqlen = u_dims[1];
+    let dim    = u_dims[2];
+    let dstate = a_dims[1];
+    let dtype  = input_dtypes[0];
+    let y_shape = Shape::from_dims(&[batch, seqlen, dim]);
+    let last_state_shape = Shape::from_dims(&[batch, dim, dstate]);
+    vec![
+        OutputViewSpec {
+            dtype,
+            shape:  y_shape.clone(),
+            layout: Layout::contiguous(y_shape),
+            name:   Some("y"),
+        },
+        OutputViewSpec {
+            dtype,
+            shape:  last_state_shape.clone(),
+            layout: Layout::contiguous(last_state_shape),
+            name:   Some("last_state"),
+        },
+    ]
 }
 
 /// Dtype rule: output matches `u`'s dtype (input 0). All 5 inputs
