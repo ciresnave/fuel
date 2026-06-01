@@ -214,7 +214,7 @@ fn encoder_layer(
     let mask_t = scores
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
         .reshape(Shape::from_dims(&[1, 1, seq, seq]))
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]));
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t);
     let probs = scores.softmax_last_dim();
     let ctx = probs
@@ -247,7 +247,7 @@ fn quick_gelu(x: &LazyTensor) -> LazyTensor {
     // Div op; use `div` with the numerator 1-tensor.
     let ones = x
         .const_f32_like(vec![1.0_f32; 1], Shape::from_dims(&[1]))
-        .broadcast_to(one_plus.shape());
+        .broadcast_to(one_plus.shape()).unwrap();
     let sig = ones.div(&one_plus);
     x.mul(&sig)
 }
@@ -265,11 +265,11 @@ fn layer_norm_affine(
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g).add(&b)
 }
 
@@ -288,7 +288,7 @@ fn linear(
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f]))
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f]));
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
         None => proj,

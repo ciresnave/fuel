@@ -292,25 +292,25 @@ fn group_norm(
     let mean = x_flat.mean_dim(2);  // [1, groups]
     let mean_bc = mean
         .reshape(Shape::from_dims(&[1, groups, 1]))
-        .broadcast_to(Shape::from_dims(&[1, groups, m]));
+        .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let centered = x_flat.sub(&mean_bc);
     let sq = centered.mul(&centered);
     let var = sq.mean_dim(2);  // [1, groups]
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
         .reshape(Shape::from_dims(&[1, groups, 1]))
-        .broadcast_to(Shape::from_dims(&[1, groups, m]));
+        .broadcast_to(Shape::from_dims(&[1, groups, m])).unwrap();
     let normed = centered.div(&std_bc);  // [1, groups, m]
     // Back to [1, C, H, W] and affine.
     let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w]));
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .broadcast_to(Shape::from_dims(&[1, c, h, w]));
+        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     let b = x
         .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .broadcast_to(Shape::from_dims(&[1, c, h, w]));
+        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     normed_chw.mul(&g).add(&b)
 }
 
@@ -378,7 +378,7 @@ fn linear(
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f]))
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f]));
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
         None => proj,

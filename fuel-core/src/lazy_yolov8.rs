@@ -236,11 +236,11 @@ fn per_channel_affine(
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .broadcast_to(Shape::from_dims(&[1, c, h, w]));
+        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     let sh = x
         .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))
-        .broadcast_to(Shape::from_dims(&[1, c, h, w]));
+        .broadcast_to(Shape::from_dims(&[1, c, h, w])).unwrap();
     x.mul(&s).add(&sh)
 }
 
@@ -448,7 +448,7 @@ fn dfl_decode(reg_logits: &LazyTensor, reg_max: usize, n_anchors: usize) -> Lazy
     let bins_t = reg_logits
         .const_f32_like(bins, Shape::from_dims(&[r]))
         .reshape(Shape::from_dims(&[1, 1, 1, r]))
-        .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r]));
+        .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r])).unwrap();
     let weighted = probs.mul(&bins_t);
     weighted.sum_dim(3)  // [1, 4, N]
 }

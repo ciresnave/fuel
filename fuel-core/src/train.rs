@@ -414,7 +414,7 @@ impl<B: GraphBackend> TrainState<B> {
                 Some(scale) => {
                     // Broadcast the rank-0 scalar to grad's shape and multiply.
                     let grad_shape = raw_grad.graph_tensor().shape();
-                    let scale_bcast = scale.broadcast_to(grad_shape);
+                    let scale_bcast = scale.broadcast_to(grad_shape).unwrap();
                     raw_grad.mul(&scale_bcast)
                 }
             };
@@ -566,13 +566,13 @@ pub mod loss {
         let mut keepdim = dims.clone();
         keepdim[rank - 1] = 1;
         let max_kd = max_r.reshape(Shape::from_dims(&keepdim));
-        let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims));
+        let max_bcast = max_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
         let shifted = logits.sub(&max_bcast);
         let expd = shifted.exp();
         let sum_exp = expd.sum_dim(rank - 1);
         let log_sum = sum_exp.log();
         let log_sum_kd = log_sum.reshape(Shape::from_dims(&keepdim));
-        let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims));
+        let log_sum_bcast = log_sum_kd.broadcast_to(Shape::from_dims(&dims)).unwrap();
         let log_softmax = shifted.sub(&log_sum_bcast);
 
         // -sum(target * log_softmax, last-dim) summed over batch, then mean.
@@ -1027,8 +1027,8 @@ mod tests {
                 // by using `const_f32_like` off an existing param.
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                let w_b = w.broadcast_to(Shape::from_dims(&[len]));
-                let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                 let y_hat = x.mul(&w_b).add(&b_b);
                 let diff = y_hat.sub(&y);
                 let sq = diff.sqr();
@@ -1075,8 +1075,8 @@ mod tests {
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                let w_b = w.broadcast_to(Shape::from_dims(&[len]));
-                let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                 let y_hat = x.mul(&w_b).add(&b_b);
                 let diff = y_hat.sub(&y);
                 diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
@@ -1141,7 +1141,7 @@ mod tests {
                 // logits = x @ W + b_broadcast
                 let logits_raw = x.matmul(w);
                 let b_b = b.reshape(Shape::from_dims(&[1, n_class]))
-                    .broadcast_to(Shape::from_dims(&[n, n_class]));
+                    .broadcast_to(Shape::from_dims(&[n, n_class])).unwrap();
                 let logits = logits_raw.add(&b_b);
                 super::loss::cross_entropy_with_logits(&logits, &y)
             }).unwrap();
@@ -1198,7 +1198,7 @@ mod tests {
                 let x_norm = x.rms_norm_last_dim(1e-6);
                 let logits = x_norm.matmul(w);
                 let b_b = b.reshape(Shape::from_dims(&[1, 1]))
-                    .broadcast_to(Shape::from_dims(&[n, 1]));
+                    .broadcast_to(Shape::from_dims(&[n, 1])).unwrap();
                 let pred = logits.add(&b_b);
                 super::loss::mse(&pred, &y)
             }).unwrap();
@@ -1266,8 +1266,8 @@ mod tests {
                     let w = &p["w"]; let b = &p["b"];
                     let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                     let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                    let w_b = w.broadcast_to(Shape::from_dims(&[len]));
-                    let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                     let y_hat = x.mul(&w_b).add(&b_b);
                     y_hat.sub(&y).sqr().sum_all().mul_scalar(1.0 / len as f64)
                 }).unwrap();
@@ -1289,8 +1289,8 @@ mod tests {
                     let w = &p["w"]; let b = &p["b"];
                     let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                     let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                    let w_b = w.broadcast_to(Shape::from_dims(&[len]));
-                    let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                    let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                    let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                     let y_hat = x.mul(&w_b).add(&b_b);
                     y_hat.sub(&y).sqr().sum_all().mul_scalar(1.0 / len as f64)
                 }).unwrap();
@@ -1326,8 +1326,8 @@ mod tests {
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                 let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-                let w_b = w.broadcast_to(Shape::from_dims(&[len]));
-                let b_b = b.broadcast_to(Shape::from_dims(&[len]));
+                let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+                let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
                 let y_hat = x.mul(&w_b).add(&b_b);
                 let diff = y_hat.sub(&y);
                 diff.sqr().sum_all().mul_scalar(1.0 / len as f64)

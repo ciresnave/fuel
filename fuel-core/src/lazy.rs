@@ -622,11 +622,10 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.squeeze(dim)? })
     }
 
-    /// Broadcast to a larger shape.
-    pub fn broadcast_to(&self, shape: impl Into<Shape>) -> Self {
-        Self {
-            inner: self.inner.broadcast_to(shape),
-        }
+    /// Broadcast to a larger shape. Shape-incompatibility surfaces as a
+    /// typed error at build time.
+    pub fn broadcast_to(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+        Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
     }
 
     /// Slice (narrow) along `dim`: take elements `[start, start+len)`.
@@ -1698,11 +1697,6 @@ impl LazyTensor {
     /// Result-returning sibling of [`Self::transpose`].
     pub fn try_transpose(&self) -> std::result::Result<Self, fuel_core_types::Error> {
         Ok(Self { inner: self.inner.try_transpose()? })
-    }
-
-    /// Result-returning sibling of [`Self::broadcast_to`].
-    pub fn try_broadcast_to(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
-        Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
     }
 
     /// Result-returning sibling of [`Self::reshape`].
@@ -3675,6 +3669,7 @@ impl LlamaModel {
                     seq,
                     cfg.head_dim,
                 ]))
+                .unwrap()
                 .reshape(Shape::from_dims(&[
                     batch,
                     cfg.n_heads,
@@ -5987,6 +5982,7 @@ impl Gemma2Model {
             let expand = |t: LazyTensor| -> LazyTensor {
                 t.reshape(Shape::from_dims(&[batch, cfg.n_kv_heads, 1, seq, cfg.head_dim]))
                     .broadcast_to(Shape::from_dims(&[batch, cfg.n_kv_heads, n_rep, seq, cfg.head_dim]))
+                    .unwrap()
                     .reshape(Shape::from_dims(&[batch, cfg.n_heads, seq, cfg.head_dim]))
             };
             (expand(k_r), expand(v_h))

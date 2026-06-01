@@ -207,7 +207,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     let mask_t = scores
         .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
         .reshape(Shape::from_dims(&[1, 1, seq, seq]))
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]));
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t);
     let probs = scores.softmax_last_dim();
     let ctx = probs
@@ -243,7 +243,7 @@ fn moe_block(
         // Slice router_weights to get the column for this expert: [1, seq, 1].
         let w_col = router_weights
             .slice(2, ei, 1);  // [1, seq, 1]
-        let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h]));
+        let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
         let gated = expert_out.mul(&w_bc);
         routed_sum = Some(match routed_sum {
             Some(s) => s.add(&gated),
@@ -258,7 +258,7 @@ fn moe_block(
     // Shared expert gate: Linear(h → 1), then sigmoid.
     let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]));
     let sg = x.matmul(&sg_w).sigmoid();  // [1, seq, 1]
-    let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h]));
+    let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h])).unwrap();
     let shared_gated = shared_out.mul(&sg_bc);
 
     routed.add(&shared_gated)
@@ -286,12 +286,12 @@ fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, 
     let rstd = ms.add_scalar(eps).sqrt();
     let rstd_bc = rstd
         .reshape(Shape::from_dims(&[1, seq, 1]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     let normed = x.div(&rstd_bc);
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))
-        .broadcast_to(Shape::from_dims(&[1, seq, hidden]));
+        .broadcast_to(Shape::from_dims(&[1, seq, hidden])).unwrap();
     normed.mul(&g)
 }
 
@@ -324,11 +324,11 @@ fn apply_rope(
     let cos_t = x
         .const_f32_like(cos.to_vec(), Shape::from_dims(&[seq, d_head]))
         .reshape(Shape::from_dims(&[1, 1, seq, d_head]))
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head]));
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
     let sin_t = x
         .const_f32_like(sin.to_vec(), Shape::from_dims(&[seq, d_head]))
         .reshape(Shape::from_dims(&[1, 1, seq, d_head]))
-        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head]));
+        .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head])).unwrap();
     let half = d_head / 2;
     let x1 = x.slice(3, 0, half);
     let x2 = x.slice(3, half, half);
@@ -353,7 +353,7 @@ fn linear(
             let bias = x
                 .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
                 .reshape(Shape::from_dims(&[1, 1, out_f]))
-                .broadcast_to(Shape::from_dims(&[1, seq, out_f]));
+                .broadcast_to(Shape::from_dims(&[1, seq, out_f])).unwrap();
             proj.add(&bias)
         }
         None => proj,
