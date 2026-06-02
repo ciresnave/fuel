@@ -77,6 +77,7 @@ pub mod lazy_gemma;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
 pub mod lazy_mistral;
+pub mod lazy_mixtral;
 pub mod lazy_phi3;
 pub mod lazy_qwen2;
 pub mod lazy_qwen2_moe;
