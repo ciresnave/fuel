@@ -68,6 +68,46 @@ pub struct ChatGlmConfig {
     pub add_bias_linear: bool,
     pub apply_residual_connection_post_layernorm: bool,
     pub post_layer_norm: bool,
+    /// RoPE base. GLM3-6B uses `10_000.0`; CodeGeeX4-9B uses
+    /// `10_000.0 * rope_ratio = 5_000_000.0` (ratio = 500).
+    pub rope_base: f64,
+}
+
+impl ChatGlmConfig {
+    /// GLM3-6B preset (THUDM/chatglm3-6b).
+    pub fn glm3_6b() -> Self {
+        Self {
+            num_layers: 28, padded_vocab_size: 65024,
+            hidden_size: 4096, ffn_hidden_size: 13696,
+            kv_channels: 128, num_attention_heads: 32,
+            multi_query_group_num: 2,
+            seq_length: 8192, layernorm_epsilon: 1e-5,
+            norm_kind: ChatGlmNorm::Rms,
+            add_qkv_bias: true, add_bias_linear: false,
+            apply_residual_connection_post_layernorm: false,
+            post_layer_norm: true,
+            rope_base: 10_000.0,
+        }
+    }
+
+    /// CodeGeeX4-9B preset (THUDM/codegeex4-all-9b). Same
+    /// architecture as GLM3-6B with a different layer count,
+    /// vocab + seq_length, and **`rope_ratio = 500`** which
+    /// pushes the RoPE base to `5_000_000`.
+    pub fn codegeex4() -> Self {
+        Self {
+            num_layers: 40, padded_vocab_size: 151552,
+            hidden_size: 4096, ffn_hidden_size: 13696,
+            kv_channels: 128, num_attention_heads: 32,
+            multi_query_group_num: 2,
+            seq_length: 131_072, layernorm_epsilon: 1e-5,
+            norm_kind: ChatGlmNorm::Rms,
+            add_qkv_bias: true, add_bias_linear: false,
+            apply_residual_connection_post_layernorm: false,
+            post_layer_norm: true,
+            rope_base: 10_000.0 * 500.0,
+        }
+    }
 }
 
 impl ChatGlmConfig {
@@ -151,7 +191,7 @@ impl ChatGlmModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
         let (cos_data, sin_data) =
-            fuel_graph::build_rope_tables(10_000.0, start_pos, seq, rope_dim);
+            fuel_graph::build_rope_tables(cfg.rope_base, start_pos, seq, rope_dim);
         let rope_shape = Shape::from_dims(&[seq, rope_dim]);
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
@@ -445,6 +485,7 @@ mod tests {
             add_bias_linear: false,
             apply_residual_connection_post_layernorm: false,
             post_layer_norm: true,
+            rope_base: 10_000.0,
         }
     }
 
@@ -519,6 +560,49 @@ mod tests {
         for &v in &logits {
             assert!(v.is_finite());
         }
+    }
+
+    /// `rope_base` actually affects RoPE. Use a config with
+    /// `kv_channels = 8` so `rope_dim = 4` ⇒ the
+    /// `step_by(2)` over `[0, rope_dim)` includes a non-zero `i`,
+    /// making the per-frequency exponent depend on the base
+    /// (with `rope_dim = 2`, the only frequency is `theta^0 = 1`
+    /// regardless of `theta`).
+    #[test]
+    fn rope_base_alters_output() {
+        let base_cfg = ChatGlmConfig {
+            kv_channels: 8, // ⇒ rope_dim = 4
+            num_attention_heads: 2,
+            hidden_size: 16, // 2 heads * 8
+            ..tiny_config()
+        };
+        let cfg_a = ChatGlmConfig { rope_base: 10_000.0, ..base_cfg.clone() };
+        let cfg_b = ChatGlmConfig { rope_base: 5_000_000.0, ..base_cfg };
+        let weights = tiny_weights(&cfg_a);
+        let m_a = ChatGlmModel { config: cfg_a, weights: weights.clone() };
+        let m_b = ChatGlmModel { config: cfg_b, weights };
+        let toks = [1_u32, 2, 3, 4];
+        let a = m_a.forward(&toks, 0).unwrap().realize_f32();
+        let b = m_b.forward(&toks, 0).unwrap().realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        // Tiny weights (∈ [-0.025, 0.025]) ⇒ diff is real but small.
+        assert!(max_diff > 1e-8,
+            "rope_base change must alter output, max_diff = {max_diff}");
+    }
+
+    /// Both presets construct without panic.
+    #[test]
+    fn presets_construct() {
+        let glm = ChatGlmConfig::glm3_6b();
+        assert_eq!(glm.num_layers, 28);
+        assert_eq!(glm.rope_base, 10_000.0);
+
+        let cgx = ChatGlmConfig::codegeex4();
+        assert_eq!(cgx.num_layers, 40);
+        assert_eq!(cgx.rope_base, 5_000_000.0);
     }
 
     /// `apply_residual_connection_post_layernorm` flag flips the
