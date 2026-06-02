@@ -83,6 +83,7 @@ pub mod lazy_helium;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
 pub mod lazy_mistral;
+pub mod lazy_mixformer;
 pub mod lazy_mixtral;
 pub mod lazy_mpt;
 pub mod lazy_olmo;
