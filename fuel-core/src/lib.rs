@@ -103,6 +103,7 @@ pub mod lazy_rwkv6;
 pub mod lazy_smollm3;
 pub mod lazy_stablelm;
 pub mod lazy_starcoder2;
+pub mod lazy_t5;
 pub mod lazy_yi;
 pub mod lazy_sd_text_encoder;
 pub mod lazy_sd_unet;
