@@ -74,6 +74,7 @@ pub mod lazy_kv_cache;
 pub mod lazy_convnext;
 pub mod lazy_falcon;
 pub mod lazy_gemma;
+pub mod lazy_helium;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
 pub mod lazy_mistral;
