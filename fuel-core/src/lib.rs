@@ -102,6 +102,7 @@ pub mod lazy_qwen3_moe;
 pub mod lazy_recurrent_gemma;
 pub mod lazy_rwkv5;
 pub mod lazy_rwkv6;
+pub mod lazy_rwkv7;
 pub mod lazy_smollm3;
 pub mod lazy_stablelm;
 pub mod lazy_starcoder2;
