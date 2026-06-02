@@ -70,6 +70,7 @@ mod indexer;
 pub mod kv_cache;
 pub mod lazy;
 pub mod lazy_based;
+pub mod lazy_beit;
 pub mod lazy_bert;
 pub mod lazy_bigcode;
 pub mod lazy_chatglm;
