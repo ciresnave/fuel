@@ -123,6 +123,32 @@ impl MixFormerModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "MixFormerModel: tokens must be non-empty");
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let h = embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+
+        self.forward_embeds(&h, start_pos)
+    }
+
+    /// Forward from pre-computed input embeddings of shape
+    /// `(batch, seq, hidden_size)`. Used by multimodal models
+    /// (Moondream, etc.) that interleave image embeddings with
+    /// text embeddings.
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         assert_eq!(
             cfg.num_attention_heads * head_dim, cfg.hidden_size,
@@ -134,15 +160,7 @@ impl MixFormerModel {
             "MixFormerConfig: rotary_dim ({rotary_dim}) out of (0, head_dim ({head_dim})]",
         );
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let mut h = embeds.clone();
 
         let (cos_data, sin_data) =
             fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, rotary_dim);
