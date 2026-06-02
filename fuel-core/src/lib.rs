@@ -77,6 +77,7 @@ pub mod lazy_convnext;
 pub mod lazy_falcon;
 pub mod lazy_gemma;
 pub mod lazy_gemma3;
+pub mod lazy_glm4;
 pub mod lazy_granite;
 pub mod lazy_helium;
 pub mod lazy_mamba;
