@@ -82,6 +82,7 @@ pub mod lazy_convmixer;
 pub mod lazy_convnext;
 pub mod lazy_deepseek2;
 pub mod lazy_dinov2;
+pub mod lazy_dinov2reg4;
 pub mod lazy_distilbert;
 pub mod lazy_efficientnet;
 pub mod lazy_falcon;
