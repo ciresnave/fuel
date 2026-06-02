@@ -104,10 +104,6 @@ impl GemmaModel {
             cfg.hidden_size,
             "GemmaConfig: num_attention_heads * head_dim must equal hidden_size",
         );
-        assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
-            "GemmaConfig: num_attention_heads must be a multiple of num_key_value_heads",
-        );
 
         // Embedding lookup + sqrt(hidden_size) scaling (Gemma-specific).
         let embed = LazyTensor::from_f32(
@@ -116,13 +112,37 @@ impl GemmaModel {
             &Device::cpu(),
         );
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
+        let h = embed
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
         let scale = (cfg.hidden_size as f64).sqrt();
-        h = h.mul_scalar(scale);
+        let h = h.mul_scalar(scale);
 
-        // Shared RoPE tables.
+        self.forward_embeds(&h, start_pos)
+    }
+
+    /// Forward from pre-computed input embeddings of shape
+    /// `(batch, seq, hidden_size)`. Used by multimodal models
+    /// (PaliGemma, etc.) that interleave image embeddings with
+    /// text embeddings before running the Gemma layers. The
+    /// caller is responsible for the `sqrt(hidden_size)` token-
+    /// embedding scaling that `forward()` applies internally.
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size, "embeds last dim must equal hidden_size");
+        assert_eq!(
+            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
+            "GemmaConfig: num_attention_heads must be a multiple of num_key_value_heads",
+        );
+
+        let mut h = embeds.clone();
+
+        // Shared RoPE tables — built fresh per call because seq may vary.
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_theta, start_pos, seq, cfg.head_dim,
         );
