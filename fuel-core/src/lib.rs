@@ -88,6 +88,7 @@ pub mod lazy_persimmon;
 pub mod lazy_phi3;
 pub mod lazy_qwen2;
 pub mod lazy_qwen2_moe;
+pub mod lazy_qwen3;
 pub mod lazy_smollm3;
 pub mod lazy_stablelm;
 pub mod lazy_starcoder2;
