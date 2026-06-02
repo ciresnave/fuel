@@ -87,6 +87,7 @@ pub mod lazy_mpt;
 pub mod lazy_olmo;
 pub mod lazy_olmo2;
 pub mod lazy_persimmon;
+pub mod lazy_phi;
 pub mod lazy_phi3;
 pub mod lazy_qwen2;
 pub mod lazy_qwen2_moe;
