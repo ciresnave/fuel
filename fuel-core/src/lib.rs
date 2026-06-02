@@ -95,6 +95,7 @@ pub mod lazy_marian;
 pub mod lazy_mistral;
 pub mod lazy_mixformer;
 pub mod lazy_mixtral;
+pub mod lazy_moondream;
 pub mod lazy_mpt;
 pub mod lazy_olmo;
 pub mod lazy_olmo2;
