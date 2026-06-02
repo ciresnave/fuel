@@ -81,6 +81,7 @@ pub mod lazy_llava;
 pub mod lazy_convnext;
 pub mod lazy_deepseek2;
 pub mod lazy_dinov2;
+pub mod lazy_distilbert;
 pub mod lazy_falcon;
 pub mod lazy_gemma;
 pub mod lazy_gemma3;
