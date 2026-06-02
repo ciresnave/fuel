@@ -76,6 +76,7 @@ pub mod lazy_chatglm;
 pub mod lazy_clip;
 pub mod lazy_kv_cache;
 pub mod lazy_llama2c;
+pub mod lazy_llava;
 pub mod lazy_convnext;
 pub mod lazy_deepseek2;
 pub mod lazy_dinov2;

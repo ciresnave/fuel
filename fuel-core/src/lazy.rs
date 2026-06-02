@@ -4099,12 +4099,35 @@ impl LlamaModel {
             embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         // index_select(0, token_ids) produces [seq, dim]. Reshape to
         // [1, seq, dim] for the downstream attention code.
-        let mut h = embed
+        let h = embed
             .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
-        // Share RoPE cos/sin across all layers — see the matching
-        // comment in `forward_with_cache`.
+        self.forward_embeds(&h, start_pos)
+    }
+
+    /// Forward from pre-computed input embeddings of shape
+    /// `(batch, seq, dim)`. Used by multimodal models (LLaVA,
+    /// Pixtral, Qwen-VL, etc.) that interleave image embeddings
+    /// with text embeddings before running the LLaMA decoder
+    /// stack.
+    pub fn forward_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
+        assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
+
+        let mut h = embeds.clone();
+
+        // RoPE tables.
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_base,
             start_pos,
@@ -4115,19 +4138,16 @@ impl LlamaModel {
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
-        // Chain through all decoder layers.
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin);
         }
 
-        // Final norm (affine RmsNorm).
         let h_norm = apply_affine_rms_norm(
             &h,
             &weights.final_norm_gain,
             cfg.dim,
             cfg.norm_eps,
         );
-        // Output projection to vocab logits (routes through qmatmul for Q4_0).
         Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size))
     }
 
