@@ -81,6 +81,7 @@ pub mod lazy_mixtral;
 pub mod lazy_phi3;
 pub mod lazy_qwen2;
 pub mod lazy_qwen2_moe;
+pub mod lazy_starcoder2;
 pub mod lazy_sd_text_encoder;
 pub mod lazy_sd_unet;
 pub mod lazy_sd_vae;
