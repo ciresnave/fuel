@@ -136,6 +136,33 @@ impl MistralModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "MistralModel::forward: tokens must be non-empty");
+
+        // Embedding lookup.
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let h = embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+
+        self.forward_embeds(&h, start_pos)
+    }
+
+    /// Forward from pre-computed input embeddings of shape
+    /// `(batch, seq, hidden_size)`. Used by multimodal models
+    /// (Pixtral, etc.) that interleave image embeddings with
+    /// text embeddings before running the Mistral decoder.
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size);
         assert_eq!(
             cfg.num_attention_heads * cfg.head_dim,
             cfg.hidden_size,
@@ -147,18 +174,8 @@ impl MistralModel {
             cfg.num_attention_heads, cfg.num_key_value_heads,
         );
 
-        // Embedding lookup.
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let mut h = embeds.clone();
 
-        // Shared RoPE tables (one alloc per forward; reused across layers).
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_theta,
             start_pos,
@@ -169,12 +186,10 @@ impl MistralModel {
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
-        // Per-layer decode.
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
 
-        // Final RmsNorm + lm_head projection.
         let h_norm = crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
         );
