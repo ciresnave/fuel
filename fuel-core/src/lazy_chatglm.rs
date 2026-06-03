@@ -165,6 +165,24 @@ impl ChatGlmModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_post = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output_layer.apply_linear(
+            &h_post, cfg.hidden_size, cfg.padded_vocab_size,
+        ))
+    }
+
+    /// Run the decoder forward up to (and including, when
+    /// `post_layer_norm`) the final norm and return per-token
+    /// hidden states `(1, seq, hidden_size)`. ChatGLM-specific:
+    /// optional `post_layer_norm` gate and configurable
+    /// `apply_residual_connection_post_layernorm` are honored.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "ChatGlmModel: tokens must be non-empty");
@@ -200,21 +218,17 @@ impl ChatGlmModel {
             h = self.apply_block(&h, layer, &rope_cos, &rope_sin)?;
         }
 
-        // Optional final norm + lm head.
-        let h_post = if cfg.post_layer_norm {
+        if cfg.post_layer_norm {
             apply_norm(
                 &h,
                 weights.final_norm_gain.as_ref()
                     .expect("post_layer_norm: final_norm_gain required"),
                 weights.final_norm_bias.as_ref(),
                 cfg.hidden_size, cfg.layernorm_epsilon, cfg.norm_kind,
-            )?
+            )
         } else {
-            h
-        };
-        Ok(weights.output_layer.apply_linear(
-            &h_post, cfg.hidden_size, cfg.padded_vocab_size,
-        ))
+            Ok(h)
+        }
     }
 
     fn apply_block(
@@ -629,5 +643,17 @@ mod tests {
         }
         assert!(max_diff > 1e-6,
             "residual-source flag must alter output, max_diff = {max_diff}");
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = ChatGlmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

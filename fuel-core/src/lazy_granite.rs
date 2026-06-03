@@ -50,6 +50,19 @@ impl GraniteModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         let head_dim = cfg.head_dim();
@@ -76,10 +89,9 @@ impl GraniteModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_layer(
@@ -202,5 +214,21 @@ mod tests {
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
         for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = GraniteConfig {
+            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
+            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
+            rms_norm_eps: 1e-5, rope_theta: 10_000.0, max_position_embeddings: 64,
+        };
+        let model = GraniteModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

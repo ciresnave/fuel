@@ -148,6 +148,30 @@ impl Glm4NewModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        let logits = match &weights.lm_head {
+            Some(w) => w.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size),
+            None => {
+                let lm_w = h_norm.const_f32_like(
+                    Arc::clone(&weights.token_embedding),
+                    Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+                );
+                h_norm.matmul(&lm_w.transpose()?)?
+            }
+        };
+        Ok(logits)
+    }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips tied/untied `lm_head` projection.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -160,7 +184,6 @@ impl Glm4NewModel {
             "Glm4NewConfig: num_attention_heads must be a multiple of num_key_value_heads",
         );
 
-        // Embedding lookup.
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
@@ -171,7 +194,6 @@ impl Glm4NewModel {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
-        // Shared RoPE tables (sized to rotary_dim, not head_dim).
         let rope_dim = cfg.rotary_dim();
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_theta, start_pos, seq, rope_dim,
@@ -180,30 +202,14 @@ impl Glm4NewModel {
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
-        // Causal (optionally sliding) mask, shared across layers.
         let mask = self.build_mask(&h, seq);
 
-        // Decoder blocks.
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask, q_dim, kv_dim)?;
         }
-
-        // Final RmsNorm + lm_head.
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        let logits = match &weights.lm_head {
-            Some(w) => w.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size),
-            None => {
-                // Tied: lm_head_w = embed.T → use a matmul against the embedding constant.
-                let lm_w = h.const_f32_like(
-                    Arc::clone(&weights.token_embedding),
-                    Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-                );
-                h_norm.matmul(&lm_w.transpose()?)?
-            }
-        };
-        Ok(logits)
+        ))
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
@@ -518,6 +524,18 @@ mod tests {
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
         for &v in &out.realize_f32() {
             assert!(v.is_finite());
+        }
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_cfg();
+        let model = Glm4NewModel { config: cfg.clone(), weights: tiny_weights(&cfg, 55) };
+        let tokens = [1_u32, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
         }
     }
 }

@@ -119,6 +119,23 @@ impl Glm4Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        let lm_head_w = match &weights.lm_head {
+            Some(w) => w.clone(),
+            None => WeightStorage::F32(weights.token_embedding.clone()),
+        };
+        Ok(lm_head_w.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "Glm4Model::forward: tokens must be non-empty");
@@ -152,15 +169,9 @@ impl Glm4Model {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        let lm_head_w = match &weights.lm_head {
-            Some(w) => w.clone(),
-            None => WeightStorage::F32(weights.token_embedding.clone()),
-        };
-        Ok(lm_head_w.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_layer(
@@ -504,6 +515,18 @@ mod tests {
         for (a, e) in rot_out.iter().zip(expected.iter()) {
             assert!((a - e).abs() < 1e-5,
                 "interleaved rotation: got {a}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
         }
     }
 }
