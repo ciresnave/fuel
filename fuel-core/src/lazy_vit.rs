@@ -233,6 +233,87 @@ impl VitModel {
         }
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, num_patches + 1, hidden_size)` — CLS at slot 0,
+    /// patches follow. **No final LayerNorm** applied — DPT-
+    /// style heads (DPT-Hybrid, MiDaS variants built on plain
+    /// ViT, etc.) have their own per-stage projection.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_hidden_layers)`. Mirrors
+    /// [`crate::lazy_dinov2::Dinov2Model::forward_intermediate_layers`]
+    /// — the difference between the two is just the LayerScale +
+    /// fused Wqkv layout DINOv2 brings; the hook contract is
+    /// identical.
+    pub fn forward_intermediate_layers(
+        &self,
+        pixel_values: &LazyTensor,
+        layer_ids: &[usize],
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = pixel_values.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4);
+        let batch = dims[0];
+        assert_eq!(batch, 1, "v1 supports batch == 1");
+        assert_eq!(dims[1], cfg.num_channels);
+        assert_eq!(dims[2], cfg.image_size);
+        assert_eq!(dims[3], cfg.image_size);
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+
+        let conv_w = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj),
+            Shape::from_dims(&[cfg.hidden_size, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+        );
+        let conv_b = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj_bias),
+            Shape::from_dims(&[cfg.hidden_size]),
+        );
+        let conv_out = pixel_values.conv2d(
+            &conv_w, Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+        )?;
+        let num_patches = cfg.num_patches();
+        let patches = conv_out
+            .reshape(Shape::from_dims(&[batch, cfg.hidden_size, num_patches]))?
+            .permute([0, 2, 1_usize])?;
+
+        let cls_tok = patches.const_f32_like(
+            Arc::clone(&weights.cls_token),
+            Shape::from_dims(&[1, 1, cfg.hidden_size]),
+        );
+        let cls_bc = cls_tok.broadcast_to(Shape::from_dims(&[batch, 1, cfg.hidden_size]))?;
+        let with_cls = cls_bc.concat(&patches, 1_usize)?;
+
+        let pos = patches.const_f32_like(
+            Arc::clone(&weights.position_embeddings),
+            Shape::from_dims(&[1, num_patches + 1, cfg.hidden_size]),
+        );
+        let pos_bc = pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
+        let mut h = with_cls.add(&pos_bc)?;
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            h = self.apply_layer(&h, layer)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
@@ -498,5 +579,42 @@ mod tests {
         let t = VitConfig::microsoft_trocr_base_handwritten();
         assert!(!t.qkv_bias);
         assert_eq!(t.image_size, 384);
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped
+    /// `(1, num_patches + 1, hidden_size)`. Same contract as
+    /// the DINOv2 hook (commit `de541296`).
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_config();
+        let model = VitModel { config: cfg.clone(), weights: tiny_weights(&cfg, None) };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        assert_eq!(outs.len(), 2);
+        let np = cfg.num_patches();
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, np + 1, cfg.hidden_size]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+    }
+
+    /// Intermediate features at different depths must differ.
+    #[test]
+    fn intermediate_layers_differ_across_depth() {
+        let cfg = tiny_config();
+        let model = VitModel { config: cfg.clone(), weights: tiny_weights(&cfg, None) };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
