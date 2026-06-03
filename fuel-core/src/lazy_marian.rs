@@ -226,6 +226,53 @@ impl MarianModel {
         self.encode(&embed, &pos_full, src_tokens)
     }
 
+    /// Run only the Marian decoder, given a precomputed encoder
+    /// output and target tokens, and return logits of shape
+    /// `(1, tgt_len, target_vocab)`. Mirrors
+    /// `WhisperModel::forward_decoder` and
+    /// `T5Model::forward_decoder` — `enc_out` is the graph
+    /// anchor so all decoder constants land on the same graph.
+    /// Use this for autoregressive NMT generation where the
+    /// encoder output is cached once and the decoder is invoked
+    /// per generated token.
+    pub fn forward_decoder(
+        &self,
+        tgt_tokens: &[u32],
+        enc_out: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        assert!(!tgt_tokens.is_empty(), "tgt_tokens must be non-empty");
+        assert!(
+            cfg.share_encoder_decoder_embeddings,
+            "v1 only supports shared encoder+decoder embeddings",
+        );
+        assert_eq!(
+            cfg.d_model % cfg.decoder_attention_heads, 0,
+            "d_model must be divisible by decoder_attention_heads",
+        );
+
+        let embed = enc_out.const_f32_like(
+            self.weights.shared_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
+        );
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_full = enc_out.const_f32_like(
+            Arc::from(pos_table),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
+        );
+
+        let dec_out = self.decode(&embed, &pos_full, tgt_tokens, enc_out)?;
+
+        let lm_head = WeightStorage::F32(self.weights.shared_embedding.clone());
+        let target_vocab = cfg.target_vocab_size();
+        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab);
+        let bias_t = enc_out.const_f32_like(
+            Arc::clone(&self.weights.final_logits_bias),
+            Shape::from_dims(&[target_vocab]),
+        );
+        logits.broadcast_add(&bias_t)
+    }
+
     fn encode(
         &self,
         embed: &LazyTensor,
@@ -669,6 +716,38 @@ mod tests {
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(b.iter()) {
             assert!((x - y).abs() < 1e-7, "non-deterministic encoder: {x} vs {y}");
+        }
+    }
+
+    #[test]
+    fn forward_decoder_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let enc = model.forward_encoder(&[1_u32, 2, 3, 4]).unwrap();
+        let tgt = [5_u32, 6, 7];
+        let logits = model.forward_decoder(&tgt, &enc).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, tgt.len(), cfg.target_vocab_size()]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite decoder logit: {v}");
+        }
+    }
+
+    /// `forward_decoder(tgt, forward_encoder(src))` must match
+    /// `forward(src, tgt)` — the two paths compute the same
+    /// graph.
+    #[test]
+    fn forward_decoder_matches_full_forward() {
+        let cfg = tiny_config();
+        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let src = [1_u32, 2, 3];
+        let tgt = [5_u32, 6, 7];
+        let full = model.forward(&src, &tgt).unwrap().realize_f32();
+        let enc = model.forward_encoder(&src).unwrap();
+        let split = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
+        assert_eq!(full.len(), split.len());
+        for (a, b) in full.iter().zip(split.iter()) {
+            assert!((a - b).abs() < 1e-5,
+                "forward_decoder must match forward: {a} vs {b}");
         }
     }
 }

@@ -209,6 +209,46 @@ impl T5Model {
         self.encode(&embed, src_tokens)
     }
 
+    /// Run only the T5 decoder, given a precomputed encoder
+    /// output and target tokens, and return logits of shape
+    /// `(1, tgt_len, vocab_size)`. The caller slices the last
+    /// row to pick the next token. Mirrors
+    /// `WhisperModel::forward_decoder` — `encoder_out` is the
+    /// graph anchor so all decoder constants land on the same
+    /// graph (avoids cross-graph build errors). Use this for
+    /// autoregressive seq2seq generation where the encoder
+    /// output is cached once and the decoder is invoked per
+    /// generated token.
+    pub fn forward_decoder(
+        &self,
+        tgt_tokens: &[u32],
+        encoder_out: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        assert!(!tgt_tokens.is_empty(), "tgt_tokens must be non-empty");
+        let embed = encoder_out.const_f32_like(
+            self.weights.shared_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
+        );
+        let dec_out = self.decode(&embed, tgt_tokens, encoder_out)?;
+        let lm_head = match &self.weights.lm_head {
+            Some(w) => w.clone(),
+            None => {
+                assert!(
+                    cfg.tie_word_embeddings,
+                    "lm_head absent but tie_word_embeddings=false",
+                );
+                WeightStorage::F32(self.weights.shared_embedding.clone())
+            }
+        };
+        let dec_scaled = if cfg.tie_word_embeddings {
+            dec_out.mul_scalar((cfg.d_model as f64).powf(-0.5))
+        } else {
+            dec_out
+        };
+        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size))
+    }
+
     fn encode(&self, embed: &LazyTensor, src: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let src_len = src.len();
@@ -728,5 +768,41 @@ mod tests {
         }
         assert!(max_diff > 1e-6,
             "forward_encoder must respond to src changes, max_diff = {max_diff}");
+    }
+
+    /// `forward_decoder(tgt, enc_out)` runs only the decoder
+    /// against a cached encoder output and returns logits of
+    /// shape `(1, tgt_len, vocab_size)`. Used for
+    /// autoregressive seq2seq generation.
+    #[test]
+    fn forward_decoder_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let enc = model.forward_encoder(&[1_u32, 2, 3, 4]).unwrap();
+        let tgt = [5_u32, 6, 7];
+        let logits = model.forward_decoder(&tgt, &enc).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, tgt.len(), cfg.vocab_size]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite decoder logit: {v}");
+        }
+    }
+
+    /// `forward_decoder(tgt, forward_encoder(src))` must match
+    /// `forward(src, tgt)` — the two paths compute the same
+    /// graph.
+    #[test]
+    fn forward_decoder_matches_full_forward() {
+        let cfg = tiny_config();
+        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let src = [1_u32, 2, 3];
+        let tgt = [5_u32, 6, 7];
+        let full = model.forward(&src, &tgt).unwrap().realize_f32();
+        let enc = model.forward_encoder(&src).unwrap();
+        let split = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
+        assert_eq!(full.len(), split.len());
+        for (a, b) in full.iter().zip(split.iter()) {
+            assert!((a - b).abs() < 1e-5,
+                "forward_decoder must match forward: {a} vs {b}");
+        }
     }
 }
