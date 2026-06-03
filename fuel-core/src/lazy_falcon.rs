@@ -124,9 +124,29 @@ impl FalconModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final LayerNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection. Mirrors the
+    /// `forward_hidden` pattern across the LLM family —
+    /// Falcon-specific bit is the final-LN uses gain+bias
+    /// affine (LayerNorm, not RmsNorm).
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    /// Shared backbone: embed → RoPE → per-layer parallel
+    /// attn + MLP (Falcon's parallel structure) → final
+    /// LayerNorm.
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "FalconModel::forward: tokens must be non-empty");
+        assert!(seq > 0, "FalconModel: tokens must be non-empty");
         let head_dim = cfg.head_dim();
         assert_eq!(
             cfg.num_attention_heads * head_dim,
@@ -157,13 +177,10 @@ impl FalconModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-
-        // Final LayerNorm + lm_head.
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_layer(
@@ -456,5 +473,30 @@ mod tests {
         let any_diff = out_p.iter().zip(out_s.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "parallel vs serial attention must diverge");
+    }
+
+    /// `forward_hidden` returns post-final-LN hidden states
+    /// `(1, seq, hidden_size)` without the lm_head matmul.
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = FalconConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            n_head_kv: 1,
+            layer_norm_epsilon: 1e-5,
+            max_position_embeddings: 64,
+            parallel_attn: true,
+            bias: false,
+            rope_theta: 10_000.0,
+        };
+        let model = FalconModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
