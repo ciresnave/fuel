@@ -2223,6 +2223,76 @@ impl LazyTensor {
             ),
         })
     }
+
+    /// Append a transposed 1D convolution. `self` is
+    /// `[N, Cin, Lin]`; `weight` is `[Cin, Cout/groups, K]`
+    /// (PyTorch channel order). Returns `[N, Cout, Lout]`.
+    ///
+    /// Internally lifts to rank-4 and dispatches through
+    /// `conv_transpose2d` — there is no separate 1D op in the
+    /// IR; the lift is transparent to the executor (which sees
+    /// the same `Op::Fused(CONV_TRANSPOSE2D, _)` it already
+    /// dispatches CPU kernels for).
+    ///
+    /// Unblocks audio codec decoders (DAC, EnCodec, SNAC, Mimi,
+    /// Parler-TTS, MetaVoice, CSM) which all upsample quantized
+    /// latents to waveform via strided transposed convs.
+    pub fn conv_transpose1d(
+        &self,
+        weight: &Self,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        dilation: usize,
+        groups: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        if groups < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: groups must be >= 1, got {groups}",
+            )).bt());
+        }
+        let x_shape = self.inner.shape();
+        let x_dims = x_shape.dims();
+        let w_shape = weight.inner.shape();
+        let w_dims = w_shape.dims();
+        if x_dims.len() != 3 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: x must be rank 3 [N, Cin, Lin], got {x_dims:?}",
+            )).bt());
+        }
+        if w_dims.len() != 3 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: weight must be rank 3 [Cin, Cout/groups, K], got {w_dims:?}",
+            )).bt());
+        }
+        if stride < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: stride must be >= 1, got {stride}",
+            )).bt());
+        }
+        if dilation < 1 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: dilation must be >= 1, got {dilation}",
+            )).bt());
+        }
+        let cin = x_dims[1];
+        let cin_w = w_dims[0];
+        if cin != cin_w {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: x has {cin} in-channels but weight has {cin_w}",
+            )).bt());
+        }
+        if cin % groups != 0 {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "conv_transpose1d: Cin={cin} must be divisible by groups={groups}",
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.conv_transpose1d(
+                &weight.inner, stride, padding, output_padding, dilation, groups,
+            ),
+        })
+    }
 }
 
 // ============================================================================

@@ -2955,6 +2955,56 @@ impl Tensor {
         }
     }
 
+    /// Append a transposed 1D convolution by lifting `self` and
+    /// `weight` into the rank-4 path and dispatching through
+    /// [`Self::conv_transpose2d`]. `self` is `[N, Cin, Lin]`;
+    /// `weight` is `[Cin, Cout/groups, K]` (transposed channel
+    /// order, matches PyTorch). Returns `[N, Cout, Lout]` where
+    /// `Lout = (Lin − 1)·stride − 2·pad + dil·(K − 1) + out_pad + 1`.
+    ///
+    /// Used by audio codec models (DAC / EnCodec / SNAC / Mimi /
+    /// Parler-TTS / MetaVoice / CSM) where the decoder upsamples
+    /// quantized latents back to waveform with strided transposed
+    /// convs.
+    pub fn conv_transpose1d(
+        &self,
+        weight: &Tensor,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        dilation: usize,
+        groups: usize,
+    ) -> Tensor {
+        let x_dims = self.shape();
+        let x_dims = x_dims.dims();
+        let w_dims = weight.shape();
+        let w_dims = w_dims.dims();
+        assert_eq!(
+            x_dims.len(), 3,
+            "conv_transpose1d: x must be rank 3 [N, Cin, Lin], got {x_dims:?}",
+        );
+        assert_eq!(
+            w_dims.len(), 3,
+            "conv_transpose1d: weight must be rank 3 [Cin, Cout/groups, K], got {w_dims:?}",
+        );
+        let (n, cin, l_in) = (x_dims[0], x_dims[1], x_dims[2]);
+        let (cin_w, cout_per_g, k) = (w_dims[0], w_dims[1], w_dims[2]);
+        let x4 = self.reshape(Shape::from_dims(&[n, cin, 1, l_in]));
+        let w4 = weight.reshape(Shape::from_dims(&[cin_w, cout_per_g, 1, k]));
+        let y4 = x4.conv_transpose2d(
+            &w4,
+            (1, stride),
+            (0, padding),
+            (0, output_padding),
+            (1, dilation),
+            groups,
+        );
+        let y_dims = y4.shape();
+        let y_dims = y_dims.dims();
+        let (n_o, cout, _h_one, l_out) = (y_dims[0], y_dims[1], y_dims[2], y_dims[3]);
+        y4.reshape(Shape::from_dims(&[n_o, cout, l_out]))
+    }
+
     /// Append a [`Op::FlashAttn`] node. `self` is `q` of shape
     /// `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]` with
     /// `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional) is
@@ -8609,6 +8659,49 @@ mod tests {
         let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3 * 3], Shape::from_dims(&[2, 3, 3, 3]));
         let y = x.conv_transpose2d(&w, (2, 2), (1, 1), (1, 1), (1, 1), 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8, 8]);
+    }
+
+    #[test]
+    fn conv_transpose1d_builder_shape_stride_2_pad_1() {
+        // Lin=4, K=3, s=2, pad=1, out_pad=1, dil=1
+        // Lout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 2 * 4], Shape::from_dims(&[1, 2, 4]), cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 2 * 3 * 3], Shape::from_dims(&[2, 3, 3]),
+        );
+        let y = x.conv_transpose1d(&w, 2, 1, 1, 1, 1);
+        assert_eq!(y.shape().dims(), &[1, 3, 8]);
+    }
+
+    #[test]
+    fn conv_transpose1d_builder_shape_stride_4_no_pad() {
+        // Lin=2, K=4, s=4, pad=0, out_pad=0, dil=1
+        // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 1 * 2], Shape::from_dims(&[1, 1, 2]), cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]),
+        );
+        let y = x.conv_transpose1d(&w, 4, 0, 0, 1, 1);
+        assert_eq!(y.shape().dims(), &[1, 1, 8]);
+    }
+
+    #[test]
+    fn conv_transpose1d_builder_with_groups() {
+        // groups=2: input Cin=4 splits into 2 groups of 2; weight
+        // Cin=4 first dim matches input; Cout/group=3 → total Cout=6.
+        // Lin=3, K=3, s=1, pad=0, out_pad=0, dil=1 → Lout = (3-1)*1 + 2 + 0 + 1 = 5.
+        let x = Tensor::from_f32(
+            vec![0.0_f32; 1 * 4 * 3], Shape::from_dims(&[1, 4, 3]), cpu_dev(),
+        );
+        let w = x.const_f32_like(
+            vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 3, 3]),
+        );
+        let y = x.conv_transpose1d(&w, 1, 0, 0, 1, 2);
+        assert_eq!(y.shape().dims(), &[1, 6, 5]);
     }
 
     #[test]
