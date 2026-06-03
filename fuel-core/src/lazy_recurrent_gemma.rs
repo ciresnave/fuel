@@ -197,6 +197,28 @@ impl RecurrentGemmaModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
+        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
+        let sc = cfg.logits_soft_cap;
+        if sc > 0.0 {
+            Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc))
+        } else {
+            Ok(logits)
+        }
+    }
+
+    /// Run the decoder forward up to the final offset RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// RecurrentGemma-specific: per-layer Attention vs. Recurrent
+    /// (LRU) temporal block selection from `block_types`.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "RecurrentGemmaModel: tokens must be non-empty");
@@ -226,7 +248,6 @@ impl RecurrentGemmaModel {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
-        // RoPE tables for attention layers (rope_dim = head_dim / 2).
         let rope_dim = cfg.head_dim / 2;
         let (cos_data, sin_data) =
             fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, rope_dim);
@@ -237,19 +258,9 @@ impl RecurrentGemmaModel {
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_layer(&h, layer, layer_idx, &rope_cos, &rope_sin)?;
         }
-
-        // Final offset RmsNorm + tied lm_head + soft-cap.
-        let h_norm = apply_offset_rms_norm(
+        apply_offset_rms_norm(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
-        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
-        let sc = cfg.logits_soft_cap;
-        if sc > 0.0 {
-            Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc))
-        } else {
-            Ok(logits)
-        }
+        )
     }
 
     fn apply_layer(
@@ -774,5 +785,17 @@ mod tests {
         assert_eq!(cfg.block_type(0), TemporalBlockType::Recurrent);
         assert_eq!(cfg.block_type(1), TemporalBlockType::Recurrent);
         assert_eq!(cfg.block_type(2), TemporalBlockType::Attention);
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
