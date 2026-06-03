@@ -73,6 +73,23 @@ impl Llama2cModel {
         };
         llama.forward(tokens, start_pos)
     }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, dim)`. Delegates
+    /// to `LlamaModel::forward_hidden` with an internally-built
+    /// anchor from the token-embedding constant.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        let anchor = LazyTensor::from_f32(
+            llama.weights.token_embedding.clone(),
+            fuel_core_types::Shape::from_dims(&[llama.config.vocab_size, llama.config.dim]),
+            &crate::Device::cpu(),
+        );
+        llama.forward_hidden(tokens, start_pos, &anchor)
+    }
 }
 
 #[cfg(test)]
@@ -136,5 +153,49 @@ mod tests {
         assert_eq!(l.n_kv_heads, 2);
         assert_eq!(l.head_dim, 8); // 64 / 8
         assert_eq!(l.vocab_size, 256);
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = Llama2cConfig {
+            dim: 16, hidden_dim: 32, n_layers: 2,
+            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
+            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+        };
+        let mut s: u32 = 31415;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
+            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+        };
+        let h = cfg.dim; let i = cfg.hidden_dim;
+        let kv = cfg.n_kv_heads * cfg.head_dim;
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
+            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
+            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
+            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
+            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
+            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
+        }).collect();
+        let weights = LlamaWeights {
+            token_embedding, layers,
+            final_norm_gain: Arc::from(vec![1.0_f32; h]),
+            output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
+        };
+        let model = Llama2cModel { config: cfg.clone(), weights };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.dim]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
