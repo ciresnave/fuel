@@ -103,6 +103,23 @@ impl BigCodeModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final LayerNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection. BigCode (StarCoder1)
+    /// uses learned absolute position embeddings + LayerNorm
+    /// final norm — same backbone is run for both `forward`
+    /// and `forward_hidden`.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -113,7 +130,6 @@ impl BigCodeModel {
             start_pos + seq, cfg.max_position_embeddings,
         );
 
-        // Token embedding lookup.
         let wte = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
@@ -124,7 +140,6 @@ impl BigCodeModel {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
-        // Learned position embedding: index rows [start_pos..start_pos + seq].
         let wpe = wte.const_f32_like(
             weights.position_embedding.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
@@ -134,18 +149,15 @@ impl BigCodeModel {
         let pos_emb = wpe
             .index_select(0_usize, &pos_ids_t)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
-
         let mut h = token_emb.add(&pos_emb)?;
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_layer(
@@ -316,5 +328,22 @@ mod tests {
         let any_diff = out_0.iter().zip(out_5.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-7);
         assert!(any_diff, "different start_pos must change the learned-position output");
+    }
+
+    /// `forward_hidden` returns post-LayerNorm hidden states.
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = BigCodeConfig {
+            vocab_size: 32, max_position_embeddings: 64, num_hidden_layers: 2,
+            hidden_size: 16, num_attention_heads: 4, layer_norm_epsilon: 1e-5,
+            intermediate_size: 32, multi_query: true,
+        };
+        let model = BigCodeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

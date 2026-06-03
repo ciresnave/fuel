@@ -120,9 +120,28 @@ impl PhiModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        let logits = weights.lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
+        let bias_t = h_norm.const_f32_like(
+            Arc::clone(&weights.lm_head_bias),
+            Shape::from_dims(&[cfg.vocab_size]),
+        );
+        logits.broadcast_add(&bias_t)
+    }
+
+    /// Run the decoder forward up to the final LayerNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection AND its bias.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "PhiModel::forward: tokens must be non-empty");
+        assert!(seq > 0, "PhiModel: tokens must be non-empty");
         assert_eq!(
             cfg.num_attention_heads * cfg.head_dim, cfg.hidden_size,
             "PhiConfig: num_attention_heads * head_dim must equal hidden_size",
@@ -157,18 +176,10 @@ impl PhiModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-
-        // Final LayerNorm + lm_head (with bias).
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_eps,
-        );
-        let logits = weights.lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
-        let bias_t = h.const_f32_like(
-            Arc::clone(&weights.lm_head_bias),
-            Shape::from_dims(&[cfg.vocab_size]),
-        );
-        logits.broadcast_add(&bias_t)
+        ))
     }
 
     fn apply_layer(
@@ -424,5 +435,20 @@ mod tests {
     fn num_kv_heads_default_is_num_attention_heads() {
         let cfg = tiny_config();
         assert_eq!(cfg.num_kv_heads(), cfg.num_attention_heads);
+    }
+
+    /// `forward_hidden` returns post-LayerNorm hidden states
+    /// `(1, seq, hidden_size)` without the lm_head matmul or
+    /// its bias.
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = PhiModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
