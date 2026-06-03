@@ -3466,11 +3466,15 @@ impl LazyTensor {
         replicated.reshape(vec![n, c, t * scale])
     }
 
-    /// 2-D nearest interpolation to an explicit target size. Equivalent
-    /// to `upsample_nearest2d` when `target_h` / `target_w` are integer
-    /// multiples of `H` / `W` and the multiplier is the same on both
-    /// axes; for non-uniform / non-integer ratios this is a future
-    /// enhancement.
+    /// 2-D nearest interpolation to an explicit target size.
+    /// Arbitrary ratios (non-integer, non-uniform between H and
+    /// W) supported via an `index_select`-based composite. The
+    /// indexing convention matches PyTorch / the eager kernel:
+    /// `src_h[oi] = min(H - 1, floor(oi * H / H_out))`.
+    ///
+    /// Used by DepthAnythingV2's DPT head and similar dense
+    /// prediction heads that resize feature maps to arbitrary
+    /// targets.
     pub fn interpolate2d(
         &self,
         target_h: usize,
@@ -3484,24 +3488,38 @@ impl LazyTensor {
         }
         let h = dims[2];
         let w = dims[3];
-        if h == 0 || w == 0 {
+        if h == 0 || w == 0 || target_h == 0 || target_w == 0 {
             return Err(fuel_core_types::Error::Msg(
-                "interpolate2d: input spatial dims must be positive".into(),
+                "interpolate2d: input + target spatial dims must be positive".into(),
             ).bt());
         }
-        if target_h % h != 0 || target_w % w != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
-                "interpolate2d: target ({target_h}×{target_w}) must be integer multiple of input ({h}×{w}); non-integer ratios are future work",
-            )).bt());
+        // Fast-path: identity.
+        if target_h == h && target_w == w {
+            return Ok(self.clone());
         }
-        let sh = target_h / h;
-        let sw = target_w / w;
-        if sh != sw {
-            return Err(fuel_core_types::Error::Msg(format!(
-                "interpolate2d: non-uniform scale ({sh} vs {sw}) is future work",
-            )).bt());
+        // Fast-path: integer-multiple uniform scale → existing
+        // `upsample_nearest2d` (more cache-friendly than the
+        // index_select composite for the common 2× / 4× case).
+        if target_h % h == 0 && target_w % w == 0 && target_h / h == target_w / w {
+            return self.upsample_nearest2d(target_h / h);
         }
-        self.upsample_nearest2d(sh)
+        // General case: build per-axis source-index tensors and
+        // index_select. Matches the eager UpsampleNearest2D
+        // kernel's convention: src_idx = min(src - 1, floor(out * src / target)).
+        let h_idx: Vec<u32> = (0..target_h)
+            .map(|oi| ((oi * h) / target_h).min(h - 1) as u32)
+            .collect();
+        let w_idx: Vec<u32> = (0..target_w)
+            .map(|oj| ((oj * w) / target_w).min(w - 1) as u32)
+            .collect();
+        let h_idx_tensor = self.const_u32_like(
+            h_idx, fuel_core_types::Shape::from_dims(&[target_h]),
+        );
+        let w_idx_tensor = self.const_u32_like(
+            w_idx, fuel_core_types::Shape::from_dims(&[target_w]),
+        );
+        let after_h = self.index_select(2_usize, &h_idx_tensor)?;
+        after_h.index_select(3_usize, &w_idx_tensor)
     }
 
     /// 1-D nearest interpolation to an explicit target size. Same
@@ -10698,9 +10716,14 @@ mod phase_a5_factory_tests {
     }
 
     #[test]
-    fn interpolate2d_rejects_non_integer_ratio() {
+    fn interpolate2d_accepts_non_integer_ratio() {
+        // Lifted from "rejects non-integer ratio" — arbitrary
+        // ratios are now supported via the index_select composite
+        // (matching the eager UpsampleNearest2D convention). See
+        // tests/lazy_interpolate2d_oracle.rs for parity checks.
         let x = cpu_f32(vec![1.0; 4], &[1, 1, 2, 2]);
-        assert!(x.interpolate2d(3, 4).is_err());
+        let out = x.interpolate2d(3, 4).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 3, 4]);
     }
 
     #[test]
