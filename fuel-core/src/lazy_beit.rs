@@ -207,6 +207,84 @@ impl BeitModel {
         logits.broadcast_add(&bias_t)
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, num_patches + 1, embed_dim)` — CLS at slot 0,
+    /// patches follow. **No final LayerNorm** applied — the
+    /// final LN sits inside the classifier head, so the raw
+    /// post-block hidden state is what gets returned (matches
+    /// the convention used by the other ViT-shape hooks).
+    ///
+    /// BEiT specifics preserved:
+    ///   - **Learned relative position bias** is built once
+    ///     per layer block (the bias table is per-block in
+    ///     BEiT) and applied inside the attention path —
+    ///     same path the public `forward` takes.
+    ///   - No absolute / learned 1D position embedding.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_blocks)`. Mirrors the ViT, DINOv2, DINOv2-reg4,
+    /// SigLIP, and CLIP hooks.
+    pub fn forward_intermediate_layers(
+        &self,
+        pixel_values: &LazyTensor,
+        layer_ids: &[usize],
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = pixel_values.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4);
+        let batch = dims[0];
+        assert_eq!(batch, 1, "v1 supports batch == 1");
+        assert_eq!(dims[1], cfg.num_channels);
+        assert_eq!(dims[2], cfg.image_size);
+        assert_eq!(dims[3], cfg.image_size);
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.blocks.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_blocks = {depth})",
+        );
+
+        let conv_w = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj),
+            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+        );
+        let conv_b = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj_bias),
+            Shape::from_dims(&[cfg.embed_dim]),
+        );
+        let conv_out = pixel_values.conv2d(
+            &conv_w, Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+        )?;
+        let np = cfg.num_patches();
+        let patches = conv_out
+            .reshape(Shape::from_dims(&[batch, cfg.embed_dim, np]))?
+            .permute([0, 2, 1_usize])?;
+        let cls = pixel_values.const_f32_like(
+            Arc::clone(&weights.cls_token),
+            Shape::from_dims(&[1, 1, cfg.embed_dim]),
+        );
+        let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
+        let mut h = cls_bc.concat(&patches, 1_usize)?;
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, block) in weights.blocks.iter().enumerate() {
+            h = self.apply_block(&h, block, pixel_values)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_block(
         &self,
         x: &LazyTensor,
@@ -537,5 +615,33 @@ mod tests {
         for k in 1..=4 {
             assert_eq!(idx[k * 5 + k], same_bucket);
         }
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped
+    /// `(1, num_patches + 1, embed_dim)`. CLS at slot 0,
+    /// patches follow. Mirrors the ViT-shape vision hooks.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_config();
+        let model = BeitModel::new(cfg.clone(), tiny_weights(&cfg));
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        assert_eq!(outs.len(), 2);
+        let np = cfg.num_patches();
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, np + 1, cfg.embed_dim]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
