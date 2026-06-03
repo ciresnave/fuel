@@ -166,6 +166,27 @@ impl ConvMixerModel {
     /// Returns class logits `(1, nclasses)`.
     pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
+        let x = self.run_backbone(image)?;
+        let pooled_w = x.mean_dim(3_usize)?;
+        let pooled = pooled_w.mean_dim(2_usize)?;
+        let logits = self.weights.head.apply_linear(&pooled, cfg.dim, cfg.nclasses);
+        let bias_t = pooled.const_f32_like(
+            Arc::clone(&self.weights.head_bias),
+            Shape::from_dims(&[cfg.nclasses]),
+        );
+        logits.broadcast_add(&bias_t)
+    }
+
+    /// Run the backbone (patch-embed stem + ConvMixer blocks)
+    /// and return the channels-first feature map
+    /// `(1, dim, H/patch, W/patch)` BEFORE global mean pool
+    /// and the linear classifier.
+    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone(image)
+    }
+
+    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
@@ -175,7 +196,6 @@ impl ConvMixerModel {
             cfg.kernel_size,
         );
 
-        // ---- Stem: patch-embed conv → GELU → BN ---------------------------
         let stem_w = self.weights.stem.const_like(
             image,
             Shape::from_dims(&[cfg.dim, 3, cfg.patch_size, cfg.patch_size]),
@@ -185,22 +205,10 @@ impl ConvMixerModel {
             .gelu_erf();
         x = self.apply_bn(&x, &self.weights.stem_bn)?;
 
-        // ---- Mixer blocks --------------------------------------------------
         for block in &self.weights.blocks {
             x = self.apply_block(&x, block)?;
         }
-
-        // ---- Head: global mean over (H, W) → Linear -----------------------
-        // x is (1, dim, H', W'). Mean over dim 3 (W) then dim 2 (H).
-        let pooled_w = x.mean_dim(3_usize)?;     // (1, dim, H')
-        let pooled = pooled_w.mean_dim(2_usize)?; // (1, dim)
-        // Apply classifier head (Linear).
-        let logits = self.weights.head.apply_linear(&pooled, cfg.dim, cfg.nclasses);
-        let bias_t = pooled.const_f32_like(
-            Arc::clone(&self.weights.head_bias),
-            Shape::from_dims(&[cfg.nclasses]),
-        );
-        logits.broadcast_add(&bias_t)
+        Ok(x)
     }
 
     fn apply_block(
@@ -380,5 +388,20 @@ mod tests {
         let img = tiny_image(6, 6, &Device::cpu());
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, cfg.nclasses]);
+    }
+
+    #[test]
+    fn forward_features_shape_and_finite() {
+        let cfg = tiny_cfg(2);
+        let model = ConvMixerModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let img = tiny_image(8, 8, &Device::cpu());
+        let feats = model.forward_features(&img).unwrap();
+        let shape = feats.shape();
+        let dims = shape.dims();
+        assert_eq!(dims[0], 1);
+        assert_eq!(dims[1], cfg.dim);
+        for &v in &feats.realize_f32() {
+            assert!(v.is_finite(), "non-finite feature: {v}");
+        }
     }
 }

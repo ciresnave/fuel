@@ -160,31 +160,10 @@ impl ResNetModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
     pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        let x = self.run_backbone(image)?;
+        let pooled_w = x.mean_dim(3_usize)?;
+        let pooled = pooled_w.mean_dim(2_usize)?;
 
-        // ---- Stem: conv7x7 s=2 p=3 → BN → ReLU → max_pool 3 s=2 p=1
-        let stem_w = self.weights.stem_conv.const_like(
-            image, Shape::from_dims(&[64, 3, 7, 7]),
-        );
-        let mut x = image.conv2d(&stem_w, None, (2, 2), (3, 3), 1)?;
-        x = apply_bn(&x, &self.weights.stem_bn, 64)?.relu();
-        x = x.max_pool2d((3, 3), (2, 2), (1, 1))?;
-
-        // ---- Four residual stages ----------------------------------------
-        for stage in &self.weights.stages {
-            for block in &stage.blocks {
-                x = self.apply_block(&x, block)?;
-            }
-        }
-
-        // ---- Global average pool → (1, features) -------------------------
-        let pooled_w = x.mean_dim(3_usize)?;     // (1, C, H)
-        let pooled = pooled_w.mean_dim(2_usize)?; // (1, C)
-
-        // ---- Classifier (optional) ---------------------------------------
         match &self.weights.fc {
             None => Ok(pooled),
             Some((w, b)) => {
@@ -196,6 +175,36 @@ impl ResNetModel {
                 logits.broadcast_add(&bias_t)
             }
         }
+    }
+
+    /// Run the backbone (stem + all four residual stages) and
+    /// return the channels-first feature map
+    /// `(1, features, H/32, W/32)` BEFORE global average pool
+    /// and the classifier. Useful for segmentation/detection
+    /// heads, embedding adapters, and dense prediction.
+    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone(image)
+    }
+
+    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        let dims = image.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
+        assert_eq!(dims[1], 3, "image must have 3 input channels");
+
+        let stem_w = self.weights.stem_conv.const_like(
+            image, Shape::from_dims(&[64, 3, 7, 7]),
+        );
+        let mut x = image.conv2d(&stem_w, None, (2, 2), (3, 3), 1)?;
+        x = apply_bn(&x, &self.weights.stem_bn, 64)?.relu();
+        x = x.max_pool2d((3, 3), (2, 2), (1, 1))?;
+
+        for stage in &self.weights.stages {
+            for block in &stage.blocks {
+                x = self.apply_block(&x, block)?;
+            }
+        }
+        Ok(x)
     }
 
     fn apply_block(
@@ -496,5 +505,21 @@ mod tests {
         // path mismatches, the conv2d shape check would fail.
         let feats = model.forward(&img).unwrap();
         assert_eq!(feats.shape().dims(), &[1, 512]);
+    }
+
+    #[test]
+    fn forward_features_shape_and_finite() {
+        let cfg = ResNetConfig::resnet18(Some(10));
+        let weights = build_tiny_weights(&cfg, 3333);
+        let model = ResNetModel { config: cfg, weights };
+        let img = tiny_image(64, 64);
+        let feats = model.forward_features(&img).unwrap();
+        let shape = feats.shape();
+        let dims = shape.dims();
+        assert_eq!(dims[0], 1);
+        assert_eq!(dims[1], 512);
+        for &v in &feats.realize_f32() {
+            assert!(v.is_finite(), "non-finite feature: {v}");
+        }
     }
 }

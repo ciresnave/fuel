@@ -150,17 +150,7 @@ pub struct MobileOneModel {
 impl MobileOneModel {
     pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
-
-        let mut x = self.apply_layer(image, &self.weights.stem)?;
-        for stage in &self.weights.stages {
-            for layer in stage {
-                x = self.apply_layer(&x, layer)?;
-            }
-        }
+        let x = self.run_backbone(image)?;
         let pooled_w = x.mean_dim(3_usize)?;
         let pooled = pooled_w.mean_dim(2_usize)?;
         match &self.weights.head {
@@ -175,6 +165,29 @@ impl MobileOneModel {
                 logits.broadcast_add(&bias_t)
             }
         }
+    }
+
+    /// Run the backbone (stem + 4 MobileOne stages with
+    /// branch-fused Conv+bias and optional SE) and return the
+    /// channels-first feature map BEFORE global avg pool and
+    /// the classifier.
+    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone(image)
+    }
+
+    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        let dims = image.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
+        assert_eq!(dims[1], 3, "image must have 3 input channels");
+
+        let mut x = self.apply_layer(image, &self.weights.stem)?;
+        for stage in &self.weights.stages {
+            for layer in stage {
+                x = self.apply_layer(&x, layer)?;
+            }
+        }
+        Ok(x)
     }
 
     fn apply_layer(&self, x: &LazyTensor, layer: &MobileOneLayerWeights) -> Result<LazyTensor> {
@@ -371,6 +384,22 @@ mod tests {
         for (i, count) in expected_layer_counts.iter().enumerate() {
             assert_eq!(weights.stages[i].len(), *count,
                 "stage {} expected {} layers, got {}", i + 1, count, weights.stages[i].len());
+        }
+    }
+
+    #[test]
+    fn forward_features_shape_and_finite() {
+        let cfg = MobileOneConfig::s0(Some(10));
+        let weights = build_weights(&cfg, false, 44);
+        let model = MobileOneModel { config: cfg, weights };
+        let img = tiny_image(32);
+        let feats = model.forward_features(&img).unwrap();
+        let shape = feats.shape();
+        let dims = shape.dims();
+        assert_eq!(dims[0], 1);
+        assert_eq!(dims[1], model.config.channels_at(4));
+        for &v in &feats.realize_f32() {
+            assert!(v.is_finite(), "non-finite feature: {v}");
         }
     }
 }
