@@ -196,6 +196,60 @@ impl MistralModel {
         Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
     }
 
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection — useful for embedding
+    /// adapters (NV-Embed v2's perceiver-style latent-attention
+    /// head, custom poolers, etc.) that swap the causal LM head
+    /// for a downstream projector.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0, "MistralModel::forward_hidden: tokens must be non-empty");
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let h = embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        self.forward_hidden_embeds(&h, start_pos)
+    }
+
+    /// Like [`Self::forward_embeds`] but skips the `lm_head`
+    /// projection and returns the post-RmsNorm hidden states.
+    /// Used by multimodal+embedding compositions that mix
+    /// pre-computed embeddings with a custom pooling head.
+    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size);
+
+        let mut h = embeds.clone();
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_theta, start_pos, seq, cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        for layer in &weights.layers {
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
+        }
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
+            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
+        ))
+    }
+
     /// Build the sliding-window causal mask for a single forward
     /// (v1, no cache). Shape `[1, 1, seq, seq]`, broadcast-ready for
     /// `scores`.
@@ -455,5 +509,28 @@ mod tests {
         let any_diff = out_small.iter().zip(out_full.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "sliding_window=2 should differ from full causal");
+    }
+
+    /// `forward_hidden` returns post-RmsNorm hidden states with
+    /// shape `(1, seq, hidden)`, not logits. Skipping the
+    /// `lm_head` projection unlocks embedding-adapter
+    /// composition (NV-Embed v2 perceiver, etc.).
+    #[test]
+    fn forward_hidden_skips_lm_head() {
+        let cfg = MistralConfig {
+            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
+            num_hidden_layers: 2, num_attention_heads: 4,
+            num_key_value_heads: 2, head_dim: 4,
+            rms_norm_eps: 1e-5, rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            sliding_window: None,
+        };
+        let model = MistralModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
