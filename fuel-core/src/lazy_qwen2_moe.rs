@@ -129,11 +129,34 @@ impl Qwen2MoeModel {
     /// "prefill from scratch" path.
     pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
+        let h_norm = self.run_backbone(tokens)?;
+        let lm = h_norm.const_f32_like(
+            self.weights.lm_head.clone(),
+            Shape::from_dims(&[cfg.hidden_size, cfg.vocab_size]),
+        );
+        Ok(h_norm.matmul(&lm).unwrap())
+    }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection. Mirrors the
+    /// `forward_hidden` pattern used by Llama / Mistral /
+    /// Gemma / MixFormer / Qwen2 — useful for any embedding
+    /// adapter or custom pooler built on top of a Qwen2-MoE
+    /// backbone.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    /// Shared backbone: embed → per-layer attn+MoE → final
+    /// RmsNorm. Used by `forward` (then matmuls with `lm_head`)
+    /// and `forward_hidden` (returns hidden states directly).
+    fn run_backbone(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
         let h = cfg.hidden_size;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        // Anchor the graph on the token embedding.
         let embed = LazyTensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
@@ -147,10 +170,7 @@ impl Qwen2MoeModel {
         for lw in &self.weights.layers {
             x = decoder_layer(&x, lw, cfg, seq);
         }
-
-        let x = rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq);
-        let lm = x.const_f32_like(self.weights.lm_head.clone(), Shape::from_dims(&[h, cfg.vocab_size]));
-        Ok(x.matmul(&lm).unwrap())
+        Ok(rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq))
     }
 }
 
@@ -437,5 +457,53 @@ mod tests {
     fn config_head_dim() {
         let cfg = tiny_cfg();
         assert_eq!(cfg.head_dim(), 4);
+    }
+
+    /// `forward_hidden` returns post-RmsNorm hidden states
+    /// `(1, seq, hidden_size)` without the lm_head matmul.
+    /// Same backbone as `forward`, just skips the final
+    /// projection.
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_cfg();
+        let h = cfg.hidden_size;
+        let moe_int = cfg.moe_intermediate_size;
+        let shared_int = cfg.shared_expert_intermediate_size;
+        let z = |n| Arc::from(vec![0.0_f32; n]) as Arc<[f32]>;
+        let o = |n| Arc::from(vec![1.0_f32; n]) as Arc<[f32]>;
+        let experts: Vec<ExpertWeights> = (0..cfg.num_experts)
+            .map(|_| ExpertWeights {
+                gate_w: z(h * moe_int),
+                up_w:   z(h * moe_int),
+                down_w: z(moe_int * h),
+            })
+            .collect();
+        let layer = Qwen2MoeLayerWeights {
+            input_ln: o(h),
+            q_w: z(h * h), q_b: z(h),
+            k_w: z(h * h), k_b: z(h),
+            v_w: z(h * h), v_b: z(h),
+            o_w: z(h * h),
+            post_attn_ln: o(h),
+            gate_w: z(h * cfg.num_experts),
+            experts,
+            shared_gate_w: z(h * shared_int),
+            shared_up_w:   z(h * shared_int),
+            shared_down_w: z(shared_int * h),
+            shared_expert_gate_w: z(h),
+        };
+        let weights = Qwen2MoeWeights {
+            token_embedding: z(cfg.vocab_size * h),
+            layers: vec![layer],
+            final_ln: o(h),
+            lm_head: z(h * cfg.vocab_size),
+        };
+        let model = Qwen2MoeModel { config: cfg.clone(), weights };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), h]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
