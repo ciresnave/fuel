@@ -221,6 +221,126 @@ impl ModernBertModel {
         ))
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, seq, hidden_size)`. Each captured tensor is the
+    /// post-block hidden state **before the final LN** —
+    /// downstream heads can apply normalization themselves
+    /// (matching the convention used by the ViT-shape vision
+    /// hooks).
+    ///
+    /// ModernBERT specifics preserved:
+    ///   - Dual RoPE tables (global + local) built once and
+    ///     selected per layer based on
+    ///     `i % global_attn_every_n_layers`.
+    ///   - Local sliding-window additive mask built once and
+    ///     combined with the caller-supplied attention mask
+    ///     on local-attention layers.
+    ///   - Embedding LayerNorm (no bias) applied before the
+    ///     first encoder block.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_hidden_layers)`.
+    pub fn forward_intermediate_layers(
+        &self,
+        tokens: &[u32],
+        layer_ids: &[usize],
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let h = cfg.hidden_size;
+        assert!(seq > 0);
+        assert!(seq <= cfg.max_position_embeddings);
+        assert!(
+            cfg.num_attention_heads * cfg.head_dim() == h,
+            "num_attention_heads * head_dim must equal hidden_size",
+        );
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+
+        // Same embedding + RoPE + local-mask setup as `forward`.
+        let word_emb_t = LazyTensor::from_f32(
+            weights.word_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, h]),
+            &Device::cpu(),
+        );
+        let token_ids = word_emb_t.const_u32_like(
+            tokens.to_vec(),
+            Shape::from_dims(&[seq]),
+        );
+        let embeds = word_emb_t
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let mut x = crate::lazy::apply_affine_layer_norm_pub(
+            &embeds,
+            &weights.embed_ln_gain,
+            &Arc::from(vec![0.0_f32; h]),
+            h,
+            cfg.layer_norm_eps,
+        );
+
+        let head_dim = cfg.head_dim();
+        let (g_cos, g_sin) = fuel_graph::build_rope_tables(
+            cfg.global_rope_theta, 0, seq, head_dim,
+        );
+        let (l_cos, l_sin) = fuel_graph::build_rope_tables(
+            cfg.local_rope_theta, 0, seq, head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, head_dim]);
+        let global_cos = x.const_f32_like(g_cos, rope_shape.clone());
+        let global_sin = x.const_f32_like(g_sin, rope_shape.clone());
+        let local_cos = x.const_f32_like(l_cos, rope_shape.clone());
+        let local_sin = x.const_f32_like(l_sin, rope_shape);
+
+        let half_window = cfg.local_attention / 2;
+        let mut local_mask = vec![0.0_f32; seq * seq];
+        for i in 0..seq {
+            for j in 0..seq {
+                if (i as isize - j as isize).unsigned_abs() > half_window {
+                    local_mask[i * seq + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let local_mask_t = x
+            .const_f32_like(Arc::<[f32]>::from(local_mask), Shape::from_dims(&[seq, seq]))
+            .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (i, layer) in weights.layers.iter().enumerate() {
+            let uses_local = i % cfg.global_attn_every_n_layers != 0;
+            let (cos, sin) = if uses_local {
+                (&local_cos, &local_sin)
+            } else {
+                (&global_cos, &global_sin)
+            };
+            let layer_mask = if uses_local {
+                match attention_mask {
+                    None => Some(local_mask_t.clone()),
+                    Some(global) => Some(global.broadcast_add(&local_mask_t)?),
+                }
+            } else {
+                attention_mask.cloned()
+            };
+            x = self.apply_layer(&x, layer, cos, sin, layer_mask.as_ref())?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == i {
+                out.push(x.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
@@ -488,5 +608,33 @@ mod tests {
         }
         assert!(max_diff > 1e-7,
             "local_attention window size must affect output (small vs large window), max_diff = {max_diff}");
+    }
+
+    /// `forward_intermediate_layers` on ModernBERT returns
+    /// per-layer features `(1, seq, hidden_size)`, capturing
+    /// the post-block hidden state BEFORE the final LN
+    /// (consistent with the other intermediate hooks).
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_cfg();
+        let model = ModernBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens = [1_u32, 2, 3, 4, 5, 6, 7, 8];
+        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1, 3], None).unwrap();
+        assert_eq!(outs.len(), 3);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        // Layer 0 vs layer 3 must differ (each layer transforms x).
+        let a = outs[0].realize_f32();
+        let c = outs[2].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(c.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 3 intermediates must differ, max_diff = {max_diff}");
     }
 }
