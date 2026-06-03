@@ -133,28 +133,8 @@ impl VggModel {
     /// Returns `(1, nclasses)`.
     pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
-        assert_eq!(dims[2], dims[3], "VGG expects square inputs");
-        assert!(
-            dims[2] % 32 == 0,
-            "VGG input H must be divisible by 32 (5 stride-2 pools), got {}",
-            dims[2],
-        );
+        let x = self.run_backbone(image)?;
 
-        // ---- Conv blocks ---------------------------------------------------
-        let mut x = image.clone();
-        for block in &self.weights.blocks {
-            for conv in block {
-                x = self.apply_conv(&x, conv)?.relu();
-            }
-            // Max-pool 2×2 stride=2, no padding.
-            x = x.max_pool2d((2, 2), (2, 2), (0, 0))?;
-        }
-
-        // ---- Flatten -------------------------------------------------------
         let final_dims = x.shape();
         let final_dims = final_dims.dims();
         let n = final_dims[0];
@@ -173,11 +153,41 @@ impl VggModel {
             self.weights.fc1.in_features);
         let flat = x.reshape(Shape::from_dims(&[n, flat_dim]))?;
 
-        // ---- FC head: fc1 → ReLU → fc2 → ReLU → fc3 → ReLU ----------------
         let h1 = self.apply_fc(&flat, &self.weights.fc1)?.relu();
         let h2 = self.apply_fc(&h1, &self.weights.fc2)?.relu();
         let h3 = self.apply_fc(&h2, &self.weights.fc3)?.relu();
         Ok(h3)
+    }
+
+    /// Run the conv backbone (all 5 conv blocks + max-pools)
+    /// and return the channels-first feature map
+    /// `(1, last_block_channels, H/32, W/32)` BEFORE flatten
+    /// and the FC head. Useful for downstream dense prediction
+    /// or as a frozen feature extractor.
+    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone(image)
+    }
+
+    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        let dims = image.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
+        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        assert_eq!(dims[2], dims[3], "VGG expects square inputs");
+        assert!(
+            dims[2] % 32 == 0,
+            "VGG input H must be divisible by 32 (5 stride-2 pools), got {}",
+            dims[2],
+        );
+
+        let mut x = image.clone();
+        for block in &self.weights.blocks {
+            for conv in block {
+                x = self.apply_conv(&x, conv)?.relu();
+            }
+            x = x.max_pool2d((2, 2), (2, 2), (0, 0))?;
+        }
+        Ok(x)
     }
 
     fn apply_conv(&self, x: &LazyTensor, conv: &VggConvWeights) -> Result<LazyTensor> {
@@ -331,5 +341,22 @@ mod tests {
         assert_eq!(VggVariant::Vgg13.convs_per_block(), [2, 2, 2, 2, 2]);
         assert_eq!(VggVariant::Vgg16.convs_per_block(), [2, 2, 3, 3, 3]);
         assert_eq!(VggVariant::Vgg19.convs_per_block(), [2, 2, 4, 4, 4]);
+    }
+
+    #[test]
+    fn forward_features_shape_and_finite() {
+        let cfg = tiny_cfg(VggVariant::Vgg13);
+        let weights = build_weights(&cfg, 44);
+        let model = VggModel { config: cfg.clone(), weights };
+        let img = tiny_image(32);
+        let feats = model.forward_features(&img).unwrap();
+        let shape = feats.shape();
+        let dims = shape.dims();
+        assert_eq!(dims[0], 1);
+        assert_eq!(dims[2], cfg.head_spatial);
+        assert_eq!(dims[3], cfg.head_spatial);
+        for &v in &feats.realize_f32() {
+            assert!(v.is_finite(), "non-finite feature: {v}");
+        }
     }
 }

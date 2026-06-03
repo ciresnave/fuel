@@ -209,6 +209,29 @@ impl EfficientNetModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
     pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
+        let x = self.run_backbone(image)?;
+        let pooled_w = x.mean_dim(3_usize)?;
+        let pooled = pooled_w.mean_dim(2_usize)?;
+
+        let logits = self.weights.classifier_w.apply_linear(
+            &pooled, cfg.final_channels, cfg.nclasses,
+        );
+        let bias_t = pooled.const_f32_like(
+            Arc::clone(&self.weights.classifier_b),
+            Shape::from_dims(&[cfg.nclasses]),
+        );
+        logits.broadcast_add(&bias_t)
+    }
+
+    /// Run the backbone (init Conv-BN-Swish + MBConv blocks +
+    /// final Conv-BN-Swish) and return the channels-first
+    /// feature map `(1, final_channels, H/32, W/32)` BEFORE
+    /// global avg pool and the classifier.
+    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone(image)
+    }
+
+    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
@@ -220,20 +243,7 @@ impl EfficientNetModel {
             x = self.apply_mbconv(&x, block)?;
         }
         x = self.apply_conv_bn(&x, &self.weights.final_cna)?;
-        x = swish(&x)?;
-
-        // Global average pool over (H, W).
-        let pooled_w = x.mean_dim(3_usize)?;     // (1, C, H)
-        let pooled = pooled_w.mean_dim(2_usize)?; // (1, C)
-
-        let logits = self.weights.classifier_w.apply_linear(
-            &pooled, cfg.final_channels, cfg.nclasses,
-        );
-        let bias_t = pooled.const_f32_like(
-            Arc::clone(&self.weights.classifier_b),
-            Shape::from_dims(&[cfg.nclasses]),
-        );
-        logits.broadcast_add(&bias_t)
+        Ok(swish(&x)?)
     }
 
     fn apply_conv_bn(&self, x: &LazyTensor, cb: &ConvBN) -> Result<LazyTensor> {
@@ -492,6 +502,22 @@ mod tests {
         assert_eq!(out.shape().dims(), &[1, 32, 4, 4]);
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite SE output: {v}");
+        }
+    }
+
+    #[test]
+    fn forward_features_shape_and_finite() {
+        let cfg = EfficientNetConfig::b0(10);
+        let weights = build_weights(&cfg, 1234);
+        let model = EfficientNetModel { config: cfg.clone(), weights };
+        let img = tiny_image(32);
+        let feats = model.forward_features(&img).unwrap();
+        let shape = feats.shape();
+        let dims = shape.dims();
+        assert_eq!(dims[0], 1);
+        assert_eq!(dims[1], cfg.final_channels);
+        for &v in &feats.realize_f32() {
+            assert!(v.is_finite(), "non-finite feature: {v}");
         }
     }
 }

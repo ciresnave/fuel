@@ -177,6 +177,32 @@ impl ConvNextModel {
     /// num_classes]`.
     pub fn forward(&self, image: &[f32]) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
+        let (x, c, h) = self.run_backbone(image)?;
+
+        let pooled = global_avg_pool_2d(&x, c, h, h);
+        let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c])).unwrap();
+        let normed = layer_norm_affine(
+            &pooled3, &self.weights.head_ln_g, &self.weights.head_ln_b,
+            cfg.layer_norm_eps, c, 1,
+        );
+        Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)
+            .reshape(Shape::from_dims(&[1, cfg.num_classes])).unwrap())
+    }
+
+    /// Run the backbone (stem + stages) and return the final
+    /// channels-first feature map `(1, C, H, W)` BEFORE global
+    /// avg pool, head LayerNorm, and the classifier. C is
+    /// `dims[-1]` and `H = W = image_size / (stem_patch *
+    /// 2^(n_stages - 1))`. Useful for segmentation/detection
+    /// heads, embedding adapters, and Depth-Anything-style
+    /// dense prediction.
+    pub fn forward_features(&self, image: &[f32]) -> crate::Result<LazyTensor> {
+        let (x, _, _) = self.run_backbone(image)?;
+        Ok(x)
+    }
+
+    fn run_backbone(&self, image: &[f32]) -> crate::Result<(LazyTensor, usize, usize)> {
+        let cfg = &self.config;
         let cin = cfg.in_channels;
         let s = cfg.image_size;
         assert_eq!(
@@ -185,10 +211,9 @@ impl ConvNextModel {
         );
         let x = LazyTensor::from_f32(image.to_vec(), Shape::from_dims(&[1, cin, s, s]), &crate::Device::cpu());
 
-        // --- stem: Conv(3, dims[0], k=patch, s=patch) + LN ----------------
         let p = cfg.stem_patch;
         assert!(s.is_multiple_of(p), "image_size {s} must be divisible by stem_patch {p}");
-        let h1 = s / p;  // 224/4 = 56
+        let h1 = s / p;
         let d0 = cfg.dims[0];
         let x = conv2d_stride_eq_kernel(
             &x,
@@ -197,10 +222,8 @@ impl ConvNextModel {
             cin, d0, p,
             s, s,
         );
-        // Channel-dim LayerNorm: permute to channels-last, normalize, permute back.
         let x = layer_norm_channel_dim(&x, &self.weights.stem_ln_g, &self.weights.stem_ln_b, cfg.layer_norm_eps, d0, h1, h1);
 
-        // --- stages ------------------------------------------------------
         let mut x = x;
         let mut h = h1;
         let mut c = d0;
@@ -216,16 +239,7 @@ impl ConvNextModel {
                 x = convnext_block(&x, bw, cfg.layer_norm_eps, c, h, h);
             }
         }
-
-        // --- head: global avg pool + LN + Linear -------------------------
-        let pooled = global_avg_pool_2d(&x, c, h, h);  // [1, C]
-        let pooled3 = pooled.reshape(Shape::from_dims(&[1, 1, c])).unwrap();
-        let normed = layer_norm_affine(
-            &pooled3, &self.weights.head_ln_g, &self.weights.head_ln_b,
-            cfg.layer_norm_eps, c, 1,
-        );
-        Ok(linear(&normed, &self.weights.head_fc_w, Some(&self.weights.head_fc_b), c, cfg.num_classes, 1)
-            .reshape(Shape::from_dims(&[1, cfg.num_classes])).unwrap())
+        Ok((x, c, h))
     }
 }
 
@@ -685,5 +699,19 @@ mod tests {
         // Phase 6a oracle gate.
         let flat_ref = logits.realize_f32_reference();
         crate::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+    }
+
+    #[test]
+    fn forward_features_shape_and_finite_tiny() {
+        let cfg = tiny_cfg();
+        let model = ConvNextModel { weights: zero_weights(&cfg), config: cfg.clone() };
+        let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
+        let feats = model.forward_features(&image).unwrap();
+        // tiny_cfg: image_size 16, stem_patch 4, 2 stages → h = 16 / 4 / 2 = 2;
+        // c = last dim = 8.
+        assert_eq!(feats.shape().dims(), &[1, *cfg.dims.last().unwrap(), 2, 2]);
+        for &v in &feats.realize_f32() {
+            assert!(v.is_finite(), "non-finite feature: {v}");
+        }
     }
 }
