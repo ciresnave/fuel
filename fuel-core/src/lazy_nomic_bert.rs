@@ -247,6 +247,111 @@ impl NomicBertModel {
         Ok(h)
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, seq, n_embd)`. NomicBert defaults to post-LN
+    /// (the public release uses `prenorm: false`); with
+    /// `prenorm: true` the captures are pre-LN features
+    /// instead. Either way, each capture is the OUTPUT of
+    /// the requested encoder layer.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, n_layer)`. Same shape contract as the BERT and
+    /// DistilBERT hooks. The optional `token_type_ids` and
+    /// `attention_mask` parameters thread through identically
+    /// to `forward`.
+    ///
+    /// # Use cases
+    ///
+    ///   - **Multi-layer features** for `nomic-ai/nomic-embed-text-v1.5`
+    ///     and similar Matryoshka-trained embedding models. The
+    ///     v1.5 release exposes 6 output dimensions trained
+    ///     jointly; some retrieval pipelines additionally
+    ///     concat layer-N hidden states for better recall at
+    ///     low embedding dims.
+    ///   - **Layer-wise probing** of the RoPE-equipped
+    ///     BERT-family backbone.
+    pub fn forward_intermediate_layers(
+        &self,
+        tokens: &[u32],
+        layer_ids: &[usize],
+        token_type_ids: Option<&[u32]>,
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0);
+        assert!(seq <= cfg.n_positions);
+        assert!(
+            cfg.n_head * cfg.head_dim() == cfg.n_embd,
+            "n_head * head_dim must equal n_embd",
+        );
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, n_layer = {depth})",
+        );
+
+        let word_emb_t = LazyTensor::from_f32(
+            weights.word_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
+            &Device::cpu(),
+        );
+        let token_ids = word_emb_t.const_u32_like(
+            tokens.to_vec(), Shape::from_dims(&[seq]),
+        );
+        let mut embeds = word_emb_t
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
+        if let Some(tte) = &weights.token_type_embedding {
+            let tte_t = word_emb_t.const_f32_like(
+                Arc::clone(tte),
+                Shape::from_dims(&[cfg.type_vocab_size, cfg.n_embd]),
+            );
+            let tt_ids: Vec<u32> = match token_type_ids {
+                Some(ids) => {
+                    assert_eq!(ids.len(), seq, "token_type_ids length must match tokens length");
+                    ids.to_vec()
+                }
+                None => vec![0; seq],
+            };
+            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]));
+            let tt_emb = tte_t
+                .index_select(0_usize, &tt_id_t)?
+                .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
+            embeds = embeds.add(&tt_emb)?;
+        }
+        let mut h = crate::lazy::apply_affine_layer_norm_pub(
+            &embeds, &weights.embed_ln_gain, &weights.embed_ln_bias,
+            cfg.n_embd, cfg.layer_norm_epsilon,
+        );
+
+        let rope_dim = cfg.rotary_emb_dim();
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rotary_emb_base, 0, seq, rope_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, rope_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
@@ -609,5 +714,30 @@ mod tests {
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite output: {v}");
         }
+    }
+
+    /// `forward_intermediate_layers` returns per-layer features
+    /// `(1, seq, n_embd)`. Mirrors the BERT-family hooks.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_cfg();
+        let model = NomicBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens = [1_u32, 2, 3, 4];
+        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1], None, None).unwrap();
+        assert_eq!(outs.len(), 2);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.n_embd]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
