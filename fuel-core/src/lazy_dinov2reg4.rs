@@ -230,6 +230,105 @@ impl Dinov2Reg4Model {
         logits.broadcast_add(&bias_t)
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, 1 + num_register_tokens + num_patches, embed_dim)` —
+    /// CLS at slot 0, register tokens at slots 1..1+n_reg,
+    /// patches follow. **No final LayerNorm** applied (DPT-
+    /// style heads have their own per-stage projection).
+    ///
+    /// DPT consumers (Depth Anything V2-style heads built on a
+    /// register-token DINOv2) typically drop both the CLS and
+    /// the register tokens before reshape — only the patch
+    /// slots get reassembled into a spatial feature map.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, depth)`. Mirrors
+    /// [`crate::lazy_dinov2::Dinov2Model::forward_intermediate_layers`].
+    pub fn forward_intermediate_layers(
+        &self,
+        pixel_values: &LazyTensor,
+        layer_ids: &[usize],
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = pixel_values.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4);
+        let batch = dims[0];
+        assert_eq!(batch, 1, "v1 supports batch == 1");
+        assert_eq!(dims[1], cfg.num_channels);
+        assert_eq!(dims[2], cfg.image_size,
+            "input H must equal cfg.image_size (variable input deferred)");
+        assert_eq!(dims[3], cfg.image_size,
+            "input W must equal cfg.image_size (variable input deferred)");
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        assert!(
+            *layer_ids.last().unwrap() < cfg.depth,
+            "layer_ids must all be in [0, depth = {})", cfg.depth,
+        );
+
+        let h = cfg.embed_dim;
+        let np = cfg.num_patches();
+        let n_reg = cfg.num_register_tokens;
+
+        // Patch Conv2d → (B, embed_dim, P, P) → reshape → permute.
+        let conv_w = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj),
+            Shape::from_dims(&[h, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+        );
+        let conv_b = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj_bias),
+            Shape::from_dims(&[h]),
+        );
+        let conv_out = pixel_values.conv2d(
+            &conv_w, Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+        )?;
+        let patches = conv_out
+            .reshape(Shape::from_dims(&[batch, h, np]))?
+            .permute([0, 2, 1_usize])?;
+
+        // Pos embed on patches only.
+        let pos = pixel_values.const_f32_like(
+            Arc::clone(&weights.pos_embed),
+            Shape::from_dims(&[np, h]),
+        );
+        let pos_bc = pos
+            .reshape(Shape::from_dims(&[1, np, h]))?
+            .broadcast_to(Shape::from_dims(&[batch, np, h]))?;
+        let patches = patches.add(&pos_bc)?;
+
+        // Prepend CLS + register tokens.
+        let cls = pixel_values.const_f32_like(
+            Arc::clone(&weights.cls_token),
+            Shape::from_dims(&[1, 1, h]),
+        );
+        let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
+        let reg = pixel_values.const_f32_like(
+            Arc::clone(&weights.reg_token),
+            Shape::from_dims(&[1, n_reg, h]),
+        );
+        let reg_bc = reg.broadcast_to(Shape::from_dims(&[batch, n_reg, h]))?;
+        let cls_reg = cls_bc.concat(&reg_bc, 1_usize)?;
+        let mut x = cls_reg.concat(&patches, 1_usize)?;
+
+        // Walk blocks and capture at requested indices.
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, block) in weights.blocks.iter().enumerate() {
+            x = self.apply_block(&x, block)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(x.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_block(
         &self,
         x: &LazyTensor,
@@ -479,5 +578,26 @@ mod tests {
         assert!(max_diff > 1e-7,
             "zeroing pos_embed must alter CLS output (pos signal influences CLS via attention), \
              max_diff = {max_diff}");
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index with the full CLS + reg + patch
+    /// sequence length. Mirrors the lazy_dinov2 hook.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_cfg();
+        let model = Dinov2Reg4Model {
+            config: cfg.clone(), weights: tiny_weights(&cfg, 99),
+        };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        assert_eq!(outs.len(), 2);
+        let expected_seq = cfg.seq_len(); // 1 (cls) + 4 (reg) + num_patches.
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, expected_seq, cfg.embed_dim]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
     }
 }
