@@ -108,6 +108,7 @@ pub mod lazy_mobileone;
 pub mod lazy_moondream;
 pub mod lazy_mpt;
 pub mod lazy_nomic_bert;
+pub mod lazy_nvembed_v2;
 pub mod lazy_olmo;
 pub mod lazy_olmo2;
 pub mod lazy_paligemma;

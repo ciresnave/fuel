@@ -185,9 +185,10 @@ impl MistralModel {
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
+        let mask = self.build_sliding_window_mask(embeds, seq);
 
         for layer in &weights.layers {
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
 
         let h_norm = crate::lazy::apply_affine_rms_norm_pub(
@@ -234,6 +235,42 @@ impl MistralModel {
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
 
+        let mask = self.build_sliding_window_mask(embeds, seq);
+        self.forward_hidden_embeds_with_mask_impl(embeds, &mask, start_pos)
+    }
+
+    /// Like [`Self::forward_hidden_embeds`] but takes a
+    /// caller-supplied additive attention mask of shape
+    /// `(1, 1, seq, seq)` instead of building the standard
+    /// sliding-window causal mask internally. Pass `0` for
+    /// keep and `-inf` (or a large negative) for mask.
+    ///
+    /// Used by NV-Embed v2 and other Mistral-shape embedding
+    /// models that run with bidirectional attention (mask is
+    /// just the padding mask, no causal triangle).
+    pub fn forward_hidden_embeds_with_mask(
+        &self,
+        embeds: &LazyTensor,
+        attention_mask: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        self.forward_hidden_embeds_with_mask_impl(embeds, attention_mask, start_pos)
+    }
+
+    fn forward_hidden_embeds_with_mask_impl(
+        &self,
+        embeds: &LazyTensor,
+        mask: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size);
+
         let mut h = embeds.clone();
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
             cfg.rope_theta, start_pos, seq, cfg.head_dim,
@@ -243,7 +280,7 @@ impl MistralModel {
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         for layer in &weights.layers {
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
         Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
@@ -274,13 +311,17 @@ impl MistralModel {
 
     /// Single transformer layer. Mirrors
     /// `crate::lazy::LlamaModel::apply_layer` except the attention
-    /// mask uses sliding-window semantics.
+    /// mask is injected by the caller — usually a sliding-window
+    /// causal mask from `build_sliding_window_mask` but can be any
+    /// additive `(1, 1, seq, seq)` shape (e.g. bidirectional
+    /// padding mask for NV-Embed v2).
     fn apply_layer(
         &self,
         x: &LazyTensor,
         layer: &LayerWeights,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
+        mask: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
@@ -345,13 +386,13 @@ impl MistralModel {
             (expand(k_r)?, expand(v)?)
         };
 
-        // Scaled dot-product attention with the sliding-window mask.
+        // Scaled dot-product attention with the caller-supplied mask.
         let k_t = k_full.transpose()?;
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
-        let mask = self.build_sliding_window_mask(x, seq);
-        let scores_masked = scores_scaled.broadcast_add(&mask)?;
+        let _ = seq; // silence unused after refactor; mask already sized for seq.
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
