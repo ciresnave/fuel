@@ -142,6 +142,28 @@ impl Gemma4TextModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
+        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
+        match cfg.final_logit_softcapping {
+            None => Ok(logits),
+            Some(sc) => Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc)),
+        }
+    }
+
+    /// Run the decoder forward up to the final offset RmsNorm
+    /// and return per-token hidden states `(1, seq, hidden_size)`.
+    /// Gemma4-text-specific: alternating
+    /// `SlidingAttention` / `FullAttention` layer types each
+    /// with their own head_dim, num_kv_heads, RoPE table, and
+    /// mask — all honored by the shared backbone.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -160,11 +182,8 @@ impl Gemma4TextModel {
         let mut h = embed
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
-        // Gemma family: scale by sqrt(hidden_size).
         h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
 
-        // Build BOTH RoPE table sets.
-        // Sliding (local) layers: full rotary on `head_dim` with `rope_local_base_freq`.
         let (cos_l, sin_l) = fuel_graph::build_rope_tables(
             cfg.rope_local_base_freq, start_pos, seq, cfg.head_dim,
         );
@@ -172,7 +191,6 @@ impl Gemma4TextModel {
         let rope_cos_l = h.const_f32_like(cos_l, rope_l_shape.clone());
         let rope_sin_l = h.const_f32_like(sin_l, rope_l_shape);
 
-        // Global layers: partial rotary on `global_head_dim` with `rope_theta`.
         let rope_dim_global = cfg.global_rope_dim();
         let (cos_g, sin_g) = fuel_graph::build_rope_tables(
             cfg.rope_theta, start_pos, seq, rope_dim_global,
@@ -181,7 +199,6 @@ impl Gemma4TextModel {
         let rope_cos_g = h.const_f32_like(cos_g, rope_g_shape.clone());
         let rope_sin_g = h.const_f32_like(sin_g, rope_g_shape);
 
-        // Two masks.
         let full_mask = self.build_mask(&h, seq, None);
         let sliding_mask = self.build_mask(&h, seq, Some(cfg.sliding_window));
 
@@ -203,16 +220,9 @@ impl Gemma4TextModel {
                 &h, layer, head_dim, num_kv, rope_cos, rope_sin, rope_dim, mask, is_global,
             )?;
         }
-
-        let h_norm = apply_offset_rms_norm(
+        apply_offset_rms_norm(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
-        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
-        match cfg.final_logit_softcapping {
-            None => Ok(logits),
-            Some(sc) => Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc)),
-        }
+        )
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize, sliding: Option<usize>) -> LazyTensor {
@@ -543,6 +553,18 @@ mod tests {
             let mean_sq: f32 = chunk.iter().map(|v| v * v).sum::<f32>() / 4.0;
             assert!((mean_sq - 1.0).abs() < 1e-3,
                 "v_rms_norm did not produce unit-RMS chunk: mean_sq = {mean_sq}");
+        }
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = Gemma4TextModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
         }
     }
 }
