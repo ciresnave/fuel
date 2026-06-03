@@ -253,6 +253,93 @@ impl ClipTextModel {
             .reshape(Shape::from_dims(&[1, cfg.embed_dim]))?;
         Ok(pooled)
     }
+
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, seq_len, embed_dim)`. **No final LayerNorm**
+    /// applied — downstream heads handle normalization
+    /// themselves (matches the vision-tower hook convention).
+    ///
+    /// Use cases:
+    ///
+    ///   - **SDXL TE1 penultimate conditioning**: SDXL
+    ///     conditions the UNet on the second-to-last CLIP
+    ///     text-tower layer (NOT the final-LN output). The
+    ///     existing `lazy_sd_text_encoder::forward_until_encoder_layer`
+    ///     hook does the same for SD's standalone CLIP-L
+    ///     text encoder; this hook gives the equivalent for
+    ///     the joint `ClipModel`'s text tower.
+    ///   - **Multi-layer features** for analysis / probing
+    ///     (e.g., "which CLIP text-tower layer best predicts
+    ///     class X?").
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_hidden_layers)`. Causal mask is applied per
+    /// layer just like the public `forward`.
+    pub fn forward_intermediate_layers(
+        &self,
+        tokens: &[u32],
+        layer_ids: &[usize],
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0);
+        assert!(seq <= cfg.max_position_embeddings);
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_embeds = embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.embed_dim]))?;
+        let pos_full = embed.const_f32_like(
+            Arc::clone(&weights.position_embedding),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.embed_dim]),
+        );
+        let pos_slice = pos_full
+            .slice(0_usize, 0, seq)?
+            .reshape(Shape::from_dims(&[1, seq, cfg.embed_dim]))?;
+        let pos_bc = pos_slice.broadcast_to(Shape::from_dims(&[batch, seq, cfg.embed_dim]))?;
+        let mut h = token_embeds.add(&pos_bc)?;
+
+        // Same causal mask the public `forward` uses.
+        let mut mask_data = vec![0.0_f32; seq * seq];
+        for i in 0..seq {
+            for j in (i + 1)..seq {
+                mask_data[i * seq + j] = f32::NEG_INFINITY;
+            }
+        }
+        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            h = apply_clip_layer(
+                &h, layer,
+                cfg.num_attention_heads, cfg.head_dim(),
+                Some(&mask),
+            )?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
 }
 
 // ---- Vision tower forward ---------------------------------------------------
@@ -788,6 +875,33 @@ mod tests {
         let model = ClipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg) };
         let img = tiny_image(&cfg);
         let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+    }
+
+    /// `forward_intermediate_layers` on the CLIP **text** tower
+    /// returns one tensor per requested layer, shape
+    /// `(1, seq_len, embed_dim)`. The causal mask is applied
+    /// per layer just like the public `forward`.
+    #[test]
+    fn text_forward_intermediate_layers_shape() {
+        let cfg = tiny_text_cfg();
+        let model = ClipTextModel { config: cfg.clone(), weights: tiny_text_weights(&cfg) };
+        let tokens = [1_u32, 2, 3, 4, 5];
+        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1]).unwrap();
+        assert_eq!(outs.len(), 2);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.embed_dim]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
         let a = outs[0].realize_f32();
         let b = outs[1].realize_f32();
         let mut max_diff = 0.0_f32;
