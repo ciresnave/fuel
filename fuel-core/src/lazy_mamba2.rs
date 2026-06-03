@@ -132,6 +132,23 @@ impl Mamba2Model {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens)?;
+        Ok(weights.output.apply_linear(
+            &h_norm, cfg.d_model, cfg.vocab_size(),
+        ))
+    }
+
+    /// Run the Mamba-2 SSD stack forward up to the final
+    /// RmsNorm and return per-token hidden states
+    /// `(1, seq, d_model)`. v1 is prefill only; `seq` must be
+    /// a multiple of `cfg.chunk_size`.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "Mamba2Model::forward: tokens must be non-empty");
@@ -156,11 +173,9 @@ impl Mamba2Model {
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.d_model, cfg.rms_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.d_model, vocab_padded))
+        ))
     }
 
     fn apply_residual_block(
@@ -372,5 +387,21 @@ mod tests {
         assert_eq!(cfg.n_heads(), 24);
         // d_xbc = d_inner + 2*ngroups*d_state = 1536 + 2*1*64 = 1664
         assert_eq!(cfg.d_xbc(), 1664);
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = Mamba2Config {
+            d_model: 16, n_layer: 2, vocab_size: 32, d_state: 8,
+            expand: 2, head_dim: 4, ngroups: 1, pad_vocab_size_multiple: 8,
+            chunk_size: 4, rms_norm_eps: 1e-5,
+        };
+        let model = Mamba2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.d_model]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

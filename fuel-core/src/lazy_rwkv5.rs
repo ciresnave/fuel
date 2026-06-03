@@ -148,6 +148,21 @@ impl Rwkv5Model {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens)?;
+        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the RWKV-v5 stack forward up to the final LayerNorm
+    /// and return per-token hidden states `(1, seq, hidden_size)`.
+    /// No `start_pos` parameter — RWKV's recurrent state is
+    /// implicit in the time-mix; v1 is prefill only.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "Rwkv5Model::forward: tokens must be non-empty");
@@ -157,7 +172,6 @@ impl Rwkv5Model {
             n_heads * head_size, cfg.hidden_size,
             "Rwkv5Config: n_heads({n_heads}) * head_size({head_size}) must equal hidden_size",
         );
-        // Embed.
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
@@ -171,12 +185,10 @@ impl Rwkv5Model {
         for layer in &weights.layers {
             h = self.apply_block(&h, layer, batch, seq, n_heads, head_size)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
-        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_block(
@@ -578,5 +590,17 @@ mod tests {
             max_diff = max_diff.max((x - y).abs());
         }
         assert!(max_diff > 1e-6, "zeroing ffn_value must change output, max_diff = {max_diff}");
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

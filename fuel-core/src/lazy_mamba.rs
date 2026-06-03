@@ -144,12 +144,28 @@ impl MambaModel {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens)?;
+        Ok(weights.output.apply_linear(
+            &h_norm, cfg.d_model, cfg.vocab_size(),
+        ))
+    }
+
+    /// Run the Mamba SSM stack forward up to the final RmsNorm
+    /// and return per-token hidden states `(1, seq, d_model)`.
+    /// No `start_pos` parameter — Mamba's recurrent state is
+    /// implicit in the SSM scan; v1 is prefill only.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "MambaModel::forward: tokens must be non-empty");
         let vocab_padded = cfg.vocab_size();
 
-        // Embedding lookup.
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[vocab_padded, cfg.d_model]),
@@ -163,11 +179,9 @@ impl MambaModel {
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.d_model, cfg.rms_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.d_model, vocab_padded))
+        ))
     }
 
     fn apply_residual_block(
@@ -343,5 +357,20 @@ mod tests {
         };
         assert_eq!(cfg.dt_rank(), 48);
         assert_eq!(cfg.d_inner(), 1536);
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = MambaConfig {
+            d_model: 16, n_layer: 2, vocab_size: 24,
+            pad_vocab_size_multiple: 8, rms_norm_eps: 1e-5,
+        };
+        let model = MambaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.d_model]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

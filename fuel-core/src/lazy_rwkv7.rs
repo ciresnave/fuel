@@ -154,6 +154,21 @@ impl Rwkv7Model {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens)?;
+        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the RWKV-v7 stack forward up to the final LayerNorm
+    /// and return per-token hidden states `(1, seq, hidden_size)`.
+    /// v_first is collected at layer 0 and consumed by later
+    /// layers — all internal to the backbone.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -174,8 +189,6 @@ impl Rwkv7Model {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
-        // v_first collected at layer 0, consumed by layers > 0.
-        // Stored as per-token vectors of shape (b, hidden).
         let mut v_first: Option<Vec<LazyTensor>> = None;
 
         for (li, layer) in weights.layers.iter().enumerate() {
@@ -203,12 +216,10 @@ impl Rwkv7Model {
             let ff = self.channel_mix(&xs_ln2, layer, batch, seq)?;
             h = h_post_attn.add(&ff)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
-        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     /// TimeMix forward over the full sequence; unrolls the time
@@ -672,5 +683,17 @@ mod tests {
         // to be measurably non-zero.
         assert!(max_diff > 1e-8,
             "value-residual gate (v0) must alter output, max_diff = {max_diff}");
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
