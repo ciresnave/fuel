@@ -113,9 +113,84 @@ impl Qwen2Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the encoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection — useful for embedding
+    /// adapters (Stella-en-v5, etc.) that swap the causal LM
+    /// head for a custom projector or pooler.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    /// Like [`Self::forward_hidden`] but takes pre-computed
+    /// `embeds` of shape `(1, seq, hidden_size)` and a
+    /// caller-supplied `(1, 1, seq, seq)` additive mask. The
+    /// mask is used for ALL layers — Qwen2's per-layer
+    /// sliding-window gating is skipped. Both `embeds` and
+    /// `attention_mask` MUST live on the same graph (build
+    /// the mask via `embeds.const_f32_like(...)`).
+    ///
+    /// Useful for bidirectional encoder mode (mask is just
+    /// the pad-only `(1 - mask[j]) * MIN` broadcast). Pass
+    /// `0` for keep and `-inf` (or a large negative) for mask.
+    pub fn forward_hidden_embeds_with_mask(
+        &self,
+        embeds: &LazyTensor,
+        attention_mask: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size);
+        let head_dim = cfg.head_dim();
+        assert_eq!(
+            cfg.num_attention_heads * head_dim, cfg.hidden_size,
+            "Qwen2Config: num_attention_heads * head_dim must equal hidden_size",
+        );
+        assert_eq!(
+            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
+            "Qwen2Config: num_attention_heads must be a multiple of num_key_value_heads",
+        );
+
+        let mut h = embeds.clone();
+        let (cos_data, sin_data) =
+            fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, head_dim);
+        let rope_shape = Shape::from_dims(&[seq, head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        for layer in &weights.layers {
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
+        }
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
+            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
+        ))
+    }
+
+    /// Shared backbone for the causal-mask paths
+    /// (`forward` and `forward_hidden`). Embed → RoPE →
+    /// per-layer attn+MLP → final RmsNorm. Builds a
+    /// sliding-window or strict-causal mask per layer based
+    /// on the config. For non-causal use (bidirectional
+    /// encoder mode), see [`Self::forward_hidden_embeds_with_mask`].
+    fn run_backbone(
+        &self,
+        tokens: &[u32],
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "Qwen2Model::forward: tokens must be non-empty");
+        assert!(seq > 0, "Qwen2Model: tokens must be non-empty");
         let head_dim = cfg.head_dim();
         assert_eq!(
             cfg.num_attention_heads * head_dim,
@@ -129,56 +204,6 @@ impl Qwen2Model {
             cfg.num_attention_heads, cfg.num_key_value_heads,
         );
 
-        // Embedding lookup.
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
-
-        // Shared RoPE tables.
-        let (cos_data, sin_data) =
-            fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, head_dim);
-        let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
-
-        // Per-layer decode. Layer index drives sliding-window gating.
-        for (layer_idx, layer) in weights.layers.iter().enumerate() {
-            let uses_window =
-                cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, uses_window)?;
-        }
-
-        // Final RmsNorm + lm_head projection.
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
-    }
-
-    /// Run the encoder forward up to the final RmsNorm and
-    /// return per-token hidden states `(1, seq, hidden_size)`.
-    /// Skips the `lm_head` projection — useful for embedding
-    /// adapters (Stella-en-v5, NV-Embed v2, etc.) that swap
-    /// the causal LM head for a custom projector or pooler.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
-        let cfg = &self.config;
-        let weights = &self.weights;
-        let seq = tokens.len();
-        let batch = 1;
-        assert!(seq > 0, "Qwen2Model::forward_hidden: tokens must be non-empty");
-        let head_dim = cfg.head_dim();
-        assert_eq!(
-            cfg.num_attention_heads * head_dim,
-            cfg.hidden_size,
-            "Qwen2Config: num_attention_heads * head_dim must equal hidden_size",
-        );
-
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
@@ -195,10 +220,24 @@ impl Qwen2Model {
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
+        // Pre-build the up-to-two distinct causal masks
+        // (windowed + strict) once; layers pick the right one.
+        let causal_window = if cfg.use_sliding_window {
+            Some(self.build_layer_mask(&h, seq, true))
+        } else {
+            None
+        };
+        let causal_strict = self.build_layer_mask(&h, seq, false);
+
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
             let uses_window =
                 cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
-            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, uses_window)?;
+            let mask = if uses_window {
+                causal_window.as_ref().expect("windowed mask built when use_sliding_window")
+            } else {
+                &causal_strict
+            };
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
         Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
@@ -228,7 +267,7 @@ impl Qwen2Model {
         layer: &LayerWeights,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
-        uses_window: bool,
+        mask: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
@@ -302,13 +341,13 @@ impl Qwen2Model {
             (expand(k_r)?, expand(v)?)
         };
 
-        // Scaled dot-product attention.
+        // Scaled dot-product attention with caller-supplied mask.
         let k_t = k_full.transpose()?;
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
-        let mask = self.build_layer_mask(x, seq, uses_window);
-        let scores_masked = scores_scaled.broadcast_add(&mask)?;
+        let _ = seq; // silence unused after refactor; mask already sized for seq.
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
@@ -521,5 +560,62 @@ mod tests {
         let any_diff = out_zero.iter().zip(out_random.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "non-zero Q/K/V biases must change output");
+    }
+
+    /// `forward_hidden_embeds_with_mask` accepts pre-computed
+    /// embeds plus a caller-supplied `(1, 1, seq, seq)`
+    /// additive mask. A bidirectional pad mask (all zeros)
+    /// produces different hidden states than the strict-causal
+    /// `forward_hidden` because the bidirectional path lets
+    /// earlier tokens attend to later ones too.
+    #[test]
+    fn forward_hidden_embeds_with_bidirectional_mask() {
+        let cfg = Qwen2Config {
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            max_position_embeddings: 32,
+            sliding_window: 32,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            tie_word_embeddings: false,
+        };
+        let model = Qwen2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let h_causal = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
+
+        // Build embeds externally and the bidirectional mask
+        // anchored on the same graph as embeds.
+        let embed_table = LazyTensor::from_f32(
+            model.weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = embed_table.const_u32_like(
+            tokens.clone(), Shape::from_dims(&[tokens.len()]),
+        );
+        let embeds = embed_table
+            .index_select(0_usize, &token_ids).unwrap()
+            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size])).unwrap();
+        let zero_mask: Arc<[f32]> = Arc::from(vec![0.0_f32; tokens.len() * tokens.len()]);
+        let mask = embeds.const_f32_like(
+            zero_mask, Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
+        );
+        let h_bidir = model.forward_hidden_embeds_with_mask(&embeds, &mask, 0).unwrap().realize_f32();
+        assert_eq!(h_causal.len(), h_bidir.len());
+        let mut max_diff = 0.0_f32;
+        for (x, y) in h_causal.iter().zip(h_bidir.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "bidirectional hidden states must differ from causal, max_diff = {max_diff}");
+        for &v in &h_bidir {
+            assert!(v.is_finite(), "non-finite bidirectional hidden: {v}");
+        }
     }
 }
