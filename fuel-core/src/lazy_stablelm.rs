@@ -92,6 +92,21 @@ impl StableLmModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final LayerNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection. Mirrors the
+    /// `forward_hidden` pattern across the LLM family.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -107,7 +122,6 @@ impl StableLmModel {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
-        // Partial-rotary table: built for `rope_dim`, not `head_dim`.
         let rope_dim = cfg.rope_dim();
         let (cos_data, sin_data) =
             fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, rope_dim);
@@ -118,12 +132,10 @@ impl StableLmModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_layer(
@@ -328,5 +340,25 @@ mod tests {
         let any_diff = out_partial.iter().zip(out_full.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-7);
         assert!(any_diff, "partial vs full rotary must differ");
+    }
+
+    /// `forward_hidden` returns post-LayerNorm hidden states
+    /// `(1, seq, hidden_size)` without the lm_head matmul.
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = StableLmConfig {
+            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
+            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
+            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
+            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            use_qkv_bias: false,
+        };
+        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
