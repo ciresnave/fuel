@@ -209,6 +209,90 @@ impl Dinov2Model {
         logits.broadcast_add(&bias_t)
     }
 
+    /// Extract per-token features at the requested layer indices.
+    /// Used by DPT-style heads (Depth Anything V2, etc.) that
+    /// fuse features from multiple stages of the backbone — the
+    /// canonical layer pick for DINOv2 ViT-Small/Base/Large is
+    /// `[2, 5, 8, 11]` (every 3 layers).
+    ///
+    /// Returns `Vec<LazyTensor>` with one tensor per requested
+    /// layer index, shape `(1, num_patches + 1, embed_dim)`. The
+    /// CLS token is at slot 0 of each output; the patch features
+    /// follow. **No final LayerNorm** is applied — the DPT head
+    /// has its own per-stage projection that absorbs the
+    /// normalization step.
+    ///
+    /// Layer indices are 0-based and must be strictly increasing
+    /// and within `[0, depth)`.
+    pub fn forward_intermediate_layers(
+        &self,
+        pixel_values: &LazyTensor,
+        layer_ids: &[usize],
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = pixel_values.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4);
+        let batch = dims[0];
+        assert_eq!(batch, 1, "v1 supports batch == 1");
+        assert_eq!(dims[1], cfg.num_channels);
+        assert_eq!(dims[2], cfg.image_size);
+        assert_eq!(dims[3], cfg.image_size);
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        assert!(
+            *layer_ids.last().unwrap() < cfg.depth,
+            "layer_ids must all be in [0, depth = {})", cfg.depth,
+        );
+
+        // Patch conv + cls + pos_embed (same path as forward()).
+        let conv_w = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj),
+            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+        );
+        let conv_b = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj_bias),
+            Shape::from_dims(&[cfg.embed_dim]),
+        );
+        let conv_out = pixel_values.conv2d(
+            &conv_w, Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+        )?;
+        let np = cfg.num_patches();
+        let patches = conv_out
+            .reshape(Shape::from_dims(&[batch, cfg.embed_dim, np]))?
+            .permute([0, 2, 1_usize])?;
+        let cls = pixel_values.const_f32_like(
+            Arc::clone(&weights.cls_token),
+            Shape::from_dims(&[1, 1, cfg.embed_dim]),
+        );
+        let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
+        let with_cls = cls_bc.concat(&patches, 1_usize)?;
+        let pos = pixel_values.const_f32_like(
+            Arc::clone(&weights.pos_embed),
+            Shape::from_dims(&[np + 1, cfg.embed_dim]),
+        );
+        let pos_bc = pos
+            .reshape(Shape::from_dims(&[1, np + 1, cfg.embed_dim]))?
+            .broadcast_to(Shape::from_dims(&[batch, np + 1, cfg.embed_dim]))?;
+        let mut h = with_cls.add(&pos_bc)?;
+
+        // Run blocks and capture at the requested indices.
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, block) in weights.blocks.iter().enumerate() {
+            h = self.apply_block(&h, block)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_block(
         &self,
         x: &LazyTensor,
@@ -454,5 +538,58 @@ mod tests {
         let base = Dinov2Config::vit_base();
         assert_eq!(base.embed_dim, 768);
         assert_eq!(base.num_patches(), 1369);
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped
+    /// `(1, num_patches + 1, embed_dim)` (CLS token + patches).
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_config();
+        let model = Dinov2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let img = tiny_image(&cfg);
+        let layer_ids = [0_usize, 1];
+        let outs = model.forward_intermediate_layers(&img, &layer_ids).unwrap();
+        assert_eq!(outs.len(), 2);
+        let np = cfg.num_patches();
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, np + 1, cfg.embed_dim]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+    }
+
+    /// Intermediate features at different layers must differ —
+    /// each block transforms the hidden state, so layer 0 ≠ layer 1
+    /// even for a noise-free input.
+    #[test]
+    fn intermediate_layers_differ_across_depth() {
+        let cfg = tiny_config();
+        let model = Dinov2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+    }
+
+    /// Requesting the LAST layer's intermediate gives the same
+    /// hidden state that `forward` runs through the final LN.
+    #[test]
+    fn last_intermediate_matches_pre_final_ln() {
+        let cfg = tiny_config();
+        let last = cfg.depth - 1;
+        let model = Dinov2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[last]).unwrap();
+        assert_eq!(outs.len(), 1);
+        let np = cfg.num_patches();
+        assert_eq!(outs[0].shape().dims(), &[1, np + 1, cfg.embed_dim]);
     }
 }
