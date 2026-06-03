@@ -80,6 +80,7 @@ pub mod lazy_llama2c;
 pub mod lazy_llava;
 pub mod lazy_convmixer;
 pub mod lazy_convnext;
+pub mod lazy_dac;
 pub mod lazy_deepseek2;
 pub mod lazy_depth_anything_v2;
 pub mod lazy_dinov2;
