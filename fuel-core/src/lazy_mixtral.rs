@@ -118,9 +118,30 @@ impl MixtralModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection — useful for Mixtral-
+    /// based embedding adapters (analogous to NV-Embed-v2
+    /// running on Mistral). Mirrors the `forward_hidden`
+    /// pattern across the LLM family.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    /// Shared backbone: embed → RoPE → per-layer attn+MoE →
+    /// final RmsNorm. Used by both `forward` (then matmuls
+    /// with `lm_head`) and `forward_hidden` (returns hidden
+    /// states directly).
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "MixtralModel::forward: tokens must be non-empty");
+        assert!(seq > 0, "MixtralModel: tokens must be non-empty");
         assert_eq!(
             cfg.num_attention_heads * cfg.head_dim,
             cfg.hidden_size,
@@ -151,11 +172,9 @@ impl MixtralModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn build_sliding_window_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
@@ -401,5 +420,35 @@ mod tests {
         let any_diff = out_full.iter().zip(out_one.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "4-expert vs 1-expert dense MoE must differ");
+    }
+
+    /// `forward_hidden` returns post-RmsNorm hidden states
+    /// `(1, seq, hidden_size)` without the lm_head matmul.
+    /// Same backbone as `forward`, just skips the final
+    /// projection.
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = MixtralConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 64,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            sliding_window: None,
+            num_experts_per_tok: 2,
+            num_local_experts: 4,
+        };
+        let model = MixtralModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
