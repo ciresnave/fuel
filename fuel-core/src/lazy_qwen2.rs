@@ -161,6 +161,50 @@ impl Qwen2Model {
         Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
     }
 
+    /// Run the encoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection — useful for embedding
+    /// adapters (Stella-en-v5, NV-Embed v2, etc.) that swap
+    /// the causal LM head for a custom projector or pooler.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0, "Qwen2Model::forward_hidden: tokens must be non-empty");
+        let head_dim = cfg.head_dim();
+        assert_eq!(
+            cfg.num_attention_heads * head_dim,
+            cfg.hidden_size,
+            "Qwen2Config: num_attention_heads * head_dim must equal hidden_size",
+        );
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+
+        let (cos_data, sin_data) =
+            fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, head_dim);
+        let rope_shape = Shape::from_dims(&[seq, head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        for (layer_idx, layer) in weights.layers.iter().enumerate() {
+            let uses_window =
+                cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, uses_window)?;
+        }
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
+            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
+        ))
+    }
+
     /// Build the attention mask for one layer. `uses_window == true`
     /// produces the sliding-window causal mask; `false` produces a
     /// strict lower-triangular causal mask.
