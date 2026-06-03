@@ -193,6 +193,97 @@ impl XlmrModel {
         Ok(h)
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, seq, hidden_size)`. Each captured tensor is the
+    /// post-block hidden state (XLM-R is post-LN throughout
+    /// like BERT, so the captures are already fully normalized).
+    ///
+    /// Mirrors
+    /// [`crate::lazy_bert::BertModel::forward_intermediate_layers`]
+    /// and the DistilBERT hook. Useful for multilingual
+    /// layer-wise probing, multi-layer feature fusion on
+    /// `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`-shape
+    /// checkpoints, and cross-lingual distillation.
+    pub fn forward_intermediate_layers(
+        &self,
+        tokens: &[u32],
+        layer_ids: &[usize],
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0);
+        assert!(
+            seq + cfg.pad_token_id as usize + 1 <= cfg.max_position_embeddings,
+            "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
+            seq + cfg.pad_token_id as usize + 1, cfg.max_position_embeddings,
+        );
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+
+        // Same embedding setup as `forward`.
+        let word_emb_t = LazyTensor::from_f32(
+            weights.word_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = word_emb_t.const_u32_like(
+            tokens.to_vec(),
+            Shape::from_dims(&[seq]),
+        );
+        let word_embeds = word_emb_t
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let pad_off = cfg.pad_token_id as usize + 1;
+        let position_ids_vec: Vec<u32> = (0..seq).map(|i| (pad_off + i) as u32).collect();
+        let pos_full = word_emb_t.const_f32_like(
+            Arc::clone(&weights.position_embedding),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
+        );
+        let pos_ids = word_emb_t.const_u32_like(
+            position_ids_vec, Shape::from_dims(&[seq]),
+        );
+        let pos_embeds = pos_full
+            .index_select(0_usize, &pos_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let tt_full = word_emb_t.const_f32_like(
+            Arc::clone(&weights.token_type_embedding),
+            Shape::from_dims(&[cfg.type_vocab_size, cfg.hidden_size]),
+        );
+        let tt_ids = word_emb_t.const_u32_like(
+            vec![0_u32; seq], Shape::from_dims(&[seq]),
+        );
+        let tt_embeds = tt_full
+            .index_select(0_usize, &tt_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let sum = word_embeds.add(&pos_embeds)?.add(&tt_embeds)?;
+        let mut h = crate::lazy::apply_affine_layer_norm_pub(
+            &sum, &weights.embed_ln_gain, &weights.embed_ln_bias,
+            cfg.hidden_size, cfg.layer_norm_eps,
+        );
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            h = self.apply_layer(&h, layer, attention_mask)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
@@ -406,5 +497,30 @@ mod tests {
         }
         assert!(max_diff > 1e-6,
             "RoBERTa position offset (modifying row pad_idx+1) must affect output, max_diff = {max_diff}");
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped `(1, seq, hidden_size)`.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_cfg();
+        let model = XlmrModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let toks = [1_u32, 2, 3];
+        let outs = model.forward_intermediate_layers(&toks, &[0_usize, 1], None).unwrap();
+        assert_eq!(outs.len(), 2);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, toks.len(), cfg.hidden_size]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
