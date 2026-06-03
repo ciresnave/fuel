@@ -161,6 +161,60 @@ impl GemmaModel {
         Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
     }
 
+    /// Run the decoder forward up to the final offset RmsNorm
+    /// and return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the `lm_head` projection. Pairs with
+    /// [`Self::forward_hidden_embeds`] for vision-language
+    /// composition or embedding adapters that need raw hidden
+    /// states.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0, "GemmaModel::forward_hidden: tokens must be non-empty");
+
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let h_raw = embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        // Gemma scales the token-embedding output by sqrt(hidden_size).
+        let h_scaled = h_raw.mul_scalar((cfg.hidden_size as f64).sqrt());
+        self.forward_hidden_embeds(&h_scaled, start_pos)
+    }
+
+    /// Like [`Self::forward_embeds`] but skips the `lm_head`
+    /// projection and returns the post-RmsNorm hidden states.
+    /// Caller is responsible for the `sqrt(hidden_size)`
+    /// embedding scaling that `forward_hidden()` applies.
+    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        let seq = dims[1];
+        assert_eq!(dims[2], cfg.hidden_size);
+
+        let mut h = embeds.clone();
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_theta, start_pos, seq, cfg.head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+
+        for layer in &weights.layers {
+            h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
+        }
+        apply_offset_rms_norm(&h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
