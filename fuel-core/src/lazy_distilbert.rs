@@ -160,6 +160,77 @@ impl DistilBertModel {
         Ok(h)
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer: `(1, seq, dim)`.
+    /// Each captured tensor is the post-block hidden state
+    /// (DistilBERT is post-LN throughout, so it's already
+    /// fully normalized).
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, n_layers)`. Mirrors the
+    /// [`crate::lazy_bert::BertModel::forward_intermediate_layers`]
+    /// hook contract.
+    pub fn forward_intermediate_layers(
+        &self,
+        tokens: &[u32],
+        layer_ids: &[usize],
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        assert!(seq > 0);
+        assert!(seq <= cfg.max_position_embeddings);
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, n_layers = {depth})",
+        );
+
+        // Same embedding setup as `forward`.
+        let word_emb_t = LazyTensor::from_f32(
+            weights.word_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = word_emb_t.const_u32_like(
+            tokens.to_vec(),
+            Shape::from_dims(&[seq]),
+        );
+        let word_embeds = word_emb_t
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+        let pos_full = word_emb_t.const_f32_like(
+            Arc::clone(&weights.position_embedding),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.dim]),
+        );
+        let pos_slice = pos_full
+            .slice(0_usize, 0, seq)?
+            .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
+        let pos_bc = pos_slice.broadcast_to(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+        let sum = word_embeds.add(&pos_bc)?;
+        let mut h = crate::lazy::apply_affine_layer_norm_pub(
+            &sum, &weights.embed_ln_gain, &weights.embed_ln_bias,
+            cfg.dim, cfg.layer_norm_eps,
+        );
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            h = self.apply_layer(&h, layer, attention_mask)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
@@ -370,5 +441,31 @@ mod tests {
         }
         assert!(max_diff > 1e-6,
             "position-embed change must alter output, max_diff = {max_diff}");
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped `(1, seq, dim)`.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_cfg();
+        let model = DistilBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens = [1_u32, 2, 3, 4];
+        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1], None).unwrap();
+        assert_eq!(outs.len(), 2);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.dim]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        // Layer 0 and layer 1 outputs must differ.
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
