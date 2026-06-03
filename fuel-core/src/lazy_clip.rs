@@ -333,6 +333,102 @@ impl ClipVisionModel {
             cfg.embed_dim, 1e-5,
         ))
     }
+
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer:
+    /// `(1, num_patches + 1, embed_dim)` — CLS at slot 0,
+    /// patches follow. The pre-encoder LayerNorm IS applied
+    /// (it sits BEFORE the encoder loop, so it's part of the
+    /// hidden state entering the first block). **The post-LN
+    /// pooler is NOT applied** — downstream heads see the
+    /// raw post-block features.
+    ///
+    /// Use cases:
+    ///
+    ///   - **CLIP-Penultimate conditioning**: SD 1.5/2.x and
+    ///     SDXL TE1 condition the UNet on the SECOND-TO-LAST
+    ///     layer's CLS-stripped patches, not the post-pooler
+    ///     output (the `lazy_sd_text_encoder::forward_until_encoder_layer`
+    ///     hook does the same trick for the TEXT tower).
+    ///   - **DPT-on-CLIP-vision**: same as the DPT hooks added
+    ///     for ViT/DINOv2/DINOv2-reg4/SigLIP.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_hidden_layers)`. Mirrors the four other
+    /// ViT-shape backbone hooks.
+    pub fn forward_intermediate_layers(
+        &self,
+        pixel_values: &LazyTensor,
+        layer_ids: &[usize],
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = pixel_values.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 4);
+        let batch = dims[0];
+        assert_eq!(batch, 1, "v1 supports batch == 1");
+        assert_eq!(dims[1], cfg.num_channels);
+        assert_eq!(dims[2], cfg.image_size);
+        assert_eq!(dims[3], cfg.image_size);
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+
+        // Same prep as forward().
+        let conv_w = pixel_values.const_f32_like(
+            Arc::clone(&weights.patch_proj),
+            Shape::from_dims(&[cfg.embed_dim, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+        );
+        let conv_out = pixel_values.conv2d(
+            &conv_w, None,
+            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+        )?;
+        let np = cfg.num_patches();
+        let patches = conv_out
+            .reshape(Shape::from_dims(&[batch, cfg.embed_dim, np]))?
+            .permute([0, 2, 1_usize])?;
+        let cls = pixel_values.const_f32_like(
+            Arc::clone(&weights.class_embedding),
+            Shape::from_dims(&[1, 1, cfg.embed_dim]),
+        );
+        let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
+        let with_cls = cls_bc.concat(&patches, 1_usize)?;
+        let pos = pixel_values.const_f32_like(
+            Arc::clone(&weights.position_embedding),
+            Shape::from_dims(&[np + 1, cfg.embed_dim]),
+        );
+        let pos_bc = pos
+            .reshape(Shape::from_dims(&[1, np + 1, cfg.embed_dim]))?
+            .broadcast_to(Shape::from_dims(&[batch, np + 1, cfg.embed_dim]))?;
+        let pre = with_cls.add(&pos_bc)?;
+        let pre_ln = crate::lazy::apply_affine_layer_norm_pub(
+            &pre, &weights.pre_ln_gain, &weights.pre_ln_bias,
+            cfg.embed_dim, 1e-5,
+        );
+
+        let mut h = pre_ln;
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            h = apply_clip_layer(
+                &h, layer,
+                cfg.num_attention_heads, cfg.head_dim(),
+                None,
+            )?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(h.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
 }
 
 // ---- Joint model forward ----------------------------------------------------
@@ -664,5 +760,41 @@ mod tests {
         assert_eq!(t.head_dim(), 64);
         let v = ClipVisionConfig::vit_base_patch32();
         assert_eq!(v.num_patches(), 49); // 224 / 32 = 7; 7*7 = 49
+    }
+
+    /// `forward_intermediate_layers` on the CLIP vision tower
+    /// returns one tensor per requested layer index, shape
+    /// `(1, num_patches + 1, embed_dim)` (CLS + patches).
+    #[test]
+    fn vision_forward_intermediate_layers_shape() {
+        let cfg = tiny_vision_cfg();
+        let model = ClipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg) };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        assert_eq!(outs.len(), 2);
+        let np = cfg.num_patches();
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, np + 1, cfg.embed_dim]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+    }
+
+    /// Intermediate features at different depths must differ.
+    #[test]
+    fn vision_intermediate_layers_differ_across_depth() {
+        let cfg = tiny_vision_cfg();
+        let model = ClipVisionModel { config: cfg.clone(), weights: tiny_vision_weights(&cfg) };
+        let img = tiny_image(&cfg);
+        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
