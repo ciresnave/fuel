@@ -118,6 +118,19 @@ impl Rwkv6Model {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens)?;
+        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the RWKV-v6 stack forward up to the final LayerNorm
+    /// and return per-token hidden states `(1, seq, hidden_size)`.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "Rwkv6Model: tokens must be non-empty");
@@ -141,12 +154,10 @@ impl Rwkv6Model {
         for layer in &weights.layers {
             h = self.apply_block(&h, layer, batch, seq, n_heads, head_size)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
-        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn apply_block(
@@ -571,5 +582,17 @@ mod tests {
         }
         assert!(max_diff > 1e-10,
             "v6 per-token decay correction must alter output, max_diff = {max_diff}");
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = Rwkv6Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
