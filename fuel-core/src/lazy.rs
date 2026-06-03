@@ -4118,6 +4118,32 @@ impl LlamaModel {
     ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size))
+    }
+
+    /// Like [`forward_embeds`] but skips the LM-head projection
+    /// and returns post-final-RmsNorm hidden states
+    /// `(batch, seq, dim)`. Uses strict-causal masking. Use
+    /// this from multimodal hosts (LLaVA, Pixtral, etc.) that
+    /// interleave image embeddings into the text stream and
+    /// want hidden states without the lm_head projection.
+    /// Mirrors `MistralModel::forward_hidden_embeds`.
+    pub fn forward_hidden_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> crate::Result<LazyTensor> {
+        self.run_backbone_embeds(embeds, start_pos)
+    }
+
+    fn run_backbone_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
@@ -4126,32 +4152,21 @@ impl LlamaModel {
         assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
 
         let mut h = embeds.clone();
-
-        // RoPE tables.
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base,
-            start_pos,
-            seq,
-            cfg.head_dim,
+            cfg.rope_base, start_pos, seq, cfg.head_dim,
         );
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
-        // Build the strict-causal mask once instead of per layer.
         let mask = build_strict_causal_mask(embeds, seq);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask);
         }
-
-        let h_norm = apply_affine_rms_norm(
-            &h,
-            &weights.final_norm_gain,
-            cfg.dim,
-            cfg.norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size))
+        Ok(apply_affine_rms_norm(
+            &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
+        ))
     }
 
     /// Like [`forward_embeds`] but takes a caller-supplied
@@ -9394,6 +9409,49 @@ mod llama_tests {
             assert!(v.is_finite(), "bidirectional hidden state not finite: {v}");
         }
         assert!(!causal_logits.is_empty());
+    }
+
+    /// `forward_hidden_embeds(embeds, start_pos)` returns
+    /// post-final-RmsNorm hidden states for pre-built embeds —
+    /// useful for multimodal hosts (LLaVA, Pixtral) that
+    /// interleave image embeddings with text embeddings and
+    /// want hidden states without the lm_head projection.
+    /// The result must match `forward_embeds(embeds,
+    /// start_pos)` projected through the lm_head, because
+    /// `forward_embeds` is exactly `forward_hidden_embeds`
+    /// followed by `lm_head.apply_linear`.
+    #[test]
+    fn forward_hidden_embeds_followed_by_lm_head_matches_forward_embeds() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 1, n_heads: 2,
+            n_kv_heads: 2, head_dim: 4, ffn_dim: 16,
+            norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let weights = make_tiny_weights(&cfg);
+        let model = LlamaModel { config: cfg.clone(), weights };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+
+        let embed = LazyTensor::from_f32(
+            model.weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &crate::Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(
+            tokens.clone(), Shape::from_dims(&[tokens.len()]),
+        );
+        let embeds = embed
+            .index_select(0_usize, &token_ids).unwrap()
+            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.dim])).unwrap();
+
+        let hidden = model.forward_hidden_embeds(&embeds, 0).unwrap();
+        let logits_from_hidden = model.weights.output
+            .apply_linear(&hidden, cfg.dim, cfg.vocab_size).realize_f32();
+        let logits_direct = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
+        assert_eq!(logits_from_hidden.len(), logits_direct.len());
+        for (a, b) in logits_from_hidden.iter().zip(logits_direct.iter()) {
+            assert!((a - b).abs() < 1e-6,
+                "forward_hidden_embeds + lm_head must match forward_embeds: {a} vs {b}");
+        }
     }
 }
 
