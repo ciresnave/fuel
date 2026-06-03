@@ -226,6 +226,94 @@ impl BertModel {
         }
         Ok(x)
     }
+
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer: `(1, seq, hidden_size)`.
+    /// Each captured tensor is the OUTPUT of the requested
+    /// encoder layer (post-LayerNorm, post-FFN-residual —
+    /// BERT is post-LN throughout).
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_hidden_layers)`. Mirrors the
+    /// `forward_intermediate_layers` hook contract used by the
+    /// ViT-shape vision backbones.
+    ///
+    /// # Use cases
+    ///
+    ///   - **Layer-wise probing**: classify or analyze
+    ///     individual encoder layers (BERTology, "what does
+    ///     each layer learn?" experiments).
+    ///   - **Multi-layer features**: pool/concatenate features
+    ///     from several layers for downstream tasks where the
+    ///     last layer alone discards too much.
+    ///   - **Distillation**: align teacher's intermediate
+    ///     hidden states with a smaller student.
+    pub fn forward_intermediate_layers(
+        &self,
+        token_ids: &[u32],
+        layer_ids: &[usize],
+    ) -> crate::Result<Vec<LazyTensor>> {
+        assert!(!token_ids.is_empty(), "BertModel::forward_intermediate_layers: empty input");
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = self.weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+        let seq = token_ids.len();
+        let cfg = &self.config;
+        let h = cfg.hidden_size;
+        assert!(
+            seq <= cfg.max_position_embeddings,
+            "BertModel::forward_intermediate_layers: seq {seq} > max_position_embeddings {}",
+            cfg.max_position_embeddings,
+        );
+
+        // Same embedding setup as `forward`.
+        let word_emb = LazyTensor::from_f32(
+            self.weights.word_embeddings.clone(),
+            Shape::from_dims(&[cfg.vocab_size, h]),
+            &crate::Device::cpu(),
+        );
+        let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]));
+        let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
+        let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        let token_type_ids =
+            word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
+        let pos_emb = word_emb.const_f32_like(
+            self.weights.position_embeddings.clone(),
+            Shape::from_dims(&[cfg.max_position_embeddings, h]),
+        );
+        let type_emb = word_emb.const_f32_like(
+            self.weights.token_type_embeddings.clone(),
+            Shape::from_dims(&[cfg.type_vocab_size, h]),
+        );
+        let w = word_emb.index_select(0, &input_ids).unwrap();
+        let p = pos_emb.index_select(0, &position_ids).unwrap();
+        let t = type_emb.index_select(0, &token_type_ids).unwrap();
+        let embeds = w.add(&p).unwrap().add(&t).unwrap()
+            .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        let embeds = layer_norm_affine(
+            &embeds, &self.weights.emb_ln_gamma, &self.weights.emb_ln_beta,
+            cfg.layer_norm_eps, h, seq,
+        );
+
+        // Walk layers and capture at the requested indices.
+        let mut x = embeds;
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, lw) in self.weights.layers.iter().enumerate() {
+            x = encoder_layer(&x, lw, cfg, seq);
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(x.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
 }
 
 // ---- Layer primitives ------------------------------------------------------
@@ -787,5 +875,71 @@ mod tests {
         // Phase 6a oracle gate.
         let out_ref = hidden.realize_f32_reference();
         crate::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped `(1, seq, hidden_size)`.
+    /// Mirrors the ViT-shape backbone hooks.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = BertConfig {
+            vocab_size:              50,
+            hidden_size:             16,
+            num_hidden_layers:       3,
+            num_attention_heads:     4,
+            intermediate_size:       32,
+            max_position_embeddings: 16,
+            type_vocab_size:         2,
+            layer_norm_eps:          1e-12,
+        };
+        let h = cfg.hidden_size;
+        let zeros = |n: usize| Arc::from(vec![0.0_f32; n]);
+        let ones = |n: usize| Arc::from(vec![1.0_f32; n]);
+        let mut s: u32 = 314159;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let mut vec_of = |n: usize| -> Arc<[f32]> {
+            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+        };
+        let weights = BertWeights {
+            word_embeddings:       vec_of(cfg.vocab_size * h),
+            position_embeddings:   vec_of(cfg.max_position_embeddings * h),
+            token_type_embeddings: vec_of(cfg.type_vocab_size * h),
+            emb_ln_gamma:          ones(h),
+            emb_ln_beta:           zeros(h),
+            layers: (0..cfg.num_hidden_layers).map(|_| BertLayerWeights {
+                attn_q_w: vec_of(h * h), attn_q_b: vec_of(h),
+                attn_k_w: vec_of(h * h), attn_k_b: vec_of(h),
+                attn_v_w: vec_of(h * h), attn_v_b: vec_of(h),
+                attn_out_w: vec_of(h * h), attn_out_b: vec_of(h),
+                attn_ln_gamma: ones(h), attn_ln_beta: zeros(h),
+                ffn_in_w: vec_of(h * cfg.intermediate_size),
+                ffn_in_b: vec_of(cfg.intermediate_size),
+                ffn_out_w: vec_of(cfg.intermediate_size * h),
+                ffn_out_b: vec_of(h),
+                ffn_ln_gamma: ones(h), ffn_ln_beta: zeros(h),
+            }).collect(),
+        };
+        let model = BertModel { config: cfg, weights };
+        let ids: Vec<u32> = (0..8).collect();
+        let outs = model.forward_intermediate_layers(&ids, &[0_usize, 2]).unwrap();
+        assert_eq!(outs.len(), 2);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, ids.len(), h]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        // Layer 0 and layer 2 outputs must differ (each layer transforms x).
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 2 intermediates must differ, max_diff = {max_diff}");
     }
 }
