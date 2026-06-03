@@ -236,6 +236,102 @@ impl JinaBertModel {
         Ok(x)
     }
 
+    /// Extract per-token features at the requested layer
+    /// indices. Output shape per layer: `(1, seq, hidden_size)`.
+    /// Each capture is the post-block hidden state (Jina-BERT
+    /// is post-LN throughout, so captures are already fully
+    /// normalized).
+    ///
+    /// Jina-BERT specifics preserved:
+    ///   - **ALiBi bias** built once and (when an
+    ///     `attention_mask` is supplied) pre-folded with the
+    ///     pad mask, so each layer just broadcast-adds a
+    ///     single bias tensor — same path the public `forward`
+    ///     takes.
+    ///   - **Token-type embeddings** at row 0 (default).
+    ///   - **Embedding LayerNorm** (with bias) applied before
+    ///     the first encoder block.
+    ///
+    /// Layer-id contract: 0-based, strictly increasing, all in
+    /// `[0, num_hidden_layers)`. Mirrors the BERT / DistilBERT
+    /// / XLM-R / NomicBert / ModernBERT hooks.
+    pub fn forward_intermediate_layers(
+        &self,
+        tokens: &[u32],
+        layer_ids: &[usize],
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<Vec<LazyTensor>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let h = cfg.hidden_size;
+        let n_heads = cfg.num_attention_heads;
+        assert!(seq > 0);
+        assert!(seq <= cfg.max_position_embeddings);
+        assert!(
+            n_heads * cfg.head_dim() == h,
+            "num_attention_heads * head_dim must equal hidden_size",
+        );
+        assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
+        for w in layer_ids.windows(2) {
+            assert!(w[0] < w[1], "layer_ids must be strictly increasing");
+        }
+        let depth = weights.layers.len();
+        assert!(
+            *layer_ids.last().unwrap() < depth,
+            "layer_ids must all be in [0, num_hidden_layers = {depth})",
+        );
+
+        let word_emb_t = LazyTensor::from_f32(
+            weights.word_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, h]),
+            &Device::cpu(),
+        );
+        let token_ids = word_emb_t.const_u32_like(
+            tokens.to_vec(), Shape::from_dims(&[seq]),
+        );
+        let word_embeds = word_emb_t
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let tte_t = word_emb_t.const_f32_like(
+            Arc::clone(&weights.token_type_embedding),
+            Shape::from_dims(&[cfg.type_vocab_size, h]),
+        );
+        let tt_ids = word_emb_t.const_u32_like(
+            vec![0_u32; seq], Shape::from_dims(&[seq]),
+        );
+        let tt_embeds = tte_t
+            .index_select(0_usize, &tt_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let mut x = crate::lazy::apply_affine_layer_norm_pub(
+            &word_embeds.add(&tt_embeds)?,
+            &weights.embed_ln_gain, &weights.embed_ln_bias,
+            h, cfg.layer_norm_eps,
+        );
+
+        // Shared ALiBi bias (optionally folded with pad mask).
+        let alibi_data = build_alibi_bias(n_heads, seq);
+        let alibi_t = x
+            .const_f32_like(alibi_data, Shape::from_dims(&[n_heads, seq, seq]))
+            .reshape(Shape::from_dims(&[1, n_heads, seq, seq]))?;
+        let bias = match attention_mask {
+            None => alibi_t,
+            Some(mask) => alibi_t.broadcast_add(mask)?,
+        };
+
+        let mut out = Vec::with_capacity(layer_ids.len());
+        let mut next_capture = 0;
+        for (idx, layer) in weights.layers.iter().enumerate() {
+            x = self.apply_layer(&x, layer, &bias)?;
+            if next_capture < layer_ids.len() && layer_ids[next_capture] == idx {
+                out.push(x.clone());
+                next_capture += 1;
+            }
+        }
+        Ok(out)
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
@@ -473,5 +569,31 @@ mod tests {
         assert!(max_diff > 1e-7,
             "ALiBi should weigh the distinct token differently at distance 5 \
              vs distance 1, but position 0 and 4 outputs are identical: max_diff = {max_diff}");
+    }
+
+    /// `forward_intermediate_layers` returns one tensor per
+    /// requested layer index, each shaped `(1, seq, hidden_size)`.
+    /// Mirrors the BERT-family hooks.
+    #[test]
+    fn forward_intermediate_layers_shape() {
+        let cfg = tiny_cfg();
+        let model = JinaBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let toks = [1_u32, 2, 3, 4];
+        let outs = model.forward_intermediate_layers(&toks, &[0_usize, 1], None).unwrap();
+        assert_eq!(outs.len(), 2);
+        for out in &outs {
+            assert_eq!(out.shape().dims(), &[1, toks.len(), cfg.hidden_size]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite intermediate: {v}");
+            }
+        }
+        let a = outs[0].realize_f32();
+        let b = outs[1].realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
     }
 }
