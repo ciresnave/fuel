@@ -188,6 +188,27 @@ impl T5Model {
         Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size))
     }
 
+    /// Run only the T5 encoder and return its hidden states
+    /// `(1, src_len, d_model)`. Use this when T5 is a
+    /// conditioning text encoder rather than a full
+    /// seq2seq model — Parler-TTS, Stable Diffusion 3 / FLUX
+    /// (T5-XXL conditioning), and any future model that
+    /// just consumes T5 features.
+    ///
+    /// Includes the final RmsNorm. No LM head. Mirrors the
+    /// `forward_hidden` pattern on the LLM backbones (Llama,
+    /// Mistral, Qwen2) and the SD-text-encoder shape.
+    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        assert!(!src_tokens.is_empty(), "src_tokens must be non-empty");
+        let embed = LazyTensor::from_f32(
+            self.weights.shared_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
+            &Device::cpu(),
+        );
+        self.encode(&embed, src_tokens)
+    }
+
     fn encode(&self, embed: &LazyTensor, src: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let src_len = src.len();
@@ -674,5 +695,38 @@ mod tests {
         assert_eq!(c.num_heads, 8);
         assert_eq!(c.inner_dim(), 512);
         assert!(!c.gated_ffn);
+    }
+
+    /// `forward_encoder(src)` runs the T5 encoder in isolation
+    /// and returns post-final-norm hidden states
+    /// `(1, src_len, d_model)`. Used when T5 is a conditioning
+    /// text encoder (Parler-TTS, SD3, FLUX).
+    #[test]
+    fn forward_encoder_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let src = [1_u32, 2, 3, 4, 5];
+        let enc = model.forward_encoder(&src).unwrap();
+        assert_eq!(enc.shape().dims(), &[1, src.len(), cfg.d_model]);
+        for &v in &enc.realize_f32() {
+            assert!(v.is_finite(), "non-finite encoder hidden: {v}");
+        }
+    }
+
+    /// `forward_encoder` is the same path the full `forward`
+    /// runs internally — same encoder. Changing the source
+    /// tokens must change the encoder hidden state.
+    #[test]
+    fn forward_encoder_responds_to_src() {
+        let cfg = tiny_config();
+        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let a = model.forward_encoder(&[1_u32, 2, 3]).unwrap().realize_f32();
+        let b = model.forward_encoder(&[7_u32, 8, 9]).unwrap().realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-6,
+            "forward_encoder must respond to src changes, max_diff = {max_diff}");
     }
 }
