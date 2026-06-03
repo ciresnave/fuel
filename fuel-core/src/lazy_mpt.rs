@@ -146,6 +146,21 @@ impl MptModel {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.d_model, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final LayerNorm and
+    /// return per-token hidden states `(1, seq, d_model)`.
+    /// MPT uses ALiBi positional bias + causal mask combined
+    /// in a single per-head additive bias.
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        self.run_backbone(tokens)
+    }
+
+    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -162,7 +177,6 @@ impl MptModel {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.d_model]))?;
 
-        // ALiBi + causal combined mask, computed once at forward.
         let slopes = cfg.alibi_slopes();
         let mask_data = build_alibi_causal_mask(seq, &slopes);
         let mask = h.const_f32_like(
@@ -173,12 +187,10 @@ impl MptModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &mask)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
+        Ok(crate::lazy::apply_affine_layer_norm_pub(
             &h, &weights.final_ln_gain, &weights.final_ln_bias,
             cfg.d_model, cfg.layer_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.d_model, cfg.vocab_size))
+        ))
     }
 
     fn apply_layer(
@@ -343,5 +355,21 @@ mod tests {
         let any_diff = causal_mask.iter().zip(alibi_mask.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-7 && a.is_finite() && b.is_finite());
         assert!(any_diff, "ALiBi mask must differ from zero-slope causal mask on j < i positions");
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = MptConfig {
+            d_model: 16, n_heads: 4, n_layers: 2, expansion_ratio: 4,
+            max_seq_len: 16, vocab_size: 32, kv_n_heads: 1,
+            alibi_bias_max: 8, layer_norm_eps: 1e-5,
+        };
+        let model = MptModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.d_model]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }

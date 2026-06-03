@@ -61,6 +61,22 @@ impl SmolLm3Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
+    /// Run the decoder forward up to the final RmsNorm and
+    /// return per-token hidden states `(1, seq, hidden_size)`.
+    /// SmolLM3-specific: every Nth layer skips RoPE
+    /// (NoPE pattern). The hook honors the same per-layer
+    /// RoPE-on/off schedule as `forward`.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
@@ -86,11 +102,9 @@ impl SmolLm3Model {
             let uses_rope = cfg.layer_uses_rope(layer_idx);
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, uses_rope)?;
         }
-
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
+        Ok(crate::lazy::apply_affine_rms_norm_pub(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        ))
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
@@ -278,5 +292,23 @@ mod tests {
         let any_diff = out_all.iter().zip(out_partial.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-7);
         assert!(any_diff, "skipping RoPE on layer 0 must change output");
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = SmolLm3Config {
+            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
+            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
+            head_dim: 4, rms_norm_eps: 1e-5, rope_theta: 10_000.0,
+            max_position_embeddings: 64, attention_bias: false,
+            sliding_window: None, no_rope_layers: None,
+        };
+        let model = SmolLm3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
