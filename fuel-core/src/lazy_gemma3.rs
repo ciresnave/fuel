@@ -115,9 +115,32 @@ impl Gemma3Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
+        let h_norm = self.run_backbone(tokens, start_pos)?;
+        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
+        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
+        let logits = match cfg.final_logit_softcapping {
+            None => logits,
+            Some(sc) => logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc),
+        };
+        Ok(logits)
+    }
+
+    /// Run the decoder forward up to the final offset RmsNorm
+    /// and return per-token hidden states `(1, seq, hidden_size)`.
+    /// Skips the tied `lm_head` matmul AND the final logit
+    /// softcapping. Gemma3-specific: dual-RoPE (global + local)
+    /// + per-layer sliding-window pattern + sqrt(hidden_size)
+    /// embedding scaling — all honored by the shared backbone.
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        self.run_backbone(tokens, start_pos)
+    }
+
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "Gemma3Model::forward: tokens must be non-empty");
+        assert!(seq > 0, "Gemma3Model: tokens must be non-empty");
         assert_eq!(
             cfg.num_attention_heads % cfg.num_key_value_heads, 0,
             "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads",
@@ -127,7 +150,6 @@ impl Gemma3Model {
             "Gemma3Config: sliding_window_pattern must be > 0",
         );
 
-        // Embedding lookup + sqrt(hidden_size) scaling (Gemma-shaped).
         let embed = LazyTensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
@@ -139,7 +161,6 @@ impl Gemma3Model {
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
         h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
 
-        // Build BOTH RoPE table sets — one per base frequency.
         let (cos_g, sin_g) = fuel_graph::build_rope_tables(
             cfg.rope_theta, start_pos, seq, cfg.head_dim,
         );
@@ -152,7 +173,6 @@ impl Gemma3Model {
         let rope_cos_l = h.const_f32_like(cos_l, rope_shape.clone());
         let rope_sin_l = h.const_f32_like(sin_l, rope_shape);
 
-        // Two masks: full causal + sliding-window causal.
         let full_mask = self.build_mask(&h, seq, None);
         let sliding_mask = self.build_mask(&h, seq, Some(cfg.sliding_window));
 
@@ -166,21 +186,9 @@ impl Gemma3Model {
             let mask = if uses_window { &sliding_mask } else { &full_mask };
             h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask)?;
         }
-
-        // Final offset RmsNorm.
-        let h_norm = apply_offset_rms_norm(
+        apply_offset_rms_norm(
             &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
-        // lm_head is tied to token_embedding (shape [vocab, hidden]
-        // already matches the linear-weight layout used by
-        // apply_linear: (in_features=hidden, out_features=vocab)).
-        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
-        let logits = match cfg.final_logit_softcapping {
-            None => logits,
-            Some(sc) => logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc),
-        };
-        Ok(logits)
+        )
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize, sliding: Option<usize>) -> LazyTensor {
@@ -532,5 +540,17 @@ mod tests {
         assert!(!model.layer_uses_sliding(1));
         assert!(model.layer_uses_sliding(2));
         assert!(!model.layer_uses_sliding(3));
+    }
+
+    #[test]
+    fn forward_hidden_shape_and_finite() {
+        let cfg = tiny_config();
+        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let hidden = model.forward_hidden(&tokens, 0).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
+        }
     }
 }
