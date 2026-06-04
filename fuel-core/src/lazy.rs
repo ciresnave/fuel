@@ -2986,6 +2986,39 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
+    /// Split a `(B, N, num_heads * head_dim)` projection into the
+    /// multi-head attention layout `(B, num_heads, N, head_dim)`.
+    /// Equivalent to `reshape(B, N, num_heads, head_dim).permute([0, 2, 1, 3])`
+    /// — promoted to a method to retire the per-port reimplementations
+    /// of this same composite.
+    pub fn split_heads(
+        &self, num_heads: usize, head_dim: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.inner.shape().dims().to_vec();
+        debug_assert_eq!(dims.len(), 3,
+            "split_heads: input must be rank 3 (B, N, embed), got {dims:?}");
+        debug_assert_eq!(dims[2], num_heads * head_dim,
+            "split_heads: trailing dim ({}) != num_heads * head_dim ({} * {} = {})",
+            dims[2], num_heads, head_dim, num_heads * head_dim);
+        let b = dims[0]; let n = dims[1];
+        self.reshape(Shape::from_dims(&[b, n, num_heads, head_dim]))?
+            .permute([0, 2, 1, 3_usize])
+    }
+
+    /// Merge a `(B, num_heads, N, head_dim)` attention result back
+    /// into the projection layout `(B, N, num_heads * head_dim)`.
+    /// Inverse of [`Self::split_heads`].
+    pub fn merge_heads(
+        &self,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.inner.shape().dims().to_vec();
+        debug_assert_eq!(dims.len(), 4,
+            "merge_heads: input must be rank 4 (B, heads, N, head_dim), got {dims:?}");
+        let b = dims[0]; let num_heads = dims[1]; let n = dims[2]; let head_dim = dims[3];
+        self.permute([0, 2, 1, 3_usize])?
+            .reshape(Shape::from_dims(&[b, n, num_heads * head_dim]))
+    }
+
     /// Add a length-`bias.len()` bias vector to the trailing dim
     /// of `self`, broadcasting across all leading dims. The bias
     /// is materialized fresh on `self`'s graph from the supplied
@@ -10197,6 +10230,21 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn split_heads_then_merge_heads_round_trip() {
+        // (B=1, N=2, embed=6) — split into 2 heads of head_dim=3.
+        let x = cpu_f32((0..12).map(|i| i as f32).collect(), &[1, 2, 6]);
+        let split = x.split_heads(2, 3).unwrap();
+        assert_eq!(split.shape().dims(), &[1, 2, 2, 3]);
+        let merged = split.merge_heads().unwrap();
+        assert_eq!(merged.shape().dims(), &[1, 2, 6]);
+        let m = merged.realize_f32();
+        let original = x.realize_f32();
+        for (a, b) in m.iter().zip(original.iter()) {
+            assert!((a - b).abs() < 1e-7, "{a} vs {b}");
+        }
     }
 
     #[test]

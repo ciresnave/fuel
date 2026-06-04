@@ -328,12 +328,10 @@ fn apply_attention(
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
 
-    let q = q.reshape(Shape::from_dims(&[b, q_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[b, kv_len, num_kv_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[b, kv_len, num_kv_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    let _ = (q_len, kv_len);
+    let q = q.split_heads(num_heads, head_dim)?;
+    let k = k.split_heads(num_kv_heads, head_dim)?;
+    let v = v.split_heads(num_kv_heads, head_dim)?;
 
     // GQA: repeat K/V along the head dim to match Q's head count.
     let (k, v) = if num_kv_heads == num_heads {
@@ -353,10 +351,8 @@ fn apply_attention(
         scores = scores.add(&mb)?;
     }
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs.matmul(&v)?;
-    let ctx = ctx
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, q_len, q_out_dim]))?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
+    let _ = (b, q_out_dim);
     Ok(w.out_proj.apply_linear(&ctx, q_out_dim, q_out_dim))
 }
 

@@ -362,20 +362,16 @@ fn apply_efficient_attention(
         &kv_seq, &attn.value, &attn.value_bias, hidden_size, hidden_size, anchor,
     )?;
 
-    let q = q.reshape(Shape::from_dims(&[b, q_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[b, kv_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[b, kv_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    let _ = (q_len, kv_len);
+    let q = q.split_heads(num_heads, head_dim)?;
+    let k = k.split_heads(num_heads, head_dim)?;
+    let v = v.split_heads(num_heads, head_dim)?;
 
     let kt = k.permute([0, 1, 3, 2_usize])?;
     let scores = q.matmul(&kt)?.mul_scalar(scale);
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs.matmul(&v)?;
-    let ctx = ctx
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, q_len, hidden_size]))?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
+    let _ = (b, hidden_size);
     apply_linear_with_bias(
         &ctx, &out.dense, &out.dense_bias, hidden_size, hidden_size, anchor,
     )
