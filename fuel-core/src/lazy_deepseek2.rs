@@ -346,13 +346,8 @@ impl DeepSeek2Model {
         let scale = 1.0_f64 / (q_head_dim as f64).sqrt();
         let scores = q_full.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
-        let mut mask_data = vec![0.0_f32; seq * seq];
-        for i in 0..seq {
-            for j in (i + 1)..seq {
-                mask_data[i * seq + j] = f32::NEG_INFINITY;
-            }
-        }
-        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+            .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let probs = scores_masked.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?; // (b, n_heads, seq, v_dim)
