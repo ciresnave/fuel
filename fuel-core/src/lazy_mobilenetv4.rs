@@ -48,6 +48,17 @@ pub enum BlockSpec {
         out_channels: usize, start_kernel: usize, mid_kernel: usize,
         stride: usize, expand: usize,
     },
+    /// Mobile multi-query attention block. Q has `heads` separate
+    /// streams (each `kv_dim` channels); K/V each have a single
+    /// stream (`kv_dim` channels) broadcast across all heads. When
+    /// `kv_stride > 1`, K/V get a depthwise downsample by
+    /// `kernel`/`kv_stride` before the projections.
+    ///
+    /// v1: `stride` must equal 1.
+    Attention {
+        out_channels: usize, heads: usize, kernel: usize, stride: usize,
+        kv_dim: usize, kv_stride: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,12 +150,37 @@ pub struct EdgeResidualWeights {
     pub conv_pwl: Conv2dBnWeights,
 }
 
+/// Mobile multi-query attention weights. The depthwise
+/// downsample (+ BN) on K/V is present iff `kv_stride > 1`.
+#[derive(Debug, Clone)]
+pub struct MqaWeights {
+    /// BatchNorm applied to the residual input before Q/K/V.
+    pub input_norm: BatchNormParams,
+    /// Q projection: 1×1 conv `in_channels → kv_dim · heads`.
+    pub query_proj: Conv2dBnWeights,
+    /// Optional K depthwise downsample (groups=in_channels).
+    pub key_down: Option<Conv2dBnWeights>,
+    /// K projection: 1×1 conv `in_channels → kv_dim`.
+    pub key_proj: Conv2dBnWeights,
+    /// Optional V depthwise downsample.
+    pub value_down: Option<Conv2dBnWeights>,
+    /// V projection: 1×1 conv `in_channels → kv_dim`.
+    pub value_proj: Conv2dBnWeights,
+    /// Output projection: 1×1 conv `kv_dim · heads → out_channels`.
+    pub output_proj: Conv2dBnWeights,
+    pub heads: usize,
+    pub kv_dim: usize,
+    pub layer_scale_gamma: Option<Arc<[f32]>>,
+    pub skip: bool,
+}
+
 /// Per-block weights, tagged to match the spec.
 #[derive(Debug, Clone)]
 pub enum BlockWeights {
     Convolutional(Conv2dBnWeights),
     EdgeResidual(EdgeResidualWeights),
     UniversalBottleneck(UibWeights),
+    Attention(MqaWeights),
 }
 
 #[derive(Debug, Clone)]
@@ -300,7 +336,99 @@ fn apply_block(
             }
             Ok(y)
         }
+        BlockWeights::Attention(mqa) => apply_mqa(x, mqa, anchor),
     }
+}
+
+/// Mobile multi-query attention forward. Input `(1, C, H, W)`;
+/// output `(1, C_out, H, W)`.
+///
+///   q = query_proj(BN(x))                                            shape (1, kv_dim·heads, H, W)
+///   k = key_proj(optional key_down(BN(x)))                           shape (1, kv_dim, H_kv, W_kv)
+///   v = value_proj(optional value_down(BN(x)))                       shape (1, kv_dim, H_kv, W_kv)
+///
+///   Reshape into multi-query attention layout:
+///     q' = q.reshape(1, heads, kv_dim, H·W).transpose(-1,-2)         (1, heads, H·W, kv_dim)
+///     kv = reshape_kv (1, kv_dim, H_kv·W_kv) → transpose → unsqueeze (1, 1, H_kv·W_kv, kv_dim)
+///
+///   attn = softmax(q' · scale · k^T)                                 (1, heads, H·W, H_kv·W_kv)
+///   o    = attn · v                                                  (1, heads, H·W, kv_dim)
+///   reshape back to (1, kv_dim·heads, H, W), output_proj, then optional
+///   layer-scale + optional residual.
+fn apply_mqa(
+    x: &LazyTensor, mqa: &MqaWeights, anchor: &LazyTensor,
+) -> Result<LazyTensor> {
+    let dims = x.shape();
+    let dims = dims.dims();
+    let b = dims[0]; let h = dims[2]; let w = dims[3];
+    let heads = mqa.heads;
+    let kv_dim = mqa.kv_dim;
+    let scale = 1.0_f64 / (kv_dim as f64).sqrt();
+
+    let normed = apply_bn(x, &mqa.input_norm, mqa.input_norm.w.len())?;
+
+    // Q: 1×1 conv → (B, kv_dim*heads, H, W)
+    let q = apply_conv_bn(&normed, &mqa.query_proj, anchor)?;
+    let q = q
+        .reshape(Shape::from_dims(&[b, heads, kv_dim, h * w]))?
+        .permute([0, 1, 3, 2_usize])?; // (B, heads, H·W, kv_dim)
+    let q = q.mul_scalar(scale);
+
+    // K
+    let mut k_input = normed.clone();
+    if let Some(kd) = &mqa.key_down {
+        k_input = apply_conv_bn(&k_input, kd, anchor)?;
+    }
+    let k = apply_conv_bn(&k_input, &mqa.key_proj, anchor)?;
+    let k_dims = k.shape();
+    let k_dims = k_dims.dims();
+    let h_kv = k_dims[2]; let w_kv = k_dims[3];
+    let kv_len = h_kv * w_kv;
+    // (B, kv_dim, H_kv·W_kv) → (B, H_kv·W_kv, kv_dim) → unsqueeze head dim
+    let k_seq = k
+        .reshape(Shape::from_dims(&[b, kv_dim, kv_len]))?
+        .permute([0, 2, 1_usize])?
+        .reshape(Shape::from_dims(&[b, 1, kv_len, kv_dim]))?;
+    // Broadcast to (B, heads, kv_len, kv_dim) so matmul shapes match.
+    let k_bc = k_seq.broadcast_to(Shape::from_dims(&[b, heads, kv_len, kv_dim]))?;
+
+    // V (same shape gymnastics)
+    let mut v_input = normed.clone();
+    if let Some(vd) = &mqa.value_down {
+        v_input = apply_conv_bn(&v_input, vd, anchor)?;
+    }
+    let v = apply_conv_bn(&v_input, &mqa.value_proj, anchor)?;
+    let v_seq = v
+        .reshape(Shape::from_dims(&[b, kv_dim, kv_len]))?
+        .permute([0, 2, 1_usize])?
+        .reshape(Shape::from_dims(&[b, 1, kv_len, kv_dim]))?;
+    let v_bc = v_seq.broadcast_to(Shape::from_dims(&[b, heads, kv_len, kv_dim]))?;
+
+    // attn = q @ k^T → (B, heads, H·W, kv_len)
+    let k_t = k_bc.permute([0, 1, 3, 2_usize])?;
+    let scores = q.matmul(&k_t)?;
+    let probs = scores.softmax_last_dim()?;
+    let ctx = probs.matmul(&v_bc)?; // (B, heads, H·W, kv_dim)
+
+    // Reshape back to (B, kv_dim·heads, H, W):
+    //   (B, heads, H·W, kv_dim) → permute (0, 2, 1, 3) → (B, H·W, heads, kv_dim)
+    //   reshape (B, H, W, kv_dim·heads) → permute (0, 3, 1, 2) → (B, kv_dim·heads, H, W)
+    let o = ctx
+        .permute([0, 2, 1, 3_usize])?
+        .reshape(Shape::from_dims(&[b, h, w, kv_dim * heads]))?
+        .permute([0, 3, 1, 2_usize])?;
+
+    let mut y = apply_conv_bn(&o, &mqa.output_proj, anchor)?;
+    if let Some(g) = &mqa.layer_scale_gamma {
+        let gt = anchor
+            .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))
+            .reshape(Shape::from_dims(&[1, g.len(), 1, 1]))?;
+        y = y.broadcast_mul(&gt)?;
+    }
+    if mqa.skip {
+        y = y.add(x)?;
+    }
+    Ok(y)
 }
 
 // ---- Tests -----------------------------------------------------------------
@@ -381,6 +509,33 @@ mod tests {
                     skip,
                 })
             }
+            BlockSpec::Attention {
+                out_channels, heads, kernel, stride, kv_dim, kv_stride,
+            } => {
+                assert_eq!(stride, 1, "Mobile-MQA v1: stride must be 1");
+                let key_down = if kv_stride > 1 {
+                    Some(conv_bn_w(in_ch, in_ch, kernel, kv_stride, kernel / 2, in_ch, nb))
+                } else { None };
+                let value_down = if kv_stride > 1 {
+                    Some(conv_bn_w(in_ch, in_ch, kernel, kv_stride, kernel / 2, in_ch, nb))
+                } else { None };
+                BlockWeights::Attention(MqaWeights {
+                    input_norm: BatchNormParams {
+                        w: Arc::from(vec![1.0_f32; in_ch]),
+                        b: Arc::from(vec![0.0_f32; in_ch]),
+                    },
+                    query_proj: conv_bn_w(in_ch, kv_dim * heads, 1, 1, 0, 1, nb),
+                    key_down,
+                    key_proj: conv_bn_w(in_ch, kv_dim, 1, 1, 0, 1, nb),
+                    value_down,
+                    value_proj: conv_bn_w(in_ch, kv_dim, 1, 1, 0, 1, nb),
+                    output_proj: conv_bn_w(kv_dim * heads, out_channels, 1, 1, 0, 1, nb),
+                    heads,
+                    kv_dim,
+                    layer_scale_gamma: None,
+                    skip: in_ch == out_channels,
+                })
+            }
         }
     }
 
@@ -398,6 +553,7 @@ mod tests {
                     BlockSpec::Convolutional { out_channels, .. } => *out_channels,
                     BlockSpec::EdgeResidual { out_channels, .. } => *out_channels,
                     BlockSpec::UniversalBottleneck { out_channels, .. } => *out_channels,
+                    BlockSpec::Attention { out_channels, .. } => *out_channels,
                 };
             }
         }
@@ -530,5 +686,87 @@ mod tests {
         assert_eq!(cfg.head_out_channels, 1280);
         assert_eq!(cfg.stages[0].len(), 2);
         assert_eq!(cfg.stages[4].len(), 1);
+    }
+
+    /// Tiny config with a Mobile-MQA Attention block. Exercise both
+    /// the `kv_stride > 1` (key/value depthwise downsample) and
+    /// `kv_stride == 1` (direct) paths.
+    fn tiny_hybrid_config(kv_stride: usize) -> Mv4Config {
+        use BlockSpec::*;
+        Mv4Config {
+            stem_dim: 8,
+            activation: Mv4Activation::Relu,
+            head_in_channels: 32,
+            head_out_channels: 16,
+            stages: [
+                vec![Convolutional { out_channels: 8, kernel: 1, stride: 1 }],
+                vec![Convolutional { out_channels: 16, kernel: 3, stride: 2 }],
+                vec![
+                    UniversalBottleneck { out_channels: 16, start_kernel: 3, mid_kernel: 3, stride: 1, expand: 2 },
+                    Attention { out_channels: 16, heads: 2, kernel: 3, stride: 1, kv_dim: 4, kv_stride },
+                ],
+                vec![
+                    EdgeResidual { out_channels: 24, kernel: 3, stride: 2, expand: 2 },
+                ],
+                vec![Convolutional { out_channels: 32, kernel: 1, stride: 1 }],
+            ],
+        }
+    }
+
+    #[test]
+    fn mqa_kv_stride_2_runs() {
+        let cfg = tiny_hybrid_config(2);
+        let weights = build_weights(&cfg);
+        let model = Mv4Model { config: cfg.clone(), weights };
+        let img = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let pooled = model.forward(&img).unwrap();
+        assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
+        for &v in &pooled.realize_f32() {
+            assert!(v.is_finite(), "kv_stride=2 produced non-finite pooled: {v}");
+        }
+    }
+
+    #[test]
+    fn mqa_kv_stride_1_runs() {
+        let cfg = tiny_hybrid_config(1);
+        let weights = build_weights(&cfg);
+        let model = Mv4Model { config: cfg.clone(), weights };
+        let img = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let pooled = model.forward(&img).unwrap();
+        assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
+        for &v in &pooled.realize_f32() {
+            assert!(v.is_finite(), "kv_stride=1 produced non-finite pooled: {v}");
+        }
+    }
+
+    /// Different input images must yield different pooled outputs
+    /// when an Attention block is present.
+    #[test]
+    fn mqa_responds_to_input() {
+        let cfg = tiny_hybrid_config(2);
+        let weights = build_weights(&cfg);
+        let model = Mv4Model { config: cfg.clone(), weights };
+        let img_a = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let img_b = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let a = model.forward(&img_a).unwrap().realize_f32();
+        let b = model.forward(&img_b).unwrap().realize_f32();
+        let mut max_diff = 0.0_f32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            max_diff = max_diff.max((x - y).abs());
+        }
+        assert!(max_diff > 1e-9,
+            "Mobile-MQA path must respond to input changes, max_diff = {max_diff}");
     }
 }
