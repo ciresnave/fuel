@@ -135,6 +135,7 @@ pub mod lazy_stablelm;
 pub mod lazy_stella_v5;
 pub mod lazy_starcoder2;
 pub mod lazy_t5;
+pub mod lazy_trocr;
 pub mod lazy_vit;
 pub mod lazy_xlm_roberta;
 pub mod lazy_yi;
