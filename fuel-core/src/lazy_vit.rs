@@ -348,15 +348,10 @@ impl VitModel {
             layer.v_proj_bias.as_ref(), h,
         )?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let k_t = k.transpose()?;
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
@@ -364,9 +359,7 @@ impl VitModel {
         let scores_scaled = scores.mul_scalar(scale);
         let probs = scores_scaled.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = ctx.merge_heads()?;
 
         // SelfOutput: dense projection only (no normalisation here in HF).
         let attn_out = layer.attn_output_proj.apply_linear(&merged, h, h);
