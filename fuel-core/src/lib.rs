@@ -136,6 +136,7 @@ pub mod lazy_rwkv6;
 pub mod lazy_rwkv7;
 pub mod lazy_siglip;
 pub mod lazy_smollm3;
+pub mod lazy_snac;
 pub mod lazy_stablelm;
 pub mod lazy_stella_v5;
 pub mod lazy_starcoder2;
