@@ -269,7 +269,7 @@ impl FastVitModel {
             Some(head) => {
                 let h = apply_conv2d_bias(&feats, &head.conv, image)?;
                 let h = h.gelu_erf();
-                let pooled = h.mean_dim(3_usize)?.mean_dim(2_usize)?;
+                let pooled = h.global_avg_pool_2d()?;
                 let dims = pooled.shape();
                 let dims = dims.dims();
                 let c = dims[1];
@@ -351,8 +351,7 @@ fn apply_se(
     let dims = dims.dims();
     let c = dims[1];
     let pooled = x
-        .mean_dim(3_usize)?
-        .mean_dim(2_usize)?
+        .global_avg_pool_2d()?
         .reshape(Shape::from_dims(&[dims[0], c, 1, 1]))?;
     let g = apply_conv2d_bias(&pooled, &se.fc1, anchor)?.relu();
     let g = apply_conv2d_bias(&g, &se.fc2, anchor)?.sigmoid();

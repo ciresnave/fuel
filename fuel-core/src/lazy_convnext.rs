@@ -475,9 +475,7 @@ fn linear(
 
 /// Global average pool 2D. Input `[1, C, H, W]` → output `[1, C]`.
 fn global_avg_pool_2d(x: &LazyTensor, _c: usize, _h: usize, _w: usize) -> LazyTensor {
-    // mean over W (dim 3), then over H (dim 2) — the order matters
-    // because `mean_dim` drops the dim, shifting indices.
-    x.mean_dim(3).unwrap().mean_dim(2).unwrap()
+    x.global_avg_pool_2d().unwrap()
 }
 
 /// Conv2d with `stride == kernel` and `padding == 0`. The windows are
