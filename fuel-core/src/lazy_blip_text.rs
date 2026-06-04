@@ -315,12 +315,10 @@ fn apply_attention(
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
 
-    let q = q.reshape(Shape::from_dims(&[b, q_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[b, kv_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[b, kv_len, num_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    let _ = (q_len, kv_len);
+    let q = q.split_heads(num_heads, head_dim)?;
+    let k = k.split_heads(num_heads, head_dim)?;
+    let v = v.split_heads(num_heads, head_dim)?;
 
     let kt = k.permute([0, 1, 3, 2_usize])?;
     let mut scores = q.matmul(&kt)?;
@@ -330,9 +328,8 @@ fn apply_attention(
     }
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
-    Ok(ctx
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, q_len, embed]))?)
+    let _ = (b, embed);
+    ctx.merge_heads()
 }
 
 fn apply_layer_norm(
