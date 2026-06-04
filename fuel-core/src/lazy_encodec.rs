@@ -356,7 +356,7 @@ fn extra_padding_for_conv1d(
 /// Pad a (B, C, T) tensor along the last dim. Implements
 /// Constant (zero) and Replicate (edge-repeat) modes via concat
 /// composites. Causal callers pass `right = 0`.
-fn pad1d(
+pub fn pad1d(
     x: &LazyTensor, left: usize, right: usize, mode: PadMode, anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     if left == 0 && right == 0 {
