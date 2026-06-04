@@ -224,8 +224,7 @@ impl Mv4Model {
             x = apply_block(&x, blk, cfg.activation, image)?;
         }
         // Global mean over (H, W).
-        let pooled_w = x.mean_dim(3_usize)?;
-        let pooled = pooled_w.mean_dim(2_usize)?;
+        let pooled = x.global_avg_pool_2d()?;
         match &self.weights.head {
             None => Ok(pooled),
             Some(head) => {

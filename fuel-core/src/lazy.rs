@@ -2986,6 +2986,25 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
+    /// Global average pool over the spatial dims of a rank-4
+    /// `(B, C, H, W)` tensor: reduces dims 2 and 3, returning
+    /// `(B, C)`. For the keepdim variant (`(B, C, 1, 1)`, used by
+    /// SE blocks), follow with `.reshape(Shape::from_dims(&[B, C, 1, 1]))`.
+    ///
+    /// Backs the classification heads of every conv vision port
+    /// (ResNet, EfficientNet, ConvMixer, FastViT, MobileNetV4,
+    /// MobileOne, RepVGG, ConvNeXt, EfficientViT, etc.) plus the
+    /// pre-projection pool inside each squeeze-excite block.
+    pub fn global_avg_pool_2d(
+        &self,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.inner.shape().dims().to_vec();
+        debug_assert_eq!(dims.len(), 4,
+            "global_avg_pool_2d: input must be rank 4 (B, C, H, W), got {dims:?}");
+        // Reduce W first (dim 3), then H (dim 2 of the H-reduced (B, C, H) tensor).
+        self.mean_dim(3_usize)?.mean_dim(2_usize)
+    }
+
     /// Apply a per-channel affine `gain · x + bias` to a rank-4
     /// `(B, C, H, W)` tensor. Both `gain` and `bias` are length-`C`
     /// vectors materialized fresh on the receiver's graph and
@@ -10139,6 +10158,25 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn global_avg_pool_2d_averages_spatial_dims() {
+        // (1, 2, 2, 3) — two channels, 2×3 spatial.
+        // Channel 0: 1..=6, mean = 3.5.
+        // Channel 1: 10, 20, 30, 40, 50, 60, mean = 35.
+        let x = cpu_f32(
+            vec![
+                1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0,
+                10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+            ],
+            &[1, 2, 2, 3],
+        );
+        let out = x.global_avg_pool_2d().unwrap();
+        assert_eq!(out.shape().dims(), &[1, 2]);
+        let v = out.realize_f32();
+        assert!((v[0] - 3.5).abs() < 1e-5);
+        assert!((v[1] - 35.0).abs() < 1e-4);
     }
 
     #[test]

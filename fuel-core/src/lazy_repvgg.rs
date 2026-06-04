@@ -147,8 +147,7 @@ impl RepVggModel {
     pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
-        let pooled_w = x.mean_dim(3_usize)?;
-        let pooled = pooled_w.mean_dim(2_usize)?;
+        let pooled = x.global_avg_pool_2d()?;
         match &self.weights.head {
             None => Ok(pooled),
             Some((w, b)) => {

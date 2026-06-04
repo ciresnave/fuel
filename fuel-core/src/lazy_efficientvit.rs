@@ -212,8 +212,7 @@ impl EfficientVitModel {
             }
         }
         // Global mean over (H, W).
-        let pooled_w = x.mean_dim(3_usize)?;
-        let pooled = pooled_w.mean_dim(2_usize)?;
+        let pooled = x.global_avg_pool_2d()?;
         match &self.weights.head {
             None => Ok(pooled),
             Some((bn, lin_w, lin_b)) => {
@@ -316,9 +315,8 @@ fn apply_se(
     let dims = x.shape();
     let dims = dims.dims();
     let c = dims[1];
-    let pooled_w = x.mean_dim(3_usize)?;
-    let pooled = pooled_w.mean_dim(2_usize)?;
-    let pooled = pooled.reshape(Shape::from_dims(&[dims[0], c, 1, 1]))?;
+    let pooled = x.global_avg_pool_2d()?
+        .reshape(Shape::from_dims(&[dims[0], c, 1, 1]))?;
     let g = apply_conv1x1_bias(&pooled, &se.fc1, anchor)?.relu();
     let g = apply_conv1x1_bias(&g, &se.fc2, anchor)?.sigmoid();
     let g_b = g.broadcast_to(Shape::from_dims(dims))?;
