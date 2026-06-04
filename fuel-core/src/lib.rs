@@ -85,6 +85,7 @@ pub mod lazy_lstm;
 pub mod lazy_llava;
 pub mod lazy_convmixer;
 pub mod lazy_convnext;
+pub mod lazy_csm;
 pub mod lazy_dac;
 pub mod lazy_debertav2;
 pub mod lazy_encodec;
