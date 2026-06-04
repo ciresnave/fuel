@@ -105,6 +105,7 @@ pub mod lazy_glm4_new;
 pub mod lazy_granite;
 pub mod lazy_granitemoehybrid;
 pub mod lazy_helium;
+pub mod lazy_hiera;
 pub mod lazy_jina_bert;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
