@@ -197,17 +197,11 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     let k = linear(x, &lw.k_w, Some(&lw.k_b), h, n_kv * d_head, seq);
     let v = linear(x, &lw.v_w, Some(&lw.v_b), h, n_kv * d_head, seq);
 
-    let q = q
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+    let q = q.split_heads(n_heads, d_head).unwrap();
     // For Qwen1.5-MoE num_kv_heads == num_attention_heads, so no GQA
-    // replication needed; but keep the rehape path general.
-    let k = k
-        .reshape(Shape::from_dims(&[1, seq, n_kv, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let v = v
-        .reshape(Shape::from_dims(&[1, seq, n_kv, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+    // replication needed; but keep the path general.
+    let k = k.split_heads(n_kv, d_head).unwrap();
+    let v = v.split_heads(n_kv, d_head).unwrap();
 
     // RoPE.
     let (cos, sin) = rope_tables(cfg.rope_theta, seq, d_head);
@@ -232,8 +226,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap()
-        .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        .merge_heads().unwrap();
     linear(&ctx, &lw.o_w, None, h, h, seq)
 }
 

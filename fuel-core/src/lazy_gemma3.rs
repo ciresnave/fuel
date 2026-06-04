@@ -242,15 +242,10 @@ impl Gemma3Model {
         )?;
 
         // (b, seq, n_heads, head_dim) -> (b, n_heads, seq, head_dim).
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_attention_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
+        let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
+        let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
         // Per-head Q/K RmsNorm on head_dim (POST-reshape, like eager Gemma3).
         let q = apply_offset_rms_norm(
@@ -295,9 +290,7 @@ impl Gemma3Model {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
-        let merged = attn_v
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, q_dim]))?;
+        let merged = attn_v.merge_heads()?;
         let attn_out = opt_bias(
             layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size),
             layer.attn_o_bias.as_ref(), cfg.hidden_size,
