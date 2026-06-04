@@ -729,6 +729,38 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
     }
 
+    /// Equivalent to `torch.repeat_interleave(x, repeats, dim)`.
+    /// Replaces each element along `dim` with `repeats` consecutive
+    /// copies of itself, expanding that dim by a factor of `repeats`.
+    /// Implemented via reshape+broadcast+reshape — no new graph op.
+    ///
+    /// `repeats == 1` is a no-op clone. `repeats == 0` returns an
+    /// error at build time.
+    pub fn repeat_interleave<D: Dim>(
+        &self, dim: D, repeats: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let dim = dim.to_index(&shape, "repeat_interleave")?;
+        if repeats == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "repeat_interleave: repeats must be ≥ 1".into(),
+            ).bt());
+        }
+        if repeats == 1 {
+            return Ok(self.clone());
+        }
+        let dims_v: Vec<usize> = shape.dims().to_vec();
+        let mut unsq_shape = dims_v.clone();
+        unsq_shape.insert(dim + 1, 1);
+        let mut bc_shape = unsq_shape.clone();
+        bc_shape[dim + 1] = repeats;
+        let unsq = self.reshape(Shape::from_dims(&unsq_shape))?;
+        let bc = unsq.broadcast_to(Shape::from_dims(&bc_shape))?;
+        let mut out_shape = dims_v.clone();
+        out_shape[dim] *= repeats;
+        bc.reshape(Shape::from_dims(&out_shape))
+    }
+
     /// Slice (narrow) along `dim`: take elements `[start, start+len)`.
     /// Bad `dim` / out-of-range slice surfaces as a typed error at build
     /// time. Accepts any [`Dim`].
@@ -9979,6 +10011,45 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn repeat_interleave_last_dim_matches_torch_semantics() {
+        // (2, 3) input: rows [1,2,3] and [4,5,6]. dim=1, repeats=2
+        // → each element becomes two consecutive copies:
+        // (2, 6): [1,1,2,2,3,3] and [4,4,5,5,6,6].
+        let a = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let out = a.repeat_interleave(1_usize, 2).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 6]);
+        assert_eq!(out.realize_f32(),
+            vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0,
+                 4.0, 4.0, 5.0, 5.0, 6.0, 6.0]);
+    }
+
+    #[test]
+    fn repeat_interleave_middle_dim() {
+        // (2, 2, 2) input. dim=1, repeats=3 → (2, 6, 2).
+        let a = cpu_f32((0..8).map(|i| i as f32).collect(), &[2, 2, 2]);
+        let out = a.repeat_interleave(1_usize, 3).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 6, 2]);
+        // First sample's elements: (0,1) repeated 3× then (2,3) repeated 3×.
+        let v = out.realize_f32();
+        assert_eq!(&v[0..6], &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(&v[6..12], &[2.0, 3.0, 2.0, 3.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn repeat_interleave_repeats_one_is_noop() {
+        let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let out = a.repeat_interleave(0_usize, 1).unwrap();
+        assert_eq!(out.shape().dims(), &[3]);
+        assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn repeat_interleave_repeats_zero_errors() {
+        let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        assert!(a.repeat_interleave(0_usize, 0).is_err());
     }
 
     #[test]
