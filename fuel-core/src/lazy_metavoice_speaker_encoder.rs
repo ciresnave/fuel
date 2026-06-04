@@ -100,13 +100,8 @@ impl SpeakerEncoderModel {
 fn l2_normalize_last(
     x: &LazyTensor, b: usize, t: usize, e: usize,
 ) -> Result<LazyTensor> {
-    let sq = x.mul(x)?;
-    let sum = sq.sum_dim(2_usize)?;
-    let norm = sum
-        .sqrt()
-        .reshape(Shape::from_dims(&[b, t, 1]))?
-        .broadcast_to(Shape::from_dims(&[b, t, e]))?;
-    x.div(&norm)
+    let _ = (b, t, e);
+    x.l2_normalize(2_usize, 0.0)
 }
 
 // ---- Tests -----------------------------------------------------------------

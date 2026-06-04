@@ -729,6 +729,25 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
     }
 
+    /// L2-normalize along `dim`: `x / sqrt(sum(x²) + eps)`. Output
+    /// shape equals input shape; the normalization divisor is
+    /// broadcast across `dim` after a keepdim reduction.
+    ///
+    /// Common values: `eps = 1e-12` (PyTorch default), `eps = 1e-6`
+    /// (some retrieval pipelines), `eps = 0.0` (no epsilon — caller
+    /// guarantees no all-zero rows).
+    pub fn l2_normalize<D: Dim>(
+        &self, dim: D, eps: f64,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let sq = self.sqr();
+        let summed = sq.sum_keepdim(dim)?;
+        let with_eps = if eps == 0.0 { summed } else { summed.add_scalar(eps) };
+        let l2 = with_eps.sqrt();
+        let dims_v: Vec<usize> = self.inner.shape().dims().to_vec();
+        let l2_bc = l2.broadcast_to(Shape::from_dims(&dims_v))?;
+        self.div(&l2_bc)
+    }
+
     /// Equivalent to `torch.repeat_interleave(x, repeats, dim)`.
     /// Replaces each element along `dim` with `repeats` consecutive
     /// copies of itself, expanding that dim by a factor of `repeats`.
@@ -10011,6 +10030,32 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn l2_normalize_last_dim_unit_norm_per_row() {
+        // (2, 3): rows [3,4,0] (norm 5) and [1,2,2] (norm 3).
+        let a = cpu_f32(vec![3.0, 4.0, 0.0, 1.0, 2.0, 2.0], &[2, 3]);
+        let out = a.l2_normalize(1_usize, 1e-12).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 3]);
+        let v = out.realize_f32();
+        let row0_norm = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+        let row1_norm = (v[3]*v[3] + v[4]*v[4] + v[5]*v[5]).sqrt();
+        assert!((row0_norm - 1.0).abs() < 1e-5, "row 0 norm = {row0_norm}");
+        assert!((row1_norm - 1.0).abs() < 1e-5, "row 1 norm = {row1_norm}");
+        // Row 0: [3,4,0]/5 → [0.6, 0.8, 0.0].
+        assert!((v[0] - 0.6).abs() < 1e-5);
+        assert!((v[1] - 0.8).abs() < 1e-5);
+        assert!(v[2].abs() < 1e-5);
+    }
+
+    #[test]
+    fn l2_normalize_eps_zero_works_when_nonzero() {
+        let a = cpu_f32(vec![1.0_f32, 0.0], &[2]);
+        let out = a.l2_normalize(0_usize, 0.0).unwrap();
+        let v = out.realize_f32();
+        assert!((v[0] - 1.0).abs() < 1e-6);
+        assert!(v[1].abs() < 1e-6);
     }
 
     #[test]

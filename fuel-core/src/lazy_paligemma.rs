@@ -202,15 +202,8 @@ impl PaligemmaModel {
 /// L2-normalize along the last dim with an epsilon-clamped
 /// denominator.
 fn l2_normalize_last(x: &LazyTensor, eps: f64) -> Result<LazyTensor> {
-    let sq = x.sqr();
-    let dims = x.shape();
-    let dims_v: Vec<usize> = dims.dims().to_vec();
-    let last_dim_idx = dims_v.len() - 1;
-    let l2 = sq.sum_keepdim(last_dim_idx)?
-        .add_scalar(eps)
-        .sqrt();
-    let l2_bc = l2.broadcast_to(Shape::from_dims(&dims_v))?;
-    x.div(&l2_bc)
+    let last = x.shape().dims().len() - 1;
+    x.l2_normalize(last, eps)
 }
 
 #[cfg(test)]

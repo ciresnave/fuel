@@ -190,11 +190,7 @@ impl StellaV5Model {
 
 /// L2-normalize on the last dim of a rank-2 tensor `(B, D)`.
 fn l2_normalize(x: &LazyTensor) -> Result<LazyTensor> {
-    // ||x||_2 = sqrt(sum(x*x, last_dim, keepdim))
-    let sq = x.mul(x)?;
-    let summed = sq.sum_keepdim(1_usize)?;
-    let norm = summed.sqrt();
-    x.broadcast_div(&norm)
+    x.l2_normalize(1_usize, 0.0)
 }
 
 #[cfg(test)]
