@@ -217,12 +217,9 @@ impl MptModel {
         let k = layer.attn_k.apply_linear(&x_norm, cfg.d_model, kv_dim);
         let v = layer.attn_v.apply_linear(&x_norm, cfg.d_model, kv_dim);
 
-        let q = q.reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k.reshape(Shape::from_dims(&[batch, seq, cfg.kv_n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v.reshape(Shape::from_dims(&[batch, seq, cfg.kv_n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let q = q.split_heads(cfg.n_heads, head_dim)?;
+        let k = k.split_heads(cfg.kv_n_heads, head_dim)?;
+        let v = v.split_heads(cfg.kv_n_heads, head_dim)?;
 
         // GQA replication.
         let n_rep = cfg.n_heads / cfg.kv_n_heads;
@@ -252,8 +249,7 @@ impl MptModel {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
-        let merged = attn_v.permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.d_model]))?;
+        let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.d_model, cfg.d_model);
 
         let h1 = x.add(&attn_out)?;

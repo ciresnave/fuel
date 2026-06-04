@@ -277,15 +277,10 @@ impl MixFormerModel {
         let k = qkv.slice(2_usize, h, h)?;
         let v = qkv.slice(2_usize, 2 * h, h)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = batch;
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         // Partial rotary on first `rotary_dim` features.
         let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, head_dim, rotary_dim)?;
@@ -296,20 +291,13 @@ impl MixFormerModel {
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
         // Strict causal mask.
-        let mut mask_data = vec![0.0_f32; seq * seq];
-        for i in 0..seq {
-            for j in (i + 1)..seq {
-                mask_data[i * seq + j] = f32::NEG_INFINITY;
-            }
-        }
-        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+            .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v)?;
 
-        let merged = attn_v
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = attn_v.merge_heads()?;
         let attn_out_lin = layer.out_proj.apply_linear(&merged, h, h);
         let out_bias_t = x.const_f32_like(
             Arc::clone(&layer.out_proj_bias),

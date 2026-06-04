@@ -444,15 +444,10 @@ impl MarianModel {
             &w.v_proj_bias, d_model,
         )?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, q_len, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, kv_len, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, kv_len, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, q_len, kv_len);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let k_t = k.transpose()?;
         let scores = q.matmul(&k_t)?;
@@ -462,9 +457,7 @@ impl MarianModel {
         };
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, q_len, d_model]))?;
+        let merged = ctx.merge_heads()?;
         let out = w.out_proj.apply_linear(&merged, d_model, d_model);
         add_bias_3d(out, &w.out_proj_bias, d_model)
     }
