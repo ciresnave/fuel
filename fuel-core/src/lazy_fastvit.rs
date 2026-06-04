@@ -73,6 +73,33 @@ impl FastVitConfig {
             num_classes: Some(1000),
         }
     }
+    /// FastViT-MCI0 — vision backbone for MobileCLIP-S1 / MetaCLIP.
+    pub fn mci0() -> Self {
+        Self {
+            in_channels: 64, blocks: [2, 6, 10, 2],
+            exp_ratio: 3, attn: true, lkc_use_act: true,
+            head_dim: 32, image_size: 256,
+            num_classes: None,
+        }
+    }
+    /// FastViT-MCI1 — vision backbone for MobileCLIP-S2.
+    pub fn mci1() -> Self {
+        Self {
+            in_channels: 64, blocks: [4, 12, 20, 4],
+            exp_ratio: 3, attn: true, lkc_use_act: true,
+            head_dim: 32, image_size: 256,
+            num_classes: None,
+        }
+    }
+    /// FastViT-MCI2 — vision backbone for MobileCLIP-S3.
+    pub fn mci2() -> Self {
+        Self {
+            in_channels: 80, blocks: [4, 12, 24, 4],
+            exp_ratio: 3, attn: true, lkc_use_act: true,
+            head_dim: 32, image_size: 256,
+            num_classes: None,
+        }
+    }
 }
 
 // ---- Weight structures ------------------------------------------------------
