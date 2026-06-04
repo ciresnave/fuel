@@ -343,19 +343,8 @@ fn apply_attention(
 fn apply_layer_norm_last(
     x: &LazyTensor, ln: &LayerNormWeights, hidden: usize,
 ) -> Result<LazyTensor> {
-    let normed = x.layer_norm_last_dim(1e-6)?;
-    let dims_v = x.shape().dims().to_vec();
-    let mut shape = vec![1_usize; dims_v.len()];
-    shape[dims_v.len() - 1] = hidden;
-    let g = normed
-        .const_f32_like(Arc::clone(&ln.gain), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&shape))?
-        .broadcast_to(Shape::from_dims(&dims_v))?;
-    let bias = normed
-        .const_f32_like(Arc::clone(&ln.bias), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&shape))?
-        .broadcast_to(Shape::from_dims(&dims_v))?;
-    Ok(normed.mul(&g)?.add(&bias)?)
+    let _ = hidden;
+    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
 }
 
 fn apply_linear(

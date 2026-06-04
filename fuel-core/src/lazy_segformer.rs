@@ -467,22 +467,9 @@ fn apply_layer_norm(
     hidden: usize,
     eps: f64,
 ) -> Result<LazyTensor> {
-    let normed = x.layer_norm_last_dim(eps)?;
-    let dims_v = x.shape().dims().to_vec();
-    let last = dims_v.last().copied().unwrap();
+    let last = x.shape().dims().last().copied().unwrap();
     assert_eq!(last, hidden);
-    let bc_shape = Shape::from_dims(&dims_v);
-    let mut bias_shape = vec![1_usize; dims_v.len()];
-    bias_shape[dims_v.len() - 1] = hidden;
-    let g = normed
-        .const_f32_like(Arc::clone(&ln.gain), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&bias_shape))?
-        .broadcast_to(bc_shape.clone())?;
-    let bias = normed
-        .const_f32_like(Arc::clone(&ln.bias), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&bias_shape))?
-        .broadcast_to(bc_shape)?;
-    Ok(normed.mul(&g)?.add(&bias)?)
+    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
 }
 
 fn apply_linear_with_bias(
