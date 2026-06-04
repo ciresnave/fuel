@@ -408,15 +408,12 @@ fn apply_layer_norm(
 fn apply_linear(
     x: &LazyTensor, lw: &LinearWeights, anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
+    let _ = anchor;
     let dims = x.shape();
     let dims = dims.dims();
     let in_features = dims[dims.len() - 1];
     let out_features = lw.b.len();
-    let projected = lw.w.apply_linear(x, in_features, out_features);
-    let bias = anchor.const_f32_like(
-        Arc::clone(&lw.b), Shape::from_dims(&[out_features]),
-    );
-    projected.broadcast_add(&bias)
+    lw.w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(&lw.b))
 }
 
 // ---- Tests -----------------------------------------------------------------

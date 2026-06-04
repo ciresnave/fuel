@@ -358,11 +358,8 @@ fn apply_linear_with_bias(
     out_features: usize,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let projected = w.apply_linear(x, in_features, out_features);
-    let bias_t = anchor.const_f32_like(
-        Arc::clone(b), Shape::from_dims(&[out_features]),
-    );
-    projected.broadcast_add(&bias_t)
+    let _ = anchor;
+    w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(b))
 }
 
 // ---- Tests -----------------------------------------------------------------

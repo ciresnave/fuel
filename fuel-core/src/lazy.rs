@@ -4070,6 +4070,31 @@ impl WeightStorage {
         }
     }
 
+    /// Produce `X @ W + bias` for this weight storage. Bias is a
+    /// length-`out_features` Arc<[f32]> materialized fresh on the
+    /// receiver's graph and broadcast across the leading dims of
+    /// the output.
+    ///
+    /// Equivalent to the per-port `apply_linear_with_bias` helpers
+    /// that several ports inlined — promoted here so call sites
+    /// stop drifting.
+    pub fn apply_linear_with_bias(
+        &self,
+        x: &LazyTensor,
+        in_features: usize,
+        out_features: usize,
+        bias: std::sync::Arc<[f32]>,
+    ) -> std::result::Result<LazyTensor, fuel_core_types::Error> {
+        debug_assert_eq!(bias.len(), out_features,
+            "apply_linear_with_bias: bias len ({}) != out_features ({})",
+            bias.len(), out_features);
+        let projected = self.apply_linear(x, in_features, out_features);
+        let bias_t = projected.const_f32_like(
+            bias, Shape::from_dims(&[out_features]),
+        );
+        projected.broadcast_add(&bias_t)
+    }
+
     /// Produce `X @ W` (with optional bias) for this weight storage.
     /// Dispatches to `matmul` for F32/BF16 weights and to `qmatmul`
     /// for Q4_0. The activations `x` must be F32.

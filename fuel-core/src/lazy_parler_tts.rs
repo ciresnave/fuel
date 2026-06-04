@@ -388,14 +388,12 @@ fn apply_linear_with_bias(
     w: &LinearWeights,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let projected = w.w.apply_linear(x, w.in_features, w.out_features);
-    if let Some(b) = &w.b {
-        let bias_t = anchor.const_f32_like(
-            Arc::clone(b), Shape::from_dims(&[w.out_features]),
-        );
-        projected.broadcast_add(&bias_t)
-    } else {
-        Ok(projected)
+    let _ = anchor;
+    match &w.b {
+        Some(b) => w.w.apply_linear_with_bias(
+            x, w.in_features, w.out_features, Arc::clone(b),
+        ),
+        None => Ok(w.w.apply_linear(x, w.in_features, w.out_features)),
     }
 }
 
