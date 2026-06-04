@@ -2986,6 +2986,24 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
+    /// Add a length-`bias.len()` bias vector to the trailing dim
+    /// of `self`, broadcasting across all leading dims. The bias
+    /// is materialized fresh on `self`'s graph from the supplied
+    /// `Arc<[f32]>`.
+    ///
+    /// Common pattern after `WeightStorage::apply_linear` when the
+    /// linear has a bias term but the activation tensor is on a
+    /// different anchor than where the bias was originally
+    /// allocated. Several lazy ports inlined this same 3-line
+    /// helper as `bias_add` — promoted here to a method.
+    pub fn add_trailing_bias(
+        &self, bias: std::sync::Arc<[f32]>,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let n = bias.len();
+        let bias_t = self.const_f32_like(bias, Shape::from_dims(&[n]));
+        self.broadcast_add(&bias_t)
+    }
+
     /// Apply RMSNorm along the last dim with an affine `gain · x`
     /// post-step (no bias — RMSNorm has no β term). `gain` is a
     /// length-`gain.len()` vector materialized fresh on the
@@ -10179,6 +10197,17 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn add_trailing_bias_broadcasts_across_leading_dims() {
+        // (2, 3) input + length-3 bias should add per-column.
+        let x = cpu_f32(vec![1.0_f32, 2.0, 3.0, 10.0, 20.0, 30.0], &[2, 3]);
+        let bias = std::sync::Arc::<[f32]>::from(vec![100.0_f32, 200.0, 300.0]);
+        let out = x.add_trailing_bias(bias).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 3]);
+        let v = out.realize_f32();
+        assert_eq!(v, vec![101.0, 202.0, 303.0, 110.0, 220.0, 330.0]);
     }
 
     #[test]

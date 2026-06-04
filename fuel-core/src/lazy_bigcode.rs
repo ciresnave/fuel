@@ -255,9 +255,8 @@ impl BigCodeModel {
 }
 
 fn bias_add(x: LazyTensor, b: &Arc<[f32]>, n: usize) -> Result<LazyTensor> {
-    assert_eq!(b.len(), n);
-    let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
-    x.broadcast_add(&bt)
+    let _ = n;
+    x.add_trailing_bias(Arc::clone(b))
 }
 
 #[cfg(test)]

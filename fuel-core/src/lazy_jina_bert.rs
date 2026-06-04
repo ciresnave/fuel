@@ -413,9 +413,8 @@ fn bias_add(
     n: usize,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    assert_eq!(bias.len(), n);
-    let bt = anchor.const_f32_like(Arc::clone(bias), Shape::from_dims(&[n]));
-    x.broadcast_add(&bt)
+    let _ = (n, anchor);
+    x.add_trailing_bias(Arc::clone(bias))
 }
 
 #[cfg(test)]
