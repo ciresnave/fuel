@@ -729,6 +729,38 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
     }
 
+    /// Apply LayerNorm along the last dim with an affine
+    /// `gain · x + bias` post-step. Both `gain` and `bias` are
+    /// length-`hidden` vectors materialized fresh on `self`'s
+    /// graph; they're broadcast across all leading dims of the
+    /// output.
+    ///
+    /// Equivalent to the per-port `apply_layer_norm(x, ln, hidden,
+    /// eps)` helpers that several ports inlined — promoted here so
+    /// the call sites stop drifting.
+    pub fn layer_norm_affine(
+        &self, gain: std::sync::Arc<[f32]>, bias: std::sync::Arc<[f32]>, eps: f64,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let hidden = gain.len();
+        debug_assert_eq!(bias.len(), hidden,
+            "layer_norm_affine: gain ({}) and bias ({}) must have the same length",
+            gain.len(), bias.len());
+        let normed = self.layer_norm_last_dim(eps)?;
+        let dims_v: Vec<usize> = self.inner.shape().dims().to_vec();
+        let mut affine_shape = vec![1_usize; dims_v.len()];
+        affine_shape[dims_v.len() - 1] = hidden;
+        let bc_shape = Shape::from_dims(&dims_v);
+        let g = normed
+            .const_f32_like(gain, Shape::from_dims(&[hidden]))
+            .reshape(Shape::from_dims(&affine_shape))?
+            .broadcast_to(bc_shape.clone())?;
+        let b = normed
+            .const_f32_like(bias, Shape::from_dims(&[hidden]))
+            .reshape(Shape::from_dims(&affine_shape))?
+            .broadcast_to(bc_shape)?;
+        normed.mul(&g)?.add(&b)
+    }
+
     /// L2-normalize along `dim`: `x / sqrt(sum(x²) + eps)`. Output
     /// shape equals input shape; the normalization divisor is
     /// broadcast across `dim` after a keepdim reduction.
@@ -10030,6 +10062,41 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn layer_norm_affine_unit_gain_zero_bias_matches_layer_norm_last_dim() {
+        let a = cpu_f32(vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let gain = std::sync::Arc::<[f32]>::from(vec![1.0_f32; 3]);
+        let bias = std::sync::Arc::<[f32]>::from(vec![0.0_f32; 3]);
+        let out_affine = a.layer_norm_affine(gain, bias, 1e-5).unwrap();
+        let out_plain = a.layer_norm_last_dim(1e-5).unwrap();
+        let va = out_affine.realize_f32();
+        let vp = out_plain.realize_f32();
+        for (a, b) in va.iter().zip(vp.iter()) {
+            assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn layer_norm_affine_applies_gain_and_bias() {
+        let a = cpu_f32(vec![1.0_f32, 2.0, 3.0], &[1, 3]);
+        let gain = std::sync::Arc::<[f32]>::from(vec![2.0_f32, 0.5, 1.5]);
+        let bias = std::sync::Arc::<[f32]>::from(vec![10.0_f32, -5.0, 0.0]);
+        let out = a.layer_norm_affine(gain, bias, 1e-5).unwrap();
+        let v = out.realize_f32();
+        // Manual: mean=2, var=2/3; normed = (x-2)/sqrt(2/3+1e-5).
+        let mean = 2.0_f32;
+        let var = ((1.0 - mean).powi(2) + (2.0 - mean).powi(2) + (3.0 - mean).powi(2)) / 3.0;
+        let den = (var + 1e-5_f32).sqrt();
+        let expected = [
+            ((1.0 - mean) / den) * 2.0 + 10.0,
+            ((2.0 - mean) / den) * 0.5 + (-5.0),
+            ((3.0 - mean) / den) * 1.5 + 0.0,
+        ];
+        for (got, want) in v.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-4, "{got} vs {want}");
+        }
     }
 
     #[test]
