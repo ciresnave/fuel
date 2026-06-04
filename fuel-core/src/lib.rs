@@ -117,6 +117,7 @@ pub mod lazy_mpt;
 pub mod lazy_nomic_bert;
 pub mod lazy_nvembed_v2;
 pub mod lazy_olmo;
+pub mod lazy_openclip_text;
 pub mod lazy_olmo2;
 pub mod lazy_parler_tts;
 pub mod lazy_paligemma;
