@@ -2986,6 +2986,27 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
+    /// Build the strict additive causal mask `(seq_len, seq_len)`
+    /// anchored on `anchor`'s graph: 0 on and below the diagonal,
+    /// `f32::NEG_INFINITY` above it. Add to attention scores before
+    /// softmax to enforce strict causality (position `i` cannot
+    /// attend to position `j > i`).
+    ///
+    /// Equivalent to the `(T, T)` mask several ports build inline
+    /// — promoted here so call sites stop drifting.
+    pub fn additive_causal_mask_like(anchor: &LazyTensor, seq_len: usize) -> Self {
+        let mut data = vec![0.0_f32; seq_len * seq_len];
+        for i in 0..seq_len {
+            for j in (i + 1)..seq_len {
+                data[i * seq_len + j] = f32::NEG_INFINITY;
+            }
+        }
+        anchor.const_f32_like(
+            std::sync::Arc::from(data),
+            Shape::from_dims(&[seq_len, seq_len]),
+        )
+    }
+
     /// Lower-triangular ones matrix `[n, n]`. `tril2(n).to_dtype(dtype)` is
     /// the causal-attention-mask building block.
     pub fn tril2(n: usize, dtype: DType, device: &Device) -> Self {
@@ -10087,6 +10108,31 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn additive_causal_mask_has_strict_lower_triangle() {
+        let anchor = cpu_f32(vec![0.0_f32], &[1]);
+        let mask = LazyTensor::additive_causal_mask_like(&anchor, 4);
+        assert_eq!(mask.shape().dims(), &[4, 4]);
+        let v = mask.realize_f32();
+        // Expected (-inf shown as 'x'):
+        //   0 x x x
+        //   0 0 x x
+        //   0 0 0 x
+        //   0 0 0 0
+        for i in 0..4 {
+            for j in 0..4 {
+                let got = v[i * 4 + j];
+                if j > i {
+                    assert!(got.is_infinite() && got.is_sign_negative(),
+                        "above-diag (i={i}, j={j}) should be -inf, got {got}");
+                } else {
+                    assert_eq!(got, 0.0,
+                        "on/below-diag (i={i}, j={j}) should be 0, got {got}");
+                }
+            }
+        }
     }
 
     #[test]
