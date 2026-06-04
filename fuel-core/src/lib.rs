@@ -107,6 +107,7 @@ pub mod lazy_mistral;
 pub mod lazy_mixformer;
 pub mod lazy_modernbert;
 pub mod lazy_mixtral;
+pub mod lazy_mobilenetv4;
 pub mod lazy_mobileone;
 pub mod lazy_moondream;
 pub mod lazy_mpt;
