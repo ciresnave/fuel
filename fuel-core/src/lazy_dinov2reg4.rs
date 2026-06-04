@@ -357,23 +357,16 @@ impl Dinov2Reg4Model {
         let k = qkv.slice(2_usize, h, h)?;
         let v = qkv.slice(2_usize, 2 * h, h)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
         let scores = q.matmul(&k.transpose()?)?.mul_scalar(scale);
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = ctx.merge_heads()?;
         let proj = block.proj.apply_linear(&merged, h, h);
         let proj_b_t = x.const_f32_like(
             Arc::clone(&block.proj_bias),

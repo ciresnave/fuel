@@ -231,20 +231,15 @@ fn apply_attention(
     let v = qkv.narrow(2_usize, 2 * embed, embed)?;
 
     // (B, seq, embed) → (B, n_heads, seq, head_dim).
-    let q = q.reshape(Shape::from_dims(&[b, seq, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[b, seq, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[b, seq, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    let _ = (b, seq, embed);
+    let q = q.split_heads(n_heads, head_dim)?;
+    let k = k.split_heads(n_heads, head_dim)?;
+    let v = v.split_heads(n_heads, head_dim)?;
 
     let kt = k.permute([0, 1, 3, 2_usize])?;
     let scores = q.matmul(&kt)?.mul_scalar(scale);
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs.matmul(&v)?;
-    let ctx = ctx
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, seq, embed]))?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
     apply_linear_with_bias(&ctx, &w.projection, &w.projection_bias, embed, embed, anchor)
 }
 
