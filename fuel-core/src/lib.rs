@@ -114,6 +114,7 @@ pub mod lazy_jina_bert;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
 pub mod lazy_metavoice_speaker_encoder;
+pub mod lazy_mimi;
 pub mod lazy_mimi_quantization;
 pub mod lazy_mimi_resampler;
 pub mod lazy_mimi_seanet;
