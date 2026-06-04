@@ -132,6 +132,71 @@ impl PaligemmaModel {
         };
         gemma.forward_embeds(&combined, 0)
     }
+
+    /// Like [`Self::forward`] but skips the LM head and returns
+    /// post-final-RmsNorm hidden states
+    /// `(1, num_patches + text_len, hidden_size)`.
+    ///
+    /// Used by retrieval models (ColPali, ColIdefics, etc.) that
+    /// project the per-token hidden states into a dense embedding
+    /// space rather than predicting tokens.
+    pub fn forward_hidden(
+        &self,
+        pixel_values: &LazyTensor,
+        text_tokens: &[u32],
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let v_cfg = &cfg.vision_config;
+        let t_cfg = &cfg.text_config;
+        assert_eq!(
+            cfg.projection_dim, t_cfg.hidden_size,
+            "v1: projection_dim must equal text hidden_size",
+        );
+        let text_len = text_tokens.len();
+        assert!(text_len > 0, "text_tokens must be non-empty");
+
+        let vision = SiglipVisionModel {
+            config: v_cfg.clone(),
+            weights: self.weights.vision.clone(),
+        };
+        let image_features = vision.forward(pixel_values)?;
+        let np = v_cfg.num_patches();
+        let dims = image_features.shape();
+        let dims = dims.dims();
+        assert_eq!(dims, &[1, np, v_cfg.hidden_size]);
+
+        let projected = self.weights.mm_proj.apply_linear(
+            &image_features,
+            v_cfg.hidden_size,
+            cfg.projection_dim,
+        );
+        let bias_t = pixel_values.const_f32_like(
+            Arc::clone(&self.weights.mm_proj_bias),
+            Shape::from_dims(&[cfg.projection_dim]),
+        );
+        let image_proj = projected.broadcast_add(&bias_t)?;
+        let image_proj_n = l2_normalize_last(&image_proj, 1e-12)?;
+
+        let gemma_embed_lt = pixel_values.const_f32_like(
+            Arc::clone(&self.weights.text.token_embedding),
+            Shape::from_dims(&[t_cfg.vocab_size, t_cfg.hidden_size]),
+        );
+        let token_ids = pixel_values.const_u32_like(
+            text_tokens.to_vec(),
+            Shape::from_dims(&[text_len]),
+        );
+        let text_embeds = gemma_embed_lt
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[1, text_len, t_cfg.hidden_size]))?;
+        let text_embeds_scaled = text_embeds.mul_scalar((t_cfg.hidden_size as f64).sqrt());
+
+        let combined = image_proj_n.concat(&text_embeds_scaled, 1_usize)?;
+        let gemma = GemmaModel {
+            config: t_cfg.clone(),
+            weights: self.weights.text.clone(),
+        };
+        gemma.forward_hidden_embeds(&combined, 0)
+    }
 }
 
 /// L2-normalize along the last dim with an epsilon-clamped
