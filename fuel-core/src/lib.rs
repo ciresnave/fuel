@@ -87,6 +87,7 @@ pub mod lazy_dinov2;
 pub mod lazy_dinov2reg4;
 pub mod lazy_distilbert;
 pub mod lazy_efficientnet;
+pub mod lazy_efficientvit;
 pub mod lazy_falcon;
 pub mod lazy_gemma;
 pub mod lazy_gemma2;
