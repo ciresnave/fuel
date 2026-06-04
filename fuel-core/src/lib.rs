@@ -94,6 +94,7 @@ pub mod lazy_distilbert;
 pub mod lazy_efficientnet;
 pub mod lazy_efficientvit;
 pub mod lazy_falcon;
+pub mod lazy_fastvit;
 pub mod lazy_gemma;
 pub mod lazy_gemma2;
 pub mod lazy_gemma3;
